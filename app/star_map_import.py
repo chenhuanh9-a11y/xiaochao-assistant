@@ -26,6 +26,7 @@ AUTHOR_PACKAGES = {
 }
 AUTHOR_SIDECARS = {"catalog.json", "display-bindings.json"}
 PACKAGE_IDS = {"nightmare-suju", "difficult-zhan10"} | set(AUTHOR_PACKAGES)
+SUPPORTED_DISPLAY_VERSIONS = {"1.0", "1.0.1"}
 CLIENT_COMPATIBILITY = {"displayVersion": "1.0", "numericLine": "1.0.0.N",
                         "minimumBuild": 1, "maximumBuild": 65535}
 BASE_DEPENDENCIES = {
@@ -361,7 +362,8 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None) -
     # data schemas/coordinate versions. Unknown major/minor/patch fail closed.
     numeric = version.get("numericVersion")
     build = re.fullmatch(r"1\.0\.0\.([1-9][0-9]{0,4})", numeric) if isinstance(numeric, str) else None
-    if version.get("displayVersion") != "1.0" or build is None or int(build[1]) > 65535:
+    # 1.0.1 changes only the desktop UI and update notices, not the resource layout.
+    if version.get("displayVersion") not in SUPPORTED_DISPLAY_VERSIONS or build is None or int(build[1]) > 65535:
         raise ImportRejected("unsupported-client-version")
     for row in dependencies.values():
         dependency = _target(root, row["path"])
