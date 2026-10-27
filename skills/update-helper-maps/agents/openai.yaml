@@ -1,0 +1,6 @@
+interface:
+  display_name: "Update Helper Maps"
+  short_description: "Maintain game maps, shared structures and author displays"
+  default_prompt: "Use $update-helper-maps to inspect a new game package and stage a verified map update, reporting blocked gates."
+policy:
+  allow_implicit_invocation: true

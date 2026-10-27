@@ -24,6 +24,7 @@ class SharedStructureReference:
     known_boundary: np.ndarray | None = None
     unknown_mask: np.ndarray | None = None
     native_wall_segments: list[dict] | None = None
+    resource_root: Path | None = None
 
     @property
     def mask(self) -> np.ndarray:
@@ -93,7 +94,7 @@ class SharedStructureResourceStore:
         except ValueError:
             return None
         binding = dict(profile=str(profile), mapId=str(map_id), floor=str(floor), variant=str(variant))
-        return load_shared_structure(path, expected_binding=binding)
+        return load_shared_structure(path, expected_binding=binding, resource_root=self.resource_root)
 
 
 def _metadata_from_archive(archive) -> dict | None:
@@ -158,6 +159,7 @@ def load_shared_structure(
     *,
     expected_binding: dict | None = None,
     expected_shape: tuple[int, int] | None = None,
+    resource_root: str | Path | None = None,
 ) -> SharedStructureReference | None:
     """Load one game-rendered binary structure product, fail-closed.
 
@@ -215,7 +217,7 @@ def load_shared_structure(
         if not isinstance(binding, dict) or binding != dict(expected_binding):
             return None
     return SharedStructureReference(clean_mask, validation_mask, dict(metadata), candidate, known, unknown,
-                                    native)
+                                    native, Path(resource_root).resolve() if resource_root is not None else None)
 
 
 __all__ = ["SharedStructureReference", "SharedStructureResourceStore", "load_shared_structure"]

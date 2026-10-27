@@ -1212,6 +1212,7 @@ class DesktopMainUI:
     def _sync_view(self):
         getter = getattr(self.assistant, "_route_presentation_snapshot", None)
         snapshot = getter() if callable(getter) else {}
+        self.map_browser.sync_game_mode(snapshot)
         self.hide_button.configure(text="最小化到任务栏")
         control_visible = snapshot.get("controlVisible")
         self.panel_button.configure(text="查看游戏控件" if control_visible is True else "打开游戏控件")
@@ -1236,6 +1237,7 @@ class DesktopMainUI:
         self._sync_help_bindings(key_texts)
         self._sync_reference_controls()
         self.map_browser.sync_map_package_import()
+        self.map_browser.sync_online_packages()
         self.home_session.configure(text=snapshot.get("roundStateText") or "本局状态未知")
         map_id = snapshot.get("mapId")
         item = getattr(self.assistant.pack, "by_id", {}).get(map_id)

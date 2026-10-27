@@ -168,6 +168,7 @@ APP_VERSION = load_runtime_app_version(
 APP_DISPLAY_VERSION = load_runtime_display_version(
     source_root=SOURCE_ROOT, resource_root=RESOURCE_ROOT,
     frozen=bool(getattr(sys, 'frozen', False)))
+ONLINE_MAP_PACKAGE_INDEX_URL = os.environ.get('STAR_MAP_PACKAGE_INDEX_URL', '').strip()
 ACTION_HOTKEYS = {
     "toggle-panel": ("F5", 0x74),
     "candidate-prev": ("F6", 0x75),
@@ -200,6 +201,7 @@ PROCESSED_AUTHOR_PROFILE_IDS = {"zhan10-speed", "zhan10-coffin"}
 ROUTE_PROFILE_OPTIONS = (
     (SUJU_ROUTE_PROFILE_ID, "滋酥居"),
     (DEFAULT_ROUTE_PROFILE_ID, "王清心（默认）"),
+    ('nightingale', '夜莺'),
     ("zhan10-speed", "展十 · 速刷路线"),
     ("zhan10-coffin", "展十 · 全棺路线"),
     ("lianghapi-single", "凉哈皮 · 单人路线"),
@@ -4115,7 +4117,7 @@ def structure_current_map_evidence(frame: np.ndarray | None) -> dict | None:
     if current is None:
         return None
     return dict(query=(current[0] > .22).astype(np.uint8),
-                observationBounds=tuple(visible[1]))
+                observationBounds=tuple(visible[1]), visible=visible)
 
 
 def map_translation_mask(
@@ -5589,8 +5591,20 @@ class DailyAssistant:
         pack=getattr(self,'pack',None)
         if self._shared_structure_mode_enabled():
             catalog = getattr(self, 'author_route_catalog', None)
-            profile = catalog.profiles.get(SUJU_ROUTE_PROFILE_ID) if catalog is not None else None
-            return SUJU_ROUTE_PROFILE_ID if profile is not None and profile.runtime_enabled else SHARED_STRUCTURE_PROFILE_ID
+            display_profile = self._shared_display_profile_id()
+            profile = catalog.profiles.get(display_profile) if catalog is not None else None
+            optional = getattr(self, 'optional_author_displays', None)
+            if optional is not None and display_profile in optional.profiles:
+                if not map_id:
+                    return display_profile
+                binding = optional.binding(display_profile,map_id,floor)
+                return display_profile if binding is not None and binding['usable'] else SHARED_STRUCTURE_PROFILE_ID
+            if optional is not None and profile is not None:
+                path = catalog.route_path(display_profile,map_id,str(floor),include_inactive=True) if map_id else None
+                available = Path(path).is_file() if path is not None else (not map_id and any(
+                    Path(layer).is_file() for variants in profile.maps.values() for variant in variants for layer in variant.layers.values()))
+                return display_profile if profile.runtime_enabled and available else SHARED_STRUCTURE_PROFILE_ID
+            return display_profile if profile is not None and profile.runtime_enabled else SHARED_STRUCTURE_PROFILE_ID
         source_store=getattr(pack,'source_candidates',None)
         if (source_store is not None
             and source_store.source_group_for_runtime_map_id(map_id)):
@@ -5610,6 +5624,10 @@ class DailyAssistant:
 
     def _route_author_fallback_notice(self):
         if self._shared_structure_mode_enabled():
+            optional = getattr(self,'optional_author_displays',None)
+            preferred = getattr(self,'preferred_route_profile_id',None)
+            if optional is not None and preferred in optional.profiles and self.route_profile_id == SHARED_STRUCTURE_PROFILE_ID:
+                return '所选作者该层未通过配准 · 当前使用结构底图，原图仍可浏览'
             return ''
         actual=self.route_profile_id
         if actual==getattr(self,'preferred_route_profile_id',actual):return ''
@@ -5620,7 +5638,10 @@ class DailyAssistant:
         return bool(store is not None and store.source_group_for_runtime_map_id(map_id))
 
     @staticmethod
-    def _load_shared_version_context(root, pack, resources, adapters, catalog, side_entries):
+    def _load_shared_version_context(root, pack, resources, adapters, catalog, side_entries, *,
+                                     neutral_relative='references/nightmare-structure-display.json',
+                                     author_profile_id=SUJU_ROUTE_PROFILE_ID,
+                                     entry_root_relative='references/nightmare-entries'):
         """Read ordinary per-floor dependency identities once per installation."""
         root = Path(root).resolve()
         def local(relative):
@@ -5635,7 +5656,7 @@ class DailyAssistant:
         registry = json.loads(local(registry_path).read_text(encoding='utf-8'))
         if registry.get('schemaVersion') != 1 or registry.get('resourceKind') != 'native-structure-version-bindings':
             raise ValueError('shared structure version bindings are incompatible')
-        neutral = json.loads(local('references/nightmare-structure-display.json').read_text(encoding='utf-8'))
+        neutral = json.loads(local(neutral_relative).read_text(encoding='utf-8'))
         if (neutral.get('schemaVersion') != 1 or neutral.get('resourceKind') != 'typed-shared-structure-display'
                 or local(neutral.get('indexPath')) != resources.index_path.resolve()):
             raise ValueError('shared neutral display index is incompatible')
@@ -5653,7 +5674,7 @@ class DailyAssistant:
         side_rows = rows_by_floor([item[0] for item in side_entries])
         reference_profile = getattr(adapters, 'coordinate_reference_profile_id', SHARED_STRUCTURE_PROFILE_ID)
         raw_catalog = getattr(catalog, '_raw', {})
-        author_profile = next((row for row in raw_catalog.get('profiles', []) if row.get('id') == SUJU_ROUTE_PROFILE_ID), {})
+        author_profile = next((row for row in raw_catalog.get('profiles', []) if row.get('id') == author_profile_id), {})
         context = {}
         for key, entry in resources.entries.items():
             profile, map_id, variant, floor = key
@@ -5691,7 +5712,7 @@ class DailyAssistant:
             side = side_rows.get((map_id, floor))
             if side is not None and (side.get('sourceKind') != 'game-rendered-shared-structure'
                     or side.get('profileId') != profile or side.get('variantId') != variant
-                    or local('references/nightmare-entries/' + str(side.get('structureResource'))) != local(entry.get('resourcePath'))
+                    or local(str(Path(entry_root_relative)/str(side.get('structureResource')))) != local(entry.get('resourcePath'))
                     or side.get('canvas') != display.get('canvas')):
                 errors.append('shared-local-feature-binding-mismatch')
             product_path = local(entry.get('resourcePath'))
@@ -5709,7 +5730,7 @@ class DailyAssistant:
             variants = author_profile.get('maps', {}).get(map_id) or []
             author_variant = next((row for row in variants if row.get('layers', {}).get(floor) == author.get('resource')), {})
             author_layer = (author_variant.get('layerMeta') or {}).get(floor) or {}
-            author_adapter = (((getattr(adapters, 'profiles', {}).get(SUJU_ROUTE_PROFILE_ID) or {}).get('maps') or {}).get(map_id) or {}).get('floors', {}).get(floor) or {}
+            author_adapter = (((getattr(adapters, 'profiles', {}).get(author_profile_id) or {}).get('maps') or {}).get(map_id) or {}).get('floors', {}).get(floor) or {}
             if catalog is None:
                 author_errors.append('author-not-installed')
             elif (author.get('baseResourceKey') != resource_key
@@ -5762,6 +5783,10 @@ class DailyAssistant:
         context = self.shared_structure_version_context or {}
         declarations = [self._shared_structure_lookup_binding(SHARED_STRUCTURE_PROFILE_ID, item.id, str(floor))
                         for item in pack.maps for floor in pack.floors]
+        native = getattr(self, 'difficult_native_context', None)
+        if native is not None:
+            declarations = [row for row in declarations
+                            if native.legacy_route_to_native(row['mapId'], row['floor']) is not None]
         expected = {(row['profile'], row['mapId'], row['variant'], row['floor']) for row in declarations}
         failures = []
         for key in sorted(expected):
@@ -5775,15 +5800,26 @@ class DailyAssistant:
             if reason:
                 failures.append(dict(binding=list(key), reason=reason))
         extras = sorted(set(resources.entries) - expected)
+        legacy_clean_count = 0
+        if native is not None:
+            for key in native.legacy_bindings:
+                if native.legacy_reference(key[1],key[3]) is None:
+                    failures.append(dict(binding=list(key), reason='legacy-clean-compatibility-unavailable'))
+                else:
+                    legacy_clean_count += 1
         return dict(success=not failures and not extras and bool(expected), mapCount=len(pack.maps),
             expectedLayerCount=len(expected), checkedLayerCount=len(expected)-len(failures),
             loadedProducts=bool(load_products), authorDisplayRequired=False, failures=failures,
+            **({'unboundNativeLayers': native.unbound_layers, 'gameNativeLayerCount':len(expected),
+                'legacyCleanLayerCount':legacy_clean_count} if native is not None else {}),
             extraBindings=[list(key) for key in extras])
 
     def _install_map_mode(self, mode, *, asset_root=None, memory_root=None, resource_root=None, before_publish=None):
         """Construct one isolated resource context; lifecycle invalidation is caller-owned."""
         if mode not in {'nightmare','difficult'}:raise ValueError('Unknown game mode')
         shared_resources = None
+        native_context = None
+        native_identity = False
         nightmare_root = Path(resource_root or getattr(self, 'nightmare_resource_root', None) or RESOURCE_ROOT)
         explicit_nightmare_root = resource_root is not None or getattr(self, 'nightmare_resource_root', None) is not None
         if mode == 'nightmare':
@@ -5795,18 +5831,34 @@ class DailyAssistant:
                 if shared_resources.error:
                     raise ValueError(f'共享结构资源不可用：{shared_resources.error}')
         if mode=='difficult':
-            from difficult_mode import DifficultPack,DifficultCatalog,DifficultCoordinateAdapters,DifficultStructureStore
             from difficult_map_ui import DifficultMapUI
-            assets=Path(asset_root if asset_root is not None else
-                os.environ.get('IDENTITYV_DIFFICULT_MAPS',str(RESOURCE_ROOT/'assets/difficult-maps')))
-            pack=DifficultPack(RESOURCE_ROOT,assets)
-            check=pack.validate()
-            if not check['success']:
-                raise ValueError(f"困难地图资源不完整：缺失 {len(check['missing'])} 项；"+
-                    '; '.join((check['missing']+check.get('errors',[]))[:3]))
-            catalog=DifficultCatalog(pack);adapters=DifficultCoordinateAdapters(pack)
-            resources=DifficultStructureStore(RESOURCE_ROOT)
-            ui=DifficultMapUI(RESOURCE_ROOT/'references/difficult-ui-controls.npz')
+            native_root = Path(os.environ.get('IDENTITYV_DIFFICULT_NATIVE_ROOT') or RESOURCE_ROOT)
+            native_manifest = native_root/'difficult-native-manifest.json'
+            native_interfaces = (json.loads(native_manifest.read_text(encoding='utf-8')).get('runtimeInterfaces', {})
+                                 if native_manifest.is_file() else {})
+            native_identity = 'identityPack' in native_interfaces
+            if native_identity:
+                from difficult_native_context import DifficultNativeContext
+                from difficult_native_identity import NativeDifficultPack
+                native_context = DifficultNativeContext(native_root)
+                pack = NativeDifficultPack(native_context.root, native_interfaces['identityPack'],
+                    display_context=native_context)
+                native_context.validate_identity_pack(pack)
+                catalog, adapters, resources = native_context.catalog, native_context.adapters, native_context.resources
+                shared_resources = resources
+                ui = DifficultMapUI(native_context.local(native_interfaces['uiControls']))
+            else:
+                from difficult_mode import DifficultPack,DifficultCatalog,DifficultCoordinateAdapters,DifficultStructureStore
+                assets=Path(asset_root if asset_root is not None else
+                    os.environ.get('IDENTITYV_DIFFICULT_MAPS',str(RESOURCE_ROOT/'assets/difficult-maps')))
+                pack=DifficultPack(RESOURCE_ROOT,assets)
+                check=pack.validate()
+                if not check['success']:
+                    raise ValueError(f"困难地图资源不完整：缺失 {len(check['missing'])} 项；"+
+                        '; '.join((check['missing']+check.get('errors',[]))[:3]))
+                catalog=DifficultCatalog(pack);adapters=DifficultCoordinateAdapters(pack)
+                resources=DifficultStructureStore(RESOURCE_ROOT)
+                ui=DifficultMapUI(RESOURCE_ROOT/'references/difficult-ui-controls.npz')
         else:
             pack=NightmarePack(manifest_path=nightmare_root/'references/nightmare-map-pack.json')
             try:
@@ -5858,26 +5910,114 @@ class DailyAssistant:
             engine_options['entry_shared_reference_provider'] = shared_loader
             engine_options['shared_reference_loader'] = shared_loader
         if mode=='difficult':
-            from difficult_mode import DifficultCandidateEngine
-            engine_type=DifficultCandidateEngine
-            engine_options={'resource_root':RESOURCE_ROOT,'entry_structure_store':resources.tilemaps,
-                'entry_route_loader':entry_route_loader,
-                'entry_context_is_current':entry_context_is_current}
+            if native_identity:
+                from difficult_native_identity import NativeDifficultCandidateEngine
+                engine_type = NativeDifficultCandidateEngine
+                def native_identity_reference(profile, map_id, floor):
+                    return (self._shared_structure_reference(profile, map_id, floor, resources=resources,
+                        adapters=adapters, version_context=shared_version_context) if entry_context_is_current() else None)
+                engine_options = dict(identity_root=native_context.local(native_interfaces['identityEntries']),
+                    identity_profile_id=SHARED_STRUCTURE_PROFILE_ID, identity_floors=pack.floors,
+                    exit_icon_path=native_context.local(native_interfaces['exitIcon']),
+                    entry_structure_store=resources, entry_shared_reference_provider=native_identity_reference,
+                    shared_reference_loader=native_identity_reference, entry_context_is_current=entry_context_is_current)
+            else:
+                from difficult_mode import DifficultCandidateEngine
+                engine_type=DifficultCandidateEngine
+                engine_options={'resource_root':RESOURCE_ROOT,'entry_structure_store':resources.tilemaps,
+                    'entry_route_loader':entry_route_loader,
+                    'entry_context_is_current':entry_context_is_current}
         base=engine_type(pack,memory_store=memory,**engine_options,
             structure_resource_loader=self._author_route_clean_product_for_route,
             structure_direct_resource_loader=self._author_route_clean_product_direct,
             structure_profile_provider=lambda:getattr(self,'route_profile_id',DEFAULT_ROUTE_PROFILE_ID),
             structure_cache_context_provider=self._author_structure_cache_context)
         engine=base
-        if shared_resources is not None:
+        difficult_identity_resources = None
+        if native_identity:
+            base._structure_profile_provider = lambda: SHARED_STRUCTURE_PROFILE_ID
+            base._structure_cache_context_provider = lambda: ''
+            native_context.attach_legacy_entry_metadata(base.side_entry_identity)
+            shared_version_context = self._load_shared_version_context(
+                native_context.root, native_context.version_pack, resources, adapters, catalog,
+                getattr(getattr(base,'side_entry_identity',None),'entries', []),
+                neutral_relative=native_context.neutral_relative, author_profile_id='zhan10-speed',
+                entry_root_relative='')
+            native_context.validate_versions(shared_version_context)
+        elif mode == 'difficult':
+            from difficult_native_context import DifficultNativeContext
+            configured_native = os.environ.get('IDENTITYV_DIFFICULT_NATIVE_ROOT')
+            native_root = Path(configured_native or RESOURCE_ROOT)
+            if configured_native or (native_root/'references/difficult-shared-structure-index.json').is_file():
+                # The old engine retains its actual identity pixels, entry
+                # indices and thresholds. Native products belong to alignment
+                # and presentation only, after the map/floor is identified.
+                identity_resources, identity_catalog = resources, catalog
+                native_context = DifficultNativeContext(native_root, pack)
+                identity_route_cache = {}
+                def identity_route_loader(profile, map_id, floor):
+                    if not entry_context_is_current():
+                        return None
+                    key = (str(profile), str(map_id), str(floor))
+                    if key not in identity_route_cache:
+                        path = identity_catalog.route_path(*key, include_inactive=True)
+                        if path is None:
+                            return None
+                        image = imread_unicode(path, cv2.IMREAD_UNCHANGED)
+                        if image is None:
+                            return None
+                        identity_route_cache[key] = image
+                        while len(identity_route_cache) > 6:
+                            identity_route_cache.pop(next(iter(identity_route_cache)))
+                    return identity_route_cache[key]
+                def identity_direct_loader(profile, map_id, floor):
+                    return identity_resources.load(profile, map_id, floor)
+                def identity_product_loader(route, profile, map_id, floor):
+                    return identity_resources.load_for_route(route, profile, map_id, floor)
+                base.entry_identity.route_loader = identity_route_loader
+                if base.side_entry_identity is not None:
+                    base.side_entry_identity.route_loader = identity_route_loader
+                base._structure_resource_loader = identity_product_loader
+                base._structure_direct_resource_loader = identity_direct_loader
+                base._structure_profile_provider = lambda: 'zhan10-speed'
+                base._structure_cache_context_provider = lambda: ''
+                difficult_identity_resources = identity_resources
+                catalog, adapters, resources = native_context.catalog, native_context.adapters, native_context.resources
+                shared_resources = resources
+                shared_version_context = self._load_shared_version_context(
+                    native_context.root, native_context.version_pack, resources, adapters, catalog, [],
+                    neutral_relative=native_context.neutral_relative, author_profile_id='zhan10-speed')
+                native_context.validate_versions(shared_version_context)
+                original_proposals = base.pose_index_candidates
+                def native_pose_proposals(frame, map_id, floor, **options):
+                    rows, diagnostic = original_proposals(frame, map_id, floor, **options)
+                    bridge = native_context.legacy_route_to_native(map_id, floor)
+                    if bridge is None:
+                        return [], dict(diagnostic, reason='difficult-native-binding-unavailable', candidateCount=0)
+                    # Preserve both independent axes. A converted legacy
+                    # proposal is still subject to the native solver's gates.
+                    converted = [np.asarray(row, np.float64) @ np.linalg.inv(bridge) for row in rows]
+                    return converted, dict(diagnostic, proposalCoordinateSpace='game-native-pixels',
+                        convertedFrom='legacy-difficult-route', candidateCount=len(converted))
+                base.pose_index_candidates = native_pose_proposals
+        if shared_resources is not None and mode == 'nightmare':
             shared_version_context = self._load_shared_version_context(nightmare_root, pack, resources,
                 adapters, catalog, getattr(getattr(base, 'side_entry_identity', None), 'entries', []))
+        optional_author_displays = None
+        if mode == 'nightmare' and shared_resources is not None:
+            from optional_author_displays import OptionalAuthorDisplays
+            optional_author_displays = OptionalAuthorDisplays(nightmare_root,pack,catalog,adapters,shared_version_context)
+            catalog,adapters = optional_author_displays.catalog,optional_author_displays.adapters
+            base._structure_profile_provider = lambda: SHARED_STRUCTURE_PROFILE_ID
         if before_publish is not None:
             before_publish()
         self.game_mode=mode;self.pack=pack;self.gate=RouteDisplayGate(pack)
         self.round_start_intent = None
         self.author_route_catalog=catalog;self.author_coordinate_adapters=adapters
         self.author_structure_resources=resources;self.memory_store=memory;self.engine=engine
+        self.difficult_native_context = native_context
+        self.difficult_identity_resources = difficult_identity_resources
+        self.optional_author_displays = optional_author_displays
         self.shared_structure_resources = shared_resources
         self.shared_structure_version_context = shared_version_context
         self.shared_structure_load_errors = {}
@@ -5908,10 +6048,19 @@ class DailyAssistant:
 
     def _mode_route_options(self):
         if self._shared_structure_mode_enabled():
-            profile = SUJU_ROUTE_PROFILE_ID if getattr(self, 'author_route_catalog', None) is not None else SHARED_STRUCTURE_PROFILE_ID
+            optional = getattr(self,'optional_author_displays',None)
+            if optional is not None:
+                installed = [profile for profile in (SUJU_ROUTE_PROFILE_ID,DEFAULT_ROUTE_PROFILE_ID,'nightingale')
+                    if profile in optional.profiles or (profile == SUJU_ROUTE_PROFILE_ID
+                        and getattr(self,'author_route_catalog',None) is not None
+                        and profile in self.author_route_catalog.profiles
+                        and any(Path(path).is_file() for variants in self.author_route_catalog.profiles[profile].maps.values()
+                                for variant in variants for path in variant.layers.values()))]
+                return tuple((profile,ROUTE_PROFILE_LABELS[profile]) for profile in installed) or ((SHARED_STRUCTURE_PROFILE_ID,ROUTE_PROFILE_LABELS[SHARED_STRUCTURE_PROFILE_ID]),)
+            profile = self._shared_display_profile_id() if getattr(self, 'author_route_catalog', None) is not None else SHARED_STRUCTURE_PROFILE_ID
             return ((profile, ROUTE_PROFILE_LABELS[profile]),)
         return tuple((key,label) for key,label in ROUTE_PROFILE_OPTIONS
-            if key != SUJU_ROUTE_PROFILE_ID and (getattr(self,'game_mode','nightmare')!='difficult' or key=='zhan10-speed'))
+            if key not in {SUJU_ROUTE_PROFILE_ID,'nightingale'} and (getattr(self,'game_mode','nightmare')!='difficult' or key=='zhan10-speed'))
 
     def _sync_active_mode_ui(self) -> None:
         """Describe the loaded mode, never a combobox choice still being applied."""
@@ -9225,7 +9374,12 @@ class DailyAssistant:
         selectable_profile_ids = {
             profile.id for profile in self.author_route_catalog.settings_choices()
         } if self.author_route_catalog is not None else set()
-        if selected != DEFAULT_ROUTE_PROFILE_ID and selected not in selectable_profile_ids:
+        if self._shared_structure_mode_enabled() and selected not in dict(self._mode_route_options()):
+            self.route_profile_var.set(ROUTE_PROFILE_LABELS[self.route_profile_id])
+            self._set_status('当前模式未安装所选作者，已保留原选择', '#ffb84d')
+            return
+        if (not self._shared_structure_mode_enabled()
+                and selected != DEFAULT_ROUTE_PROFILE_ID and selected not in selectable_profile_ids):
             selected = DEFAULT_ROUTE_PROFILE_ID
             self._set_status("作者路线目录不可用，已保留王清心路线", "#ffb84d")
         self.route_profile_id = selected
@@ -9775,10 +9929,14 @@ class DailyAssistant:
                 '上次导入请求尚未确认结束，当前不能重试。')
         return state
 
-    def inspect_map_package(self, path: str | Path) -> dict:
+    def inspect_map_package(self, path: str | Path, *, _expected_archive: dict | None = None) -> dict:
         self._ensure_map_package_import_state()
         if self.closed:
             return dict(success=False, reason='application-closed', message='程序正在关闭，无法检查地图包。')
+        if _expected_archive is None and getattr(self, '_online_map_package_worker', None) is not None:
+            self.cancel_online_map_package('local-package-selected')
+        elif _expected_archive is None and getattr(self, '_online_map_inspection', None) is not None:
+            self.cancel_online_map_package('local-package-selected')
         try:
             archive = Path(path).expanduser().resolve(strict=True)
             if not archive.is_file():
@@ -9796,7 +9954,8 @@ class DailyAssistant:
         self._map_package_import_state = dict(stage='checking', message='正在检查地图包，暂不修改已安装资源。',
             packagePath=str(archive), ready=None)
         request = dict(generation=self._map_package_import_generation, archive=archive,
-            installRoot=Path(ROOT).resolve(), resourceRoot=Path(RESOURCE_ROOT).resolve(), cancelled=cancelled)
+            installRoot=Path(ROOT).resolve(), resourceRoot=Path(RESOURCE_ROOT).resolve(), cancelled=cancelled,
+            expectedArchive=copy.deepcopy(_expected_archive))
         # Keep at most one one-shot inspector running. A new selection replaces
         # only the pending request; a completed old generation cannot publish.
         self._map_package_import_pending = request
@@ -9814,7 +9973,7 @@ class DailyAssistant:
         def run() -> None:
             event = dict(kind='map-package-inspected', generation=request['generation'],
                 packagePath=str(request['archive']), installRoot=str(request['installRoot']),
-                resourceRoot=str(request['resourceRoot']))
+                resourceRoot=str(request['resourceRoot']), expectedArchive=request['expectedArchive'])
             try:
                 from star_map_import import inspect_package
                 if not request['cancelled'].is_set():
@@ -9823,6 +9982,11 @@ class DailyAssistant:
                     after = self._map_package_file_identity(request['archive'])
                     if before != after:
                         raise ValueError('地图包在检查期间发生变化，请重新选择。')
+                    expected = request['expectedArchive']
+                    if expected is not None and (after[2] != expected['bytes']
+                            or result.get('archiveSha256') != expected['sha256']
+                            or result.get('packageId') != expected['packageId']):
+                        raise ValueError('实际地图包检查结果与所选下载列表的长度、SHA或地图标识不一致。')
                     event.update(result=result, fileIdentity=after)
             except Exception as error:
                 event['error'] = f'{type(error).__name__}: {error}'
@@ -9855,11 +10019,16 @@ class DailyAssistant:
                 self._map_package_import_state.update(stage='ready',
                     ready=dict(title=title, summary=summary),
                     message='地图包检查通过。退出并导入后，请手动重新启动星图。')
+        self._finish_online_map_inspection(event)
         if self._map_package_import_pending is not None and not self.closed:
             self._start_map_package_inspection()
 
     def cancel_map_package_import(self, reason: str = 'user-cancelled') -> dict:
         self._ensure_map_package_import_state()
+        online = getattr(self, '_online_map_inspection', None)
+        if online is not None and online[1] == self._map_package_import_generation:
+            self._online_map_inspection = None
+            self._online_map_package_state.update(stage='ready', message='已取消地图包检查；尚未导入。')
         self._map_package_import_generation += 1
         self._map_package_import_cancel.set()
         self._map_package_import_pending = None
@@ -9989,6 +10158,215 @@ class DailyAssistant:
             return dict(success=False, reason='import-start-failed', message=self._map_package_import_state['message'])
         finally:
             self.exit_confirmation_in_progress = False
+
+    def _online_map_service_adapter(self):
+        service = getattr(self, '_online_map_package_service', None)
+        if service is not None:
+            return service
+        if not ONLINE_MAP_PACKAGE_INDEX_URL or getattr(self, '_online_map_service_error', None):
+            return None
+        try:
+            from star_map_download import MapPackageDownloadService
+            service = MapPackageDownloadService(ONLINE_MAP_PACKAGE_INDEX_URL,
+                Path(ROOT).resolve() / 'work' / 'map-packages' / 'downloads')
+        except Exception as error:
+            self._online_map_service_error = str(error)
+            return None
+        self._online_map_package_service = service
+        return service
+
+    def _ensure_online_map_package_state(self) -> None:
+        if hasattr(self, '_online_map_package_state'):
+            return
+        self._online_map_package_generation = 0
+        self._online_map_package_cancel = threading.Event()
+        self._online_map_package_worker = None
+        self._online_map_inspection = None
+        self._online_map_package_entries = {}
+        self._online_map_progress_lock = threading.Lock()
+        self._online_map_latest_progress = None
+        self._online_map_package_state = dict(stage='idle', message='', packages=[], selectedPackageId='',
+            progress=dict(receivedBytes=0, totalBytes=None))
+
+    def online_map_packages_snapshot(self) -> dict:
+        self._ensure_online_map_package_state()
+        state = copy.deepcopy(self._online_map_package_state)
+        busy = self._online_map_package_worker is not None or self._online_map_inspection is not None
+        configured = bool(ONLINE_MAP_PACKAGE_INDEX_URL)
+        service = self._online_map_service_adapter()
+        available = service is not None and service.configured
+        usable = configured and available and not self.closed
+        state.update(busy=busy, canCheck=usable and not busy,
+            canDownload=usable and not busy and bool(self._online_map_package_entries),
+            canCancel=busy and not self._online_map_package_cancel.is_set())
+        if not configured:
+            state.update(packages=[], selectedPackageId='',
+                message='尚未配置地图下载地址；可继续使用内置地图或本地导入。')
+        elif not available:
+            state.update(packages=[], selectedPackageId='',
+                message=f"地图下载服务不可用：{getattr(self, '_online_map_service_error', None) or '组件尚未安装'}")
+        return state
+
+    def check_online_map_packages(self) -> dict:
+        return self._begin_online_map_package_job('index')
+
+    def download_online_map_package(self, package_id: str) -> dict:
+        self._ensure_online_map_package_state()
+        if not isinstance(package_id, str) or package_id not in self._online_map_package_entries:
+            return dict(success=False, reason='unknown-package', message='请先检查下载列表并选择其中的地图包。')
+        service = self._online_map_service_adapter()
+        if service is not None and service.attempts_remaining(package_id) <= 0:
+            return dict(success=False, reason='manual-retry-limit', message='此地图包已达到手动重试上限，请明确检查列表后再试。')
+        return self._begin_online_map_package_job('download', package_id)
+
+    def _begin_online_map_package_job(self, operation: str, package_id: str = '') -> dict:
+        self._ensure_online_map_package_state()
+        snapshot = self.online_map_packages_snapshot()
+        if self.closed:
+            return dict(success=False, reason='application-closed', message='程序正在关闭，不能开始下载。')
+        if snapshot['busy']:
+            return dict(success=False, reason='online-operation-busy', message='上一项在线操作尚未结束，请稍候。')
+        if not snapshot['canCheck']:
+            return dict(success=False, reason='online-unavailable', message=snapshot['message'])
+        self._ensure_map_package_import_state()
+        self._online_map_package_generation += 1
+        generation = self._online_map_package_generation
+        cancelled = threading.Event()
+        self._online_map_package_cancel = cancelled
+        self._online_map_package_worker = generation
+        with self._online_map_progress_lock:
+            self._online_map_latest_progress = None
+        self._online_map_package_state.update(
+            stage='checking-index' if operation == 'index' else 'downloading',
+            message='正在读取地图下载列表。' if operation == 'index' else '正在下载并校验地图包；尚未导入。',
+            selectedPackageId=package_id, progress=dict(receivedBytes=0, totalBytes=None))
+        service = self._online_map_service_adapter()
+        entry = copy.deepcopy(self._online_map_package_entries.get(package_id))
+        import_generation = self._map_package_import_generation
+        root = Path(ROOT).resolve()
+
+        def progress(received, total):
+            if cancelled.is_set():
+                return
+            # One latest cell; HTTP chunks never flood the main event FIFO.
+            with self._online_map_progress_lock:
+                self._online_map_latest_progress = (generation, dict(receivedBytes=received, totalBytes=total))
+
+        def run() -> None:
+            event = dict(kind='online-map-packages-completed', operation=operation,
+                generation=generation, packageId=package_id, importGeneration=import_generation,
+                installRoot=str(root), expectedArchive=(dict(packageId=package_id, bytes=entry['bytes'],
+                    sha256=entry['sha256'], onlineGeneration=generation) if entry is not None else None))
+            try:
+                if not cancelled.is_set():
+                    if operation == 'index':
+                        event['result'] = service.read_index(cancel_event=cancelled)
+                    else:
+                        event['result'] = service.download_package(package_id, cancel_event=cancelled, progress=progress)
+            except Exception as error:
+                event['error'] = f'{type(error).__name__}: {error}'
+            event['cancelled'] = cancelled.is_set()
+            self.events.put(event)
+
+        threading.Thread(target=run, name='online-map-package', daemon=True).start()
+        return dict(success=True, reason='checking-index' if operation == 'index' else 'downloading',
+            message=self._online_map_package_state['message'])
+
+    def _drain_online_map_package_progress(self) -> None:
+        lock = getattr(self, '_online_map_progress_lock', None)
+        if lock is None:
+            return
+        with lock:
+            latest = self._online_map_latest_progress
+            self._online_map_latest_progress = None
+        if latest is None or latest[0] != self._online_map_package_generation or self.closed:
+            return
+        values = latest[1]
+        received, total = values.get('receivedBytes'), values.get('totalBytes')
+        self._online_map_package_state['progress'] = dict(
+            receivedBytes=received if type(received) is int and received >= 0 else 0,
+            totalBytes=total if type(total) is int and total >= 0 else None)
+
+    def _consume_online_map_package_result(self, event: dict) -> None:
+        self._ensure_online_map_package_state()
+        if event.get('generation') != self._online_map_package_worker:
+            return
+        self._online_map_package_worker = None
+        self._drain_online_map_package_progress()
+        if (self.closed or event.get('cancelled') or event.get('generation') != self._online_map_package_generation
+                or event.get('installRoot') != str(Path(ROOT).resolve())):
+            if not self.closed:
+                self._online_map_package_state.update(stage='ready' if self._online_map_package_entries else 'idle',
+                    message='已取消在线操作；未检查或导入迟到的地图包。')
+            return
+        if event.get('error'):
+            self._online_map_package_state.update(stage='error', message=f"在线操作失败：{event['error']}")
+            return
+        if event['operation'] == 'index':
+            try:
+                entries = {}
+                packages = []
+                for entry in event['result']:
+                    package_id = entry['packageId']
+                    if not isinstance(package_id, str) or not package_id or package_id in entries:
+                        raise ValueError('下载列表含无效或重复地图标识。')
+                    entries[package_id] = copy.deepcopy(entry)
+                    packages.append(dict(packageId=package_id, title=str(entry.get('title') or package_id),
+                        summary=str(entry.get('summary') or ''), bytes=entry.get('bytes')))
+                self._online_map_package_entries = entries
+                self._online_map_package_state.update(stage='ready', packages=packages,
+                    message='地图下载列表已更新。' if packages else '当前下载列表没有可用地图包。')
+            except (KeyError, TypeError, ValueError) as error:
+                self._online_map_package_entries = {}
+                self._online_map_package_state.update(stage='error', packages=[], message=f'下载列表不可用：{error}')
+            return
+        self._online_map_package_state.update(stage='ready', message='地图包下载及校验完成；尚未导入。')
+        if event.get('importGeneration') != self._map_package_import_generation:
+            self._online_map_package_state['message'] = '地图包已下载；当前选择已改变，未自动检查或导入。'
+            return
+        try:
+            archive = Path(event['result']).resolve(strict=True)
+            expected = event['expectedArchive']
+            result = self.inspect_map_package(archive, _expected_archive=expected)
+            if result['success']:
+                self._online_map_inspection = (self._online_map_package_generation, self._map_package_import_generation)
+            self._online_map_package_state['message'] = ('地图包已下载，正在执行原有本地检查；确认后才退出导入。'
+                if result['success'] else result['message'])
+        except (OSError, TypeError, ValueError) as error:
+            self._online_map_package_state.update(stage='error', message=f'已下载文件不可用：{error}')
+
+    def cancel_online_map_package(self, reason: str = 'user-cancelled') -> dict:
+        self._ensure_online_map_package_state()
+        self._online_map_package_generation += 1
+        self._online_map_package_cancel.set()
+        service = self._online_map_service_adapter()
+        if service is not None:
+            service.cancel_active()
+        online = self._online_map_inspection
+        if online is not None and online[1] == self._map_package_import_generation:
+            self.cancel_map_package_import(reason)
+        self._online_map_inspection = None
+        with self._online_map_progress_lock:
+            self._online_map_latest_progress = None
+        self._online_map_package_state.update(stage='ready' if self._online_map_package_entries else 'idle',
+            progress=dict(receivedBytes=0, totalBytes=None),
+            message='正在取消在线操作；不会导入迟到的地图包。' if self._online_map_package_worker is not None else '已取消在线操作。')
+        return dict(success=True, reason=reason, message=self._online_map_package_state['message'])
+
+    def _finish_online_map_inspection(self, event: dict) -> None:
+        expected = event.get('expectedArchive')
+        online = getattr(self, '_online_map_inspection', None)
+        if expected is None or online is None or online != (expected['onlineGeneration'], event['generation']):
+            return
+        self._online_map_inspection = None
+        if (self.closed or expected['onlineGeneration'] != self._online_map_package_generation
+                or event['generation'] != self._map_package_import_generation):
+            return
+        if self._map_package_import_state['stage'] == 'ready':
+            self._online_map_package_state.update(stage='ready',
+                message='所选列表的长度/SHA与实际地图包检查一致；请在本地导入面板确认，尚未导入。')
+        else:
+            self._online_map_package_state.update(stage='error', message=self._map_package_import_state['message'])
 
     def export_diagnostic_logs(self) -> None:
         if self.diagnostic_export_in_progress:
@@ -12528,7 +12906,28 @@ class DailyAssistant:
 
     @observe_runtime('structure-solver')
     def _alignment_v2_structure_fit(self, frame, route, map_id, floor, profile, *, cancelled=None, floor_evidence=None, entry_seed=None):
+        from fast_structure_alignment import try_alignment
+        fast = try_alignment(self, frame, map_id, floor, cancelled=cancelled, entry_seed=entry_seed)
+        if fast is not None:
+            return fast
         from single_map_structure import solve
+        native = getattr(self, 'difficult_native_context', None)
+        if native is not None and getattr(self.engine, 'entry_shared_reference_provider', None) is None:
+            if not native.has_reference_binding(map_id, floor):
+                return dict(success=False, reason='difficult-native-binding-unavailable')
+            if (str(getattr(self.gate, 'confirmed_id', '')) != str(map_id)
+                    or str(getattr(self, 'current_floor', '')) != str(floor)):
+                return dict(success=False, reason='initial-structure-identity-not-current')
+            group = self._active_round_layer_group(map_id)
+            if group is not None and group.verified_floors and str(floor) in group.relations:
+                recovery = solve(self, frame, map_id, floor, profile, route, cancelled=cancelled)
+                if (recovery.get('success') or recovery.get('reason') != 'structure-current-geometry-failed'
+                        or recovery.get('sharedProjectionGeometryInsufficient')):
+                    return recovery
+            # Identity has already been decided in its original pixel domain.
+            # Its successful pose/residual is not native alignment evidence.
+            return self._alignment_v2_independent_member_fit(
+                frame, route, map_id, floor, profile, cancelled=cancelled)
         sparse_fit=self._alignment_v2_sparse_floor_fit(frame,route,map_id,floor,profile,cancelled=cancelled,evidence=floor_evidence)
         if sparse_fit is not None:return sparse_fit
         group = self._active_round_layer_group(map_id)
@@ -27858,9 +28257,48 @@ class DailyAssistant:
                     evidence, floor_read, round_locked=round_identity_locked))
         return probable_map_interface(evidence)
 
+    def _capture_map_open_full_probe(self, hwnd, token, context, capture_context,
+            deadline_at, cancelled, *, silent_hint, round_identity_locked,
+            proposal_source, full_probe):
+        """Return one original full-frame verdict, retaining its capture lane."""
+        if not self._acquire_capture_lane(token, context, cancelled, deadline_at=deadline_at):
+            return None, True
+        keep_lock = False
+        try:
+            started = time.perf_counter()
+            frame, bounds = self._capture_source_frame(hwnd)
+            captured_utc = datetime.now(timezone.utc).isoformat(timespec='milliseconds')
+            captured = time.perf_counter()
+            if (not self._map_ready_current(token, context, cancelled)
+                    or tuple(bounds) != capture_context.client_screen_bounds
+                    or frame.shape[:2] != capture_context.full_client_size[::-1]
+                    or client_capture_context(hwnd) != capture_context):
+                return None, True
+            evidence_started = time.perf_counter()
+            evidence = self._mode_map_interface(frame)
+            evidence_done = time.perf_counter()
+            floor_read = self._mode_selected_floor(frame)
+            checked_at = time.perf_counter()
+            accepted = self._full_capture_frame_is_probable(evidence, floor_read,
+                silent_hint=silent_hint, round_identity_locked=round_identity_locked)
+            self._log('map-ready-full-checked', cycleId=token, accepted=accepted,
+                proposalSource=proposal_source, fullProbe=full_probe,
+                reason=evidence.get('reason'), floorReason=floor_read.get('reason'),
+                observedFloor=floor_read.get('selectedFloor'),
+                captureStartedAt=started, capturedAt=captured)
+            if accepted and self._map_ready_current(token, context, cancelled):
+                keep_lock = True
+                return ((frame, bounds, captured_utc, evidence, floor_read,
+                    (captured-started)*1000, (evidence_done-evidence_started)*1000,
+                    (checked_at-evidence_done)*1000, started, captured), False)
+            return None, False
+        finally:
+            if not keep_lock:
+                self.capture_lock.release()
+
     def _prepare_map_open_frame(self, hwnd, token, deadline_at, cancelled,
             *, silent_hint=True, round_identity_locked=False):
-        """ROI stability only proposes one fresh FULL check; never rank a crop.
+        """Known maps try a full frame first; ROI stability remains a fallback.
 
         The absolute deadline belongs to preparation. Once a fresh full frame
         passes original map/floor checks, the original solver budget applies.
@@ -27871,6 +28309,25 @@ class DailyAssistant:
         if time.perf_counter() >= deadline_at:
             self._log('map-ready-stopped', cycleId=token, reason='preparation-deadline')
             return None
+        full_probes = 0
+        if (round_identity_locked
+                and os.environ.get('IDENTITYV_REOPEN_FAST_CAPTURE', '1') != '0'):
+            # A known-map reopen may already have a usable frame. The same
+            # full interface/floor checks can authorize it without first
+            # collecting two ROI observations and a 50ms stable window.
+            full_probes += 1
+            try:
+                prepared, stopped = self._capture_map_open_full_probe(
+                    hwnd, token, context, capture_context, deadline_at, cancelled,
+                    silent_hint=silent_hint, round_identity_locked=round_identity_locked,
+                    proposal_source='locked-first-full-frame', full_probe=full_probes)
+            except OSError as error:
+                self._log('map-ready-first-full-unavailable', cycleId=token, error=str(error))
+                prepared, stopped = None, False
+            if prepared is not None:
+                return prepared
+            if stopped:
+                return None
         rectangle = live_capture.normalized_rect_to_client(
             capture_context.full_client_size, live_capture.BACKDROP[:4], policy='full-client')
         window = MapReadyWindow(required_observations=2, stable_seconds=.05)
@@ -27878,7 +28335,6 @@ class DailyAssistant:
             now=time.perf_counter(), deadline_at=deadline_at)
         previous = None
         revision = 0
-        full_probes = 0
         max_full_probes = int(self.CAPTURE_VISUAL_MAX_ATTEMPTS)
         full_probe_period = float(self.CAPTURE_VISUAL_DEADLINE_SECONDS) / max(1, max_full_probes)
         next_full_probe_at = time.perf_counter() + full_probe_period
@@ -27936,41 +28392,16 @@ class DailyAssistant:
             if decision.needs_fresh_full_frame or probe_due:
                 # This latch is consumed exactly once. A rejected full check
                 # returns to ROI only within the SAME original deadline.
-                if not self._acquire_capture_lane(token, context, cancelled, deadline_at=deadline_at):
+                full_probes += 1
+                prepared, stopped = self._capture_map_open_full_probe(
+                    hwnd, token, context, capture_context, deadline_at, cancelled,
+                    silent_hint=silent_hint, round_identity_locked=round_identity_locked,
+                    proposal_source='roi-stable' if decision.needs_fresh_full_frame else 'bounded-full-probe',
+                    full_probe=full_probes)
+                if prepared is not None:
+                    return prepared
+                if stopped:
                     break
-                keep_lock = False
-                try:
-                    full_probes += 1
-                    started = time.perf_counter()
-                    frame, bounds = self._capture_source_frame(hwnd)
-                    captured_utc = datetime.now(timezone.utc).isoformat(timespec='milliseconds')
-                    captured = time.perf_counter()
-                    if (not self._map_ready_current(token, context, cancelled)
-                            or tuple(bounds) != capture_context.client_screen_bounds
-                            or frame.shape[:2] != capture_context.full_client_size[::-1]
-                            or client_capture_context(hwnd) != capture_context):
-                        break
-                    evidence_started = time.perf_counter()
-                    evidence = self._mode_map_interface(frame)
-                    evidence_done = time.perf_counter()
-                    floor_read = self._mode_selected_floor(frame)
-                    checked_at = time.perf_counter()
-                    accepted = self._full_capture_frame_is_probable(evidence, floor_read,
-                        silent_hint=silent_hint, round_identity_locked=round_identity_locked)
-                    self._log('map-ready-full-checked', cycleId=token, accepted=accepted,
-                        proposalSource='roi-stable' if decision.needs_fresh_full_frame else 'bounded-full-probe',
-                        fullProbe=full_probes,
-                        reason=evidence.get('reason'), floorReason=floor_read.get('reason'),
-                        observedFloor=floor_read.get('selectedFloor'),
-                        captureStartedAt=started, capturedAt=captured)
-                    if accepted and self._map_ready_current(token, context, cancelled):
-                        keep_lock = True
-                        return (frame, bounds, captured_utc, evidence, floor_read,
-                            (captured-started)*1000, (evidence_done-evidence_started)*1000,
-                            (checked_at-evidence_done)*1000, started, captured)
-                finally:
-                    if not keep_lock:
-                        self.capture_lock.release()
                 now = time.perf_counter()
                 if now >= deadline_at or full_probes >= max_full_probes:
                     break
@@ -28299,10 +28730,12 @@ class DailyAssistant:
                 return
             started = time.perf_counter()
             preload_status = self.engine.preload_status(floor)
+            rank_started = time.perf_counter()
             ranked = self.engine.rank(
                 best, floor=floor, limit=len(self.pack.maps),
                 budget_seconds=AUTO_IDENTITY_BUDGET_SECONDS,
             )
+            rank_completed = time.perf_counter()
             source_structure_candidate=None
             source_diagnostics=(getattr(self.engine,'last_difficult_evidence',{}) or {}).get('sourceStructureCandidates') or {}
             raw_source_candidate=source_diagnostics.get('automaticCandidate')
@@ -28365,9 +28798,16 @@ class DailyAssistant:
                     if seed_reference_context is not None:
                         front_pose_seed.update(coordinateSpace='shared-structure-to-client',
                                               structureReferenceContext=seed_reference_context)
+            if (getattr(self, 'difficult_native_context', None) is not None
+                    and getattr(self.engine, 'entry_shared_reference_provider', None) is None):
+                # This engine ranked the legacy identity domain. Do not tag
+                # its pose as native or let a legacy residual authorize paint.
+                front_pose_seed = None
             self.events.put({
                 "kind": "ranked", "ranked": ranked, "frame": best,
                 "frameCapturedAtUtc": best_captured_at,
+                "rankStartedMonotonicAt": rank_started,
+                "rankCompletedMonotonicAt": rank_completed,
                 "rankCaptureStartFrameGeneration": source_frame_generation,
                 "rankSourceSurfaceGeneration": source_surface_generation,
                 "bounds": best_bounds, "floor": floor,
@@ -28526,7 +28966,9 @@ class DailyAssistant:
         if photo is None:
             try:
                 if getattr(self,'game_mode','nightmare')=='difficult':
-                    path=self.pack.source_root/self.pack.metadata[item.id]['manualReference']
+                    native = getattr(self, 'difficult_native_context', None)
+                    path = (native.full_reference(item.id) if native is not None else
+                            self.pack.source_root/self.pack.metadata[item.id]['manualReference'])
                     with Image.open(path) as source:preview=source.convert('RGB')
                     preview.thumbnail((112,72),Image.Resampling.LANCZOS)
                 elif preview_mode == 'front' and self.front_clean_previews is not None:
@@ -28843,6 +29285,21 @@ class DailyAssistant:
     def show_one_flow(self) -> None:
         if self.gate.selected_id in self.pack.by_id:
             item = self.pack.by_id[self.gate.selected_id]
+            optional = getattr(self,'optional_author_displays',None)
+            preferred = getattr(self,'preferred_route_profile_id',None)
+            binding = optional.binding(preferred,item.id,self.current_floor) if optional is not None else None
+            if binding is not None:
+                suffix = '原图' if binding['usable'] else '原图（该层配准未通过，仅浏览）'
+                self._show_image(binding['path'],f'{item.name} · {ROUTE_PROFILE_LABELS[preferred]} · {suffix}',(420,500))
+                return
+            native = getattr(self, 'difficult_native_context', None)
+            if native is not None:
+                path = native.full_reference(item.id)
+                if path is not None:
+                    self._show_image(path, f'{item.name} · 完整路线', (420, 500))
+                else:
+                    self._set_status('该图尚无可靠原生资源绑定，完整路线保持隐藏', '#ffb84d')
+                return
             if self._shared_structure_mode_enabled():
                 layer = self._shared_display_layer(self.route_profile_id, item.id, self.current_floor)
                 if layer is not None:
@@ -28872,7 +29329,10 @@ class DailyAssistant:
         display_basis = adapters.matrix_profile_to_canonical(profile_id, map_id, floor) if adapters is not None else None
         catalog = getattr(self, 'author_route_catalog', None)
         path = catalog.route_path(profile_id, map_id, str(floor), include_inactive=True) if catalog is not None else None
-        if (profile_id != SHARED_STRUCTURE_PROFILE_ID and not version.get('authorError')
+        optional = getattr(self,'optional_author_displays',None)
+        optional_binding = optional.binding(profile_id,map_id,floor) if optional is not None else None
+        author_available = (optional_binding['usable'] if optional_binding is not None else not version.get('authorError'))
+        if (profile_id != SHARED_STRUCTURE_PROFILE_ID and author_available
                 and path is not None and source_basis is not None and display_basis is not None):
             try:
                 image = self._aligned_author_route_image(profile_id, map_id, floor)
@@ -28901,6 +29361,12 @@ class DailyAssistant:
                           else '结构底图（作者路线不可用）'))
 
     def _display_pixels_for_source(self, path, role, *, profile_id=None):
+        optional = getattr(self,'optional_author_displays',None)
+        if optional is not None and any(row['path'] == Path(path).resolve() for row in optional.bindings.values()):
+            return optional.pixels(path,role)
+        native = getattr(self, 'difficult_native_context', None)
+        if native is not None and Path(path).suffix.lower() != '.npz':
+            return native.display_pixels(path, role)
         if not self._shared_structure_mode_enabled():
             return self._transparent_display_store().load_for_source(path, role)
         if Path(path).suffix.lower() == '.npz':
@@ -28909,7 +29375,7 @@ class DailyAssistant:
             if layer is None or Path(path).resolve() != layer['sourcePath'].resolve():
                 raise ValueError('structure display has no current map/floor binding')
             return layer['routeSource']
-        profile_id = profile_id or SUJU_ROUTE_PROFILE_ID
+        profile_id = profile_id or self._shared_display_profile_id()
         catalog = getattr(self, 'author_route_catalog', None)
         profile = catalog.profiles.get(profile_id) if catalog is not None else None
         if profile_id != SUJU_ROUTE_PROFILE_ID or profile is None or not profile.runtime_enabled:
@@ -29104,6 +29570,30 @@ class DailyAssistant:
             raise ValueError(f'display original binding unavailable: {profile_id}/{map_id}/{floor}')
         return Path(path)
 
+    def _prepare_display_pixel_source(self, display, *, reuse):
+        """Bounded pure pixel preparation; never caches geometry or a verdict.
+
+        Some author arrays are writable. Compare their bytes against an owned
+        snapshot instead of treating an array id as proof of unchanged pixels.
+        A retained owner also prevents Python object-id reuse.
+        """
+        maximum = 96 * 1024 * 1024
+        cache = getattr(self, '_prepared_display_pixels', None)
+        eligible = bool(reuse and display.nbytes * 5 <= maximum)
+        if (eligible and cache is not None and cache['owner'] is display
+                and np.array_equal(cache['snapshot'], display)):
+            return cache['source'], cache, True
+        snapshot = display.copy() if eligible else display
+        alpha = snapshot[:, :, 3:4].astype(np.float32) / 255.0
+        source = np.concatenate((snapshot[:, :, :3].astype(np.float32) * alpha, alpha), axis=2)
+        cache = None
+        if eligible:
+            snapshot.setflags(write=False)
+            source.setflags(write=False)
+            cache = dict(owner=display, snapshot=snapshot, source=source)
+        self._prepared_display_pixels = cache
+        return source, cache, False
+
     def _build_display_overlay(self, route_source, matrix, frame_shape, *,
                                map_id=None, floor=None, profile_id=None, **options):
         """Build display pixels using the active reference's coverage basis."""
@@ -29135,32 +29625,58 @@ class DailyAssistant:
                 original, metadata = build_original_sheet_overlay(route_source, matrix, frame_shape, **options)
                 if original is None:
                     return None, metadata
-            alpha = display[:, :, 3:4].astype(np.float32) / 255.0
-            source = np.concatenate((display[:, :, :3].astype(np.float32) * alpha, alpha), axis=2)
-            height, width = frame_shape[:2]
-            warped = cv2.warpPerspective(source, np.asarray(matrix, np.float64), (width, height),
-                flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0, 0))
-            a = np.clip(warped[:, :, 3:4], 0.0, 1.0)
-            color = np.divide(warped[:, :, :3], a, out=np.zeros_like(warped[:, :, :3]), where=a > 0)
-            np.rint(color, out=color)
-            np.clip(color, 0, 255, out=color)
-            output = np.empty(warped.shape, dtype=np.uint8)
-            output[:, :, :3] = color
-            np.multiply(a, 255, out=a)
-            np.rint(a, out=a)
-            output[:, :, 3:4] = a
-            output[output[:, :, 3] == 0] = 0
+            spec = None
             if shared_display:
+                # Binding/version/bridge resolution remains fresh even when
+                # exactly identical display pixels can be reused below.
                 spec = self._route_profile_validation_spec(profile_id, map_id, floor, matrix, route_source)
                 if spec is None or not spec.get('profileBridgeVerified'):
                     raise ValueError('shared display has no declared native coordinate bridge')
-                metadata = self._shared_display_canvas_metadata(spec['sharedReference'].shape,
-                    spec['matrixSourceToClient'], output, **options)
-                if not metadata['success']:
-                    return None, metadata
+            reuse = bool(shared_display and os.environ.get('IDENTITYV_REOPEN_DISPLAY_CACHE', '1') != '0')
+            source, pixel_cache, source_reused = self._prepare_display_pixel_source(display, reuse=reuse)
+            render_key = None
+            if (pixel_cache is not None and set(options) <= {'minimum_coverage', 'minimum_visible_pixels'}):
+                render_key = (self.game_mode, map_id, floor, profile_id, tuple(frame_shape[:2]),
+                    tuple(np.asarray(matrix, np.float64).ravel()), tuple(spec['sharedReference'].shape),
+                    tuple(np.asarray(spec['matrixSourceToClient'], np.float64).ravel()),
+                    options.get('minimum_coverage', .08), options.get('minimum_visible_pixels', 500))
+            previous_render = pixel_cache.get('render') if pixel_cache is not None else None
+            render_reused = bool(render_key is not None and previous_render is not None
+                                 and previous_render['key'] == render_key)
+            if render_reused:
+                # Give consumers their own writable canvas, preserving the
+                # prior API without exposing the retained cached pixels.
+                output = previous_render['pixels'].copy()
+                metadata = copy.deepcopy(previous_render['metadata'])
+            else:
+                height, width = frame_shape[:2]
+                warped = cv2.warpPerspective(source, np.asarray(matrix, np.float64), (width, height),
+                    flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0, 0))
+                a = np.clip(warped[:, :, 3:4], 0.0, 1.0)
+                color = np.divide(warped[:, :, :3], a, out=np.zeros_like(warped[:, :, :3]), where=a > 0)
+                np.rint(color, out=color)
+                np.clip(color, 0, 255, out=color)
+                output = np.empty(warped.shape, dtype=np.uint8)
+                output[:, :, :3] = color
+                np.multiply(a, 255, out=a)
+                np.rint(a, out=a)
+                output[:, :, 3:4] = a
+                output[output[:, :, 3] == 0] = 0
+                if shared_display:
+                    metadata = self._shared_display_canvas_metadata(spec['sharedReference'].shape,
+                        spec['matrixSourceToClient'], output, **options)
+                    if not metadata['success']:
+                        return None, metadata
+                if (render_key is not None and pixel_cache['source'].nbytes
+                        + pixel_cache['snapshot'].nbytes + output.nbytes <= 96 * 1024 * 1024):
+                    retained = output.copy()
+                    retained.setflags(write=False)
+                    self._prepared_display_pixels = dict(pixel_cache, render=dict(
+                        key=render_key, pixels=retained, metadata=copy.deepcopy(metadata)))
             self._log('transparent-display-overlay-built', mapId=map_id, floor=floor,
                 profileId=profile_id, originalPath=str(path), originalValidationPreserved=not shared_display,
-                coverageBasis=metadata.get('coverageBasis', 'original-sheet-alpha'))
+                coverageBasis=metadata.get('coverageBasis', 'original-sheet-alpha'),
+                sourcePixelsReused=source_reused, renderedPixelsReused=render_reused)
             self.events.put(dict(kind='display-resource-ready', **context,
                 originalPath=str(path.resolve()).casefold()))
             return output, {**metadata, 'displayPixelsDerived': True, 'validationPixelsUnmodified': True,
@@ -29207,7 +29723,7 @@ class DailyAssistant:
         if profile_id == SOURCE_STRUCTURE_PROFILE_ID:
             if not self._is_source_structure_identity(map_id):return None
             return self.engine.route_image(map_id,floor)
-        if profile_id == DEFAULT_ROUTE_PROFILE_ID:
+        if profile_id == DEFAULT_ROUTE_PROFILE_ID and not self._shared_structure_mode_enabled():
             if getattr(self.pack, 'route_profiles', {}).get(map_id, DEFAULT_ROUTE_PROFILE_ID) != DEFAULT_ROUTE_PROFILE_ID:
                 return None
             return self.engine.route_image(map_id, floor)
@@ -29313,7 +29829,7 @@ class DailyAssistant:
         """An explicit shared channel selects its context; missing rows never fall back to art."""
         if resources is None:
             if getattr(self, 'game_mode', 'nightmare') != 'nightmare':
-                return False
+                return getattr(self, 'difficult_native_context', None) is not None
             if getattr(self, 'shared_structure_resources', None) is not None:
                 return True
             resources = getattr(self, 'author_structure_resources', None)
@@ -29321,6 +29837,21 @@ class DailyAssistant:
             return True
         return any('sharedResourcePath' in entry or 'sharedMaskResourcePath' in entry
                    for entry in getattr(resources, 'entries', {}).values())
+
+    def _shared_display_profile_id(self):
+        if getattr(self, 'difficult_native_context', None) is not None:
+            return 'zhan10-speed'
+        preferred = getattr(self,'preferred_route_profile_id',None)
+        optional = getattr(self,'optional_author_displays',None)
+        return preferred if optional is not None and preferred in optional.profiles else SUJU_ROUTE_PROFILE_ID
+
+    def _alignment_entry_locator(self):
+        # Legacy entry verdicts stay inside the identity engine. The native
+        # shared solver must validate native geometry on the current frame.
+        if (getattr(self, 'difficult_native_context', None) is not None
+                and getattr(self.engine, 'entry_shared_reference_provider', None) is None):
+            return None
+        return getattr(getattr(self, 'engine', None), 'entry_identity', None)
 
     def _shared_structure_lookup_binding(self, profile_id, map_id, floor, *, adapters=None):
         profile = str(profile_id or DEFAULT_ROUTE_PROFILE_ID)
@@ -29343,6 +29874,17 @@ class DailyAssistant:
         return dict(profile=profile, mapId=str(map_id), floor=str(floor), variant=variant)
 
     def _shared_structure_reference(self, profile_id, map_id, floor, *, resources=None, adapters=None, version_context=None):
+        native = getattr(self, 'difficult_native_context', None)
+        if native is not None and (resources is None or resources is native.resources):
+            reference = native.legacy_reference(map_id, floor)
+            if reference is not None:
+                # The compatibility canvas is the original cropped clean
+                # domain, never a fabricated game-native layout or pose.
+                binding = reference.metadata['binding']
+                key = (id(native.resources),binding['profile'],str(map_id),str(floor),'legacy-clean')
+                with self.aligned_author_route_lock:
+                    self._shared_structure_reference_cache[key] = reference
+                return reference
         explicit_resources = resources is not None
         if not map_id or not floor or not self._shared_structure_mode_enabled(resources=resources):
             return None
@@ -29491,7 +30033,8 @@ class DailyAssistant:
                 if key[0] == id(current) and image is route:
                     return SHARED_STRUCTURE_PROFILE_ID, key[1], key[2]
             for key, image in getattr(self, 'aligned_author_route_cache', {}).items():
-                if key[0] == SUJU_ROUTE_PROFILE_ID and image is route:
+                if (key[0] == self._shared_display_profile_id()
+                        or key[0] in getattr(getattr(self,'optional_author_displays',None),'profiles',set())) and image is route:
                     return key[0], str(key[1]), str(key[2])
         return None
 
@@ -29528,7 +30071,9 @@ class DailyAssistant:
                     **{key:reference.metadata.get(key) for key in ('structureVersionKey', 'sourceVersion', 'baseSnapshot')})
 
     def _shared_front_pose_seed_is_current(self, seed, map_id, floor, frame) -> bool:
-        if (not self._shared_structure_mode_enabled() or not isinstance(seed, dict)
+        if ((getattr(self, 'difficult_native_context', None) is not None
+                and getattr(self.engine, 'entry_shared_reference_provider', None) is None)
+                or not self._shared_structure_mode_enabled() or not isinstance(seed, dict)
                 or seed.get('coordinateSpace') != 'shared-structure-to-client'):
             return False
         context = self._shared_structure_pose_context(map_id, floor)
@@ -35229,6 +35774,7 @@ class DailyAssistant:
         if self.closed:
             return
         self._reap_cancelled_map_package_helper()
+        self._drain_online_map_package_progress()
         self._service_display_capture()
         if getattr(self,'game_mode','nightmare')=='difficult':
             core=getattr(self,'alignment_core_v2',None)
@@ -35313,6 +35859,9 @@ class DailyAssistant:
                         continue
                     kind = event["kind"]
                 current_kind = str(kind)
+                if kind == 'online-map-packages-completed':
+                    self._consume_online_map_package_result(event)
+                    continue
                 if kind == 'map-package-inspected':
                     self._consume_map_package_inspection(event)
                     continue
@@ -35943,10 +36492,17 @@ class DailyAssistant:
                     self.front_group_sibling_pending = None
                     self.front_group_sibling_attempted_members = set()
                     self.map_probe_misses = 0
-                    self._advance_current_frame(
+                    accepted_frame_generation = self._advance_current_frame(
                         event["frame"], event.get("bounds"),
                         captured_at_utc=event.get('frameCapturedAtUtc'),
                     )
+                    if ('rankCaptureStartFrameGeneration' in event
+                            and 'rankSourceFrameGeneration' not in event
+                            and event['frame'] is self.current_frame):
+                        # A capture gets its frame generation only when this
+                        # exact array is accepted. Never rebind a rerank's
+                        # original source generation to a later UI frame.
+                        event['rankSourceFrameGeneration'] = accepted_frame_generation
                     if self.map_is_open:
                         self._maybe_open_drag_boundary_calibration()
                     self.map_probe_signature = map_frame_signature(self.current_frame)
@@ -38002,6 +38558,8 @@ class DailyAssistant:
     def close(self) -> None:
         if self.closed:
             return
+        if hasattr(self, '_online_map_package_state'):
+            self.cancel_online_map_package('assistant-closed')
         if hasattr(self, '_map_package_import_state'):
             self.cancel_map_package_import('assistant-closed')
         self._set_sheet_move_mode(False)
@@ -39257,8 +39815,16 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # Geometry helpers must reuse the actual entry module and its context.
+    sys.modules.setdefault('identityv_daily_assistant', sys.modules[__name__])
     try:
-        main()
+        if '--fastpath-info' in sys.argv:
+            import fast_structure_alignment
+            print(json.dumps(dict(experimental=True,solver='sparse-shared-structure',
+                enabledByDefault=True,scope='shared-reference-with-matching-prepared',module=fast_structure_alignment.__file__,
+                preparedIndices=len(list((RESOURCE_ROOT/'references/fast-structure').glob('*.npz')))),ensure_ascii=False))
+        else:
+            main()
     except Exception:
         report_unhandled_error(*sys.exc_info())
         raise SystemExit(1)
