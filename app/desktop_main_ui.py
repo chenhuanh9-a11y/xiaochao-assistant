@@ -1360,7 +1360,8 @@ class DesktopMainUI:
             return
         result = self.assistant.update_chest_auto_tap(**wanted)
         if not result.get("success"):
-            # Restore the controls to what is actually saved.
+            # Disabling can succeed in memory even when saving fails.
+            current = self.assistant.chest_auto_tap_snapshot()
             self._chest_enabled.set("开启" if current.get("enabled") else "关闭")
             self._chest_hold.set(current.get("holdKey", ""))
             self._chest_tap.set(current.get("tapKey", ""))
@@ -1377,8 +1378,11 @@ class DesktopMainUI:
         if signature == self._chest_signature:
             return
         self._chest_signature = signature
+        self._chest_enabled.set("开启" if state.get("enabled") else "关闭")
         if not state.get("available"):
             text, color = "开箱连点只能在 Windows 上使用。", MUTED
+        elif state.get("error"):
+            text, color = state.get("status") or state["error"], ERROR
         elif not state.get("enabled"):
             text, color = f"未开启 · 开启后在游戏里按住 {state.get('holdKey')} 连发 {state.get('tapKey')}", MUTED
         else:

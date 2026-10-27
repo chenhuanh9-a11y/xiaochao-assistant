@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageTk
 
-from custom_routes import (COLORS, FLOOR_LABELS, FLOORS, MAX_POINTS, FloorRoute, Walkable,
+from custom_routes import (COLORS, FLOOR_LABELS, FLOORS, MAX_POINTS, FloorRoute, RoutePathError, Walkable,
                            route_polyline)
 from desktop_rounded import RoundedButton, RoundedFrame
 from desktop_theme import (BG, BUTTON_BG, BUTTON_TEXT, ERROR, FONT, GREEN, IMAGE_BG, INPUT_BG, LINE,
@@ -64,6 +64,7 @@ class CustomRouteEditor(tk.Frame):
         self._drag = None
         self._render_job = None
         self._signature = None
+        self._path_error = None
         self.floor_var = tk.StringVar(self, FLOOR_LABELS[self.floor])
         self.in_game_var = tk.StringVar(self, "关闭")
         self._build()
@@ -238,7 +239,8 @@ class CustomRouteEditor(tk.Frame):
         maps = tuple(snapshot.get("maps") or ())
         store = self._store()
         signature = (snapshot.get("available"), snapshot.get("message"), maps,
-                     store.revision if store is not None else None, snapshot.get("currentMapId"))
+                     store.revision if store is not None else None, snapshot.get("currentMapId"),
+                     snapshot.get("currentFloor"))
         self.in_game_var.set("开启" if snapshot.get("useInGame") else "关闭")
         if signature == self._signature:
             return
@@ -357,6 +359,7 @@ class CustomRouteEditor(tk.Frame):
             self._commit(history.pop(), record=False)
 
     def _clear(self):
+        """Clear this floor's points; keep its colour and snapping preference."""
         if not self._route().empty:
             self._commit(FloorRoute(color=self._route().color, snap=self._route().snap))
             self._feedback("已清空本层，可点“撤销”恢复。")
@@ -367,6 +370,8 @@ class CustomRouteEditor(tk.Frame):
 
     def _paint_status(self):
         message, error = getattr(self, "_message", (None, False))
+        if not message and getattr(self, "_path_error", None):
+            message, error = self._path_error, True
         if message:
             self.status.configure(text=message, fg=ERROR if error else MUTED)
             return
@@ -404,6 +409,7 @@ class CustomRouteEditor(tk.Frame):
 
     def _render(self):
         self._render_job = None
+        self._path_error = None
         canvas = self.canvas
         canvas.delete("all")
         self._paint_tools()
@@ -431,8 +437,12 @@ class CustomRouteEditor(tk.Frame):
             points = list(route.points)
             points[self._drag["index"]] = self._drag["point"]
             route = FloorRoute(tuple(points), route.color, route.snap)
-        segments = (route_polyline(route, walkable) if self._drag is None
-                    else [[a, b] for a, b in zip(route.points, route.points[1:])])
+        try:
+            segments = route_polyline(route, walkable)
+        except RoutePathError as error:
+            segments = []
+            self._path_error = str(error)
+        self._paint_status()
         line = max(3, round(self.ui._px(4)))
         edge = _darker(route.color)
         for segment in segments:

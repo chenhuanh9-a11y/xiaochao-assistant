@@ -4,8 +4,8 @@ Routes are stored as waypoints in the same game-native pixel frame as the
 shared structure references (one canvas per map and floor). Rendering into
 that canvas means the in-game overlay can use an identity bridge: the route
 image lines up wherever the structure itself is aligned, with no per-map
-calibration. Walkable space is the structure footprint; it does not encode
-interior walls, so automatic routing follows open floor and corridors only.
+calibration. Automatic routing uses the structure footprint as a geometric
+constraint. That footprint does not encode complete wall or passage semantics.
 """
 from __future__ import annotations
 
@@ -88,8 +88,7 @@ class CustomRouteStore:
             for floor, route in (floors or {}).items() if isinstance(floors, dict) else ():
                 if str(floor) in FLOORS:
                     parsed = FloorRoute.from_json(route)
-                    if not parsed.empty:
-                        self._routes[(str(map_id), str(floor))] = parsed
+                    self._routes[(str(map_id), str(floor))] = parsed
 
     def _save(self) -> bool:
         maps: dict[str, dict] = {}
@@ -110,12 +109,14 @@ class CustomRouteStore:
             return self._routes.get((str(map_id), str(floor)), FloorRoute())
 
     def set_route(self, map_id, floor, route: FloorRoute) -> bool:
+        """Save points and preferences, including preferences before the first point.
+
+        An empty route clears points while retaining its supplied preferences;
+        passing ``FloorRoute()`` also resets preferences to their defaults.
+        """
         with self._lock:
             key = (str(map_id), str(floor))
-            if route.empty:
-                self._routes.pop(key, None)
-            else:
-                self._routes[key] = route
+            self._routes[key] = route
             self.revision += 1
             return self._save()
 
@@ -127,11 +128,32 @@ class CustomRouteStore:
 
     def floors_with_routes(self, map_id) -> set[str]:
         with self._lock:
-            return {floor for (owner, floor) in self._routes if owner == str(map_id)}
+            return {floor for (owner, floor), route in self._routes.items()
+                    if owner == str(map_id) and not route.empty}
 
     def count(self) -> int:
         with self._lock:
-            return len(self._routes)
+            return sum(not route.empty for route in self._routes.values())
+
+
+class RoutePathError(ValueError):
+    """A snapped route cannot be drawn within the available footprint.
+
+    ``reason`` is one of missing_footprint, invalid_endpoint or no_path.
+    Point and segment indexes, when present, are zero based.
+    """
+
+    def __init__(self, reason: str, *, point_index=None, segment_index=None):
+        self.reason = reason
+        self.point_index = point_index
+        self.segment_index = segment_index
+        if reason == "missing_footprint":
+            message = "缺少本层结构范围，无法贴合路线。"
+        elif reason == "invalid_endpoint":
+            message = f"路点 {point_index + 1} 不在可用结构范围内，请移动路点或关闭贴合。"
+        else:
+            message = f"路点 {segment_index + 1} 与 {segment_index + 2} 无法在结构范围内连通，请移动路点或关闭贴合。"
+        super().__init__(message)
 
 
 class Walkable:
@@ -140,6 +162,7 @@ class Walkable:
     def __init__(self, mask: np.ndarray):
         height, width = mask.shape[:2]
         self.shape = (height, width)
+        self._footprint = mask > 0
         rows, columns = max(1, height // GRID), max(1, width // GRID)
         footprint = (mask[:rows * GRID, :columns * GRID] > 0).astype(np.float32)
         cells = cv2.resize(footprint, (columns, rows), interpolation=cv2.INTER_AREA) >= .5
@@ -156,30 +179,65 @@ class Walkable:
         y = min(rows - 1, max(0, int(point[1]) // GRID))
         return x, y
 
+    def contains(self, point) -> bool:
+        """Whether a native endpoint is in bounds, on footprint and in an open cell."""
+        height, width = self.shape
+        try:
+            x, y = point
+            if not (math.isfinite(x) and math.isfinite(y) and 0 <= x < width and 0 <= y < height):
+                return False
+            cx, cy = self._cell(point)
+            return bool(self._footprint[int(y), int(x)] and self.open[cy, cx])
+        except (TypeError, ValueError, OverflowError):
+            return False
+
+    def _line_on_footprint(self, start, goal) -> bool:
+        """Check the rasterized centreline, including sub-cell holes in the mask."""
+        x0, y0 = map(int, start)
+        x1, y1 = map(int, goal)
+        left, top = min(x0, x1), min(y0, y1)
+        right, bottom = max(x0, x1), max(y0, y1)
+        height, width = self.shape
+        if left < 0 or top < 0 or right >= width or bottom >= height:
+            return False
+        line = np.zeros((bottom - top + 1, right - left + 1), np.uint8)
+        cv2.line(line, (x0 - left, y0 - top), (x1 - left, y1 - top), 1, 1)
+        return not bool(np.any((line > 0) & ~self._footprint[top:bottom + 1, left:right + 1]))
+
     @staticmethod
     def _centre(cell) -> tuple[int, int]:
         return cell[0] * GRID + GRID // 2, cell[1] * GRID + GRID // 2
 
     def snap(self, point, *, reach: int = 12) -> tuple[int, int] | None:
         """Nearest open cell centre within ``reach`` cells, else None."""
+        height, width = self.shape
+        if not (0 <= point[0] < width and 0 <= point[1] < height):
+            return None
         x, y = self._cell(point)
         if self.open[y, x]:
-            return self._centre((x, y))
+            centre = self._centre((x, y))
+            if self.contains(centre):
+                return centre
         if not len(self._open_cells):
             return None
         distance = np.abs(self._open_cells - (x, y)).max(axis=1)
-        index = int(np.argmin(distance))
-        if distance[index] > reach:
-            return None
-        return self._centre(tuple(int(value) for value in self._open_cells[index]))
+        for index in np.argsort(distance):
+            if distance[index] > reach:
+                break
+            centre = self._centre(tuple(int(value) for value in self._open_cells[index]))
+            if self.contains(centre):
+                return centre
+        return None
 
     def path(self, start, goal) -> list[tuple[int, int]] | None:
         """A* through open cells, biased towards wide space; native pixels out."""
+        if not (self.contains(start) and self.contains(goal)):
+            return None
         source, target = self._cell(start), self._cell(goal)
         if not (self.open[source[1], source[0]] and self.open[target[1], target[0]]):
             return None
         if source == target:
-            return [tuple(start), tuple(goal)]
+            return [tuple(start), tuple(goal)] if self._line_on_footprint(start, goal) else None
         rows, columns = self.open.shape
         steps = ((1, 0, 1.0), (-1, 0, 1.0), (0, 1, 1.0), (0, -1, 1.0),
                  (1, 1, 1.4142), (1, -1, 1.4142), (-1, 1, 1.4142), (-1, -1, 1.4142))
@@ -212,19 +270,38 @@ class Walkable:
         while cells[-1] != source:
             cells.append(parent[cells[-1]])
         cells.reverse()
-        contour = np.array([self._centre(cell) for cell in cells], np.int32).reshape(-1, 1, 2)
-        simplified = cv2.approxPolyDP(contour, GRID * .9, False).reshape(-1, 2)
-        points = [tuple(map(int, point)) for point in simplified]
-        points[0], points[-1] = tuple(start), tuple(goal)
+        # Remove only collinear grid centres: approximate simplification can cut
+        # across void at bends. Retain centres beside arbitrary native endpoints.
+        centres = [self._centre(cell) for cell in cells]
+        points = [tuple(start), centres[0]]
+        for previous, current, following in zip(centres, centres[1:], centres[2:]):
+            if (current[0] - previous[0], current[1] - previous[1]) != (
+                    following[0] - current[0], following[1] - current[1]):
+                points.append(current)
+        points.extend((centres[-1], tuple(goal)))
+        points = [point for index, point in enumerate(points) if index == 0 or point != points[index - 1]]
+        if not all(self._line_on_footprint(a, b) for a, b in zip(points, points[1:])):
+            return None
         return points
 
 
 def route_polyline(route: FloorRoute, walkable: Walkable | None) -> list[list[tuple[int, int]]]:
-    """Segments between consecutive waypoints, routed when snapping is on."""
+    """Build segments, raising RoutePathError rather than inventing snapped paths."""
+    if route.snap and route.points:
+        if walkable is None:
+            raise RoutePathError("missing_footprint")
+        for index, point in enumerate(route.points):
+            if not walkable.contains(point):
+                raise RoutePathError("invalid_endpoint", point_index=index)
     segments = []
-    for start, goal in zip(route.points, route.points[1:]):
-        routed = walkable.path(start, goal) if route.snap and walkable is not None else None
-        segments.append(routed or [start, goal])
+    for index, (start, goal) in enumerate(zip(route.points, route.points[1:])):
+        if route.snap:
+            routed = walkable.path(start, goal)
+            if routed is None:
+                raise RoutePathError("no_path", segment_index=index)
+            segments.append(routed)
+        else:
+            segments.append([start, goal])
     return segments
 
 
@@ -252,9 +329,10 @@ def render_layer(mask: np.ndarray, route: FloorRoute, walkable: Walkable | None 
     color = _rgb(route.color)
     edge = tuple(round(channel * .55) for channel in color)
     unit = max(8, round(min(width, height) / 160))
-    for segment in route_polyline(route, walkable):
+    segments = route_polyline(route, walkable)
+    for segment in segments:
         draw.line(segment, fill=(*edge, 255), width=unit * 2 + 6, joint="curve")
-    for segment in route_polyline(route, walkable):
+    for segment in segments:
         draw.line(segment, fill=(*color, 255), width=unit * 2, joint="curve")
     radius = unit * 3
     font = _font(round(radius * 1.15))

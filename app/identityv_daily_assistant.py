@@ -5629,6 +5629,13 @@ class DailyAssistant:
     def _route_author_fallback_notice(self):
         gate = getattr(self, 'gate', None)
         if self._custom_route_active(getattr(gate, 'confirmed_id', None), str(getattr(self, 'current_floor', '1'))):
+            key = (id(getattr(self, 'shared_structure_resources', None)),
+                   str(gate.confirmed_id), str(getattr(self, 'current_floor', '1')))
+            with self.aligned_author_route_lock:
+                entry = getattr(self, '_custom_route_layers', {}).get(key)
+                if (entry is not None and entry['error']
+                        and entry['route'] == self.custom_route_store().route(key[1], key[2])):
+                    return entry['error']
             return '当前楼层使用自定义路线'
         if self._shared_structure_mode_enabled():
             optional = getattr(self,'optional_author_displays',None)
@@ -10550,6 +10557,12 @@ class DailyAssistant:
         self._hotkey_bindings_snapshot = (self.hotkey_capture_generation, bindings)
         self.hotkey_name, self.hotkey_vk = bindings["map"].name, bindings["map"].vk
         self.action_hotkeys = {key: (bindings[key].name, bindings[key].vk) for key in ACTION_ORDER}
+        tapper = getattr(self, 'chest_auto_tap', None)
+        if tapper is not None:
+            result = tapper.reconcile_reserved()
+            if not result['success']:
+                self.hotkey_settings_warning = result['message']
+                self._log('chest-auto-tap-hotkey-conflict', message=result['message'])
         self._sync_hotkey_current()
         self._sync_sheet_visibility_ui()
         return True
@@ -29356,24 +29369,23 @@ class DailyAssistant:
             except (OSError, ValueError, KeyError, TypeError, cv2.error):
                 pass # Keep recognition independent of optional display files.
         key = (id(getattr(self, 'shared_structure_resources', None)), str(map_id), str(floor))
-        # A player's custom route is drawn on this same structure canvas, so it
-        # takes the structure's cache slot and identity bridge unchanged.
+        # Plain and custom pixels have independent cache slots and provenance.
         custom = self._custom_route_image(map_id, floor, reference)
+        if custom is not None:
+            return dict(routeSource=custom, sourcePath=reference.path, routeProfileId=SHARED_STRUCTURE_PROFILE_ID,
+                matrixDisplayToReference=np.eye(3), displayKind='custom-route', displayLabel='自定义路线')
+        if self._custom_route_active(map_id, floor):
+            return None  # A failed snapped route must never become a straight/old route.
         with self.aligned_author_route_lock:
             cache = self._shared_structure_display_cache
             image = cache.get(key)
-            if custom is not None:
-                image = cache[key] = custom
-            elif image is None or id(image) in self._custom_route_image_ids():
+            if image is None:
                 image = np.zeros((*reference.shape, 4), np.uint8)
                 image[reference.clean_mask != 0] = (218, 228, 238, 255)
                 image.setflags(write=False)
                 cache[key] = image
             while len(cache) > 6:
                 cache.pop(next(iter(cache)))
-        if custom is not None:
-            return dict(routeSource=image, sourcePath=reference.path, routeProfileId=SHARED_STRUCTURE_PROFILE_ID,
-                matrixDisplayToReference=np.eye(3), displayKind='custom-route', displayLabel='自定义路线')
         return dict(routeSource=image, sourcePath=reference.path, routeProfileId=SHARED_STRUCTURE_PROFILE_ID,
             matrixDisplayToReference=np.eye(3), displayKind='shared-structure',
             displayLabel=('结构底图（作者路线版本不匹配）' if version.get('authorError') == 'author-structure-version-or-base-snapshot-mismatch'
@@ -29381,10 +29393,10 @@ class DailyAssistant:
 
     # Chest auto tap ----------------------------------------------------------
     def _chest_auto_tap_reserved(self) -> dict:
-        """Single keys the assistant itself listens for; chords never collide."""
+        """Reserve primary keys even when the assistant binding is a chord."""
         bindings = {"map": (getattr(self, 'hotkey_name', ''), getattr(self, 'hotkey_vk', 0)),
                     **getattr(self, 'action_hotkeys', {})}
-        return {vk: '星图快捷键' for name, vk in bindings.values() if vk and '+' not in str(name)}
+        return {vk: f'星图快捷键 {name}' for name, vk in bindings.values() if vk}
 
     def chest_auto_tap_snapshot(self) -> dict:
         return self.chest_auto_tap.snapshot()
@@ -29444,29 +29456,31 @@ class DailyAssistant:
         return bool(store.use_in_game and self._custom_route_mode_ready()
                     and not store.route(map_id, str(floor)).empty)
 
-    def _custom_route_image_ids(self) -> set:
-        return {id(image) for _signature, image in getattr(self, '_custom_route_layers', {}).values()}
-
     def _custom_route_image(self, map_id, floor, reference):
-        """Rendered custom layer for this floor, or None when not in use."""
+        """Display-only pixels, retaining source and route provenance explicitly."""
         if not self._custom_route_active(map_id, floor):
             return None
         route = self.custom_route_store().route(map_id, str(floor))
-        signature = (route, tuple(reference.shape), id(reference.clean_mask))
-        layers = getattr(self, '_custom_route_layers', None)
-        if layers is None:
-            layers = self._custom_route_layers = {}
+        key = (id(getattr(self, 'shared_structure_resources', None)), str(map_id), str(floor))
         with self.aligned_author_route_lock:
-            cached = layers.get((str(map_id), str(floor)))
-        if cached is not None and cached[0] == signature:
-            return cached[1]
+            layers = getattr(self, '_custom_route_layers', None)
+            if layers is None:
+                layers = self._custom_route_layers = {}
+            cached = layers.get(key)
+            if cached is not None and cached['route'] == route and cached['reference'] is reference:
+                return cached['image']
         try:
             image = render_custom_route(reference.clean_mask, route, CustomRouteWalkable(reference.clean_mask))
-        except (OSError, ValueError, TypeError, cv2.error):
+        except (OSError, ValueError, TypeError, cv2.error) as exc:
+            with self.aligned_author_route_lock:
+                layers[key] = dict(route=route, reference=reference, image=None,
+                                   error=f'自定义路线无法显示：{exc}')
+                while len(layers) > 6:
+                    layers.pop(next(iter(layers)))
             return None
         image.setflags(write=False)
         with self.aligned_author_route_lock:
-            layers[(str(map_id), str(floor))] = (signature, image)
+            layers[key] = dict(route=route, reference=reference, image=image, error='')
             while len(layers) > 6:
                 layers.pop(next(iter(layers)))
         return image
@@ -30140,6 +30154,13 @@ class DailyAssistant:
             return None
         with lock:
             current = getattr(self, 'shared_structure_resources', None)
+            for key, entry in getattr(self, '_custom_route_layers', {}).items():
+                if (key[0] == id(current) and entry['image'] is route and route is not None
+                        and self._custom_route_active(key[1], key[2])
+                        and entry['route'] == self.custom_route_store().route(key[1], key[2])
+                        and entry['reference'] is self._shared_structure_reference(
+                            SHARED_STRUCTURE_PROFILE_ID, key[1], key[2])):
+                    return SHARED_STRUCTURE_PROFILE_ID, key[1], key[2]
             for key, image in getattr(self, '_shared_structure_display_cache', {}).items():
                 if key[0] == id(current) and image is route:
                     return SHARED_STRUCTURE_PROFILE_ID, key[1], key[2]
