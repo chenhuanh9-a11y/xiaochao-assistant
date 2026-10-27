@@ -319,6 +319,30 @@ def _rows(rows, *, dependencies=False):
     return found
 
 
+def _owned_inventory(root: Path, package_id: str):
+    """Only an installed receipt proves ownership; incoming archives cannot claim it."""
+    path = _target(root, f"work/map-packages/{package_id}.json")
+    if not path.exists():
+        return {}, None
+    if not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
+        raise ImportRejected("invalid-installed-package-receipt")
+    raw = path.read_bytes()
+    receipt = _json(raw)
+    if (receipt.get("packageId") != package_id or receipt.get("revision") != 1
+            or not isinstance(receipt.get("archiveSha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", receipt["archiveSha256"])):
+        raise ImportRejected("invalid-installed-package-receipt")
+    rows = _rows(receipt.get("files"))
+    if any(not _allowed(package_id, row["path"]) for row in rows.values()):
+        raise ImportRejected("invalid-installed-package-receipt")
+    return rows, hashlib.sha256(raw).hexdigest()
+
+
+def _pending_upgrade(root: Path):
+    if _target(root, "work/map-packages/pending-upgrade.json").exists():
+        raise ImportRejected("upgrade-recovery-required; run recover with application closed")
+
+
 def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None) -> dict:
     infos = archive.infolist()
     if not 2 <= len(infos) <= MAX_FILES + 1:
@@ -377,6 +401,8 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None) -
     if total > MAX_TOTAL_BYTES:
         raise ImportRejected("archive-expanded-size-limit")
     existing = 0
+    replacements, missing = [], []
+    owned, receipt_digest = None, None
     for row in rows.values():
         path = row["path"]
         if not _allowed(package_id, path):
@@ -387,8 +413,21 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None) -
         target = _target(root, path)
         if target.exists():
             if not target.is_file() or target.stat().st_size != row["bytes"] or _sha(target) != row["sha256"]:
-                raise ImportRejected(f"existing-data-conflict: {path}")
-            existing += 1
+                if owned is None:
+                    owned, receipt_digest = _owned_inventory(root, package_id)
+                old = owned.get(path.casefold())
+                if (old is None or not target.is_file() or target.stat().st_size != old["bytes"]
+                        or _sha(target) != old["sha256"]):
+                    raise ImportRejected(f"existing-data-conflict: {path}")
+                for other in PACKAGE_IDS - {package_id}:
+                    other_rows, _ = _owned_inventory(root, other)
+                    if path.casefold() in other_rows:
+                        raise ImportRejected(f"shared-package-ownership-conflict: {path}")
+                replacements.append(old)
+            else:
+                existing += 1
+        else:
+            missing.append(row)
         digest = hashlib.sha256()
         count = 0
         sink = None
@@ -413,6 +452,8 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None) -
             raise ImportRejected(f"file-integrity-mismatch: {path}")
     return {"packageId": package_id, "revision": 1, "files": list(rows.values()),
             "fileCount": len(rows), "bytes": total, "alreadyPresent": existing,
+            "replaceFiles": replacements, "missingFiles": missing,
+            "previousReceiptSha256": receipt_digest,
             "restartRequired": True, "authentication": "not-signed; SHA256 integrity only"}
 
 
@@ -435,6 +476,7 @@ def inspect_package(zip_path, install_root) -> dict:
     """Validate all bytes/CRC/dependencies without writing to the installation."""
     root = Path(os.path.abspath(install_root))
     _no_links(root)
+    _pending_upgrade(root)
     try:
         with _open_archive(zip_path) as (archive, digest):
             result = _validate(archive, root)
@@ -519,13 +561,8 @@ def _rollback_published(path, identity, digest):
             api.CloseHandle(native_handle)
 
 
-def install_package(zip_path, install_root, *, application_stopped=False, expected_archive_sha256=None) -> dict:
-    """Append verified data, never replace existing different data; restart after success.
-
-    Caller must close the application first. UI must run this off its Tk thread.
-    Exception rollback removes only files created by this call. On process/power
-    loss, existing data stays untouched; a rerun completes identical partial data.
-    """
+@contextmanager
+def _locked_installation(install_root, application_stopped):
     if application_stopped is not True:
         raise ImportRejected("close-application-first")
     root = Path(os.path.abspath(install_root))
@@ -548,6 +585,31 @@ def install_package(zip_path, install_root, *, application_stopped=False, expect
                 fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as error:
             raise ImportRejected("another-import-is-running") from error
+        yield root, state
+
+
+def recover_package_upgrade(install_root, *, application_stopped=False):
+    """Recover an interrupted owned-resource transaction, preserving unknown files."""
+    from map_package_upgrade import recover_pending_upgrade
+    with _locked_installation(install_root, application_stopped) as (root, _):
+        return recover_pending_upgrade(root)
+
+
+def rollback_package_upgrade(install_root, transaction_id, *, application_stopped=False):
+    from map_package_upgrade import rollback_upgrade
+    with _locked_installation(install_root, application_stopped) as (root, _):
+        return rollback_upgrade(root, transaction_id)
+
+
+def install_package(zip_path, install_root, *, application_stopped=False, expected_archive_sha256=None) -> dict:
+    """Append data, or transactionally upgrade unchanged files owned by this package.
+
+    UI must run this off its Tk thread with the application closed. Unknown or
+    edited files remain conflicts. A failed owned upgrade rolls back; interruption
+    retains its journal/backups for explicit recovery before the next inspection.
+    """
+    with _locked_installation(install_root, application_stopped) as (root, state):
+        _pending_upgrade(root)
         created = []
         with tempfile.TemporaryDirectory(prefix="staging-", dir=state) as directory:
             stage = Path(directory)
@@ -555,6 +617,9 @@ def install_package(zip_path, install_root, *, application_stopped=False, expect
                 with _open_archive(zip_path, expected_archive_sha256) as (archive, digest):
                     result = _validate(archive, root, stage)
                     result["archiveSha256"] = digest
+                if result["replaceFiles"]:
+                    from map_package_upgrade import commit_upgrade
+                    return commit_upgrade(root, result, stage)
                 for row in result["files"]:
                     target = _target(root, row["path"])
                     if target.exists():
@@ -574,6 +639,16 @@ def install_package(zip_path, install_root, *, application_stopped=False, expect
                 result["added"] = len(created)
                 result["status"] = "already-installed" if not created else "installed-restart-required"
                 receipt = _target(root, f"work/map-packages/{result['packageId']}.json")
+                if not created and receipt.exists():
+                    owned, _ = _owned_inventory(root, result['packageId'])
+                    if owned == _rows(result['files']):
+                        # A no-op must retain the receipt inode/transaction witness
+                        # so an earlier owned upgrade can still be rolled back.
+                        previous = _json(receipt.read_bytes())
+                        if previous.get('upgradeTransactionId'):
+                            result['upgradeTransactionId'] = previous['upgradeTransactionId']
+                        result['receiptPreserved'] = True
+                        return result
                 temporary = stage / "receipt.json"
                 temporary.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
                 os.replace(temporary, receipt)
@@ -587,15 +662,25 @@ def install_package(zip_path, install_root, *, application_stopped=False, expect
 
 
 if __name__ == "__main__":
+    # The transaction helper must reuse this module's exception and constants
+    # when the adapter is launched directly instead of imported by the client.
+    import sys
+    sys.modules["star_map_import"] = sys.modules[__name__]
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["inspect", "install"])
+    parser.add_argument("action", choices=["inspect", "install", "recover", "rollback"])
     parser.add_argument("archive")
     parser.add_argument("install_root")
     parser.add_argument("--application-closed", action="store_true")
     args = parser.parse_args()
     try:
-        result = (inspect_package(args.archive, args.install_root) if args.action == "inspect" else
-                  install_package(args.archive, args.install_root, application_stopped=args.application_closed))
+        if args.action == "inspect":
+            result = inspect_package(args.archive, args.install_root)
+        elif args.action == "recover":
+            result = recover_package_upgrade(args.install_root, application_stopped=args.application_closed)
+        elif args.action == "rollback":
+            result = rollback_package_upgrade(args.install_root, args.archive, application_stopped=args.application_closed)
+        else:
+            result = install_package(args.archive, args.install_root, application_stopped=args.application_closed)
         print(json.dumps(result, ensure_ascii=False, indent=2))
     except (ImportRejected, OSError, zipfile.BadZipFile) as error:
         print(json.dumps({"success": False, "reason": str(error)}, ensure_ascii=False))
