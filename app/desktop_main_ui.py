@@ -1236,6 +1236,7 @@ class DesktopMainUI:
         self._sync_help_bindings(key_texts)
         self._sync_reference_controls()
         self.map_browser.sync_map_package_import()
+        self.map_browser.sync_online_packages()
         self.home_session.configure(text=snapshot.get("roundStateText") or "本局状态未知")
         map_id = snapshot.get("mapId")
         item = getattr(self.assistant.pack, "by_id", {}).get(map_id)

@@ -1,21 +1,23 @@
-# 星图 / 小抄助手
+# 星图 1.0 · 小抄助手
 
-Windows 上的第五人格地图与路线辅助工具源码。主要入口为 `app/identityv_daily_assistant.py`，使用 Python、Tkinter、OpenCV 与 Pillow，包含窗口截图、地图候选识别、当前帧配准、路线显示、资源浏览和离线地图包导入等模块。
+星图是面向Windows的第五人格地图与路线辅助工具，使用Python、Tkinter、OpenCV和Pillow。它读取游戏窗口画面，识别地图与楼层，按当前帧几何验证显示路线，并提供资源浏览、离线地图包导入和可配置的下载入口。证据不足时应隐藏路线，保留人工确认与完整小抄等兜底。
 
-**本仓库是试验源码快照，不是可直接使用的完整产品包。** 克隆后可安装依赖、检查源码和构建程序骨架；地图识别与路线显示必须另行提供有权使用、且版本一致的资源。仓库没有地图、作者路线、游戏解包数据、结构底图、品牌 Logo 或安装包，也没有可下载资源的承诺。
+**这里发布源码和维护工具，不分发完整游戏资源或安装包。** 地图、作者路线、游戏解包数据、结构NPZ、截图与品牌Logo均需另行提供有权使用的同版本资源。仅克隆仓库不能完成地图识别或直接复现产品包。
 
-## 快照范围
+## 当前代码
 
-- 整理日期：2026-10-27 UTC；来源为冻结的 `source-snapshot-1.0-suju15`，包含 73 个 Python 文件。
-- 对应候选显示版本 `1.0`、Windows 数字版本 `1.0.0.4`，原候选构建指纹 `5E25C1A1`。
-- 冻结主程序 SHA-256：`D6D5B20A234286B00DF2B84EEC005E18A3F0A8A6A36FDA4D464253966159F0DC`。
-- 原候选是以基线提交 `534cc0be0a6f08c9abc351ff86a44c46a2432068` 加逐文件核验的冻结覆盖文件组装；本仓库建立新的干净历史，没有搬运原开发仓库历史。
-- 公开整理只将三个旧原型模块中的个人素材绝对路径替换为环境变量/仓库相对目录。主程序源码保持冻结字节。原始源码哈希和具体整理范围见 [快照记录](docs/source-snapshot.json)。公开源码的构建指纹可能与原候选不同。
-- 后续在线功能、困难模式 native 识别的进行中改动未合入；已有困难模式相关模块不代表完整困难资源已经随仓库交付。
+| 分支/快照 | 内容与状态 |
+| --- | --- |
+| `main` 首次公开基线 | candidate15，73个应用Python文件，原候选指纹 `5E25C1A1`。 |
+| `dev/current-integration-20261027` | 完整candidate17/P0冻结源码，78个应用Python文件，原候选指纹 `DC9986E2`；本分支用于草稿评审，未自动合并。 |
 
-## 环境与运行
+本分支包含已整合的可选作者显示、地图下载与导入、困难原生资源适配、原454快结构模块，以及困难启动候选列表缺少 `filter()` 和缩略图取图协议的窄修复。有启动问题的D231不是本次同步终点。后续困难共享快路径sharedfast06未混入此完整快照。
 
-面向 Windows 10/11 x64、Python 3.13（需要带 Tkinter 的 Python 安装）。在仓库根目录运行 PowerShell：
+显示版本为 `1.0`，Windows数字版本为 `1.0.0.4`。冻结主程序SHA-256为 `934F4CCEFC3EDFD5B75347DFF37A40958223D30019F31CD699557A555264DE65`。逐文件哈希及公开整理差异见 [快照记录](docs/source-snapshot.json)，首次公开来源保留在 [candidate15记录](docs/source-snapshot-candidate15.json)。公共Git历史独立于原开发仓库，没有导入旧历史、内部协作记录或活动工作树。
+
+## 快速开始
+
+需要Windows 10/11 x64和带Tkinter的Python 3.13。在仓库根目录运行PowerShell：
 
 ```powershell
 py -3.13 -m venv .venv
@@ -24,37 +26,74 @@ py -3.13 -m venv .venv
 & .\.venv\Scripts\python.exe app\identityv_daily_assistant.py --build-id
 ```
 
-依赖版本来自该冻结候选使用的本机构建环境。`opencv-python-headless` 的用途是图像计算，界面由 Tkinter 提供，不要同时安装多个 OpenCV Python 分发包。
+依赖锁定到冻结候选构建环境。`opencv-python-headless` 负责图像计算，窗口由Tkinter提供，请勿同时安装多个OpenCV分发包。
 
-正常启动命令：
+准备完整合法资源并按 [资源配置](docs/resources.md) 设置目录后启动：
 
 ```powershell
 & .\.venv\Scripts\python.exe app\identityv_daily_assistant.py
 ```
 
-**正常启动前需要配置完整资源。** 仅克隆本仓库时，缺少 `references/nightmare-map-pack.json` 等生产资源，正常启动或资源校验会报告资源缺失；这属于此源码分发的已知限制。样例配置不会制造虚假的地图识别能力。资源目录、支持的配置项与空索引样例见 [资源分离说明](docs/resources.md) 和 [环境变量示例](examples/environment.ps1)。
+正常启动需要生产索引、结构、坐标与显示资源匹配。空JSON示例只说明接口，不能用于识别。下载服务没有默认服务器，不承诺地图下载或素材授权。
 
-## 构建
+## 地图处理与技能
 
-仓库提供新的、可移植的开发构建脚本，生成不带地图/品牌资源的 PyInstaller 程序骨架：
+真实命令、输入输出和缺口见 [地图处理流程](docs/map-processing.md)。
+
+| 入口 | 用途 |
+| --- | --- |
+| `skills/update-helper-maps/` | 项目维护技能：中间manifest契约、差异计划、内容寻址staging及fixture测试。 |
+| `tools/maps/native24/` | 历史24图/72层结构计划、typed NPZ、轮廓和候选元数据生成配方。 |
+| `tools/maps/authors/` | 作者清单、候选配准、canonical选源/裁切、校验与打包。 |
+| `tools/maps/prepare_fast_structures.py` | 已有噩梦共享结构的独立预制与冻结loader回读。 |
+| `tools/maps/render-candidate-structures.cjs` | 调用外部合法renderer的候选渲染包装；renderer与纹理未分发。 |
+| `app/star_map_import.py` / `star_map_download.py` | 生产数据包与静态索引的schema、路径/哈希校验及传输。 |
+
+先查看安全帮助入口：
+
+```powershell
+& .\.venv\Scripts\python.exe skills\update-helper-maps\scripts\map_update.py --help
+& .\.venv\Scripts\python.exe tools\maps\prepare_fast_structures.py --help
+```
+
+这些代码不是从任意新游戏包到生产更新的全自动流水线。历史配方保留批次数量与证据格式断言，新批次必须先适配。维护技能的 `stage` 和 `check --scope release` 在生产适配器未闭合时返回 **3（blocked）**，不能当成可安装更新成功。
+
+## 构建与安装范围
 
 ```powershell
 & .\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
+& .\.venv\Scripts\python.exe tools\build.py --dry-run
 & .\.venv\Scripts\python.exe tools\build.py
 ```
 
-输出为 `dist/xiaochao-assistant/`。本脚本只打包代码、版本清单、Windows DPI/权限 manifest 与第三方许可，不自动收集本地资源、配置、日志或缓存。产物仍需独立配置合法资源，不等同于原候选安装包，也不承诺与其 EXE 二进制一致。此仓库不发布 Release 或安装包。
+输出 `dist/xiaochao-assistant/` 开发骨架，包含代码、版本、Windows manifest与第三方声明，不收集本地地图、设置、日志或缓存。沿用manifest要求管理员权限并声明Per-Monitor DPI，启动前应理解该权限。骨架仍需独立资源，不是原候选完整重建或二进制一致性证明。
 
-## 已知边界
+仓库不提供Setup或Release，源码运行不需要安装器。已有本地产品的安装、覆盖和卸载应按其实际安装包说明操作；本仓库没有自动修改已安装程序的命令。
 
-- 当前代码是试验状态；源码/CLI 检查不能替代真实游戏识别、界面手感或外部机器验收。
-- 地图身份、楼层或当前帧几何证据不足时，应隐藏路线并由人工确认；缺少资源不会自动替换为猜测结果。
-- 原候选的资源和规则仅覆盖其已冻结范围；不应将已有模块理解为所有地图、困难模式或在线能力均已完成。
-- 捕获和悬浮层使用 Windows API；不支持将此版本直接作为 Linux/macOS 应用运行。打包沿用原 manifest 的管理员权限要求，应在理解权限含义后启动本地构建。
-- `work/`、`outputs/` 是运行时状态、诊断和可能的截图位置；默认忽略，不应公开上传。分享故障资料前需自行检查画面与路径信息。
+## 目录与协作
 
-## 许可与素材
+```text
+app/                         应用冻结源码与资源loader
+tools/build.py               可移植开发骨架构建
+tools/maps/                  地图维护、历史配方与预制入口
+skills/update-helper-maps/   本项目维护技能、规范和测试
+docs/                        资源、流程及来源记录
+examples/                    不含真实资源的配置示例
+assets/、references/         外部资源本地位置，实际资源默认忽略
+```
 
-项目自有代码**暂未指定整体许可证**。公开可见不代表已授予 MIT 等开源许可；使用、修改或再分发的授权需另行向权利人确认。没有将第三方图标的许可证套用到整个项目。
+协作从最新远端创建独立分支，通过PR审阅。推送前先fetch并读取他人提交，禁止force push覆盖协作者。及时同步完成且一致的冻结源码，附清晰提交和真实验证范围；进行中工作放开发分支/草稿PR，确认后合并。推送后核对远端SHA。仓库本身没有常驻自动同步进程。
 
-已保留的嵌入图标及许可见 [第三方说明](THIRD_PARTY_NOTICES.md)。地图、作者路线、游戏素材与品牌原图不随源码分发；需要另行取得相应授权。
+`work/`、`outputs/`、`resources-private/`、构建产物、截图、设置与日志均默认忽略。地图脚本生成的外部清单可能带来源路径，分享前须检查；忽略规则不能代替内容审查。
+
+## 验证与限制
+
+candidate17已在原构建流程中用相同设置与入口完成旧PE异常→新PE通过：30候选/30真实缩略图读取、无源码覆盖，末端GUI对象使用IO探针。**这只证明启动候选子链，不等于完整GUI、真实游戏识别、性能或玩家验收。** 本次源码同步仅检查增量内容、语法/help与无地图fixture，不重复全图库识别。
+
+Windows捕获与悬浮层API限制平台支持。身份、楼层或当前帧几何不可信时不能猜测显示。维护流程中“作者资源可用”和“runtime已接入”分列；历史矩阵、alpha轮廓和哈希不能单独证明图像语义或生产精度。
+
+## 许可
+
+项目自有代码与维护技能**暂未指定整体许可证**。公开可见不等于授予MIT等许可，使用、修改或再分发授权需向权利人确认。没有擅自为整个项目新增开源授权。
+
+嵌入Lucide/Feather与Microsoft Fluent图标的来源和许可见 [第三方声明](THIRD_PARTY_NOTICES.md)。外部依赖遵循各自许可；地图、路线、游戏素材、renderer与品牌原图需要另行取得授权。

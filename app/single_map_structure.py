@@ -75,7 +75,7 @@ def current_geometry(frame):
     from identityv_daily_assistant import structure_current_map_evidence
     current=structure_current_map_evidence(frame)
     if current is None: return None
-    return dict(query=current['query'],observationBounds=current['observationBounds'])
+    return dict(query=current['query'],observationBounds=current['observationBounds'],visible=current.get('visible'))
 
 
 def current_part(frame,context,key):
@@ -1185,11 +1185,11 @@ def solve(assistant, frame, map_id, floor, profile, route, *, cancelled=None):
         wall_args['source_wall_mask']=product.known_boundary
         wall_args['_fit_only']=True
         wall_args['_allow_scale_recovery']=not translation_only
-        locator=getattr(getattr(assistant,'engine',None),'entry_identity',None)
+        locator=assistant._alignment_entry_locator() if hasattr(assistant,'_alignment_entry_locator') else getattr(getattr(assistant,'engine',None),'entry_identity',None)
         if locator is not None:
             wall_args['_matching_source_lines']=locator.native_wall_lines(product,map_id,floor)
     if floor not in group.verified_floors and static_args:
-        locator=getattr(getattr(assistant,'engine',None),'entry_identity',None)
+        locator=assistant._alignment_entry_locator() if hasattr(assistant,'_alignment_entry_locator') else getattr(getattr(assistant,'engine',None),'entry_identity',None)
         if locator is not None:
             wall_args['_source_lines']=locator.native_wall_lines(product,map_id,floor)
     validation, _, _ = assistant._author_route_structure_reference_cached(
@@ -1325,7 +1325,7 @@ def solve(assistant, frame, map_id, floor, profile, route, *, cancelled=None):
         # Keep a successful local/follow solve free of entry work. If its old
         # scale fails, the confirmed member's entry supplies a fresh continuous
         # similarity before repeating the broad old-scale translation search.
-        locator=getattr(getattr(assistant,'engine',None),'entry_identity',None)
+        locator=assistant._alignment_entry_locator() if hasattr(assistant,'_alignment_entry_locator') else getattr(getattr(assistant,'engine',None),'entry_identity',None)
         surface_generation=getattr(assistant,'surface_visibility_generation',0)
         if locator is not None:
             if cancelled and cancelled():return obsolete

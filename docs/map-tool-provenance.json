@@ -1,0 +1,90 @@
+{
+  "schema": "xiaochao-map-tool-provenance-v1",
+  "tools": [
+    {
+      "path": "skills/update-helper-maps/SKILL.md",
+      "sourceFile": "SKILL.md",
+      "originalSHA256": "86CAF8528279D2F91AFBA9E0E22B3ED6AF184BC1332ED5B07DE7F94D6FB360AA",
+      "publicationChange": "Project-owned skill copy; source directories and internal coordination references are replaced in adapters-and-gaps.md."
+    },
+    {
+      "path": "skills/update-helper-maps/references/manifest-contract.md",
+      "sourceFile": "manifest-contract.md",
+      "originalSHA256": "55B21B085503068BACFB7B51A55E18D81F948B7D109BA8178A34EDB5D7D56EA0",
+      "publicationChange": "Project-owned skill copy; source directories and internal coordination references are replaced in adapters-and-gaps.md."
+    },
+    {
+      "path": "skills/update-helper-maps/scripts/map_update.py",
+      "sourceFile": "map_update.py",
+      "originalSHA256": "0844D89AA492285E35C6D424A06D493D5D7BB0BC4A323C1D619B3C9C4265CF21",
+      "publicationChange": "Project-owned skill copy; source directories and internal coordination references are replaced in adapters-and-gaps.md."
+    },
+    {
+      "path": "skills/update-helper-maps/scripts/test_map_update.py",
+      "sourceFile": "test_map_update.py",
+      "originalSHA256": "C196F94470718809770C099E74912DDA5DD7E52B66ECA8F4A7B78E45A90C0321",
+      "publicationChange": "Project-owned skill copy; source directories and internal coordination references are replaced in adapters-and-gaps.md."
+    },
+    {
+      "path": "skills/update-helper-maps/agents/openai.yaml",
+      "sourceFile": "openai.yaml",
+      "originalSHA256": "FC07C77BD6B33CFF98858EE23E35A8701B68BCA9D6D0D27752A682CFF77E1DF2",
+      "publicationChange": "Project-owned skill copy; source directories and internal coordination references are replaced in adapters-and-gaps.md."
+    },
+    {
+      "path": "tools/maps/native24/plan_24_native_layers.py",
+      "sourceFile": "plan_24_native_layers.py",
+      "originalSHA256": "6EC11907AAE527FEC55A9BBAEEC6EC048550AD3C364CCC76DAFFDA30837587FD",
+      "publicationChange": "Explicit input/workspace CLI; historical 24/72 recipe and binding logic retained."
+    },
+    {
+      "path": "tools/maps/native24/build_native_24.py",
+      "sourceFile": "build_native_24.py",
+      "originalSHA256": "8819E686A3532482133036841F974ED884B48262F3EA621253B169FD7908A75F",
+      "publicationChange": "Explicit input/workspace CLI; historical 24/72 assertions retained, no assets copied into repository."
+    },
+    {
+      "path": "tools/maps/authors/author_audit.py",
+      "sourceFile": "author_audit.py",
+      "originalSHA256": "9573BA7D37ADB27B80C9339581CABD298C3711BC11C6DBD0CF4D3BB37F348D6D",
+      "publicationChange": "Configured external roots, safe argparse help, optional font; historical recipe/schema/quality assertions retained."
+    },
+    {
+      "path": "tools/maps/authors/align_authors.py",
+      "sourceFile": "align_authors.py",
+      "originalSHA256": "69548D8BECC8220E13E45B00C1330B843CF0199ADB679E37C57B907E9A479B67",
+      "publicationChange": "Configured external roots, safe argparse help, optional font; historical recipe/schema/quality assertions retained."
+    },
+    {
+      "path": "tools/maps/authors/canonical_display_r4.py",
+      "sourceFile": "canonical_display_r4.py",
+      "originalSHA256": "CE82E39B0F9C5E0C64B25BE208B88A8663834C851CAECF6FAA07F1F53BEDA5D1",
+      "publicationChange": "Configured external roots, safe argparse help, optional font; historical recipe/schema/quality assertions retained."
+    },
+    {
+      "path": "tools/maps/authors/verify_canonical_r4.py",
+      "sourceFile": "verify_canonical_r4.py",
+      "originalSHA256": "2079E65884F0E1C9FFC601C50E7FAAFAE2F4FA5453743D910B80707168DA2C24",
+      "publicationChange": "Configured external roots, safe argparse help, optional font; historical recipe/schema/quality assertions retained."
+    },
+    {
+      "path": "tools/maps/generate_author_game_derived.py",
+      "sourceFile": "generate_author_game_derived.py",
+      "originalSHA256": "AF2D3D9E7FEA361BDFAB91BA926350780B1F813DE2BE019FC07246E11695E936",
+      "publicationChange": "Unmodified single-map six-product recipe; external resources required."
+    },
+    {
+      "path": "tools/maps/render-candidate-structures.cjs",
+      "sourceFile": "render-candidate-structures.cjs",
+      "originalSHA256": "C4123462146E24236CC20851F1F89FDEAAC65EB9ED780ED41A262834733ECD6D",
+      "publicationChange": "Relative external renderer root and non-mutating --help; renderer implementation excluded."
+    },
+    {
+      "path": "tools/maps/prepare_fast_structures.py",
+      "sourceFile": "work/prepare_fast_structures.py",
+      "sourceCommit": "950930a6d7fa3053b188ac6f718fdc041237352d",
+      "originalSHA256": "BA1C55DF00C38B66C30ECA2E08A0ED2EED03F074AA741370222B53142870E4C3",
+      "publicationChange": "CLI/output-root and readback improvements described in map tooling documentation."
+    }
+  ]
+}
