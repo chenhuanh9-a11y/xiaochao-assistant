@@ -13,6 +13,7 @@ from tkinter import ttk
 from pathlib import Path
 import sys
 import time
+import webbrowser
 from PIL import Image, ImageDraw, ImageOps, ImageTk
 
 from desktop_display import WindowDisplay
@@ -34,6 +35,7 @@ from desktop_theme import (BG, SURFACE, CARD, TINT, LINE, TEXT, MUTED, SUBTLE, G
 from map_resource_browser import MapResourceBrowser
 from map_resource_model import MapResourceModel, choose_resource, floor_label, resource_inventory
 from map_resource_overview import structure_previews, load_structure_preview
+from update_service import UpdateService
 
 
 ACTION_NAMES = {"map": "游戏地图键", "toggle-panel": "呼出/收起游戏控件", "candidate-prev": "上一个候选",
@@ -53,6 +55,15 @@ def _button(parent: tk.Misc, text: str, command, *, primary=False) -> RoundedBut
         highlightthickness=0, highlightbackground=LINE, highlightcolor=PRIMARY,
         font=(FONT, 10, "bold"), padx=16, pady=9, cursor="hand2",
     )
+
+
+def _notes_body(notes: str) -> str:
+    """Release notes without the heading line and share links (buttons carry those)."""
+    lines = [line.rstrip() for line in str(notes or "").splitlines()]
+    if lines and lines[0].strip().rstrip("：:") == "更新公告":
+        lines = lines[1:]
+    lines = [line for line in lines if "网盘链接" not in line and "http" not in line]
+    return "\n".join(lines).strip() or "本次更新暂无公告。"
 
 
 def _rgb(color: str) -> tuple[int, int, int]:
@@ -419,8 +430,11 @@ class DesktopMainUI:
         self._home_layout = None
         self.display = WindowDisplay(self.window, assistant, preferred=(1000, 720),
                                      minimum=(650, 470), on_scale=self._display_changed)
+        self._update_dialog = None
+        self.updates = UpdateService(self._display_version_text(), self._update_state_path())
         self._build()
         self.display.start(self.root)
+        self.root.after(2500, lambda: None if self._closed else self._check_updates())
         self.window.bind("<Destroy>", self._destroy, add="+")
         self.window.bind("<Unmap>", self._unmap, add="+")
         self._refresh_job = self.root.after(0, self._refresh_view)
@@ -494,7 +508,9 @@ class DesktopMainUI:
         self.workspace.pack_configure(padx=self._px(40 if spacious else 22 if compact else 30))
         self.rail.configure(width=self._px(76 if compact else 184))
         rail_width = 76 if compact else 184
+        self._update_ui_signature = None  # Re-place the sidebar badge for the new rail.
         if compact:
+            self.rail_update_badge.pack_forget()
             self.brand_text.pack_forget()
             self.brand.pack_configure(padx=self._px(20), pady=(self._px(24), self._px(24)))
             self.rail_version.pack_forget()
@@ -714,6 +730,11 @@ class DesktopMainUI:
         self.rail_version = self._label(footer, f"版本 {self._display_version_text()}", size=8,
                                         color=SIDEBAR_MUTED, anchor="w")
         self.rail_version.pack(side="left", padx=(6, 0))
+        self.rail_update_badge = tk.Label(footer, text="新版本", bg=STAR_GOLD, fg=NIGHT, bd=0,
+                                          font=(FONT, 7, "bold"), padx=5, pady=1, cursor="hand2")
+        for widget in (self.rail_version, self.rail_update_badge):
+            widget.configure(cursor="hand2")
+            widget.bind("<Button-1>", lambda _e: self._open_update_card(), add="+")
         self.exit_button = RoundedButton(
             footer, text="退出", command=lambda: self.assistant.request_close(owner=self.window),
             bg=SIDEBAR, fg=SIDEBAR_MUTED, activebackground=SIDEBAR_HOVER, activeforeground=SIDEBAR_TEXT,
@@ -781,6 +802,14 @@ class DesktopMainUI:
         self.home_grid.pack(fill="both", expand=True, pady=(0, 8))
         self.home_main = tk.Frame(self.home_grid, bg=BG)
         self.home_side = tk.Frame(self.home_grid, bg=BG)
+
+        # Update reminder banner; shown by _sync_update_ui only while a newer version waits.
+        self.home_update = RoundedFrame(self.home_main, bg=BUTTON_BG, radius=14, padx=16, pady=10, highlightthickness=0)
+        self._label(self.home_update, "✦", size=10, bold=True, color=STAR_GOLD).pack(side="left")
+        self.home_update_text = self._label(self.home_update, size=10, bold=True, color=BUTTON_TEXT, anchor="w")
+        self.home_update_text.pack(side="left", padx=(8, 0))
+        self._label(self.home_update, "查看更新公告  ›", size=9, bold=True, color=BUTTON_TEXT).pack(side="right")
+        self._clickable(self.home_update, self.show_update_dialog)
 
         # Night hero: the one place that carries the brand mood.
         self.hero = self._card(self.home_main, padx=28, pady=24, bg=NIGHT, line=False)
@@ -1310,6 +1339,7 @@ class DesktopMainUI:
         content.configure(bg=BG)
         self._scroll_pages["help"][0].configure(bg=BG)
         self._heading(content, "排查与帮助", "先看当前状态，再按需要展开步骤或导出排查信息。")
+        self._build_update_card(content)
         state = self._card(content, padx=24, pady=20)
         state.pack(fill="x", pady=(0, 2))
         heading, _ = self._card_heading(state, "当前运行信息", "", "note")
@@ -1803,6 +1833,7 @@ class DesktopMainUI:
         self._refresh_job = None
         if self._closed:
             return
+        self._poll_updates()
         if self.window.winfo_viewable():
             self.display.refresh()
             self._layout_shell()
@@ -1823,6 +1854,8 @@ class DesktopMainUI:
         if self._refresh_job is not None:
             self.root.after_cancel(self._refresh_job)
             self._refresh_job = None
+        if self._update_dialog is not None and self._update_dialog.winfo_exists():
+            self._update_dialog.destroy()
         for name in ("_nav_mark_job", "_page_motion_job"):
             job = getattr(self, name, None)
             if job is not None:
@@ -1879,6 +1912,211 @@ class DesktopMainUI:
             self._refresh_maps()
         elif page == "preferences":
             self._refresh_route_choices()
+
+    # Updates -----------------------------------------------------------------
+    def _update_state_path(self) -> Path:
+        settings = getattr(self.assistant, "settings_path", None)
+        if isinstance(settings, (str, Path)):
+            return Path(settings).parent / "update-state.json"
+        return Path.home() / ".xingtu" / "update-state.json"
+
+    def _build_update_card(self, content):
+        card = self._card(content, padx=24, pady=20)
+        card.pack(fill="x", pady=(0, 2))
+        self.update_card = card
+        heading, _ = self._card_heading(card, "版本与更新", "新版本会在这里提醒，下载在浏览器中进行。", "note")
+        heading.pack(fill="x", pady=(0, 14))
+        facts = tk.Frame(card, bg=SURFACE)
+        facts.pack(fill="x")
+        facts.columnconfigure(1, weight=1)
+        self._label(facts, "当前版本", size=9, color=SUBTLE, anchor="w").grid(row=0, column=0, sticky="w", padx=(0, 18), pady=(0, 8))
+        self._label(facts, f"v{self._display_version_text()}", size=10, anchor="w").grid(row=0, column=1, sticky="w", pady=(0, 8))
+        self._label(facts, "最新版本", size=9, color=SUBTLE, anchor="w").grid(row=1, column=0, sticky="w", padx=(0, 18), pady=(0, 8))
+        self.update_status = self._label(facts, "尚未检查", size=10, anchor="w", justify="left", wraplength=460)
+        self.update_status.grid(row=1, column=1, sticky="ew", pady=(0, 8))
+        actions = tk.Frame(card, bg=SURFACE)
+        actions.pack(fill="x", pady=(6, 0))
+        self.update_check_button = _button(actions, "检查更新", lambda: self._check_updates(manual=True))
+        self.update_check_button.pack(side="left")
+        self.update_quark_button = _button(actions, "夸克网盘下载", lambda: self._open_update_page("quark"), primary=True)
+        self.update_uc_button = _button(actions, "UC 网盘下载", lambda: self._open_update_page("uc"))
+        self.update_notes_title = self._label(card, "更新公告", size=10, bold=True, anchor="w")
+        self.update_notes = self._label(card, size=9, color=MUTED, anchor="w", justify="left", wraplength=560)
+        self.update_history_toggle = self._ghost(card, "往期更新  ›", self._toggle_update_history, size=9)
+        self.update_history = tk.Frame(card, bg=SURFACE)
+        self._update_history_signature = None
+        self._update_ui_signature = None
+
+    def _check_updates(self, *, manual=False):
+        if self.updates.check(manual=manual):
+            self._sync_update_ui()
+
+    def _open_update_page(self, provider):
+        release = self.updates.latest
+        url = release.pages.get(provider) if release is not None else None
+        if url:
+            self.updates.mark_notes_seen()
+            webbrowser.open(url)
+            self._sync_update_ui()
+
+    def _toggle_update_history(self):
+        opened = not self.update_history.winfo_manager()
+        if opened:
+            self.update_history.pack(fill="x", pady=(8, 0))
+            self._reveal("help", self.update_card)
+        else:
+            self.update_history.pack_forget()
+        self.update_history_toggle.configure(text="收起往期更新  ‹" if opened else "往期更新  ›")
+
+    def _render_update_history(self):
+        releases = self.updates.history[:10]
+        signature = tuple(release.version for release in releases)
+        if signature == self._update_history_signature:
+            return
+        self._update_history_signature = signature
+        for child in self.update_history.winfo_children():
+            child.destroy()
+        for index, release in enumerate(releases):
+            if index:
+                tk.Frame(self.update_history, bg=LINE, height=1).pack(fill="x", pady=10)
+            head = tk.Frame(self.update_history, bg=SURFACE)
+            head.pack(fill="x")
+            self._label(head, f"v{release.version}", size=10, bold=True).pack(side="left")
+            self._label(head, release.published_date, size=8, color=SUBTLE).pack(side="left", padx=(8, 0))
+            self._label(self.update_history, _notes_body(release.notes), size=9, color=MUTED, anchor="w",
+                        justify="left", wraplength=540).pack(fill="x", pady=(4, 0))
+
+    def _sync_update_ui(self):
+        service = self.updates
+        release = service.latest
+        available = service.phase == "available" and release is not None
+        signature = (service.phase, service.message, release and release.version,
+                     service.skipped_version, service.has_unread, len(service.history))
+        if signature == self._update_ui_signature:
+            return
+        self._update_ui_signature = signature
+        # Sidebar: version line plus a gold "新版本" pill while the notes are unread.
+        if available and service.has_unread and self.rail_version.winfo_manager():
+            self.rail_update_badge.pack(side="left", padx=(6, 0), after=self.rail_version)
+        else:
+            self.rail_update_badge.pack_forget()
+        # Home banner: a quiet reminder that stays until the version is skipped.
+        if available and release.version != service.skipped_version:
+            self.home_update_text.configure(text=f"发现新版本 v{release.version}"
+                                                 + (f" · {release.published_date}" if release.published_date else ""))
+            if not self.home_update.winfo_manager():
+                self.home_update.pack(fill="x", pady=(0, 2), before=self.hero)
+        else:
+            self.home_update.pack_forget()
+        # Help card.
+        color = (BUTTON_TEXT if available else GREEN if service.phase == "latest"
+                 else ERROR if service.phase == "error" else MUTED)
+        status = service.message or "尚未检查"
+        if release is not None and service.phase in {"available", "latest"} and release.published_date:
+            status += f"\n发布于 {release.published_date}"
+        self.update_status.configure(text=status, fg=color)
+        checking = service.phase == "checking"
+        self.update_check_button.configure(text="正在检查…" if checking else "检查更新",
+                                           state="disabled" if checking else "normal")
+        for button, provider in ((self.update_quark_button, "quark"), (self.update_uc_button, "uc")):
+            if available and release.pages.get(provider):
+                if not button.winfo_manager():
+                    button.pack(side="left", padx=(8, 0))
+            else:
+                button.pack_forget()
+        if release is not None:
+            self.update_notes.configure(text=_notes_body(release.notes))
+            self.update_notes_title.pack(fill="x", pady=(16, 4))
+            self.update_notes.pack(fill="x")
+            self.update_history_toggle.pack(anchor="w", pady=(10, 0))
+            self._render_update_history()
+        self._fit_page("help")
+
+    def _poll_updates(self):
+        if self.updates.poll() is not None:
+            self._sync_update_ui()
+            if self.updates.should_prompt() and self.window.winfo_viewable():
+                self.show_update_dialog()
+
+    def show_update_dialog(self):
+        """Update reminder: notes, the two official download pages, later or skip."""
+        release = self.updates.latest
+        if release is None:
+            return None
+        existing = self._update_dialog
+        if existing is not None and existing.winfo_exists():
+            existing.deiconify()
+            existing.lift()
+            return existing
+        self.updates.mark_prompted()
+        self.updates.mark_notes_seen()
+        dialog = tk.Toplevel(self.window)
+        self._update_dialog = dialog
+        dialog.title("发现新版本")
+        dialog.transient(self.window)
+        dialog.configure(bg=SURFACE)
+        body = tk.Frame(dialog, bg=SURFACE)
+        body.pack(fill="both", expand=True, padx=24, pady=20)
+        head = tk.Frame(body, bg=SURFACE)
+        head.pack(fill="x")
+        mark = tk.Label(head, bg=SURFACE, bd=0)
+        mark._desktop_icon = (self._brand_images.get("round", self._px(44))
+                              or ImageTk.PhotoImage(_brand_mark(self._px(44)), master=dialog))
+        mark.configure(image=mark._desktop_icon)
+        mark.pack(side="left", padx=(0, 14))
+        words = tk.Frame(head, bg=SURFACE)
+        words.pack(side="left", fill="x", expand=True)
+        kicker = tk.Frame(words, bg=SURFACE)
+        kicker.pack(fill="x")
+        self._label(kicker, "✦", size=9, bold=True, color=STAR_GOLD).pack(side="left")
+        self._label(kicker, "NEW VERSION", size=8, bold=True, color=PRIMARY).pack(side="left", padx=(6, 0))
+        self._label(words, f"发现新版本 v{release.version}", size=16, bold=True, anchor="w").pack(fill="x", pady=(2, 0))
+        meta = " · ".join(part for part in (f"当前 v{self._display_version_text()}", release.published_date and f"发布于 {release.published_date}",
+                                            release.size and f"约 {release.size / 1024 / 1024:.0f} MB") if part)
+        self._label(words, meta, size=9, color=SUBTLE, anchor="w").pack(fill="x", pady=(2, 0))
+        notes_card = RoundedFrame(body, bg=INPUT_BG, radius=12, padx=14, pady=12, highlightthickness=0)
+        notes_card.pack(fill="both", expand=True, pady=(16, 16))
+        self._label(notes_card, "更新公告", size=9, bold=True, anchor="w").pack(fill="x", pady=(0, 6))
+        text = tk.Text(notes_card, bg=INPUT_BG, fg=TEXT, relief="flat", bd=0, highlightthickness=0,
+                       wrap="char", font=(FONT, 10), height=9, cursor="arrow", padx=0, pady=0,
+                       spacing1=2, spacing3=4)
+        text.insert("1.0", _notes_body(release.notes))
+        text.configure(state="disabled")
+        text.pack(fill="both", expand=True)
+        actions = tk.Frame(body, bg=SURFACE)
+        actions.pack(fill="x")
+
+        def close():
+            self._update_dialog = None
+            dialog.destroy()
+            self._sync_update_ui()
+
+        def skip():
+            self.updates.skip_latest()
+            close()
+
+        def download(provider):
+            self._open_update_page(provider)
+            close()
+
+        if release.pages.get("quark"):
+            _button(actions, "夸克网盘下载", lambda: download("quark"), primary=True).pack(side="left")
+        if release.pages.get("uc"):
+            _button(actions, "UC 网盘下载", lambda: download("uc")).pack(side="left", padx=(8, 0))
+        later = self._ghost(actions, "稍后提醒", close, color=MUTED)
+        later.pack(side="right")
+        self._ghost(actions, "跳过此版本", skip, color=SUBTLE).pack(side="right", padx=(0, 4))
+        dialog.protocol("WM_DELETE_WINDOW", close)
+        dialog.bind("<Escape>", lambda _event: close())
+        display = WindowDisplay(dialog, self.assistant, preferred=(520, 440), minimum=(440, 360))
+        display.start(self.window)
+        later.focus_set()
+        self._sync_update_ui()
+        return dialog
+
+    def _open_update_card(self):
+        self.show_page("help")
+        self.root.after(60, lambda: self._scroll_pages["help"][0].yview_moveto(0))
 
     def _place_nav_mark(self, *, animate=True):
         """Ease the gold marker to the current nav item; snaps when not yet mapped."""
