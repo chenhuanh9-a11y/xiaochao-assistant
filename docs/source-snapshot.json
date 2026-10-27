@@ -101,5 +101,5 @@
       "change": "Replace personal legacy asset path with configured or repository-relative directory."
     }
   ],
-  "notice": "Complete frozen preview09-19 application sources including sharedfast06 and preview/mode/diagnostic sampling. 132 prepared NPZ and all external/private resources excluded."
+  "notice": "Complete frozen preview09-19 application sources. Binary resources remain outside Git; only clean structures and matching precompute are supplied by a separate resource Release. Author maps/routes, rendered textures and private state are excluded."
 }

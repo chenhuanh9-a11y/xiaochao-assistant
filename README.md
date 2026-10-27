@@ -2,7 +2,7 @@
 
 星图是面向Windows的第五人格地图与路线辅助工具，使用Python、Tkinter、OpenCV和Pillow。它读取游戏窗口画面，识别地图与楼层，按当前帧几何验证显示路线，并提供资源浏览、离线地图包导入和可配置的下载入口。证据不足时应隐藏路线，保留人工确认与完整小抄等兜底。
 
-**这里发布源码和维护工具，不分发完整游戏资源或安装包。** 地图、作者路线、游戏解包数据、结构NPZ、截图与品牌Logo均需另行提供有权使用的同版本资源。仅克隆仓库不能完成地图识别或直接复现产品包。
+**这里发布源码和维护工具，不分发完整游戏资源或安装包。** 干净结构与配套预制通过独立素材Release提供，见 [结构资源取用](docs/resource-release.md)；作者路线图、四套地图包、游戏渲染纹理、截图与品牌Logo不在当前发布范围。仅克隆仓库不能完成完整地图识别或直接复现产品包。
 
 ## 当前代码
 
@@ -11,7 +11,7 @@
 | `main` 首次公开基线 | candidate15，73个应用Python文件，原候选指纹 `5E25C1A1`。 |
 | `dev/current-integration-20261027` | 完整preview09-19冻结源码，78个应用Python文件，原候选指纹 `0B721D65`；本分支用于草稿评审，未自动合并。 |
 
-本分支包含可选作者显示、地图下载与导入、困难原生适配、P0启动候选修复、两模式共享快路径sharedfast06，以及资源角色/版本预览、页内模式控制和诊断采样代际传输。132份快结构NPZ属于外部资源，不随源码上传。03/10身份歧义仍未解决，诊断采样改动不能表述为识别精度修复。
+本分支包含可选作者显示、地图下载与导入、困难原生适配、P0启动候选修复、两模式共享快路径sharedfast06，以及资源角色/版本预览、页内模式控制和诊断采样代际传输。132层干净结构和132份预制以独立资源附件提供，不放进Git历史。03/10身份歧义仍未解决，诊断采样改动不能表述为识别精度修复。
 
 显示版本为 `1.0`，Windows数字版本为 `1.0.0.4`。冻结主程序SHA-256为 `189F40EF167439497F80CF19CC37E65085EEE1C78ACD376E934205FFB7C46D1F`。逐文件哈希及公开整理差异见 [当前快照](docs/source-snapshot.json)，历史来源保留在 [candidate17记录](docs/source-snapshot-candidate17.json) 和 [candidate15记录](docs/source-snapshot-candidate15.json)。公共Git历史独立于原开发仓库，没有导入旧历史、内部协作记录或活动工作树。
 
@@ -47,6 +47,7 @@ py -3.13 -m venv .venv
 | `tools/maps/authors/` | 作者清单、候选配准、canonical选源/裁切、校验与打包。 |
 | `tools/maps/prepare_fast_structures.py` | 已有噩梦共享结构的独立预制与冻结loader回读。 |
 | `tools/maps/prepare_shared_fast_structures.py` | 与本版冻结源码一致的两模式provider预制、选择生成与回读。 |
+| `tools/maps/assemble_structure_resources.py` | 核验并解包独立结构Release，不导入作者路线或修改用户配置。 |
 | `tools/maps/render-candidate-structures.cjs` | 调用外部合法renderer的候选渲染包装；renderer与纹理未分发。 |
 | `app/star_map_import.py` / `star_map_download.py` | 生产数据包与静态索引的schema、路径/哈希校验及传输。 |
 

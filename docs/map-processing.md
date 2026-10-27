@@ -84,7 +84,7 @@ python tools/maps/prepare_shared_fast_structures.py RESOURCE_ROOT --output-root 
 python tools/maps/prepare_shared_fast_structures.py RESOURCE_ROOT --output-root SELECTED_STAGE --mode difficult --select MAP_ID/1
 ```
 
-新生成器通过当前应用的真实共享reference provider枚举，支持重复mode和MAP/FLOOR选择；输出NPZ和 `generation-result.json`，用同版loader回读。它只构造资源上下文，不创建Tk、截图、rank或求解；需要完整合法资源和外部输出根。示例中的MAP_ID必须替换为资源索引实际ID，不能猜数字。132份现有预制资源没有上传，也没有在本次源码同步重生成。
+新生成器通过当前应用的真实共享reference provider枚举，支持重复mode和MAP/FLOOR选择；输出NPZ和 `generation-result.json`，用同版loader回读。它只构造资源上下文，不创建Tk、截图、rank或求解；需要完整合法资源和外部输出根。示例中的MAP_ID必须替换为资源索引实际ID，不能猜数字。132层结构和现有132预制的独立交换包见 [结构资源取用](resource-release.md)，未放进Git历史，也没有在本次发布重跑识别或预制算法。
 
 两个生成器的预制均须绑定同一metadata、shape与工具版本，不混不同OpenCV或结构版本。
 

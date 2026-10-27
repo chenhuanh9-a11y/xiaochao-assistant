@@ -53,5 +53,8 @@ secrets*
 !/references/README.md
 /resources-private/
 /resources-example-local/
+/structures/
+/structure-index.json
+/.structure-*
 Thumbs.db
 Desktop.ini
