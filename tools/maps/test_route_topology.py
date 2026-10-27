@@ -14,6 +14,23 @@ def fixture(links):
     return {'schema':'custom-route-topology-v1','points':[[10,10],[30,10],[50,10]],'pointRooms':['a','a','b'],'registration':{'pixelsPerTile':20},'links':links}
 
 class TopologyTests(unittest.TestCase):
+ def test_ordinary_straight_corridor_offgrid_endpoints_join_its_axis_without_diagonal_tails(self):
+    data={'points':[[10,10],[10,30],[10,50],[10,70]],'pointRooms':['hall']*4,'registration':{'pixelsPerTile':20},'links':[[0,1,'room-grid'],[1,2,'room-grid'],[2,3,'room-grid']]}
+    t=Topology(np.ones((90,30),np.uint8),data)
+    self.assertEqual(t.path((12,14),(12,56)),[(12,14),(10,14),(10,56),(12,56)])
+ def test_ordinary_source_edge_cannot_encode_a_diagonal_shortcut(self):
+    data={'points':[[10,10],[30,30]],'pointRooms':['hall']*2,'registration':{'pixelsPerTile':20},'links':[[0,1,'room-grid']]}
+    with self.assertRaises(ValueError):Topology(np.ones((50,50),np.uint8),data)
+ def test_unregistered_mask_planner_uses_only_orthogonal_steps_and_endpoint_connections(self):
+    w=Walkable(np.ones((80,80),np.uint8));self.assertIsNone(w.topology)
+    for a,b in [((8,8),(58,38)),((11,11),(14,14))]:
+        line=w.path(a,b);self.assertTrue(line);self.assertEqual(line[0],a);self.assertEqual(line[-1],b)
+        self.assertTrue(all(p[0]==q[0] or p[1]==q[1] for p,q in zip(line,line[1:])))
+ def test_offset_waypoint_on_diagonal_corridor_never_changes_the_source_slope(self):
+    data={'points':[[10,10],[190,130]],'pointRooms':['y','y'],'registration':{'pixelsPerTile':60},'links':[[0,1,'source-diagonal']]}
+    t=Topology(np.ones((160,220),np.uint8),data);line=t.path((103,68),(190,130));self.assertTrue(line);self.assertEqual(line[0],(103,68))
+    for a,b in zip(line,line[1:]):
+        if a[0]!=b[0] and a[1]!=b[1]:self.assertAlmostEqual((b[1]-a[1])/(b[0]-a[0]),2/3)
  def test_adjacent_footprint_rooms_do_not_connect_without_a_source_door(self):
     mask=np.ones((30,70),np.uint8);t=Topology(mask,fixture([[0,1,'room-grid']]))
     self.assertIsNone(t.path((10,10),(50,10)))

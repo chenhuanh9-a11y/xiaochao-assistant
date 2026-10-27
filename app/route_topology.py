@@ -69,16 +69,21 @@ class Topology:
         self.room_ids = data['pointRooms']
         self.edges = [[] for _ in self.points]
         self.diagonal_edges = []
+        self.axis_edges = []
         for a, b, kind in data['links']:
             if kind not in ('room-grid', 'source-door', 'source-diagonal'):
                 raise ValueError('Unsupported topology edge')
             p, q = self.points[a], self.points[b]
+            if kind != 'source-diagonal' and p[0] != q[0] and p[1] != q[1]:
+                raise ValueError('Ordinary topology edges must be axis aligned')
             if not self.line_on_mask(p, q):
                 continue
             weight = math.dist(p, q)
             self.edges[a].append((b, weight)); self.edges[b].append((a, weight))
             if kind == 'source-diagonal':
                 self.diagonal_edges.append((a,b))
+            elif kind == 'room-grid' and self.room_ids[a] == self.room_ids[b]:
+                self.axis_edges.append((a,b))
 
     def line_on_mask(self, a, b):
         x0, y0 = map(round, a); x1, y1 = map(round, b)
@@ -89,36 +94,61 @@ class Topology:
         cv2.line(line, (x0-l,y0-t), (x1-l,y1-t), 1, 1)
         return not np.any((line > 0) & ~self.mask[t:bot+1,l:r+1])
 
-    def anchors(self, point):
-        """Only connect a free waypoint within its own source cell/diagonal arm.
+    def _attachments(self, point):
+        """Explicit, room-owned endpoint paths: orthogonal except source diagonals.
 
-        Avoid nearest-node snapping across a room wall. Exported room ownership
-        is explicit; geometrically adjacent rooms do not create graph edges.
+        Project onto real room edges, connecting to either end. This splits an
+        edge conceptually, avoiding both diagonal tails and a forced backtrack
+        through the nearest cell centre. Door edges are never endpoint shortcuts.
         """
-        x, y = point; pitch = self.data['registration']['pixelsPerTile']
-        diagonal = {}
-        for a,b in self.diagonal_edges:
+        x, y = point; pitch = self.data['registration']['pixelsPerTile']; options=[]
+        for a,b in self.diagonal_edges+self.axis_edges:
             p,q = self.points[a],self.points[b]; dx,dy=q[0]-p[0],q[1]-p[1]
             length2=dx*dx+dy*dy
             if length2 == 0:
                 continue
             ratio=((x-p[0])*dx+(y-p[1])*dy)/length2
             projection=(p[0]+ratio*dx,p[1]+ratio*dy)
-            if (0 <= ratio <= 1 and math.dist(point,projection) <= pitch/2
-                    and self.line_on_mask(point,p) and self.line_on_mask(point,q)):
-                diagonal[a]=math.dist(point,p);diagonal[b]=math.dist(point,q)
-        if diagonal and len({self.room_ids[i] for i in diagonal}) == 1:
-            return list(diagonal.items())
-        result = []
+            if not(0 <= ratio <= 1 and math.dist(point,projection) <= pitch/2):
+                continue
+            diagonal=(a,b) in self.diagonal_edges
+            lead=None
+            if diagonal:
+                # Retain the exact source slope. An off-axis waypoint joins its
+                # projection orthogonally instead of slanting to a distant node.
+                for bend in [(projection[0],y),(x,projection[1])]:
+                    candidate=simplify([tuple(point),bend,projection])
+                    if all(self.line_on_mask(u,v) for u,v in zip(candidate,candidate[1:])):
+                        lead=candidate;break
+                if lead is None:
+                    continue
+            for i in (a,b):
+                path=simplify([*(lead or [tuple(point),projection]),self.points[i]])
+                if all(self.line_on_mask(u,v) for u,v in zip(path,path[1:])):
+                    options.append((i,sum(math.dist(u,v) for u,v in zip(path,path[1:])),path,math.dist(point,projection)))
         for i, (px,py) in enumerate(self.points):
-            if abs(px-x) <= pitch/2 and abs(py-y) <= pitch/2 and self.line_on_mask(point,(px,py)):
-                result.append((i, math.dist(point,(px,py))))
+            if abs(px-x) > pitch/2 or abs(py-y) > pitch/2:
+                continue
+            for bend in [(px,y),(x,py)]:
+                path=simplify([tuple(point),bend,(px,py)])
+                if all(self.line_on_mask(u,v) for u,v in zip(path,path[1:])):
+                    options.append((i,sum(math.dist(u,v) for u,v in zip(path,path[1:])),path,math.dist(point,(px,py))))
+                    break
         # Ambiguous overlap is closed, rather than inventing a bridge.
-        if not result:
-            return []
-        nearest = min(d for _,d in result)
-        rooms = {self.room_ids[i] for i,d in result if abs(d-nearest) < 1e-6}
-        return [(i,d) for i,d in result if self.room_ids[i] in rooms] if len(rooms) == 1 else []
+        if not options:
+            return {}
+        nearest=min(o[3] for o in options)
+        rooms={self.room_ids[i] for i,_,_,d in options if abs(d-nearest)<1e-6}
+        if len(rooms)!=1:
+            return {}
+        result={}
+        for i,cost,path,_ in options:
+            if self.room_ids[i] in rooms and cost < result.get(i,(math.inf,[]))[0]:
+                result[i]=(cost,path)
+        return result
+
+    def anchors(self, point):
+        return [(i,cost) for i,(cost,_) in self._attachments(point).items()]
 
     def contains(self, point):
         h,w = self.mask.shape
@@ -146,17 +176,17 @@ class Topology:
         return self.points[min(candidates, key=lambda item:item[1])[0]] if candidates else None
 
     def path(self, start, goal):
-        starts, ends = self.anchors(start), dict(self.anchors(goal))
+        starts, ends = self._attachments(start), self._attachments(goal)
         if not starts or not ends:
             return None
-        dist = dict(starts); prev = {}; queue = [(v,i) for i,v in starts]; heapq.heapify(queue)
+        dist = {i:v[0] for i,v in starts.items()}; prev = {}; queue = [(v,i) for i,v in dist.items()]; heapq.heapify(queue)
         finish = None; best = math.inf
         while queue:
             cost, i = heapq.heappop(queue)
             if cost != dist[i] or cost > best:
                 continue
-            if i in ends and cost+ends[i] < best:
-                finish, best = i, cost+ends[i]
+            if i in ends and cost+ends[i][0] < best:
+                finish, best = i, cost+ends[i][0]
             for j, weight in self.edges[i]:
                 value = cost+weight
                 if value < dist.get(j, math.inf):
@@ -166,5 +196,5 @@ class Topology:
         path = [finish]
         while path[-1] in prev:
             path.append(prev[path[-1]])
-        result = simplify([tuple(start), *[self.points[i] for i in reversed(path)], tuple(goal)])
+        result = simplify([*starts[path[-1]][1], *[self.points[i] for i in reversed(path)], *reversed(ends[finish][1])])
         return result if all(self.line_on_mask(a,b) for a,b in zip(result,result[1:])) else None

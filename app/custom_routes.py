@@ -246,11 +246,19 @@ class Walkable:
         source, target = self._cell(start), self._cell(goal)
         if not (self.open[source[1], source[0]] and self.open[target[1], target[0]]):
             return None
+        def orthogonal(a,b):
+            for bend in [(b[0],a[1]),(a[0],b[1])]:
+                points=[tuple(a),bend,tuple(b)]
+                points=[p for i,p in enumerate(points) if i==0 or p!=points[i-1]]
+                if all(self._line_on_footprint(p,q) for p,q in zip(points,points[1:])):
+                    return points
+            return None
         if source == target:
-            return [tuple(start), tuple(goal)] if self._line_on_footprint(start, goal) else None
+            return orthogonal(start,goal)
         rows, columns = self.open.shape
-        steps = ((1, 0, 1.0), (-1, 0, 1.0), (0, 1, 1.0), (0, -1, 1.0),
-                 (1, 1, 1.4142), (1, -1, 1.4142), (-1, 1, 1.4142), (-1, -1, 1.4142))
+        # With no source diagonal geometry, a footprint alone cannot authorize
+        # slanted shortcuts through ordinary corridors or right-angle junctions.
+        steps = ((1, 0, 1.0), (-1, 0, 1.0), (0, 1, 1.0), (0, -1, 1.0))
         clearance = self.clearance
         best = {source: 0.0}
         parent = {}
@@ -266,8 +274,6 @@ class Walkable:
                 nx, ny = x + dx, y + dy
                 if not (0 <= nx < columns and 0 <= ny < rows) or not self.open[ny, nx]:
                     continue
-                if dx and dy and not (self.open[y, nx] and self.open[ny, x]):
-                    continue  # No corner cutting through void.
                 step = cost + length * (1.0 + 2.5 / (1.0 + clearance[ny, nx]))
                 neighbour = (nx, ny)
                 if step < best.get(neighbour, math.inf):
@@ -283,12 +289,15 @@ class Walkable:
         # Remove only collinear grid centres: approximate simplification can cut
         # across void at bends. Retain centres beside arbitrary native endpoints.
         centres = [self._centre(cell) for cell in cells]
-        points = [tuple(start), centres[0]]
+        prefix=orthogonal(start,centres[0]);suffix=orthogonal(centres[-1],goal)
+        if prefix is None or suffix is None:
+            return None
+        points = prefix[:]
         for previous, current, following in zip(centres, centres[1:], centres[2:]):
             if (current[0] - previous[0], current[1] - previous[1]) != (
                     following[0] - current[0], following[1] - current[1]):
                 points.append(current)
-        points.extend((centres[-1], tuple(goal)))
+        points.extend(suffix)
         points = [point for index, point in enumerate(points) if index == 0 or point != points[index - 1]]
         if not all(self._line_on_footprint(a, b) for a, b in zip(points, points[1:])):
             return None

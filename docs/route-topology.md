@@ -99,10 +99,41 @@ python tools/maps/render_topology_pilot.py --structures STRUCTURE_ROOT --output 
 The offline renderer calls the real `Walkable`, `route_polyline` and `render_layer`
 used by PR4, using the same native waypoints before/after. The 1F example follows
 two diagonal Y arms; the 2F example traverses multiple ordinary source rooms/doors
-with 11 orthogonal segments. Seven targeted tests cover missing doors, unknown
+with 13 orthogonal segments including free-endpoint lead-ins. Eleven targeted tests cover missing doors, unknown
 transfers, void crossing, exact resource binding, collinear reduction, free diagonal
 waypoints, manual mode, no-path semantics and empty saved preferences.
 
 GUI/game-input validation is NOT_RUN (CUA paused). No current gameplay collision,
 timing, live door state, exhaustive map conversion or player acceptance is claimed.
 Base checkout: `80cc4fb85ab540edba7bc3e2842cb1ec6b5e230d`.
+
+## Straight-corridor feedback correction
+
+The first contact sheet's historical mask-A* column really did contain diagonal
+shortcuts in ordinary corridors. On 2F, examples are `(855,695)->(915,755)` and
+`(1155,755)->(1275,875)`. Those came from eight-neighbour fallback A*, not the Y
+source geometry, misregistration, rendering, or collinear reduction. Fallback A*
+now uses four neighbours and orthogonal endpoint connectors when no source
+diagonal evidence is available.
+
+The PR8 topology column had no diagonal 2F body segment for exact grid-centre
+endpoints, but free endpoints exposed a separate defect: `(158,458)` was linked
+directly to `(150,450)`. The straight-corridor reproduction
+`(158,458)->(158,650)` emitted diagonal tails at both ends. Endpoint attachment
+now projects onto room-owned source axis edges and retains explicit orthogonal
+lead-ins. It considers both edge ends rather than forcing a nearest-centre
+backtrack. The corrected path is exactly
+`(158,458),(150,458),(150,650),(158,650)`.
+
+Only `source-diagonal` edges can carry a diagonal. Ordinary graph edges with
+both coordinates changed are rejected. Off-axis endpoints on a true diagonal
+arm first join the arm's projection orthogonally; the remaining slope is the
+exact source slope. Every lead-in and solved segment still passes current-mask
+checks; missing doors, ambiguous room ownership and unknown transfers remain
+closed. Simplification only removes forward collinear vertices.
+
+Use `--before CAPTURED_PR8_PATHS.json` on the offline renderer to reproduce the
+same 1F/2F free endpoints against the actual captured PR8 paths. The updated
+comparison includes a zoom of the straight-corridor endpoint defect, drawn with
+small waypoint dots so marker circles cannot hide diagonal tails. No CUA or
+game input was used. The prior Library image is retained as version history.
