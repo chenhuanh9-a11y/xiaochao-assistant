@@ -198,7 +198,10 @@ class UpdateService:
         self.checked_at = now
         if "error" in event:
             self._failures += 1
-            self.phase = "error" if event["manual"] or self.latest is None else self.phase
+            # check() replaced the cached phase with "checking". Restore a
+            # finished state so a failed background refresh cannot lock the UI.
+            self.phase = ("error" if event["manual"] or self.latest is None else
+                          "available" if is_newer(self.latest.version, self.current_version) else "latest")
             self.message = f"检查更新失败：{event['error']}"
             self.next_check_at = now + RETRY_SECONDS[min(self._failures, len(RETRY_SECONDS)) - 1]
             return event
