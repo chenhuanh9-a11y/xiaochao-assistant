@@ -1,0 +1,9 @@
+* text=auto
+*.py text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.txt text eol=lf
+*.ps1 text eol=crlf
+*.manifest text eol=lf
+# Preserve the frozen mixed-line-ending module byte for byte.
+app/single_map_structure.py -text

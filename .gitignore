@@ -1,0 +1,57 @@
+# Local environments and Python caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime state, screenshots, logs, original development artifacts
+work/
+outputs/
+logs/
+*.log
+*.jsonl
+*.dmp
+*.dump
+*settings*.json
+*.bak
+*.tmp
+
+# Build products and installers
+build/
+dist/
+*.spec
+*.exe
+*.dll
+*.pyd
+*.msi
+*.zip
+*.7z
+
+# Credentials and private local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+credentials*
+secrets*
+.aws/
+.codex/
+.agents/
+.vscode/
+.idea/
+
+# Resources are supplied separately; only documentation is versioned
+/assets/**
+!/assets/README.md
+/references/**
+!/references/README.md
+/resources-private/
+/resources-example-local/
+Thumbs.db
+Desktop.ini

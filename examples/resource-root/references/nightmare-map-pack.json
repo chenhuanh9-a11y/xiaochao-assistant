@@ -1,0 +1,8 @@
+{
+  "exampleOnly": true,
+  "packId": "example-empty-not-for-recognition",
+  "displayName": "Empty schema example — no game data",
+  "sourceRoot": "assets/nightmare-maps",
+  "defaultEntryFloor": 2,
+  "maps": []
+}
