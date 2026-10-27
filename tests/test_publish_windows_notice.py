@@ -115,7 +115,7 @@ class PublisherTests(unittest.TestCase):
     def test_publish_refuses_without_person(self):
         code, _, err = self.run_main("--publish", tty=False)
         self.assertEqual(code, 2)
-        self.assertIn("交互终端", err)
+        self.assertIn("--yes", err)
         code, out, _ = self.run_main("--publish", typed="1.0.1")
         self.assertEqual(code, 1)
         self.assertEqual(FakeServer.posts, [])
@@ -126,6 +126,20 @@ class PublisherTests(unittest.TestCase):
             code, out, err = self.run_main("--publish", typed="1.0.2")
         self.assertEqual(code, 0, err)
         self.assertEqual(FakeServer.manifest["versionCode"], 1711)
+
+    def test_unattended_publish(self):
+        code, out, err = self.run_main("--publish", "--yes", tty=False)
+        self.assertEqual(code, 0, err)
+        self.assertIn("已发布并核对一致", out)
+        self.assertEqual(FakeServer.manifest["versionCode"], 1711)
+        self.assertNotIn(TOKEN, out + err)
+
+    def test_unattended_publish_needs_token(self):
+        with mock.patch.dict(os.environ, {"UPDATE_ADMIN_TOKEN": ""}):
+            code, _, err = self.run_main("--publish", "--yes", tty=False)
+        self.assertEqual(code, 2)
+        self.assertIn("UPDATE_ADMIN_TOKEN", err)
+        self.assertEqual(FakeServer.posts, [])
 
     def test_wrong_token_stops(self):
         with mock.patch.dict(os.environ, {"UPDATE_ADMIN_TOKEN": "x" * 40}):

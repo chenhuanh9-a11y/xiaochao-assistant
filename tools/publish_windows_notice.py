@@ -6,9 +6,14 @@ Usage (from the repository root):
       Preview only: checks everything and shows what would be sent.
 
   python tools/publish_windows_notice.py --installer PATH --notes NOTES.txt --publish
-      Publish. Must be run by a person in an interactive terminal, who
-      confirms by typing the version. The admin token is typed at a hidden
-      prompt (or taken from UPDATE_ADMIN_TOKEN) and is never printed or saved.
+      Publish interactively: confirm by typing the version, then the admin
+      token at a hidden prompt (or from UPDATE_ADMIN_TOKEN).
+
+  python tools/publish_windows_notice.py --installer PATH --notes NOTES.txt --publish --yes
+      Publish without prompts, e.g. by an assistant after the installer is
+      on the cloud drives. The token must be in UPDATE_ADMIN_TOKEN.
+
+The token is never printed or saved by this script.
 
 Only metadata is sent; the installer itself stays on the cloud drives. The
 version comes from version.json, so the app and the notice always agree.
@@ -198,7 +203,9 @@ def main(argv=None) -> int:
     parser.add_argument("--installer", required=True, help="正式安装包（星图-X.Y.Z-Setup.exe 或 IdentityV-Map-pc-X.Y.Z.exe）")
     parser.add_argument("--notes", required=True, help="公告文本文件（UTF-8）")
     parser.add_argument("--version-code", type=int, help="内部版本号；默认线上当前值 + 1")
-    parser.add_argument("--publish", action="store_true", help="真正发布（需要在终端里手动确认）")
+    parser.add_argument("--publish", action="store_true", help="真正发布")
+    parser.add_argument("--yes", action="store_true",
+                        help="与 --publish 一起使用：不再询问确认，口令从 UPDATE_ADMIN_TOKEN 读取")
     args = parser.parse_args(argv)
     try:
         base = server_url()
@@ -209,15 +216,20 @@ def main(argv=None) -> int:
             print("线上已经是这一版的同一份信息，无需重复发布。")
             return 0
         if not args.publish:
-            print("以上为预览，尚未发布。确认无误后，由发布人在自己的终端里加 --publish 运行。")
+            print("以上为预览，尚未发布。确认安装包已上传夸克和 UC 后，加 --publish 发布。")
             return 0
-        if not sys.stdin.isatty():
-            raise PublishError("--publish 必须由发布人在交互终端里运行并手动确认。")
-        typed = input(f"发布后不能修改或删除。确认发布请输入版本号 {payload['version']}：").strip()
-        if typed != payload["version"]:
-            print("输入不一致，已取消，没有发布。")
-            return 1
-        token = os.environ.get("UPDATE_ADMIN_TOKEN", "") or getpass.getpass("管理员口令（输入时不显示）：").strip()
+        token = os.environ.get("UPDATE_ADMIN_TOKEN", "").strip()
+        if args.yes:
+            if not token:
+                raise PublishError("没有设置 UPDATE_ADMIN_TOKEN 环境变量，无法自动发布。请让口令持有人按说明设置一次。")
+        else:
+            if not sys.stdin.isatty():
+                raise PublishError("没有交互终端，无法确认。自动发布请加 --yes，并设置 UPDATE_ADMIN_TOKEN。")
+            typed = input(f"发布后不能修改或删除。确认发布请输入版本号 {payload['version']}：").strip()
+            if typed != payload["version"]:
+                print("输入不一致，已取消，没有发布。")
+                return 1
+            token = token or getpass.getpass("管理员口令（输入时不显示）：").strip()
         if not (len(token) >= 32 or (base != SERVER and token)):
             raise PublishError("管理员口令为空或长度不对，已取消，没有发布。")
         readback = publish(payload, base, token)

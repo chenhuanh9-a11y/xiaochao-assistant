@@ -58,3 +58,6 @@ secrets*
 /.structure-*
 Thumbs.db
 Desktop.ini
+
+# Windows update notice drafts (tools/publish_windows_notice.py)
+/notes.txt
