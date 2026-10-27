@@ -4,8 +4,9 @@ Routes are stored as waypoints in the same game-native pixel frame as the
 shared structure references (one canvas per map and floor). Rendering into
 that canvas means the in-game overlay can use an identity bridge: the route
 image lines up wherever the structure itself is aligned, with no per-map
-calibration. Automatic routing uses the structure footprint as a geometric
-constraint. That footprint does not encode complete wall or passage semantics.
+calibration. An exact released-mask binding can add static source room/door
+topology; other resources retain footprint routing. Neither footprint nor this
+bounded topology pilot encodes complete interior collision or live door state.
 """
 from __future__ import annotations
 
@@ -160,6 +161,8 @@ class Walkable:
     """Coarse routing grid over one structure footprint."""
 
     def __init__(self, mask: np.ndarray):
+        from route_topology import for_mask
+        self.topology = for_mask(mask)
         height, width = mask.shape[:2]
         self.shape = (height, width)
         self._footprint = mask > 0
@@ -181,13 +184,16 @@ class Walkable:
 
     def contains(self, point) -> bool:
         """Whether a native endpoint is in bounds, on footprint and in an open cell."""
+        if self.topology is not None:
+            return self.topology.contains(point)
         height, width = self.shape
         try:
             x, y = point
             if not (math.isfinite(x) and math.isfinite(y) and 0 <= x < width and 0 <= y < height):
                 return False
             cx, cy = self._cell(point)
-            return bool(self._footprint[int(y), int(x)] and self.open[cy, cx])
+            return bool(self._footprint[int(y), int(x)] and self.open[cy, cx]
+                        and (self.topology is None or self.topology.contains(point)))
         except (TypeError, ValueError, OverflowError):
             return False
 
@@ -210,6 +216,8 @@ class Walkable:
 
     def snap(self, point, *, reach: int = 12) -> tuple[int, int] | None:
         """Nearest open cell centre within ``reach`` cells, else None."""
+        if self.topology is not None:
+            return self.topology.snap(point)
         height, width = self.shape
         if not (0 <= point[0] < width and 0 <= point[1] < height):
             return None
@@ -231,6 +239,8 @@ class Walkable:
 
     def path(self, start, goal) -> list[tuple[int, int]] | None:
         """A* through open cells, biased towards wide space; native pixels out."""
+        if self.topology is not None:
+            return self.topology.path(start, goal)
         if not (self.contains(start) and self.contains(goal)):
             return None
         source, target = self._cell(start), self._cell(goal)

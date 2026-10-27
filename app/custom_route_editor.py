@@ -14,6 +14,7 @@ from PIL import Image, ImageTk
 
 from custom_routes import (COLORS, FLOOR_LABELS, FLOORS, MAX_POINTS, FloorRoute, RoutePathError, Walkable,
                            route_polyline)
+from route_topology import display_name
 from desktop_rounded import RoundedButton, RoundedFrame
 from desktop_theme import (BG, BUTTON_BG, BUTTON_TEXT, ERROR, FONT, GREEN, IMAGE_BG, INPUT_BG, LINE,
                            MUTED, PRIMARY, SUBTLE, SURFACE, TEXT, TINT)
@@ -271,7 +272,7 @@ class CustomRouteEditor(tk.Frame):
         for map_id, name in self._maps:
             row = tk.Frame(self.list_frame, bg=SURFACE, cursor="hand2")
             row.pack(fill="x", pady=1)
-            title = tk.Label(row, text=name, bg=SURFACE, fg=TEXT, font=(FONT, 10), anchor="w", padx=10, pady=6)
+            title = tk.Label(row, text=display_name(map_id, name), bg=SURFACE, fg=TEXT, font=(FONT, 10), anchor="w", padx=10, pady=6)
             title.pack(side="left", fill="x", expand=True)
             badge = tk.Label(row, text="", bg=SURFACE, fg=PRIMARY, font=(FONT, 8, "bold"), padx=8)
             badge.pack(side="right")
@@ -310,7 +311,7 @@ class CustomRouteEditor(tk.Frame):
             self._schedule_render()
             return
         self.map_id = map_id
-        name = dict(self._maps).get(map_id, map_id)
+        name = display_name(map_id, dict(self._maps).get(map_id, map_id))
         self.map_title.configure(text=name)
         if self._floor_data(map_id, self.floor)[0] is None:
             available = [floor for floor in FLOORS if self._floor_data(map_id, floor)[0] is not None]
@@ -383,6 +384,9 @@ class CustomRouteEditor(tk.Frame):
             text, color = "在地图上点击第一个路点开始画路线。", MUTED
         else:
             text, color = f"已自动保存 · {len(route.points)} 个路点", GREEN
+        planner = self._floor_data(self.map_id, self.floor)[1] if self.map_id else None
+        if planner is not None and planner.topology is not None:
+            text += " · 房间门连通；静态门默认可通行"
         self.status.configure(text=text, fg=color)
 
     def _paint_tools(self, route=None):
