@@ -9,11 +9,11 @@
 | 分支/快照 | 内容与状态 |
 | --- | --- |
 | `main` 首次公开基线 | candidate15，73个应用Python文件，原候选指纹 `5E25C1A1`。 |
-| `dev/current-integration-20261027` | 完整candidate17/P0冻结源码，78个应用Python文件，原候选指纹 `DC9986E2`；本分支用于草稿评审，未自动合并。 |
+| `dev/current-integration-20261027` | 完整preview09-19冻结源码，78个应用Python文件，原候选指纹 `0B721D65`；本分支用于草稿评审，未自动合并。 |
 
-本分支包含已整合的可选作者显示、地图下载与导入、困难原生资源适配、原454快结构模块，以及困难启动候选列表缺少 `filter()` 和缩略图取图协议的窄修复。有启动问题的D231不是本次同步终点。后续困难共享快路径sharedfast06未混入此完整快照。
+本分支包含可选作者显示、地图下载与导入、困难原生适配、P0启动候选修复、两模式共享快路径sharedfast06，以及资源角色/版本预览、页内模式控制和诊断采样代际传输。132份快结构NPZ属于外部资源，不随源码上传。03/10身份歧义仍未解决，诊断采样改动不能表述为识别精度修复。
 
-显示版本为 `1.0`，Windows数字版本为 `1.0.0.4`。冻结主程序SHA-256为 `934F4CCEFC3EDFD5B75347DFF37A40958223D30019F31CD699557A555264DE65`。逐文件哈希及公开整理差异见 [快照记录](docs/source-snapshot.json)，首次公开来源保留在 [candidate15记录](docs/source-snapshot-candidate15.json)。公共Git历史独立于原开发仓库，没有导入旧历史、内部协作记录或活动工作树。
+显示版本为 `1.0`，Windows数字版本为 `1.0.0.4`。冻结主程序SHA-256为 `189F40EF167439497F80CF19CC37E65085EEE1C78ACD376E934205FFB7C46D1F`。逐文件哈希及公开整理差异见 [当前快照](docs/source-snapshot.json)，历史来源保留在 [candidate17记录](docs/source-snapshot-candidate17.json) 和 [candidate15记录](docs/source-snapshot-candidate15.json)。公共Git历史独立于原开发仓库，没有导入旧历史、内部协作记录或活动工作树。
 
 ## 快速开始
 
@@ -46,6 +46,7 @@ py -3.13 -m venv .venv
 | `tools/maps/native24/` | 历史24图/72层结构计划、typed NPZ、轮廓和候选元数据生成配方。 |
 | `tools/maps/authors/` | 作者清单、候选配准、canonical选源/裁切、校验与打包。 |
 | `tools/maps/prepare_fast_structures.py` | 已有噩梦共享结构的独立预制与冻结loader回读。 |
+| `tools/maps/prepare_shared_fast_structures.py` | 与本版冻结源码一致的两模式provider预制、选择生成与回读。 |
 | `tools/maps/render-candidate-structures.cjs` | 调用外部合法renderer的候选渲染包装；renderer与纹理未分发。 |
 | `app/star_map_import.py` / `star_map_download.py` | 生产数据包与静态索引的schema、路径/哈希校验及传输。 |
 
@@ -88,7 +89,7 @@ assets/、references/         外部资源本地位置，实际资源默认忽�
 
 ## 验证与限制
 
-candidate17已在原构建流程中用相同设置与入口完成旧PE异常→新PE通过：30候选/30真实缩略图读取、无源码覆盖，末端GUI对象使用IO探针。**这只证明启动候选子链，不等于完整GUI、真实游戏识别、性能或玩家验收。** 本次源码同步仅检查增量内容、语法/help与无地图fixture，不重复全图库识别。
+0B721D65已在原构建流程中完成无源码覆盖的实际PE代表检查：同设置30候选/30真实缩略图、模式按钮到真实controller往返、真实model/PIL/结构解码及单损坏NPZ局部恢复；末端GUI变量、widget、PhotoImage等使用明确IO替身。诊断采样复用已核producer/poll/store代际证据。**这些子链不等于完整GUI、真实游戏识别、性能或玩家验收。** 03/10身份歧义仍未解决。本次公开同步只做必要增量语法/help和内容检查，不重复全图库识别或实际PE验证。
 
 Windows捕获与悬浮层API限制平台支持。身份、楼层或当前帧几何不可信时不能猜测显示。维护流程中“作者资源可用”和“runtime已接入”分列；历史矩阵、alpha轮廓和哈希不能单独证明图像语义或生产精度。
 

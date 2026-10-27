@@ -12,7 +12,8 @@
 | 作者inventory / 候选配准 | `tools/maps/authors/author_audit.py`、`align_authors.py` | 读取配置目录，候选矩阵不是自动验收。 |
 | canonical选源/裁切/打包 | `tools/maps/authors/canonical_display_r4.py`、`verify_canonical_r4.py` | 历史R3→R4，复用已有矩阵，固定27组/81层等断言，不自动产生R3人工证据。 |
 | 离线快结构预制 | `tools/maps/prepare_fast_structures.py` | 原454生成器，增加独立输出及真实loader回读；只处理已有噩梦共享index，不是困难sharedfast06生成器。 |
-| 生产loader / package schema | `app/shared_structure_reference.py`、`difficult_native_context.py`、`star_map_import.py`、`star_map_download.py` | candidate17应用快照；中间清单不能直接交给生产loader。 |
+| 当前两模式共享预制 | `tools/maps/prepare_shared_fast_structures.py` | preview09-19冻结生成器，通过同版provider枚举/选择生成与回读；需要合法外部资源，不运行识别/求解。 |
+| 生产loader / package schema | `app/shared_structure_reference.py`、`difficult_native_context.py`、`star_map_import.py`、`star_map_download.py` | preview09-19应用快照；中间清单不能直接交给生产loader。 |
 
 完整命令与前置条件见仓库 `docs/map-processing.md`。无完整合法资源时，只运行help、语法检查和合成fixture。不要将历史脚本指向活动源目录，不为查参数执行未经审查的顶层脚本。
 

@@ -5841,7 +5841,8 @@ class DailyAssistant:
                 from difficult_native_context import DifficultNativeContext
                 from difficult_native_identity import NativeDifficultPack
                 native_context = DifficultNativeContext(native_root)
-                pack = NativeDifficultPack(native_context.root, native_interfaces['identityPack'])
+                pack = NativeDifficultPack(native_context.root, native_interfaces['identityPack'],
+                    display_context=native_context)
                 native_context.validate_identity_pack(pack)
                 catalog, adapters, resources = native_context.catalog, native_context.adapters, native_context.resources
                 shared_resources = resources
@@ -12905,11 +12906,10 @@ class DailyAssistant:
 
     @observe_runtime('structure-solver')
     def _alignment_v2_structure_fit(self, frame, route, map_id, floor, profile, *, cancelled=None, floor_evidence=None, entry_seed=None):
-        if getattr(self, 'game_mode', 'nightmare') == 'nightmare':
-            from fast_structure_alignment import try_alignment
-            fast = try_alignment(self, frame, map_id, floor, cancelled=cancelled, entry_seed=entry_seed)
-            if fast is not None:
-                return fast
+        from fast_structure_alignment import try_alignment
+        fast = try_alignment(self, frame, map_id, floor, cancelled=cancelled, entry_seed=entry_seed)
+        if fast is not None:
+            return fast
         from single_map_structure import solve
         native = getattr(self, 'difficult_native_context', None)
         if native is not None and getattr(self.engine, 'entry_shared_reference_provider', None) is None:
@@ -28698,10 +28698,12 @@ class DailyAssistant:
                 return
             started = time.perf_counter()
             preload_status = self.engine.preload_status(floor)
+            rank_started = time.perf_counter()
             ranked = self.engine.rank(
                 best, floor=floor, limit=len(self.pack.maps),
                 budget_seconds=AUTO_IDENTITY_BUDGET_SECONDS,
             )
+            rank_completed = time.perf_counter()
             source_structure_candidate=None
             source_diagnostics=(getattr(self.engine,'last_difficult_evidence',{}) or {}).get('sourceStructureCandidates') or {}
             raw_source_candidate=source_diagnostics.get('automaticCandidate')
@@ -28772,6 +28774,8 @@ class DailyAssistant:
             self.events.put({
                 "kind": "ranked", "ranked": ranked, "frame": best,
                 "frameCapturedAtUtc": best_captured_at,
+                "rankStartedMonotonicAt": rank_started,
+                "rankCompletedMonotonicAt": rank_completed,
                 "rankCaptureStartFrameGeneration": source_frame_generation,
                 "rankSourceSurfaceGeneration": source_surface_generation,
                 "bounds": best_bounds, "floor": floor,
@@ -36406,10 +36410,17 @@ class DailyAssistant:
                     self.front_group_sibling_pending = None
                     self.front_group_sibling_attempted_members = set()
                     self.map_probe_misses = 0
-                    self._advance_current_frame(
+                    accepted_frame_generation = self._advance_current_frame(
                         event["frame"], event.get("bounds"),
                         captured_at_utc=event.get('frameCapturedAtUtc'),
                     )
+                    if ('rankCaptureStartFrameGeneration' in event
+                            and 'rankSourceFrameGeneration' not in event
+                            and event['frame'] is self.current_frame):
+                        # A capture gets its frame generation only when this
+                        # exact array is accepted. Never rebind a rerank's
+                        # original source generation to a later UI frame.
+                        event['rankSourceFrameGeneration'] = accepted_frame_generation
                     if self.map_is_open:
                         self._maybe_open_drag_boundary_calibration()
                     self.map_probe_signature = map_frame_signature(self.current_frame)
@@ -39728,7 +39739,7 @@ if __name__ == "__main__":
         if '--fastpath-info' in sys.argv:
             import fast_structure_alignment
             print(json.dumps(dict(experimental=True,solver='sparse-shared-structure',
-                enabledByDefault=True,scope='nightmare-shared-only',module=fast_structure_alignment.__file__,
+                enabledByDefault=True,scope='shared-reference-with-matching-prepared',module=fast_structure_alignment.__file__,
                 preparedIndices=len(list((RESOURCE_ROOT/'references/fast-structure').glob('*.npz')))),ensure_ascii=False))
         else:
             main()

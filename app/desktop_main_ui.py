@@ -1212,6 +1212,7 @@ class DesktopMainUI:
     def _sync_view(self):
         getter = getattr(self.assistant, "_route_presentation_snapshot", None)
         snapshot = getter() if callable(getter) else {}
+        self.map_browser.sync_game_mode(snapshot)
         self.hide_button.configure(text="最小化到任务栏")
         control_visible = snapshot.get("controlVisible")
         self.panel_button.configure(text="查看游戏控件" if control_visible is True else "打开游戏控件")

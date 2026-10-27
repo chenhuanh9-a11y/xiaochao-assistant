@@ -85,6 +85,13 @@
       "sourceCommit": "950930a6d7fa3053b188ac6f718fdc041237352d",
       "originalSHA256": "BA1C55DF00C38B66C30ECA2E08A0ED2EED03F074AA741370222B53142870E4C3",
       "publicationChange": "CLI/output-root and readback improvements described in map tooling documentation."
+    },
+    {
+      "path": "tools/maps/prepare_shared_fast_structures.py",
+      "sourceFile": "work/prepare_fast_structures.py",
+      "sourceSnapshot": "source-snapshot-preview09-19",
+      "originalSHA256": "C43191115726735325C1920D47C98685911D072707BAFE57F8E4A476F27C7097",
+      "publicationChange": "Only relocate app import root from work/ to tools/maps/; frozen generator logic preserved."
     }
   ]
 }

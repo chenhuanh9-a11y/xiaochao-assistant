@@ -76,7 +76,17 @@ python tools/maps/prepare_fast_structures.py RESOURCE_ROOT --output-root FAST_ST
 
 输入为已存在的 `references/nightmare-shared-structure-index.json` 与typed NPZ。生成器来自原454认可逻辑对应 `950930a6...`，保持prepare数值逻辑，增加独立输出、路径检查、冲突拒绝和真实loader回读。输出 `FAST_STAGE/references/fast-structure/`，包含uint16距离、chains/rays/pitch/shape和sourceMetadata；不运行识别/求解/GUI，不回写输入。
 
-它不是困难sharedfast06统一provider生成器，本分支未合那套应用变更。预制必须绑定同一metadata、shape与工具版本，不混不同OpenCV或结构版本。
+以上是保留的旧噩梦共享index入口。当前应用已包含sharedfast06；与preview09-19冻结清单一致的新入口为：
+
+```powershell
+python tools/maps/prepare_shared_fast_structures.py --help
+python tools/maps/prepare_shared_fast_structures.py RESOURCE_ROOT --output-root SHARED_FAST_STAGE --mode nightmare --mode difficult
+python tools/maps/prepare_shared_fast_structures.py RESOURCE_ROOT --output-root SELECTED_STAGE --mode difficult --select MAP_ID/1
+```
+
+新生成器通过当前应用的真实共享reference provider枚举，支持重复mode和MAP/FLOOR选择；输出NPZ和 `generation-result.json`，用同版loader回读。它只构造资源上下文，不创建Tk、截图、rank或求解；需要完整合法资源和外部输出根。示例中的MAP_ID必须替换为资源索引实际ID，不能猜数字。132份现有预制资源没有上传，也没有在本次源码同步重生成。
+
+两个生成器的预制均须绑定同一metadata、shape与工具版本，不混不同OpenCV或结构版本。
 
 ## runtime契约与缺口
 

@@ -12,9 +12,11 @@ from nightmare_candidate import NightmareMap, NightmarePack
 class NativeDifficultPack:
     mode = 'difficult'
     filter = NightmarePack.filter
+    layer_role = 'structure-reference'
 
-    def __init__(self, root, manifest_relative):
+    def __init__(self, root, manifest_relative, *, display_context=None):
         self.resource_root = self.source_root = Path(root).resolve()
+        self.display_context = display_context
         self.manifest_path = self.local(manifest_relative)
         self.raw = json.loads(self.manifest_path.read_text(encoding='utf-8'))
         if self.raw.get('schemaVersion') != 1 or self.raw.get('mode') != self.mode:

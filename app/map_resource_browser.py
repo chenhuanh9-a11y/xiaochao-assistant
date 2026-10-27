@@ -72,6 +72,8 @@ class MapResourceBrowser(tk.Frame):
         self._controls_layout = None
         self._overview = True
         self._overview_rendered = None
+        self._resource_mode_signature = None
+        self._resource_mode_switching = False
         self._wheel_tag = f"MapResourceWheel-{id(self)}"
         self._wheel_binding = self._root().bind_class(self._wheel_tag, "<MouseWheel>", self._route_wheel)
         self._build()
@@ -132,6 +134,17 @@ class MapResourceBrowser(tk.Frame):
         self.online_bar.pack(fill="x", padx=20, pady=(0, 10))
         self.online_toggle = _button(self.online_bar, "下载地图", self._toggle_online_packages)
         self.online_toggle.pack(side="left")
+        mode_controls = tk.Frame(self.online_bar, bg=BG)
+        mode_controls.pack(side="right", padx=(10, 0))
+        _label(mode_controls, "游戏模式", size=9, color=MUTED).pack(side="left", padx=(0, 6))
+        self.resource_mode_buttons = {}
+        for mode, title in (("nightmare", "噩梦"), ("difficult", "困难")):
+            button = _button(mode_controls, title, lambda value=mode: self._select_resource_mode(value))
+            button.pack(side="left", padx=1)
+            self.resource_mode_buttons[mode] = button
+        self.mode_feedback = _label(self, size=9, color=WARNING, anchor="w", justify="left", wraplength=460)
+        self.mode_feedback.bind("<Configure>", lambda event: self.mode_feedback.configure(
+            wraplength=max(100, event.width - 4)), add="+")
         self.online_bar_status = _label(self.online_bar, size=9, color=MUTED, anchor="w",
                                         justify="left", wraplength=300)
         self.online_bar_status.pack(side="left", fill="x", expand=True, padx=(10, 0))
@@ -275,6 +288,55 @@ class MapResourceBrowser(tk.Frame):
                 self._render_overview()
             else:
                 self._layout_controls()
+        self.sync_game_mode()
+
+    def sync_game_mode(self, snapshot=None):
+        if self._closed:
+            return
+        if snapshot is None:
+            getter = getattr(self.assistant, "_route_presentation_snapshot", None)
+            snapshot = getter() if callable(getter) else {}
+        mode = snapshot.get("mode", getattr(self.assistant, "game_mode", None))
+        enabled = (snapshot.get("modeChangeEnabled") is True and not self._resource_mode_switching
+                   and callable(getattr(self.assistant, "set_game_mode", None)))
+        signature = mode, enabled
+        if signature != self._resource_mode_signature:
+            self._resource_mode_signature = signature
+            self.mode_label.configure(text=f"当前模式：{ {'nightmare': '噩梦', 'difficult': '困难'}.get(mode, '未读取')}")
+            for value, button in self.resource_mode_buttons.items():
+                selected = mode == value
+                button.configure(bg=ACCENT if selected else BUTTON_BG, fg="white" if selected else BUTTON_TEXT,
+                                 activebackground=ACCENT if selected else BUTTON_HOVER,
+                                 state="normal" if enabled else "disabled")
+        context = (id(self.assistant.pack), id(getattr(self.assistant, "author_route_catalog", None)))
+        if self._active and not self._resource_mode_switching and context != self._context:
+            self.refresh()
+
+    def _select_resource_mode(self, mode):
+        if self._closed or self._resource_mode_switching:
+            return
+        callback = getattr(self.assistant, "set_game_mode", None)
+        if not callable(callback):
+            self.sync_game_mode()
+            return
+        self._resource_mode_switching = True
+        self.sync_game_mode()
+        try:
+            result = callback(mode)
+        finally:
+            self._resource_mode_switching = False
+            if not self._closed:
+                self.sync_game_mode()
+        if self._closed:
+            return
+        message = str(result.get("message") or "") if isinstance(result, dict) and result.get("success") is False else ""
+        self.mode_feedback.configure(text=message)
+        if message:
+            anchor = next(widget for widget in (self.online_surface, self.subtitle, self.import_surface,
+                                                self.filter_host, self.content) if widget.winfo_manager())
+            self.mode_feedback.pack(fill="x", padx=20, pady=(0, 8), before=anchor)
+        else:
+            self.mode_feedback.pack_forget()
 
     def _map_package_snapshot(self):
         getter = getattr(self.assistant, "map_package_import_snapshot", None)

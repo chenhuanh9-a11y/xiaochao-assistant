@@ -73,9 +73,16 @@ def prepare(reference):
                              np.asarray(rays, dtype=np.float32).reshape(-1,2,2), _pitch(edge), mask.shape)
 
 
-def load_prepared(reference):
+def prepared_path_for(reference):
+    """Use the provider's explicit root; preserve standalone legacy readers."""
     path = Path(reference.path)
-    prepared_path = path.parent.parent / 'fast-structure' / (path.stem + '-fast.npz')
+    root = getattr(reference, 'resource_root', None)
+    directory = Path(root) / 'references' / 'fast-structure' if root is not None else path.parent.parent / 'fast-structure'
+    return directory / (path.stem + '-fast.npz')
+
+
+def load_prepared(reference):
+    prepared_path = prepared_path_for(reference)
     if not prepared_path.is_file():
         return None
     stat = prepared_path.stat()

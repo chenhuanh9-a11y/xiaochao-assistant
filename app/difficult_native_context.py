@@ -184,7 +184,7 @@ class DifficultNativeContext:
                 width=canvas['shapeHW'][1],height=canvas['shapeHW'][0],floor=key[3]),
             **{name:canvas[name] for name in ('structureVersionKey','sourceVersion','baseSnapshot')})
         reference = SharedStructureReference(product.clean_mask,product.validation_mask,metadata,path,
-            product.known_boundary,product.unknown_mask,product.native_wall_segments)
+            product.known_boundary,product.unknown_mask,product.native_wall_segments,self.root)
         self._legacy_cache[key] = reference
         return reference
 

@@ -70,7 +70,8 @@ class MapResourceModel:
         profile = getattr(self.catalog, "profiles", {}).get(profile_id)
         result = []
         for item in self.pack.maps:
-            if self.base_profiles.get(item.id, self.default_profile) == profile_id:
+            if (getattr(self.pack, 'layer_role', 'author-display') == 'author-display'
+                    and self.base_profiles.get(item.id, self.default_profile) == profile_id):
                 variants = (ResourceVariant("pack", "内置路线", dict(item.layers)),)
             else:
                 variants = tuple(ResourceVariant(row.id, row.display_name, dict(row.layers))
