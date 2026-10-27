@@ -32,6 +32,8 @@ from desktop_theme import (BG, SURFACE, CARD, TINT, LINE, TEXT, MUTED, SUBTLE, G
                            SIDEBAR_TEXT, SIDEBAR_MUTED, SIDEBAR_LINE, SIDEBAR_SUCCESS, PANEL_RADIUS_DIP,
                            SHADOW_DIP,
                            status_color)
+from chest_auto_tap import TAP_KEYS, TRIGGER_KEYS
+from custom_route_editor import CustomRouteEditor
 from map_resource_browser import MapResourceBrowser
 from map_resource_model import MapResourceModel, choose_resource, floor_label, resource_inventory
 from map_resource_overview import structure_previews, load_structure_preview
@@ -189,7 +191,20 @@ def _keyboard_mask(size: int = 128) -> Image.Image:
     return mask
 
 
-_GLYPHS = {"keyboard": _keyboard_mask}
+def _route_mask(size: int = 128) -> Image.Image:
+    """Route glyph: two waypoints joined by a bent path."""
+    mask = Image.new("L", (size, size), 0)
+    draw = ImageDraw.Draw(mask)
+    stroke = round(size * .08)
+    draw.line([(size * .26, size * .74), (size * .26, size * .5), (size * .74, size * .5),
+               (size * .74, size * .26)], fill=255, width=stroke, joint="curve")
+    for x, y in ((.26, .74), (.74, .26)):
+        r = size * .12
+        draw.ellipse((size * x - r, size * y - r, size * x + r, size * y + r), outline=255, width=stroke)
+    return mask
+
+
+_GLYPHS = {"keyboard": _keyboard_mask, "route": _route_mask}
 
 
 def _icon_tile(icons, name: str, size: int, *, fill=BUTTON_BG, color=PRIMARY, background=SURFACE) -> Image.Image:
@@ -399,7 +414,7 @@ class HotkeyEditorView(tk.Frame):
 class DesktopMainUI:
     """A normal desktop window, not an always-on-top game overlay."""
 
-    PAGES = ("home", "preferences", "maps", "help")
+    PAGES = ("home", "preferences", "maps", "custom", "help")
     HELP_IMAGE_FILES = {"quick-start": "home.png", "shortcuts-visibility": "settings.png",
                         "resources-opacity": "resources.png", "check-feedback": "help.png"}
 
@@ -422,6 +437,8 @@ class DesktopMainUI:
         self._shell_layout = None
         self._close_choice_window = None
         self._icons = DesktopIcons(self.root) if DesktopIcons is not None else None
+        if self._icons is not None:
+            self._icons._masks.setdefault("route", _route_mask())
         self._brand_images = BrandImages(self.window)
         self._window_brand_icons = self._brand_images.window_icons(self.window)
         self._action_feedback = tk.StringVar(self.root)
@@ -457,7 +474,7 @@ class DesktopMainUI:
     def _apply_icons(self):
         compact = getattr(self, "_compact", False)
         for page, button in self._nav_buttons.items():
-            name = {"home": "home", "preferences": "settings", "maps": "map", "help": "help"}[page]
+            name = {"home": "home", "preferences": "settings", "maps": "map", "custom": "route", "help": "help"}[page]
             selected = page == self._page
             photo = self._icons.get(name, self._px(20), SIDEBAR_TEXT if selected else SIDEBAR_MUTED) if self._icons else None
             button._desktop_icon = photo
@@ -705,7 +722,7 @@ class DesktopMainUI:
         self._label(self.brand_text, "星图", size=14, bold=True, color=SIDEBAR_TEXT).pack(anchor="w")
         self._label(self.brand_text, "地图与路线助手", size=8, color=SIDEBAR_MUTED).pack(anchor="w")
         self._nav_labels = {}
-        for key, label in (("home", "主页面"), ("maps", "地图资源"),
+        for key, label in (("home", "主页面"), ("maps", "地图资源"), ("custom", "自定义地图"),
                            ("preferences", "设置"), ("help", "帮助")):
             button = RoundedButton(
                 rail, text=label, command=lambda page=key: self.show_page(page),
@@ -778,6 +795,8 @@ class DesktopMainUI:
         self._build_preferences()
         self._build_maps()
         self._build_help()
+        self.custom_editor = CustomRouteEditor(self.body, self)
+        self._page_frames["custom"] = self.custom_editor
         self.show_page("home")
         self.window.bind("<Configure>", lambda event: self._layout_shell()
                          if event.widget is self.window else None, add="+")
@@ -1242,6 +1261,8 @@ class DesktopMainUI:
         self._label(display, "不透明度 0% 完全透明，100% 完全不透明。", size=8, color=SUBTLE,
                     anchor="w").pack(fill="x")
 
+        self._build_chest_auto_tap(content)
+
         # Collapsible "more": game mode, route, controls and the floating settings.
         self.preferences_more = self._card(content, padx=24, pady=18)
         self.preferences_more.pack(fill="x", pady=(0, 16))
@@ -1290,6 +1311,80 @@ class DesktopMainUI:
         _button(row, "打开悬浮设置", self._open_advanced).pack(side="right")
         self.preferences_surface.bind("<Configure>", lambda _e: self._layout_preferences(), add="+")
         self._finish_scroll_page("preferences")
+
+    def _build_chest_auto_tap(self, content):
+        card = self._card(content, padx=24, pady=22)
+        card.pack(fill="x", pady=(0, 2))
+        heading, _ = self._card_heading(card, "开箱连点", "在游戏里按住触发键，自动连发开箱按键；松开立即停止。", "play")
+        heading.pack(fill="x", pady=(0, 16))
+        state = self.assistant.chest_auto_tap_snapshot()
+        self._chest_enabled = tk.StringVar(self.root, "开启" if state.get("enabled") else "关闭")
+        self._chest_hold = tk.StringVar(self.root, state.get("holdKey", ""))
+        self._chest_tap = tk.StringVar(self.root, state.get("tapKey", ""))
+        self._chest_interval = tk.StringVar(self.root, str(state.get("intervalMs", "")))
+        row = self._setting_row(card, "开箱连点")
+        self.chest_switch = self._segmented(row, self._chest_enabled, ("关闭", "开启"), self._save_chest_auto_tap)
+        self.chest_switch.pack(side="right")
+        tk.Frame(card, bg=LINE, height=1).pack(fill="x", pady=(0, 14))
+        keys = tk.Frame(card, bg=SURFACE)
+        keys.pack(fill="x")
+        self.chest_boxes = {}
+        for column, (title, variable, values, editable) in enumerate((
+                ("按住触发", self._chest_hold, TRIGGER_KEYS, False),
+                ("连发按键", self._chest_tap, TAP_KEYS, False),
+                ("间隔（毫秒）", self._chest_interval, ("50", "70", "90", "120", "150", "200", "300", "500"), True))):
+            keys.columnconfigure(column, weight=1, uniform="chest")
+            cell = tk.Frame(keys, bg=SURFACE)
+            cell.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 10, 0))
+            self._label(cell, title, size=9, color=SUBTLE, anchor="w").pack(fill="x", pady=(0, 6))
+            box = RoundedCombobox(cell, textvariable=variable, values=values,
+                                  state="normal" if editable else "readonly", width=8)
+            box.pack(fill="x")
+            box.bind("<<ComboboxSelected>>", lambda _e: self._save_chest_auto_tap())
+            if editable:
+                box.bind("<Return>", lambda _e: self._save_chest_auto_tap())
+                box.bind("<FocusOut>", lambda _e: self._save_chest_auto_tap(quiet=True))
+            self.chest_boxes[title] = box
+        self.chest_status = self._label(card, "", size=9, color=MUTED, anchor="w", justify="left", wraplength=500)
+        self.chest_status.pack(fill="x", pady=(14, 0))
+        self.chest_feedback = self._label(card, "", size=9, color=GOLD, anchor="w", justify="left", wraplength=500)
+        self._label(card, "只在游戏窗口位于前台时发送按键。触发键不能与星图快捷键相同。", size=8, color=SUBTLE,
+                    anchor="w", justify="left", wraplength=500).pack(fill="x", pady=(6, 0))
+        self._chest_signature = None
+
+    def _save_chest_auto_tap(self, *, quiet=False):
+        current = self.assistant.chest_auto_tap_snapshot()
+        wanted = dict(enabled=self._chest_enabled.get() == "开启", holdKey=self._chest_hold.get(),
+                      tapKey=self._chest_tap.get(), intervalMs=self._chest_interval.get().strip())
+        if quiet and str(wanted["intervalMs"]) == str(current.get("intervalMs")):
+            return
+        result = self.assistant.update_chest_auto_tap(**wanted)
+        if not result.get("success"):
+            # Restore the controls to what is actually saved.
+            self._chest_enabled.set("开启" if current.get("enabled") else "关闭")
+            self._chest_hold.set(current.get("holdKey", ""))
+            self._chest_tap.set(current.get("tapKey", ""))
+            self._chest_interval.set(str(current.get("intervalMs", "")))
+        self.chest_feedback.configure(text=result.get("message") or "", fg=GREEN if result.get("success") else ERROR)
+        if not self.chest_feedback.winfo_manager():
+            self.chest_feedback.pack(fill="x", pady=(4, 0), after=self.chest_status)
+        self._chest_signature = None
+        self._sync_chest_auto_tap()
+
+    def _sync_chest_auto_tap(self):
+        state = self.assistant.chest_auto_tap_snapshot()
+        signature = (state.get("enabled"), state.get("status"), state.get("holding"), state.get("error"))
+        if signature == self._chest_signature:
+            return
+        self._chest_signature = signature
+        if not state.get("available"):
+            text, color = "开箱连点只能在 Windows 上使用。", MUTED
+        elif not state.get("enabled"):
+            text, color = f"未开启 · 开启后在游戏里按住 {state.get('holdKey')} 连发 {state.get('tapKey')}", MUTED
+        else:
+            text = state.get("status") or "等待按住触发键"
+            color = ERROR if state.get("error") else GREEN if state.get("holding") else PRIMARY
+        self.chest_status.configure(text=f"●  {text}", fg=color)
 
     def _layout_preferences(self):
         width = self.preferences_surface.winfo_width() / self._scale
@@ -1722,6 +1817,10 @@ class DesktopMainUI:
         getter = getattr(self.assistant, "_route_presentation_snapshot", None)
         snapshot = getter() if callable(getter) else {}
         self.map_browser.sync_game_mode(snapshot)
+        if self._page == "custom":
+            self.custom_editor.refresh()
+        elif self._page == "preferences":
+            self._sync_chest_auto_tap()
         self.hide_button.configure(text="最小化到任务栏")
         control_visible = snapshot.get("controlVisible")
         self.panel_button.configure(text="  查看游戏控件" if control_visible is True else "  打开游戏控件")
@@ -1908,10 +2007,13 @@ class DesktopMainUI:
             self.header.pack(fill="x", before=self.body)
         else:
             self.header.pack_forget()
-        self.header_title.configure(text={"home": "主页面", "maps": "地图资源", "preferences": "设置", "help": "帮助"}[page])
+        self.header_title.configure(text={"home": "主页面", "maps": "地图资源", "custom": "自定义地图",
+                                          "preferences": "设置", "help": "帮助"}[page])
         self._apply_icons()
         if page == "maps":
             self._refresh_maps()
+        elif page == "custom":
+            self.custom_editor.refresh()
         elif page == "preferences":
             self._refresh_route_choices()
 
