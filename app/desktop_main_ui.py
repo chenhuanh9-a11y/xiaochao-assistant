@@ -1193,7 +1193,7 @@ class DesktopMainUI:
         self.preferences_display = self._card(self.preferences_surface, padx=24, pady=22)
         heading, _ = self._card_heading(self.preferences_keys, "快捷键", "点击键帽录入新组合，核对后确认。", "keyboard")
         heading.pack(fill="x", pady=(0, 16))
-        heading, _ = self._card_heading(self.preferences_display, "小抄显示", "显影、参考小抄、透明度与大小。", "eye")
+        heading, _ = self._card_heading(self.preferences_display, "小抄显示", "显影、定点地图、透明度与大小。", "eye")
         heading.pack(fill="x", pady=(0, 16))
         common = ("map", "toggle-panel", "toggle-round", "toggle-sheet-visibility")
         advanced = tuple(target for target in ACTION_NAMES if target not in common)
@@ -1207,7 +1207,7 @@ class DesktopMainUI:
         self.save_shortcuts_button = self.hotkey_editor.confirm_button
 
         display = self.preferences_display
-        visibility = self._setting_row(display, "总显影", "同时控制参考小抄和贴合显示。")
+        visibility = self._setting_row(display, "总显影", "同时控制定点地图和贴合显示。")
         self.preferences_visibility_button = _button(visibility, "未知", self._toggle_visibility)
         self.preferences_visibility_button.configure(padx=18)
         self.preferences_visibility_button.pack(side="right")
@@ -1216,16 +1216,16 @@ class DesktopMainUI:
         reference.pack(fill="x", pady=(0, 14))
         reference_heading = tk.Frame(reference, bg=SURFACE)
         reference_heading.pack(fill="x")
-        self._label(reference_heading, "参考小抄", size=10).pack(side="left")
+        self._label(reference_heading, "定点地图", size=10).pack(side="left")
         self.reference_status = self._label(reference_heading, size=9, color=SUBTLE)
         self.reference_status.pack(side="right")
         reference_actions = tk.Frame(reference, bg=SURFACE)
         reference_actions.pack(fill="x", pady=(8, 0))
         self.reference_visibility_button = _button(reference_actions, "显示", self._toggle_reference_visibility)
         self.reference_visibility_button.pack(side="left")
-        self.reference_adjust_button = _button(reference_actions, "调整位置", self._adjust_reference_position)
+        self.reference_adjust_button = _button(reference_actions, "编辑位置", self._adjust_reference_position)
         self.reference_adjust_button.pack(side="left", padx=(8, 0))
-        self._label(reference, "从首页切回游戏后，在悬浮面板点“调整小抄”；拖动后点“完成调整”。", size=8,
+        self._label(reference, "点击“编辑位置”后移动定点地图；调整完后点击“完成”。", size=8,
                     color=SUBTLE, anchor="w", justify="left", wraplength=400).pack(fill="x", pady=(8, 0))
         self.reference_feedback = self._label(reference, size=9, color=GOLD, anchor="w", justify="left", wraplength=400)
         self._reference_controls_signature = None
@@ -1472,7 +1472,7 @@ class DesktopMainUI:
                 ("使用当前“呼出/收起控件”绑定，显示或隐藏整个游戏控件。", ("toggle-panel",), None),
                 ("“收成球”仅折叠控件，球上的“展开”恢复面板；这与整个控件隐藏不同。录入地图键时收成球，会取消本次录入，已保存的地图键不变。", (), None),
                 ("使用当前“显示/隐藏小抄”绑定改变贴图显隐；隐藏后识别、锁图和后台贴合继续。", ("toggle-sheet-visibility",), None),
-                ("参考小抄可在设置中单独显示或隐藏；总显影仍同时控制参考和贴合显示。切回游戏后，在悬浮面板点“调整小抄”，拖动后点“完成调整”恢复鼠标穿透。", (), None),
+                ("定点地图可在设置中单独显示或隐藏；总显影仍同时控制定点地图和贴合显示。点击“编辑位置”开始编辑，移动后仍保持编辑状态，点击“完成”恢复鼠标穿透。", (), None),
             )),
             ("resources-opacity", "资源与透明度", "先看当前模式的资源状态；不透明度越高，小抄越实。", "map", (
                 ("噩梦作者路线未安装时，结构底图仍可独立浏览；资源未就绪时先查看当前模式的缺失提示。", (), "maps"),
@@ -1626,31 +1626,36 @@ class DesktopMainUI:
         visible = state.get("visible") is True
         adjusting = state.get("adjusting") is True
         can_adjust = state.get("canAdjust") is True
+        message = str(state.get("message") or "")
         toggle = callable(getattr(self.assistant, "toggle_reference_sheet_visibility", None))
         adjust = callable(getattr(self.assistant, "finish_reference_sheet_move" if adjusting else "move_sheet", None))
-        signature = enabled, visible, adjusting, can_adjust, toggle, adjust
+        signature = enabled, visible, adjusting, can_adjust, toggle, adjust, message
         if signature == self._reference_controls_signature:
             return
         self._reference_controls_signature = signature
         known = isinstance(enabled, bool)
         self.reference_visibility_button.configure(text="隐藏" if enabled is True else "显示",
             state="normal" if known and toggle else "disabled")
-        self.reference_adjust_button.configure(text="完成" if adjusting else "调整位置",
+        self.reference_adjust_button.configure(text="完成" if adjusting else "编辑位置",
             state="normal" if known and adjust and (adjusting or can_adjust) else "disabled")
-        text = ("状态未读取" if not known else "调整中" if visible and adjusting else "显示中" if visible
+        text = ("状态未读取" if not known else "编辑中" if adjusting else "显示中" if visible
                 else "已允许，当前隐藏" if enabled else "已隐藏")
         self.reference_status.configure(text=text)
+        self._set_reference_feedback(message)
 
-    def _reference_action(self, method):
-        callback = getattr(self.assistant, method, None)
-        result = callback() if callable(callback) else dict(success=False, message="参考小抄暂不可用")
-        message = str(result.get("message") or "") if isinstance(result, dict) else ""
+    def _set_reference_feedback(self, message):
         self.reference_feedback.configure(text=message)
         if message:
             self.reference_feedback.pack(fill="x", pady=(4, 0))
         else:
             self.reference_feedback.pack_forget()
+
+    def _reference_action(self, method):
+        callback = getattr(self.assistant, method, None)
+        result = callback() if callable(callback) else dict(success=False, message="定点地图暂不可用")
         self._sync_reference_controls()
+        if isinstance(result, dict) and "message" in result:
+            self._set_reference_feedback(str(result.get("message") or ""))
 
     def _toggle_reference_visibility(self):
         self._reference_action("toggle_reference_sheet_visibility")
