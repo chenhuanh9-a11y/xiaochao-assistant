@@ -1,38 +1,64 @@
-"""Shared presentation tokens; callers retain all state and lifecycle decisions."""
+"""Shared presentation tokens; callers retain all state and lifecycle decisions.
 
-BG = "#edf3fb"
+Xingtu palette: a light star-chart canvas, white cards and one action blue,
+with a night-navy identity (sidebar, home hero) and a single star-gold accent.
+"""
+
+BG = "#f3f5fa"
 SURFACE = "#ffffff"
 CARD = "#ffffff"
-TINT = "#f1f6ff"
-LINE = "#d6e2f0"
-TEXT = "#172b4d"
-MUTED = "#52667f"
-PRIMARY = "#2563eb"
-PRIMARY_HOVER = "#1d4ed8"
+TINT = "#eef2fb"
+LINE = "#e3e8f1"
+TEXT = "#142035"
+MUTED = "#5c677d"
+SUBTLE = "#8a95a8"
+PRIMARY = "#2f66eb"
+PRIMARY_HOVER = "#1f50cc"
 ON_PRIMARY = "#ffffff"
-BUTTON_BG = "#eaf2ff"
-BUTTON_HOVER = "#dbeafe"
-BUTTON_TEXT = "#1e40af"
-NAV_SELECTED = "#dbeafe"
-NAV_TEXT = "#1d4ed8"
-INPUT_BG = "#f0f5fc"
-IMAGE_BG = "#edf2f8"
-SCROLL_THUMB = "#b6c8df"
-SCROLL_HOVER = "#8eaace"
-GREEN = "#137a4b"
-GOLD = "#996600"
-WARNING_BG = "#fff4d6"
-ERROR = "#b42318"
-ERROR_BG = "#fff0ee"
-ORB_SHADOW = "#bccfe8"
+BUTTON_BG = "#e9effd"
+BUTTON_HOVER = "#dce6fc"
+BUTTON_TEXT = "#1f50cc"
+NAV_SELECTED = "#e9effd"
+NAV_TEXT = "#1f50cc"
+INPUT_BG = "#f5f7fb"
+IMAGE_BG = "#eef1f7"
+SCROLL_THUMB = "#c5cedd"
+SCROLL_HOVER = "#98a4b8"
+GREEN = "#17775a"
+SUCCESS_BG = "#e3f4ec"
+GOLD = "#9a5b0f"
+WARNING_BG = "#fcf0dc"
+ERROR = "#b8364a"
+ERROR_BG = "#fbe7ea"
+ORB_SHADOW = "#c3d2ec"
 SHELL_BG = SURFACE
 SHELL_HEADER_BG = TINT
 SHELL_BORDER = LINE
 CONNECTOR_BG = SURFACE
 STATUS_PILL_BG = SURFACE
 STATUS_PILL_TEXT = TEXT
-CARD_RADIUS_DIP = 10
-CONTROL_RADIUS_DIP = 8
+
+# Night identity: desktop sidebar and the home hero card.
+NIGHT = "#13214a"
+NIGHT_RING = "#1d2f63"
+NIGHT_TEXT = "#f1f5fd"
+NIGHT_MUTED = "#aebddf"
+NIGHT_ACCENT = "#9db8ff"
+NIGHT_HOVER = "#22356b"
+STAR_GOLD = "#f2b544"
+SIDEBAR = "#101a35"
+SIDEBAR_HOVER = "#1a2748"
+SIDEBAR_SELECTED = "#253863"
+SIDEBAR_TEXT = "#f1f5fd"
+SIDEBAR_MUTED = "#9aa8c7"
+SIDEBAR_LINE = "#223154"
+SIDEBAR_SUCCESS = "#7fd8b2"
+
+CARD_RADIUS_DIP = 12
+CONTROL_RADIUS_DIP = 10
+PANEL_RADIUS_DIP = 18
+SHADOW_DIP = 10
+SHADOW_COLOR = "#142035"
 FONT = "Microsoft YaHei UI"
 
 

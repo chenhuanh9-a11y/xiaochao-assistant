@@ -14,7 +14,7 @@ from desktop_display import WindowDisplay
 from desktop_rounded import RoundedButton, RoundedEntry, RoundedCombobox, RoundedFrame, set_rounded_scale
 from desktop_theme import (BG, CARD, LINE, TEXT, MUTED, PRIMARY as ACCENT,
                            GOLD as WARNING, FONT, IMAGE_BG, INPUT_BG, BUTTON_BG,
-                           BUTTON_HOVER, BUTTON_TEXT)
+                           BUTTON_HOVER, BUTTON_TEXT, PANEL_RADIUS_DIP, SHADOW_DIP)
 from map_resource_model import (MapResourceModel, STRUCTURE_SOURCE, choose_resource,
                                 floor_label, resource_status, resource_inventory)
 from map_resource_overview import structure_previews, load_structure_preview, author_resource_version
@@ -29,9 +29,9 @@ def _label(parent, text="", size=10, color=TEXT, bold=False, **kwargs):
 def _button(parent, text, command):
     return RoundedButton(parent, text=text, command=command, bg=BUTTON_BG, fg=BUTTON_TEXT,
                      activebackground=BUTTON_HOVER, activeforeground=BUTTON_TEXT,
-                     relief="flat", bd=0, padx=10, pady=7, cursor="hand2",
-                     highlightcolor=ACCENT, highlightthickness=1,
-                     highlightbackground=LINE, font=(FONT, 9))
+                     relief="flat", bd=0, padx=12, pady=7, cursor="hand2",
+                     highlightcolor=ACCENT, highlightthickness=0,
+                     highlightbackground=LINE, font=(FONT, 9, "bold"))
 
 
 def load_preview(path: Path, size: tuple[int, int]) -> Image.Image:
@@ -121,8 +121,8 @@ class MapResourceBrowser(tk.Frame):
         top = tk.Frame(self, bg=BG)
         self.heading = top
         top._display_manual_geometry = True
-        top.pack(fill="x", padx=20, pady=(20, 10))
-        _label(top, "地图资源", size=26, bold=True).pack(side="left")
+        top.pack(fill="x", padx=SHADOW_DIP, pady=(20, 10))
+        _label(top, "地图资源", size=22, bold=True).pack(side="left")
         self.mode_label = _label(top, color=ACCENT, bold=True)
         self.mode_label.pack(side="right")
         self.import_button = _button(top, "导入资源包", self._choose_map_package)
@@ -130,7 +130,7 @@ class MapResourceBrowser(tk.Frame):
         self.overview_button = _button(top, "资源概览", self._show_overview)
         self.subtitle = _label(self, "看图辨认地图，点开查看完整楼层与路线。", color=MUTED, size=9)
         self.subtitle._display_manual_geometry = True
-        self.subtitle.pack(anchor="w", padx=20, pady=(0, 12))
+        self.subtitle.pack(anchor="w", padx=SHADOW_DIP, pady=(0, 12))
         self.import_surface = tk.Frame(self, bg=BG)
         self.import_message = _label(self.import_surface, color=MUTED, anchor="w", justify="left", wraplength=460)
         self.import_message.pack(fill="x")
@@ -146,7 +146,7 @@ class MapResourceBrowser(tk.Frame):
         self._import_message_text = ""
         self.import_surface.bind("<Configure>", self._fit_import_text, add="+")
         self.filter_host = tk.Frame(self, bg=BG)
-        self.filter_host.pack(fill="x", padx=20)
+        self.filter_host.pack(fill="x", padx=SHADOW_DIP)
         controls = tk.Frame(self.filter_host, bg=BG)
         self.source_controls = controls
         controls._display_manual_geometry = True
@@ -174,14 +174,14 @@ class MapResourceBrowser(tk.Frame):
         self.floor_box.bind("<<ComboboxSelected>>", lambda _e: self._render_gallery())
         self.summary = _label(self, size=9, color=MUTED, anchor="w", justify="left")
         self.summary._display_manual_geometry = True
-        self.summary.pack(fill="x", padx=20, pady=(5, 10))
+        self.summary.pack(fill="x", padx=SHADOW_DIP, pady=(5, 10))
         self.content = tk.Frame(self, bg=BG)
         self.content._desktop_scroll_owner = self
         self.content.pack(fill="both", expand=True)
         footer = tk.Frame(self, bg=BG)
         self.footer = footer
         footer._display_manual_geometry = True
-        footer.pack(fill="x", padx=20, pady=(8, 12))
+        footer.pack(fill="x", padx=SHADOW_DIP, pady=(8, 12))
         _label(footer, "浏览不更改游戏模式或作者偏好；资源包检查后需退出导入。", size=8, color=MUTED,
                anchor="w", wraplength=500).pack(fill="x")
 
@@ -198,7 +198,7 @@ class MapResourceBrowser(tk.Frame):
             return
         self._controls_layout = signature
         px = lambda value: round(value * self._scale)
-        self.heading.pack_configure(padx=px(20), pady=(px(10 if short else 20), px(8 if short else 10)))
+        self.heading.pack_configure(padx=px(SHADOW_DIP), pady=(px(10 if short else 20), px(8 if short else 10)))
         self.subtitle.pack_forget()
         self.footer.pack_forget()
         # Overview removes this sibling. Restore the anchor before placing the
@@ -206,10 +206,10 @@ class MapResourceBrowser(tk.Frame):
         if self._overview:
             self.filter_host.pack_forget()
         elif not self.filter_host.winfo_manager():
-            self.filter_host.pack(fill="x", padx=px(20), before=self.content)
+            self.filter_host.pack(fill="x", padx=px(SHADOW_DIP), before=self.content)
         if not short and not self._overview:
-            self.subtitle.pack(anchor="w", padx=px(20), pady=(0, px(12)), before=self.filter_host)
-            self.footer.pack(fill="x", padx=px(20), pady=(px(8), px(12)))
+            self.subtitle.pack(anchor="w", padx=px(SHADOW_DIP), pady=(0, px(12)), before=self.filter_host)
+            self.footer.pack(fill="x", padx=px(SHADOW_DIP), pady=(px(8), px(12)))
         self.source_controls.pack_configure(side="left" if short else "top", fill="x", expand=short)
         self.browse_controls.pack_forget()
         self.summary.pack_forget()
@@ -217,7 +217,7 @@ class MapResourceBrowser(tk.Frame):
             self.browse_controls.pack(side="left" if short else "top", fill="x", expand=True,
                                       padx=(px(12) if short else 0, 0),
                                       pady=(0 if short else px(10), 0 if short else px(5)))
-            self.summary.pack(fill="x", padx=px(20), pady=(px(5), px(10)), before=self.content)
+            self.summary.pack(fill="x", padx=px(SHADOW_DIP), pady=(px(5), px(10)), before=self.content)
             full = getattr(self, "_summary_full", "")
             text = full.split("\n")[0] if short else full
             if short and self.model and self.profile_id == STRUCTURE_SOURCE:
@@ -312,7 +312,7 @@ class MapResourceBrowser(tk.Frame):
             self.import_actions.pack_forget()
         if message or stage != "idle":
             anchor = self.filter_host if self.filter_host.winfo_manager() else self.content
-            self.import_surface.pack(fill="x", padx=20, pady=(0, 12), before=anchor)
+            self.import_surface.pack(fill="x", padx=SHADOW_DIP, pady=(0, 12), before=anchor)
         else:
             self.import_surface.pack_forget()
 
@@ -415,8 +415,9 @@ class MapResourceBrowser(tk.Frame):
         page.bind("<Configure>", lambda _e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
         self.canvas.bind("<Configure>", lambda event: self.canvas.itemconfigure(item, width=event.width))
         self.canvas.bind("<MouseWheel>", self._wheel)
-        section = RoundedFrame(page, bg=CARD, padx=inset, pady=inset, radius=16, highlightthickness=0)
-        section.pack(fill="x", pady=(12, 24))
+        section = RoundedFrame(page, bg=CARD, padx=inset, pady=inset, radius=PANEL_RADIUS_DIP,
+                               highlightthickness=1, highlightbackground=LINE, shadow=SHADOW_DIP)
+        section.pack(fill="x", pady=(4, 2))
         _label(section, "结构底图", size=14, bold=True).pack(anchor="w")
         _label(section, f"{self.model.mode_label} · 当前安装资源", size=9, color=MUTED).pack(anchor="w", pady=(6, 14))
         tiles = tk.Frame(section, bg=CARD)
@@ -439,8 +440,9 @@ class MapResourceBrowser(tk.Frame):
             _label(tile, floor_label(asset.floor), size=9, color=MUTED, anchor="w").pack(fill="x", pady=(3, 0))
         if not assets:
             _label(tiles, "当前资源未提供可浏览的结构图。", size=10, color=MUTED).pack(anchor="w", pady=20)
-        author = RoundedFrame(page, bg=CARD, padx=inset, pady=inset, radius=16, highlightthickness=0)
-        author.pack(fill="x", pady=(0, 24))
+        author = RoundedFrame(page, bg=CARD, padx=inset, pady=inset, radius=PANEL_RADIUS_DIP,
+                              highlightthickness=1, highlightbackground=LINE, shadow=SHADOW_DIP)
+        author.pack(fill="x", pady=(0, 16))
         _label(author, "作者路线", size=14, bold=True).pack(anchor="w", pady=(0, 14))
         inventory = resource_inventory(self.model.maps(self.profile_id))
         available, total = inventory["availableLayerImages"], inventory["layerImageCount"]
@@ -449,7 +451,7 @@ class MapResourceBrowser(tk.Frame):
         view_button.configure(state="normal" if available else "disabled")
         view_button.pack(side="right", padx=(12, 0))
         name = self.model.profiles[self.profile_id] if available or total else "作者路线未安装"
-        cover = tk.Label(author, bg=IMAGE_BG, text="未安装", fg=MUTED, font=(FONT, 9))
+        cover = tk.Label(author, bg=IMAGE_BG, text="未安装", fg=MUTED, font=(FONT, 9), width=12, height=5)
         cover.pack(side="left", padx=(0, gap))
         cover_path = next((Path(path) for item in self.model.maps(self.profile_id) for variant in item.variants
                            for path in variant.layers.values() if Path(path).is_file()), None)
@@ -470,7 +472,8 @@ class MapResourceBrowser(tk.Frame):
         catalog = getattr(self.assistant, "author_route_catalog", None)
         _label(info, author_resource_version(self.assistant.pack, catalog), size=10, color=MUTED, anchor="w", wraplength=500).pack(fill="x", pady=(6, 0))
         status = "本地已装" if available and available == total else "部分可用" if available else "未安装作者路线 · 结构底图可独立浏览"
-        _label(info, f"{status}\n{self._inventory_text(inventory)}", size=9, color=MUTED, anchor="w").pack(fill="x", pady=(6, 0))
+        _label(info, f"{status}\n{self._inventory_text(inventory)}", size=9, color=MUTED, anchor="w",
+               justify="left").pack(fill="x", pady=(6, 0))
         self._apply_display()
 
     @staticmethod
@@ -536,7 +539,7 @@ class MapResourceBrowser(tk.Frame):
         self._layout_controls()
         if not matching:
             empty = tk.Frame(self.content, bg=BG)
-            empty.pack(fill="both", expand=True, padx=20, pady=35)
+            empty.pack(fill="both", expand=True, padx=SHADOW_DIP, pady=35)
             _label(empty, "没有符合条件的地图", size=13, bold=True).pack(anchor="w")
             _label(empty, "试试清空名称搜索，或切换来源与楼层。", color=MUTED, size=9).pack(anchor="w", pady=8)
             _button(empty, "清空搜索", self._clear_search).pack(anchor="w")
@@ -546,7 +549,7 @@ class MapResourceBrowser(tk.Frame):
         scroll = tk.Scrollbar(self.content, orient="vertical", command=self._scroll_to)
         self.canvas.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y", padx=(0, 5))
-        self.canvas.pack(side="left", fill="both", expand=True, padx=(16, 0))
+        self.canvas.pack(side="left", fill="both", expand=True, padx=(SHADOW_DIP - 4, 0))
         self.grid_frame = tk.Frame(self.canvas, bg=BG)
         self._grid_window = self.canvas.create_window((0, 0), window=self.grid_frame, anchor="nw")
         self.grid_frame.bind("<Configure>", lambda _e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
@@ -562,7 +565,7 @@ class MapResourceBrowser(tk.Frame):
         self._schedule(1, self._layout_cards)
 
     def _make_card(self, item, floor):
-        card = RoundedFrame(self.grid_frame, bg=CARD, highlightthickness=1, highlightbackground=LINE)
+        card = RoundedFrame(self.grid_frame, bg=CARD, highlightthickness=1, highlightbackground=LINE, radius=14)
         card._display_manual_geometry = True  # Height/grid handled by _layout_cards.
         px = lambda value: value  # DIP, scaled once by the owning window.
         thumb = tk.Button(card, bg=IMAGE_BG, activebackground=IMAGE_BG, fg=MUTED,
@@ -596,6 +599,16 @@ class MapResourceBrowser(tk.Frame):
         for widget in (card, thumb, title, *card.winfo_children()):
             widget.bind("<MouseWheel>", self._wheel)
         title.bind("<Button-1>", lambda _e: self._show_detail(item))
+        # Hover outlines the whole card in the accent; pointer checks ignore child crossings.
+        def hover(on):
+            card.configure(highlightbackground=ACCENT if on else LINE)
+        def leave(_event):
+            widget = card.winfo_containing(*card.winfo_pointerxy())
+            if widget is None or not str(widget).startswith(str(card)):
+                hover(False)
+        for widget in (card, thumb, title, floor_text, status_label):
+            widget.bind("<Enter>", lambda _e: hover(True), add="+")
+            widget.bind("<Leave>", leave, add="+")
         thumb.bind("<Return>", lambda _e: thumb.invoke())
         thumb.bind("<FocusIn>", lambda _e: self._reveal_card(card))
 
@@ -764,11 +777,11 @@ class MapResourceBrowser(tk.Frame):
         self.browse_controls.pack_forget()
         self.summary.pack_forget()
         toolbar = tk.Frame(self.content, bg=BG)
-        toolbar.pack(fill="x", padx=20, pady=(0, 8))
+        toolbar.pack(fill="x", padx=SHADOW_DIP, pady=(0, 8))
         _button(toolbar, "返回地图列表", self._render_gallery).pack(side="left")
         _label(toolbar, item.name, size=12, bold=True).pack(side="left", padx=12)
         row = tk.Frame(self.content, bg=BG)
-        row.pack(fill="x", padx=20, pady=(0, 8))
+        row.pack(fill="x", padx=SHADOW_DIP, pady=(0, 8))
         self.variant_box = RoundedCombobox(row, state="readonly", values=[v.name for v in item.variants], width=18)
         self.variant_box.pack(side="left", fill="x", expand=True)
         self.variant_box.bind("<<ComboboxSelected>>", lambda _e: self._detail_variant())
@@ -779,15 +792,15 @@ class MapResourceBrowser(tk.Frame):
                                       activebackground=IMAGE_BG, activeforeground=TEXT,
                                       relief="flat", bd=0, font=(FONT, 10), cursor="hand2",
                                       command=self._open_preview)
-        self.detail_image.pack(fill="both", expand=True, padx=20)
+        self.detail_image.pack(fill="both", expand=True, padx=SHADOW_DIP)
         self.detail_image.bind("<Configure>", self._detail_resized)
         self.detail_image.bind("<Return>", lambda _event: self._open_preview())
         self.detail_status = _label(self.content, size=9, color=MUTED, anchor="w", justify="left", wraplength=530)
         self.detail_image._status_widget = self.detail_status
-        self.detail_status.pack(fill="x", padx=20, pady=(8, 5))
+        self.detail_status.pack(fill="x", padx=SHADOW_DIP, pady=(8, 5))
         self._details_open = False
         self.details_toggle = _button(self.content, "资源详情", self._toggle_details)
-        self.details_toggle.pack(anchor="w", padx=20, pady=(0, 6))
+        self.details_toggle.pack(anchor="w", padx=SHADOW_DIP, pady=(0, 6))
         self.details_text = tk.Text(self.content, height=3, bg=INPUT_BG, fg=MUTED, relief="flat",
                                     wrap="char", font=(FONT, 8))
         if item.variants:
@@ -852,7 +865,7 @@ class MapResourceBrowser(tk.Frame):
     def _toggle_details(self):
         self._details_open = not self._details_open
         if self._details_open:
-            self.details_text.pack(fill="x", padx=20, pady=(0, 8))
+            self.details_text.pack(fill="x", padx=SHADOW_DIP, pady=(0, 8))
         else:
             self.details_text.pack_forget()
         self.details_toggle.configure(text="收起资源详情" if self._details_open else "资源详情")

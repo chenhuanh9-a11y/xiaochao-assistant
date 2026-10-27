@@ -9,11 +9,11 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk, font as tkfont
 
-from PIL import Image, ImageDraw, ImageTk
+from PIL import Image, ImageDraw, ImageFilter, ImageTk
 
 from desktop_theme import (BG, SURFACE, INPUT_BG, LINE, TEXT, MUTED, PRIMARY,
                            BUTTON_BG, BUTTON_HOVER, BUTTON_TEXT, FONT,
-                           CARD_RADIUS_DIP, CONTROL_RADIUS_DIP)
+                           CARD_RADIUS_DIP, CONTROL_RADIUS_DIP, SHADOW_COLOR)
 
 
 def _parent_background(parent):
@@ -39,15 +39,25 @@ class _Skins:
     def color(self, value):
         return "#%02x%02x%02x" % tuple(round(v/257) for v in self.root.winfo_rgb(value))
 
-    def picture(self, fill, outline, parent, radius, width, *, focus=False, button=False):
+    def picture(self, fill, outline, parent, radius, width, *, focus=False, button=False, shadow=0):
         radius = max(1, round(radius))
         # ttk tiles the center of an image element. A tiny center causes
         # thousands of GDI copies for large cards; keep a broad solid center.
-        extent = radius*2+128
+        # A shadow margin sits inside the border slices, so edges stay uniform.
+        margin = max(0, round(shadow))
+        extent = radius*2+128+margin*2
         factor = 4
         image = Image.new("RGB", (extent*factor, extent*factor), self.color(parent))
         draw = ImageDraw.Draw(image)
-        bounds = (1, 1, extent*factor-2, extent*factor-2)
+        if margin:
+            mask = Image.new("L", (extent, extent), 0)
+            drop = max(1, round(margin*.3))
+            ImageDraw.Draw(mask).rounded_rectangle(
+                (margin, margin+drop, extent-margin-1, extent-margin-1+drop), radius=radius, fill=26)
+            mask = mask.filter(ImageFilter.GaussianBlur(margin*.45)).resize(image.size, Image.Resampling.BILINEAR)
+            image.paste(self.color(SHADOW_COLOR), mask=mask)
+        edge = margin*factor
+        bounds = (edge+1, edge+1, extent*factor-edge-2, extent*factor-edge-2)
         draw.rounded_rectangle(bounds, radius=radius*factor, fill=self.color(fill),
                                outline=self.color(outline), width=max(0, round(width*factor)))
         if focus and button:
@@ -70,12 +80,14 @@ class _Skins:
         name = f"XiaochaoRound{len(self.cache)+1}.{suffix}"
         element = name + ".surface"
         radius = max(1, round(props["radius"]*scale))
+        margin = round(props.get("shadow", 0)*scale)
         edge = props["highlightbackground"]
         width = props["highlightthickness"]
-        normal = self.picture(props["bg"], edge, parent, radius, width)
+        normal = self.picture(props["bg"], edge, parent, radius, width, shadow=margin)
         image_spec = [normal]
         if kind != "frame":
-            disabled = self.picture(INPUT_BG, LINE, parent, radius, width)
+            muted = props.get("disabledbackground", INPUT_BG)
+            disabled = self.picture(muted, LINE if muted == INPUT_BG else edge, parent, radius, width)
             focus = self.picture(props["bg"], props["highlightcolor"], parent, radius,
                                  max(2, round(2*scale)), focus=True, button=kind == "button")
             image_spec += [("disabled", disabled)]
@@ -89,7 +101,7 @@ class _Skins:
             if kind == "button":
                 image_spec += [("active", hover)]
         self.style.element_create(element, "image", *image_spec,
-            border=radius+1, padding=0, width=0, height=0, sticky="nsew")
+            border=radius+margin+1, padding=0, width=0, height=0, sticky="nsew")
         if kind == "frame":
             layout = [(element, {"sticky": "nsew"})]
         elif kind == "button":
@@ -131,13 +143,16 @@ class _Appearance:
             highlightcolor="highlightcolor", highlightthickness="highlightthickness", radius="radius")
         if kind == "button":
             self._props.update(bg=BUTTON_BG, fg=BUTTON_TEXT, activebackground=BUTTON_HOVER,
-                activeforeground=BUTTON_TEXT, disabledforeground=MUTED, font=(FONT, 10, "bold"),
-                padx=15, pady=9, anchor="center", borderwidth=0, relief="flat")
-            self._aliases.update({key: key for key in ("activebackground", "activeforeground", "disabledforeground", "font", "padx", "pady", "anchor", "borderwidth", "relief")})
+                activeforeground=BUTTON_TEXT, disabledforeground=MUTED, disabledbackground=INPUT_BG,
+                font=(FONT, 10, "bold"), padx=15, pady=9, anchor="center", borderwidth=0, relief="flat")
+            self._aliases.update({key: key for key in ("activebackground", "activeforeground", "disabledforeground",
+                                                       "disabledbackground", "font", "padx", "pady", "anchor",
+                                                       "borderwidth", "relief")})
             self._aliases.update(fg="fg", foreground="fg", bd="borderwidth")
         elif kind == "frame":
-            self._props.update(padx=0, pady=0, borderwidth=0)
-            self._aliases.update(padx="padx", pady="pady", borderwidth="borderwidth", bd="borderwidth")
+            self._props.update(padx=0, pady=0, borderwidth=0, shadow=0)
+            self._aliases.update(padx="padx", pady="pady", borderwidth="borderwidth", bd="borderwidth",
+                                 shadow="shadow")
         else:
             self._props.update(bg=INPUT_BG, fg=TEXT, borderwidth=7, relief="flat", insertbackground=TEXT)
             self._aliases.update(fg="fg", foreground="fg", bd="borderwidth", borderwidth="borderwidth",
@@ -163,7 +178,9 @@ class _Appearance:
         style = self._skins.get(self._kind, self._props, _parent_background(self.master), scale)
         super().configure(style=style)
         if self._kind == "frame":
-            super().configure(padding=(self._props["padx"], self._props["pady"]))
+            # The shadow margin is outside the visible card, so content keeps its inset.
+            margin = round(self._props["shadow"]*scale)
+            super().configure(padding=(self._props["padx"]+margin, self._props["pady"]+margin))
 
     def configure(self, cnf=None, **kwargs):
         if not getattr(self, "_round_ready", False):
