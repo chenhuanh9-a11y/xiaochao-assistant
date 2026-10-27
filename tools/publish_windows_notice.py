@@ -79,7 +79,10 @@ def _request(url: str, *, data: bytes | None = None, headers: dict | None = None
 
 
 def read_manifest(base: str) -> dict:
-    status, body = _request(f"{base}/updates/windows.json")
+    try:
+        status, body = _request(f"{base}/updates/windows.json")
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as error:
+        raise PublishError("读取线上版本失败，已停止；没有自动重试。") from error
     if status != 200 or not isinstance(body, dict):
         raise PublishError(f"读取线上版本失败（HTTP {status}）。")
     return body
@@ -190,7 +193,10 @@ def publish(payload: dict, base: str, token: str) -> dict:
         raise PublishError("管理员口令不正确，已停止。不要反复尝试，请联系口令管理人。")
     if status not in (200, 201, None):
         raise PublishError(f"发布失败（HTTP {status}）：{result.get('message') or '服务器未说明原因'}")
-    readback = read_manifest(base)
+    try:
+        readback = read_manifest(base)
+    except PublishError as error:
+        raise PublishError("发布请求后无法确认线上状态，结果不明；请先预览核对，不要直接重试发布。") from error
     if not already_published(readback, payload):
         if status is None:
             raise PublishError("请求结果不明，线上还不是本次版本。请先刷新后台确认，不要直接重试。")

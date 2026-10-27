@@ -1,0 +1,6 @@
+更新公告：
+PC端 v{{DISPLAY_VERSION}}
+更新内容：
+1. {{本版相对上一发布版本的已完成变化；删除占位内容后再预览}}
+夸克网盘链接：https://pan.quark.cn/s/4cec4ca814f7
+UC网盘链接：https://drive.uc.cn/s/df8af96910bb4?public=1

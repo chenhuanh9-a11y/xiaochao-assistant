@@ -2,12 +2,13 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import json
-import os
 from pathlib import Path
 import sys
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
+import urllib.error
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
@@ -72,8 +73,8 @@ class PublisherTests(unittest.TestCase):
         self.installer.write_bytes(b"installer-bytes")
         self.notes = root / "notes.txt"
         self.notes.write_text(NOTES, encoding="utf-8")
-        self.env = mock.patch.dict(os.environ, {
-            "XINGTU_PUBLISH_SERVER": f"http://127.0.0.1:{self.server.server_port}", "UPDATE_ADMIN_TOKEN": TOKEN})
+        self.env = mock.patch.object(publisher, "os", SimpleNamespace(environ={
+            "XINGTU_PUBLISH_SERVER": f"http://127.0.0.1:{self.server.server_port}", "UPDATE_ADMIN_TOKEN": TOKEN}))
         self.env.start()
         self.version = mock.patch.object(publisher, "app_version", lambda: "1.0.2")
         self.version.start()
@@ -100,6 +101,49 @@ class PublisherTests(unittest.TestCase):
         self.assertIn("IdentityV-Map-pc-1.0.2.exe", out)
         self.assertEqual(FakeServer.posts, [])
 
+    def test_preview_even_with_yes_never_reads_credentials(self):
+        class PreviewEnvironment(dict):
+            def get(self, key, default=None):
+                if key == 'UPDATE_ADMIN_TOKEN':
+                    raise AssertionError('preview must not read credentials')
+                return super().get(key, default)
+        with mock.patch.object(publisher.os, 'environ', PreviewEnvironment(publisher.os.environ)):
+            code, _, err = self.run_main('--yes')
+        self.assertEqual(code, 0, err)
+        self.assertEqual(FakeServer.posts, [])
+
+    def test_preview_network_failure_stops_without_retry(self):
+        with mock.patch.object(publisher, '_request', side_effect=urllib.error.URLError('fixture offline')) as request:
+            code, _, err = self.run_main()
+        self.assertEqual(code, 2)
+        self.assertIn('没有自动重试', err)
+        self.assertEqual(request.call_count, 1)
+        self.assertEqual(FakeServer.posts, [])
+
+    def test_same_version_changed_notes_is_rejected_even_with_higher_code(self):
+        FakeServer.manifest = dict(version='1.0.2', versionCode=1711)
+        code, _, err = self.run_main('--version-code', '1712')
+        self.assertEqual(code, 2)
+        self.assertIn('用户不会收到提醒', err)
+        self.assertEqual(FakeServer.posts, [])
+
+    def test_uncertain_post_with_unavailable_readback_is_never_retried(self):
+        with mock.patch.object(publisher, '_request', side_effect=urllib.error.URLError('fixture offline')) as request:
+            with self.assertRaisesRegex(publisher.PublishError, '结果不明'):
+                publisher.publish({}, 'http://127.0.0.1:1', 'fixture-only')
+        self.assertEqual(request.call_count, 2)
+        self.assertIsNotNone(request.call_args_list[0].kwargs.get('data'))
+        self.assertIsNone(request.call_args_list[1].kwargs.get('data'))
+
+    def test_uncertain_post_with_different_readback_is_never_retried(self):
+        payload = dict(version='1.0.2', versionCode=1711, releaseNotes=NOTES,
+                       artifactFileName='IdentityV-Map-pc-1.0.2.exe', size=1, sha256='A'*64)
+        with mock.patch.object(publisher, '_request', side_effect=[urllib.error.URLError('fixture offline'),
+                                                                  (200, dict(version='1.0', versionCode=1))]) as request:
+            with self.assertRaisesRegex(publisher.PublishError, '不要直接重试'):
+                publisher.publish(payload, 'http://127.0.0.1:1', 'fixture-only')
+        self.assertEqual(request.call_count, 2)
+
     def test_publish_after_typed_confirmation(self):
         code, out, err = self.run_main("--publish", typed="1.0.2")
         self.assertEqual(code, 0, err)
@@ -121,7 +165,7 @@ class PublisherTests(unittest.TestCase):
         self.assertEqual(FakeServer.posts, [])
 
     def test_token_prompt_when_not_in_environment(self):
-        with mock.patch.dict(os.environ, {"UPDATE_ADMIN_TOKEN": ""}), \
+        with mock.patch.dict(publisher.os.environ, {"UPDATE_ADMIN_TOKEN": ""}), \
                 mock.patch.object(publisher.getpass, "getpass", lambda _prompt: TOKEN):
             code, out, err = self.run_main("--publish", typed="1.0.2")
         self.assertEqual(code, 0, err)
@@ -135,14 +179,14 @@ class PublisherTests(unittest.TestCase):
         self.assertNotIn(TOKEN, out + err)
 
     def test_unattended_publish_needs_token(self):
-        with mock.patch.dict(os.environ, {"UPDATE_ADMIN_TOKEN": ""}):
+        with mock.patch.dict(publisher.os.environ, {"UPDATE_ADMIN_TOKEN": ""}):
             code, _, err = self.run_main("--publish", "--yes", tty=False)
         self.assertEqual(code, 2)
         self.assertIn("UPDATE_ADMIN_TOKEN", err)
         self.assertEqual(FakeServer.posts, [])
 
     def test_wrong_token_stops(self):
-        with mock.patch.dict(os.environ, {"UPDATE_ADMIN_TOKEN": "x" * 40}):
+        with mock.patch.dict(publisher.os.environ, {"UPDATE_ADMIN_TOKEN": "x" * 40}):
             code, _, err = self.run_main("--publish", typed="1.0.2")
         self.assertEqual(code, 2)
         self.assertIn("口令不正确", err)
@@ -172,7 +216,7 @@ class PublisherTests(unittest.TestCase):
         self.assertEqual(publisher.server_version("1.0"), "1.0.0")
 
     def test_production_only_unless_local(self):
-        with mock.patch.dict(os.environ, {"XINGTU_PUBLISH_SERVER": "https://evil.example"}):
+        with mock.patch.dict(publisher.os.environ, {"XINGTU_PUBLISH_SERVER": "https://evil.example"}):
             with self.assertRaises(publisher.PublishError):
                 publisher.server_url()
 

@@ -1,0 +1,11 @@
+{
+  "schema": "xingtu-windows-build-record-v1",
+  "sourceCommit": "REPLACE_WITH_VERIFIED_REMOTE_COMMIT",
+  "displayVersion": "REPLACE_FROM_VERSION_JSON",
+  "numericVersion": "REPLACE_FROM_VERSION_JSON",
+  "installer": {
+    "fileName": "REPLACE_WITH_REAL_INSTALLER_FILENAME",
+    "size": 0,
+    "sha256": "REPLACE_WITH_REAL_INSTALLER_SHA256"
+  }
+}
