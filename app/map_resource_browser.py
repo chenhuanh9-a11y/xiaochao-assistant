@@ -72,6 +72,8 @@ class MapResourceBrowser(tk.Frame):
         self._controls_layout = None
         self._overview = True
         self._overview_rendered = None
+        self._resource_mode_signature = None
+        self._resource_mode_switching = False
         self._wheel_tag = f"MapResourceWheel-{id(self)}"
         self._wheel_binding = self._root().bind_class(self._wheel_tag, "<MouseWheel>", self._route_wheel)
         self._build()
@@ -128,6 +130,43 @@ class MapResourceBrowser(tk.Frame):
         self.import_button = _button(top, "导入资源包", self._choose_map_package)
         self.import_button.pack(side="right", padx=(8, 0))
         self.overview_button = _button(top, "资源概览", self._show_overview)
+        self.online_bar = tk.Frame(self, bg=BG)
+        self.online_bar.pack(fill="x", padx=20, pady=(0, 10))
+        self.online_toggle = _button(self.online_bar, "下载地图", self._toggle_online_packages)
+        self.online_toggle.pack(side="left")
+        mode_controls = tk.Frame(self.online_bar, bg=BG)
+        mode_controls.pack(side="right", padx=(10, 0))
+        _label(mode_controls, "游戏模式", size=9, color=MUTED).pack(side="left", padx=(0, 6))
+        self.resource_mode_buttons = {}
+        for mode, title in (("nightmare", "噩梦"), ("difficult", "困难")):
+            button = _button(mode_controls, title, lambda value=mode: self._select_resource_mode(value))
+            button.pack(side="left", padx=1)
+            self.resource_mode_buttons[mode] = button
+        self.mode_feedback = _label(self, size=9, color=WARNING, anchor="w", justify="left", wraplength=460)
+        self.mode_feedback.bind("<Configure>", lambda event: self.mode_feedback.configure(
+            wraplength=max(100, event.width - 4)), add="+")
+        self.online_bar_status = _label(self.online_bar, size=9, color=MUTED, anchor="w",
+                                        justify="left", wraplength=300)
+        self.online_bar_status.pack(side="left", fill="x", expand=True, padx=(10, 0))
+        self.online_surface = tk.Frame(self, bg=BG)
+        self.online_message = _label(self.online_surface, color=MUTED, anchor="w", justify="left", wraplength=460)
+        self.online_message.pack(fill="x")
+        online_actions = tk.Frame(self.online_surface, bg=BG)
+        online_actions.pack(fill="x", pady=(6, 8))
+        self.online_check = _button(online_actions, "检查下载列表", self._check_online_packages)
+        self.online_check.pack(side="left")
+        self.online_cancel = _button(online_actions, "取消", self._cancel_online_package)
+        self.online_cancel.pack(side="left", padx=(8, 0))
+        self.online_progress = ttk.Progressbar(self.online_surface, mode="determinate", maximum=100, value=0)
+        self.online_progress_text = _label(self.online_surface, size=9, color=MUTED, anchor="w")
+        self.online_list = tk.Frame(self.online_surface, bg=BG)
+        self.online_list.pack(fill="x")
+        self.online_feedback = _label(self.online_surface, color=WARNING, anchor="w", justify="left", wraplength=460)
+        self._online_open = False
+        self._online_signature = None
+        self._online_message_text = ""
+        self._online_rows = {}
+        self.online_surface.bind("<Configure>", self._fit_online_text, add="+")
         self.subtitle = _label(self, "看图辨认地图，点开查看完整楼层与路线。", color=MUTED, size=9)
         self.subtitle._display_manual_geometry = True
         self.subtitle.pack(anchor="w", padx=SHADOW_DIP, pady=(0, 12))
@@ -227,6 +266,7 @@ class MapResourceBrowser(tk.Frame):
     def refresh(self):
         self._active = True
         self.sync_map_package_import()
+        self.sync_online_packages()
         pack = self.assistant.pack
         catalog = getattr(self.assistant, "author_route_catalog", None)
         context = (id(pack), id(catalog))
@@ -248,6 +288,55 @@ class MapResourceBrowser(tk.Frame):
                 self._render_overview()
             else:
                 self._layout_controls()
+        self.sync_game_mode()
+
+    def sync_game_mode(self, snapshot=None):
+        if self._closed:
+            return
+        if snapshot is None:
+            getter = getattr(self.assistant, "_route_presentation_snapshot", None)
+            snapshot = getter() if callable(getter) else {}
+        mode = snapshot.get("mode", getattr(self.assistant, "game_mode", None))
+        enabled = (snapshot.get("modeChangeEnabled") is True and not self._resource_mode_switching
+                   and callable(getattr(self.assistant, "set_game_mode", None)))
+        signature = mode, enabled
+        if signature != self._resource_mode_signature:
+            self._resource_mode_signature = signature
+            self.mode_label.configure(text=f"当前模式：{ {'nightmare': '噩梦', 'difficult': '困难'}.get(mode, '未读取')}")
+            for value, button in self.resource_mode_buttons.items():
+                selected = mode == value
+                button.configure(bg=ACCENT if selected else BUTTON_BG, fg="white" if selected else BUTTON_TEXT,
+                                 activebackground=ACCENT if selected else BUTTON_HOVER,
+                                 state="normal" if enabled else "disabled")
+        context = (id(self.assistant.pack), id(getattr(self.assistant, "author_route_catalog", None)))
+        if self._active and not self._resource_mode_switching and context != self._context:
+            self.refresh()
+
+    def _select_resource_mode(self, mode):
+        if self._closed or self._resource_mode_switching:
+            return
+        callback = getattr(self.assistant, "set_game_mode", None)
+        if not callable(callback):
+            self.sync_game_mode()
+            return
+        self._resource_mode_switching = True
+        self.sync_game_mode()
+        try:
+            result = callback(mode)
+        finally:
+            self._resource_mode_switching = False
+            if not self._closed:
+                self.sync_game_mode()
+        if self._closed:
+            return
+        message = str(result.get("message") or "") if isinstance(result, dict) and result.get("success") is False else ""
+        self.mode_feedback.configure(text=message)
+        if message:
+            anchor = next(widget for widget in (self.online_surface, self.subtitle, self.import_surface,
+                                                self.filter_host, self.content) if widget.winfo_manager())
+            self.mode_feedback.pack(fill="x", padx=20, pady=(0, 8), before=anchor)
+        else:
+            self.mode_feedback.pack_forget()
 
     def _map_package_snapshot(self):
         getter = getattr(self.assistant, "map_package_import_snapshot", None)
@@ -358,6 +447,163 @@ class MapResourceBrowser(tk.Frame):
 
     def _cancel_map_package(self):
         return self._map_package_action("cancel_map_package_import", reason="user-cancelled")
+
+    def _online_snapshot(self):
+        getter = getattr(self.assistant, "online_map_packages_snapshot", None)
+        return getter() if callable(getter) else {}
+
+    @staticmethod
+    def _online_size(value):
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return ""
+        if value >= 1_000_000:
+            return f"{value / 1_000_000:.1f} MB"
+        if value >= 1000:
+            return f"{value / 1000:.0f} KB"
+        return f"{value} B"
+
+    def _fit_online_text(self, event):
+        if self._closed:
+            return
+        for label in (self.online_message, self.online_feedback):
+            label.configure(wraplength=max(100, event.width - 4))
+        for row in self._online_rows.values():
+            row["title"].configure(wraplength=max(100, event.width - 110))
+            row["summary"].configure(wraplength=max(100, event.width - 110))
+
+    def sync_online_packages(self):
+        if self._closed:
+            return
+        state = self._online_snapshot()
+        stage = state.get("stage", "idle")
+        busy = state.get("busy") is True
+        getter = callable(getattr(self.assistant, "online_map_packages_snapshot", None))
+        check = getter and callable(getattr(self.assistant, "check_online_map_packages", None)) and state.get("canCheck") is True and not busy
+        download = getter and callable(getattr(self.assistant, "download_online_map_package", None)) and state.get("canDownload") is True and not busy
+        cancel = getter and callable(getattr(self.assistant, "cancel_online_map_package", None)) and state.get("canCancel") is True
+        packages = tuple((item["packageId"], str(item.get("title") or item["packageId"]),
+                          str(item.get("summary") or ""), self._online_size(item.get("bytes")))
+                         for item in state.get("packages", ()) if isinstance(item, dict)
+                         and isinstance(item.get("packageId"), str) and item["packageId"])
+        selected = state.get("selectedPackageId")
+        progress = state.get("progress") or {}
+        received, total = progress.get("receivedBytes"), progress.get("totalBytes")
+        received_text, total_text = self._online_size(received), self._online_size(total)
+        message = str(state.get("message") or "")
+        if not getter:
+            message = "当前版本尚不支持地图下载。"
+        elif not message:
+            message = ("正在读取下载列表。" if stage == "checking-index" else
+                       "正在接收地图资源。" if stage == "downloading" else
+                       "下载未完成，请手动重试。" if stage == "error" else
+                       "请选择要下载的地图包。" if packages else
+                       "尚未配置地图下载地址。" if not check else "点击检查下载列表。")
+        signature = stage, busy, message, packages, selected, received, total, check, download, cancel, self._online_open
+        if signature == self._online_signature:
+            return
+        self._online_signature = signature
+        self._online_message_text = message
+        self.online_toggle.configure(text="收起下载" if self._online_open else "下载地图")
+        self.online_check.configure(state="normal" if check else "disabled")
+        self.online_cancel.configure(state="normal" if cancel else "disabled")
+        self.online_message.configure(text=message)
+        self.online_bar_status.configure(text=message)
+        self.online_feedback.configure(text="")
+        self.online_feedback.pack_forget()
+        ids = {item[0] for item in packages}
+        for package_id in tuple(self._online_rows):
+            if package_id not in ids:
+                self._online_rows.pop(package_id)["frame"].destroy()
+        for package_id, title, summary, size in packages:
+            row = self._online_rows.get(package_id)
+            if row is None:
+                frame = tk.Frame(self.online_list, bg=BG)
+                button = _button(frame, "下载", lambda value=package_id: self._download_online_package(value))
+                button.pack(side="right", padx=(10, 0))
+                text = tk.Frame(frame, bg=BG)
+                text.pack(side="left", fill="x", expand=True)
+                heading = _label(text, bold=True, anchor="w", justify="left", wraplength=350)
+                heading.pack(fill="x")
+                detail = _label(text, size=9, color=MUTED, anchor="w", justify="left", wraplength=350)
+                detail.pack(fill="x", pady=(3, 0))
+                row = self._online_rows[package_id] = dict(frame=frame, title=heading, summary=detail,
+                                                          button=button, signature=None)
+            row_signature = title, summary, size, download, stage == "error" and selected == package_id
+            if row["signature"] != row_signature:
+                row["signature"] = row_signature
+                row["title"].configure(text=title)
+                row["summary"].configure(text=" · ".join(value for value in (summary, size) if value))
+                row["button"].configure(text="重试" if row_signature[-1] else "下载",
+                                        state="normal" if download else "disabled")
+            row["frame"].pack(fill="x", pady=(0, 10))
+        show_progress = selected and stage in {"downloading", "error"} and bool(received_text)
+        if show_progress:
+            text = f"已接收 {received_text}" + (f" / {total_text}" if total_text else "")
+            self.online_progress_text.configure(text=text)
+            self.online_progress_text.pack(fill="x", pady=(0, 8), before=self.online_list)
+        else:
+            self.online_progress_text.pack_forget()
+        if show_progress and total_text and total > 0:
+            self.online_progress.configure(value=min(100, received / total * 100))
+            self.online_progress.pack(fill="x", pady=(0, 4), before=self.online_progress_text)
+        else:
+            self.online_progress.pack_forget()
+        if self._online_open:
+            self.online_bar_status.pack_forget()
+            anchor = next(widget for widget in (self.subtitle, self.import_surface, self.filter_host, self.content)
+                          if widget.winfo_manager())
+            self.online_surface.pack(fill="x", padx=20, pady=(0, 12), before=anchor)
+        else:
+            self.online_bar_status.pack(side="left", fill="x", expand=True, padx=(10, 0))
+            self.online_surface.pack_forget()
+
+    def _online_action(self, name, *args, **kwargs):
+        if self._closed:
+            return None
+        callback = getattr(self.assistant, name, None)
+        result = callback(*args, **kwargs) if callable(callback) else None
+        if self._closed:
+            return result
+        self.sync_online_packages()
+        self.sync_map_package_import()
+        message = str(result.get("message") or "") if isinstance(result, dict) else ""
+        if message and message != self._online_message_text:
+            self.online_feedback.configure(text=message)
+            self.online_feedback.pack(fill="x", pady=(6, 0))
+        return result
+
+    def _toggle_online_packages(self):
+        if self._closed:
+            return
+        self._online_open = not self._online_open
+        self.sync_online_packages()
+
+    def _check_online_packages(self):
+        if self._closed:
+            return
+        state = self._online_snapshot()
+        if state.get("canCheck") is not True or state.get("busy") is True:
+            self.sync_online_packages()
+            return
+        self._online_action("check_online_map_packages")
+
+    def _download_online_package(self, package_id):
+        if self._closed:
+            return
+        state = self._online_snapshot()
+        if (state.get("canDownload") is not True or state.get("busy") is True
+                or not any(item.get("packageId") == package_id for item in state.get("packages", ()))):
+            self.sync_online_packages()
+            return
+        self._online_action("download_online_map_package", package_id)
+
+    def _cancel_online_package(self):
+        if self._closed:
+            return
+        if self._online_snapshot().get("canCancel") is not True:
+            self.sync_online_packages()
+            return
+        self._online_action("cancel_online_map_package", reason="user-cancelled")
 
     def suspend(self):
         self._active = False
