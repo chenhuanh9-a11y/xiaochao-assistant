@@ -334,7 +334,7 @@ def _font(size: int):
     return ImageFont.load_default(size=size)
 
 
-def render_layer(mask: np.ndarray, route: FloorRoute, walkable: Walkable | None = None) -> np.ndarray:
+def render_layer(mask: np.ndarray, route: FloorRoute, walkable: Walkable | None = None, *, background=None) -> np.ndarray:
     """Straight-alpha BGRA on the structure canvas: footprint plus the route.
 
     Stroke sizes are native pixels; the overlay scales the whole canvas down
@@ -342,8 +342,11 @@ def render_layer(mask: np.ndarray, route: FloorRoute, walkable: Walkable | None 
     """
     height, width = mask.shape[:2]
     image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    footprint = Image.fromarray(np.where(mask > 0, 255, 0).astype(np.uint8), "L")
-    image.paste((*BASE_FILL, 255), mask=footprint)
+    if background is not None and background.image is not None:
+        image.alpha_composite(background.image)
+    else:
+        footprint = Image.fromarray(np.where(mask > 0, 255, 0).astype(np.uint8), "L")
+        image.paste((*BASE_FILL, 255), mask=footprint)
     draw = ImageDraw.Draw(image)
     color = _rgb(route.color)
     edge = tuple(round(channel * .55) for channel in color)

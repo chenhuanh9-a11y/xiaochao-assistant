@@ -107,6 +107,54 @@ GUI/game-input validation is NOT_RUN (CUA paused). No current gameplay collision
 timing, live door state, exhaustive map conversion or player acceptance is claimed.
 Base checkout: `80cc4fb85ab540edba7bc3e2842cb1ec6b5e230d`.
 
+## Three independent layers: normal display, topology planning, binary recognition
+
+The editor background is now a normal clean source-rendered PNG, not a recoloured
+binary footprint. `route_map_display.py` validates a companion image using
+`route_render_pilot_data.py`: source layout, floor, exact native shape, image SHA,
+paired mask SHA and explicit identity image-to-shared registration. It uses the
+existing 104001 60px renderer outputs without author overlays. The images are
+older source RGB snapshots, so neither current GPU equivalence nor a current
+texture extraction is asserted. Their exact hashes are:
+
+| Floor | Normal PNG SHA256 |
+|---|---|
+| 1F / world 2 | 11cefc733d351dca7c336ab3c274f29830ff502e2fa530cac381d2cac5486094 |
+| 2F / world 3 | 9d94e8bb75280ba96f377b3f6d1393583d1e18343400eb4c23424868d293fe9d |
+
+The normal pixels are optional companion resources in
+`assets/route-render/104001-2.png` and `104001-3.png`, or the same relative paths
+under `XINGTU_EDITOR_RENDER_ROOT`. They are installed locally for the pilot but
+**not committed or publicly uploaded with this PR**. Only their portable hash and
+coordinate manifest is committed. The preparation helper copies only these two
+verified existing renderer outputs:
+
+```
+python tools/maps/prepare_route_render_pilot.py --base LAYOUT.json --source-images SOURCE_RENDER_DIR --asset-root APP_ROOT --module app/route_render_pilot_data.py
+```
+
+Missing, mismatched or unpaired images show explicit structure-preview fallback;
+the application does not claim the full map library has normal backgrounds.
+The editor's picture/refresh signature includes the asset identity and file
+revision, so installing, replacing or invalidating a normal image updates the
+background instead of keeping a stale cached bitmap. No main-controller/API
+change is needed for this editor-only display path. The existing game overlay's
+default footprint display remains unchanged; optional `render_layer(background=)`
+is used by the offline demonstration, not silently wired into game overlay caches.
+
+Room/door topology remains the planning layer, and the released binary mask stays
+the recognition/range-validation layer. Neither is derived anew from the display
+PNG and no recognition data is regenerated. Three more tests verify original RGB
+pixels are retained rather than recoloured, mask bytes remain unchanged, cache
+invalidation/fallback, image class validation and path-escape rejection. The
+combined targeted suite now has 14 passing tests.
+
+Offline comparison command adds `--require-normal` to forbid a misleading fallback
+in the delivered sample. Both before/after use the same normal map pixels and
+native waypoints. The final sheet includes 1F source diagonals, 2F orthogonal
+routes, and a zoom of the corrected endpoint tails on the real normal renderer
+background. CUA remains paused.
+
 ## Straight-corridor feedback correction
 
 The first contact sheet's historical mask-A* column really did contain diagonal
