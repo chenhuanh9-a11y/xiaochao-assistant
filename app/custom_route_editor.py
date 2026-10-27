@@ -14,6 +14,8 @@ from PIL import Image, ImageTk
 
 from custom_routes import (COLORS, FLOOR_LABELS, FLOORS, MAX_POINTS, FloorRoute, RoutePathError, Walkable,
                            route_polyline)
+from route_topology import display_name
+from route_map_display import load_background
 from desktop_rounded import RoundedButton, RoundedFrame
 from desktop_theme import (BG, BUTTON_BG, BUTTON_TEXT, ERROR, FONT, GREEN, IMAGE_BG, INPUT_BG, LINE,
                            MUTED, PRIMARY, SUBTLE, SURFACE, TEXT, TINT)
@@ -34,8 +36,12 @@ def _darker(color: str, amount=.55) -> str:
     return _hex(round(int(value[index:index + 2], 16) * amount) for index in (0, 2, 4))
 
 
-def _map_picture(mask: np.ndarray, size: tuple[int, int]) -> Image.Image:
-    """Footprint with soft outlines, fitted to ``size`` (display pixels)."""
+def _map_picture(mask: np.ndarray, size: tuple[int, int], background=None) -> Image.Image:
+    """Normal source renderer image, or an explicitly labelled structure fallback."""
+    if background is not None and background.image is not None:
+        image=Image.new('RGBA',background.image.size,(23,32,39,255))
+        image.alpha_composite(background.image)
+        return image.convert('RGB').resize(size,Image.Resampling.LANCZOS)
     width, height = size
     alpha = cv2.resize((mask > 0).astype(np.float32), (width, height), interpolation=cv2.INTER_AREA)
     edge = cv2.morphologyEx((alpha > .5).astype(np.uint8), cv2.MORPH_GRADIENT, np.ones((3, 3), np.uint8))
@@ -238,7 +244,9 @@ class CustomRouteEditor(tk.Frame):
         snapshot = self._snapshot()
         maps = tuple(snapshot.get("maps") or ())
         store = self._store()
-        signature = (snapshot.get("available"), snapshot.get("message"), maps,
+        selected_mask=self._floor_data(self.map_id,self.floor)[0] if self.map_id else None
+        background_signature=load_background(selected_mask).signature if selected_mask is not None else None
+        signature = (snapshot.get("available"), snapshot.get("message"), maps, background_signature,
                      store.revision if store is not None else None, snapshot.get("currentMapId"),
                      snapshot.get("currentFloor"))
         self.in_game_var.set("开启" if snapshot.get("useInGame") else "关闭")
@@ -271,7 +279,7 @@ class CustomRouteEditor(tk.Frame):
         for map_id, name in self._maps:
             row = tk.Frame(self.list_frame, bg=SURFACE, cursor="hand2")
             row.pack(fill="x", pady=1)
-            title = tk.Label(row, text=name, bg=SURFACE, fg=TEXT, font=(FONT, 10), anchor="w", padx=10, pady=6)
+            title = tk.Label(row, text=display_name(map_id, name), bg=SURFACE, fg=TEXT, font=(FONT, 10), anchor="w", padx=10, pady=6)
             title.pack(side="left", fill="x", expand=True)
             badge = tk.Label(row, text="", bg=SURFACE, fg=PRIMARY, font=(FONT, 8, "bold"), padx=8)
             badge.pack(side="right")
@@ -310,7 +318,7 @@ class CustomRouteEditor(tk.Frame):
             self._schedule_render()
             return
         self.map_id = map_id
-        name = dict(self._maps).get(map_id, map_id)
+        name = display_name(map_id, dict(self._maps).get(map_id, map_id))
         self.map_title.configure(text=name)
         if self._floor_data(map_id, self.floor)[0] is None:
             available = [floor for floor in FLOORS if self._floor_data(map_id, floor)[0] is not None]
@@ -383,6 +391,11 @@ class CustomRouteEditor(tk.Frame):
             text, color = "在地图上点击第一个路点开始画路线。", MUTED
         else:
             text, color = f"已自动保存 · {len(route.points)} 个路点", GREEN
+        planner = self._floor_data(self.map_id, self.floor)[1] if self.map_id else None
+        if planner is not None and planner.topology is not None:
+            text += " · 房间门连通；静态门默认可通行"
+        if mask is not None:
+            text += " · "+load_background(mask).status
         self.status.configure(text=text, fg=color)
 
     def _paint_tools(self, route=None):
@@ -427,9 +440,10 @@ class CustomRouteEditor(tk.Frame):
         size = (max(1, round(native_w * scale)), max(1, round(native_h * scale)))
         ox, oy = (width - size[0]) / 2, (height - size[1]) / 2
         self._view = (scale, ox, oy)
-        key = (self.map_id, self.floor, size)
+        background=load_background(mask)
+        key = (self.map_id, self.floor, size, background.signature)
         if key != self._picture_key:
-            self._picture = ImageTk.PhotoImage(_map_picture(mask, size), master=canvas)
+            self._picture = ImageTk.PhotoImage(_map_picture(mask, size, background), master=canvas)
             self._picture_key = key
         canvas.create_image(ox, oy, image=self._picture, anchor="nw")
         route = self._route()

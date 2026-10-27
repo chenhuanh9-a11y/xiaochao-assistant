@@ -4,8 +4,9 @@ Routes are stored as waypoints in the same game-native pixel frame as the
 shared structure references (one canvas per map and floor). Rendering into
 that canvas means the in-game overlay can use an identity bridge: the route
 image lines up wherever the structure itself is aligned, with no per-map
-calibration. Automatic routing uses the structure footprint as a geometric
-constraint. That footprint does not encode complete wall or passage semantics.
+calibration. An exact released-mask binding can add static source room/door
+topology; other resources retain footprint routing. Neither footprint nor this
+bounded topology pilot encodes complete interior collision or live door state.
 """
 from __future__ import annotations
 
@@ -160,6 +161,8 @@ class Walkable:
     """Coarse routing grid over one structure footprint."""
 
     def __init__(self, mask: np.ndarray):
+        from route_topology import for_mask
+        self.topology = for_mask(mask)
         height, width = mask.shape[:2]
         self.shape = (height, width)
         self._footprint = mask > 0
@@ -181,13 +184,16 @@ class Walkable:
 
     def contains(self, point) -> bool:
         """Whether a native endpoint is in bounds, on footprint and in an open cell."""
+        if self.topology is not None:
+            return self.topology.contains(point)
         height, width = self.shape
         try:
             x, y = point
             if not (math.isfinite(x) and math.isfinite(y) and 0 <= x < width and 0 <= y < height):
                 return False
             cx, cy = self._cell(point)
-            return bool(self._footprint[int(y), int(x)] and self.open[cy, cx])
+            return bool(self._footprint[int(y), int(x)] and self.open[cy, cx]
+                        and (self.topology is None or self.topology.contains(point)))
         except (TypeError, ValueError, OverflowError):
             return False
 
@@ -210,6 +216,8 @@ class Walkable:
 
     def snap(self, point, *, reach: int = 12) -> tuple[int, int] | None:
         """Nearest open cell centre within ``reach`` cells, else None."""
+        if self.topology is not None:
+            return self.topology.snap(point)
         height, width = self.shape
         if not (0 <= point[0] < width and 0 <= point[1] < height):
             return None
@@ -231,16 +239,26 @@ class Walkable:
 
     def path(self, start, goal) -> list[tuple[int, int]] | None:
         """A* through open cells, biased towards wide space; native pixels out."""
+        if self.topology is not None:
+            return self.topology.path(start, goal)
         if not (self.contains(start) and self.contains(goal)):
             return None
         source, target = self._cell(start), self._cell(goal)
         if not (self.open[source[1], source[0]] and self.open[target[1], target[0]]):
             return None
+        def orthogonal(a,b):
+            for bend in [(b[0],a[1]),(a[0],b[1])]:
+                points=[tuple(a),bend,tuple(b)]
+                points=[p for i,p in enumerate(points) if i==0 or p!=points[i-1]]
+                if all(self._line_on_footprint(p,q) for p,q in zip(points,points[1:])):
+                    return points
+            return None
         if source == target:
-            return [tuple(start), tuple(goal)] if self._line_on_footprint(start, goal) else None
+            return orthogonal(start,goal)
         rows, columns = self.open.shape
-        steps = ((1, 0, 1.0), (-1, 0, 1.0), (0, 1, 1.0), (0, -1, 1.0),
-                 (1, 1, 1.4142), (1, -1, 1.4142), (-1, 1, 1.4142), (-1, -1, 1.4142))
+        # With no source diagonal geometry, a footprint alone cannot authorize
+        # slanted shortcuts through ordinary corridors or right-angle junctions.
+        steps = ((1, 0, 1.0), (-1, 0, 1.0), (0, 1, 1.0), (0, -1, 1.0))
         clearance = self.clearance
         best = {source: 0.0}
         parent = {}
@@ -256,8 +274,6 @@ class Walkable:
                 nx, ny = x + dx, y + dy
                 if not (0 <= nx < columns and 0 <= ny < rows) or not self.open[ny, nx]:
                     continue
-                if dx and dy and not (self.open[y, nx] and self.open[ny, x]):
-                    continue  # No corner cutting through void.
                 step = cost + length * (1.0 + 2.5 / (1.0 + clearance[ny, nx]))
                 neighbour = (nx, ny)
                 if step < best.get(neighbour, math.inf):
@@ -273,12 +289,15 @@ class Walkable:
         # Remove only collinear grid centres: approximate simplification can cut
         # across void at bends. Retain centres beside arbitrary native endpoints.
         centres = [self._centre(cell) for cell in cells]
-        points = [tuple(start), centres[0]]
+        prefix=orthogonal(start,centres[0]);suffix=orthogonal(centres[-1],goal)
+        if prefix is None or suffix is None:
+            return None
+        points = prefix[:]
         for previous, current, following in zip(centres, centres[1:], centres[2:]):
             if (current[0] - previous[0], current[1] - previous[1]) != (
                     following[0] - current[0], following[1] - current[1]):
                 points.append(current)
-        points.extend((centres[-1], tuple(goal)))
+        points.extend(suffix)
         points = [point for index, point in enumerate(points) if index == 0 or point != points[index - 1]]
         if not all(self._line_on_footprint(a, b) for a, b in zip(points, points[1:])):
             return None
@@ -315,7 +334,7 @@ def _font(size: int):
     return ImageFont.load_default(size=size)
 
 
-def render_layer(mask: np.ndarray, route: FloorRoute, walkable: Walkable | None = None) -> np.ndarray:
+def render_layer(mask: np.ndarray, route: FloorRoute, walkable: Walkable | None = None, *, background=None) -> np.ndarray:
     """Straight-alpha BGRA on the structure canvas: footprint plus the route.
 
     Stroke sizes are native pixels; the overlay scales the whole canvas down
@@ -323,8 +342,11 @@ def render_layer(mask: np.ndarray, route: FloorRoute, walkable: Walkable | None 
     """
     height, width = mask.shape[:2]
     image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    footprint = Image.fromarray(np.where(mask > 0, 255, 0).astype(np.uint8), "L")
-    image.paste((*BASE_FILL, 255), mask=footprint)
+    if background is not None and background.image is not None:
+        image.alpha_composite(background.image)
+    else:
+        footprint = Image.fromarray(np.where(mask > 0, 255, 0).astype(np.uint8), "L")
+        image.paste((*BASE_FILL, 255), mask=footprint)
     draw = ImageDraw.Draw(image)
     color = _rgb(route.color)
     edge = tuple(round(channel * .55) for channel in color)

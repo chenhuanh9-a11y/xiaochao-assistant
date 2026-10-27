@@ -1,0 +1,187 @@
+# Custom editor topology pilot
+
+The editor and overlay keep PR4's native-pixel waypoints and the existing settings,
+reference cache binding, manual mode and explicit no-path failures. `Walkable`
+selects the new topology only when the released clean-mask binary SHA and shape
+match exactly one bundled floor. Otherwise the existing footprint planner remains.
+No main-controller or desktop UI entry point is changed.
+
+## Bounded data contract
+
+`app/route_topology_pilot_data.py` is the portable, generated
+`custom-route-topology-v1` payload. It includes only one layout, two floors:
+
+| Runtime ID | Source layout | Floor | Vertices | Admitted source door pairs |
+|---|---|---|---:|---:|
+| nightmare-09 | 104001 | 1F / world 2 | 329 | 65 |
+| nightmare-09 | 104001 | 2F / world 3 | 237 | 39 |
+
+Fields include `mapId`, `sourceLayout`, `floor`, `worldFloor`, `shape`,
+`maskSha256`, `resourceSha256`, `sourceBaseSha256`, source versions,
+`registration`, `points`, `pointRooms`, typed `links`, source room IDs,
+static door IDs and state, and source entrance-marker coordinates.
+No raw game files, texture bytes, author pixels or machine-specific paths are
+included. The generated module is imported normally, so the existing PyInstaller
+build can collect it without collecting the ignored/private references tree.
+
+## Registration is a producer transform, not a bounding-box fit
+
+The public structure metadata explicitly binds `nightmare-09` to source layout
+104001, world floors 2/3, and `game-native-pixels:104001:<floor>`.
+`sourceGeometry.production` is direct renderer alpha without projection or resize;
+`matrixRendererPixelToProduct` is identity; tile pitch is 60 pixels. The existing
+native24 producer defines native-pixel to source-renderer coordinates as
+`[[128/60,0,minX],[0,128/60,minY],[0,0,1]]`.
+
+For a world cell `[x,worldFloor,z]`, its centre projects to native pixels:
+
+```
+u = 60 * (x + 0.5) - minX * 60/128
+v = 60 * (-z - 0.5) - minY * 60/128
+```
+
+The exporter requires the source layout, floor, producer contract, explicit
+identity registration and matching source framing. It does not derive a transform
+from image dimensions or occupied bounds. At load time the entire released binary
+mask SHA and shape must match, and every admitted point/edge is checked against
+that exact clean_mask. Door/room identities are retained even where footprints
+touch. Changes to the resource mask disable this pilot instead of reusing a stale
+registration.
+
+Topology source: 2.104.3034860 (base SHA
+`d1910f7b738c0a6bc0ba2d1f771fd6c1f3a29416fcfd061206aee82d3867444a`).
+Public shared metadata source: 2.104.3059230, release
+`resources-0B721D65-20261027`. These are separate versions. The static topology
+snapshot does not establish current runtime door states or full package equivalence.
+The source PNG alpha differs from the current binary mask at 273 pixels on 1F
+and 450 on 2F (IoU 0.999775 / 0.999471); no image-equality claim is made. The
+registered coordinates come from the explicit producer contract, and paths are
+validated against the current mask, not the older PNG.
+
+## Routing and limits
+
+Within ordinary rooms the planner uses source cells and any existing explicit
+cell-link restrictions, with cardinal grid edges. Different room IDs connect only
+through admitted source-paired doors. The source-reviewed Y corridor uses its
+explicit centreline links, preserving diagonal arms. Each line is checked against
+the current footprint. Only forward collinear points are merged; no smoothing
+or full-map Manhattan replacement occurs. Free native waypoints, including points
+midway along diagonal arms, remain the start/end of each solved leg. No arrows or
+cross-floor connector lines are added.
+
+The footprint and occupancy are not a complete interior collision model. There
+is no complete native-wall channel in this public resource. Static paired doors
+use a planning-open policy; their live states remain unknown. Every unknown
+transfer is excluded; this pilot does not introduce cross-floor routing or
+infer a walkable upper floor from occupied height. The separate, earlier user
+confirmation that room 83 of 103001 is double-height is not generalized to 104001.
+
+## Display names
+
+Names are UI mappings; runtime map IDs, package IDs, alignment references and
+saved route ownership never change. The sample is
+`nightmare-09 → 一楼正门 · 二楼侧门 01`, based on the two recorded entrance
+markers and a pilot group ordinal. Other nightmare maps use neutral `地图 NN`
+until their classifications are reviewed. The offline contact sheet supplies
+the corresponding real footprint thumbnail. This is a pilot naming proposal,
+not a complete renamed map library.
+
+## Reproduce and validate
+
+Run with authorized local inputs; paths are arguments, not committed defaults:
+
+```
+python tools/maps/export_route_topology.py --base LAYOUT.json --structures STRUCTURE_ROOT --output LOCAL.json --python-module app/route_topology_pilot_data.py
+python -m unittest discover -s tools/maps -p test_route_topology.py -v
+python tools/maps/render_topology_pilot.py --structures STRUCTURE_ROOT --output LOCAL_EVIDENCE
+```
+
+The offline renderer calls the real `Walkable`, `route_polyline` and `render_layer`
+used by PR4, using the same native waypoints before/after. The 1F example follows
+two diagonal Y arms; the 2F example traverses multiple ordinary source rooms/doors
+with 13 orthogonal segments including free-endpoint lead-ins. Eleven targeted tests cover missing doors, unknown
+transfers, void crossing, exact resource binding, collinear reduction, free diagonal
+waypoints, manual mode, no-path semantics and empty saved preferences.
+
+GUI/game-input validation is NOT_RUN (CUA paused). No current gameplay collision,
+timing, live door state, exhaustive map conversion or player acceptance is claimed.
+Base checkout: `80cc4fb85ab540edba7bc3e2842cb1ec6b5e230d`.
+
+## Three independent layers: normal display, topology planning, binary recognition
+
+The editor background is now a normal clean source-rendered PNG, not a recoloured
+binary footprint. `route_map_display.py` validates a companion image using
+`route_render_pilot_data.py`: source layout, floor, exact native shape, image SHA,
+paired mask SHA and explicit identity image-to-shared registration. It uses the
+existing 104001 60px renderer outputs without author overlays. The images are
+older source RGB snapshots, so neither current GPU equivalence nor a current
+texture extraction is asserted. Their exact hashes are:
+
+| Floor | Normal PNG SHA256 |
+|---|---|
+| 1F / world 2 | 11cefc733d351dca7c336ab3c274f29830ff502e2fa530cac381d2cac5486094 |
+| 2F / world 3 | 9d94e8bb75280ba96f377b3f6d1393583d1e18343400eb4c23424868d293fe9d |
+
+The normal pixels are optional companion resources in
+`assets/route-render/104001-2.png` and `104001-3.png`, or the same relative paths
+under `XINGTU_EDITOR_RENDER_ROOT`. They are installed locally for the pilot but
+**not committed or publicly uploaded with this PR**. Only their portable hash and
+coordinate manifest is committed. The preparation helper copies only these two
+verified existing renderer outputs:
+
+```
+python tools/maps/prepare_route_render_pilot.py --base LAYOUT.json --source-images SOURCE_RENDER_DIR --asset-root APP_ROOT --module app/route_render_pilot_data.py
+```
+
+Missing, mismatched or unpaired images show explicit structure-preview fallback;
+the application does not claim the full map library has normal backgrounds.
+The editor's picture/refresh signature includes the asset identity and file
+revision, so installing, replacing or invalidating a normal image updates the
+background instead of keeping a stale cached bitmap. No main-controller/API
+change is needed for this editor-only display path. The existing game overlay's
+default footprint display remains unchanged; optional `render_layer(background=)`
+is used by the offline demonstration, not silently wired into game overlay caches.
+
+Room/door topology remains the planning layer, and the released binary mask stays
+the recognition/range-validation layer. Neither is derived anew from the display
+PNG and no recognition data is regenerated. Three more tests verify original RGB
+pixels are retained rather than recoloured, mask bytes remain unchanged, cache
+invalidation/fallback, image class validation and path-escape rejection. The
+combined targeted suite now has 14 passing tests.
+
+Offline comparison command adds `--require-normal` to forbid a misleading fallback
+in the delivered sample. Both before/after use the same normal map pixels and
+native waypoints. The final sheet includes 1F source diagonals, 2F orthogonal
+routes, and a zoom of the corrected endpoint tails on the real normal renderer
+background. CUA remains paused.
+
+## Straight-corridor feedback correction
+
+The first contact sheet's historical mask-A* column really did contain diagonal
+shortcuts in ordinary corridors. On 2F, examples are `(855,695)->(915,755)` and
+`(1155,755)->(1275,875)`. Those came from eight-neighbour fallback A*, not the Y
+source geometry, misregistration, rendering, or collinear reduction. Fallback A*
+now uses four neighbours and orthogonal endpoint connectors when no source
+diagonal evidence is available.
+
+The PR8 topology column had no diagonal 2F body segment for exact grid-centre
+endpoints, but free endpoints exposed a separate defect: `(158,458)` was linked
+directly to `(150,450)`. The straight-corridor reproduction
+`(158,458)->(158,650)` emitted diagonal tails at both ends. Endpoint attachment
+now projects onto room-owned source axis edges and retains explicit orthogonal
+lead-ins. It considers both edge ends rather than forcing a nearest-centre
+backtrack. The corrected path is exactly
+`(158,458),(150,458),(150,650),(158,650)`.
+
+Only `source-diagonal` edges can carry a diagonal. Ordinary graph edges with
+both coordinates changed are rejected. Off-axis endpoints on a true diagonal
+arm first join the arm's projection orthogonally; the remaining slope is the
+exact source slope. Every lead-in and solved segment still passes current-mask
+checks; missing doors, ambiguous room ownership and unknown transfers remain
+closed. Simplification only removes forward collinear vertices.
+
+Use `--before CAPTURED_PR8_PATHS.json` on the offline renderer to reproduce the
+same 1F/2F free endpoints against the actual captured PR8 paths. The updated
+comparison includes a zoom of the straight-corridor endpoint defect, drawn with
+small waypoint dots so marker circles cannot hide diagonal tails. No CUA or
+game input was used. The prior Library image is retained as version history.
