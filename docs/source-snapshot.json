@@ -1,12 +1,14 @@
 {
   "schema": "xiaochao-public-source-snapshot-v1",
   "snapshotDateUTC": "2026-10-27",
-  "sourceSnapshot": "source-snapshot-preview09-19",
+  "sourceSnapshot": "source-snapshot-preview09-19 + reopen-speed-86E85F7F",
   "baseCommit": "534cc0be0a6f08c9abc351ff86a44c46a2432068",
-  "candidateDisplayVersion": "1.0",
+  "candidateDisplayVersion": "1.0 后续开图提速测试版",
   "candidateNumericVersion": "1.0.0.4",
-  "candidateBuildFingerprint": "0B721D65",
-  "state": "MACHINE_VERIFIED actual-PE startup/preview/mode subchains; GUI/game NOT_RUN; identity ambiguity03/10 unresolved",
+  "candidateBuildFingerprint": "86E85F7F",
+  "incrementalSourceCommit": "9d5e3023fc4ee8f89fdda386049154059fbb5e8e",
+  "previousCandidateBuildFingerprint": "0B721D65",
+  "state": "Reopen-speed candidate tested by user with improvement reported; bounded machine checks passed; synthetic keypath replay is not physical timing; all-map acceptance and identity ambiguity03/10 remain unresolved",
   "originalSourceFilesSHA256": {
     "app/map_identity_engine.py": "E6F12F28E6899CA8112B8A1EA54359821DD3E59C0E48A1CF4B0EB8BA002B4514",
     "app/side_door_recognition.py": "BE80226E4A52A980831536715F68A8CD65F5A532AE32D36DEB4899CD01D1313D",
@@ -65,7 +67,7 @@
     "app/front_door_layout_recognition.py": "C3D88971F09EE466D28B681467DE8AC687F16147F0C7CC550ABE3348A1CC3DA2",
     "app/alignment_pose_transaction.py": "69D0B45904D372659BC49A99D1D5CD2F9D3FCFC64D87BC065C511DDA182C231F",
     "app/author_route_catalog.py": "A7496CC1C23BE43E7F1DBEC68B90A08D1815478B6083513E1092B69D3902742D",
-    "app/identityv_daily_assistant.py": "189F40EF167439497F80CF19CC37E65085EEE1C78ACD376E934205FFB7C46D1F",
+    "app/identityv_daily_assistant.py": "6634E889A40011D823FCA45DC97EB5E1AD63087515F53687622E651DB946346A",
     "app/sparse_floor_structure.py": "6215E322ACDF8B7933C22B39C79F9C3D05D84247925CA653D2C84BF6C7B03B33",
     "app/runtime_map_recognition.py": "1BA41B0E3B8339CF333B0A949F312E2D8B1B92006185220FEAF0AFF9AB825D78",
     "app/map_resource_model.py": "05BAB500F9FF9A79EA76BB2FB37070018E8BF0DAFCCFD24EC1042A7F7CBB35FE",
@@ -101,5 +103,5 @@
       "change": "Replace personal legacy asset path with configured or repository-relative directory."
     }
   ],
-  "notice": "Complete frozen preview09-19 application sources. Binary resources remain outside Git; only clean structures and matching precompute are supplied by a separate resource Release. Author maps/routes, rendered textures and private state are excluded."
+  "notice": "Complete frozen preview09-19 application sources plus the tested reopen-speed product delta (main and version.json). Local verification scripts and ICP experiments are excluded. Binary resources remain outside Git; only clean structures and matching precompute are supplied by a separate resource Release. Author maps/routes, rendered textures and private state are excluded."
 }

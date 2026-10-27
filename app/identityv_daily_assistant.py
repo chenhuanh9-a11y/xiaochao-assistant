@@ -28257,9 +28257,48 @@ class DailyAssistant:
                     evidence, floor_read, round_locked=round_identity_locked))
         return probable_map_interface(evidence)
 
+    def _capture_map_open_full_probe(self, hwnd, token, context, capture_context,
+            deadline_at, cancelled, *, silent_hint, round_identity_locked,
+            proposal_source, full_probe):
+        """Return one original full-frame verdict, retaining its capture lane."""
+        if not self._acquire_capture_lane(token, context, cancelled, deadline_at=deadline_at):
+            return None, True
+        keep_lock = False
+        try:
+            started = time.perf_counter()
+            frame, bounds = self._capture_source_frame(hwnd)
+            captured_utc = datetime.now(timezone.utc).isoformat(timespec='milliseconds')
+            captured = time.perf_counter()
+            if (not self._map_ready_current(token, context, cancelled)
+                    or tuple(bounds) != capture_context.client_screen_bounds
+                    or frame.shape[:2] != capture_context.full_client_size[::-1]
+                    or client_capture_context(hwnd) != capture_context):
+                return None, True
+            evidence_started = time.perf_counter()
+            evidence = self._mode_map_interface(frame)
+            evidence_done = time.perf_counter()
+            floor_read = self._mode_selected_floor(frame)
+            checked_at = time.perf_counter()
+            accepted = self._full_capture_frame_is_probable(evidence, floor_read,
+                silent_hint=silent_hint, round_identity_locked=round_identity_locked)
+            self._log('map-ready-full-checked', cycleId=token, accepted=accepted,
+                proposalSource=proposal_source, fullProbe=full_probe,
+                reason=evidence.get('reason'), floorReason=floor_read.get('reason'),
+                observedFloor=floor_read.get('selectedFloor'),
+                captureStartedAt=started, capturedAt=captured)
+            if accepted and self._map_ready_current(token, context, cancelled):
+                keep_lock = True
+                return ((frame, bounds, captured_utc, evidence, floor_read,
+                    (captured-started)*1000, (evidence_done-evidence_started)*1000,
+                    (checked_at-evidence_done)*1000, started, captured), False)
+            return None, False
+        finally:
+            if not keep_lock:
+                self.capture_lock.release()
+
     def _prepare_map_open_frame(self, hwnd, token, deadline_at, cancelled,
             *, silent_hint=True, round_identity_locked=False):
-        """ROI stability only proposes one fresh FULL check; never rank a crop.
+        """Known maps try a full frame first; ROI stability remains a fallback.
 
         The absolute deadline belongs to preparation. Once a fresh full frame
         passes original map/floor checks, the original solver budget applies.
@@ -28270,6 +28309,25 @@ class DailyAssistant:
         if time.perf_counter() >= deadline_at:
             self._log('map-ready-stopped', cycleId=token, reason='preparation-deadline')
             return None
+        full_probes = 0
+        if (round_identity_locked
+                and os.environ.get('IDENTITYV_REOPEN_FAST_CAPTURE', '1') != '0'):
+            # A known-map reopen may already have a usable frame. The same
+            # full interface/floor checks can authorize it without first
+            # collecting two ROI observations and a 50ms stable window.
+            full_probes += 1
+            try:
+                prepared, stopped = self._capture_map_open_full_probe(
+                    hwnd, token, context, capture_context, deadline_at, cancelled,
+                    silent_hint=silent_hint, round_identity_locked=round_identity_locked,
+                    proposal_source='locked-first-full-frame', full_probe=full_probes)
+            except OSError as error:
+                self._log('map-ready-first-full-unavailable', cycleId=token, error=str(error))
+                prepared, stopped = None, False
+            if prepared is not None:
+                return prepared
+            if stopped:
+                return None
         rectangle = live_capture.normalized_rect_to_client(
             capture_context.full_client_size, live_capture.BACKDROP[:4], policy='full-client')
         window = MapReadyWindow(required_observations=2, stable_seconds=.05)
@@ -28277,7 +28335,6 @@ class DailyAssistant:
             now=time.perf_counter(), deadline_at=deadline_at)
         previous = None
         revision = 0
-        full_probes = 0
         max_full_probes = int(self.CAPTURE_VISUAL_MAX_ATTEMPTS)
         full_probe_period = float(self.CAPTURE_VISUAL_DEADLINE_SECONDS) / max(1, max_full_probes)
         next_full_probe_at = time.perf_counter() + full_probe_period
@@ -28335,41 +28392,16 @@ class DailyAssistant:
             if decision.needs_fresh_full_frame or probe_due:
                 # This latch is consumed exactly once. A rejected full check
                 # returns to ROI only within the SAME original deadline.
-                if not self._acquire_capture_lane(token, context, cancelled, deadline_at=deadline_at):
+                full_probes += 1
+                prepared, stopped = self._capture_map_open_full_probe(
+                    hwnd, token, context, capture_context, deadline_at, cancelled,
+                    silent_hint=silent_hint, round_identity_locked=round_identity_locked,
+                    proposal_source='roi-stable' if decision.needs_fresh_full_frame else 'bounded-full-probe',
+                    full_probe=full_probes)
+                if prepared is not None:
+                    return prepared
+                if stopped:
                     break
-                keep_lock = False
-                try:
-                    full_probes += 1
-                    started = time.perf_counter()
-                    frame, bounds = self._capture_source_frame(hwnd)
-                    captured_utc = datetime.now(timezone.utc).isoformat(timespec='milliseconds')
-                    captured = time.perf_counter()
-                    if (not self._map_ready_current(token, context, cancelled)
-                            or tuple(bounds) != capture_context.client_screen_bounds
-                            or frame.shape[:2] != capture_context.full_client_size[::-1]
-                            or client_capture_context(hwnd) != capture_context):
-                        break
-                    evidence_started = time.perf_counter()
-                    evidence = self._mode_map_interface(frame)
-                    evidence_done = time.perf_counter()
-                    floor_read = self._mode_selected_floor(frame)
-                    checked_at = time.perf_counter()
-                    accepted = self._full_capture_frame_is_probable(evidence, floor_read,
-                        silent_hint=silent_hint, round_identity_locked=round_identity_locked)
-                    self._log('map-ready-full-checked', cycleId=token, accepted=accepted,
-                        proposalSource='roi-stable' if decision.needs_fresh_full_frame else 'bounded-full-probe',
-                        fullProbe=full_probes,
-                        reason=evidence.get('reason'), floorReason=floor_read.get('reason'),
-                        observedFloor=floor_read.get('selectedFloor'),
-                        captureStartedAt=started, capturedAt=captured)
-                    if accepted and self._map_ready_current(token, context, cancelled):
-                        keep_lock = True
-                        return (frame, bounds, captured_utc, evidence, floor_read,
-                            (captured-started)*1000, (evidence_done-evidence_started)*1000,
-                            (checked_at-evidence_done)*1000, started, captured)
-                finally:
-                    if not keep_lock:
-                        self.capture_lock.release()
                 now = time.perf_counter()
                 if now >= deadline_at or full_probes >= max_full_probes:
                     break
@@ -29538,6 +29570,30 @@ class DailyAssistant:
             raise ValueError(f'display original binding unavailable: {profile_id}/{map_id}/{floor}')
         return Path(path)
 
+    def _prepare_display_pixel_source(self, display, *, reuse):
+        """Bounded pure pixel preparation; never caches geometry or a verdict.
+
+        Some author arrays are writable. Compare their bytes against an owned
+        snapshot instead of treating an array id as proof of unchanged pixels.
+        A retained owner also prevents Python object-id reuse.
+        """
+        maximum = 96 * 1024 * 1024
+        cache = getattr(self, '_prepared_display_pixels', None)
+        eligible = bool(reuse and display.nbytes * 5 <= maximum)
+        if (eligible and cache is not None and cache['owner'] is display
+                and np.array_equal(cache['snapshot'], display)):
+            return cache['source'], cache, True
+        snapshot = display.copy() if eligible else display
+        alpha = snapshot[:, :, 3:4].astype(np.float32) / 255.0
+        source = np.concatenate((snapshot[:, :, :3].astype(np.float32) * alpha, alpha), axis=2)
+        cache = None
+        if eligible:
+            snapshot.setflags(write=False)
+            source.setflags(write=False)
+            cache = dict(owner=display, snapshot=snapshot, source=source)
+        self._prepared_display_pixels = cache
+        return source, cache, False
+
     def _build_display_overlay(self, route_source, matrix, frame_shape, *,
                                map_id=None, floor=None, profile_id=None, **options):
         """Build display pixels using the active reference's coverage basis."""
@@ -29569,32 +29625,58 @@ class DailyAssistant:
                 original, metadata = build_original_sheet_overlay(route_source, matrix, frame_shape, **options)
                 if original is None:
                     return None, metadata
-            alpha = display[:, :, 3:4].astype(np.float32) / 255.0
-            source = np.concatenate((display[:, :, :3].astype(np.float32) * alpha, alpha), axis=2)
-            height, width = frame_shape[:2]
-            warped = cv2.warpPerspective(source, np.asarray(matrix, np.float64), (width, height),
-                flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0, 0))
-            a = np.clip(warped[:, :, 3:4], 0.0, 1.0)
-            color = np.divide(warped[:, :, :3], a, out=np.zeros_like(warped[:, :, :3]), where=a > 0)
-            np.rint(color, out=color)
-            np.clip(color, 0, 255, out=color)
-            output = np.empty(warped.shape, dtype=np.uint8)
-            output[:, :, :3] = color
-            np.multiply(a, 255, out=a)
-            np.rint(a, out=a)
-            output[:, :, 3:4] = a
-            output[output[:, :, 3] == 0] = 0
+            spec = None
             if shared_display:
+                # Binding/version/bridge resolution remains fresh even when
+                # exactly identical display pixels can be reused below.
                 spec = self._route_profile_validation_spec(profile_id, map_id, floor, matrix, route_source)
                 if spec is None or not spec.get('profileBridgeVerified'):
                     raise ValueError('shared display has no declared native coordinate bridge')
-                metadata = self._shared_display_canvas_metadata(spec['sharedReference'].shape,
-                    spec['matrixSourceToClient'], output, **options)
-                if not metadata['success']:
-                    return None, metadata
+            reuse = bool(shared_display and os.environ.get('IDENTITYV_REOPEN_DISPLAY_CACHE', '1') != '0')
+            source, pixel_cache, source_reused = self._prepare_display_pixel_source(display, reuse=reuse)
+            render_key = None
+            if (pixel_cache is not None and set(options) <= {'minimum_coverage', 'minimum_visible_pixels'}):
+                render_key = (self.game_mode, map_id, floor, profile_id, tuple(frame_shape[:2]),
+                    tuple(np.asarray(matrix, np.float64).ravel()), tuple(spec['sharedReference'].shape),
+                    tuple(np.asarray(spec['matrixSourceToClient'], np.float64).ravel()),
+                    options.get('minimum_coverage', .08), options.get('minimum_visible_pixels', 500))
+            previous_render = pixel_cache.get('render') if pixel_cache is not None else None
+            render_reused = bool(render_key is not None and previous_render is not None
+                                 and previous_render['key'] == render_key)
+            if render_reused:
+                # Give consumers their own writable canvas, preserving the
+                # prior API without exposing the retained cached pixels.
+                output = previous_render['pixels'].copy()
+                metadata = copy.deepcopy(previous_render['metadata'])
+            else:
+                height, width = frame_shape[:2]
+                warped = cv2.warpPerspective(source, np.asarray(matrix, np.float64), (width, height),
+                    flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0, 0))
+                a = np.clip(warped[:, :, 3:4], 0.0, 1.0)
+                color = np.divide(warped[:, :, :3], a, out=np.zeros_like(warped[:, :, :3]), where=a > 0)
+                np.rint(color, out=color)
+                np.clip(color, 0, 255, out=color)
+                output = np.empty(warped.shape, dtype=np.uint8)
+                output[:, :, :3] = color
+                np.multiply(a, 255, out=a)
+                np.rint(a, out=a)
+                output[:, :, 3:4] = a
+                output[output[:, :, 3] == 0] = 0
+                if shared_display:
+                    metadata = self._shared_display_canvas_metadata(spec['sharedReference'].shape,
+                        spec['matrixSourceToClient'], output, **options)
+                    if not metadata['success']:
+                        return None, metadata
+                if (render_key is not None and pixel_cache['source'].nbytes
+                        + pixel_cache['snapshot'].nbytes + output.nbytes <= 96 * 1024 * 1024):
+                    retained = output.copy()
+                    retained.setflags(write=False)
+                    self._prepared_display_pixels = dict(pixel_cache, render=dict(
+                        key=render_key, pixels=retained, metadata=copy.deepcopy(metadata)))
             self._log('transparent-display-overlay-built', mapId=map_id, floor=floor,
                 profileId=profile_id, originalPath=str(path), originalValidationPreserved=not shared_display,
-                coverageBasis=metadata.get('coverageBasis', 'original-sheet-alpha'))
+                coverageBasis=metadata.get('coverageBasis', 'original-sheet-alpha'),
+                sourcePixelsReused=source_reused, renderedPixelsReused=render_reused)
             self.events.put(dict(kind='display-resource-ready', **context,
                 originalPath=str(path.resolve()).casefold()))
             return output, {**metadata, 'displayPixelsDerived': True, 'validationPixelsUnmodified': True,
