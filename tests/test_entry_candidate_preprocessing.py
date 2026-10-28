@@ -44,6 +44,11 @@ class PreprocessingTests(unittest.TestCase):
         self.assertFalse(r["grantsIdentity"])
         self.assertIn("doorway-boundary-unavailable",r["semanticGaps"])
         self.assertEqual(r["neighborhoods"][0]["anchor"]["kind"],"source-marker")
+    def test_declared_subset_does_not_claim_raw_closure(self):
+        self.config["sources"][0]["dependencies"]=["base.bin"]
+        self.write("config.json",self.config)
+        _,rows=self.run_build()
+        self.assertIn("raw-source-dependency-closure-unverified",rows[0]["semanticGaps"])
     def test_missing_binding_retained(self):
         self.write("index.json",dict(entries=[]))
         _,rows=self.run_build()

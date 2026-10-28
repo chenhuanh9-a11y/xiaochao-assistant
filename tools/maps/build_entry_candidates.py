@@ -116,8 +116,8 @@ def build(config_path, output):
             gaps.extend(["known-wall-classification-unavailable", "live-uniqueness-not-evaluated"])
             # Raw dependency closure is not reconstructed from an alpha mask or a cached renderer path.
             deps = {name:file_hash(within(root,name)) for name in source.get("dependencies",[])}
-            if not deps:
-                gaps.append("raw-source-dependency-closure-unverified")
+            # A nonempty declared subset cannot prove complete raw dependency closure.
+            gaps.append("raw-source-dependency-closure-unverified")
             source_gaps = [g for g in payload.get("semanticGaps",[]) if isinstance(g,dict) and str(g.get("mapId")) == key[0] and str(g.get("floor",key[1])) == key[1]]
             content = dict(schema=SCHEMA, identity=identity, binding=binding, coordinateSpace=item.get("canvas"), sourceSemanticGaps=source_gaps,
                            structureSha256=resource_hash, dependencies=deps, compilerSha256=compiler,
