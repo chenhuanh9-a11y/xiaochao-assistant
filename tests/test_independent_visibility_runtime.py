@@ -13,6 +13,7 @@ class IndependentVisibility(unittest.TestCase):
                 state = SimpleNamespace(gate=SimpleNamespace(confirmed_id='map'),
                     pack=SimpleNamespace(by_id={'map': object()}),
                     _round_identity_lock_context=lambda _: {},
+                    _provisional_reference_is_verified=lambda: False,
                     sheet_visibility_enabled=overlay, reference_sheet_visibility_enabled=reference,
                     game_foreground=True, map_is_open=True, current_floor='1',
                     _current_frame_floor_conflicts=lambda _: False,

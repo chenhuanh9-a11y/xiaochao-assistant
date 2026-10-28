@@ -6064,6 +6064,7 @@ class DailyAssistant:
         self.native_similarity_state = NativeSimilarityState()
         self._native_similarity_priority = None
         self._native_similarity_condition_context = None
+        self._native_similarity_family = None
         self.difficult_native_context = native_context
         self.difficult_identity_resources = difficult_identity_resources
         self.optional_author_displays = optional_author_displays
@@ -12362,6 +12363,17 @@ class DailyAssistant:
         pending = getattr(self, "front_group_sibling_pending", None)
         engine = getattr(self, "engine", None)
         group_index = getattr(engine, "front_group_index", None)
+        if isinstance(pending, dict) and pending.get('nativeSimilarity'):
+            def current():
+                return self._front_group_sibling_event_is_current(dict(mapId=map_id,
+                    cycleId=pending['cycleId'], sourceFrameGeneration=pending['frameGeneration'],
+                    alignmentRequestId=pending['requestId']), source_frame=frame)
+            if not current():return dict(fit=None, route=None, reason='native-group-target-stale')
+            profile = normalize_route_profile_id(getattr(self, 'route_profile_id', DEFAULT_ROUTE_PROFILE_ID))
+            route = self._aligned_author_route_image(profile, map_id, floor)
+            fit = self._alignment_v2_structure_fit(frame, route, map_id, floor, profile,
+                cancelled=lambda:not current(), entry_seed=pending['nativePoseSeed'])
+            return dict(fit=fit, route=route, reason=(fit or {}).get('reason'))
         if not isinstance(pending, dict) or group_index is None:
             return {"fit": None, "route": None, "reason": "front-group-sibling-context-unavailable"}
         source_id = str(pending.get("fromMemberId") or "")
@@ -14678,15 +14690,8 @@ class DailyAssistant:
                 if not rendered_profile_residual_is_verified(residual):
                     fit.update(success=False, reason="worker-rendered-profile-unverified")
                     fit_usable = False
-            prior=base_pose_context.get('nativeSimilarityContext')
-            if prior and str(floor)=='1' and (fit or {}).get('reason')!='structure-work-obsolete':
-                deadline=worker_started_at+AUTO_IDENTITY_BUDGET_SECONDS
-                if fit_usable and fit.get('coordinateSpace')=='shared-structure-to-client':
-                    native_proposal=engine.native_similarity_pose_observation(frame,map_id,floor,
-                        fit['matrixSourceToClient'],prior=prior,deadline=deadline)
-                elif not fit_usable:
-                    native_proposal=engine.native_similarity_recover_observation(frame,floor,
-                        prior=prior,deadline=deadline)
+            # Group identity review is scheduled after display commit; it must
+            # not extend the foreground fit worker's critical path.
             if mode == 'first-pose' and not fit_usable and difference_evidence is None and (fit or {}).get('reason') != 'structure-work-obsolete':
                 difference_evidence = self._alignment_v2_uncommitted_front_difference_sensor(
                     frame, map_id, floor, fit,
@@ -14945,6 +14950,139 @@ class DailyAssistant:
             str(getattr(self, 'current_floor', '')), getattr(self, 'current_frame_generation', None),
             getattr(self, 'surface_visibility_generation', None))
 
+    def _established_group_prior(self):
+        state = getattr(self, 'native_similarity_state', None)
+        prior = state.context_snapshot() if state is not None else None
+        if prior:return prior
+        family = getattr(self, '_native_similarity_family', None)
+        if family and family[:2] == (id(self.engine), self.game_mode):
+            return family[2]
+        return None
+
+    def _native_group_review_scope(self):
+        state = getattr(self, 'native_similarity_state', None)
+        context = self._native_similarity_context()
+        # A newer capture of identical pixels may consume this result, but a
+        # changed cycle/floor/surface/bounds must never be rebound.
+        return ((context[:3], context[4]), tuple(getattr(self, 'current_bounds', ()) or ()),
+                id(getattr(self, 'engine', None)),
+                getattr(state, 'generation', None), getattr(state, 'resource_key', None),
+                getattr(getattr(self, 'gate', None), 'confirmed_id', None),
+                getattr(self, 'route_profile_id', None))
+
+    def _start_native_group_review(self):
+        """One bounded identity job, after the foreground has committed pixels."""
+        sibling = getattr(self, 'front_group_sibling_pending', None)
+        if (isinstance(sibling, dict) and sibling.get('nativeSimilarity')
+                and not getattr(self, '_alignment_v2_worker_pending', False)
+                and not self._front_group_sibling_event_is_current(dict(
+                    mapId=sibling['toMemberId'], cycleId=sibling['cycleId'],
+                    sourceFrameGeneration=sibling['frameGeneration'],
+                    alignmentRequestId=sibling['requestId']))):
+            self.front_group_sibling_pending = None
+            if sibling['requestId'] == getattr(self, 'alignment_request_generation', None):
+                self.alignment_in_progress = False
+        state = getattr(self, 'native_similarity_state', None)
+        if (getattr(state, 'state', None) != 'GROUP_LOCKED'
+                or not state.context_snapshot()
+                or getattr(self, 'closed', False)
+                or getattr(getattr(self, 'gate', None), 'confirmed_id', None) != state.provisional_member_id
+                or getattr(self, '_native_group_review_request', None) is not None
+                or getattr(self, 'front_group_sibling_pending', None) is not None
+                or getattr(self, 'alignment_in_progress', False)
+                or getattr(self, '_alignment_v2_worker_pending', False)
+                or getattr(self, '_identity_rank_request', None) is not None
+                or getattr(self, 'capture_in_progress', False)
+                or getattr(self, 'floor_required', True)
+                or not getattr(self, 'map_is_open', False)
+                or not getattr(self, 'game_foreground', False)
+                or getattr(self, 'map_visual_suppressed', False)):
+            return False
+        engine = self.engine
+        rank = getattr(engine, 'rank_established_group', None)
+        if not callable(rank):return False
+        scope = self._native_group_review_scope()
+        now = time.monotonic()
+        work_key = (scope, _map_frame_signature_token(map_frame_signature(self.current_frame)))
+        if (work_key == getattr(self, '_native_group_review_last_scope', None)
+                or now - getattr(self, '_native_group_review_started', -100.) < 1.):
+            return False
+        frame = self.current_frame.copy()
+        request = dict(scope=scope, frame=frame, prior=state.context_snapshot(),
+                       floor=str(self.current_floor), cancelled=threading.Event())
+        self._native_group_review_request = request
+        self._identity_rank_request = request
+        self._native_group_review_last_scope = work_key
+        self._native_group_review_started = now
+        def run():
+            started = time.perf_counter()
+            result = dict(kind='native-group-review-completed', request=request)
+            try:
+                result['ranked'] = rank(frame, request['floor'], prior=request['prior'], budget_seconds=.2)
+            except Exception as error:
+                result['error'] = type(error).__name__
+            result['elapsedMs'] = (time.perf_counter()-started)*1000
+            self.events.put(result)
+        worker = threading.Thread(target=run, daemon=True)
+        request['worker'] = worker
+        try:worker.start()
+        except Exception:
+            self._native_group_review_request = None
+            if getattr(self, '_identity_rank_request', None) is request:
+                self._identity_rank_request = None
+            raise
+        return True
+
+    def _consume_native_group_review(self, event):
+        request = event.get('request')
+        if request is not getattr(self, '_native_group_review_request', None) or request is None:
+            return False
+        # Keep ownership until the terminal event is consumed, not merely until
+        # the worker exits. Duplicate/old completions cannot release a new job.
+        self._native_group_review_request = None
+        if getattr(self, '_identity_rank_request', None) is request:
+            self._identity_rank_request = None
+        if (request['cancelled'].is_set() or request['scope'] != self._native_group_review_scope()
+                or getattr(self, 'closed', False) or not self.map_is_open or getattr(self, 'floor_required', True)
+                or not getattr(self, 'game_foreground', False)
+                or getattr(self, 'map_visual_suppressed', False)
+                or not np.array_equal(request['frame'], self.current_frame)):
+            return False
+        rows = event.get('ranked') or []
+        verified = [row for row in rows if row.get('identityHardGatePassed') is True]
+        state = self.native_similarity_state
+        if event.get('error') or len(verified) != 1 or verified[0]['mapId'] not in state.member_ids:
+            self._log('similar-group-review-pending', reason=event.get('error') or 'identity-evidence-incomplete',
+                      elapsedMs=event.get('elapsedMs'), foregroundChanged=False, fullMapIdentitySearch=False)
+            return False
+        target = verified[0]['mapId']
+        staged = copy.deepcopy(state)
+        staged.provisional_member_id = target
+        staged.pending_identity = (target, str(self.current_floor), self._native_similarity_context())
+        staged.member_reference = None
+        source = self.gate.confirmed_id
+        if target == source:
+            # Identity is still pending: the next ordinary current-frame pose
+            # commit owns final promotion, with the unchanged residual gate.
+            self.native_similarity_state = staged
+            displayed = getattr(self, 'current_alignment_candidate', None) or {}
+            self._native_similarity_member_committed(target, str(self.current_floor),
+                global_verified=bool(displayed.get('globalResidualVerified')))
+            return True
+        seed = self._native_similarity_display_seed(dict(ranked=rows), target)
+        if seed is None or getattr(self, 'front_group_sibling_pending', None) is not None:
+            return False
+        self.front_group_sibling_pending = dict(fromMemberId=source, toMemberId=target,
+            groupId=state.group_id, groupGeneration=state.generation,
+            floor=str(self.current_floor), cycleId=self.active_map_cycle_id,
+            frameGeneration=self.current_frame_generation, requestId=None,
+            nativeSimilarity=True, stagedNativeState=staged, nativePoseSeed=seed)
+        request_id = self._invalidate_alignment_work()
+        self.front_group_sibling_pending['requestId'] = request_id
+        self._start_alignment_v2_first_pose_worker(target, str(self.current_floor),
+            str(self.current_floor), mode='front-group-sibling')
+        return True
+
     def _native_similarity_floor_changed(self, floor):
         state = getattr(self, 'native_similarity_state', None)
         if state is not None and state.floor is not None and state.floor != str(floor):
@@ -14955,6 +15093,9 @@ class DailyAssistant:
                 self.auto_lock_pending=None
                 self.map_identity_pose_pending=False
                 self._hide_spatial_route('front-group-floor-changed')
+            prior = state.context_snapshot()
+            if prior:
+                self._native_similarity_family = (id(self.engine), self.game_mode, prior)
             state.reset()
             self._native_similarity_priority = None
             self._native_similarity_condition_context = None
@@ -14981,6 +15122,7 @@ class DailyAssistant:
             state.reset()
             self._native_similarity_priority = None
             self._native_similarity_condition_context = None
+            self._native_similarity_family = None
             self._log('similar-group-reset',reason='resource-binding-changed')
 
     def _native_similarity_display_seed(self, event, map_id):
@@ -15088,6 +15230,48 @@ class DailyAssistant:
                 originalIdentityHardGatePassed=bool(proposal.get('originalIdentityHardGatePassed')),
                 positiveDifferences=(proposal.get('differenceEvidence') or {}),candidateOnly=True)
 
+    def _native_similarity_strong_conflict(self, event):
+        """Reopen a final family only after repeated explicit current contradictions.
+
+        Missing geometry, low confidence, timeouts and residual misses alone do
+        not contradict identity. Each counted observation must name a different
+        group member with confident structural evidence or a contradicted entry.
+        """
+        state = getattr(self, 'native_similarity_state', None)
+        if getattr(state, 'state', None) != 'MEMBER_VERIFIED' or not isinstance(event, dict):
+            return False
+        source = state.verified_member_id
+        if (event.get('mapId') != source or event.get('cycleId') != self.active_map_cycle_id
+                or event.get('sourceFrameGeneration') != self.current_frame_generation
+                or str(event.get('floor')) != str(self.current_floor)
+                or self.floor_required or not self.map_is_open):
+            return False
+        difference = event.get('frontGroupDifferenceEvidence') or {}
+        fit = event.get('fit') or {}
+        strong = bool((fit.get('entryCrossCheck') or {}).get('contradicted') is True
+            or (difference.get('confident') is True
+                and difference.get('candidateMapId') in state.member_ids
+                and difference.get('candidateMapId') != source))
+        key = (self.active_map_cycle_id, str(self.current_floor), source)
+        old = getattr(self, '_native_group_conflicts', None)
+        frames = set(old[1]) if old and old[0] == key else set()
+        if not strong:
+            self._native_group_conflicts = (key, set())
+            return False
+        frames.add(self.current_frame_generation)
+        self._native_group_conflicts = (key, frames)
+        if len(frames) < 2:return False
+        state.state = 'GROUP_LOCKED'
+        state.verified_member_id = None
+        state.pending_identity = None
+        state.generation += 1
+        self.active_confirmation = None
+        self._native_group_conflicts = None
+        self._native_group_review_last_scope = None
+        self._log('similar-group-final-lock-reopened', mapId=source, floor=self.current_floor,
+                  reason='repeated-current-structure-contradictions', fullMapIdentitySearch=False)
+        return True
+
     def _native_similarity_member_committed(self, map_id, floor, *, global_verified):
         state = getattr(self, 'native_similarity_state', None)
         if state is None or not global_verified or self.gate.confirmed_id!=map_id:
@@ -15098,9 +15282,13 @@ class DailyAssistant:
                 cycle_id=self.active_map_cycle_id,map_id=map_id,floor=str(floor),
                 frame_generation=self.current_frame_generation):
             return False
+        if state.state == 'MEMBER_VERIFIED' and state.verified_member_id == map_id:
+            self._native_group_conflicts = None
+            return False
         provisional=self._front_group_provisional_lock_context(map_id)
         confirmed = state.confirm(map_id,str(floor),self._native_similarity_context())
         if confirmed:
+            self._native_group_conflicts = None
             self._native_similarity_priority = None
             if provisional and provisional.get('nativeSimilarity'):
                 self._remember_confirmation(map_id,str(floor))
@@ -18232,6 +18420,7 @@ class DailyAssistant:
                 "cycleId": self.active_map_cycle_id,
                 "mapId": str(map_id), "floor": str(floor),
                 "accepted": True, "alignmentMode": "alignment-v2",
+                "globalResidualVerified": bool(candidate.global_residual_verified),
                 "source": candidate.source,
                 "displayAuthorizationId": authorization.authorization_id,
                 "matrixSourceToClient": render_matrix.tolist(),
@@ -19972,6 +20161,7 @@ class DailyAssistant:
             recovery_context = (self.active_map_cycle_id, str(floor), id(self.pack),
                 getattr(self, 'game_mode', None), getattr(self, 'surface_visibility_generation', 0))
         native_recheck=bool((self._front_group_provisional_lock_context() or {}).get('nativeSimilarity'))
+        group_prior = self._established_group_prior()
         engine = self.engine
         frame = self.current_frame.copy()
         bounds = self.current_bounds
@@ -20001,8 +20191,10 @@ class DailyAssistant:
             try:
                 if not request['cancelled'].is_set():
                     event['rankingPreload'] = engine.preload_status(floor)
-                    event['ranked'] = engine.rank(frame, floor=floor, limit=13,
-                        budget_seconds=AUTO_IDENTITY_BUDGET_SECONDS)
+                    event['ranked'] = (engine.rank_established_group(frame, floor, prior=group_prior,
+                        budget_seconds=AUTO_IDENTITY_BUDGET_SECONDS) if group_prior
+                        else engine.rank(frame, floor=floor, limit=13,
+                            budget_seconds=AUTO_IDENTITY_BUDGET_SECONDS))
             except Exception as error:
                 event.update(kind='unconfirmed-identity-rank-error',
                     recoveryContext=recovery_context, errorType=type(error).__name__)
@@ -29785,10 +29977,11 @@ class DailyAssistant:
             started = time.perf_counter()
             preload_status = self.engine.preload_status(floor)
             rank_started = time.perf_counter()
-            ranked = self.engine.rank(
+            group_prior = self._established_group_prior()
+            ranked = (self.engine.rank_established_group(best, floor, prior=group_prior,
+                budget_seconds=AUTO_IDENTITY_BUDGET_SECONDS) if group_prior else self.engine.rank(
                 best, floor=floor, limit=len(self.pack.maps),
-                budget_seconds=AUTO_IDENTITY_BUDGET_SECONDS,
-            )
+                budget_seconds=AUTO_IDENTITY_BUDGET_SECONDS))
             rank_completed = time.perf_counter()
             source_structure_candidate=None
             source_diagnostics=(getattr(self.engine,'last_difficult_evidence',{}) or {}).get('sourceStructureCandidates') or {}
@@ -32753,10 +32946,14 @@ class DailyAssistant:
             role = 'full-reference' if reference_context is None else 'minimap'
             if reference_context is not None and self._is_source_structure_identity(reference_context[1]):
                 role = 'runtime-bound-source-display'
-            cache_key = (str(path), tuple(max_size), role)
+            provisional = bool(reference_context is not None
+                and (self._round_identity_lock_context() or {}).get('provisional'))
+            cache_key = (str(path), tuple(max_size), role, provisional)
             pixels = self.sheet_photo_cache.get(cache_key)
             if pixels is None:
                 pixels = fit_display_bgra(self._display_pixels_for_source(path, role), max_size)
+                if provisional:
+                    pixels = self._mark_provisional_reference(pixels)
                 pixels.setflags(write=False)
                 self.sheet_photo_cache[cache_key] = pixels
                 while len(self.sheet_photo_cache) > 48:
@@ -32804,7 +33001,7 @@ class DailyAssistant:
             fitted = clamp_rect_to_work_area(candidate, work, margin_px=5)
             x, y = fitted.left, fitted.top
             self.sheet_position = (x, y)
-            render_key = (str(path), tuple(max_size), title, image_width, image_height,
+            render_key = (str(path), tuple(max_size), title, provisional, image_width, image_height,
                 float(self.sheet_opacity), x, y, bool(self.sheet_move_mode),
                 getattr(getattr(self, 'gate', None), 'confirmed_id', None),
                 str(getattr(self, 'current_floor', '')), getattr(self, 'route_profile_id', None),
@@ -35165,6 +35362,7 @@ class DailyAssistant:
             native_group_state.reset()
         self._native_similarity_priority = None
         self._native_similarity_condition_context = None
+        self._native_similarity_family = None
         if isinstance(engine, FrontDoorLiveTestEngine):
             engine.front_temporal_history = []
             engine.last_front_diagnostics = None
@@ -35218,6 +35416,35 @@ class DailyAssistant:
                 getattr(getattr(self, 'gate', None), 'confirmed_id', None),
                 str(getattr(self, 'current_floor', '')), getattr(self, 'route_profile_id', None))
 
+    def _provisional_reference_is_verified(self) -> bool:
+        core = getattr(self, 'alignment_core_v2', None)
+        map_id = getattr(getattr(self, 'gate', None), 'confirmed_id', None)
+        if not getattr(self, 'map_is_open', False):
+            return (getattr(self, '_provisional_reference_context', None)
+                    == self._reference_sheet_context()[:3])
+        return bool(core is not None and core.can_display(
+            authorization=core.display_authorization, cycle_id=self.active_map_cycle_id,
+            map_id=map_id, floor=str(self.current_floor),
+            frame_generation=self.current_frame_generation))
+
+    @staticmethod
+    def _mark_provisional_reference(pixels):
+        """Visible badge is part of the reference pixels, never the route pose."""
+        from PIL import ImageDraw, ImageFont
+        image = Image.fromarray(cv2.cvtColor(pixels, cv2.COLOR_BGRA2RGBA))
+        try:
+            font = ImageFont.truetype('msyh.ttc', 14)
+            text = '暂选地图｜组内确认中'
+        except OSError:
+            font = ImageFont.load_default()
+            text = 'PROVISIONAL MAP'
+        draw = ImageDraw.Draw(image)
+        box = draw.textbbox((0, 0), text, font=font)
+        height = min(image.height, box[3]-box[1]+10)
+        draw.rectangle((0, 0, image.width, height), fill=(45, 35, 12, 255))
+        draw.text((5, 5-box[1]), text, font=font, fill=(255, 215, 115, 255))
+        return cv2.cvtColor(np.asarray(image), cv2.COLOR_RGBA2BGRA)
+
     def _remember_reference_sheet_context(self) -> None:
         # This is the last observed floor for a static sheet, never a pose or
         # spatial display authorization. Reuse the existing surface epoch.
@@ -35227,6 +35454,9 @@ class DailyAssistant:
             and not self._current_frame_floor_conflicts(str(getattr(self, 'current_floor', '')))
             and self._current_frame_matches_display_environment()):
             self._reference_sheet_confirmed_context = self._reference_sheet_context()[:3]
+            if ((self._round_identity_lock_context() or {}).get('provisional')
+                    and self._provisional_reference_is_verified()):
+                self._provisional_reference_context = self._reference_sheet_context()[:3]
 
     def _reference_sheet_may_show(self) -> bool:
         """Keep a last-confirmed static reference across G; pose stays closed."""
@@ -35235,7 +35465,7 @@ class DailyAssistant:
         return bool(
             not getattr(self, 'closed', False)
             and map_id in getattr(getattr(self, 'pack', None), 'by_id', {})
-            and not (lock or {}).get('provisional')
+            and (not (lock or {}).get('provisional') or self._provisional_reference_is_verified())
             and getattr(self, 'reference_sheet_visibility_enabled', True)
             and getattr(self, 'game_foreground', False)
             and not getattr(self, 'floor_required', False)
@@ -35759,6 +35989,9 @@ class DailyAssistant:
         self, map_id: str, floor: str,
     ) -> dict | None:
         """Run the next reviewed-box probe from a committed pose or seed."""
+        if (self._front_group_provisional_lock_context(str(map_id)) or {}).get("nativeSimilarity"):
+            self._start_native_group_review()
+            return None
         if not self._front_group_difference_probe_should_start(
             str(map_id), str(floor), {"_fromPoll": True},
         ):
@@ -36010,7 +36243,8 @@ class DailyAssistant:
         pending = getattr(self, "front_group_sibling_pending", None)
         if not isinstance(pending, dict) or not isinstance(event, dict):
             return False
-        state = getattr(getattr(self, "engine", None), "front_group_state", None)
+        state = (getattr(self, 'native_similarity_state', None) if pending.get('nativeSimilarity')
+                 else getattr(getattr(self, "engine", None), "front_group_state", None))
         if (str(getattr(getattr(self, "gate", None), "confirmed_id", ""))
                 != str(pending.get("fromMemberId") or "")
             or getattr(state, "group_id", None) != pending.get("groupId")
@@ -36203,6 +36437,18 @@ class DailyAssistant:
     def _commit_front_group_sibling_state(self) -> bool:
         sibling = getattr(self, "front_group_sibling_pending", None)
         engine = getattr(self, "engine", None)
+        if isinstance(sibling, dict) and sibling.get('nativeSimilarity'):
+            state = getattr(self, 'native_similarity_state', None)
+            if (state is None or state.generation != sibling['groupGeneration']
+                    or self.gate.confirmed_id != sibling['toMemberId']):
+                return False
+            staged = sibling['stagedNativeState']
+            staged.generation += 1
+            self.native_similarity_state = staged
+            self._native_similarity_priority = staged.priority(self.game_mode)
+            self._native_similarity_condition_context = staged.context_snapshot()
+            self.front_group_sibling_pending = None
+            return True
         if not isinstance(sibling, dict) or not callable(
             getattr(engine, "switch_front_provisional_member", None)
         ):
@@ -36264,6 +36510,7 @@ class DailyAssistant:
 
     def _handle_front_group_alignment_failure(self, event: dict | None) -> bool:
         """Consume the next reviewed group member or terminate fail-closed."""
+        self._native_similarity_strong_conflict(event)
         pending_sibling = getattr(self, "front_group_sibling_pending", None)
         if isinstance(pending_sibling, dict):
             if not self._front_group_sibling_event_is_current(event):
@@ -36875,6 +37122,7 @@ class DailyAssistant:
         callback_started = time.perf_counter()
         scheduled_at = getattr(self, '_event_poll_due_at', callback_started)
         self._check_native_similarity_resources()
+        self._start_native_group_review()
         self._check_reference_position_editor()
         self._reap_cancelled_map_package_helper()
         self._drain_online_map_package_progress()
@@ -36976,6 +37224,9 @@ class DailyAssistant:
                 current_kind = str(kind)
                 event_processing = (event_dequeued_at, current_kind)
                 if not self._finish_rerank_request(event):
+                    continue
+                if kind == 'native-group-review-completed':
+                    self._consume_native_group_review(event)
                     continue
                 if kind == 'online-map-packages-completed':
                     self._consume_online_map_package_result(event)
