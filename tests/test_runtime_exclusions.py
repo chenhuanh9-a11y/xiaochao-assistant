@@ -1,6 +1,8 @@
 from pathlib import Path
 import sys
 import unittest
+import runpy
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 from runtime_exclusions import PYTHON_MODULE_EXCLUSIONS, filter_binaries
@@ -24,6 +26,23 @@ class RuntimeExclusionTests(unittest.TestCase):
         self.assertEqual(set(PYTHON_MODULE_EXCLUSIONS), {"PIL.AvifImagePlugin", "PIL._avif"})
         self.assertFalse(set(PYTHON_MODULE_EXCLUSIONS) & {
             "PIL.PngImagePlugin", "PIL.JpegImagePlugin", "PIL.WebPImagePlugin", "cv2"})
+
+    def test_maintained_spec_collects_support_images_when_present(self):
+        root = Path(__file__).resolve().parents[1]
+        if not (root / "assets/support").is_dir():
+            self.skipTest("Support-window PR not present in this checkout")
+        calls = {}
+        def analysis(*args, **kwargs):
+            calls.update(kwargs)
+            return SimpleNamespace(binaries=[], pure=[], scripts=[], datas=kwargs["datas"])
+        runpy.run_path(str(root / "tools/xiaochao-assistant.spec"), init_globals={
+            "SPECPATH": str(root / "tools"), "Analysis": analysis,
+            "PYZ": lambda *a, **kw: None, "EXE": lambda *a, **kw: None,
+            "COLLECT": lambda *a, **kw: None,
+        })
+        self.assertIn((str(root / "assets/support"), "assets/support"), calls["datas"])
+        self.assertTrue((root / "assets/support/wechat.png").is_file())
+        self.assertTrue((root / "assets/support/alipay.png").is_file())
 
 
 if __name__ == "__main__":
