@@ -9,3 +9,36 @@ GitHub 仓库是源码协作与交付的依据。本地完成的改动应及时�
 5. 资源发布遵循授权范围和来源说明。游戏原包、账号信息、个人配置、日志、密钥及未授权素材不能随源码或构建产物提交。
 
 离线测试应使用 fixture 或 mock；需要 Windows 输入、GUI 或游戏实测的功能，单独记录其验证状态。测试通过不等同于完成真实游戏验证。
+
+## 变更规模与功能关系
+
+根目录 [AGENTS.md](../AGENTS.md) 和 [PR 模板](../.github/pull_request_template.md) 提供短检查清单。普通小修只需在 PR 说明问题、影响链路、实际验证和未测项；不要为每次修复增加设计报告或跑无关全库。跨模块协议或状态归属变化才补必要设计。以下是当前代码导航，不代表各条链路已经完整统一或全部验收。
+
+| 变更入口 | 必须跟到的消费者 | 现有代码与测试起点 |
+| --- | --- | --- |
+| 识别、正门/侧门、相似组 | 候选证据 → 组态/身份 → 当前帧验证 → 提交；暂定成员与唯一身份确认分清 | [map_identity_engine.py](../app/map_identity_engine.py)、[difficult_native_identity.py](../app/difficult_native_identity.py)、[test_native_similarity_runtime.py](../tests/test_native_similarity_runtime.py)、[test_front_gate_observation.py](../tests/test_front_gate_observation.py)、[test_side_entry_search.py](../tests/test_side_entry_search.py) |
+| 首次/后续贴合、楼层、关闭与重开 | 当前地图/层/帧 → worker → 验证 → round-pose/core → 正确可见像素 | [identityv_daily_assistant.py](../app/identityv_daily_assistant.py)、[fast_structure_alignment.py](../app/fast_structure_alignment.py)、[alignment_pose_transaction.py](../app/alignment_pose_transaction.py)、[test_queued_first_pose_delivery.py](../tests/test_queued_first_pose_delivery.py)、[test_queued_delivery_core_contract.py](../tests/test_queued_delivery_core_contract.py) |
+| 作者与自定义路线选择 | 偏好 → 实际来源与每层显示桥 → 渲染缓存 → 当前显示；身份/结构位姿不漂移 | [optional_author_displays.py](../app/optional_author_displays.py)、[test_route_selection_controller.py](../tests/test_route_selection_controller.py)、[test_route_selection_regressions.py](../tests/test_route_selection_regressions.py)、[test_custom_route_integration.py](../tests/test_custom_route_integration.py) |
+| 下载/导入资源 | 下载状态与校验 → 安装事务 → 资源工厂 → 作者选项/列表 → 缓存和旧任务失效 | [star_map_download.py](../app/star_map_download.py)、[star_map_import.py](../app/star_map_import.py)、[map_resource_browser.py](../app/map_resource_browser.py)、[test_live_author_import.py](../tests/test_live_author_import.py)、[test_live_author_import_controller.py](../tests/test_live_author_import_controller.py)、[test_map_package_upgrade.py](../tests/test_map_package_upgrade.py) |
+
+噩梦与困难应使用同一识别/贴合及生命周期实现，差异由资源、楼层元数据和必要参数提供。修改前核实际调用路径，修改后用两模式受影响的参数或代表资源验证。无法验证的资源契约要留明确缺口；不能删验证、复制模式专属算法或强套另一模式的门/坐标语义。既有测试名只是起点，例如排队首次任务测试不能代表后续每次开图延迟已经修复。
+
+涉及异步与状态的改动，按风险选择成功、失败、取消、重复触发、迟到回调及换图/换层/关图/结束本局反例。检查最后实际消费者，而不只检查日志、列表条目或中间返回值。可重复的少量代表回归优先；不为小修添加镜像实现的测试或无关全量测试。
+
+## 贴合速度与可靠显示的验收口径
+
+首贴属于识别阶段，约 **500ms** 是目标；已锁图且首贴成功后的每一次重新开图，约 **300ms** 是目标。当前规范不宣称任一目标已经达成，也不改变验证门槛。
+
+按同一单调时钟和开图轮次关联：输入接收、画面就绪、截图、楼层高亮判断、锁图后的求解、排队/验证与首次正确可见像素。先把首贴与后续开图分开，再区分算法计算时间和端到端时间；嵌套阶段不能相加，日志终点不是可见像素时不得冒称端到端。无真实按键时刻的回放写明起点是保存帧或事件注入。
+
+连续样本报告版本/资源、模式/地图/楼层、样本数、p50/p95/max、未显示次数、错层次数以及超时判定窗口；百分位写明采用的方法。未显示的轮次不能从统计中无声删除，也不能记作零耗时。错层要对照有来源的图像真值；高亮尚不稳定、缺帧或无真值时单列未知。涉及楼层逻辑时按实际支持范围覆盖 B1、F1、F2 及过渡帧，不把所有模式都假定为三层。
+
+前后对比注明是否同帧、同资源、同运行环境及热/冷缓存。保存帧回放可用于定位和回归，真实游戏的调度、截图就绪、绘图时延与长期 RSS/句柄仍须独立验收，不能从局部算法更快推导整体更稳。
+
+## 合并后与安装包绑定
+
+合并改变了最终提交或调用关系时，在最终远端 commit 的干净 checkout 上运行受影响的联合检查，然后从同一 commit 构建。若某个未变模块的测试复用旧证据，记录对应文件/哈希和复用范围，不能将合并前的整体通过直接写成合并后通过。
+
+交付回执记录 source commit、显示/数值版本、构建指纹、资源版本和锁文件哈希、实际内置范围、Setup 精确字节数与 SHA256。需要外部资源时明确获取与绑定合同；缺失时报告，不能静默退回旧本地源码/素材。软件只交付 Setup，地图导入包仍可用 ZIP；未生成安装器时不要用便携 ZIP 的大小估算安装包收益。
+
+源码/离线检查、包内模块检查、安装、真实 GUI/游戏和线上发布分别标明结果。生成 Setup 不代表自动授权安装或发布；保留旧交付物和用户数据，未包含的 PR/修复不得写进当前版本公告。
