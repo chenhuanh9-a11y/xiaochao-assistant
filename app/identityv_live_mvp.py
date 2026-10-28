@@ -153,6 +153,10 @@ user32.SetWindowPos.argtypes = [
     ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint,
 ]
 user32.SetWindowPos.restype = ctypes.c_bool
+user32.SetWindowRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_bool]
+user32.SetWindowRgn.restype = ctypes.c_int
+gdi32.CreateRectRgn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+gdi32.CreateRectRgn.restype = ctypes.c_void_p
 user32.DestroyWindow.argtypes = [ctypes.c_void_p]
 user32.DestroyWindow.restype = ctypes.c_bool
 user32.UnregisterClassW.argtypes = [ctypes.c_wchar_p, ctypes.c_void_p]
@@ -1301,6 +1305,12 @@ class LayeredOverlay:
         self._last_presented_bgra: np.ndarray | None = None
         self._last_presented_position: tuple[int, int] | None = None
         self._last_presented_opacity: float | None = None
+        self._retained_packet = None
+        self._retained_token = None
+        self._retained_client_origin = None
+        self._retained_clipped_out = False
+        self._surface_clip = None
+        self.retained_move_count = 0
         self.present_count = 0
         # Exclude this desktop-only overlay from our own screen capture where Windows supports it.
         # The overlay is hidden before recognition captures. Do not opt this large
@@ -1471,6 +1481,7 @@ class LayeredOverlay:
             result = bool(user32.ShowWindow(self.hwnd, self.SW_HIDE))
             self._record_native_call("ShowWindow(SW_HIDE)", started, result)
             self.visible = False
+            self._retained_clipped_out = False
 
     def request_hide(self) -> bool:
         """Request a hide without waiting on the owner thread's visibility lock.
@@ -1526,6 +1537,9 @@ class LayeredOverlay:
         move/show operation instead of another alpha crop, DIB allocation and
         ``UpdateLayeredWindow`` call.
         """
+        if self._retained_packet is not None:
+            return self.show_retained(self._retained_packet, client_origin,
+                                      opacity=self._last_presented_opacity)
         if (
             not self.hwnd
             or self.window_size is None
@@ -1551,6 +1565,9 @@ class LayeredOverlay:
                 started = time.perf_counter()
                 shown = bool(user32.ShowWindow(self.hwnd, self.SW_SHOWNOACTIVATE))
                 self._record_native_call("ShowWindow(SW_SHOWNOACTIVATE)", started, shown)
+                if not self._visibility_allowed():
+                    self.hide()
+                    return False
                 self.screen_position = (x, y)
                 self._last_presented_position = (x, y)
                 self.visible = True
@@ -1565,13 +1582,21 @@ class LayeredOverlay:
         drag has finished.
         """
         if (
-            not self.hwnd or not self.visible
+            not self.hwnd or (not self.visible and not self._retained_clipped_out)
             or self.screen_position is None
             or not np.isfinite([dx, dy]).all()
         ):
             return False
         x = int(round(self.screen_position[0] + float(dx)))
         y = int(round(self.screen_position[1] + float(dy)))
+        if self._retained_packet is not None and self._retained_client_origin is not None:
+            origin = self._retained_client_origin
+            packet = self._retained_packet.at_offset((x - origin[0], y - origin[1]))
+            shown = self.show_retained(packet, origin, opacity=self._last_presented_opacity)
+            # An empty intersection is a successful drag placement, not an
+            # unavailable native move. The caller must accumulate that delta
+            # so its later source refresh and drag-back use the same offset.
+            return bool(shown or self._retained_clipped_out)
         with self._visibility_guard("move_by"):
             if not self._visibility_allowed():
                 self.hide()
@@ -1591,7 +1616,164 @@ class LayeredOverlay:
                 self.visible = True
             return ok
 
+    def _set_surface_clip(self, bounds) -> bool:
+        """Set a local HWND region; Windows owns a region only after success."""
+        if self._surface_clip == bounds:
+            return True
+        region = None if bounds is None else gdi32.CreateRectRgn(*bounds)
+        if bounds is not None and not region:
+            return False
+        started = time.perf_counter()
+        ok = bool(user32.SetWindowRgn(self.hwnd, region, True))
+        self._record_native_call("SetWindowRgn", started, ok)
+        if ok:
+            self._surface_clip = bounds
+        elif region:
+            gdi32.DeleteObject(region)
+        return ok
+
+    def _upload_retained_pixels(self, pixels, position) -> bool:
+        height, width = pixels.shape[:2]
+        screen_dc = user32.GetDC(None)
+        if not screen_dc:
+            return False
+        memory_dc = bitmap = old = None
+        try:
+            memory_dc = gdi32.CreateCompatibleDC(screen_dc)
+            if not memory_dc:
+                return False
+            info = BITMAPINFO()
+            info.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+            info.bmiHeader.biWidth = width
+            info.bmiHeader.biHeight = -height
+            info.bmiHeader.biPlanes = 1
+            info.bmiHeader.biBitCount = 32
+            bits = ctypes.c_void_p()
+            bitmap = gdi32.CreateDIBSection(screen_dc, ctypes.byref(info),
+                                          self.DIB_RGB_COLORS, ctypes.byref(bits), None, 0)
+            if not bitmap or not bits:
+                return False
+            old = gdi32.SelectObject(memory_dc, bitmap)
+            ctypes.memmove(bits, pixels.ctypes.data, pixels.nbytes)
+            destination, size, source = POINT(*position), SIZE(width, height), POINT(0, 0)
+            blend = BLENDFUNCTION(self.AC_SRC_OVER, 0, 255, self.AC_SRC_ALPHA)
+            started = time.perf_counter()
+            ok = bool(user32.UpdateLayeredWindow(
+                self.hwnd, screen_dc, ctypes.byref(destination), ctypes.byref(size),
+                memory_dc, ctypes.byref(source), 0, ctypes.byref(blend), self.ULW_ALPHA))
+            self._record_native_call("UpdateLayeredWindow(retained)", started, ok)
+            return ok
+        finally:
+            if old:
+                gdi32.SelectObject(memory_dc, old)
+            if bitmap:
+                gdi32.DeleteObject(bitmap)
+            if memory_dc:
+                gdi32.DeleteDC(memory_dc)
+            user32.ReleaseDC(None, screen_dc)
+
+    def show_retained(self, packet, client_origin: tuple[int, int], opacity: float = 0.88) -> bool:
+        """Upload a local bitmap once; subsequent placement uses only HWND moves.
+
+        The full image remains resident even outside the client. A window region
+        clips it to the current game rectangle and is recalculated on each drag.
+        This endpoint records native-call completion, not displayed-frame latency.
+        """
+        if packet is None or not np.isfinite(opacity):
+            self.hide()
+            return False
+        pixels = packet.pixels
+        if (not isinstance(pixels, np.ndarray) or pixels.dtype != np.uint8
+                or pixels.ndim != 3 or pixels.shape[2] != 4):
+            self.hide()
+            return False
+        effective_opacity = float(np.clip(opacity, 0, 1))
+        origin = tuple(int(value) for value in client_origin)
+        offset = packet.client_offset
+        position = (origin[0] + offset[0], origin[1] + offset[1])
+        with self._visibility_guard("show_retained"):
+            if not self.hwnd or not self._visibility_allowed():
+                self.hide()
+                return False
+            upload = bool(self._retained_token is not packet.token
+                          or self._last_presented_opacity != effective_opacity)
+            # Empty the old region before changing placement. Otherwise an old
+            # edge clip can briefly expose pixels beyond the game client.
+            if (upload or self._surface_clip != packet.clip_bounds):
+                if not self._set_surface_clip((0, 0, 0, 0)):
+                    self.hide()
+                    return False
+            if upload:
+                crop = np.array(pixels, copy=True, order='C')
+                alpha = crop[:, :, 3].copy()
+                for channel in range(3):
+                    crop[:, :, channel] = cv2.multiply(
+                        crop[:, :, channel], alpha, scale=effective_opacity / 255.0,
+                        dtype=cv2.CV_8U)
+                crop[:, :, 3] = cv2.convertScaleAbs(alpha, alpha=effective_opacity)
+                if not self._visibility_allowed():
+                    self.hide()
+                    return False
+                if not self._upload_retained_pixels(crop, position):
+                    self._retained_token = None
+                    self.hide()
+                    return False
+                self._retained_token = packet.token
+                self._last_presented_bgra = crop
+                self._last_presented_opacity = effective_opacity
+                self.present_count += 1
+            self._retained_packet = packet
+            self._retained_client_origin = origin
+            self.client_offset = tuple(offset)
+            self.window_size = (int(pixels.shape[1]), int(pixels.shape[0]))
+            if not self._visibility_allowed():
+                self.hide()
+                return False
+            started = time.perf_counter()
+            moved = bool(user32.SetWindowPos(
+                self.hwnd, self.HWND_TOPMOST, *position, 0, 0,
+                self.SWP_NOSIZE | self.SWP_NOACTIVATE | self.SWP_SHOWWINDOW))
+            self._record_native_call("SetWindowPos(retained)", started, moved)
+            if not moved or not self._visibility_allowed():
+                self.hide()
+                return False
+            if not self._set_surface_clip(packet.clip_bounds) or not self._visibility_allowed():
+                self.hide()
+                return False
+            self.screen_position = position
+            self._last_presented_position = position
+            started = time.perf_counter()
+            shown = bool(user32.ShowWindow(self.hwnd, self.SW_SHOWNOACTIVATE))
+            self._record_native_call("ShowWindow(retained)", started, shown)
+            if not self._visibility_allowed():
+                self.hide()
+                return False
+            x0, y0, x1, y1 = packet.clip_bounds
+            self.visible = bool(x1 > x0 and y1 > y0)
+            self._retained_clipped_out = False
+            if not self.visible:
+                self.hide()
+                # Continue tracking a drag that temporarily takes all ink
+                # outside the game. An explicit hide still cancels movement.
+                self._retained_clipped_out = True
+            self.retained_move_count += int(not upload)
+            self._record_diagnostic(
+                "overlay-retained-presented", uploaded=upload,
+                bitmapBuildCount=self.present_count, nativeMoveCount=self.retained_move_count,
+                clientOffset=self.client_offset, clipBounds=packet.clip_bounds,
+                endpoint="native-call-return-not-screen-presentation")
+            return self.visible
+
     def show_bgra(self, image: np.ndarray, client_origin: tuple[int, int], opacity: float = 0.88) -> bool:
+        with self._visibility_guard("show_bgra-retained-reset"):
+            if self._retained_packet is not None:
+                # Clearing a region on a visible local raster would briefly
+                # expose its off-client pixels before the legacy upload.
+                self.hide()
+            self._retained_packet = None
+            self._retained_token = None
+            self._retained_client_origin = None
+            self._retained_clipped_out = False
         crop, crop_bounds = prepare_layered_bgra(image, opacity)
         if crop is None or crop_bounds is None:
             self.hide()
@@ -1603,7 +1785,15 @@ class LayeredOverlay:
             int(client_origin[0] + x0), int(client_origin[1] + y0),
         )
         with self._visibility_guard("show_bgra-cache-check"):
-            if not self._visibility_allowed():
+            if not self.hwnd or not self._visibility_allowed():
+                self.hide()
+                return False
+            # A legacy upload replaces the native surface. Its pixels can no
+            # longer be reused by an old retained token, even at the same size.
+            self._retained_packet = None
+            self._retained_token = None
+            self._retained_client_origin = None
+            if not self._set_surface_clip(None):
                 self.hide()
                 return False
             if layered_surface_payload_is_unchanged(
@@ -1701,6 +1891,11 @@ class LayeredOverlay:
             self._last_presented_bgra = None
             self._last_presented_position = None
             self._last_presented_opacity = None
+            self._retained_packet = None
+            self._retained_token = None
+            self._retained_client_origin = None
+            self._surface_clip = None
+            self._retained_clipped_out = False
             if self._class_registered:
                 if not user32.UnregisterClassW(self.class_name, self._instance):
                     raise ctypes.WinError()
