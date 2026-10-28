@@ -38,6 +38,7 @@ from map_resource_browser import MapResourceBrowser
 from map_resource_model import MapResourceModel, choose_resource, floor_label, resource_inventory
 from map_resource_overview import structure_previews, load_structure_preview
 from update_service import UpdateService
+from support_window import open_support_window
 
 
 ACTION_NAMES = {"map": "游戏地图键", "toggle-panel": "呼出/收起游戏控件", "candidate-prev": "上一个候选",
@@ -436,6 +437,7 @@ class DesktopMainUI:
         self._refresh_job = None
         self._shell_layout = None
         self._close_choice_window = None
+        self._support_window = None
         self._icons = DesktopIcons(self.root) if DesktopIcons is not None else None
         if self._icons is not None:
             self._icons._masks.setdefault("route", _route_mask())
@@ -1531,6 +1533,12 @@ class DesktopMainUI:
             self._help_images[topic] = dict(toggle=image_toggle, holder=holder, label=image_label,
                 opened=False, source=None, photo=None, job=None, generation=0, size=None)
             holder.bind("<Configure>", lambda event, topic=topic: self._queue_help_image(topic), add="+")
+        support = self._card(content, padx=24, pady=18)
+        support.pack(fill="x", pady=(14, 2))
+        self._label(support, "支持开发", size=13, bold=True, anchor="w").pack(fill="x")
+        self._label(support, "星图免费使用，赞赏完全自愿。", size=9, color=MUTED,
+                    anchor="w").pack(fill="x", pady=(6, 10))
+        self._ghost(support, "打开赞赏窗口", self._open_support_window, size=9).pack(anchor="w")
         tk.Frame(content, bg=BG, height=14).pack(fill="x")
         self._finish_scroll_page("help")
 
@@ -1934,6 +1942,10 @@ class DesktopMainUI:
         # Canvas item's allocation. Reconcile through the existing refresh.
         self._fit_home_canvas()
 
+    def _open_support_window(self):
+        self._support_window = open_support_window(
+            self.window, self._support_window, context_provider=self.assistant)
+
     def _refresh_view(self):
         self._refresh_job = None
         if self._closed:
@@ -1949,6 +1961,9 @@ class DesktopMainUI:
         if event.widget is not self.window:
             return
         self._closed = True
+        if self._support_window is not None:
+            self._support_window.close()
+            self._support_window = None
         self._brand_images.close()
         self._window_brand_icons = ()
         self.brand_icon._desktop_icon = None
