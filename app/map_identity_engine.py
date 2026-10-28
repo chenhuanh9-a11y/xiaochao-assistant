@@ -734,12 +734,13 @@ class MapIdentityEngine(NightmareCandidateEngine):
             variantExclusiveEvidence=variant_exclusive,
             poseSubmissionAllowed=False,authorRouteDisplayAllowed=False)
 
-    def rank(self,frame,floor='1',limit=30,*,budget_seconds=None):
+    def rank(self,frame,floor='1',limit=30,*,budget_seconds=None,_established_members=None):
         if floor not in self.identity_floors:return []
         started=time.perf_counter()
-        allowed=None;gate_report=None
+        allowed=set(_established_members) if _established_members is not None else None
+        gate_report=None
         prefilter=getattr(self,'front_gate_prefilter',None)
-        if prefilter is not None:
+        if prefilter is not None and _established_members is None:
             allowed,gate_report=prefilter.select(frame,floor,self.entry_identity.geometry)
         gate_args=dict(candidate_map_ids=allowed) if allowed is not None else {}
         budget=1.0 if budget_seconds is None else max(0.,float(budget_seconds))
@@ -892,8 +893,9 @@ class MapIdentityEngine(NightmareCandidateEngine):
         # A registered identity does not suppress the new source-family scan.
         # Both searches share the original request budget; source rows remain
         # advisory and cannot replace the registered identity or authorize pose/display.
-        source_candidates=self._rank_source_structure_candidates(
-            frame,budget_seconds=remaining(),floor=str(floor))
+        source_candidates=(self._rank_source_structure_candidates(
+            frame,budget_seconds=remaining(),floor=str(floor)) if _established_members is None
+            else dict(candidates=[],candidateCount=0,reason='established-group-only'))
         source_candidates=dict(source_candidates,
             registeredIdentityCandidates=registered_identity_candidates,
             evaluatedAlongsideRegisteredIdentity=bool(registered_identity_candidates),
@@ -904,7 +906,8 @@ class MapIdentityEngine(NightmareCandidateEngine):
         # icon-only advisory pass. Unresolved inputs keep that fallback intact.
         evidence=(dict(candidates=[],entryKind='main',reason='tilemap-entry-verified')
                   if any(row['identityVerified'] for row in entry_rows) or side_winner is not None
-                  else self.entry_advisory(frame) if self.entry_advisory is not None else dict(candidates=[],entryKind='unknown'))
+                  else self.entry_advisory(frame) if self.entry_advisory is not None and _established_members is None
+                  else dict(candidates=[],entryKind='unknown'))
         evidence['tilemapEntry']=entry_diagnostics
         evidence['tilemapCandidates']=entry_rows
         evidence['tilemapSide']=side_diagnostics
@@ -991,6 +994,45 @@ class MapIdentityEngine(NightmareCandidateEngine):
                 required_map_ids=tuple(sorted(group_required))) if self.native_similarity_index is not None else dict(status='none',reason='similarity-root-not-configured')
         diagnostics['elapsedMs'] = (time.perf_counter()-started)*1000
         return rows[:limit]
+
+    def rank_established_group(self, frame, floor, *, prior, budget_seconds):
+        """Run the unchanged identity gates within a previously proven family.
+
+        Only the bound entrance context can supply the competitor set. A caller
+        cannot make an arbitrary singleton unique by passing a list of map IDs.
+        Source-family discovery and icon advice are not part of this review.
+        """
+        started = time.perf_counter()
+        budget = max(0., float(budget_seconds))
+        if budget <= 0:return []
+        index = getattr(self, 'native_similarity_index', None)
+        conditions = getattr(index, 'condition_index', None)
+        if (conditions is None or getattr(index, 'mode', None) != self.pack.mode
+                or not prior or len(prior) != 4
+                or tuple(prior[:3]) != (self.pack.mode, '1', index.index_digest)):
+            return []
+        cohorts = []
+        for domain_id, condition_ids in prior[3]:
+            if domain_id not in conditions.domains or not condition_ids:
+                return []
+            for condition_id in condition_ids:
+                condition = conditions.conditions.get(condition_id)
+                if (condition is None or condition_id not in conditions.domain_conditions[domain_id]
+                        or not condition.get('completeForeignMapCompetition')):
+                    return []
+                cohorts.append({conditions.references[conditions.poses[str(pid)]['target']]['mapId']
+                                for pid in condition['poseIds']})
+        members = set.intersection(*cohorts) if cohorts else set()
+        if len(members) < 2 or not members <= set(self.pack.by_id):
+            return []
+        conditions.validate_domains([domain for domain, _ in prior[3]], self.entry_shared_reference_provider)
+        # Dynamic dispatch preserves NativeDifficultCandidateEngine's missing
+        # inventory suppression. Every member and every alternative pose still
+        # competes through exactly the original validators.
+        remaining = budget - (time.perf_counter() - started)
+        if remaining <= 0:return []
+        return self.rank(frame, str(floor), limit=len(members), budget_seconds=remaining,
+                         _established_members=tuple(sorted(members)))
 
     def identity_profile_for_map(self, map_id):
         return getattr(self.pack, 'identity_profiles', {}).get(map_id, self.identity_profile_id)
