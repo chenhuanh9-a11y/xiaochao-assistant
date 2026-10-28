@@ -85,6 +85,9 @@ class CurrentDoorTests(unittest.TestCase):
         result = identity.verify(np.zeros((100, 150, 3), np.uint8), row)
         self.assertFalse(result['success'])
         self.assertEqual(result['reason'], 'side-door-boundary-contradiction')
+        cross_check = identity.check_entry_evidence(np.zeros((100,150,3),np.uint8),row,
+                                                    observation=dict(observations=[]))
+        self.assertTrue(cross_check['contradicted'])
 
     def test_small_icon_search_roi_is_safe_and_returns_full_client_coordinates(self):
         from side_door_recognition import SideDoorRecognizer
