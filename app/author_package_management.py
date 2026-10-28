@@ -5,16 +5,18 @@ lease as live import, then refreshes the existing resource factory on Tk.
 """
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import tempfile
 
 from star_map_import import (
     ImportRejected, LIVE_AUTHOR_IMAGE_ROOTS, PACKAGE_IDS,
-    _check_cancelled, _live_author_path, _no_links, _owned_inventory,
+    _allowed, _check_cancelled, _live_author_path, _no_links, _owned_inventory, _rows,
     _pending_upgrade, _sha, _target, _writer_locked_installation,
     verified_installed_package,
 )
+from legacy_author_inventory import LEGACY_AUTHOR_INVENTORY
 
 PACKAGE_NAMES = {
     'nightmare-suju': '滋酥居 · 噩梦',
@@ -43,6 +45,80 @@ def _package_id(package_id):
     if package_id not in PACKAGE_NAMES:
         raise ImportRejected('unsupported-author-package')
     return package_id
+
+
+def adopt_legacy_author_package(install_root, package_id, *, cancelled=None) -> dict:
+    """Register an entire approved legacy display set, without changing assets.
+
+    This runs in the existing local-state worker. A release ZIP hash and its
+    independently generated inventory authorize ownership, never folder presence.
+    Publication is exclusive under the same lock as import/removal. Existing
+    receipts, unknown files and core dependencies are never overwritten/claimed.
+    """
+    package_id = _package_id(package_id)
+    root = Path(os.path.abspath(install_root))
+    _no_links(root)
+    _pending_upgrade(root)
+    owned, digest = _owned_inventory(root, package_id)
+    if digest is not None:
+        return dict(status='already-managed')
+    release = LEGACY_AUTHOR_INVENTORY.get(package_id)
+    if not release:
+        return dict(status='no-approved-legacy-release')
+    rows = _rows([{key: row[key] for key in ('path', 'bytes', 'sha256')}
+                  for row in release['files']])
+    if not rows or any(not _allowed(package_id, row['path']) or
+                       not _live_author_path(package_id, row['path']) for row in rows.values()):
+        raise ImportRejected('invalid-legacy-author-inventory')
+    if not any(_target(root, row['path']).exists() for row in rows.values()):
+        return dict(status='not-installed')
+    with _writer_locked_installation(root, require_closed=False) as (root, state):
+        _pending_upgrade(root)
+        _, digest = _owned_inventory(root, package_id)
+        if digest is not None:
+            return dict(status='already-managed')
+        for other in PACKAGE_IDS - {package_id}:
+            other_rows, _ = _owned_inventory(root, other)
+            if rows.keys() & other_rows.keys():
+                raise ImportRejected('shared-author-file-ownership')
+        witnesses = {}
+        for row in rows.values():
+            _check_cancelled(cancelled)
+            path = _target(root, row['path'])
+            before = path.stat() if path.is_file() else None
+            if (before is None or before.st_size != row['bytes'] or _sha(path) != row['sha256']):
+                return dict(status='legacy-unverified', reason='legacy-display-set-not-exact',
+                            path=row['path'])
+            stat = path.stat()
+            if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                    stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns):
+                raise ImportRejected('legacy-author-file-changed')
+            witnesses[row['path']] = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+        receipt = dict(packageId=package_id, revision=1, files=list(rows.values()),
+                       archiveSha256=release['archiveSha256'],
+                       legacyAdoption=dict(schemaVersion=1, scope='author-display-only',
+                                           sourceArchive=release['archiveName'],
+                                           completeDisplaySet=True))
+        target = _target(root, f'work/map-packages/{package_id}.json')
+        fd, temporary_name = tempfile.mkstemp(prefix='legacy-receipt-', suffix='.tmp', dir=state)
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+                json.dump(receipt, stream, ensure_ascii=False, indent=2)
+                stream.flush()
+                os.fsync(stream.fileno())
+            for relative, before in witnesses.items():
+                _check_cancelled(cancelled)
+                stat = _target(root, relative).stat()
+                if before != (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns):
+                    raise ImportRejected('legacy-author-file-changed')
+            _check_cancelled(cancelled)
+            _no_links(target)
+            # Complete same-volume publication; never replace a raced receipt.
+            os.link(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return dict(status='legacy-adopted', fileCount=len(rows), restartRequired=False)
 
 
 def inspect_author_package_removal(install_root, package_id) -> dict:
@@ -85,6 +161,12 @@ def managed_author_packages_snapshot(install_root, *, cancelled=None) -> list[di
         item = dict(packageId=package_id, title=title,
                     mode='difficult' if package_id.startswith('difficult-') else 'nightmare',
                     canRemove=False)
+        adoption = None
+        try:
+            adoption = adopt_legacy_author_package(root, package_id, cancelled=cancelled)
+        except (ImportRejected, OSError) as error:
+            adoption = dict(status='legacy-unverified', reason=str(error))
+        _check_cancelled(cancelled)
         state = verified_installed_package(root, package_id, cancelled=cancelled)
         item.update(state)
         try:
@@ -108,7 +190,8 @@ def managed_author_packages_snapshot(install_root, *, cancelled=None) -> list[di
                 except (ImportRejected, OSError) as scan_error:
                     item.update(status='unverified', reason=str(scan_error))
                 if unowned:
-                    item.update(status='unmanaged', reason='author-files-without-receipt')
+                    item.update(status='unmanaged', reason=(adoption or {}).get('reason') or
+                                'author-files-without-receipt')
         else:
             item.update(canRemove=True, fileCount=plan['fileCount'], bytes=plan['bytes'],
                         receiptSha256=plan['receiptSha256'])
