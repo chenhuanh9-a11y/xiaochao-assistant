@@ -164,8 +164,13 @@ class Walkable:
         self.shape = (height, width)
         self._footprint = mask > 0
         rows, columns = max(1, height // GRID), max(1, width // GRID)
-        footprint = (mask[:rows * GRID, :columns * GRID] > 0).astype(np.float32)
-        cells = cv2.resize(footprint, (columns, rows), interpolation=cv2.INTER_AREA) >= .5
+        block = np.zeros((rows * GRID, columns * GRID), bool)
+        part = self._footprint[:rows * GRID, :columns * GRID]
+        block[:part.shape[0], :part.shape[1]] = part
+        # A cell is open only when every pixel in it is footprint. Steps between
+        # neighbouring open centres (diagonals need both orthogonal cells open)
+        # then never leave the footprint, so the pixel-level segment check holds.
+        cells = block.reshape(rows, GRID, columns, GRID).all(axis=(1, 3))
         self.open = cells
         padded = np.pad(cells.astype(np.uint8), 1)
         # Distance to the nearest void keeps routes on corridor centrelines.

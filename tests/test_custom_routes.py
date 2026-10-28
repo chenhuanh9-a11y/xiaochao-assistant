@@ -161,5 +161,36 @@ class CustomRouteTests(unittest.TestCase):
             self.assertEqual(reset.count(), 0)
 
 
+class PartialCellTests(unittest.TestCase):
+    def test_partially_covered_cells_are_not_walkable(self):
+        mask = np.zeros((40, 40), np.uint8)
+        mask[0:40, 0:16] = 1  # Second column of cells is only 60% footprint.
+        walkable = Walkable(mask)
+        self.assertTrue(walkable.open[:, 0].all())
+        self.assertFalse(walkable.open[:, 1:].any())
+
+    def test_every_pair_in_a_region_connects_on_diagonal_corridors(self):
+        import cv2
+        import random
+        mask = np.zeros((600, 600), np.uint8)
+        cv2.line(mask, (60, 540), (540, 60), 1, 70)
+        cv2.line(mask, (60, 60), (300, 300), 1, 45)
+        mask[480:560, 40:560] = 1
+        walkable = Walkable(mask)
+        count, labels = cv2.connectedComponents(walkable.open.astype(np.uint8), connectivity=4)
+        ys, xs = np.nonzero(walkable.open)
+        rng = random.Random(7)
+        checked = 0
+        for _ in range(120):
+            a, b = rng.randrange(len(xs)), rng.randrange(len(xs))
+            if labels[ys[a], xs[a]] != labels[ys[b], xs[b]]:
+                continue
+            start = walkable._centre((int(xs[a]), int(ys[a])))
+            goal = walkable._centre((int(xs[b]), int(ys[b])))
+            self.assertIsNotNone(walkable.path(start, goal), (start, goal))
+            checked += 1
+        self.assertGreater(checked, 50)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -75,7 +75,7 @@ class CustomRouteEditorTests(unittest.TestCase):
             _route=lambda: FloorRoute(((25, 25), (75, 75)), snap=snap),
             _floor_data=lambda *_args: (mask, Walkable(mask)),
             _picture_key=("a", "1", (216, 216)), _picture=object(),
-            ui=SimpleNamespace(_px=lambda value: value),
+            ui=SimpleNamespace(_px=lambda value: value), _sync_hint=Mock(),
         )
         editor._paint_status = lambda: CustomRouteEditor._paint_status(editor)
         return editor

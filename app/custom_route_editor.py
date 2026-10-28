@@ -145,7 +145,7 @@ class CustomRouteEditor(tk.Frame):
         status.pack(side="bottom", fill="x", pady=(10, 0))
         self.status_row = status
         self.hint = ui._label(status, "左键加点 · 拖动调整 · 右键删除", size=8, color=SUBTLE)
-        self.status = ui._label(status, "", size=9, color=MUTED, anchor="w")
+        self.status = ui._label(status, "", size=9, color=MUTED, anchor="w", justify="left", wraplength=400)
         self.status.pack(side="left", fill="x", expand=True)
 
         # Created on the card so narrow layouts can re-home them with pack(in_=...).
@@ -189,8 +189,8 @@ class CustomRouteEditor(tk.Frame):
             self.floor_switch.pack(in_=self.tools, side="right")
             self.clear_button.pack(in_=self.options, side="right")
             self.undo_button.pack(in_=self.options, side="right", padx=(0, 4))
-            self.hint.pack(in_=self.status_row, side="right")
         self.status.pack(side="left", fill="x", expand=True)
+        self._sync_hint()
         for widget in (self.floor_switch, self.clear_button, self.undo_button):
             widget.lift()
         self.list_canvas.configure(width=self.ui._px(132 if compact else 176))
@@ -372,6 +372,8 @@ class CustomRouteEditor(tk.Frame):
         message, error = getattr(self, "_message", (None, False))
         if not message and getattr(self, "_path_error", None):
             message, error = self._path_error, True
+        self._showing_message = bool(message)
+        self._sync_hint()
         if message:
             self.status.configure(text=message, fg=ERROR if error else MUTED)
             return
@@ -384,6 +386,14 @@ class CustomRouteEditor(tk.Frame):
         else:
             text, color = f"已自动保存 · {len(route.points)} 个路点", GREEN
         self.status.configure(text=text, fg=color)
+
+    def _sync_hint(self):
+        """The usage hint shares the status row; give a message the whole row."""
+        show = not self._compact and not getattr(self, "_showing_message", False)
+        if show and not self.hint.winfo_manager():
+            self.hint.pack(in_=self.status_row, side="right", before=self.status)
+        elif not show and self.hint.winfo_manager():
+            self.hint.pack_forget()
 
     def _paint_tools(self, route=None):
         route = route or self._route()
