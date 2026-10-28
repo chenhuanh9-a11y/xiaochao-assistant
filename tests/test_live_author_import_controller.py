@@ -28,7 +28,7 @@ class ControllerTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         root = Path(self.tmp.name)
         self.root = root
-        names = {'_ensure_map_package_import_state', '_author_import_idle',
+        names = {'_ensure_online_map_package_state', '_ensure_map_package_import_state', '_author_import_idle',
                  'map_package_import_snapshot', '_start_live_author_import',
                  '_consume_live_author_import', 'cancel_map_package_import',
                  '_refresh_imported_author_resources', '_invalidate_author_browser',
@@ -50,6 +50,16 @@ class ControllerTests(unittest.TestCase):
         s._map_package_import_state.update(stage='ready',ready=dict(title='author',summary='ok'))
         s._invalidate_capture_work=Mock(); s._invalidate_author_browser=Mock()
         s._refresh_imported_author_resources=Mock()
+
+    def test_import_invalidates_only_target_and_obsoletes_online_worker(self):
+        self.s._ensure_online_map_package_state()
+        self.s._online_installed_packages={'nightmare-suju':{'status':'installed'}, 'other':{'status':'installed'}}
+        old_generation=self.s._online_map_package_generation
+        event=self.start(Mock(side_effect=OSError('write-failed')))
+        self.assertGreater(self.s._online_map_package_generation,old_generation)
+        self.s._consume_live_author_import(event)
+        self.assertEqual(self.s._online_installed_packages['other']['status'],'installed')
+        self.assertEqual(self.s._online_installed_packages['nightmare-suju']['status'],'unverified')
 
     def completion(self, **extra):
         return dict(request=self.s._map_package_live_request, **extra)

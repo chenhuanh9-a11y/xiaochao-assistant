@@ -541,7 +541,8 @@ class MapResourceBrowser(tk.Frame):
         download = getter and callable(getattr(self.assistant, "download_online_map_package", None)) and state.get("canDownload") is True and not busy
         cancel = getter and callable(getattr(self.assistant, "cancel_online_map_package", None)) and state.get("canCancel") is True
         packages = tuple((item["packageId"], str(item.get("title") or item["packageId"]),
-                          str(item.get("summary") or ""), self._online_size(item.get("bytes")))
+                          str(item.get("summary") or ""), self._online_size(item.get("bytes")),
+                          (item.get("installation") or {}).get("status", "not-installed"))
                          for item in state.get("packages", ()) if isinstance(item, dict)
                          and isinstance(item.get("packageId"), str) and item["packageId"])
         selected = state.get("selectedPackageId")
@@ -573,7 +574,7 @@ class MapResourceBrowser(tk.Frame):
         for package_id in tuple(self._online_rows):
             if package_id not in ids:
                 self._online_rows.pop(package_id)["frame"].destroy()
-        for package_id, title, summary, size in packages:
+        for package_id, title, summary, size, installation in packages:
             row = self._online_rows.get(package_id)
             if row is None:
                 frame = tk.Frame(self.online_list, bg=BG)
@@ -587,13 +588,13 @@ class MapResourceBrowser(tk.Frame):
                 detail.pack(fill="x", pady=(3, 0))
                 row = self._online_rows[package_id] = dict(frame=frame, title=heading, summary=detail,
                                                           button=button, signature=None)
-            row_signature = title, summary, size, download, stage == "error" and selected == package_id
+            row_signature = title, summary, size, download, installation, stage == "error" and selected == package_id
             if row["signature"] != row_signature:
                 row["signature"] = row_signature
                 row["title"].configure(text=title)
                 row["summary"].configure(text=" · ".join(value for value in (summary, size) if value))
-                row["button"].configure(text="重试" if row_signature[-1] else "下载",
-                                        state="normal" if download else "disabled")
+                row["button"].configure(text=({"installed": "已安装", "update-available": "更新", "incomplete": "修复", "unverified": "重新下载"}.get(installation) or ("重试" if row_signature[-1] else "下载")),
+                                        state="normal" if download and installation != "installed" else "disabled")
             row["frame"].pack(fill="x", pady=(0, 10))
         show_progress = selected and stage in {"downloading", "error"} and bool(received_text)
         if show_progress:
