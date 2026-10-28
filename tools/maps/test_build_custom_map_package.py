@@ -62,14 +62,17 @@ class MaskBindingTests(unittest.TestCase):
     def test_builder_persists_verified_mask_hash_without_changing_topology(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            args, path, _topology, native = self._inputs(root)
+            args, path, topology, native = self._inputs(root)
             original = path.read_bytes()
             with patch.object(builder, "register", return_value=(np.eye(3), 1.0)):
                 self.assertEqual(builder.main(args), 0)
             manifest = json.loads((root / "out/manifest.json").read_text("utf-8"))
             floor = manifest["maps"][0]["floors"]["1"]
             self.assertEqual(floor["maskSha256"], builder.mask_sha256(native))
-            self.assertEqual((root / "out" / floor["topology"]).read_bytes(), original)
+            # The package keeps only the road graph and its binding; the source stays untouched.
+            packaged = json.loads((root / "out" / floor["topology"]).read_text("utf-8"))
+            self.assertEqual(packaged, {key: topology[key] for key in builder.TOPOLOGY_KEYS})
+            self.assertTrue(floor["image"].endswith(".webp"))
             self.assertEqual(path.read_bytes(), original)
 
     def test_builder_rejects_same_shape_wrong_mask_before_registration(self):

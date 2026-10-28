@@ -20,20 +20,22 @@
 
 ## 资源包
 
-当前版本：[custom-maps-20261028-1](https://github.com/chenhuanh9-a11y/xiaochao-assistant/releases/tag/custom-maps-20261028-1)，`xingtu-custom-maps-20261028-1.zip`，56,790,370 字节，SHA-256 `d5dd4be7de77dd6ba248527d83cf05a51faf54e30127bd88abb31c7d3e47c466`。打包软件前下载并安装：
+当前版本：[custom-maps-20261028-2](https://github.com/chenhuanh9-a11y/xiaochao-assistant/releases/tag/custom-maps-20261028-2)，`xingtu-custom-maps-20261028-2.zip`，8,392,636 字节，SHA-256 `ee4b9ba686f41d7dd677ebcf34fb0d9d6cf1b07d7f96cb7d2eeae207a5070c00`。打包软件前下载并安装：
 
 ```
-python tools/maps/install_custom_maps.py --archive xingtu-custom-maps-20261028-1.zip --sha256 d5dd4be7de77dd6ba248527d83cf05a51faf54e30127bd88abb31c7d3e47c466
+python tools/maps/install_custom_maps.py --archive xingtu-custom-maps-20261028-2.zip --sha256 ee4b9ba686f41d7dd677ebcf34fb0d9d6cf1b07d7f96cb7d2eeae207a5070c00
 ```
 
 重新构建：
 
 ```
-python tools/maps/build_custom_map_package.py --legacy 旧版/nightmare-route-editor --game-data 噩梦24图交接包 --structures 结构资源 --out 新目录 --version 20261028-1 --zip 发布目录 [--review 对比图目录]
+python tools/maps/build_custom_map_package.py --legacy 旧版/nightmare-route-editor --game-data 噩梦24图交接包 --structures 结构资源 --out 新目录 --version 新版本号 --zip 发布目录 [--review 对比图目录]
 python tools/maps/install_custom_maps.py --archive xingtu-custom-maps-VERSION.zip --sha256 压缩包SHA256
 ```
 
 资源包含 `manifest.json`（对应关系、矩阵、入口、楼梯与逐文件 SHA-256）、`images/`、`topology/` 和入口图标，安装到 `assets/custom-maps`（不进 Git，可用 `XINGTU_CUSTOM_MAPS_ROOT` 指定）。软件读取每个文件前都会核对 SHA-256。
+
+为节省空间，底图存为 WebP（颜色质量 90，透明通道无损；`--quality 0` 改为全无损），道路网只保留软件用到的点、房间和连线；门、房间轮廓等来源信息留在游戏数据交接包里。旧版 PNG 资源包仍可读取。
 
 ## 路线与图库
 
@@ -61,10 +63,10 @@ python tools/draw_custom_routes.py
 - 尚未在 Windows 实机和游戏内验证对齐效果。
 # 构建交接与兼容修复
 
-固定资源 Release：`custom-maps-20261028-1`，资源 ZIP `xingtu-custom-maps-20261028-1.zip`，56,790,370 字节，SHA256 `d5dd4be7de77dd6ba248527d83cf05a51faf54e30127bd88abb31c7d3e47c466`。Release 是编辑器资源包，不是软件安装包。
+固定资源 Release：`custom-maps-20261028-2`，资源 ZIP `xingtu-custom-maps-20261028-2.zip`，8,392,636 字节，SHA256 `ee4b9ba686f41d7dd677ebcf34fb0d9d6cf1b07d7f96cb7d2eeae207a5070c00`。Release 是编辑器资源包，不是软件安装包。
 
 ```powershell
-python tools/maps/install_custom_maps.py --archive <下载的ZIP> --sha256 d5dd4be7de77dd6ba248527d83cf05a51faf54e30127bd88abb31c7d3e47c466 --root <干净构建输出根目录>
+python tools/maps/install_custom_maps.py --archive <下载的ZIP> --sha256 ee4b9ba686f41d7dd677ebcf34fb0d9d6cf1b07d7f96cb7d2eeae207a5070c00 --root <干净构建输出根目录>
 ```
 
 资源安装在应用根目录 `assets/custom-maps`，包含 manifest、图片和道路拓扑；`app/custom_default_gallery.json` 由构建脚本随程序收集。不要把验证目录、玩家图库或设置打进安装包。安装工具会替换目标资源目录，仅用于已确认的构建 stage；不应拿它覆盖未知用户自制资源。
