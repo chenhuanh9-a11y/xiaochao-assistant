@@ -782,3 +782,28 @@ if __name__ == "__main__":
     except (ImportRejected, OSError, zipfile.BadZipFile) as error:
         print(json.dumps({"success": False, "reason": str(error)}, ensure_ascii=False))
         raise SystemExit(2)
+
+
+def verified_installed_package(root, package_id, expected_sha256=None, *, cancelled=None):
+    """Read receipt and actual contents off the UI thread; never trust download completion."""
+    root = Path(root).resolve()
+    try:
+        _pending_upgrade(root)
+        rows, receipt_digest = _owned_inventory(root, package_id)
+        if not rows:
+            return dict(status='not-installed')
+        receipt = _json(_target(root, f"work/map-packages/{package_id}.json").read_bytes())
+        for row in rows.values():
+            if cancelled and cancelled():
+                return dict(status='unverified')
+            target = _target(root, row['path'])
+            if not target.is_file() or target.stat().st_size != row['bytes'] or _sha(target) != row['sha256']:
+                return dict(status='incomplete')
+        _, after = _owned_inventory(root, package_id)
+        if after != receipt_digest:
+            return dict(status='unverified')
+        digest = receipt['archiveSha256']
+        return dict(status='update-available' if expected_sha256 and digest != expected_sha256 else 'installed',
+                    archiveSha256=digest)
+    except (OSError, ValueError, TypeError, KeyError):
+        return dict(status='unverified')

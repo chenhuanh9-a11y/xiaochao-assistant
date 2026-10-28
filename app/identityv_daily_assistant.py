@@ -10200,11 +10200,17 @@ class DailyAssistant:
             return dict(success=False, reason='import-busy', message='作者资源正在导入。')
         request = dict(generation=self._map_package_import_generation,
             installRoot=checked['installRoot'], resourceRoot=checked['resourceRoot'],
-            pack=self.pack, mode=self.game_mode, cancelled=threading.Event())
+            pack=self.pack, mode=self.game_mode, packageId=checked['result']['packageId'], cancelled=threading.Event())
         self._invalidate_capture_work()
         self._invalidate_author_browser()
         self._map_package_live_request = request
         self._map_package_import_cancel = request['cancelled']
+        self._ensure_online_map_package_state()
+        self._online_map_package_generation += 1
+        self._online_map_package_cancel.set()
+        if not hasattr(self, '_online_installed_packages'):
+            self._online_installed_packages = {}
+        self._online_installed_packages[request['packageId']] = dict(status='unverified')
         self._map_package_import_state.update(stage='installing', message='正在导入作者资源；完成后自动刷新。')
 
         def run():
@@ -10214,6 +10220,8 @@ class DailyAssistant:
                 event['result'] = install_author_package_live(checked['packagePath'], checked['installRoot'],
                     application_idle=True, expected_archive_sha256=checked['result']['archiveSha256'],
                     cancelled=request['cancelled'].is_set)
+                from star_map_import import verified_installed_package
+                event['installation'] = verified_installed_package(request['installRoot'], request['packageId'])
             except Exception as error:
                 event['error'] = f'{type(error).__name__}: {error}'
             self.events.put(event)
@@ -10277,6 +10285,17 @@ class DailyAssistant:
                 message=f'作者文件已安装，但列表刷新失败，请重新检查并导入以重试刷新：{type(error).__name__}')
             self._log('author-import-refresh-failed', errorType=type(error).__name__)
             return
+        self._ensure_online_map_package_state()
+        installed = dict(event.get('installation') or {})
+        entry = self._online_map_package_entries.get(request['packageId'], {})
+        if installed.get('status') == 'installed' and entry.get('sha256') and entry['sha256'] != installed.get('archiveSha256'):
+            installed['status'] = 'update-available'
+        if not hasattr(self, '_online_installed_packages'):
+            self._online_installed_packages = {}
+        self._online_installed_packages[request['packageId']] = installed
+        browser = getattr(getattr(self, 'desktop_main_ui', None), 'map_browser', None)
+        if browser is not None:
+            browser.sync_online_packages()
         self._map_package_import_state.update(stage='complete', ready=None,
             message=f"作者资源已导入并刷新（新增 {result['authorFilesAdded']} 个文件），无需重启。请在“实际使用路线”选择作者。")
 
@@ -10556,7 +10575,10 @@ class DailyAssistant:
     def online_map_packages_snapshot(self) -> dict:
         self._ensure_online_map_package_state()
         state = copy.deepcopy(self._online_map_package_state)
-        busy = self._online_map_package_worker is not None or self._online_map_inspection is not None
+        for package in state.get('packages', []):
+            package['installation'] = dict(getattr(self, '_online_installed_packages', {}).get(package['packageId'], {}))
+        busy = (self._online_map_package_worker is not None or self._online_map_inspection is not None
+                or getattr(self, '_map_package_live_request', None) is not None)
         configured = bool(ONLINE_MAP_PACKAGE_INDEX_URL)
         service = self._online_map_service_adapter()
         available = service is not None and service.configured
@@ -10626,6 +10648,8 @@ class DailyAssistant:
                 if not cancelled.is_set():
                     if operation == 'index':
                         event['result'] = service.read_index(cancel_event=cancelled)
+                        from star_map_import import verified_installed_package
+                        event['installedPackages'] = {e['packageId']: verified_installed_package(root, e['packageId'], e.get('sha256'), cancelled=cancelled.is_set) for e in event['result']}
                     else:
                         event['result'] = service.download_package(package_id, cancel_event=cancelled, progress=progress)
             except Exception as error:
@@ -10679,6 +10703,8 @@ class DailyAssistant:
                     packages.append(dict(packageId=package_id, title=str(entry.get('title') or package_id),
                         summary=str(entry.get('summary') or ''), bytes=entry.get('bytes')))
                 self._online_map_package_entries = entries
+                if event.get('importGeneration') == self._map_package_import_generation:
+                    self._online_installed_packages = event.get('installedPackages', {})
                 self._online_map_package_state.update(stage='ready', packages=packages,
                     message='地图下载列表已更新。' if packages else '当前下载列表没有可用地图包。')
             except (KeyError, TypeError, ValueError) as error:
