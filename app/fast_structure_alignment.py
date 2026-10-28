@@ -187,8 +187,8 @@ def _chain_seeds(frame, context, prepared, cancelled):
 def _grid(points, prepared, scale, prior, cancelled):
     if prior is not None:
         offsets = np.arange(-32., 32.1, 4.)
-        x, y = np.meshgrid(offsets, offsets)
-        translations = prior[:2,2] + np.column_stack((x.ravel(), y.ravel()))
+        tx = prior[0,2] + offsets
+        ty = prior[1,2] + offsets
     else:
         # Median support bounds admit partially outside viewports too.
         reference_points = points / scale
@@ -199,15 +199,55 @@ def _grid(points, prepared, scale, prior, cancelled):
         ys = np.arange(lo[1], hi[1]+stride, stride)
         if len(xs)*len(ys) > 350000:
             return []
-        x, y = np.meshgrid(xs, ys)
-        translations = -scale*np.column_stack((x.ravel(), y.ravel()))
-    values = np.empty(len(translations), np.float32)
-    for start in range(0, len(translations), 8192):
-        if cancelled and cancelled():
-            return []
-        tt = translations[start:start+8192]
-        result = scores(points, prepared, scale, tt)
-        values[start:start+len(result)] = result
+        tx, ty = -scale*xs, -scale*ys
+    x, y = np.meshgrid(tx, ty)
+    translations = np.column_stack((x.ravel(), y.ravel()))
+    # A Cartesian search repeats each X coordinate for every row and each Y
+    # coordinate for every column. Quantize each axis once, with the same
+    # float32 scale and rounding used by scores; retain every original pose.
+    scale32 = np.float32(scale)
+    xx = np.rint((points[None,:,0]-tx[:,None])/scale32).astype(np.int32)
+    yy = np.rint((points[None,:,1]-ty[:,None])/scale32).astype(np.int32)
+    h, w = prepared.shape
+    valid_x, valid_y = (xx >= 0) & (xx < w), (yy >= 0) & (yy < h)
+    xx, yy = np.clip(xx,0,w-1), np.clip(yy,0,h-1)
+    if len(translations) < 4096:
+        # Small local grids are cheaper as one or a few candidate batches.
+        values = np.empty(len(translations), np.float32)
+        for start in range(0, len(translations), 1024):
+            if cancelled and cancelled():
+                return []
+            indices = np.arange(start,min(start+1024,len(translations)))
+            columns, rows = indices % len(tx), indices // len(tx)
+            valid = valid_x[columns] & valid_y[rows]
+            distance = prepared.distance[yy[rows],xx[columns]].astype(np.float32) * scale32 * .25
+            hit3, hit6 = valid & (distance <= 3.), valid & (distance <= 6.)
+            values[start:start+len(indices)] = (2*hit3.sum(axis=1)+hit6.sum(axis=1))/(3.*len(points))
+    else:
+        # The prepared distance is uint16. Derive inclusive integer cutoffs
+        # using the original float32 arithmetic, including its rounding at
+        # 3/6 pixels. Visit every pose for each point without materializing
+        # candidate-by-point coordinate and floating-distance batches.
+        distances = np.arange(65536, dtype=np.float32) * scale32 * .25
+        limit3 = int(np.searchsorted(distances, 3., side='right')) - 1
+        limit6 = int(np.searchsorted(distances, 6., side='right')) - 1
+        totals = np.zeros((len(ty), len(tx)), np.uint32)
+        for point in range(len(points)):
+            if cancelled and cancelled():
+                return []
+            columns = np.flatnonzero(valid_x[:,point])
+            rows = np.flatnonzero(valid_y[:,point])
+            if not len(columns) or not len(rows):
+                continue
+            # Grid axes are monotonic, so in-bounds indices form one interval.
+            # Off-canvas point/pose pairs contribute zero as before; avoid
+            # loading their clipped edge pixels just to discard them.
+            x0, x1 = int(columns[0]), int(columns[-1]) + 1
+            y0, y1 = int(rows[0]), int(rows[-1]) + 1
+            distance = prepared.distance[yy[y0:y1,point,None],xx[None,x0:x1,point]]
+            hit3, hit6 = distance <= limit3, distance <= limit6
+            totals[y0:y1,x0:x1] += 2*hit3.astype(np.uint32) + hit6
+        values = (totals.ravel() / (3.*len(points))).astype(np.float32)
     # Suppress complete spatial basins before retaining peaks. Chunk-local
     # top-k can otherwise hide a separate runner-up behind one broad peak.
     rows = []
@@ -272,10 +312,18 @@ def propose(frame, reference, prepared, *, prior=None, cancelled=None, context=N
         return [], context, {'reason': 'fast-insufficient-edges', 'points': len(points)}
     coarse = sample_edges(edge, 96)
     rows = []
+    searches = []
+    def grid(scale, seed):
+        began = time.perf_counter()
+        found = _grid(coarse, prepared, scale, seed, cancelled)
+        searches.append(dict(scope='local' if seed is not None else 'global',
+            elapsedMs=(time.perf_counter()-began)*1000,
+            bestScore=found[0][0] if found else None))
+        return found
     if prior is not None:
-        rows = _grid(coarse, prepared, float(prior[0,0]), prior, cancelled)
+        rows = grid(float(prior[0,0]), prior)
         if not rows or rows[0][0] < .50:
-            rows.extend(_grid(coarse, prepared, float(prior[0,0]), None, cancelled))
+            rows.extend(grid(float(prior[0,0]), None))
     else:
         seeds = _chain_seeds(frame, context, prepared, cancelled)
         if seeds:
@@ -288,7 +336,7 @@ def propose(frame, reference, prepared, *, prior=None, cancelled=None, context=N
             if pitch > 0 and prepared.pitch > 0:
                 scale = pitch/prepared.pitch
                 if .03 <= scale <= 6.:
-                    rows.extend(_grid(coarse, prepared, scale, None, cancelled))
+                    rows.extend(grid(scale, None))
     retained = _distinct(rows, maximum=8)
     refined = []
     for _, scale, translation in retained:
@@ -299,7 +347,7 @@ def propose(frame, reference, prepared, *, prior=None, cancelled=None, context=N
     elapsed = (time.perf_counter()-started)*1000
     diagnostics = {'proposalMs': elapsed, 'points': len(points), 'coarsePoints': len(coarse),
                    'scaleLocked': prior is not None, 'candidateCount': len(refined),
-                   'scores': [r[0] for r in refined]}
+                   'scores': [r[0] for r in refined], 'searchStages': searches}
     if not refined or refined[0][0] < .50:
         return [], context, dict(diagnostics, reason='fast-low-score')
     if len(refined) > 1 and refined[0][0]-refined[1][0] < .06:
@@ -349,7 +397,7 @@ def native_point_geometry(frame, prepared, matrix, context, *, lock_scale):
     return geometry
 
 
-def try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_seed=None):
+def try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_seed=None, context=None):
     """Full production proposal + existing residual consumers; no state writer."""
     if os.environ.get('IDENTITYV_FAST_ALIGNMENT', '1') == '0' or not assistant._shared_structure_mode_enabled():
         return None
@@ -373,7 +421,7 @@ def try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_seed
                 matrix = np.asarray(canonical) @ adapter
                 if np.isfinite(matrix).all() and matrix[0,0] > 0 and np.allclose(matrix[:2,:2], np.eye(2)*matrix[0,0]):
                     prior = matrix
-    rows, context, diagnostics = propose(frame, reference, prepared, prior=prior, cancelled=cancelled)
+    rows, context, diagnostics = propose(frame, reference, prepared, prior=prior, cancelled=cancelled, context=context)
     if rows:
         from single_map_structure import graph_point_geometry, partial_wall_geometry, projected_geometry, regional_validation
         score, scale, translation = rows[0]
