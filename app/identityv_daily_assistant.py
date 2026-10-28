@@ -6160,6 +6160,8 @@ class DailyAssistant:
             menu.entryconfigure(0, label=f'当前模式：{label}')
 
     def _apply_game_mode_setting(self,_event=None):
+        if getattr(self, '_map_package_live_request', None) is not None:
+            return
         mode='difficult' if self.game_mode_var.get()=='困难' else 'nightmare'
         if mode==getattr(self,'game_mode','nightmare'):
             if getattr(self, 'mode_resource_error', None):
@@ -6207,6 +6209,8 @@ class DailyAssistant:
         else:self._set_status(f'已切换到{self.game_mode_var.get()} · 等待打开游戏地图','#5ee0a3')
 
     def set_game_mode(self, mode: str) -> dict:
+        if getattr(self, '_map_package_live_request', None) is not None:
+            return dict(success=False, reason='import-busy', message='作者资源正在导入，请稍后操作。')
         if mode not in {'nightmare', 'difficult'} or self.closed:
             return dict(success=False, reason='invalid-mode', message='当前无法切换模式')
         if self.hotkey_capture_active:
@@ -9454,6 +9458,8 @@ class DailyAssistant:
                     mapId=map_id, floor=floor, message=message)
 
     def select_route_profile(self, profile_id: str) -> dict:
+        if getattr(self, '_map_package_live_request', None) is not None:
+            return dict(success=False, reason='import-busy', message='作者资源正在导入，请稍后操作。')
         """One owner-thread settings action shared by settings and resources."""
         if profile_id not in dict(self._mode_route_options()):
             return dict(success=False, message='当前模式尚未安装这份路线，请先导入资源包。')
@@ -9575,6 +9581,8 @@ class DailyAssistant:
         return True
 
     def _apply_route_profile_setting(self, _event=None, *, profile_id=None) -> None:
+        if getattr(self, '_map_package_live_request', None) is not None:
+            return
         previous = self.route_profile_id
         previous_preference = getattr(self, 'preferred_route_profile_id', previous)
         selected = profile_id or {label: key for key, label in self._mode_route_options()}.get(
@@ -10143,24 +10151,138 @@ class DailyAssistant:
         self._log('map-package-helper-cancelled-finished', requestId=request['requestId'],
             returnCode=return_code)
 
+    def _author_import_idle(self) -> bool:
+        """A live import is an idle resource refresh, never a round hot-swap."""
+        if (self.closed or getattr(self, 'round_work_active', False)
+                or getattr(self, 'map_is_open', False)
+                or getattr(self, 'round_start_intent', None)
+                or getattr(getattr(self, 'gate', None), 'confirmed_id', None)
+                or getattr(self, 'active_confirmation', None)
+                or any(getattr(self, name, False) for name in (
+                    'capture_in_progress', 'alignment_in_progress', 'resource_preload_pending',
+                    '_alignment_v2_worker_running', '_alignment_v2_worker_pending'))):
+            return False
+        lock = getattr(self, '_capture_request_lock', None)
+        worker = getattr(self, 'secondary_preload_worker', None)
+        return not ((lock is not None and lock.locked())
+                    or (worker is not None and worker.is_alive()))
+
     def map_package_import_snapshot(self) -> dict:
         self._ensure_map_package_import_state()
+        from star_map_import import supports_live_author_import
         state = copy.deepcopy(self._map_package_import_state)
         helper = self._map_package_helper_path()
         available = helper.is_file() and helper.resolve() != Path(sys.executable).resolve()
-        state.update(busy=state['stage'] == 'checking', helperAvailable=available,
-            canImport=bool(state['stage'] == 'ready' and self._map_package_import_result is not None
-                and available and not self.closed and self._map_package_helper_request is None))
-        if state['stage'] == 'ready' and not available:
-            state['message'] = '地图包检查通过，但未安装独立导入组件；当前不能退出并导入。'
-        elif state['stage'] == 'ready' and self._map_package_helper_request is not None:
-            request = self._map_package_helper_request
-            state['message'] = ('正在等待上次已取消的导入组件结束，结束后可重试。'
-                if request.get('cancelled') and not request.get('pollError') else
-                '上次导入请求尚未确认结束，当前不能重试。')
+        checked = self._map_package_import_result
+        live = bool(checked and supports_live_author_import(checked['result']))
+        idle = self._author_import_idle()
+        busy = state['stage'] in {'checking', 'installing', 'cancelling'}
+        state.update(busy=busy, helperAvailable=available, liveAvailable=live,
+            restartRequired=not live,
+            canImport=bool(state['stage'] == 'ready' and checked is not None
+                and (idle if live else available) and not self.closed
+                and self._map_package_helper_request is None))
+        if state['stage'] == 'ready' and live:
+            state['message'] = ('作者资源已检查。导入并刷新，无需重启；不会改变当前路线偏好。'
+                if idle else '请先结束本局并等待后台资源加载完成，再导入作者资源；无需退出软件。')
+        elif state['stage'] == 'ready' and not available:
+            state['message'] = '此包涉及核心资源或替换，需要退出导入；尚未安装独立导入组件。'
+        if state['stage'] == 'ready' and self._map_package_helper_request is not None:
+            state['canImport'] = False
+            state['message'] = '上次导入组件尚未确认结束，请稍后重试。'
         return state
 
+    def _start_live_author_import(self, checked: dict) -> dict:
+        if not self._author_import_idle():
+            return dict(success=False, reason='live-import-requires-idle',
+                message='请先结束本局并等待后台任务完成，再导入作者资源。')
+        if getattr(self, '_map_package_live_request', None) is not None:
+            return dict(success=False, reason='import-busy', message='作者资源正在导入。')
+        request = dict(generation=self._map_package_import_generation,
+            installRoot=checked['installRoot'], resourceRoot=checked['resourceRoot'],
+            pack=self.pack, mode=self.game_mode, cancelled=threading.Event())
+        self._invalidate_capture_work()
+        self._invalidate_author_browser()
+        self._map_package_live_request = request
+        self._map_package_import_cancel = request['cancelled']
+        self._map_package_import_state.update(stage='installing', message='正在导入作者资源；完成后自动刷新。')
+
+        def run():
+            event = dict(kind='map-package-live-completed', request=request)
+            try:
+                from star_map_import import install_author_package_live
+                event['result'] = install_author_package_live(checked['packagePath'], checked['installRoot'],
+                    application_idle=True, expected_archive_sha256=checked['result']['archiveSha256'],
+                    cancelled=request['cancelled'].is_set)
+            except Exception as error:
+                event['error'] = f'{type(error).__name__}: {error}'
+            self.events.put(event)
+        try:
+            threading.Thread(target=run, name='author-package-import', daemon=True).start()
+        except RuntimeError:
+            self._map_package_live_request = None
+            self._map_package_import_state.update(stage='ready', message='无法启动导入任务，请重试。')
+            raise
+        return dict(success=True, reason='author-import-started', message='正在导入，完成后自动刷新，无需重启。')
+
+    def _invalidate_author_browser(self) -> None:
+        browser = getattr(getattr(self, 'desktop_main_ui', None), 'map_browser', None)
+        if browser is not None:
+            browser.invalidate_resource_context()
+
+    def _refresh_imported_author_resources(self) -> None:
+        # Construct before publishing. No recognition, pose, custom route or
+        # preference is rewritten: this operation is allowed only outside a round.
+        self._install_map_mode(self.game_mode)
+        self._invalidate_author_browser()
+        self.route_profile_var.set(self._route_profile_label(self._shown_route_profile()))
+        for name in ('route_profile_box', 'onboarding_route_box'):
+            box = getattr(self, name, None)
+            if tk_widget_exists(box):
+                box.configure(values=list(dict(self._mode_route_options()).values()))
+        self._refresh_candidates()
+        self._sync_route_settings_ui()
+        browser = getattr(getattr(self, 'desktop_main_ui', None), 'map_browser', None)
+        if browser is not None:
+            if browser._active and not browser._closed:
+                browser.refresh()
+            browser.sync_route_selection()
+
+    def _consume_live_author_import(self, event: dict) -> None:
+        request = event.get('request')
+        if request is not getattr(self, '_map_package_live_request', None):
+            return
+        # Only the owning completion may release the lease. Cancellation does
+        # not release it while a worker could still publish or roll back files.
+        self._map_package_live_request = None
+        result = event.get('result')
+        current = (not self.closed and request['generation'] == self._map_package_import_generation
+            and request['installRoot'] == str(Path(ROOT).resolve())
+            and request['resourceRoot'] == str(Path(RESOURCE_ROOT).resolve())
+            and request['pack'] is self.pack and request['mode'] == self.game_mode)
+        self._map_package_import_result = None
+        if not current:
+            self._map_package_import_state.update(stage='error', ready=None,
+                message='导入上下文已改变；未应用旧任务结果，请重新检查资源包。')
+            return
+        if event.get('error') or not isinstance(result, dict):
+            cancelled = 'import-cancelled' in str(event.get('error', ''))
+            self._map_package_import_state.update(stage='idle' if cancelled else 'error', ready=None,
+                message='已取消导入，新增文件已回滚。' if cancelled else f"导入失败：{event.get('error') or '没有结果'}")
+            return
+        try:
+            self._refresh_imported_author_resources()
+        except Exception as error:
+            self._map_package_import_state.update(stage='error', ready=None,
+                message=f'作者文件已安装，但列表刷新失败，请重新检查并导入以重试刷新：{type(error).__name__}')
+            self._log('author-import-refresh-failed', errorType=type(error).__name__)
+            return
+        self._map_package_import_state.update(stage='complete', ready=None,
+            message=f"作者资源已导入并刷新（新增 {result['authorFilesAdded']} 个文件），无需重启。请在“实际使用路线”选择作者。")
+
     def inspect_map_package(self, path: str | Path, *, _expected_archive: dict | None = None) -> dict:
+        if getattr(self, '_map_package_live_request', None) is not None:
+            return dict(success=False, reason='import-busy', message='作者资源正在导入，请稍后操作。')
         self._ensure_map_package_import_state()
         if self.closed:
             return dict(success=False, reason='application-closed', message='程序正在关闭，无法检查地图包。')
@@ -10256,6 +10378,11 @@ class DailyAssistant:
 
     def cancel_map_package_import(self, reason: str = 'user-cancelled') -> dict:
         self._ensure_map_package_import_state()
+        live = getattr(self, '_map_package_live_request', None)
+        if live is not None:
+            live['cancelled'].set()
+            self._map_package_import_state.update(stage='cancelling', message='正在取消并回滚，请稍候。')
+            return dict(success=True, reason='cancelling', message='已请求取消，回滚完成前请保持软件运行。')
         online = getattr(self, '_online_map_inspection', None)
         if online is not None and online[1] == self._map_package_import_generation:
             self._online_map_inspection = None
@@ -10335,6 +10462,13 @@ class DailyAssistant:
         self._ensure_map_package_import_state()
         self._reap_cancelled_map_package_helper()
         snapshot = self.map_package_import_snapshot()
+        if getattr(self, '_map_package_live_request', None) is not None:
+            return dict(success=False, reason='import-busy', message='资源正在导入。')
+        if snapshot['liveAvailable'] and self._map_package_helper_request is None:
+            try:
+                return self._start_live_author_import(self._current_map_package_inspection())
+            except (OSError, ValueError) as error:
+                return dict(success=False, reason='selection-changed', message=str(error))
         if not snapshot['helperAvailable']:
             return dict(success=False, reason='helper-not-installed',
                 message='未安装独立导入组件，不能继续；星图保持运行。')
@@ -11476,6 +11610,8 @@ class DailyAssistant:
         )
 
     def _start_primary_preload(self) -> None:
+        if getattr(self, '_map_package_live_request', None) is not None:
+            return
         if getattr(self, 'mode_resource_error', None):
             self.resource_preload_pending = False
             self.startup_resource_error = self.mode_resource_error
@@ -11515,6 +11651,8 @@ class DailyAssistant:
             self._log("preload-error",gameMode=context['gameMode'],sourceRoot=str(pack.source_root),message=str(error))
 
     def _start_secondary_floor_preload(self) -> None:
+        if getattr(self, '_map_package_live_request', None) is not None:
+            return
         worker = self.secondary_preload_worker
         if worker is not None and worker.is_alive():
             return
@@ -18986,6 +19124,8 @@ class DailyAssistant:
         self._begin_capture(*request)
 
     def _begin_capture(self, manual: bool, silent_hint: bool = False, open_intent: bool = False) -> bool:
+        if getattr(self, '_map_package_live_request', None) is not None:
+            return False
         if getattr(self,'resource_preload_pending',False) or getattr(self,'startup_resource_error',None):
             self._log('capture-resources-not-ready',gameMode=self.game_mode,manual=manual)
             return False
@@ -19163,6 +19303,8 @@ class DailyAssistant:
         self._set_status(f"已切到 {target} 层 · {suffix}", "#5ee0a3")
 
     def _handle_action_hotkey(self, action: str) -> None:
+        if getattr(self, '_map_package_live_request', None) is not None and action != 'toggle-panel':
+            return
         if getattr(self, "hotkey_capture_active", False):
             return
         if action in MANAGEMENT_HOTKEY_ACTIONS and action != 'toggle-panel':
@@ -19283,6 +19425,8 @@ class DailyAssistant:
         return True
 
     def select_floor(self, floor: str | None) -> None:
+        if getattr(self, '_map_package_live_request', None) is not None:
+            return
         if floor is not None and floor not in getattr(self.pack,'floors',('1','2','B1')):return
         floor_token = self._ui_action_begin(
             "floor", target_state=floor or "automatic",
@@ -29653,6 +29797,8 @@ class DailyAssistant:
         self.on_select(event, preserve_route=preserve_route)
 
     def on_select(self, _event=None, *, preserve_route: bool = False) -> None:
+        if getattr(self, '_map_package_live_request', None) is not None:
+            return
         selection = self.candidates.selection()
         if not selection:
             return
@@ -32582,6 +32728,8 @@ class DailyAssistant:
         self._queue_alignment_v2_close_request(reason)
 
     def confirm_route(self) -> None:
+        if getattr(self, '_map_package_live_request', None) is not None:
+            return
         confirm_token = self._ui_action_begin(
             "candidate-confirm", target_state="confirmed",
             visual_state="已收到确认 · 正在核对位置", background=True,
@@ -34494,6 +34642,8 @@ class DailyAssistant:
         return result
 
     def start_round(self) -> dict:
+        if getattr(self, '_map_package_live_request', None) is not None:
+            return dict(success=False, reason='import-busy', message='作者资源正在导入，请稍后操作。')
         if self.closed:
             return dict(success=False, reason="assistant-closed", message="助手已关闭")
         if self.hotkey_capture_active:
@@ -34929,7 +35079,7 @@ class DailyAssistant:
             referenceEnabled=bool(getattr(self, 'reference_sheet_visibility_enabled', True)),
             referenceAdjusting=bool(getattr(self, 'sheet_move_mode', False)),
             referenceCanAdjust=self.reference_sheet_snapshot()['canAdjust'],
-            modeChangeEnabled=not self.hotkey_capture_active and not self.closed,
+            modeChangeEnabled=not self.hotkey_capture_active and not self.closed and getattr(self, '_map_package_live_request', None) is None,
             controlFloorText=self._control_floor_text(),
             controlStatusText=title,
             displayKind='shared-structure' if structure_display else 'author-route',
@@ -35966,6 +36116,8 @@ class DailyAssistant:
                   occurredMonotonicAt=close_effective_at, timingMeaning='close-state-applied')
 
     def _queue_map_hotkey_edge(self, *, hotkey_generation=None) -> None:
+        if getattr(self, '_map_package_live_request', None) is not None:
+            return
         """One released-then-pressed edge changes the one open/close intent."""
         if hotkey_generation is not None and hotkey_generation != self.hotkey_capture_generation:
             return
@@ -35981,6 +36133,8 @@ class DailyAssistant:
         self._queue_urgent_event(event)
 
     def _handle_map_hotkey_event(self, event=None) -> None:
+        if getattr(self, '_map_package_live_request', None) is not None:
+            return
         if event and event.get('hotkeyGeneration', self.hotkey_capture_generation) != self.hotkey_capture_generation:
             return
         if getattr(self,'resource_preload_pending',False) or getattr(self,'startup_resource_error',None):
@@ -36375,6 +36529,9 @@ class DailyAssistant:
                 event_processing = (event_dequeued_at, current_kind)
                 if kind == 'online-map-packages-completed':
                     self._consume_online_map_package_result(event)
+                    continue
+                if kind == 'map-package-live-completed':
+                    self._consume_live_author_import(event)
                     continue
                 if kind == 'map-package-inspected':
                     self._consume_map_package_inspection(event)
@@ -39108,6 +39265,10 @@ class DailyAssistant:
                 setattr(self, name, None)
 
     def close(self) -> None:
+        if getattr(self, '_map_package_live_request', None) is not None:
+            self.cancel_map_package_import('assistant-close-requested')
+            self._set_status('正在取消资源导入，完成后可关闭星图。', '#f6c453')
+            return
         if self.closed:
             return
         if hasattr(self, '_online_map_package_state'):

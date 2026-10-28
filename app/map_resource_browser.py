@@ -277,6 +277,15 @@ class MapResourceBrowser(tk.Frame):
                 text += " · 源图标签不是游戏楼层"
             self.summary.configure(text=text)
 
+    def invalidate_resource_context(self):
+        self._generation += 1
+        self._pending.clear()
+        self._cache.clear()
+        self._close_preview()
+        self._context = None
+        self._overview_rendered = None
+        self._runtime_route_signature = None
+
     def refresh(self):
         self._active = True
         self.sync_map_package_import()
@@ -402,6 +411,7 @@ class MapResourceBrowser(tk.Frame):
         stage = state.get("stage", "idle")
         busy = state.get("busy") is True or stage == "checking"
         helper = state.get("helperAvailable") is True
+        live = state.get("liveAvailable") is True
         ready = state.get("ready") if stage == "ready" and isinstance(state.get("ready"), dict) else None
         title = str(ready.get("title") or "") if ready is not None else ""
         summary = str(ready.get("summary") or "") if ready is not None else ""
@@ -409,9 +419,9 @@ class MapResourceBrowser(tk.Frame):
         snapshot = callable(getattr(self.assistant, "map_package_import_snapshot", None))
         confirm = callable(getattr(self.assistant, "confirm_map_package_import", None))
         cancel = callable(getattr(self.assistant, "cancel_map_package_import", None))
-        can_import = ready is not None and not busy and helper and state.get("canImport") is True and confirm
+        can_import = ready is not None and not busy and (helper or live) and state.get("canImport") is True and confirm
         message = str(state.get("message") or "")
-        if not snapshot or not inspect or not helper:
+        if not snapshot or not inspect or not (helper or live):
             unavailable = "当前版本尚不支持导入资源包。"
             message = f"{message}\n{unavailable}" if message and unavailable not in message else message or unavailable
         elif not message and busy:
@@ -421,7 +431,7 @@ class MapResourceBrowser(tk.Frame):
         elif not message and stage == "error":
             message = "资源包检查失败，请重新选择。"
         package = str(state.get("packagePath") or "")
-        signature = stage, busy, helper, title, summary, message, package, inspect, snapshot, can_import, cancel
+        signature = stage, busy, helper, live, title, summary, message, package, inspect, snapshot, can_import, cancel
         if signature == self._import_signature:
             return
         self._import_signature = signature
@@ -430,7 +440,8 @@ class MapResourceBrowser(tk.Frame):
         self.import_message.configure(text=message)
         self.import_title.configure(text=title or (Path(package).name if package else ""))
         self.import_summary.configure(text=summary)
-        self.import_confirm_button.configure(state="normal" if can_import else "disabled")
+        self.import_confirm_button.configure(state="normal" if can_import else "disabled",
+            text="导入并刷新" if live else "退出并导入")
         self.import_cancel_button.configure(state="normal" if cancel and stage != "idle" else "disabled")
         self.import_feedback.configure(text="")
         self.import_feedback.pack_forget()
@@ -487,7 +498,8 @@ class MapResourceBrowser(tk.Frame):
         state = self._map_package_snapshot()
         if (state.get("stage") != "ready" or state.get("busy") is True
                 or not isinstance(state.get("ready"), dict)
-                or state.get("helperAvailable") is not True or state.get("canImport") is not True):
+                or not (state.get("helperAvailable") is True or state.get("liveAvailable") is True)
+                or state.get("canImport") is not True):
             self.sync_map_package_import()
             return
         self._map_package_action("confirm_map_package_import", owner=self.winfo_toplevel())
