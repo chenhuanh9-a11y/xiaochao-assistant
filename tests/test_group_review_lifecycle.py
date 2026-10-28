@@ -249,6 +249,37 @@ class GroupReviewTests(display_fixture.NativeGroupDisplayTests):
         h.engine=SimpleNamespace()
         self.assertIsNone(h._established_group_prior())
 
+    def test_final_identity_survives_floor_change_and_can_reopen_on_new_floor(self):
+        h=self.prepare();state=h.native_similarity_state;source=h.gate.confirmed_id
+        state.state='MEMBER_VERIFIED';state.verified_member_id=source
+        h.active_confirmation=dict(mapId=source,floor='1')
+        h._hide_spatial_route=lambda reason:None
+        h._invalidate_floor_switch_work(source,'1','2',reason='fixture-floor-change')
+        h.current_floor='2'
+        self.assertEqual(state.state,'MEMBER_VERIFIED')
+        self.assertEqual(h.gate.confirmed_id,source)
+        self.assertIsNotNone(h._established_group_prior())
+        for _ in range(2):
+            h.current_frame_generation+=1
+            event=dict(mapId=source,floor='2',cycleId=h.active_map_cycle_id,
+                sourceFrameGeneration=h.current_frame_generation,
+                frontGroupDifferenceEvidence=dict(confident=True,candidateMapId=IDS[1]))
+            reopened=h._native_similarity_strong_conflict(event)
+        self.assertTrue(reopened)
+        h._check_native_similarity_resources()
+        self.assertEqual(state.state,'GROUP_LOCKED')
+        self.assertEqual(h._front_group_provisional_lock_context()['floor'],'2')
+        self.assertIsNone(h.active_confirmation)
+        # The existing source is not authorized on the new floor by this lock.
+        h.alignment_core_v2=SimpleNamespace(display_authorization=None,can_display=lambda **kw:False)
+        self.assertFalse(h._provisional_reference_is_verified())
+        h._invalidate_floor_switch_work(source,'2','2',reason='fixture-recheck')
+        self.assertEqual(state.state,'GROUP_LOCKED')
+        # A subsequent unrelated floor again drops only the provisional pose.
+        h._native_similarity_floor_changed('B1')
+        self.assertEqual(state.state,'UNLOCKED')
+        self.assertIsNotNone(h._established_group_prior())
+
     def test_two_strong_current_contradictions_reopen_final_member_without_attempt_cap(self):
         h=self.prepare();state=h.native_similarity_state;source=h.gate.confirmed_id
         for cycle in range(3):
@@ -271,6 +302,41 @@ class GroupReviewTests(display_fixture.NativeGroupDisplayTests):
             h.current_frame_generation+=1;event['sourceFrameGeneration']=h.current_frame_generation
             self.assertFalse(h._native_similarity_strong_conflict(event))
         self.assertEqual(state.state,'MEMBER_VERIFIED')
+        h.gate.confirmed_id=IDS[1]
+        event['fit']['entryCrossCheck']={'contradicted':True}
+        for _ in range(2):
+            h.current_frame_generation+=1;event['sourceFrameGeneration']=h.current_frame_generation
+            self.assertFalse(h._native_similarity_strong_conflict(event))
+        self.assertEqual(state.state,'MEMBER_VERIFIED')
+
+    def test_real_failure_normalizer_routes_strong_evidence_to_reopening(self):
+        h=self.prepare();source=h.gate.confirmed_id;state=h.native_similarity_state
+        state.state='MEMBER_VERIFIED';state.verified_member_id=source
+        h.active_confirmation=dict(mapId=source,floor='1')
+        for _ in range(2):
+            h.current_frame_generation+=1
+            event=h._front_group_v2_failure_event(source,'1',dict(
+                cycleId=h.active_map_cycle_id,sourceFrameGeneration=h.current_frame_generation,
+                alignmentV2WorkerFit=dict(selectedRouteCurrentFrameResidual=dict(verified=False),
+                    entryCrossCheck=dict(contradicted=True))))
+            self.assertIsNotNone(event)
+            h._handle_front_group_alignment_failure(event)
+        self.assertEqual(state.state,'GROUP_LOCKED')
+        self.assertIsNone(h.active_confirmation)
+
+    def test_same_member_finalizes_only_with_current_global_pose_then_stops_review(self):
+        h=self.prepare();source=h.gate.confirmed_id
+        del h._native_similarity_member_committed
+        h.current_alignment_candidate=dict(globalResidualVerified=True)
+        h.alignment_core_v2=SimpleNamespace(display_authorization=object(),can_display=lambda **kw:True)
+        h._remember_confirmation=lambda mid,floor:setattr(h,'active_confirmation',dict(mapId=mid,floor=floor))
+        h.engine.rank_established_group=lambda *a,**kw:self.winner(source)
+        h._start_native_group_review();event=self.terminal(h)
+        self.assertTrue(h._consume_native_group_review(event))
+        self.assertEqual(h.native_similarity_state.state,'MEMBER_VERIFIED')
+        self.assertEqual(h.active_confirmation['mapId'],source)
+        h.current_frame_generation+=1;h._native_group_review_started-=2
+        self.assertFalse(h._start_native_group_review())
 
     def test_successful_pose_commit_breaks_strong_conflict_sequence(self):
         h=self.prepare();state=h.native_similarity_state;source=h.gate.confirmed_id

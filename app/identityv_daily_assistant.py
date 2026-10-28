@@ -6065,6 +6065,7 @@ class DailyAssistant:
         self._native_similarity_priority = None
         self._native_similarity_condition_context = None
         self._native_similarity_family = None
+        self._native_group_review_floor = None
         self.difficult_native_context = native_context
         self.difficult_identity_resources = difficult_identity_resources
         self.optional_author_displays = optional_author_displays
@@ -12034,7 +12035,9 @@ class DailyAssistant:
         native_group_state = getattr(self, 'native_similarity_state', None)
         if native_group_state is not None:
             self._native_similarity_floor_changed(str(floor))
-            if native_group_state.floor is not None:
+            if (native_group_state.floor is not None and native_group_state.state != 'MEMBER_VERIFIED'
+                    and getattr(self, '_native_group_review_floor', None)
+                        != (native_group_state.resource_key, str(floor))):
                 native_group_state.reset()
         self._native_similarity_priority = None
         self._native_similarity_condition_context = None
@@ -15086,6 +15089,12 @@ class DailyAssistant:
     def _native_similarity_floor_changed(self, floor):
         state = getattr(self, 'native_similarity_state', None)
         if state is not None and state.floor is not None and state.floor != str(floor):
+            # A final identity is round-wide; its evidence floor is not the
+            # currently observed floor. Only pose authority is revoked there.
+            if state.state == 'MEMBER_VERIFIED':
+                return
+            if getattr(self, '_native_group_review_floor', None) == (state.resource_key, str(floor)):
+                return
             if (state.condition_mode is not None and state.provisional_member_id
                     and getattr(getattr(self,'gate',None),'confirmed_id',None)==state.provisional_member_id
                     and not getattr(self,'active_confirmation',None)):
@@ -15123,6 +15132,7 @@ class DailyAssistant:
             self._native_similarity_priority = None
             self._native_similarity_condition_context = None
             self._native_similarity_family = None
+            self._native_group_review_floor = None
             self._log('similar-group-reset',reason='resource-binding-changed')
 
     def _native_similarity_display_seed(self, event, map_id):
@@ -15241,9 +15251,12 @@ class DailyAssistant:
         if getattr(state, 'state', None) != 'MEMBER_VERIFIED' or not isinstance(event, dict):
             return False
         source = state.verified_member_id
-        if (event.get('mapId') != source or event.get('cycleId') != self.active_map_cycle_id
+        if (getattr(self.gate, 'confirmed_id', None) != source
+                or event.get('mapId') != source or event.get('cycleId') != self.active_map_cycle_id
                 or event.get('sourceFrameGeneration') != self.current_frame_generation
                 or str(event.get('floor')) != str(self.current_floor)
+                or event.get('sourceSurfaceGeneration', self.surface_visibility_generation)
+                    != self.surface_visibility_generation
                 or self.floor_required or not self.map_is_open):
             return False
         difference = event.get('frontGroupDifferenceEvidence') or {}
@@ -15262,6 +15275,7 @@ class DailyAssistant:
         self._native_group_conflicts = (key, frames)
         if len(frames) < 2:return False
         state.state = 'GROUP_LOCKED'
+        self._native_group_review_floor = (state.resource_key, str(self.current_floor))
         state.verified_member_id = None
         state.pending_identity = None
         state.generation += 1
@@ -22053,11 +22067,13 @@ class DailyAssistant:
         engine = getattr(self, "engine", None)
         native = getattr(self, 'native_similarity_state', None)
         if (getattr(native, 'state', None) == 'GROUP_LOCKED'
-                and getattr(native, 'floor', None) == str(getattr(self, 'current_floor', ''))
+                and (getattr(native, 'floor', None) == str(getattr(self, 'current_floor', ''))
+                     or getattr(self, '_native_group_review_floor', None)
+                        == (native.resource_key, str(getattr(self, 'current_floor', ''))))
                 and native.floor == '1' and native.provisional_member_id
                 and getattr(getattr(self, 'gate', None), 'confirmed_id', None) == native.provisional_member_id
                 and (map_id is None or str(map_id) == native.provisional_member_id)):
-            return dict(mapId=native.provisional_member_id, floor=native.floor,
+            return dict(mapId=native.provisional_member_id, floor=str(self.current_floor),
                 groupId=native.group_id, provisional=True, groupGeneration=native.generation,
                 nativeSimilarity=True)
         state = getattr(engine, "front_group_state", None)
@@ -35363,6 +35379,7 @@ class DailyAssistant:
         self._native_similarity_priority = None
         self._native_similarity_condition_context = None
         self._native_similarity_family = None
+        self._native_group_review_floor = None
         if isinstance(engine, FrontDoorLiveTestEngine):
             engine.front_temporal_history = []
             engine.last_front_diagnostics = None

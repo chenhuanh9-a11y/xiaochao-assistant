@@ -34,8 +34,11 @@ the source selection is not cleared in advance. Identity promotion still require
 the current core authorization and global residual gate. Same-member results can
 promote using the recorded global verdict from an already committed current pose.
 
-A floor change drops old-floor pose/identity evidence but carries the previously
-established family into subsequent ranking. This does **not** authorize showing a
+A floor change drops old-floor provisional pose/evidence but carries the previously
+established family into subsequent ranking. A final member identity survives the
+floor change; its original evidence floor is distinct from the currently observed
+floor. Explicit contradictions can reopen that final family on the new floor,
+without granting its old-floor pose any authority. This does **not** authorize showing a
 provisional F1 pose on F2/B1. Round end, mode/resource replacement reset that family.
 Final native members may re-enter group review on two distinct current-frame
 explicit structural contradictions; low-confidence/residual misses alone do not
@@ -46,12 +49,13 @@ limit.
 
 Run from this branch using the existing OpenCV 4.12 project Python, `-B`:
 
-- `test_group_review_lifecycle.py`: 23 PASS (18 new cases and 5 inherited baseline
+- `test_group_review_lifecycle.py`: 26 PASS (21 new cases and 5 inherited baseline
   cases). Includes slow completion, unconsumed terminal, cancellation, duplicate
   terminal, stable identical pixels after capture advancement, two synthetic
   entrance cohorts (three members and two members), actual original rank dispatch
   with every rival retained, Difficult inventory suppression, floor invalidation,
-  staged member commit, repeated strong-conflict reopening, and reference badge.
+  staged member commit, repeated strong-conflict reopening through the real failure
+  normalizer, final-identity floor transition, same-member final promotion, and reference badge.
 - `test_native_similarity_runtime.py`: 28 PASS.
 - `test_native_group_display.py`: 5 PASS (overlaps inherited cases above).
 - `test_independent_visibility_runtime.py`: 5 PASS.
@@ -75,9 +79,9 @@ frame/log, original map package, executable, or user setting is committed.
   full reference is not promised throughout such an interval. This does not prove
   that every previously observed dual-disappearance interval is eliminated.
 - Current native condition resources originate on F1. This patch preserves group
-  scope across a floor change but does not create new floor relation evidence or
-  claim cross-floor final-member contradiction coverage after the old floor state
-  has been reset.
+  identity/scope across a floor change and tests the new-floor contradiction state
+  transition, but does not create new floor relation evidence. Actual F2/B1 pixels
+  and final target rendering still need representative replay/live acceptance.
 - Persistently changing pixels can reject background verdicts until a stable
   observation arrives. There is no universal non-starvation claim.
 - No game/GUI operation, Setup rebuild, install or release was performed. Real
