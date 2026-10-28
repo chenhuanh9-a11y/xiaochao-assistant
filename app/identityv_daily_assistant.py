@@ -38,8 +38,7 @@ import cv2
 import numpy as np
 import identityv_live_mvp as live_capture
 import desktop_theme as floating_theme
-from client_region_capture import capture_client_region, client_capture_context, CaptureContextChanged
-from map_ready_window import MapReadyWindow, ReadyObservation
+from client_region_capture import client_capture_context
 from hotkey_bindings import Chord, MODIFIERS, modifiers_match, parse_chord, primary_state, validate_unique
 from orb_visual import build_orb_visual, paint_orb
 from desktop_rounded import (
@@ -82,7 +81,7 @@ from alignment_core_v2 import (
 )
 from alignment_pose_transaction import AlignmentPoseTransaction
 from route_status_window import _NonActivatingWindow
-from transparent_display_resources import TransparentDisplayStore, fit_display_bgra
+from transparent_display_resources import TransparentDisplayStore, fit_display_bgra, unpremultiply_display_canvas
 from chest_auto_tap import ChestAutoTap
 from custom_maps import (CustomMapLibrary, GalleryStore, RouteError as CustomRouteError, gallery_of,
                          profile_id as custom_profile_id, render_game_layer as render_custom_map_layer)
@@ -1926,6 +1925,8 @@ def sheet_visibility_status_text(text: str, enabled: bool) -> str:
 
 def probable_map_interface(evidence: dict) -> bool:
     """Accept the nightmare canvas even when legacy UI-anchor checks differ."""
+    if evidence.get('tintedControlsLocalized') is False:
+        return False
     backdrop = float(evidence.get("backdropRatio", 0.0))
     anchors = int(evidence.get("matchedAnchors", 0))
     if evidence.get("layoutFamily") == "narrow-4x3":
@@ -6045,8 +6046,8 @@ class DailyAssistant:
         self._shared_structure_route_identities = {}
         self._shared_structure_display_cache = {}
 
-    def _mode_map_interface(self,frame):
-        if getattr(self,'game_mode','nightmare')!='difficult':return detect_map_interface(frame)
+    def _mode_map_interface(self,frame, *, floor_read=None):
+        if getattr(self,'game_mode','nightmare')!='difficult':return detect_map_interface(frame, floor_read=floor_read)
         result=self.difficult_map_ui.observe(frame)
         opened=result.get('mapOpen') is True
         return dict(detected=opened,flatMapCanvas=opened,shapeAccepted=opened,
@@ -6207,6 +6208,7 @@ class DailyAssistant:
     # the capture lane for the 2.4-2.6 seconds observed in live play.
     CAPTURE_VISUAL_DEADLINE_SECONDS = 1.05
     CAPTURE_VISUAL_MAX_ATTEMPTS = 14
+    CAPTURE_READY_PROBE_SECONDS = 0.05
     # Development variants may require a resolved floor before reusing an
     # already locked round pose. The daily build keeps its established
     # behavior unless a subclass explicitly enables this gate.
@@ -12957,10 +12959,15 @@ class DailyAssistant:
     @observe_runtime('structure-solver')
     def _alignment_v2_structure_fit(self, frame, route, map_id, floor, profile, *, cancelled=None, floor_evidence=None, entry_seed=None):
         from fast_structure_alignment import try_alignment
-        fast = try_alignment(self, frame, map_id, floor, cancelled=cancelled, entry_seed=entry_seed)
+        from single_map_structure import current_geometry, solve
+        if cancelled and cancelled():
+            return dict(success=False, reason='structure-work-obsolete')
+        # This invocation owns one immutable worker frame. A rejected fast
+        # proposal may hand its observation to fallback, never to another frame.
+        context = current_geometry(frame) if self._shared_structure_mode_enabled() else None
+        fast = try_alignment(self, frame, map_id, floor, cancelled=cancelled, entry_seed=entry_seed, context=context)
         if fast is not None:
             return fast
-        from single_map_structure import solve
         native = getattr(self, 'difficult_native_context', None)
         if native is not None and getattr(self.engine, 'entry_shared_reference_provider', None) is None:
             if not native.has_reference_binding(map_id, floor):
@@ -12970,14 +12977,14 @@ class DailyAssistant:
                 return dict(success=False, reason='initial-structure-identity-not-current')
             group = self._active_round_layer_group(map_id)
             if group is not None and group.verified_floors and str(floor) in group.relations:
-                recovery = solve(self, frame, map_id, floor, profile, route, cancelled=cancelled)
+                recovery = solve(self, frame, map_id, floor, profile, route, cancelled=cancelled, _context=context)
                 if (recovery.get('success') or recovery.get('reason') != 'structure-current-geometry-failed'
                         or recovery.get('sharedProjectionGeometryInsufficient')):
                     return recovery
             # Identity has already been decided in its original pixel domain.
             # Its successful pose/residual is not native alignment evidence.
             return self._alignment_v2_independent_member_fit(
-                frame, route, map_id, floor, profile, cancelled=cancelled)
+                frame, route, map_id, floor, profile, cancelled=cancelled, context=context)
         sparse_fit=self._alignment_v2_sparse_floor_fit(frame,route,map_id,floor,profile,cancelled=cancelled,evidence=floor_evidence)
         if sparse_fit is not None:return sparse_fit
         group = self._active_round_layer_group(map_id)
@@ -12988,7 +12995,7 @@ class DailyAssistant:
         def recover_existing_group():
             if (group is not None and group.verified_floors
                 and str(floor) in group.relations):
-                recovery=solve(self,frame,map_id,floor,profile,route,cancelled=cancelled)
+                recovery=solve(self,frame,map_id,floor,profile,route,cancelled=cancelled,_context=context)
                 if (recovery.get('success')
                     or recovery.get('reason') != 'structure-current-geometry-failed'
                     or recovery.get('sharedProjectionGeometryInsufficient')):
@@ -13005,7 +13012,7 @@ class DailyAssistant:
                 and str(floor) in group.verified_floors and group.route_profile_id==profile):
             # Confirmed same-floor recovery is translation-only, including a
             # miss. It must not restart identity or scale estimation.
-            return solve(self,frame,map_id,floor,profile,route,cancelled=cancelled)
+            return solve(self,frame,map_id,floor,profile,route,cancelled=cancelled,_context=context)
         verify_root = getattr(getattr(self.engine, 'side_entry_identity', None), 'verify_existing_pose', None)
         if (entry_first and entry_seed is None and callable(verify_root)
             and group is not None and str(floor) in group.verified_floors
@@ -13074,7 +13081,7 @@ class DailyAssistant:
                                     getattr(self,'settings',{}).get('difficultGridEnabled',False))):
                                 indexed=self._alignment_v2_independent_member_fit(
                                     frame,route,map_id,floor,profile,cancelled=cancelled,
-                                    pose_index_only=True)
+                                    pose_index_only=True,context=context)
                                 if indexed.get('reason')!='pose-index-no-candidates':
                                     indexed=dict(indexed,entryDiagnostics=local_diagnostics,
                                         entryFallback='confirmed-map-floor-pose-index')
@@ -13164,7 +13171,7 @@ class DailyAssistant:
                         getattr(self,'settings',{}).get('difficultGridEnabled',False))):
                     indexed=self._alignment_v2_independent_member_fit(
                         frame,route,map_id,floor,profile,cancelled=cancelled,
-                        pose_index_only=True)
+                        pose_index_only=True,context=context)
                     if indexed.get('reason')!='pose-index-no-candidates':
                         return dict(indexed,entryFallback='confirmed-map-floor-pose-index',
                             difficultEntryValidation=checked)
@@ -13230,7 +13237,7 @@ class DailyAssistant:
                         selectedRouteCurrentFrameResidual=dict(checked['residual'],
                             validationBasis='actual-rendered-profile-structural-mask',poseVerifiedAgainstRenderedProfile=True),
                         difficultEntryValidation=checked,localFloorDiagnostics=diagnostics)
-        fit = self._alignment_v2_independent_member_fit(frame, route, map_id, floor, profile, cancelled=cancelled)
+        fit = self._alignment_v2_independent_member_fit(frame, route, map_id, floor, profile, cancelled=cancelled, context=context)
         if fit.get('reason') == 'structure-work-obsolete':
             return fit
         if recovery is not None:
@@ -14367,6 +14374,54 @@ class DailyAssistant:
         except Exception:
             # A diagnostic copy/serialization error must not alter the result.
             pass
+
+    def _record_unresolved_floor_capture(self, frame, bounds, *, map_id, remembered_floor,
+                                         cycle_id, captured_at, floor_read, map_evidence,
+                                         capture_attempts, capture_start_frame_generation,
+                                         source_surface_generation):
+        """Retain pre-solver evidence; the remembered floor is not a label."""
+        store = getattr(self, 'memory_store', None)
+        if (not isinstance(store, NightmareMemoryStore)
+                or not isinstance(frame, np.ndarray)
+                or floor_read.get('selectedFloor') in (-1, 1, 2)
+                or self.closed or cycle_id is None
+                or cycle_id != self.capture_generation
+                or cycle_id != self.active_map_cycle_id
+                or not map_id
+                or map_id != getattr(self.gate, 'confirmed_id', None)):
+            return
+        profile = self.route_profile_id
+        reason = 'floor-evidence-unresolved'
+        failure_kind = ('localized-ambiguous' if floor_read.get('layout') == 'localized-triplet'
+                        else 'controls-unlocalized')
+        scope = f'{reason}:{failure_kind}'
+        try:
+            if not store.can_enqueue_alignment_failure(remembered_floor, map_id=map_id,
+                    profile_id=profile, cycle_id=cycle_id, sampling_scope=scope):
+                return
+            if map_evidence is None:
+                map_evidence = self._mode_map_interface(frame, floor_read=floor_read)
+            diagnostic = dict(stage=reason, failureKind=failure_kind, mode=self.game_mode, profileId=profile,
+                version=APP_VERSION, buildFingerprint=BUILD_FINGERPRINT,
+                processId=os.getpid(), eventPath=str(self.event_path),
+                cycleId=cycle_id, captureGeneration=cycle_id,
+                frameCapturedAtUtc=captured_at,
+                captureStartFrameGeneration=capture_start_frame_generation,
+                sourceSurfaceGeneration=source_surface_generation,
+                rememberedFloor=remembered_floor, observedFloor=None,
+                floorIsConfirmed=False, floorBucketMeaning='remembered-seed-only',
+                floorRead=copy.deepcopy(floor_read), mapEvidence=copy.deepcopy(map_evidence),
+                captureAttempts=capture_attempts)
+            accepted = store.enqueue_alignment_failure(map_id, remembered_floor, reason,
+                dict(success=False, reason=reason), frame.copy(), bounds,
+                cycle_id=cycle_id, diagnostic=diagnostic, sampling_scope=scope)
+            self._log('floor-evidence-failure-sample-queued', queued=bool(accepted),
+                cycleId=cycle_id, mapId=map_id, rememberedFloor=remembered_floor,
+                frameCapturedAtUtc=captured_at)
+        except Exception as error:
+            # Optional diagnostics cannot change the floor or display decision.
+            self._log('floor-evidence-failure-sample-error', cycleId=cycle_id,
+                errorType=type(error).__name__, message=str(error))
 
     def _record_unresolved_identity_rejection(self, event, top):
         """Queue a recent, current-cycle frame as diagnostic evidence only."""
@@ -15761,7 +15816,14 @@ class DailyAssistant:
         except (TypeError, ValueError):
             return False
         score = map_frame_change_score(source_signature, current_signature)
-        return bool(np.isfinite(score) and score < 0.015)
+        equivalent = bool(np.isfinite(score) and score < 0.015)
+        if not equivalent:
+            self._log_core_chain_event('alignment-v2-frame-change-rejected',
+                sourceFrameGeneration=event_data.get('sourceFrameGeneration'),
+                currentFrameGeneration=getattr(self, 'current_frame_generation', None),
+                changeScore=float(score), maximumChangeScore=0.015,
+                sourceCycleId=token[0] if token else None)
+        return equivalent
 
     def _alignment_v2_worker_pose_stale(
         self, map_id: str, event: dict | None,
@@ -27918,6 +27980,14 @@ class DailyAssistant:
         floor_started = time.perf_counter()
         floor_read = self._mode_selected_floor(frame)
         observed = floor_read.get("selectedFloor")
+        if (observed not in (-1, 1, 2) and getattr(self, 'floor_required', False)
+                and frame is getattr(self, 'current_frame', None)):
+            self._record_unresolved_floor_capture(frame, bounds,
+                map_id=getattr(self.gate, 'confirmed_id', None), remembered_floor=self.current_floor,
+                cycle_id=cycle_id, captured_at=getattr(self, 'current_frame_captured_at_utc', None),
+                floor_read=floor_read, map_evidence=None, capture_attempts=None,
+                capture_start_frame_generation=getattr(self, 'current_frame_generation', None),
+                source_surface_generation=getattr(self, 'surface_visibility_generation', None))
         if frame is getattr(self, "current_frame", None):
             self.current_frame_floor_observation = (
                 self.active_map_cycle_id,
@@ -28325,9 +28395,9 @@ class DailyAssistant:
                     or client_capture_context(hwnd) != capture_context):
                 return None, True
             evidence_started = time.perf_counter()
-            evidence = self._mode_map_interface(frame)
-            evidence_done = time.perf_counter()
             floor_read = self._mode_selected_floor(frame)
+            floor_done = time.perf_counter()
+            evidence = self._mode_map_interface(frame, floor_read=floor_read)
             checked_at = time.perf_counter()
             accepted = self._full_capture_frame_is_probable(evidence, floor_read,
                 silent_hint=silent_hint, round_identity_locked=round_identity_locked)
@@ -28339,8 +28409,8 @@ class DailyAssistant:
             if accepted and self._map_ready_current(token, context, cancelled):
                 keep_lock = True
                 return ((frame, bounds, captured_utc, evidence, floor_read,
-                    (captured-started)*1000, (evidence_done-evidence_started)*1000,
-                    (checked_at-evidence_done)*1000, started, captured), False)
+                    (captured-started)*1000, (checked_at-floor_done)*1000,
+                    (floor_done-evidence_started)*1000, started, captured), False)
             return None, False
         finally:
             if not keep_lock:
@@ -28348,121 +28418,68 @@ class DailyAssistant:
 
     def _prepare_map_open_frame(self, hwnd, token, deadline_at, cancelled,
             *, silent_hint=True, round_identity_locked=False):
-        """Known maps try a full frame first; ROI stability remains a fallback.
+        """Check fresh full frames on a bounded start-to-start cadence.
 
-        The absolute deadline belongs to preparation. Once a fresh full frame
-        passes original map/floor checks, the original solver budget applies.
-        On success the caller owns capture_lock through original ranking.
+        The former ROI stability check could only request this same full-frame
+        check; it never authorized a floor or pose. Avoid its extra capture and
+        color extraction. On success the caller retains the capture lane.
         """
         context = self._map_ready_context()
         capture_context = client_capture_context(hwnd)
-        if time.perf_counter() >= deadline_at:
+        now = time.perf_counter()
+        if now >= deadline_at:
             self._log('map-ready-stopped', cycleId=token, reason='preparation-deadline')
             return None
+        full_probe_period = float(self.CAPTURE_READY_PROBE_SECONDS)
+        # These cheap full checks replace BOTH the former full probes and ROI
+        # captures. Keep the preparation time bounded independently of the
+        # later ranking/retry count, without exhausting it during a long fade.
+        max_full_probes = max(1, math.ceil(float(self.CAPTURE_VISUAL_DEADLINE_SECONDS) / full_probe_period))
+        immediate = bool(round_identity_locked
+            and os.environ.get('IDENTITYV_REOPEN_FAST_CAPTURE', '1') != '0')
+        next_full_probe_at = now if immediate else now + full_probe_period
+        self._log('map-ready-begin', cycleId=token, deadlineAt=deadline_at,
+            fullProbePeriodSeconds=full_probe_period, maxFullProbes=max_full_probes,
+            firstProbeImmediate=immediate, policy='bounded-full-frame-start-cadence')
         full_probes = 0
-        if (round_identity_locked
-                and os.environ.get('IDENTITYV_REOPEN_FAST_CAPTURE', '1') != '0'):
-            # A known-map reopen may already have a usable frame. The same
-            # full interface/floor checks can authorize it without first
-            # collecting two ROI observations and a 50ms stable window.
+        while full_probes < max_full_probes and self._map_ready_current(token, context, cancelled):
+            now = time.perf_counter()
+            if now >= deadline_at:
+                break
+            if now < next_full_probe_at:
+                cancelled.wait(min(.025, max(0., min(deadline_at, next_full_probe_at)-now)))
+                continue
+            probe_started = now
             full_probes += 1
             try:
                 prepared, stopped = self._capture_map_open_full_probe(
                     hwnd, token, context, capture_context, deadline_at, cancelled,
                     silent_hint=silent_hint, round_identity_locked=round_identity_locked,
-                    proposal_source='locked-first-full-frame', full_probe=full_probes)
+                    proposal_source=('locked-first-full-frame' if immediate and full_probes == 1
+                                     else 'bounded-full-probe'), full_probe=full_probes)
             except OSError as error:
-                self._log('map-ready-first-full-unavailable', cycleId=token, error=str(error))
+                self._log('map-ready-full-unavailable', cycleId=token,
+                    fullProbe=full_probes, error=str(error))
                 prepared, stopped = None, False
             if prepared is not None:
                 return prepared
             if stopped:
+                reason = ('obsolete' if not self._map_ready_current(token, context, cancelled)
+                          else 'preparation-deadline' if time.perf_counter() >= deadline_at
+                          else 'capture-context-changed')
+                self._log('map-ready-stopped', cycleId=token, reason=reason)
                 return None
-        rectangle = live_capture.normalized_rect_to_client(
-            capture_context.full_client_size, live_capture.BACKDROP[:4], policy='full-client')
-        window = MapReadyWindow(required_observations=2, stable_seconds=.05)
-        window.begin(generation=token, context=(context, capture_context),
-            now=time.perf_counter(), deadline_at=deadline_at)
-        previous = None
-        revision = 0
-        max_full_probes = int(self.CAPTURE_VISUAL_MAX_ATTEMPTS)
-        full_probe_period = float(self.CAPTURE_VISUAL_DEADLINE_SECONDS) / max(1, max_full_probes)
-        next_full_probe_at = time.perf_counter() + full_probe_period
-        self._log('map-ready-begin', cycleId=token, deadlineAt=deadline_at,
-            roi=list(rectangle), requiredObservations=2, stableSeconds=.05,
-            fullProbePeriodSeconds=full_probe_period, maxFullProbes=max_full_probes,
-            policy='existing-live-map-color-mask-stability-proposal-only')
-        while self._map_ready_current(token, context, cancelled):
-            now = time.perf_counter()
-            if window.poll(now).status != 'pending':
-                break
-            ticket = window.request_roi(now)
-            if ticket is None:
-                break
-            if not self._acquire_capture_lane(token, context, cancelled, deadline_at=deadline_at):
-                break
-            context_changed = False
-            try:
-                if window.poll(time.perf_counter()).status != 'pending':
-                    break
-                roi = capture_client_region(hwnd, rectangle,
-                    expected_context=capture_context, full_capture=self._capture_source_frame)
-                captured_at = time.perf_counter()
-            except CaptureContextChanged:
-                window.cancel('capture-context-changed')
-                context_changed = True
-                roi = None
-            except OSError:
-                window.finish_roi_error(ticket, now=time.perf_counter())
-                roi = None
-            finally:
-                self.capture_lock.release()
-            if context_changed:
-                self._log('map-ready-stopped', cycleId=token, reason='capture-context-changed')
-                return None
-            if not self._map_ready_current(token, context, cancelled):
-                break
-            # Reuse the existing color-only live structure extractor. Colored
-            # player/effect pixels are not wall-motion evidence. This remains
-            # a proposal, never an identity/floor/pose authorization.
-            if roi is not None:
-                measurement = map_color_mask(roi.frame_bgr, live=True)
-                same = previous is not None and np.array_equal(previous, measurement)
-                if not same:
-                    revision += 1
-                previous = measurement
-                decision = window.observe(ticket, ReadyObservation(captured_at,
-                    (context, roi.context), True, revision, 'original-live-map-color-mask-roi'),
-                    now=time.perf_counter())
-                self._log('map-ready-roi-observed', cycleId=token, status=decision.status,
-                    acquisition=roi.acquisition, samePixels=same, origin=list(roi.origin_client))
-            else:
-                decision = window.decision()
-            probe_due = time.perf_counter() >= next_full_probe_at
-            if decision.needs_fresh_full_frame or probe_due:
-                # This latch is consumed exactly once. A rejected full check
-                # returns to ROI only within the SAME original deadline.
-                full_probes += 1
-                prepared, stopped = self._capture_map_open_full_probe(
-                    hwnd, token, context, capture_context, deadline_at, cancelled,
-                    silent_hint=silent_hint, round_identity_locked=round_identity_locked,
-                    proposal_source='roi-stable' if decision.needs_fresh_full_frame else 'bounded-full-probe',
-                    full_probe=full_probes)
-                if prepared is not None:
-                    return prepared
-                if stopped:
-                    break
-                now = time.perf_counter()
-                if now >= deadline_at or full_probes >= max_full_probes:
-                    break
-                next_full_probe_at = now + full_probe_period
-                window.begin(generation=token, context=(context, capture_context),
-                    now=now, deadline_at=deadline_at)
-                previous = None
-                revision += 1
-            cancelled.wait(min(.025, max(0., deadline_at-time.perf_counter())))
-        window.cancel('obsolete' if not self._map_ready_current(token, context, cancelled) else 'preparation-deadline')
-        self._log('map-ready-stopped', cycleId=token, reason=window.decision().reason)
+            # Processing consumes part of the interval, rather than being
+            # added to it. A slow probe never creates a backlog of catch-ups.
+            next_full_probe_at = probe_started + full_probe_period
+            if full_probes == max_full_probes - 1:
+                # Keep the final allowed probe near the deadline: faster early
+                # polling must not use up the budget before a long fade ends.
+                work_seconds = max(0.001, time.perf_counter() - probe_started)
+                next_full_probe_at = max(next_full_probe_at,
+                    deadline_at - min(full_probe_period, work_seconds))
+        self._log('map-ready-stopped', cycleId=token,
+            reason='obsolete' if not self._map_ready_current(token, context, cancelled) else 'preparation-deadline')
         return None
 
     @observe_runtime('capture-pipeline', owner='capture')
@@ -28507,7 +28524,7 @@ class DailyAssistant:
                 if prepared is not None:
                     physical_locked = True
                     # Preserve the original full-frame retry budget separately
-                    # from ROI preparation; never alter the solver's budget.
+                    # from frame preparation; never alter the solver's budget.
                     capture_deadline = prepared[-2] + float(self.CAPTURE_VISUAL_DEADLINE_SECONDS)
                 elif token != self.capture_generation or cancelled.is_set() or self.closed:
                     return
@@ -28551,14 +28568,14 @@ class DailyAssistant:
                               attempt=capture_attempts, traceContext=runtime_trace_context())
                 if token is not None and token != getattr(self, "capture_generation", token):
                     return
-                evidence_started = time.perf_counter()
-                evidence = prepared_evidence if prepared is not None else self._mode_map_interface(frame)
-                map_evidence_ms += prepared_evidence_ms if prepared is not None else (time.perf_counter() - evidence_started) * 1000.0
                 floor_read = None
                 if silent_hint:
                     floor_hint_started = time.perf_counter()
                     floor_read = prepared_floor if prepared is not None else self._mode_selected_floor(frame)
                     floor_hint_ms += prepared_floor_ms if prepared is not None else (time.perf_counter() - floor_hint_started) * 1000.0
+                evidence_started = time.perf_counter()
+                evidence = prepared_evidence if prepared is not None else self._mode_map_interface(frame, floor_read=floor_read)
+                map_evidence_ms += prepared_evidence_ms if prepared is not None else (time.perf_counter() - evidence_started) * 1000.0
                 strict_hotkey_map = verified_map_hotkey_frame(evidence, floor_read)
                 locked_canvas_without_floor = (
                     locked_map_canvas_without_floor_is_authorized(
@@ -28683,7 +28700,6 @@ class DailyAssistant:
                         silent_hint
                         and best is best_floor_read_frame
                         and isinstance(best_floor_read, dict)
-                        and best_floor_read.get("selectedFloor") in (-1, 1, 2)
                     )
                     else None
                 )
@@ -28701,6 +28717,8 @@ class DailyAssistant:
                     margin=floor_read.get("margin"), layout=floor_read.get("layout"),
                     centers=floor_read.get("centers"),
                     layoutFamily=floor_read.get("layoutFamily"),
+                    filledFloor=floor_read.get("filledFloor"),
+                    highlightEvidence=floor_read.get("highlightEvidence"),
                     safeTop=floor_read.get("safeTop"),
                     safeHeight=floor_read.get("safeHeight"),
                 )
@@ -28710,6 +28728,12 @@ class DailyAssistant:
                 else:
                     event_floor = locked_floor
                     floor_source = "remembered-seed"
+                    self._record_unresolved_floor_capture(best, best_bounds,
+                        map_id=locked_map, remembered_floor=locked_floor, cycle_id=token,
+                        captured_at=best_captured_at, floor_read=floor_read,
+                        map_evidence=best_evidence, capture_attempts=capture_attempts,
+                        capture_start_frame_generation=source_frame_generation,
+                        source_surface_generation=source_surface_generation)
                 self.events.put({
                     "kind": "round-locked-frame",
                     "_resultProducedAt": time.perf_counter(),
@@ -29749,8 +29773,15 @@ class DailyAssistant:
                 and np.array_equal(cache['snapshot'], display)):
             return cache['source'], cache, True
         snapshot = display.copy() if eligible else display
-        alpha = snapshot[:, :, 3:4].astype(np.float32) / 255.0
-        source = np.concatenate((snapshot[:, :, :3].astype(np.float32) * alpha, alpha), axis=2)
+        # Keep float32 division/multiplication and channel order identical,
+        # without allocating and joining full-canvas temporary color arrays.
+        source = np.empty(snapshot.shape, dtype=np.float32)
+        block_rows = max(1, 32768 // max(1, snapshot.shape[1]))
+        for row in range(0, snapshot.shape[0], block_rows):
+            block = source[row:row + block_rows]
+            block[:] = snapshot[row:row + block_rows]
+            block[:, :, 3:4] /= 255.0
+            block[:, :, :3] *= block[:, :, 3:4]
         cache = None
         if eligible:
             snapshot.setflags(write=False)
@@ -29817,16 +29848,7 @@ class DailyAssistant:
                 height, width = frame_shape[:2]
                 warped = cv2.warpPerspective(source, np.asarray(matrix, np.float64), (width, height),
                     flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0, 0))
-                a = np.clip(warped[:, :, 3:4], 0.0, 1.0)
-                color = np.divide(warped[:, :, :3], a, out=np.zeros_like(warped[:, :, :3]), where=a > 0)
-                np.rint(color, out=color)
-                np.clip(color, 0, 255, out=color)
-                output = np.empty(warped.shape, dtype=np.uint8)
-                output[:, :, :3] = color
-                np.multiply(a, 255, out=a)
-                np.rint(a, out=a)
-                output[:, :, 3:4] = a
-                output[output[:, :, 3] == 0] = 0
+                output = unpremultiply_display_canvas(warped, source.shape, matrix)
                 if shared_display:
                     metadata = self._shared_display_canvas_metadata(spec['sharedReference'].shape,
                         spec['matrixSourceToClient'], output, **options)
@@ -29865,8 +29887,8 @@ class DailyAssistant:
         canvas = cv2.warpPerspective(np.full(reference_shape, 255, np.uint8),
             np.asarray(native_to_client, np.float64), (width, height), flags=cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-        canvas_pixels = int((canvas >= 24).sum())
-        ink_pixels = int((output[:, :, 3] >= 24).sum())
+        canvas_pixels = cv2.countNonZero(cv2.inRange(canvas, 24, 255))
+        ink_pixels = cv2.countNonZero(cv2.inRange(cv2.extractChannel(output, 3), 24, 255))
         coverage = canvas_pixels / max(width * height, 1)
         required_pixels = max(1, int(minimum_visible_pixels))
         required_coverage = max(0.0, float(minimum_coverage))
@@ -35945,6 +35967,8 @@ class DailyAssistant:
     def _poll_events(self) -> None:
         if self.closed:
             return
+        callback_started = time.perf_counter()
+        scheduled_at = getattr(self, '_event_poll_due_at', callback_started)
         self._reap_cancelled_map_package_helper()
         self._drain_online_map_package_progress()
         self._service_display_capture()
@@ -35966,9 +35990,20 @@ class DailyAssistant:
         self._report_alignment_failure_sampling_state()
         current_kind = "idle"
         poll_started = time.perf_counter()
+        prelude_ms = (poll_started-callback_started)*1000.0
         processed_events = 0
         worker_deliveries = []
         capture_processing = None
+        event_processing = None
+        def finish_event_processing():
+            nonlocal event_processing
+            if event_processing is not None:
+                started, event_kind = event_processing
+                event_processing = None
+                elapsed = (time.perf_counter()-started)*1000.0
+                if elapsed >= self.EVENT_POLL_MS and getattr(self, 'runtime_timeline_enabled', True):
+                    self._log('ui-event-handler-slow', eventKind=event_kind,
+                        elapsedMs=elapsed, ordinaryQueueDepth=self.events.qsize())
         def finish_capture_processing():
             nonlocal capture_processing
             if capture_processing is not None:
@@ -35983,6 +36018,7 @@ class DailyAssistant:
         try:
             while True:
                 finish_capture_processing()
+                finish_event_processing()
                 urgent_event = None
                 urgent_queue = getattr(self, "urgent_events", None)
                 if urgent_queue is not None:
@@ -36031,6 +36067,7 @@ class DailyAssistant:
                         continue
                     kind = event["kind"]
                 current_kind = str(kind)
+                event_processing = (event_dequeued_at, current_kind)
                 if kind == 'online-map-packages-completed':
                     self._consume_online_map_package_result(event)
                     continue
@@ -38680,6 +38717,7 @@ class DailyAssistant:
             )
         finally:
             finish_capture_processing()
+            finish_event_processing()
             for delivery in worker_deliveries:
                 try:
                     self._alignment_v2_finish_worker_delivery()
@@ -38693,11 +38731,28 @@ class DailyAssistant:
         if watchdog is not None:
             watchdog.heartbeat()
         if not self.closed:
+            refresh_started = time.perf_counter()
             try:
                 self._refresh_route_presentation()
             except (tk.TclError, OSError) as error:
                 self._log('route-status-window-unavailable', error=str(error))
-            self.root.after(self.EVENT_POLL_MS, self._poll_events)
+            finished_at = time.perf_counter()
+            ordinary_depth = self.events.qsize()
+            urgent_depth = self.urgent_events.qsize()
+            # Keep FIFO and urgent-input ordering. If a budget-limited batch
+            # left work pending, yield to Tk without adding a full idle period.
+            delay = 1 if ordinary_depth or urgent_depth else self.EVENT_POLL_MS
+            late_ms = max(0.0,(callback_started-scheduled_at)*1000.0)
+            elapsed_ms = (finished_at-callback_started)*1000.0
+            if (getattr(self, 'runtime_timeline_enabled', True)
+                    and (elapsed_ms >= self.EVENT_POLL_MS or late_ms >= self.EVENT_POLL_MS)):
+                self._log('ui-event-poll-slow', elapsedMs=elapsed_ms,
+                    scheduledLateMs=late_ms, preludeMs=prelude_ms,
+                    presentationMs=(finished_at-refresh_started)*1000.0,
+                    processedEvents=processed_events, ordinaryQueueDepth=ordinary_depth,
+                    urgentQueueDepth=urgent_depth, nextDelayMs=delay)
+            self._event_poll_due_at = time.perf_counter()+delay/1000.0
+            self.root.after(delay, self._poll_events)
 
     def _dispose_display_surface(self, name: str, reason: str) -> None:
         with self._display_capture_lock:

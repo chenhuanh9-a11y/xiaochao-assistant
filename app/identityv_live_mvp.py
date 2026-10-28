@@ -485,6 +485,17 @@ def capture_client_gdi(hwnd: int) -> tuple[np.ndarray, tuple[int, int, int, int]
             user32.ReleaseDC(None, screen_dc)
 
 
+def client_frame_is_blank(frame: np.ndarray) -> bool:
+    """Keep the all-BGR-sample blank test without NumPy's full float64 copy."""
+    mean, deviation = cv2.meanStdDev(frame.reshape(-1, 1))
+    mean, deviation = float(mean[0, 0]), float(deviation[0, 0])
+    # E[x*x]-E[x]**2 can round differently from NumPy at the strict boundary.
+    # Retain the original decision there, including its short-circuit behavior.
+    if abs(mean - 1.0) <= 1e-8 or abs(deviation - 1.0) <= 1e-8:
+        return bool(float(frame.mean()) < 1.0 or float(frame.std()) < 1.0)
+    return mean < 1.0 or deviation < 1.0
+
+
 def capture_client_window_dc(hwnd: int) -> tuple[np.ndarray, tuple[int, int, int, int]]:
     """Capture the game client DC without compositing unrelated top windows."""
     if user32.IsIconic(hwnd):
@@ -520,7 +531,7 @@ def capture_client_window_dc(hwnd: int) -> tuple[np.ndarray, tuple[int, int, int
             buffer_type.from_address(bits.value),
         ).reshape(height, width, 4)
         frame = np.ascontiguousarray(bgra[:, :, :3])
-        if float(frame.mean()) < 1.0 or float(frame.std()) < 1.0:
+        if client_frame_is_blank(frame):
             raise RuntimeError("game-client-dc-returned-blank-frame")
         return frame, bounds
     finally:
@@ -647,6 +658,7 @@ def _floor_button_layout_in_geometry(
     density = cv2.boxFilter((gray > 60).astype(np.float32), -1, (kw, kh), normalize=True)
     _, _, stats, _ = cv2.connectedComponentsWithStats((density > 0.70).astype(np.uint8), 8)
     best = None
+    filled_floors = set()
     for bx, by, bw, bh, _area in stats[1:]:
         tile_width, tile_height = bw + kw * 0.5, bh + kh * 0.5
         if not (w * 0.020 <= tile_width <= w * 0.060
@@ -690,10 +702,14 @@ def _floor_button_layout_in_geometry(
                     uneven = abs(left - right) / max(left, right)
                     if uneven > 0.28:
                         continue
+                    filled_floors.add((-1, 1, 2)[(first, second, third).index(anchor)])
                     score = float(smooth[first] + smooth[second] + smooth[third]) - 35.0 * uneven
                     if best is None or score > best[0]:
                         best = (score, [float((x0 + index) / w) for index in (first, second, third)], measured)
-    return (best[1], best[2]) if best is not None else None
+    if best is None:
+        return None
+    return best[1], dict(best[2], filledFloor=(next(iter(filled_floors))
+                                             if len(filled_floors) == 1 else None))
 
 
 def _locate_floor_button_centers_in_geometry(
@@ -827,7 +843,7 @@ def map_interface_shape(width: int, height: int) -> dict:
     }
 
 
-def detect_map_interface(frame: np.ndarray) -> dict:
+def detect_map_interface(frame: np.ndarray, *, floor_read: dict | None = None) -> dict:
     h, w = frame.shape[:2]
     shape = map_interface_shape(w, h)
     if not shape["shapeAccepted"]:
@@ -856,6 +872,12 @@ def detect_map_interface(frame: np.ndarray) -> dict:
         tinted_ratios = {name: neutral_ratio(frame, region, True) for name, region in MAP_REGIONS.items()}
         tinted_count = sum(tinted_ratios[name] >= MAP_REGIONS[name][4] for name in MAP_REGIONS)
     damage = strong and tinted_count >= 3
+    # The broad tinted color bands can also match ordinary dark gameplay.
+    # Require the actual map-only button triplet for this tolerant branch.
+    floor_controls = None
+    if damage:
+        floor_controls = (floor_read if floor_read is not None else detect_selected_floor(frame))
+    tinted_controls_present = bool(floor_controls and floor_controls.get('layout') == 'localized-triplet')
     matched = max(neutral_count, tinted_count if damage else 0)
     required_backdrop = (
         MAP_INTERFACE_NARROW_BACKDROP
@@ -863,7 +885,7 @@ def detect_map_interface(frame: np.ndarray) -> dict:
     )
     detected = bool(
         flat_map_canvas and backdrop >= required_backdrop
-        and (neutral_count >= 3 or damage)
+        and (neutral_count >= 3 or (damage and tinted_controls_present))
     )
     if detected:
         reason = "map-interface-detected"
@@ -873,6 +895,8 @@ def detect_map_interface(frame: np.ndarray) -> dict:
         reason = "map-backdrop-insufficient"
     elif matched < 3:
         reason = "map-anchors-insufficient"
+    elif damage and not tinted_controls_present:
+        reason = "tinted-map-controls-unlocalized"
     else:
         reason = "map-evidence-insufficient"
     return {
@@ -888,6 +912,7 @@ def detect_map_interface(frame: np.ndarray) -> dict:
         "backdropTexture": texture,
         "flatMapCanvas": flat_map_canvas,
         "detectionMode": "damage-tint" if damage else "neutral",
+        "tintedControlsLocalized": tinted_controls_present if damage else None,
         "requiredBackdropRatio": required_backdrop,
         "clientCoordinatePolicies": dict(CLIENT_COMPONENT_POLICIES),
     }
@@ -939,7 +964,13 @@ def detect_selected_floor(frame: np.ndarray) -> dict:
     ordered = sorted(scores, key=scores.get, reverse=True)
     top, second = ordered[0], ordered[1]
     margin = scores[top] - scores[second]
-    selected = top if scores[top] >= 25.0 and margin >= 8.0 else None
+    # Preserve the absolute-contrast path. At lower contrast, require two
+    # independent observations to agree: the unique filled tile that anchored
+    # the layout, and a texture score at least three times the other buttons.
+    # A remembered floor, a lone glyph, or an ambiguous tile cannot qualify.
+    filled_floor = vertical.get('filledFloor')
+    filled_highlight = bool(filled_floor == top and scores[top] >= 3.0 * scores[second])
+    selected = top if margin >= 8.0 and (scores[top] >= 25.0 or filled_highlight) else None
     return {
         "selectedFloor": selected,
         "scores": {str(key): value for key, value in scores.items()},
@@ -947,6 +978,9 @@ def detect_selected_floor(frame: np.ndarray) -> dict:
         "confidence": min(1.0, max(0.0, margin / 25.0)) if selected else 0.0,
         "reason": "highlight-detected" if selected else "floor-controls-unavailable-or-ambiguous",
         "layout": layout,
+        "filledFloor": filled_floor,
+        "highlightEvidence": ("absolute-contrast" if selected and scores[top] >= 25.0
+                              else "filled-tile-and-relative-contrast" if selected else None),
         "centers": centers,
         "layoutFamily": vertical["layoutFamily"],
         "safeTop": vertical["safeTop"],
