@@ -1838,7 +1838,7 @@ class NightmareMemoryStore:
             return True
         # Unknown identity is a diagnostic bucket, never a map/training label.
         mode=getattr(self.pack,'mode',None)
-        return (map_id is None and floor in {'unknown', '1', '2'}
+        return (map_id is None and floor in {'unknown', '1', '2', 'B1'}
                 and mode in {'difficult','nightmare'}
                 and isinstance(diagnostic, dict)
                 and diagnostic.get('stage') == 'identity-rejection'
@@ -1950,6 +1950,7 @@ class NightmareMemoryStore:
         with self._failure_submit_lock:
             row = self.failure_last_record or {}
             return dict(state=self._failure_sampling.last_status,
+                        pendingSamples=self._failure_queue.qsize(),
                         savedCount=self.failure_saved_count,
                         writeError=self.failure_write_error,
                         retryAtMonotonic=self._failure_sampling.retry_at,
