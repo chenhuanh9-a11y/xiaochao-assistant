@@ -7344,6 +7344,7 @@ class DailyAssistant:
             self.assistant_shell_body, opacity_var=self.opacity_var,
             commands={
                 "toggle_sheet_visibility": self.toggle_sheet_visibility,
+                "set_reference_sheet_visible": self.set_reference_sheet_visible,
                 "change_sheet_opacity": self.change_sheet_opacity,
                 "_save_settings": self._commit_game_control_opacity,
                 "get_control_snapshot": self._route_presentation_snapshot,
@@ -9952,16 +9953,15 @@ class DailyAssistant:
         if enabled:
             restored = self._restore_sheet_visibility()
             self._set_status(
-                "小抄显影已恢复 · 当前路线已显示"
-                if restored else "小抄显影已恢复 · 下次开图自动显示",
+                "贴合显影已恢复 · 当前路线已显示"
+                if restored else "贴合显影已恢复 · 等待当前地图核对",
                 "#5ee0a3",
             )
         else:
             if getattr(self, "aligned_overlay", None) is not None:
                 self.aligned_overlay.hide()
-            self.hide_sheet()
             self._set_status(
-                "小抄显影已关闭 · 识别、锁图与后台贴合仍继续",
+                "贴合显影已关闭 · 定点图设置不变，后台识别仍继续",
                 "#f6c453",
             )
         self._save_settings()
@@ -16312,7 +16312,9 @@ class DailyAssistant:
         ):
             return False
         if not bool(getattr(self, "sheet_visibility_enabled", True)):
-            self.hide_sheet()
+            aligned = getattr(self, "aligned_overlay", None)
+            if aligned is not None:
+                aligned.hide()
             return True
         aligned = getattr(self, "aligned_overlay", None)
         if aligned is None:
@@ -17084,6 +17086,36 @@ class DailyAssistant:
                 currentFrameGeneration=getattr(self, 'current_frame_generation', None),
                 geometryVerdict=False, retryFailureRecorded=False)
             return {'handled': True, 'success': False, 'reason': 'structure-work-obsolete'}
+        if has_worker_result:
+            token = tuple(event_data.get('workerToken') or ())
+            stale_failure = (
+                len(token) == 6
+                and (token[0] != getattr(self, 'active_map_cycle_id', None)
+                     or token[5] != getattr(self, '_alignment_v2_reset_generation', 0)
+                     or event_data.get('sourceFrameGeneration') != getattr(self, 'current_frame_generation', None))
+                and not self._alignment_v2_worker_fit_usable(event_data.get('alignmentV2WorkerFit'))
+                and not self._alignment_v2_worker_fit_usable(event_data.get('alignmentV2WorkerRecoveryFit'))
+            )
+            if stale_failure:
+                # A failed old frame has no pose to cache and no verdict on
+                # the current pixels. In particular, do not open/reject the
+                # current observation or hide its already accepted display.
+                if (token[0] == getattr(self, 'active_map_cycle_id', None)
+                    and token[5] == getattr(self, '_alignment_v2_reset_generation', 0)
+                    and token[1:3] == (str(map_id), str(floor))
+                    and str(map_id) == getattr(getattr(self, 'gate', None), 'confirmed_id', None)
+                    and str(floor) == getattr(self, 'current_floor', None)
+                    and event_data.get('routeProfileId') == getattr(self, 'route_profile_id', None)
+                    and getattr(self, 'map_is_open', False)
+                    and not getattr(self, 'map_visual_suppressed', False)):
+                    self._alignment_v2_requeue_latest_pose_recovery(
+                        str(map_id), str(floor), previous_floor, event_data)
+                self._log_core_chain_event('alignment-v2-stale-failure-discarded',
+                    mapId=str(map_id), floor=str(floor),
+                    sourceFrameGeneration=event_data.get('sourceFrameGeneration'),
+                    currentFrameGeneration=getattr(self, 'current_frame_generation', None),
+                    geometryVerdict=False, retryFailureRecorded=False)
+                return {'handled': True, 'success': False, 'reason': 'stale-worker-failure'}
         if (
             not bool(getattr(self, "map_is_open", False))
             or bool(getattr(self, "map_visual_suppressed", False))
@@ -27985,6 +28017,10 @@ class DailyAssistant:
         miss must schedule the bounded V2 wide worker rather than silently
         falling back to another unbounded group-recovery poll.
         """
+        if isinstance(runtime_result, dict) and runtime_result.get('reason') in {
+            'stale-worker-failure', 'structure-work-obsolete', 'presentation-profile-stale',
+        }:
+            return False
         map_id = str(event.get("mapId") or "")
         if str(event.get("floor") or "") != "B1":
             return False
@@ -32154,14 +32190,14 @@ class DailyAssistant:
         return shown
 
     def _restore_sheet_visibility(self) -> bool:
-        """Restore the best already-known route without restarting recognition."""
+        """Restore only the aligned route; reference visibility is independent."""
         if (
             not bool(getattr(self, "sheet_visibility_enabled", True))
             or not bool(getattr(self, "game_foreground", False))
         ):
             return False
         if not bool(getattr(self, "map_is_open", False)):
-            return bool(self.show_sheet())
+            return False
         if bool(getattr(self, "map_visual_suppressed", False)):
             return False
         overlay = getattr(self, "drag_current_overlay", None)
@@ -32173,9 +32209,8 @@ class DailyAssistant:
                 overlay = (view or {}).get("overlay")
         if isinstance(overlay, np.ndarray) and self.current_bounds is not None:
             if self._show_aligned_overlay(overlay, tuple(self.current_bounds[:2])):
-                self.show_sheet()
                 return True
-        return bool(self.show_sheet())
+        return False
 
     def reference_sheet_snapshot(self) -> dict:
         editor = getattr(self, '_reference_position_edit', None)
@@ -32216,7 +32251,6 @@ class DailyAssistant:
             and not getattr(self, 'hotkey_capture_active', False)
             and not getattr(self, 'capture_in_progress', False)
             and not getattr(self, '_display_capture_active', False)
-            and getattr(self, 'sheet_visibility_enabled', True)
             and getattr(self, 'reference_sheet_visibility_enabled', True)
             and getattr(getattr(self, 'pack', None), 'maps', ()))
 
@@ -32618,7 +32652,6 @@ class DailyAssistant:
         if not bool(getattr(self, "sheet_visibility_enabled", True)):
             if self.aligned_overlay is not None:
                 self.aligned_overlay.hide()
-            self.hide_sheet()
             # Visibility is a player presentation preference, not an
             # alignment failure. Report success so recognition state and the
             # verified pose stay warm for an instant later restore.
@@ -32681,7 +32714,6 @@ class DailyAssistant:
         if not bool(getattr(self, "sheet_visibility_enabled", True)):
             if aligned_overlay is not None:
                 aligned_overlay.hide()
-            self.hide_sheet()
             return True
         restore = getattr(aligned_overlay, "restore", None)
         expected_generation = int(getattr(
@@ -34926,7 +34958,6 @@ class DailyAssistant:
             not getattr(self, 'closed', False)
             and map_id in getattr(getattr(self, 'pack', None), 'by_id', {})
             and not (lock or {}).get('provisional')
-            and getattr(self, 'sheet_visibility_enabled', True)
             and getattr(self, 'reference_sheet_visibility_enabled', True)
             and getattr(self, 'game_foreground', False)
             and not getattr(self, 'floor_required', False)
