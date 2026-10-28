@@ -471,7 +471,10 @@ class MapResourceBrowser(tk.Frame):
         else:
             self.managed_confirm.pack_forget()
         if self._managed_open:
-            self.managed_surface.pack(fill='x', padx=20, pady=(0, 12), before=self.filter_host)
+            # Overview unpacks the gallery filters; Tk requires a packed sibling
+            # for before=. Content remains packed in both overview and gallery.
+            anchor = self.filter_host if self.filter_host.winfo_manager() == 'pack' else self.content
+            self.managed_surface.pack(fill='x', padx=20, pady=(0, 12), before=anchor)
         else:
             self.managed_surface.pack_forget()
 
