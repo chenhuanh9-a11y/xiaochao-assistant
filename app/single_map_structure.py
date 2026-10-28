@@ -1180,6 +1180,7 @@ def partial_wall_geometry(frame,reference,target, *, _context=None, source_known
 
 
 def solve(assistant, frame, map_id, floor, profile, route, *, cancelled=None, _context=None):
+    from identityv_daily_assistant import rendered_profile_residual_is_verified
     started = time.perf_counter()
     assistant._single_map_structure_diagnostics = None
     group = assistant._active_round_layer_group(map_id)
@@ -1232,6 +1233,22 @@ def solve(assistant, frame, map_id, floor, profile, route, *, cancelled=None, _c
     accepted = []
     height,width=route.shape[:2]
     extent=np.asarray([[0,0,1],[width,0,1],[0,height,1],[width,height,1]])
+    def current_residual(matrix):
+        if shared:
+            # Geometry and its display-coordinate provenance must travel
+            # together. Raw mask residuals have no reviewed bridge/pack and
+            # cannot satisfy the unchanged V2 consumer contract.
+            residual, _ = assistant._canonical_geometry_current_frame_residual(
+                frame, map_id, floor, 'shared-structure', matrix, route,
+                maximum_dimension=960)
+            return residual
+        return selected_route_current_frame_residual(frame, route, matrix,
+            maximum_dimension=960, route_profile_id=profile, reference_override=validation)
+
+    def residual_verified(residual):
+        return (rendered_profile_residual_is_verified(residual) if shared
+                else residual.get('verified') is True)
+
     def validate(candidate):
         target = np.asarray(candidate.get('seedMatrix',base),dtype=np.float64).copy()
         if (target.shape!=(3,3) or not np.isfinite(target).all()
@@ -1276,18 +1293,17 @@ def solve(assistant, frame, map_id, floor, profile, route, *, cancelled=None, _c
             candidate['refinedTranslation']=target[:2,2].tolist()
             geometry_verified=True
             support=len(partial['diagnostics']['planes'])
-        residual = (selected_route_current_frame_residual(frame, route, target,
-            maximum_dimension=960, route_profile_id=profile, reference_override=validation)
+        residual = (current_residual(target)
             if geometry_verified or wall_author_recovery else dict(verified=False,reason='not-evaluated-geometry-failed'))
         candidate['residual'] = residual
-        if wall_author_recovery and residual.get('verified') is True:
+        if wall_author_recovery and residual_verified(residual):
             # One wrong nearest wall or a small consistent candidate offset
             # need not hide a route whose complete author structure explains
             # this current frame. This never authorizes by wall score alone.
             geometry_verified=True
             candidate['wallAuthorRecovery']={'reason':partial['reason'],
                 'heldOut':wall_holdout,'candidateNormals':wall_absolute}
-        if geometry_verified and residual.get('verified') is True:
+        if geometry_verified and residual_verified(residual):
             candidate['support']=max(candidate['support'],support)
             candidate['currentFrameScaleObservation']=selected_scale_observation(
                 geometry,point_target,target,residual,profile,wall_geometry=partial)
@@ -1361,6 +1377,12 @@ def solve(assistant, frame, map_id, floor, profile, route, *, cancelled=None, _c
             selected=[row for row in rows if row.get('poseVerified')]
             if len(selected)==1:
                 checked=selected[0]['verification']
+                if shared:
+                    residual = current_residual(np.asarray(checked['matrixSourceToClient']))
+                    if cancelled and cancelled(): return obsolete
+                    if not residual_verified(residual):
+                        return dict(failure, reason='structure-current-geometry-failed')
+                    checked = dict(checked, residual=residual)
                 assistant._single_map_structure_diagnostics=diagnostics
                 return dict(success=True,reason='difficult-entry-scale-relocalization',
                     matrixSourceToClient=np.asarray(checked['matrixSourceToClient']),
