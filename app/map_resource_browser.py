@@ -446,7 +446,7 @@ class MapResourceBrowser(tk.Frame):
         self._managed_signature = signature
         self.managed_message.configure(text=message)
         labels = {'installed': '已安装', 'update-available': '可更新', 'incomplete': '需修复',
-                  'unverified': '本地检查未完成', 'not-installed': '未安装', 'unmanaged': '旧资源未登记'}
+                  'unverified': '本地检查未完成', 'not-installed': '未安装', 'unmanaged': '旧资源待核实'}
         ids = {r[0] for r in rows}
         for package_id in tuple(self._managed_rows):
             if package_id not in ids:
@@ -460,7 +460,9 @@ class MapResourceBrowser(tk.Frame):
                 label = _label(frame, anchor='w', justify='left', wraplength=450)
                 label.pack(side='left', fill='x', expand=True)
                 row = self._managed_rows[package_id] = dict(frame=frame, label=label, button=button)
-            suffix = ('；缺少安装记录，不能安全删除或覆盖' if status == 'unmanaged'
+            suffix = (('；与已知原包清单未完全匹配，原文件已保留；不能安全删除或覆盖'
+                       if reason == 'legacy-display-set-not-exact' else
+                       '；来源登记尚未完成，原文件已保留；不能安全删除或覆盖') if status == 'unmanaged'
                       else '；文件已改动，已保留' if str(reason).startswith('modified-author-file:') else '')
             row['label'].configure(text=f"{title} · {labels.get(status, '本地检查失败')}{suffix}")
             row['button'].configure(state='normal' if removable and not busy else 'disabled')
