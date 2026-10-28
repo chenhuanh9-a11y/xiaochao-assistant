@@ -78,11 +78,24 @@ def _request(url: str, *, data: bytes | None = None, headers: dict | None = None
         return error.code, body
 
 
+def _manifest_read_error(error: Exception) -> PublishError:
+    """Keep local permission failures actionable without exposing proxy secrets."""
+    reason = getattr(error, "reason", error)
+    if (isinstance(reason, PermissionError)
+            or getattr(reason, "winerror", None) == 10013
+            or getattr(reason, "errno", None) in (1, 13)):
+        return PublishError(
+            "当前预览进程的网络套接字访问被拒绝（WinError 10013 / EACCES）。"
+            "请由环境管理员确认该执行环境的联网权限，再运行同一只读预览。"
+            "尚未收到 HTTP 响应；已停止，没有自动重试。")
+    return PublishError("读取线上版本失败，已停止；没有自动重试。")
+
+
 def read_manifest(base: str) -> dict:
     try:
         status, body = _request(f"{base}/updates/windows.json")
     except (urllib.error.URLError, TimeoutError, OSError, ValueError) as error:
-        raise PublishError("读取线上版本失败，已停止；没有自动重试。") from error
+        raise _manifest_read_error(error) from error
     if status != 200 or not isinstance(body, dict):
         raise PublishError(f"读取线上版本失败（HTTP {status}）。")
     return body
