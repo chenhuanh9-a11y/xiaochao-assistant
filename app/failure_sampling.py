@@ -5,7 +5,8 @@ from collections import OrderedDict
 class FailureSampling:
     interval_seconds = 60.0
     max_keys = 512
-    max_disk_bytes = 512 * 1024 * 1024
+    # Oldest failure images are evicted beyond this; the JSONL rows stay.
+    max_disk_bytes = 64 * 1024 * 1024
 
     def __init__(self):
         self.saved = OrderedDict()

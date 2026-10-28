@@ -1351,6 +1351,33 @@ class NightmarePack:
         )]
 
 
+# Per map floor. Recognition reads at most the newest 6 usable crops.
+CONFIRMATION_SAMPLES_ON_DISK = 12
+SUCCESS_SAMPLES_PER_FLOOR = 6
+
+
+def _oldest_first(directory: Path) -> list[Path]:
+    """Finished files under ``directory`` (not in-flight ``.tmp``), oldest first."""
+    if not directory.is_dir():
+        return []
+    files = []
+    for path in directory.rglob("*"):
+        try:
+            if path.is_file() and not path.name.startswith("."):
+                files.append((path.stat().st_mtime_ns, path.name, path))
+        except OSError:
+            continue
+    return [path for _mtime, _name, path in sorted(files)]
+
+
+def _delete_quietly(paths) -> None:
+    for path in paths:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
 class NightmareMemoryStore:
     """Append-only human labels plus game-map crops used as future exemplars."""
 
@@ -1936,12 +1963,27 @@ class NightmareMemoryStore:
                 del task
 
     def _reserve_failure_bytes(self, size):
-        """Writer-only accounting includes old samples and the JSONL journal."""
+        """Writer-only accounting includes old samples and the JSONL journal.
+
+        Over budget, the oldest failure images are deleted first so the
+        newest evidence is kept; their JSONL rows remain as the audit trail.
+        """
         if self._failure_disk_bytes is None:
             self._failure_disk_bytes = sum(p.stat().st_size for p in (self.root / 'failures').rglob('*') if p.is_file())
             if self.alignment_failure_path.is_file():
                 self._failure_disk_bytes += self.alignment_failure_path.stat().st_size
-        if self._failure_disk_bytes + size > self._failure_sampling.max_disk_bytes:
+        budget = self._failure_sampling.max_disk_bytes
+        if self._failure_disk_bytes + size > budget:
+            for path in _oldest_first(self.root / 'failures'):
+                if self._failure_disk_bytes + size <= budget:
+                    break
+                try:
+                    freed = path.stat().st_size
+                    path.unlink()
+                except OSError:
+                    continue
+                self._failure_disk_bytes -= freed
+        if self._failure_disk_bytes + size > budget:
             raise OSError('alignment-failure-budget-exhausted; existing evidence preserved')
         self._failure_disk_bytes += size
 
@@ -2162,6 +2204,8 @@ class NightmareMemoryStore:
                 ) + "\n")
                 handle.flush()
                 os.fsync(handle.fileno())
+            # Diagnostic-only frames: keep the newest few per map floor.
+            _delete_quietly(_oldest_first(path.parent)[:-SUCCESS_SAMPLES_PER_FLOOR])
         return row
 
     def record_confirmation(
@@ -2229,7 +2273,26 @@ class NightmareMemoryStore:
                 handle.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
                 handle.flush()
                 os.fsync(handle.fileno())
+            if sample_rel is not None:
+                self._prune_samples(map_id, floor)
             return row
+
+    def _prune_samples(self, map_id: str, floor: str) -> None:
+        """Bound one map floor's crops without changing what recognition reads.
+
+        Recognition uses the newest usable crops (``exemplar_paths``) and its
+        reliability saturates well below that count. Those files and the
+        newest few on disk are kept; older crops are deleted while the JSONL
+        labels stay, so a missing file simply reads as an unusable sample.
+        """
+        directory = self.root / "samples" / map_id / floor
+        keep = {path.resolve() for path in self.exemplar_paths(floor).get(map_id, ())}
+        files = _oldest_first(directory)
+        keep.update(path.resolve() for path in files[-CONFIRMATION_SAMPLES_ON_DISK:])
+        stale = [path for path in files if path.resolve() not in keep]
+        _delete_quietly(stale)
+        for path in stale:
+            self._sample_validation_cache.pop(path.relative_to(self.root).as_posix(), None)
 
     def exemplar_paths(self, floor: str, limit_per_map: int = 6) -> dict[str, list[Path]]:
         grouped: dict[str, list[Path]] = {item.id: [] for item in self.pack.maps}
