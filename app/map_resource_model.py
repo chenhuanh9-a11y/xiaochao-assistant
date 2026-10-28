@@ -52,8 +52,11 @@ class MapResourceModel:
         self.author_details = {}
         for key, profile in getattr(catalog, "profiles", {}).items():
             if profile.runtime_enabled or profile.settings_selectable:
-                self.profiles[key] = profile.display_name
-                self.author_details[key] = f"{profile.author_name} · {profile.route_family_name}"
+                # Current route labels take precedence over legacy catalog names.
+                display_name = '爱吃醋' if key == 'nightingale' else profile.display_name
+                author_name = '爱吃醋' if key == 'nightingale' else profile.author_name
+                self.profiles.setdefault(key, display_name)
+                self.author_details[key] = f"{author_name} · {profile.route_family_name}"
         self.base_profiles = dict(getattr(pack, "route_profiles", {}))
         self.default_profile = getattr(catalog, "default_profile_id", "wang-qingxin")
         for item in pack.maps:
