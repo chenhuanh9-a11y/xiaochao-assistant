@@ -13415,11 +13415,6 @@ class DailyAssistant:
             or str(getattr(self, 'current_floor', '')) != str(floor)):
             return {'success': False, 'reason': 'initial-structure-identity-not-current'}
         root_attempt = None
-        if (entry_first and entry_seed is None and group is not None
-                and str(floor) in group.verified_floors and group.route_profile_id==profile):
-            # Confirmed same-floor recovery is translation-only, including a
-            # miss. It must not restart identity or scale estimation.
-            return solve(self,frame,map_id,floor,profile,route,cancelled=cancelled,_context=context)
         verify_root = getattr(getattr(self.engine, 'side_entry_identity', None), 'verify_existing_pose', None)
         if (entry_first and entry_seed is None and callable(verify_root)
             and group is not None and str(floor) in group.verified_floors
@@ -13438,7 +13433,17 @@ class DailyAssistant:
                 if cancelled and cancelled():
                     return dict(success=False, reason='structure-work-obsolete')
                 try:
-                    root_attempt = verify_root(frame, map_id, floor, np.asarray(matrix).copy())
+                    validation_matrix = matrix
+                    if self._shared_structure_mode_enabled():
+                        canonical = group.canonical_pose_for_floor(floor)
+                        shared_basis = self.author_coordinate_adapters.matrix_profile_to_canonical(
+                            SHARED_STRUCTURE_PROFILE_ID, map_id, floor)
+                        if canonical is None or shared_basis is None:
+                            raise ValueError('existing-root-shared-basis-unavailable')
+                        validation_matrix = np.asarray(canonical) @ np.asarray(shared_basis)
+                    root_attempt = verify_root(frame, map_id, floor, np.asarray(validation_matrix).copy(), context=context)
+                    if cancelled and cancelled():
+                        return dict(success=False, reason='structure-work-obsolete', rootPoseValidation=root_attempt)
                     if root_attempt.get('success'):
                         residual = self._rendered_profile_current_frame_residual(
                             frame, route, matrix, profile_id=profile)
@@ -13458,6 +13463,11 @@ class DailyAssistant:
                         routeProfileId=profile, rootPoseValidation=root_attempt,
                         selectedRouteCurrentFrameResidual=dict(residual,
                             validationBasis='actual-rendered-profile-structural-mask',poseVerifiedAgainstRenderedProfile=True))
+        if (entry_first and entry_seed is None and group is not None
+                and str(floor) in group.verified_floors and group.route_profile_id==profile):
+            # Confirmed same-floor recovery is translation-only, including a
+            # miss. It must not restart identity or scale estimation.
+            return solve(self,frame,map_id,floor,profile,route,cancelled=cancelled,_context=context)
         fresh_entry_verification = False
         if isinstance(entry_seed,dict) and entry_seed.get('locatorKind')=='side':
             candidate=entry_seed.get('sideCandidate') or {}
@@ -16653,9 +16663,9 @@ class DailyAssistant:
             fit = event_data.get("fit")
         if isinstance(fit, dict) and fit.get("success"):
             return
-        if isinstance(fit, dict) and (fit.get('reason') == 'front-group-target-validation-required'
-            or (getattr(self, 'game_mode', 'nightmare') == 'difficult'
-                and fit.get('reason') == 'structure-work-obsolete')):
+        if isinstance(fit, dict) and fit.get('reason') in (
+            'front-group-target-validation-required', 'structure-work-obsolete'):
+            # Lifecycle cancellation says nothing about current-frame geometry.
             return
         if not isinstance(fit, dict) and not event_data.get('workerToken'):
             return
@@ -17053,8 +17063,7 @@ class DailyAssistant:
                     mapId=map_id, floor=floor, sourceProfileId=bound_profile,
                     currentProfileId=self.route_profile_id, geometryVerdict=False)
                 return dict(handled=True, success=False, reason='presentation-profile-stale')
-        if (getattr(self, 'game_mode', 'nightmare') == 'difficult'
-            and has_worker_result
+        if (has_worker_result
             and (event_data.get('alignmentV2WorkerFit') or {}).get('reason') == 'structure-work-obsolete'):
             # Cancellation contains no current-frame geometry verdict. Do not
             # feed it into rejection/retry suppression or revoke an unrelated
@@ -18249,6 +18258,18 @@ class DailyAssistant:
                 time.perf_counter() if player_author is not None else None
             ),
         }
+        if self._shared_structure_mode_enabled():
+            # Each floor may display a different fallback basis. Derive the
+            # bridge from the matrices actually committed, not group metadata.
+            shared_basis = self.author_coordinate_adapters.matrix_profile_to_canonical(
+                SHARED_STRUCTURE_PROFILE_ID, map_id, floor)
+            if shared_basis is not None:
+                try:
+                    bridge = np.linalg.solve(canonical @ np.asarray(shared_basis), render)
+                    if bridge.shape == (3, 3) and np.isfinite(bridge).all():
+                        tracking['routeDisplayBridge'] = bridge.tolist()
+                except (ValueError, TypeError, np.linalg.LinAlgError):
+                    pass
         group.set_tracking(
             floor, tracking, cycle_id=getattr(self, "active_map_cycle_id", None),
         )
