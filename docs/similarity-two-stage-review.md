@@ -87,3 +87,14 @@ frame/log, original map package, executable, or user setting is committed.
 - No game/GUI operation, Setup rebuild, install or release was performed. Real
   p50/p95/max key-to-display, missing-display/wrong-floor rates, and CPU/RSS remain
   unmeasured for this successor. The 300 ms objective is not an achieved result.
+
+
+## PR36 final-paint failure repair (integrated d5c8d262)
+
+The review probe reproduced a real owner/core defect: a rejected target paint restored only the gate, leaving the target observation/pose and UI selection behind and revoking the source grant. The probe uses synthetic frames and controlled fit/resource/sink boundaries, not game capture.
+
+Native sibling commits now prepare against an isolated core and compatibility projections. The original observation, authorization and surface stay untouched until target paint and sibling identity commit both succeed. Selection updates occur at that boundary. Rejected paint and exceptions discard target state and target windows; expired frame/floor/surface/context never reactivates the old grant. Request cancellation alone preserves a still-valid source and does not overwrite a newer pending request. Target token counters remain monotonic after failure.
+
+The PR35 retained path is included: target paint uses a fresh surface, bypassing the old select-surface pre-hide operation. The original retained pixels, clip, token and display bridge are preserved on failure. On success the new surface enters the bounded cache; displaced surfaces use the existing capture-aware release path. Hidden-user preference leaves an empty real surface ready for future repaint. The ordinary non-sibling pipeline is unchanged.
+
+`test_native_switch_atomic.py` exercises the actual native review staging, owner, core, pose transaction, and compositor method with controlled surface I/O: rejection/exception, successful switch, identity rejection after paint, close/frame changes, stale request, cancellation/new pending, hidden preference, non-recycled tokens, and both mode lifecycles. Retained packets are built by the real raster cache; no native HWND/game interaction is claimed. No GUI visibility latency, 300ms end-to-end result, or complete resolution of every disappearing-display cause is claimed.

@@ -80,6 +80,7 @@ from alignment_core_v2 import (
     HIGH_CONFIDENCE, MIN_DYNAMIC_ANCHORS,
 )
 from alignment_pose_transaction import AlignmentPoseTransaction
+from native_sibling_transaction import isolate_native_sibling
 from route_status_window import _NonActivatingWindow
 from transparent_display_resources import TransparentDisplayStore, fit_display_bgra, unpremultiply_display_canvas
 from chest_auto_tap import ChestAutoTap
@@ -16695,7 +16696,10 @@ class DailyAssistant:
             return False
         from idvb0059_runtime import packet_for, select_surface
         retained = packet_for(self, overlay)
-        if retained is not None:
+        native_transaction = getattr(self, '_native_sibling_transaction', None)
+        if native_transaction is not None:
+            aligned = native_transaction.surface()
+        elif retained is not None:
             aligned = select_surface(self, retained)
         generation = int(getattr(self, "surface_visibility_generation", 0))
         aligned.visibility_guard = lambda generation=generation: (
@@ -16726,6 +16730,9 @@ class DailyAssistant:
         return shown
 
     def _display_authorization_is_current(self, authorization_id: int) -> bool:
+        transaction = getattr(self, '_native_sibling_transaction', None)
+        if transaction is not None and transaction.source_authorized(authorization_id):
+            return True
         core = getattr(self, 'alignment_core_v2', None)
         authorization = getattr(core, 'display_authorization', None)
         return bool(authorization is not None
@@ -17417,6 +17424,7 @@ class DailyAssistant:
             displayAuthorizationId=authorization.authorization_id)
         return True
 
+    @isolate_native_sibling
     def _run_alignment_v2_for_current_frame_unlocked(
         self,
         map_id: str,
@@ -17427,6 +17435,10 @@ class DailyAssistant:
         """Run exactly one V2 sensor→authorization→compositor transaction."""
         if not self._alignment_v2_runtime_is_enabled():
             return {"handled": False, "reason": "v2-disabled"}
+        def hide_target(reason):
+            if getattr(self, "_native_sibling_transaction", None) is None:
+                self._hide_spatial_route(reason)
+
         core = self.alignment_core_v2
         event_data = dict(event or {})
         has_worker_result = "alignmentV2WorkerFit" in event_data
@@ -17542,7 +17554,7 @@ class DailyAssistant:
                 core.cache_candidate(
                     late_candidate, reason="map-closed-late-result",
                 )
-            self._hide_spatial_route("alignment-v2-map-closed")
+            hide_target("alignment-v2-map-closed")
             return {
                 "handled": True, "success": False,
                 "reason": "map-closed-candidate-cached",
@@ -17551,7 +17563,7 @@ class DailyAssistant:
             # An unknown opening floor is only a remembered seed. The first
             # valid observation clears this in the same consumer call; neither
             # a probe nor a worker result may authorize the seed beforehand.
-            self._hide_spatial_route("fresh-floor-evidence-required")
+            hide_target("fresh-floor-evidence-required")
             return {
                 "handled": True, "success": False,
                 "reason": "fresh-floor-evidence-missing",
@@ -17559,7 +17571,7 @@ class DailyAssistant:
         if self._current_frame_floor_conflicts(floor):
             # Floor selection cannot relabel pixels. This also rejects an old
             # worker result or explicit click target on conflicting pixels.
-            self._hide_spatial_route("alignment-v2-frame-floor-pending")
+            hide_target("alignment-v2-frame-floor-pending")
             return {
                 "handled": True, "success": False,
                 "reason": "frame-floor-pending",
@@ -17612,7 +17624,7 @@ class DailyAssistant:
                             geometryCheckMs=(time.perf_counter()-geometry_check_started)*1000)
                     else:
                         core.revoke_display(reason='difficult-recovery-continuity-expired')
-                        self._hide_spatial_route('difficult-recovery-continuity-expired')
+                        hide_target('difficult-recovery-continuity-expired')
                     # Keep existing pixels while the normal worker below runs.
                     # Do not mark this observation equivalent or return early:
                     # motion still needs a new pose and lifecycle can still hide.
@@ -17813,7 +17825,7 @@ class DailyAssistant:
                 and self._spatial_route_surface_is_visible())
             if not projected and not marker_provisional and (getattr(self, 'current_alignment_candidate', None) or {}).get('provisional'):
                 core.revoke_display(reason='shared-projection-context-changed')
-                self._hide_spatial_route('shared-projection-context-changed')
+                hide_target('shared-projection-context-changed')
             if started is not None:return started
             return self._start_alignment_v2_first_pose_worker(
                 str(map_id), str(floor), previous_floor,
@@ -17924,7 +17936,7 @@ class DailyAssistant:
                     return {'handled': True, 'success': False, 'displayed': True,
                             'reason': 'marker-provisional-geometry-pending'}
                 core._reject('no-v2-current-frame-candidate')
-                self._hide_spatial_route('alignment-v2-structure-candidate-unavailable')
+                hide_target('alignment-v2-structure-candidate-unavailable')
                 self.alignment_succeeded = False
                 self.alignment_in_progress = False
                 return {'handled': True, 'success': False, 'reason': 'candidate-unavailable'}
@@ -18039,7 +18051,7 @@ class DailyAssistant:
                     "handled": True, "success": True,
                     "reason": "alignment-v2-continuity-preserved",
                 }
-            self._hide_spatial_route("alignment-v2-candidate-unavailable")
+            hide_target("alignment-v2-candidate-unavailable")
             self.alignment_succeeded = False
             self.alignment_in_progress = False
             return {"handled": True, "success": False, "reason": "candidate-unavailable"}
@@ -18093,7 +18105,7 @@ class DailyAssistant:
                         "reason": "candidate-frame-stale-cached",
                     }
                 core.revoke_display(reason="v2-candidate-frame-stale")
-                self._hide_spatial_route("alignment-v2-candidate-frame-stale")
+                hide_target("alignment-v2-candidate-frame-stale")
                 self.alignment_succeeded = False
                 self.alignment_in_progress = False
                 return {
@@ -18110,7 +18122,7 @@ class DailyAssistant:
                 source_candidate=candidate.metadata.get('sourceStructureBinding'))
             if not rendered_profile_residual_is_verified(current_residual):
                 core._reject('source-structure-rendered-profile-unverified')
-                self._hide_spatial_route('source-structure-rendered-profile-unverified')
+                hide_target('source-structure-rendered-profile-unverified')
                 self.alignment_succeeded=False
                 self.alignment_in_progress=False
                 return {'handled':True,'success':False,
@@ -18179,7 +18191,7 @@ class DailyAssistant:
                 and str(candidate.metadata.get('routeProfileId')) == str(transient_basis['routeProfileId'])
             ):
                 core.revoke_display(reason='transient-source-or-linear-change')
-                self._hide_spatial_route('alignment-v2-transient-source-or-linear-change')
+                hide_target('alignment-v2-transient-source-or-linear-change')
                 self.alignment_succeeded = False
                 self.alignment_in_progress = False
                 return {'handled': True, 'success': False, 'reason': 'transient-source-or-linear-change'}
@@ -18215,7 +18227,7 @@ class DailyAssistant:
                     "handled": True, "success": True,
                     "reason": "alignment-v2-continuity-preserved",
                 }
-            self._hide_spatial_route(f"alignment-v2-{decision.reason}")
+            hide_target(f"alignment-v2-{decision.reason}")
             self.alignment_succeeded = False
             self.alignment_in_progress = False
             return {
@@ -18225,7 +18237,7 @@ class DailyAssistant:
             decision, source=candidate.source,
         )
         if authorization is None:
-            self._hide_spatial_route("alignment-v2-authorization-failed")
+            hide_target("alignment-v2-authorization-failed")
             return {"handled": True, "success": False, "reason": "authorization-failed"}
         frame = getattr(self, "current_frame", None)
         route = candidate_result.get("route")
@@ -18234,7 +18246,7 @@ class DailyAssistant:
         )
         if not isinstance(route, np.ndarray) or render_matrix.shape != (3, 3):
             core.revoke_display(reason="v2-render-input-missing")
-            self._hide_spatial_route("alignment-v2-render-input-missing")
+            hide_target("alignment-v2-render-input-missing")
             return {"handled": True, "success": False, "reason": "render-input-missing"}
         overlay, render_meta = self._build_display_overlay(
             route, render_matrix, frame.shape,
@@ -18243,7 +18255,7 @@ class DailyAssistant:
         )
         if overlay is None:
             core.revoke_display(reason="v2-overlay-build-failed")
-            self._hide_spatial_route("alignment-v2-overlay-build-failed")
+            hide_target("alignment-v2-overlay-build-failed")
             return {"handled": True, "success": False, "reason": "overlay-build-failed", "renderMeta": render_meta}
         front_sibling_context_current = bool(
             front_sibling_event is not None
@@ -18298,7 +18310,7 @@ class DailyAssistant:
                 self.aligned_overlay.hide()
                 if getattr(self, "aligned_overlay", None) is not None else None
             ),
-            hide_route=lambda reason: self._hide_spatial_route(reason),
+            hide_route=lambda reason: hide_target(reason),
         )
         if phase != "core-committed":
             return {"handled": True, "success": False, "reason": (
@@ -18312,7 +18324,7 @@ class DailyAssistant:
                 or not source_store.bind_runtime_sheet(str(map_id),str(floor),binding)):
                 pose_transaction.rollback()
                 core.revoke_display(reason='source-structure-binding-commit-failed')
-                self._hide_spatial_route('source-structure-binding-commit-failed')
+                hide_target('source-structure-binding-commit-failed')
                 return {'handled':True,'success':False,'reason':'source-structure-binding-commit-failed'}
         front_sibling_prepared = False
         if front_sibling_event is not None:
@@ -18321,7 +18333,7 @@ class DailyAssistant:
                 core.cache_candidate(candidate, reason="front-group-sibling-prepare-failed")
                 pose_transaction.rollback()
                 core.revoke_display(reason="front-group-sibling-prepare-failed")
-                self._hide_spatial_route("front-group-sibling-prepare-failed")
+                hide_target("front-group-sibling-prepare-failed")
                 return {
                     "handled": True, "success": False,
                     "reason": "front-group-sibling-prepare-failed",
@@ -18373,7 +18385,7 @@ class DailyAssistant:
             if front_sibling_prepared:
                 self._restore_front_group_sibling_preparation()
             core.revoke_display(reason="v2-post-commit-current-frame-failed")
-            self._hide_spatial_route("alignment-v2-post-commit-current-frame-failed")
+            hide_target("alignment-v2-post-commit-current-frame-failed")
             return {"handled": True, "success": False, "reason": "post-commit-current-frame-failed"}
         # Authorization and pose commit are complete before this final
         # compositor call. A compositor failure leaves the trusted pose warm,
@@ -18385,14 +18397,17 @@ class DailyAssistant:
             if front_sibling_prepared:
                 self._restore_front_group_sibling_preparation()
             core.revoke_display(reason="v2-compositor-rejected")
-            self._hide_spatial_route("alignment-v2-compositor-rejected")
+            hide_target("alignment-v2-compositor-rejected")
             return {"handled": True, "success": False, "reason": "compositor-rejected"}
+        native_transaction = getattr(self, '_native_sibling_transaction', None)
+        if native_transaction is not None and not native_transaction.current():
+            return {'handled': True, 'success': False, 'reason': 'native-sibling-context-expired'}
         if front_sibling_prepared and not self._commit_front_group_sibling_state():
             self._restore_front_group_sibling_preparation()
             if getattr(self, "aligned_overlay", None) is not None:
                 self.aligned_overlay.hide()
             core.revoke_display(reason="front-group-sibling-state-commit-failed")
-            self._hide_spatial_route("front-group-sibling-state-commit-failed")
+            hide_target("front-group-sibling-state-commit-failed")
             return {
                 "handled": True, "success": False,
                 "reason": "front-group-sibling-state-commit-failed",
@@ -18422,11 +18437,14 @@ class DailyAssistant:
                     if getattr(self, "aligned_overlay", None) is not None:
                         self.aligned_overlay.hide()
                     core.revoke_display(reason="front-group-member-promotion-failed")
-                    self._hide_spatial_route("front-group-member-promotion-failed")
+                    hide_target("front-group-member-promotion-failed")
                     return {
                         "handled": True, "success": False,
                         "reason": "front-group-member-promotion-failed",
                     }
+        native_transaction = getattr(self, '_native_sibling_transaction', None)
+        if native_transaction is not None and not native_transaction.commit():
+            return {'handled': True, 'success': False, 'reason': 'native-sibling-context-expired'}
         self._v2_compositor_active = True
         try:
             if transient_display:
@@ -36490,11 +36508,10 @@ class DailyAssistant:
             pending["frontGroupProvisionalMemberId"] = sibling_id
             pending["frontGroupSiblingCommitted"] = True
             pending["frontGroupSiblingRequestId"] = sibling.get("requestId")
-        self._select_candidate_programmatically(
-            sibling_id,
-            cycle_id=sibling.get("cycleId"),
-            preserve_route=True,
-        )
+        if getattr(self, '_native_sibling_transaction', None) is None:
+            self._select_candidate_programmatically(
+                sibling_id, cycle_id=sibling.get("cycleId"), preserve_route=True,
+            )
         self._log(
             "front-group-sibling-state-committed",
             cycleId=sibling.get("cycleId"),
@@ -36525,6 +36542,9 @@ class DailyAssistant:
             self._native_similarity_priority = staged.priority(self.game_mode)
             self._native_similarity_condition_context = staged.context_snapshot()
             self.front_group_sibling_pending = None
+            transaction = getattr(self, '_native_sibling_transaction', None)
+            if transaction is not None:
+                transaction.identity_prepared()
             return True
         if not isinstance(sibling, dict) or not callable(
             getattr(engine, "switch_front_provisional_member", None)
