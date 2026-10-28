@@ -12,6 +12,7 @@ class Widget:
     def configure(self, **kwargs): self.values.update(kwargs)
     def pack(self, **kwargs): self.packed = True
     def pack_forget(self): self.packed = False
+    def winfo_manager(self): return 'pack' if self.packed else ''
     def destroy(self): self.values['destroyed'] = True
 
 
@@ -44,7 +45,7 @@ class ManagementUITests(unittest.TestCase):
             confirm_author_package_removal=lambda package, **kw: self.calls.append(('confirm', package, kw)))
         b._closed = False; b._managed_open = True; b._managed_signature = None
         b._managed_rows = {}; b._managed_ready = None
-        for name in ['managed_surface','managed_message','managed_list','managed_confirm','filter_host']:
+        for name in ['managed_surface','managed_message','managed_list','managed_confirm','filter_host','content']:
             setattr(b, name, Widget())
 
     def test_local_status_and_removal_stay_available_without_online_catalog(self):

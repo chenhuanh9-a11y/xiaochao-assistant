@@ -131,7 +131,8 @@ class MapEntryGeometryIdentity:
         query=entry_corners(frame,context) if context else []
         rows=[];budget=1.0 if budget_seconds is None else max(0.,float(budget_seconds))
         complete=True
-        if len(query)<3:return [],dict(reason='entry-visible-structure-insufficient',elapsedMs=(time.perf_counter()-started)*1000)
+        if len(query)<3:return [],dict(reason='entry-visible-structure-insufficient',queryChains=len(query),
+                                     minimumQueryChains=3,elapsedMs=(time.perf_counter()-started)*1000)
         qpoints=np.array([q['point'] for q in query]);qrays=np.array([q['rays'] for q in query])
         evaluated_map_ids=[]
         for item,source,rays,main in self.entries:

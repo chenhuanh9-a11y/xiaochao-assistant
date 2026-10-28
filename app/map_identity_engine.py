@@ -23,6 +23,12 @@ def entry_rank_diagnostics(evidence, *, side_error=None):
                               'sourceEntryId', 'competitionComplete', 'poseAmbiguous'))
         summary.update(verified=checked.get('success'), reason=checked.get('reason'),
             verificationEvaluated=checked.get('evaluated'),
+            matrixSourceToClient=row.get('matrixSourceToClient'),
+            verificationMatrixSourceToClient=checked.get('matrixSourceToClient'),
+            validationPolicy=checked.get('validationPolicy'),
+            referenceChannel=checked.get('referenceChannel'),
+            regions=checked.get('regions'),
+            entryWalls=checked.get('entryWalls'),
             entry=subset(entry, ('localGeometryVerified', 'directionCompatible', 'sourceEntryId')),
             regionalEdgeVerified=(checked.get('regions') or {}).get('regionalEdgeVerified'),
             author=subset(residual, ('verified', 'reason', 'medianPixels', 'p90Pixels',
@@ -32,11 +38,13 @@ def entry_rank_diagnostics(evidence, *, side_error=None):
             exitContradicted=(row.get('entryCrossCheck') or entry.get('allObservedExits') or {}).get('contradicted'),
             structureVariants=[dict(name=variant.get('name'), verified=variant.get('verified'),
                 regionalEdgeVerified=(variant.get('regions') or {}).get('regionalEdgeVerified'),
-                walls=subset(variant.get('walls') or {}, ('verified', 'maxPixels', 'fragmentCount')))
+                regions=variant.get('regions'), walls=dict(variant.get('walls') or {}))
                 for variant in checked.get('structureVariants', [])])
         return summary
 
-    fields = ('reason', 'error', 'complete', 'elapsedMs', 'exitObserved', 'observationStatus', 'entryObserved',
+    fields = ('reason', 'error', 'complete', 'elapsedMs', 'queryTurns', 'minimumQueryTurns',
+              'queryPairs', 'queryChains', 'minimumQueryChains', 'evaluatedMapIds', 'queryPixels',
+              'minimumQueryPixels', 'queryKeypointCount', 'exitObserved', 'observationStatus', 'entryObserved',
               'verificationComplete', 'coverageComplete', 'identityAmbiguous', 'poseAmbiguous',
               'competitiveHypotheses', 'selectionPolicy',
               'continuousRefinementMs', 'continuousRefinementReason',
@@ -86,6 +94,7 @@ def entry_rank_diagnostics(evidence, *, side_error=None):
     source=evidence.get('sourceStructureCandidates') or {}
     automatic=source.get('automaticCandidate') or {}
     result['sourceStructures']=dict(reason=source.get('reason'),complete=source.get('complete'),
+        featureStatus=source.get('featureStatus'), queryKeypointCount=source.get('queryKeypointCount'),
         elapsedMs=source.get('elapsedMs'),evaluatedEntryCount=source.get('evaluatedEntryCount'),
         heldOutDecisionReason=source.get('heldOutDecisionReason'),
         variantExclusiveEvidence=source.get('variantExclusiveEvidence'),
