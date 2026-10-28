@@ -12706,7 +12706,8 @@ class DailyAssistant:
                 and pose is not None and pose.reliable
                 and pose.route_profile_id == displayed.get('routeProfileId')
                 and not self._open_cycle_transient_motion_active(map_id)
-                and np.array_equal(latest[4], displayed.get('verifiedFrame')))
+                and self._alignment_v2_queued_frame_matches_commit(
+                    latest[4], displayed.get('verifiedFrame'), floor))
             if ((latest[6] == 'group-recovery' or completed_first_pose) and self._spatial_route_surface_is_visible()
                 and getattr(getattr(core, 'display_authorization', None), 'source', None) != 'shared-root-provisional'
                 and core is not None and core.can_display(
@@ -12716,8 +12717,50 @@ class DailyAssistant:
                     mapId=map_id, floor=floor, frameGeneration=token[3], workerStarted=False,
                     sensorMode=latest[6])
                 return
+            if latest[6] == 'first-pose' and displayed.get('accepted'):
+                # Scalars only: diagnose why a successful delivery still
+                # releases another cold solve, without persisting user pixels.
+                authorization = getattr(core, 'display_authorization', None)
+                self._log_core_chain_event('alignment-v2-queued-first-pose-retained',
+                    mapId=map_id, floor=floor, frameGeneration=token[3],
+                    resetMatches=token[5] == getattr(self, '_alignment_v2_reset_generation', 0),
+                    surfaceMatches=latest[8] == getattr(self, 'surface_visibility_generation', 0),
+                    requestedProfileMatches=latest[-1].get('requestedRouteProfileId') == getattr(self, 'route_profile_id', None),
+                    displayedProfileMatches=displayed.get('routeProfileId') == getattr(self, 'route_profile_id', None),
+                    poseProfileMatches=bool(pose is not None and pose.route_profile_id == displayed.get('routeProfileId')),
+                    poseReliable=bool(pose is not None and pose.reliable),
+                    authorizationMatches=displayed.get('displayAuthorizationId') == getattr(authorization, 'authorization_id', None),
+                    framePixelsEqual=bool(np.array_equal(latest[4], displayed.get('verifiedFrame'))),
+                    completedObservation=completed_first_pose,
+                    transientMotion=bool(self._open_cycle_transient_motion_active(map_id)),
+                    surfaceVisible=bool(self._spatial_route_surface_is_visible()),
+                    coreCanDisplay=bool(core is not None and core.can_display(
+                        cycle_id=token[0], map_id=map_id, floor=floor, frame_generation=token[3])))
             context = {**latest[-1], **self._alignment_v2_worker_base_pose_context(map_id)}
             self._alignment_v2_worker_latest_args = (*latest[:-1], context)
+
+    def _alignment_v2_queued_frame_matches_commit(self, queued, verified, floor):
+        """Discard redundant work only for the already-authorized observation.
+
+        Animation outside the map can change RGB pixels after a structural
+        delivery. Use the same exact geometry/semantic comparison as delivery,
+        never a pose tolerance or a fresh authorization. The caller still
+        requires the current cycle, floor, surface, profile and core grant.
+        """
+        if not isinstance(queued, np.ndarray) or not isinstance(verified, np.ndarray):
+            return False
+        if np.array_equal(queued, verified):
+            return True
+        current = getattr(self, 'current_frame', None)
+        if (not self._shared_structure_mode_enabled()
+            or not isinstance(current, np.ndarray)
+            or not np.array_equal(queued, current)):
+            return False
+        try:
+            return self._alignment_v2_structure_frame_equivalent(
+                verified, semantic=str(floor) == '2')
+        except (ValueError, TypeError, KeyError, cv2.error):
+            return False
 
     def _structural_landmark_templates(
         self, route: np.ndarray, map_id: str, floor: str,
