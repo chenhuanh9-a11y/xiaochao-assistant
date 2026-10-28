@@ -13521,10 +13521,14 @@ class DailyAssistant:
 
     @observe_runtime('structure-solver')
     def _alignment_v2_structure_fit(self, frame, route, map_id, floor, profile, *, cancelled=None, floor_evidence=None, entry_seed=None):
+        from idvb0059_runtime import try_alignment as try_idvb0059
         from fast_structure_alignment import try_alignment
         from single_map_structure import current_geometry, solve
         if cancelled and cancelled():
             return dict(success=False, reason='structure-work-obsolete')
+        steady = try_idvb0059(self, frame, map_id, floor, cancelled=cancelled)
+        if steady is not None:
+            return steady
         # This invocation owns one immutable worker frame. A rejected fast
         # proposal may hand its observation to fallback, never to another frame.
         context = current_geometry(frame) if self._shared_structure_mode_enabled() else None
@@ -16487,16 +16491,20 @@ class DailyAssistant:
         aligned = getattr(self, "aligned_overlay", None)
         if aligned is None:
             return False
+        from idvb0059_runtime import packet_for, select_surface
+        retained = packet_for(self, overlay)
+        if retained is not None:
+            aligned = select_surface(self, retained)
         generation = int(getattr(self, "surface_visibility_generation", 0))
         aligned.visibility_guard = lambda generation=generation: (
             self._surface_visibility_is_current(generation)
             and self._display_authorization_is_current(authorization_id)
         )
         compositor_started = time.perf_counter()
-        shown = bool(aligned.show_bgra(
-            overlay, client_origin,
-            opacity=float(getattr(self, "sheet_opacity", self.SHEET_OPACITY)),
-        ))
+        opacity = float(getattr(self, "sheet_opacity", self.SHEET_OPACITY))
+        shown = bool(aligned.show_retained(retained, client_origin, opacity=opacity)
+            if retained is not None and hasattr(aligned, 'show_retained') else
+            aligned.show_bgra(overlay, client_origin, opacity=opacity))
         self._last_overlay_compositor_ms = round((time.perf_counter() - compositor_started) * 1000, 2)
         if shown and not aligned.visibility_guard():
             aligned.hide()
@@ -18324,6 +18332,10 @@ class DailyAssistant:
             canonicalMatrixSourceToClient=np.asarray(candidate.matrix_source_to_client).tolist(),
         )
         self._native_similarity_member_committed(str(map_id),str(floor),global_verified=bool(candidate.global_residual_verified))
+        if not transient_display:
+            from idvb0059_runtime import remember_committed
+            remember_committed(self, str(map_id), str(floor), frame,
+                               event_data.get('alignmentV2WorkerFit'))
         return {
             "handled": True, "success": True,
             "reason": "alignment-v2-committed",
@@ -30846,6 +30858,19 @@ class DailyAssistant:
                 spec = self._route_profile_validation_spec(profile_id, map_id, floor, matrix, route_source)
                 if spec is None or not spec.get('profileBridgeVerified'):
                     raise ValueError('shared display has no declared native coordinate bridge')
+                from idvb0059_runtime import build_display
+                retained = build_display(self, display, matrix, frame_shape,
+                    (str(self.game_mode), str(map_id), str(floor), str(profile_id), str(path)), **options)
+                if retained is not None:
+                    output, metadata = retained
+                    self._log('idvb0059-display-built', mapId=map_id, floor=str(floor),
+                              diagnostics=metadata.get('idvb0059Display'), success=metadata['success'])
+                    if output is not None:
+                        self.events.put(dict(kind='display-resource-ready', **context,
+                            originalPath=str(path.resolve()).casefold()))
+                    return output, {**metadata, 'displayPixelsDerived': True,
+                        'validationPixelsUnmodified': True, 'displayOriginalPath': str(path),
+                        'displayKind': layer['displayKind'], 'displayLabel': layer['displayLabel']}
             reuse = bool(shared_display and os.environ.get('IDENTITYV_REOPEN_DISPLAY_CACHE', '1') != '0')
             source, pixel_cache, source_reused = self._prepare_display_pixel_source(display, reuse=reuse)
             render_key = None
@@ -39827,6 +39852,8 @@ class DailyAssistant:
                     self.root.withdraw()
                     self.root.after(10, self._finish_native_close)
                     return
+                from idvb0059_runtime import close_surfaces
+                close_surfaces(self)
                 self._dispose_display_surface('aligned_overlay', 'assistant-close')
                 self._dispose_display_surface('reference_surface', 'assistant-close')
                 self._dispose_display_surface('reference_editor_surface', 'assistant-close')
