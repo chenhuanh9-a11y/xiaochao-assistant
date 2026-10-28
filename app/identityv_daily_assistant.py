@@ -6697,9 +6697,8 @@ class DailyAssistant:
             self.sheet_position = tuple(int(value) for value in self.sheet_position) if self.sheet_position is not None else None
         except (TypeError, ValueError, OverflowError):
             self.sheet_position = None
-        self.sheet_opacity = clamped_float(
-            self.settings.get("sheetOpacity"), self.SHEET_OPACITY, 0.0, 1.0,
-        )
+        from opacity_controls import load_opacities
+        self.sheet_opacity, self.reference_opacity = load_opacities(self.settings, self.SHEET_OPACITY)
         self.sheet_scale = clamped_float(
             self.settings.get("sheetScale"), 1.0, 0.50, 1.50,
         )
@@ -7244,6 +7243,7 @@ class DailyAssistant:
         )
         self.floor_var = tk.StringVar(value=self.manual_floor or "自动")
         self.opacity_var = tk.IntVar(value=round(self.sheet_opacity * 100))
+        self.reference_opacity_var = tk.IntVar(value=round(self.reference_opacity * 100))
         self.sheet_scale_var = tk.IntVar(value=round(self.sheet_scale * 100))
         self.interface_opacity_var = tk.IntVar(value=round(self.interface_opacity * 100))
         self.reduce_motion_var = tk.BooleanVar(value=self.reduce_motion)
@@ -7358,10 +7358,12 @@ class DailyAssistant:
         from game_control_view import GameControlView
         self.game_control_view = GameControlView(
             self.assistant_shell_body, opacity_var=self.opacity_var,
+            reference_opacity_var=self.reference_opacity_var,
             commands={
                 "toggle_sheet_visibility": self.toggle_sheet_visibility,
                 "set_reference_sheet_visible": self.set_reference_sheet_visible,
                 "change_sheet_opacity": self.change_sheet_opacity,
+                "change_reference_opacity": self.change_reference_opacity,
                 "_save_settings": self._commit_game_control_opacity,
                 "get_control_snapshot": self._route_presentation_snapshot,
                 "move_sheet": self.move_sheet,
@@ -9951,7 +9953,9 @@ class DailyAssistant:
     def _commit_game_control_opacity(self) -> bool:
         """Commit the Scale's current variable before its release saves it."""
         self.change_sheet_opacity(str(self.opacity_var.get()))
+        self.change_reference_opacity(str(self.reference_opacity_var.get()))
         self._flush_sheet_opacity_update()
+        self._flush_reference_opacity_update()
         return self._save_settings()
 
     def _end_round_from_quick_panel(self) -> None:
@@ -11515,6 +11519,7 @@ class DailyAssistant:
                 "sheetPosition": list(self.sheet_position) if self.sheet_position else None,
                 "referenceSheetVisible": bool(getattr(self, 'reference_sheet_visibility_enabled', True)),
                 "sheetOpacity": self.sheet_opacity,
+                "referenceOpacity": self.reference_opacity,
                 "sheetScale": self.sheet_scale,
                 "sheetVisibilityEnabled": bool(
                     getattr(self, "sheet_visibility_enabled", True),
@@ -30245,9 +30250,7 @@ class DailyAssistant:
         self.root.after_cancel(pending)
         if self.closed:
             return
-        self._refresh_visible_sheet_after_route_setting()
-        # This setting controls both the floating sheet and the aligned native
-        # layer. Always read current authorization/pixels, never retain a frame
+        # Read current authorization/pixels; never retain a frame
         # or pose in the delayed callback across a floor/resource change.
         current_overlay = getattr(self, "drag_current_overlay", None)
         if (
@@ -30261,6 +30264,53 @@ class DailyAssistant:
                 )
             except Exception as error:
                 self._log('opacity-display-update-failed', error=f'{type(error).__name__}: {error}')
+
+    def change_reference_opacity(self, value: str) -> None:
+        percent = max(0, min(100, round(float(value))))
+        previous = self.reference_opacity
+        self.reference_opacity = percent / 100.0
+        if self.reference_opacity_var.get() != percent:
+            self.reference_opacity_var.set(percent)
+        self._sync_game_control_view()
+        if (self.reference_opacity != previous
+                and getattr(self, '_reference_opacity_after_id', None) is None
+                and not self.closed):
+            self._reference_opacity_after_id = self.root.after(16, self._flush_reference_opacity_update)
+
+    def _flush_reference_opacity_update(self) -> None:
+        pending = getattr(self, '_reference_opacity_after_id', None)
+        if pending is None:
+            return
+        self._reference_opacity_after_id = None
+        self.root.after_cancel(pending)
+        if self.closed:
+            return
+        # Reuse only the currently displayed resource. Never reload an image,
+        # reveal a hidden window, or revive a prior floor from a slider callback.
+        if getattr(self, 'sheet_move_mode', False):
+            if not self._reference_editor_is_current():
+                return
+            name = 'reference_editor_surface'
+            pixels = getattr(self, '_reference_editor_presented_pixels', None)
+            position = self._reference_position_edit.position
+            alpha = max(.4, self.reference_opacity)
+        else:
+            if (not self._reference_sheet_may_show() or not self._reference_sheet_is_visible()
+                    or getattr(self, '_sheet_visible_reference', None) != self._reference_sheet_context()[1:]):
+                return
+            name = 'reference_surface'
+            pixels = getattr(self, '_reference_pixels', None)
+            position = getattr(self, '_reference_origin', None)
+            alpha = self.reference_opacity
+        surface = getattr(self, name, None)
+        if surface is None or not isinstance(pixels, np.ndarray) or position is None:
+            return
+        self._protect_display_window(name, getattr(surface, 'hwnd', None))
+        try:
+            if surface.show_bgra(pixels, position, opacity=alpha):
+                self._sheet_render_key = None
+        except Exception as error:
+            self._log('reference-opacity-display-update-failed', error=f'{type(error).__name__}: {error}')
 
     def change_interface_opacity(self, value: str) -> None:
         percent = max(65, min(95, round(float(value))))
@@ -32904,6 +32954,7 @@ class DailyAssistant:
         if editor is not None:
             editor.cancel()
         self._reference_position_edit = None
+        self._reference_editor_presented_pixels = None
         self.sheet_move_mode = False
         surface = getattr(self, 'reference_editor_surface', None)
         if surface is not None:
@@ -32938,7 +32989,8 @@ class DailyAssistant:
             getattr(self, 'urgent_events', None) or self.events)
         surface.visibility_guard = self._reference_editor_is_current
         surface.set_pointer_mailbox(self._reference_pointer_mailbox)
-        applied = surface.show_bgra(pixels, position, opacity=max(.4, float(self.sheet_opacity)))
+        self._reference_editor_presented_pixels = pixels
+        applied = surface.show_bgra(pixels, position, opacity=max(.4, float(self.reference_opacity)))
         if not applied:
             self._set_sheet_move_mode(False)
         return bool(applied)
@@ -33096,7 +33148,7 @@ class DailyAssistant:
             x, y = fitted.left, fitted.top
             self.sheet_position = (x, y)
             render_key = (str(path), tuple(max_size), title, provisional, image_width, image_height,
-                float(self.sheet_opacity), x, y, bool(self.sheet_move_mode),
+                float(self.reference_opacity), x, y, bool(self.sheet_move_mode),
                 getattr(getattr(self, 'gate', None), 'confirmed_id', None),
                 str(getattr(self, 'current_floor', '')), getattr(self, 'route_profile_id', None),
                 display_environment_signature(getattr(self, 'display_environment', None)))
@@ -33117,7 +33169,7 @@ class DailyAssistant:
             surface.visibility_guard = visibility_is_current
             if not ctypes.windll.user32.IsWindowVisible(surface.hwnd):
                 surface.visible = False
-            if not surface.show_bgra(pixels, (x, y), opacity=self.sheet_opacity):
+            if not surface.show_bgra(pixels, (x, y), opacity=self.reference_opacity):
                 return False
             if not visibility_is_current():
                 surface.hide()
@@ -33128,7 +33180,7 @@ class DailyAssistant:
             self._sheet_visible_reference = (getattr(self.gate, 'confirmed_id', None), str(self.current_floor), self.route_profile_id)
             self._log(
                 "sheet-shown", cycleId=self.active_map_cycle_id, path=str(path), title=title, position=[x, y],
-                size=[image_width, image_height], opacity=self.sheet_opacity,
+                size=[image_width, image_height], opacity=self.reference_opacity,
                 clickThrough=not self.sheet_move_mode,
             )
             return True
@@ -35846,6 +35898,7 @@ class DailyAssistant:
             controlVisible=tk_widget_is_viewable(getattr(self, "assistant_shell", None)),
             controlCollapsed=bool(getattr(self, 'control_collapsed', False)),
             mode=getattr(self, 'game_mode', 'nightmare'), sheetOpacityPercent=round(self.sheet_opacity * 100),
+            referenceOpacityPercent=round(getattr(self, 'reference_opacity', self.sheet_opacity) * 100),
             referenceEnabled=bool(getattr(self, 'reference_sheet_visibility_enabled', True)),
             referenceAdjusting=bool(getattr(self, 'sheet_move_mode', False)),
             referenceCanAdjust=self.reference_sheet_snapshot()['canAdjust'],
@@ -40107,7 +40160,7 @@ class DailyAssistant:
             except Exception as error:
                 self._log('status-window-destroy-failed', error=f'{type(error).__name__}: {error}')
         self.stop_event.set()
-        for name in ("ui_layout_after_id", "ui_environment_poll_after_id", "_sheet_opacity_after_id"):
+        for name in ("ui_layout_after_id", "ui_environment_poll_after_id", "_sheet_opacity_after_id", "_reference_opacity_after_id"):
             after_id = getattr(self, name, None)
             if after_id is not None:
                 try:

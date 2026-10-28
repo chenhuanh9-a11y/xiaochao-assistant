@@ -11,6 +11,7 @@ import tkinter as tk
 from desktop_rounded import RoundedButton
 from desktop_lucide import LucideIcons
 from star_brand import BrandImages
+from opacity_controls import OpacityUpdates, opacity_percent
 from desktop_theme import (SURFACE, LINE, TEXT, MUTED, FONT, PRIMARY,
                            BUTTON_BG, BUTTON_HOVER, BUTTON_TEXT, GOLD,
                            WARNING_BG, status_color)
@@ -49,9 +50,17 @@ class GameControlView(tk.Frame):
     BALL_SIZE_DIP = 64
     BALL_TRANSPARENT_COLOR = "#010203"
 
-    def __init__(self, parent, *, opacity_var=None, commands: Mapping[str, Callable]):
+    def __init__(self, parent, *, opacity_var=None, reference_opacity_var=None, commands: Mapping[str, Callable]):
         super().__init__(parent, bg=SURFACE)
-        self.opacity_var, self._commands = opacity_var, dict(commands)
+        self.opacity_var = opacity_var if opacity_var is not None else tk.IntVar(self, value=55)
+        self.reference_opacity_var = (reference_opacity_var if reference_opacity_var is not None
+                                      else tk.IntVar(self, value=self.opacity_var.get()))
+        self._commands = dict(commands)
+        self._opacity_updates = OpacityUpdates(self.after, self.after_cancel,
+            {surface: (lambda value, name=command: self._call(name, str(value)))
+             for surface, command in (('overlay', 'change_sheet_opacity'),
+                                      ('reference', 'change_reference_opacity')) if self._has(command)},
+            lambda: self._call('_save_settings'))
         self._icons = LucideIcons(self._root())
         self._brand_images = BrandImages(self._root())
         self.bind("<Destroy>", self._destroy_brand, add="+")
@@ -111,24 +120,35 @@ class GameControlView(tk.Frame):
             self.reference_controls, "", "move_sheet", padx=5, pady=8)
         self.reference_adjust_button.configure(command=self._adjust_reference, width=0)
         self.reference_adjust_button.grid(row=0, column=1, sticky="ns", padx=(3, 0))
-        opacity_heading = tk.Frame(self.controls, bg=SURFACE)
-        opacity_heading.pack(fill="x", pady=(8, 0))
-        self.quick_opacity_label = self._label(opacity_heading, "不透明度 · 0–100", color=MUTED)
-        self.quick_opacity_label.pack(side="left")
-        self.quick_opacity_value = self._label(opacity_heading, "未知", bold=True)
-        self.quick_opacity_value.pack(side="right")
-        ready = opacity_var is not None and self._has("change_sheet_opacity")
-        self.quick_opacity_scale = tk.Scale(
-            self.controls, from_=0, to=100, orient="horizontal", showvalue=False,
-            variable=opacity_var, command=self._command("change_sheet_opacity") if ready else None,
-            state="normal" if ready else "disabled", bg=SURFACE, fg=TEXT,
-            troughcolor=LINE, activebackground=PRIMARY, bd=0, highlightthickness=0,
-            width=self.OPACITY_WIDTH_DIP, sliderlength=self.OPACITY_SLIDER_LENGTH_DIP,
-            resolution=1)
-        self.quick_opacity_scale.pack(fill="x")
-        if ready and self._has("_save_settings"):
-            self.quick_opacity_scale.bind("<ButtonRelease-1>", lambda _event: self._call("_save_settings"))
-            self.quick_opacity_scale.bind("<KeyRelease>", self._opacity_key_released)
+        self.opacity_controls = tk.Frame(self.controls, bg=SURFACE)
+        self.opacity_controls.pack(fill="x", pady=(6, 0))
+        self.opacity_scales, self.opacity_values = {}, {}
+        for column, (surface, variable, command) in enumerate((
+                ('overlay', self.opacity_var, 'change_sheet_opacity'),
+                ('reference', self.reference_opacity_var, 'change_reference_opacity'))):
+            self.opacity_controls.columnconfigure(column, weight=1, uniform="opacity")
+            cell = tk.Frame(self.opacity_controls, bg=SURFACE)
+            cell.grid(row=0, column=column, sticky="ew", padx=(0, 3) if column == 0 else (3, 0))
+            heading = tk.Frame(cell, bg=SURFACE)
+            heading.pack(fill="x")
+            self._label(heading, "不透明度", color=MUTED).pack(side="left")
+            value_label = self._label(heading, "—", bold=True)
+            value_label.pack(side="right")
+            self.opacity_values[surface] = value_label
+            self._opacity_updates.sync(surface, variable.get())
+            slider = tk.Scale(cell, from_=0, to=100, orient="horizontal", showvalue=False,
+                variable=variable, command=lambda value, key=surface: self._opacity_changed(key, value),
+                state="normal" if self._has(command) else "disabled", bg=SURFACE, fg=TEXT,
+                troughcolor=LINE, activebackground=PRIMARY, bd=0, highlightthickness=0,
+                width=self.OPACITY_WIDTH_DIP, sliderlength=self.OPACITY_SLIDER_LENGTH_DIP,
+                length=1, resolution=1)
+            slider.pack(fill="x")
+            slider.bind("<ButtonRelease-1>", lambda _event: self._opacity_updates.commit())
+            slider.bind("<KeyRelease>", self._opacity_key_released)
+            self.opacity_scales[surface] = slider
+        # Preserve existing runtime aliases for the overlay control.
+        self.quick_opacity_scale = self.opacity_scales['overlay']
+        self.quick_opacity_value = self.opacity_values['overlay']
 
         self._round_host = tk.Frame(self.expanded_frame, bg=SURFACE)
         self._round_host.grid(row=3, column=0, sticky="ew", padx=12, pady=(8, 10))
@@ -236,7 +256,27 @@ class GameControlView(tk.Frame):
 
     def _opacity_key_released(self, event):
         if event.keysym in {"Left", "Right", "Up", "Down", "Prior", "Next", "Home", "End"}:
-            self._call("_save_settings")
+            self._opacity_updates.commit()
+
+    def _opacity_changed(self, surface, value):
+        try:
+            percent = opacity_percent(value)
+        except (TypeError, ValueError):
+            return
+        self.opacity_values[surface].configure(text=f"{percent}%")
+        self._opacity_updates.change(surface, percent)
+
+    def _sync_opacity_controls(self, snapshot):
+        for surface, key, variable in (
+                ('overlay', 'sheetOpacityPercent', self.opacity_var),
+                ('reference', 'referenceOpacityPercent', self.reference_opacity_var)):
+            try:
+                percent = self._opacity_updates.sync(surface, snapshot.get(key, variable.get()))
+            except (TypeError, ValueError, tk.TclError):
+                continue
+            if variable.get() != percent:
+                variable.set(percent)
+            self.opacity_values[surface].configure(text=f"{percent}%")
 
     def _button(self, parent, text, command, *, padx=12, pady=8):
         return RoundedButton(parent, text=text, command=self._command(command),
@@ -319,11 +359,13 @@ class GameControlView(tk.Frame):
             button.configure(image=button._lucide_image, compound="left")
         self._reference_edit_icon = self._icons.get("settings", round(17*self._scale), BUTTON_TEXT)
         self.reference_adjust_button.configure(image=self._reference_edit_icon, compound="none")
-        self.quick_opacity_scale.configure(width=max(1, round(self.OPACITY_WIDTH_DIP*self._scale)),
-                                          sliderlength=max(1, round(self.OPACITY_SLIDER_LENGTH_DIP*self._scale)))
+        for slider in self.opacity_scales.values():
+            slider.configure(width=max(1, round(self.OPACITY_WIDTH_DIP*self._scale)),
+                             sliderlength=max(1, round(self.OPACITY_SLIDER_LENGTH_DIP*self._scale)))
 
     def _destroy_brand(self, event):
         if event.widget is self:
+            self._opacity_updates.close()
             self._brand_images.close()
             self._ball_photo = None
 
@@ -342,12 +384,7 @@ class GameControlView(tk.Frame):
                              fg="white" if selected else BUTTON_TEXT,
                              state="normal" if self._has("set_game_mode") and snapshot.get("modeChangeEnabled") is not False else "disabled")
         self._sync_visibility_controls(snapshot)
-        try:
-            percent = round(float(self.opacity_var.get() if self.opacity_var is not None else snapshot["sheetOpacityPercent"]))
-            opacity_text = f"{percent}%"
-        except (KeyError, TypeError, ValueError, tk.TclError):
-            opacity_text = "未知"
-        self.quick_opacity_value.configure(text=opacity_text)
+        self._sync_opacity_controls(snapshot)
         keys = bindings if bindings is not None else snapshot.get("bindings") or {}
         hide_key = self._binding_text(keys, "toggle-panel")
         self.hide_button.configure(width=max(7, len(hide_key)+4))

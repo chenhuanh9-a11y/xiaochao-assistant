@@ -72,6 +72,10 @@ def subject_type():
         normalize_route_profile_id=lambda profile: profile,
         gallery_of=lambda profile: None, AlignmentCandidate=CORE.AlignmentCandidate,
         RoundLayerGroup=RoundLayerGroup, ROUND_LAYER_FLOORS=('B1', '1', '2'))
+    transaction_spec = importlib.util.spec_from_file_location('_route_native_transaction', APP / 'native_sibling_transaction.py')
+    transaction = importlib.util.module_from_spec(transaction_spec)
+    transaction_spec.loader.exec_module(transaction)
+    namespace['isolate_native_sibling'] = transaction.isolate_native_sibling
     exec(compile(ast.fix_missing_locations(ast.Module(body=[wrapper], type_ignores=[])), str(path), 'exec'), namespace)
     return namespace['Subject']
 
@@ -333,6 +337,13 @@ class RouteSelectionRegressions(unittest.TestCase):
         def residual(frame, source, target, **kwargs):
             np.testing.assert_allclose(target, native)
             return {'verified': True}
+        def canonical_residual(frame, map_id, floor, profile, target, source, **kwargs):
+            self.assertEqual(profile, SHARED)
+            checked = residual(frame, source, target)
+            return dict(checked, validationBasis='shared-canonical-geometry-current-frame',
+                poseVerifiedAgainstCanonicalGeometry=True, profileRenderDerivedFromCanonical=True,
+                coordinatePackId='synthetic-pack'), {}
+        s._canonical_geometry_current_frame_residual = canonical_residual
         namespace = dict(np=np, cv2=cv2, time=time, graph_point_geometry=graph,
             partial_wall_geometry=partial, selected_route_current_frame_residual=residual,
             selected_scale_observation=lambda *args, **kwargs: None)
