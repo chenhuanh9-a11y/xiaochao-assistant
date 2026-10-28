@@ -33,7 +33,7 @@ from desktop_theme import (BG, SURFACE, CARD, TINT, LINE, TEXT, MUTED, SUBTLE, G
                            SHADOW_DIP,
                            status_color)
 from chest_auto_tap import TAP_KEYS, TRIGGER_KEYS
-from custom_route_editor import CustomRouteEditor
+from custom_map_editor import CustomMapEditor
 from map_resource_browser import MapResourceBrowser
 from map_resource_model import MapResourceModel, choose_resource, floor_label, resource_inventory
 from map_resource_overview import structure_previews, load_structure_preview
@@ -795,7 +795,7 @@ class DesktopMainUI:
         self._build_preferences()
         self._build_maps()
         self._build_help()
-        self.custom_editor = CustomRouteEditor(self.body, self)
+        self.custom_editor = CustomMapEditor(self.body, self)
         self._page_frames["custom"] = self.custom_editor
         self.show_page("home")
         self.window.bind("<Configure>", lambda event: self._layout_shell()
