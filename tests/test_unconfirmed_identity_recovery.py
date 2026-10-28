@@ -112,6 +112,8 @@ class Recovery(unittest.TestCase):
         call = method('_rerank_current')
         call.__globals__.update(threading=threading, time=time, AUTO_IDENTITY_BUDGET_SECONDS=.1)
         state=self.state(); state.capture_generation=58; state.events=queue.Queue()
+        scope = method('_rerank_scope')
+        state._rerank_scope = lambda floor: scope(state, floor)
         state._front_group_provisional_lock_context=lambda: None
         state.engine=SimpleNamespace(preload_status=lambda _: {}, rank=Mock(side_effect=ValueError('fixture')))
         context=self.event(state)['unconfirmedRecoveryContext']

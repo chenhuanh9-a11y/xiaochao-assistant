@@ -153,3 +153,43 @@ a safe substitute for recovery.
 Animation owner commit `718ae78` is also adopted without altering runtime
 ownership. New repository authorization permits pushing this branch; the main
 coordinator owns the one PR-creation retry and merge/build, avoiding duplicates.
+
+## PR32 review repair: original producer shares the slot
+
+Review reproduced a missed producer seam on `7add9e6`: the original
+`_consider_floor_observation` pending-floor recovery launched an unregistered
+`automatic-stable` rerank. After 1.1 seconds the changed-frame retry launched a
+second engine call; the first result also lacked recovery context. The same
+three real production methods were replayed before and after repair. Before:
+two concurrent calls, source means `[0, 1]`, first producer context absent.
+After: one call, source mean `[0]`, first producer context present. Both runs
+joined their controlled workers; no game or native UI was used.
+
+All `_rerank_current` entries now share a UI-owned request slot. The slot is
+retained through queued terminal delivery, not just while the thread is alive.
+Additional requests replace one pending intent and copy the latest frame only
+when that intent can run. Requests bind cycle/capture generation, floor, pack,
+engine, mode, surface and selected identity/profile. All unconfirmed entries,
+including pending-floor and manual reranks, carry current-pixel provenance.
+Original initial capture/ranking retains its existing separate capture lane.
+
+Capture invalidation/close cancels the rerank owner and clears pending work;
+the slot is released only by that owner's terminal. Exceptions and thread-start
+failures also produce terminals. A duplicate old terminal cannot release a new
+owner. Pending automatic work waits for fresh current-floor evidence and an
+eligible foreground cycle; importing resources remains blocked while the slot
+is occupied. A newly locked identity invalidates pending unconfirmed work.
+
+`test_rerank_shared_lane.py`: 9 PASS. Covers the real floor producer in both
+modes, a finished worker whose terminal is not yet consumed, 20 continuous
+changes coalescing to the latest frame and accepting a valid result after
+stabilization, cancellation/invalidation, stale duplicate terminals, errors,
+thread-start failure, manual source preservation and fresh-floor gating.
+Related reruns: native similarity runtime 28, prior recovery 8, live import
+controller 15, resource controller 8, reopen 10, stale failure 4 PASS.
+
+This fixes concurrent reranking and the missing producer guard. Exact-pixel
+acceptance remains conservative: continuous pixel changes may keep results
+rejected. Stabilization acceptance is tested, not a claim of universal
+non-starvation, actual identity recognition on ambiguous frames, or complete
+resolution of every reported disappearance.

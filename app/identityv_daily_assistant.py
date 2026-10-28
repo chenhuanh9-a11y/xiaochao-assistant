@@ -10180,6 +10180,7 @@ class DailyAssistant:
         identity_worker = getattr(self, '_unconfirmed_identity_worker', None)
         return not ((lock is not None and lock.locked())
                     or (worker is not None and worker.is_alive())
+                    or getattr(self, '_identity_rank_request', None) is not None
                     or (identity_worker is not None and identity_worker.is_alive()))
 
     def map_package_import_snapshot(self) -> dict:
@@ -18703,6 +18704,7 @@ class DailyAssistant:
         if cancelled is not None:
             cancelled.set()
         self._pending_capture_request = None
+        self._cancel_rerank_work()
         if not preserve_locked_alignment:
             self._invalidate_alignment_work()
         self._invalidate_round_group_edge_correction()
@@ -19907,10 +19909,70 @@ class DailyAssistant:
                 fg=floating_theme.GOLD,
             )
 
+    def _rerank_scope(self, floor: str) -> tuple:
+        return (self.active_map_cycle_id, self.capture_generation, str(floor),
+            id(self.pack), id(self.engine), getattr(self, 'game_mode', None),
+            getattr(self, 'surface_visibility_generation', 0),
+            getattr(self.gate, 'confirmed_id', None), getattr(self, 'route_profile_id', None))
+
+    def _cancel_rerank_work(self) -> None:
+        request = getattr(self, '_identity_rank_request', None)
+        if request is not None:
+            request['cancelled'].set()
+        # Keep the slot until its terminal is consumed, even after cancel.
+        self._pending_rerank_request = None
+        self._unconfirmed_identity_retry_pending = False
+
+    def _finish_rerank_request(self, event: dict) -> bool:
+        request = event.get('rankRequest')
+        if request is None:
+            return True
+        if request is not getattr(self, '_identity_rank_request', None):
+            return False
+        self._identity_rank_request = None
+        self._unconfirmed_identity_worker = None
+        return bool(not request['cancelled'].is_set()
+            and request['scope'] == self._rerank_scope(self.current_floor)
+            and self.map_is_open and not getattr(self, 'closed', False))
+
+    def _drain_pending_rerank(self) -> None:
+        if getattr(self, '_identity_rank_request', None) is not None:
+            return
+        pending = getattr(self, '_pending_rerank_request', None)
+        if pending is None:
+            return
+        if (pending['scope'] != self._rerank_scope(self.current_floor)
+            or not self.map_is_open or getattr(self, 'closed', False)):
+            self._pending_rerank_request = None
+            return
+        if getattr(self, 'capture_in_progress', False) or getattr(self, '_map_package_live_request', None) is not None:
+            return
+        if (not getattr(self, 'game_foreground', False)
+            or getattr(self, 'map_visual_suppressed', False)
+            or getattr(self, 'floor_required', True)):
+            return
+        if pending['floorSource'] != 'manual':
+            observed = {'1': 1, '2': 2, 'B1': -1}.get(str(self.current_floor))
+            if observed is None or getattr(self, 'current_frame_floor_observation', None) != (
+                    self.active_map_cycle_id, self.current_frame_generation, observed):
+                return
+        self._pending_rerank_request = None
+        self._rerank_current(pending['floor'], pending['floorSource'])
+
     def _rerank_current(self, floor: str, floor_source: str, *, recovery_context=None):
         if self.current_frame is None:
             return
+        scope = self._rerank_scope(floor)
+        active = getattr(self, '_identity_rank_request', None)
+        if active is not None:
+            self._pending_rerank_request = dict(scope=scope, floor=floor, floorSource=floor_source)
+            return active.get('worker')
+        if getattr(self.gate, 'confirmed_id', None) is None:
+            # All unconfirmed producers, including first valid floor recovery.
+            recovery_context = (self.active_map_cycle_id, str(floor), id(self.pack),
+                getattr(self, 'game_mode', None), getattr(self, 'surface_visibility_generation', 0))
         native_recheck=bool((self._front_group_provisional_lock_context() or {}).get('nativeSimilarity'))
+        engine = self.engine
         frame = self.current_frame.copy()
         bounds = self.current_bounds
         cycle_id = self.active_map_cycle_id
@@ -19918,43 +19980,45 @@ class DailyAssistant:
         frame_captured_at = getattr(self, 'current_frame_captured_at_utc', None)
         frame_generation = getattr(self, 'current_frame_generation', None)
         surface_generation = getattr(self, 'surface_visibility_generation', None)
+        request = dict(scope=scope, cancelled=threading.Event(), worker=None)
+        self._identity_rank_request = request
 
         def run() -> None:
             started = time.perf_counter()
-            preload_status = self.engine.preload_status(floor)
-            ranked = self.engine.rank(
-                frame, floor=floor, limit=13,
-                budget_seconds=AUTO_IDENTITY_BUDGET_SECONDS,
-            )
-            completed = time.perf_counter()
-            self.events.put({
-                "kind": "ranked", "ranked": ranked, "frame": frame,
+            event = {
+                "kind": "ranked", "frame": frame, "rankRequest": request,
                 "frameCapturedAtUtc": frame_captured_at,
                 "rankStartedMonotonicAt": started,
-                "rankCompletedMonotonicAt": completed,
                 "rankSourceFrameGeneration": frame_generation,
                 "rankSourceSurfaceGeneration": surface_generation,
                 "bounds": bounds, "floor": floor, "observedFloor": None,
                 "floorSource": floor_source, "probable": True,
                 "token": cycle_id if cycle_id is not None else capture_generation,
                 "cycleId": cycle_id, "mapOpen": True,
-                "rankingPreload": preload_status,
-                "seconds": completed - started,
                 "nativeSimilarityRecheck": native_recheck,
                 "unconfirmedRecoveryContext": recovery_context,
-            })
-
-        def guarded_run():
+            }
             try:
-                run()
+                if not request['cancelled'].is_set():
+                    event['rankingPreload'] = engine.preload_status(floor)
+                    event['ranked'] = engine.rank(frame, floor=floor, limit=13,
+                        budget_seconds=AUTO_IDENTITY_BUDGET_SECONDS)
             except Exception as error:
-                if recovery_context is None:
-                    raise
-                self.events.put(dict(kind='unconfirmed-identity-rank-error',
-                    recoveryContext=recovery_context, errorType=type(error).__name__))
+                event.update(kind='unconfirmed-identity-rank-error',
+                    recoveryContext=recovery_context, errorType=type(error).__name__)
+            finally:
+                completed = time.perf_counter()
+                event.update(rankCompletedMonotonicAt=completed, seconds=completed-started)
+                self.events.put(event)
 
-        worker = threading.Thread(target=guarded_run, daemon=True)
-        worker.start()
+        worker = threading.Thread(target=run, daemon=True)
+        request['worker'] = worker
+        self._unconfirmed_identity_worker = worker
+        try:
+            worker.start()
+        except RuntimeError as error:
+            self.events.put(dict(kind='unconfirmed-identity-rank-error', rankRequest=request,
+                recoveryContext=recovery_context, errorType=type(error).__name__))
         return worker
 
     def _retry_unconfirmed_changed_frame(self) -> bool:
@@ -19987,7 +20051,8 @@ class DailyAssistant:
             self._unconfirmed_identity_retry_pending = False
             return False
         worker = getattr(self, '_unconfirmed_identity_worker', None)
-        if ((worker is not None and worker.is_alive()) or now - previous[2] < 1.0
+        if (getattr(self, '_identity_rank_request', None) is not None
+                or (worker is not None and worker.is_alive()) or now - previous[2] < 1.0
                 or (not getattr(self, '_unconfirmed_identity_retry_pending', False)
                     and map_frame_change_score(previous[1], signature) < 0.015)):
             return False
@@ -36806,6 +36871,7 @@ class DailyAssistant:
     def _poll_events(self) -> None:
         if self.closed:
             return
+        self._drain_pending_rerank()
         callback_started = time.perf_counter()
         scheduled_at = getattr(self, '_event_poll_due_at', callback_started)
         self._check_native_similarity_resources()
@@ -36909,6 +36975,8 @@ class DailyAssistant:
                     kind = event["kind"]
                 current_kind = str(kind)
                 event_processing = (event_dequeued_at, current_kind)
+                if not self._finish_rerank_request(event):
+                    continue
                 if kind == 'online-map-packages-completed':
                     self._consume_online_map_package_result(event)
                     continue
