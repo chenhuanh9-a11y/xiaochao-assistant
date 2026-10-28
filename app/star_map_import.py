@@ -25,6 +25,12 @@ AUTHOR_PACKAGES = {
     "nightmare-nightingale": "nightingale",
 }
 AUTHOR_SIDECARS = {"catalog.json", "display-bindings.json"}
+LIVE_AUTHOR_IMAGE_ROOTS = {
+    "nightmare-suju": ("_internal/assets/suju/",),
+    "difficult-zhan10": ("_internal/assets/zhan10-native/", "_internal/assets/zhan10-legacy-clean/"),
+    "nightmare-wang-qingxin": ("_internal/assets/authors/wang-qingxin/",),
+    "nightmare-nightingale": ("_internal/assets/authors/nightingale/",),
+}
 PACKAGE_IDS = {"nightmare-suju", "difficult-zhan10"} | set(AUTHOR_PACKAGES)
 SUPPORTED_DISPLAY_VERSIONS = {"1.0", "1.0.1"}
 CLIENT_COMPATIBILITY = {"displayVersion": "1.0", "numericLine": "1.0.0.N",
@@ -562,14 +568,14 @@ def _rollback_published(path, identity, digest):
 
 
 @contextmanager
-def _locked_installation(install_root, application_stopped):
-    if application_stopped is not True:
-        raise ImportRejected("close-application-first")
+def _writer_locked_installation(install_root, *, require_closed):
+    """One OS writer lock for closed upgrades and additive idle author imports."""
     root = Path(os.path.abspath(install_root))
     _no_links(root)
     if not root.is_dir():
         raise ImportRejected("installation-root-missing")
-    _check_closed(root)
+    if require_closed:
+        _check_closed(root)
     state = _target(root, "work/map-packages")
     state.mkdir(parents=True, exist_ok=True)
     lock = _target(root, "work/map-packages/import.lock")
@@ -588,6 +594,14 @@ def _locked_installation(install_root, application_stopped):
         yield root, state
 
 
+@contextmanager
+def _locked_installation(install_root, application_stopped):
+    if application_stopped is not True:
+        raise ImportRejected("close-application-first")
+    with _writer_locked_installation(install_root, require_closed=True) as installation:
+        yield installation
+
+
 def recover_package_upgrade(install_root, *, application_stopped=False):
     """Recover an interrupted owned-resource transaction, preserving unknown files."""
     from map_package_upgrade import recover_pending_upgrade
@@ -601,6 +615,122 @@ def rollback_package_upgrade(install_root, transaction_id, *, application_stoppe
         return rollback_upgrade(root, transaction_id)
 
 
+def _live_author_path(package_id, path):
+    """Only display pixels and the two exact sidecars of each optional author."""
+    if path.startswith(LIVE_AUTHOR_IMAGE_ROOTS.get(package_id, ())):
+        return PurePosixPath(path).suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
+    author = AUTHOR_PACKAGES.get(package_id)
+    return author is not None and path in {
+        f"_internal/references/author-packs/{author}/{name}" for name in AUTHOR_SIDECARS
+    }
+
+
+def supports_live_author_import(result) -> bool:
+    """Classify an already-validated inspection snapshot without reading files.
+
+    This is a UI readiness hint, not an installation authorization: the live
+    installer still stages and validates the archive under the OS writer lock.
+    """
+    if not isinstance(result, dict):
+        return False
+    package_id = result.get('packageId')
+    replacements, missing = result.get('replaceFiles'), result.get('missingFiles')
+    if (not isinstance(package_id, str) or package_id not in LIVE_AUTHOR_IMAGE_ROOTS
+            or not isinstance(replacements, list) or replacements
+            or not isinstance(missing, list)):
+        return False
+    return all(isinstance(row, dict) and isinstance(row.get('path'), str)
+               and _live_author_path(package_id, row['path']) for row in missing)
+
+
+def _check_cancelled(cancelled):
+    if cancelled is not None and cancelled():
+        raise ImportRejected("import-cancelled")
+
+
+def _commit_additions(root, result, stage, *, live=False, cancelled=None):
+    """The shared additive transaction; staged hard links remain rollback witnesses."""
+    created = []
+    try:
+        _check_cancelled(cancelled)
+        for row in result["files"]:
+            _check_cancelled(cancelled)
+            target = _target(root, row["path"])
+            if target.exists():
+                # Recheck after staging: fail closed on concurrent changes.
+                if target.stat().st_size != row["bytes"] or _sha(target) != row["sha256"]:
+                    raise ImportRejected("target-changed-during-import")
+                continue
+            # A core file disappearing after live validation is never repaired
+            # by an in-process author import, even if its staged hash is valid.
+            if live and not _live_author_path(result['packageId'], row['path']):
+                raise ImportRejected("live-import-requires-restart")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _no_links(target.parent)
+            # Same-volume hard link publishes a complete file exclusively.
+            # It cannot overwrite a file concurrently created by another writer.
+            staged = stage.joinpath(*row["path"].split("/"))
+            published = staged.stat()  # Capture the source BEFORE link/target races.
+            identity = (published.st_dev, published.st_ino)
+            _check_cancelled(cancelled)
+            os.link(staged, target)
+            created.append((target, identity, row["sha256"]))
+        _check_cancelled(cancelled)
+        result["added"] = len(created)
+        if live:
+            result["restartRequired"] = False
+            result["liveImport"] = True
+            result["authorFilesAdded"] = len(created)
+            result["authorFilesAlreadyPresent"] = sum(
+                _live_author_path(result['packageId'], row['path']) for row in result['files']
+            ) - len(created)
+            result["status"] = "author-already-installed" if not created else "author-installed-live"
+        else:
+            result["status"] = "already-installed" if not created else "installed-restart-required"
+        receipt = _target(root, f"work/map-packages/{result['packageId']}.json")
+        if not created and receipt.exists():
+            owned, _ = _owned_inventory(root, result['packageId'])
+            if owned == _rows(result['files']):
+                # A no-op must retain the receipt inode/transaction witness
+                # so an earlier owned upgrade can still be rolled back.
+                previous = _json(receipt.read_bytes())
+                if previous.get('upgradeTransactionId'):
+                    result['upgradeTransactionId'] = previous['upgradeTransactionId']
+                result['receiptPreserved'] = True
+                return result
+        temporary = stage / "receipt.json"
+        temporary.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        _check_cancelled(cancelled)
+        # Receipt replacement is the commit point. Cancellation before it
+        # rolls back additions; cancellation observed by the caller afterward
+        # cannot turn a committed import into a reported transaction failure.
+        os.replace(temporary, receipt)
+        return result
+    except Exception:
+        # Retain staged hard links through rollback: their file IDs cannot
+        # be recycled after another writer replaces a destination.
+        for path, identity, digest in reversed(created):
+            _rollback_published(path, identity, digest)
+        raise
+
+
+def _install_staged(zip_path, root, state, *, expected_archive_sha256=None, live=False, cancelled=None):
+    _pending_upgrade(root)
+    _check_cancelled(cancelled)
+    with tempfile.TemporaryDirectory(prefix="staging-", dir=state) as directory:
+        stage = Path(directory)
+        with _open_archive(zip_path, expected_archive_sha256) as (archive, digest):
+            result = _validate(archive, root, stage)
+            result["archiveSha256"] = digest
+        if live and not supports_live_author_import(result):
+            raise ImportRejected("live-import-requires-restart")
+        _check_cancelled(cancelled)
+        if result["replaceFiles"]:
+            from map_package_upgrade import commit_upgrade
+            return commit_upgrade(root, result, stage)
+        return _commit_additions(root, result, stage, live=live, cancelled=cancelled)
+
+
 def install_package(zip_path, install_root, *, application_stopped=False, expected_archive_sha256=None) -> dict:
     """Append data, or transactionally upgrade unchanged files owned by this package.
 
@@ -609,56 +739,23 @@ def install_package(zip_path, install_root, *, application_stopped=False, expect
     retains its journal/backups for explicit recovery before the next inspection.
     """
     with _locked_installation(install_root, application_stopped) as (root, state):
-        _pending_upgrade(root)
-        created = []
-        with tempfile.TemporaryDirectory(prefix="staging-", dir=state) as directory:
-            stage = Path(directory)
-            try:
-                with _open_archive(zip_path, expected_archive_sha256) as (archive, digest):
-                    result = _validate(archive, root, stage)
-                    result["archiveSha256"] = digest
-                if result["replaceFiles"]:
-                    from map_package_upgrade import commit_upgrade
-                    return commit_upgrade(root, result, stage)
-                for row in result["files"]:
-                    target = _target(root, row["path"])
-                    if target.exists():
-                        # Recheck after staging: fail closed on concurrent changes.
-                        if target.stat().st_size != row["bytes"] or _sha(target) != row["sha256"]:
-                            raise ImportRejected("target-changed-during-import")
-                        continue
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    _no_links(target.parent)
-                    # Same-volume hard link publishes a complete file exclusively.
-                    # It cannot overwrite a file concurrently created by another writer.
-                    staged = stage.joinpath(*row["path"].split("/"))
-                    published = staged.stat()  # Capture the source BEFORE link/target races.
-                    identity = (published.st_dev, published.st_ino)
-                    os.link(staged, target)
-                    created.append((target, identity, row["sha256"]))
-                result["added"] = len(created)
-                result["status"] = "already-installed" if not created else "installed-restart-required"
-                receipt = _target(root, f"work/map-packages/{result['packageId']}.json")
-                if not created and receipt.exists():
-                    owned, _ = _owned_inventory(root, result['packageId'])
-                    if owned == _rows(result['files']):
-                        # A no-op must retain the receipt inode/transaction witness
-                        # so an earlier owned upgrade can still be rolled back.
-                        previous = _json(receipt.read_bytes())
-                        if previous.get('upgradeTransactionId'):
-                            result['upgradeTransactionId'] = previous['upgradeTransactionId']
-                        result['receiptPreserved'] = True
-                        return result
-                temporary = stage / "receipt.json"
-                temporary.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-                os.replace(temporary, receipt)
-                return result
-            except Exception:
-                # Retain staged hard links through rollback: their file IDs cannot
-                # be recycled after another writer replaces a destination.
-                for path, identity, digest in reversed(created):
-                    _rollback_published(path, identity, digest)
-                raise
+        return _install_staged(zip_path, root, state, expected_archive_sha256=expected_archive_sha256)
+
+
+def install_author_package_live(zip_path, install_root, *, application_idle=False,
+                                expected_archive_sha256=None, cancelled=None) -> dict:
+    """Append optional author art while the caller owns an idle application.
+
+    The caller must keep its idle/generation token valid until completion and
+    expose invalidation through ``cancelled``. No EXE-exclusive-open test is
+    used here; the same OS writer lock, archive checks and additive transaction
+    still apply. Core repair and every owned replacement require closed import.
+    """
+    if application_idle is not True:
+        raise ImportRejected("live-import-requires-idle")
+    with _writer_locked_installation(install_root, require_closed=False) as (root, state):
+        return _install_staged(zip_path, root, state, expected_archive_sha256=expected_archive_sha256,
+                               live=True, cancelled=cancelled)
 
 
 if __name__ == "__main__":
