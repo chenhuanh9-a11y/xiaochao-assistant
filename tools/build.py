@@ -21,6 +21,7 @@ def main() -> None:
         '--specpath', str(root / 'build'), '--paths', str(root / 'app'),
         '--manifest', str(root / 'tools' / 'identityv-assistant.manifest'),
         '--add-data', f'{root / "version.json"};.',
+        '--add-data', f'{root / "app" / "custom_default_gallery.json"};.',
     ]
     for name in ('THIRD_PARTY_LUCIDE_LICENSE.txt', 'THIRD_PARTY_FLUENT_LICENSE.txt', 'THIRD_PARTY_NOTICES.md'):
         command.extend(['--add-data', f'{root / name};.'])

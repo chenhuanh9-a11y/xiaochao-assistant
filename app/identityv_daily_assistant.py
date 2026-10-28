@@ -83,7 +83,8 @@ from alignment_pose_transaction import AlignmentPoseTransaction
 from route_status_window import _NonActivatingWindow
 from transparent_display_resources import TransparentDisplayStore, fit_display_bgra, unpremultiply_display_canvas
 from chest_auto_tap import ChestAutoTap
-from custom_routes import CustomRouteStore, Walkable as CustomRouteWalkable, render_layer as render_custom_route
+from custom_maps import (CustomMapLibrary, GalleryStore, RouteError as CustomRouteError, gallery_of,
+                         profile_id as custom_profile_id, render_game_layer as render_custom_map_layer)
 from session_state_machine import (
     confirmed_overlay_source_is_allowed,
     display_event_is_current,
@@ -667,6 +668,8 @@ def inspect_display_environment(hwnd: int | None) -> dict:
 
 def normalize_route_profile_id(value) -> str:
     candidate = str(value or "").strip()
+    if gallery_of(candidate):
+        return candidate  # A custom map gallery; availability is checked where it is used.
     return candidate if candidate in ROUTE_PROFILE_LABELS or candidate == SHARED_STRUCTURE_PROFILE_ID else DEFAULT_ROUTE_PROFILE_ID
 
 
@@ -5594,7 +5597,7 @@ class DailyAssistant:
         preferred=getattr(self,'preferred_route_profile_id',DEFAULT_ROUTE_PROFILE_ID)
         pack=getattr(self,'pack',None)
         if self._shared_structure_mode_enabled():
-            if self._custom_route_active(map_id, floor):
+            if self._custom_route_active(map_id, floor) or (not map_id and self._custom_gallery_selected()):
                 return SHARED_STRUCTURE_PROFILE_ID
             catalog = getattr(self, 'author_route_catalog', None)
             display_profile = self._shared_display_profile_id()
@@ -5636,9 +5639,9 @@ class DailyAssistant:
             with self.aligned_author_route_lock:
                 entry = getattr(self, '_custom_route_layers', {}).get(key)
                 if (entry is not None and entry['error']
-                        and entry['route'] == self.custom_route_store().route(key[1], key[2])):
+                        and entry['route'] == self._custom_route_key(key[1])):
                     return entry['error']
-            return '当前楼层使用自定义路线'
+            return f'当前使用{self._route_profile_label(self.preferred_route_profile_id)}'
         if self._shared_structure_mode_enabled():
             optional = getattr(self,'optional_author_displays',None)
             preferred = getattr(self,'preferred_route_profile_id',None)
@@ -5776,7 +5779,7 @@ class DailyAssistant:
         self.candidate_photos = {}; self.candidate_photo_failures = set(); self.sheet_photo_cache = {}
         self.resource_preload_pending = False
         self.startup_resource_error = None
-        self.route_profile_var.set(ROUTE_PROFILE_LABELS[self.route_profile_id])
+        self.route_profile_var.set(self._route_profile_label(self._shown_route_profile()))
         self.current_floor = str(self.pack.default_entry_floor)
         self._update_floor_buttons(); self._refresh_candidates(); self._sync_route_settings_ui(); self._sync_active_mode_ui()
         for name in ('route_profile_box', 'onboarding_route_box'):
@@ -6092,6 +6095,39 @@ class DailyAssistant:
             controlVertical=dict(regionTop=(min((g['center'][1] for g in result.get('glyphs',[])),default=0)-22)/frame.shape[0],regionHeight=44/frame.shape[0]))
 
     def _mode_route_options(self):
+        options = self._author_route_options()
+        if self._custom_maps_ready():
+            options = tuple(options) + tuple((custom_profile_id(gallery), self._route_profile_label(custom_profile_id(gallery)))
+                                             for gallery, _name, _readonly in self.custom_galleries().galleries())
+        return options
+
+    def _route_profile_label(self, profile) -> str:
+        gallery = gallery_of(profile)
+        if gallery:
+            name = self.custom_galleries().name(gallery) if hasattr(self, 'settings_path') else None
+            duplicate = (name is not None and sum(item_name == name for _id, item_name, _ro
+                         in self.custom_galleries().galleries()) > 1)
+            suffix = f' [{gallery}]' if duplicate else ''
+            return f'自定义 · {name or "已删除的图库"}{suffix}'
+        return ROUTE_PROFILE_LABELS.get(profile, str(profile))
+
+    def _restore_route_profile_preference(self):
+        selected = normalize_route_profile_id(self.settings.get('routeProfileId', DEFAULT_ROUTE_PROFILE_ID))
+        if self.game_mode == 'difficult':
+            selected = 'zhan10-speed'
+        elif not gallery_of(selected):
+            catalog = getattr(self, 'author_route_catalog', None)
+            available = {profile.id for profile in catalog.settings_choices()} if catalog is not None else set()
+            if selected != DEFAULT_ROUTE_PROFILE_ID and selected not in available:
+                selected = DEFAULT_ROUTE_PROFILE_ID
+        self.route_profile_id = selected
+
+    def _shown_route_profile(self):
+        """The selected gallery stays the shown choice while its maps use the structure basis."""
+        preferred = getattr(self, 'preferred_route_profile_id', None)
+        return preferred if gallery_of(preferred) else self.route_profile_id
+
+    def _author_route_options(self):
         if self._shared_structure_mode_enabled():
             optional = getattr(self,'optional_author_displays',None)
             if optional is not None:
@@ -6155,8 +6191,8 @@ class DailyAssistant:
         self.mode_route_profiles[previous]=previous_profile
         allowed=dict(self._mode_route_options())
         self.route_profile_id=self.mode_route_profiles.get(mode,next(iter(allowed)))
-        if self.route_profile_id not in allowed:self.route_profile_id=next(iter(allowed))
-        self.route_profile_var.set(ROUTE_PROFILE_LABELS[self.route_profile_id])
+        if self._shown_route_profile() not in allowed:self.route_profile_id=next(iter(allowed))
+        self.route_profile_var.set(self._route_profile_label(self._shown_route_profile()))
         for name in ('route_profile_box','onboarding_route_box'):
             box=getattr(self,name,None)
             if tk_widget_exists(box):box.configure(values=list(allowed.values()))
@@ -6564,18 +6600,7 @@ class DailyAssistant:
             and len(remembered_drag_environment) == 4
             else ()
         )
-        self.route_profile_id = normalize_route_profile_id(
-            self.settings.get("routeProfileId", DEFAULT_ROUTE_PROFILE_ID),
-        )
-        if self.game_mode=='difficult':self.route_profile_id='zhan10-speed'
-        selectable_profile_ids = {
-            profile.id for profile in self.author_route_catalog.settings_choices()
-        } if self.author_route_catalog is not None else set()
-        if (
-            self.route_profile_id != DEFAULT_ROUTE_PROFILE_ID
-            and self.route_profile_id not in selectable_profile_ids
-        ):
-            self.route_profile_id = DEFAULT_ROUTE_PROFILE_ID
+        self._restore_route_profile_preference()
         self.zhan10_coffin_variant_id = normalize_coffin_variant_id(
             self.settings.get("zhan10CoffinVariantId", "variant-01"),
         )
@@ -7202,7 +7227,7 @@ class DailyAssistant:
             value="等待第五人格",
         )
         self.route_profile_var = tk.StringVar(
-            value=ROUTE_PROFILE_LABELS[self.route_profile_id],
+            value=self._route_profile_label(self._shown_route_profile()),
         )
         self.game_mode_var=tk.StringVar(value='困难' if getattr(self,'game_mode','nightmare')=='difficult' else '噩梦')
         self.active_mode_var=tk.StringVar()
@@ -9416,16 +9441,17 @@ class DailyAssistant:
         # and the user's visibility intent. It also hides a now-missing route.
         self.show_sheet()
 
-    def _apply_route_profile_setting(self, _event=None) -> None:
+    def _apply_route_profile_setting(self, _event=None, *, profile_id=None) -> None:
         previous = self.route_profile_id
-        selected = ROUTE_PROFILE_IDS_BY_LABEL.get(
+        selected = profile_id or {label: key for key, label in self._mode_route_options()}.get(
+            self.route_profile_var.get()) or ROUTE_PROFILE_IDS_BY_LABEL.get(
             self.route_profile_var.get(), DEFAULT_ROUTE_PROFILE_ID,
         )
         selectable_profile_ids = {
             profile.id for profile in self.author_route_catalog.settings_choices()
         } if self.author_route_catalog is not None else set()
         if self._shared_structure_mode_enabled() and selected not in dict(self._mode_route_options()):
-            self.route_profile_var.set(ROUTE_PROFILE_LABELS[self.route_profile_id])
+            self.route_profile_var.set(self._route_profile_label(self._shown_route_profile()))
             self._set_status('当前模式未安装所选作者，已保留原选择', '#ffb84d')
             return
         if (not self._shared_structure_mode_enabled()
@@ -9433,7 +9459,7 @@ class DailyAssistant:
             selected = DEFAULT_ROUTE_PROFILE_ID
             self._set_status("作者路线目录不可用，已保留王清心路线", "#ffb84d")
         self.route_profile_id = selected
-        self.route_profile_var.set(ROUTE_PROFILE_LABELS[selected])
+        self.route_profile_var.set(self._route_profile_label(selected))
         self._sync_route_settings_ui()
         self._save_settings()
         self._refresh_visible_sheet_after_route_setting()
@@ -29643,70 +29669,84 @@ class DailyAssistant:
         return result
 
     # Custom routes -----------------------------------------------------------
-    def custom_route_store(self) -> CustomRouteStore:
-        store = getattr(self, '_custom_route_store', None)
+    # Custom maps -------------------------------------------------------------
+    def custom_map_library(self) -> CustomMapLibrary:
+        library = getattr(self, '_custom_map_library', None)
+        if library is None:
+            library = self._custom_map_library = CustomMapLibrary()
+        return library
+
+    def custom_galleries(self) -> GalleryStore:
+        store = getattr(self, '_custom_galleries', None)
         if store is None:
-            store = self._custom_route_store = CustomRouteStore(self.settings_path.parent / 'custom-routes.json')
+            store = self._custom_galleries = GalleryStore(self.settings_path.parent / 'custom-galleries.json')
         return store
 
-    def _custom_route_mode_ready(self) -> bool:
+    def _custom_maps_ready(self) -> bool:
         return (getattr(self, 'game_mode', 'nightmare') == 'nightmare'
                 and getattr(self, 'difficult_native_context', None) is None
-                and self._shared_structure_mode_enabled())
+                and hasattr(self, 'settings_path')
+                and self._shared_structure_mode_enabled()
+                and self.custom_map_library().available)
 
-    def custom_route_snapshot(self) -> dict:
-        store = self.custom_route_store()
-        if getattr(self, 'game_mode', 'nightmare') != 'nightmare':
-            return dict(available=False, message='切换到噩梦模式后可编辑自定义地图', maps=(), useInGame=store.use_in_game)
-        if not self._custom_route_mode_ready():
-            return dict(available=False, message='地图结构资源未就绪', maps=(), useInGame=store.use_in_game)
-        maps = tuple((item.id, item.name) for item in getattr(getattr(self, 'pack', None), 'maps', ()))
+    def _custom_gallery_selected(self) -> str | None:
+        gallery = gallery_of(getattr(self, 'preferred_route_profile_id', None))
+        if gallery and self._custom_maps_ready() and self.custom_galleries().name(gallery) is not None:
+            return gallery
+        return None
+
+    def custom_map_snapshot(self) -> dict:
+        library = self.custom_map_library()
         gate = getattr(self, 'gate', None)
-        return dict(available=bool(maps), message='' if maps else '没有可用的噩梦地图', maps=maps,
-                    useInGame=store.use_in_game, currentMapId=getattr(gate, 'confirmed_id', None),
+        if getattr(self, 'game_mode', 'nightmare') != 'nightmare':
+            message = '切换到噩梦模式后可以使用自定义地图'
+        elif not library.available:
+            message = library.error or '自定义地图资源未安装'
+        else:
+            message = ''
+        return dict(available=not message, message=message, maps=tuple(library.maps()) if library.available else (),
+                    inUse=self._custom_gallery_selected(), currentMapId=getattr(gate, 'confirmed_id', None),
                     currentFloor=str(getattr(self, 'current_floor', '1')))
 
-    def custom_route_canvas(self, map_id, floor):
-        """The built-in structure footprint the editor draws on (native pixels)."""
-        if not self._custom_route_mode_ready():
-            return None
-        try:
-            reference = self._shared_structure_reference(SHARED_STRUCTURE_PROFILE_ID, map_id, str(floor))
-        except (OSError, ValueError, KeyError, TypeError):
-            return None
-        mask = getattr(reference, 'clean_mask', None)
-        return mask if isinstance(mask, np.ndarray) and mask.ndim == 2 else None
+    def use_custom_gallery(self, gallery_id) -> dict:
+        """Select a gallery (or None for the previous author) as the route source."""
+        if gallery_id is not None and (not self._custom_maps_ready() or self.custom_galleries().name(gallery_id) is None):
+            return dict(success=False, message='自定义地图资源未就绪或图库不存在。')
+        label = (self._route_profile_label(custom_profile_id(gallery_id)) if gallery_id is not None
+                 else next((label for key, label in self._author_route_options()), ''))
+        self.route_profile_var.set(label)
+        self._apply_route_profile_setting(profile_id=(custom_profile_id(gallery_id) if gallery_id is not None
+                                                else next((key for key, _label in self._author_route_options()), None)))
+        return dict(success=True, message=f'游戏内已改用{label}。' if gallery_id is not None else '游戏内已恢复作者路线。')
 
-    def set_custom_route_in_game(self, enabled) -> dict:
-        if not self.custom_route_store().set_use_in_game(bool(enabled)):
-            return dict(success=False, message='保存失败，请检查软件目录是否可写。')
-        self._log('custom-route-in-game', enabled=bool(enabled))
-        return dict(success=True, message=('游戏内将使用自定义路线，没画的楼层仍显示原路线。' if enabled
-                                           else '游戏内已恢复原路线。'))
+    def _custom_route_key(self, map_id):
+        gallery = self._custom_gallery_selected()
+        points = self.custom_galleries().route(gallery, map_id) if gallery else []
+        return gallery, json.dumps(points, sort_keys=True), self.custom_map_library().version
 
     def _custom_route_active(self, map_id, floor) -> bool:
-        if not map_id or not hasattr(self, 'settings_path'):
-            return False
-        store = self.custom_route_store()
-        return bool(store.use_in_game and self._custom_route_mode_ready()
-                    and not store.route(map_id, str(floor)).empty)
+        return bool(map_id and self._custom_gallery_selected() and self.custom_map_library().has(map_id))
 
     def _custom_route_image(self, map_id, floor, reference):
-        """Display-only pixels, retaining source and route provenance explicitly."""
+        """The gallery's art and route on the native canvas, with route provenance kept."""
         if not self._custom_route_active(map_id, floor):
             return None
-        route = self.custom_route_store().route(map_id, str(floor))
+        route = self._custom_route_key(map_id)
         key = (id(getattr(self, 'shared_structure_resources', None)), str(map_id), str(floor))
         with self.aligned_author_route_lock:
             layers = getattr(self, '_custom_route_layers', None)
             if layers is None:
                 layers = self._custom_route_layers = {}
             cached = layers.get(key)
+        try:
+            self.custom_map_library().validate_reference(map_id, str(floor), reference.clean_mask)
             if cached is not None and cached['route'] == route and cached['reference'] is reference:
                 return cached['image']
-        try:
-            image = render_custom_route(reference.clean_mask, route, CustomRouteWalkable(reference.clean_mask))
-        except (OSError, ValueError, TypeError, cv2.error) as exc:
+            points = json.loads(route[1])
+            image = render_custom_map_layer(self.custom_map_library(), map_id, str(floor), points)
+            if tuple(image.shape[:2]) != tuple(reference.shape):
+                raise ValueError('自定义地图与当前地图结构尺寸不一致')
+        except (OSError, ValueError, KeyError, TypeError, cv2.error, CustomRouteError) as exc:
             with self.aligned_author_route_lock:
                 layers[key] = dict(route=route, reference=reference, image=None,
                                    error=f'自定义路线无法显示：{exc}')
@@ -30390,7 +30430,7 @@ class DailyAssistant:
             for key, entry in getattr(self, '_custom_route_layers', {}).items():
                 if (key[0] == id(current) and entry['image'] is route and route is not None
                         and self._custom_route_active(key[1], key[2])
-                        and entry['route'] == self.custom_route_store().route(key[1], key[2])
+                        and entry['route'] == self._custom_route_key(key[1])
                         and entry['reference'] is self._shared_structure_reference(
                             SHARED_STRUCTURE_PROFILE_ID, key[1], key[2])):
                     return SHARED_STRUCTURE_PROFILE_ID, key[1], key[2]
