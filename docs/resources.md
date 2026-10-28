@@ -57,3 +57,10 @@ resource-root/
 `star_brand.py` 会尝试加载 `assets/brand/xingtu-round.png` 与 `xingtu-square.png`；缺失时返回空图像。品牌原图版权未确认，暂不随源码公开。帮助配图同样未上传。
 
 `tools/build.py` 是新的源码骨架开发构建入口，独立于原产品完整候选构建流程。它不打包地图和 Logo，不自动复制任何资源根目录。完整产品重建还需要合法资源、资源版本绑定和对应验收流程；克隆公开仓库不能复现原候选的安装包或识别效果。
+
+为减小体积，`tools/build.py` 不打包软件用不到的两部分，共约 36 MB：
+
+- Pillow 的 AVIF 编解码（`PIL._avif`、`PIL.AvifImagePlugin`，约 7.9 MB）。Pillow 本身把它当可选模块，缺失时 PNG、WebP、JPEG 照常读写。
+- OpenCV 的 FFmpeg 视频插件（`opencv_videoio_ffmpeg*.dll`，约 28.3 MB）。它只在 `VideoCapture` / `VideoWriter` 读写视频时加载，软件不用；构建完成后从 `dist` 删除。
+
+正式安装包如果用别的打包流程，也可以照做：加上这两个 `--exclude-module`，打包后删除这个 DLL。改动后需在 Windows 上实际启动并完成一次识别确认；尚未在 Windows 构建中验证。
