@@ -543,7 +543,8 @@ class MapLocalEntryIdentity:
             return [], dict(reason='side-budget-incomplete', complete=False)
         context, nodes, qpairs = self._observe(frame)
         if len(nodes) < 4 or not len(qpairs):
-            return [], dict(reason='side-visible-structure-insufficient', complete=True, queryTurns=len(nodes))
+            return [], dict(reason='side-visible-structure-insufficient', complete=True,
+                            queryTurns=len(nodes), minimumQueryTurns=4, queryPairs=len(qpairs))
         q = np.array([n['point'] for n in nodes])
         qr = np.array([n['rays'] for n in nodes])
         local_search = self.side_search if str(floor) == '2' and map_id is None else None

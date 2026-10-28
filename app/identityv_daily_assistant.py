@@ -1301,8 +1301,10 @@ def export_safe_diagnostic_bundle(
     window_environment: dict | None = None,
     runtime_context: dict | None = None,
     package_metadata: dict | None = None,
+    failure_roots: tuple[Path, ...] = (),
 ) -> dict:
-    """Create a bounded text-only diagnostic ZIP and exclude all screenshot memory."""
+    """Export bounded logs and explicitly requested, already saved failure evidence."""
+    from diagnostic_evidence import export_failure_evidence, log_window
     moment = exported_at or datetime.now().astimezone()
     destination_root = app_root / "outputs" / "诊断日志"
     destination_root.mkdir(parents=True, exist_ok=True)
@@ -1315,6 +1317,7 @@ def export_safe_diagnostic_bundle(
 
     logs = safe_diagnostic_log_files(live_root, limit=log_limit)
     included_logs: list[dict] = []
+    log_windows = {}
     included_bytes = 0
     fd, temporary_name = tempfile.mkstemp(
         prefix=".diagnostic-export-", suffix=".tmp", dir=destination_root,
@@ -1331,6 +1334,7 @@ def export_safe_diagnostic_bundle(
                     path, max(1, min(file_byte_limit, remaining)),
                 )
                 payload = _redact_local_paths(payload)
+                log_windows[path.name] = log_window(payload)
                 archive.writestr(f"logs/{path.name}", payload)
                 included_bytes += len(payload)
                 included_sha256 = hashlib.sha256(payload).hexdigest().upper()
@@ -1358,19 +1362,25 @@ def export_safe_diagnostic_bundle(
 
             package_metadata_source = 'startup-snapshot' if package_metadata is not None else 'export-time-report'
             package_metadata = package_metadata if package_metadata is not None else diagnostic_package_metadata(app_root)
+            failure_evidence = export_failure_evidence(
+                archive, failure_roots, log_windows, _redact_local_paths,
+                build_fingerprint=BUILD_FINGERPRINT,
+            )
             manifest = {
-                "schema": "identityv-safe-diagnostic-export-v2",
+                "schema": "identityv-safe-diagnostic-export-v3" if failure_roots else "identityv-safe-diagnostic-export-v2",
                 "exportedAt": moment.isoformat(timespec="seconds"),
                 "appVersion": APP_VERSION,
                 "buildFingerprint": BUILD_FINGERPRINT,
                 "runtimeProcessIntegrity": process_integrity_level(),
                 "requestedExecutionLevel": "requireAdministrator",
-                "textOnly": True,
+                "textOnly": failure_evidence['imageCount'] == 0,
                 "privacy": (
-                    "Only recent event/startup text logs, package version files, and privacy-safe "
-                    "Identity V window metadata are included. Screenshots, full executable paths, "
-                    "nightmare-memory, confirmations, and user settings are excluded."
+                    "Recent text logs, package version files and Identity V window metadata; "
+                    "when requested, bounded saved failure game frames and measured evidence "
+                    "from the included log sessions. No new screenshots are captured. "
+                    "Full local paths, confirmations, settings and unrelated memory are excluded."
                 ),
+                "failureEvidence": failure_evidence,
                 "windowEnvironment": window_environment or {
                     "schema": "identityv-window-environment-v1",
                     "candidateCount": 0,
@@ -1403,6 +1413,9 @@ def export_safe_diagnostic_bundle(
             1 for row in included_logs if row["truncatedToRecentLines"]
         ),
         "packageMetadataStatus": package_metadata["status"],
+        "includedFailureImageCount": failure_evidence['imageCount'],
+        "failureEvidenceStatus": failure_evidence['status'],
+        "omittedFailureCaseCount": failure_evidence['omittedBySampleLimit'],
     }
 
 
@@ -7884,7 +7897,7 @@ class DailyAssistant:
         )
         self.diagnostic_export_button.pack(side="left")
         tk.Label(
-            diagnostic_actions, text="不包含游戏截图和个人设置",
+            diagnostic_actions, text="包含最近失败游戏画面；分享前请检查",
             bg=floating_theme.SURFACE, fg=floating_theme.MUTED, font=("Microsoft YaHei UI", 8),
         ).pack(side="left", padx=(10, 0))
         self.build_label = tk.Label(
@@ -10778,6 +10791,13 @@ class DailyAssistant:
             map_open=bool(self.map_is_open),
         )
         package_metadata = copy.deepcopy(self.package_metadata)
+        store = getattr(self, 'memory_store', None)
+        failure_roots = [ROOT / 'work' / f'{mode}-memory' for mode in ('nightmare', 'difficult')]
+        if store is not None:
+            failure_roots.append(store.root)
+            runtime_context['failureSampling'] = store.alignment_failure_sampling_status()
+            runtime_context['failureSamplingMode'] = getattr(self, 'game_mode', None)
+        failure_roots = tuple(failure_roots)
 
         def run() -> None:
             try:
@@ -10787,6 +10807,7 @@ class DailyAssistant:
                     window_environment=environment,
                     runtime_context=runtime_context,
                     package_metadata=package_metadata,
+                    failure_roots=failure_roots,
                 )
                 self._log(
                     "diagnostic-exported",
@@ -10795,6 +10816,8 @@ class DailyAssistant:
                     windowCandidateCount=result["windowCandidateCount"],
                     truncatedLogCount=result["truncatedLogCount"],
                     packageMetadataStatus=result["packageMetadataStatus"],
+                    includedFailureImageCount=result['includedFailureImageCount'],
+                    failureEvidenceStatus=result['failureEvidenceStatus'],
                 )
                 self.events.put({"kind": "diagnostic-exported", **result})
             except Exception as error:
@@ -15046,30 +15069,41 @@ class DailyAssistant:
                 and int(source_frame_generation)==int(current_frame_generation))
         except (TypeError,ValueError):
             frame_is_current=False
-        if (mode not in {'difficult','nightmare'}
-                or getattr(self.gate, 'confirmed_id', None)
-                or not event.get('mapOpen') or not getattr(self,'map_is_open',False)
-                or (top or {}).get('identityHardGatePassed')
-                or cycle_id is None or cycle_id!=getattr(self,'active_map_cycle_id',None)
-                or not recent or not frame_is_current
-                or source_surface is None or current_surface is None
-                or source_surface!=current_surface
-                or not ranked_event_is_current(event.get('token'), self.capture_generation)):
+        if (mode not in {'difficult','nightmare'} or getattr(self.gate, 'confirmed_id', None)
+                or (top or {}).get('identityHardGatePassed')):
+            return
+        def skipped(reason, **details):
+            self._log('identity-failure-sample-skipped', mode=mode, cycleId=cycle_id,
+                      captureGeneration=event.get('token'), reason=reason, **details)
+        invalid = (
+            'map-closed' if not event.get('mapOpen') or not getattr(self,'map_is_open',False) else
+            'cycle-stale' if cycle_id is None or cycle_id!=getattr(self,'active_map_cycle_id',None) else
+            'rank-outside-sampling-window' if not recent else
+            'frame-generation-mismatch' if not frame_is_current else
+            'surface-generation-mismatch' if source_surface is None or current_surface is None
+                or source_surface!=current_surface else
+            'capture-generation-mismatch' if not ranked_event_is_current(event.get('token'),self.capture_generation) else None)
+        if invalid:
+            skipped(invalid)
             return
         store = getattr(self, 'memory_store', None)
         frame = event.get('frame')
         if not isinstance(store, NightmareMemoryStore) or not isinstance(frame, np.ndarray):
+            skipped('memory-store-or-frame-unavailable')
             return
         floor = 'unknown' if event.get('floorSource') == 'manual-required' else str(event.get('floor'))
-        if floor not in {'unknown','1','2'}:
+        if floor not in {'unknown','1','2','B1'}:
+            skipped('unsupported-floor', floor=floor)
             return
         sampling_scope=f'{mode}-identity-unresolved'
         try:
             profile = getattr(self, 'route_profile_id', None)
             if not store.can_enqueue_alignment_failure(floor, map_id=None,
-                    profile_id=None, cycle_id=cycle_id,sampling_scope=sampling_scope):
+                    profile_id=profile, cycle_id=cycle_id,sampling_scope=sampling_scope):
+                skipped('sampling-not-admitted', sampling=store.alignment_failure_sampling_status())
                 return
-            evidence=getattr(getattr(self,'engine',None),'last_difficult_evidence',None) or {}
+            # Ranked diagnostics are owned by this frame; the engine may have moved on.
+            evidence=(top or {}).get('difficultRecognition') or {}
             diagnostic = dict(stage='identity-rejection', mode=mode, profileId=profile,
                 version=APP_VERSION, buildFingerprint=BUILD_FINGERPRINT,
                 packageMetadata=copy.deepcopy(getattr(self, 'package_metadata', None)),
@@ -15085,14 +15119,15 @@ class DailyAssistant:
                 floorSource=event.get('floorSource'), rankedFloor=event.get('floor'),
                 topCandidateMapId=(top or {}).get('mapId'), topCandidateReason=(top or {}).get('reason'),
                 difficultRecognition=copy.deepcopy((top or {}).get('difficultRecognition')),
-                sourceStructureCandidates=copy.deepcopy(evidence.get('sourceStructureCandidates')))
+                sourceStructureCandidates=copy.deepcopy(evidence.get('sourceStructures')))
             accepted = store.enqueue_alignment_failure(None, floor, 'identity-unresolved',
                 dict(success=False, reason='identity-unresolved'), frame.copy(),
                 event.get('bounds'), cycle_id=cycle_id, diagnostic=diagnostic,
                 sampling_scope=sampling_scope)
             self._log(f'{mode}-identity-failure-sample-queued', queued=bool(accepted),
                 cycleId=cycle_id, captureGeneration=event.get('token'),
-                frameCapturedAtUtc=event.get('frameCapturedAtUtc'), mapId=None, floor=floor)
+                frameCapturedAtUtc=event.get('frameCapturedAtUtc'), mapId=None, floor=floor,
+                sampling=store.alignment_failure_sampling_status())
         except Exception as error:
             # Optional evidence must never affect identity, pose, or UI delivery.
             self._log(f'{mode}-identity-failure-sample-error', cycleId=cycle_id,
@@ -36731,9 +36766,11 @@ class DailyAssistant:
                             "排查信息已导出。\n\n"
                             f"文件：{path.name}\n"
                             f"位置：{path.parent}\n\n"
-                            "压缩包包含最近文字日志、版本信息和第五人格窗口环境。\n"
+                            "压缩包包含最近文字日志、版本信息、窗口环境及已保存的失败证据。\n"
+                            f"失败游戏画面：{int(event.get('includedFailureImageCount', 0))} 张；"
+                            "缺失或超限原因见 diagnostic-manifest.json。\n"
                             f"检测到候选窗口：{int(event.get('windowCandidateCount', 0))} 个。\n\n"
-                            "不含游戏截图、完整程序路径、确认记录或用户设置。"
+                            "可能含游戏画面，请检查后再分享；不含完整程序路径、确认记录或用户设置。"
                         ),
                         "星图 · 导出完成",
                         0x40,
