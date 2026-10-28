@@ -20,7 +20,7 @@ import threading
 import time
 from urllib import error, parse, request
 
-from star_map_import import _no_links, _rollback_published
+from star_map_import import ImportRejected, _no_links, _rollback_published
 
 MAX_INDEX_BYTES = 256 * 1024
 MAX_PACKAGE_BYTES = 1024 * 1024 * 1024
@@ -414,3 +414,41 @@ class MapPackageDownloadService:
                 # Only the file object created by this request is eligible. No
                 # directory sweeps or cleanup of other requests' finished ZIPs.
                 _rollback_published(temporary, identity, digest.hexdigest())
+
+
+def prune_installed_downloads(download_root: Path, install_root: Path) -> list[str]:
+    """Delete finished downloads whose exact archive is the installed package.
+
+    A cached ``<package>-<sha256>.zip`` is removed only when the package's
+    installed receipt names the same archive SHA-256 and no upgrade recovery,
+    queued import or import lock is present; any other archive stays for a
+    manual retry. Call at startup,
+    before any download or import of this session.
+    """
+    removed = []
+    state = install_root / "work" / "map-packages"
+    try:
+        _no_links(download_root)
+        # A pending upgrade, queued main-process import or running helper may
+        # still need the archive; leave every download for the next start.
+        busy = ("pending-upgrade.json", "main-import-request.json", "import.lock")
+        if any((state / name).exists() for name in busy) or not download_root.is_dir():
+            return removed
+        archives = sorted(download_root.glob("*.zip"))
+    except (ImportRejected, OSError):
+        return removed
+    for archive in archives:
+        match = re.fullmatch(r"(.+)-([0-9a-f]{64})\.zip", archive.name)
+        if match is None:
+            continue
+        try:
+            _no_links(archive)
+            receipt = json.loads((state / f"{match[1]}.json").read_text("utf-8"))
+            if (not isinstance(receipt, dict) or receipt.get("packageId") != match[1]
+                    or receipt.get("archiveSha256") != match[2] or not archive.is_file()):
+                continue
+            archive.unlink()
+        except (ImportRejected, OSError, ValueError):
+            continue
+        removed.append(archive.name)
+    return removed
