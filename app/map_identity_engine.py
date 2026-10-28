@@ -1033,14 +1033,18 @@ class MapIdentityEngine(NightmareCandidateEngine):
                 budget_seconds=remaining)
             if diagnostic.get('complete') is not True or diagnostic.get('verificationComplete') is not True:
                 return None
-            current.extend(r for r in rows if not r.get('poseAmbiguous')
+            current.extend(dict(r,locatorKind='side') for r in rows if not r.get('poseAmbiguous')
                 and (r.get('verification') or {}).get('success') is True
                 and ((r.get('verification') or {}).get('residual') or {}).get('verified') is True)
         if not current or time.perf_counter()>=deadline:return None
-        return index.propose([],[],dict(complete=True,entryInventoryComplete=True),str(floor),
+        proposal=index.propose([],[],dict(complete=True,entryInventoryComplete=True),str(floor),
             self.entry_shared_reference_provider,lambda:self.entry_identity.geometry(frame),
             side_rows=current,side_diagnostics=dict(complete=True),deadline=deadline,
             prior=prior,required_map_ids=tuple(sorted(members)))
+        # An established family may display any currently fitted member. Keep
+        # these poses with the same worker frame instead of rerunning a global
+        # solve after the UI provisionally switches members.
+        return dict(proposal,currentFrameCandidates=current)
 
     def preload(self,floor='1'):
         if floor not in self.identity_floors:return 0

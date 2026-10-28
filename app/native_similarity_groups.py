@@ -616,6 +616,16 @@ class NativeSimilarityState:
             champions.append(next((mid for mid,beaten in wins.items() if len(beaten)==len(wins)-1),None))
         return champions[0] if champions and champions[0] and all(c==champions[0] for c in champions) else None
 
+    def prefer_display_member(self, available_ids):
+        """Pick any currently fitted member without promoting its identity."""
+        if threading.get_ident()!=self.owner:raise RuntimeError('Group state belongs to UI owner')
+        available=set(available_ids).intersection(self.member_ids)
+        if (self.state!='GROUP_LOCKED' or not available or self.pending_identity
+                or self.condition_priority or self.provisional_member_id in available):
+            return
+        self.provisional_member_id=min(available)
+        self.generation+=1
+
     def priority(self,mode):
         if self.condition_mode is not None:
             return self.condition_priority

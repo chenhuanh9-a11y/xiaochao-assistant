@@ -14471,6 +14471,35 @@ class DailyAssistant:
             self._native_similarity_condition_context = None
             self._log('similar-group-reset',reason='resource-binding-changed')
 
+    def _native_similarity_display_seed(self, event, map_id):
+        """Carry a current member pose across group selection, not an identity verdict."""
+        row=next((r for r in event.get('ranked',()) if r.get('mapId')==map_id),None)
+        entry=(row or {}).get('difficultEntry') or {}
+        checked=entry.get('verification') or {}
+        if (entry.get('mapId')!=map_id or str(entry.get('floor',self.current_floor))!=str(self.current_floor)
+                or checked.get('success') is not True or entry.get('poseAmbiguous')
+                or (entry.get('entryCrossCheck') or {}).get('contradicted') is True):
+            return None
+        try:matrix=np.asarray(checked.get('matrixSourceToClient'),dtype=np.float64)
+        except (TypeError,ValueError):return None
+        if matrix.shape!=(3,3) or not np.isfinite(matrix).all():return None
+        floor=str(self.current_floor)
+        reference=(self._shared_structure_pose_context(map_id,floor)
+                   if self._shared_structure_mode_enabled() else None)
+        if self._shared_structure_mode_enabled() and reference is None:return None
+        if reference is None and entry.get('profileId')!=self._effective_route_profile(map_id,floor):return None
+        seed=dict(mapId=map_id,floor=floor,matrixSourceToClient=matrix.tolist(),
+            hypothesis=copy.deepcopy(entry.get('hypothesis',{})),difficultEntrySeed=True,
+            candidateOnly=True,currentFrameRouteResidualRequired=True,authorizesDirectDisplay=False,
+            lockGeneration=self.active_map_cycle_id,
+            sourceFrameSignatureToken=_map_frame_signature_token(map_frame_signature(self.current_frame)),
+            sourceDisplaySignature=list(display_environment_signature(getattr(self,'display_environment',None))))
+        if entry.get('locatorKind')=='side':
+            seed.update(locatorKind='side',sideCandidate=copy.deepcopy(entry))
+        if reference is not None:
+            seed.update(coordinateSpace='shared-structure-to-client',structureReferenceContext=reference)
+        return seed
+
     def _consume_native_similarity_ranked(self, event):
         state = getattr(self, 'native_similarity_state', None)
         if state is None:
@@ -14495,6 +14524,12 @@ class DailyAssistant:
         current = state.accept(proposal,self._native_similarity_context(),
             _map_frame_signature_token(map_frame_signature(self.current_frame)))
         self._check_native_similarity_resources()
+        display_seeds={}
+        if state.state=='GROUP_LOCKED' and state.context_snapshot() and str(self.current_floor)=='1':
+            for member in state.member_ids:
+                seed=self._native_similarity_display_seed(event,member)
+                if seed is not None:display_seeds[member]=seed
+            state.prefer_display_member(display_seeds)
         current=state.snapshot()
         self._native_similarity_priority = state.priority(self.game_mode)
         self._native_similarity_condition_context = state.context_snapshot()
@@ -14502,7 +14537,8 @@ class DailyAssistant:
         selected=getattr(self.gate,'confirmed_id',None)
         switching=bool(selected and selected==previous.get('provisionalMemberId')
             and selected!=provisional and (state.condition_complete
-                or proposal.get('originalIdentityHardGatePassed') or selected not in state.member_ids))
+                or proposal.get('originalIdentityHardGatePassed') or selected not in state.member_ids
+                or provisional in display_seeds and selected not in display_seeds))
         if (str(self.current_floor) == '1' and current.get('state') == 'GROUP_LOCKED'
                 and provisional in state.member_ids and state.context_snapshot()
                 and (not selected or switching)
@@ -14522,7 +14558,7 @@ class DailyAssistant:
                 self.map_identity_pose_pending = True
                 self.auto_lock_pending = dict(
                     mapId=provisional, floor=self.current_floor,
-                    cycleId=self.active_map_cycle_id, poseSeed=None,
+                    cycleId=self.active_map_cycle_id, poseSeed=display_seeds.get(provisional),
                     frontGroupState='GROUP_LOCKED', frontGroupId=current['groupId'],
                     frontGroupProvisionalMemberId=provisional,
                     frontGroupProvisional=True,
@@ -14531,6 +14567,7 @@ class DailyAssistant:
                 self._log('similar-group-provisional-selected', mapId=provisional,
                     floor=self.current_floor, groupId=current['groupId'],
                     provisional=True, identityHardGatePassed=False, poseVerified=False,
+                    currentFramePoseSeed=bool(self.auto_lock_pending['poseSeed']),
                     previousMemberId=selected)
         if current['groupId'] and current['groupId']!=previous.get('groupId'):
             self._log('similar-group-created',**current,candidateOnly=True)
@@ -16916,10 +16953,13 @@ class DailyAssistant:
         if (native_lock and native_lock.get('nativeSimilarity') and str(floor)=='1'
                 and isinstance(proposal,dict)
                 and event_data.get('sourceFrameGeneration')==self.current_frame_generation):
+            members=[dict(mapId=row['mapId'],difficultEntry=row)
+                     for row in proposal.get('currentFrameCandidates',())] or [{}]
+            members[0]['nativeSimilarity']=proposal
             self._consume_native_similarity_ranked(dict(token=self.capture_generation,
                 frame=self.current_frame,rankSourceFrameGeneration=self.current_frame_generation,
                 rankSourceSurfaceGeneration=self.surface_visibility_generation,
-                ranked=[dict(nativeSimilarity=proposal)]))
+                ranked=members))
             if self.gate.confirmed_id!=str(map_id):
                 if self.gate.confirmed_id is None:
                     return dict(handled=True,success=False,reason='front-group-resource-changed')
