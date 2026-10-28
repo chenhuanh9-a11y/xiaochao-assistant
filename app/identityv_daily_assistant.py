@@ -16621,9 +16621,9 @@ class DailyAssistant:
             fit = event_data.get("fit")
         if isinstance(fit, dict) and fit.get("success"):
             return
-        if isinstance(fit, dict) and (fit.get('reason') == 'front-group-target-validation-required'
-            or (getattr(self, 'game_mode', 'nightmare') == 'difficult'
-                and fit.get('reason') == 'structure-work-obsolete')):
+        if isinstance(fit, dict) and fit.get('reason') in (
+            'front-group-target-validation-required', 'structure-work-obsolete'):
+            # Lifecycle cancellation says nothing about current-frame geometry.
             return
         if not isinstance(fit, dict) and not event_data.get('workerToken'):
             return
@@ -17021,8 +17021,7 @@ class DailyAssistant:
                     mapId=map_id, floor=floor, sourceProfileId=bound_profile,
                     currentProfileId=self.route_profile_id, geometryVerdict=False)
                 return dict(handled=True, success=False, reason='presentation-profile-stale')
-        if (getattr(self, 'game_mode', 'nightmare') == 'difficult'
-            and has_worker_result
+        if (has_worker_result
             and (event_data.get('alignmentV2WorkerFit') or {}).get('reason') == 'structure-work-obsolete'):
             # Cancellation contains no current-frame geometry verdict. Do not
             # feed it into rejection/retry suppression or revoke an unrelated
@@ -18217,6 +18216,18 @@ class DailyAssistant:
                 time.perf_counter() if player_author is not None else None
             ),
         }
+        if self._shared_structure_mode_enabled():
+            # Each floor may display a different fallback basis. Derive the
+            # bridge from the matrices actually committed, not group metadata.
+            shared_basis = self.author_coordinate_adapters.matrix_profile_to_canonical(
+                SHARED_STRUCTURE_PROFILE_ID, map_id, floor)
+            if shared_basis is not None:
+                try:
+                    bridge = np.linalg.solve(canonical @ np.asarray(shared_basis), render)
+                    if bridge.shape == (3, 3) and np.isfinite(bridge).all():
+                        tracking['routeDisplayBridge'] = bridge.tolist()
+                except (ValueError, TypeError, np.linalg.LinAlgError):
+                    pass
         group.set_tracking(
             floor, tracking, cycle_id=getattr(self, "active_map_cycle_id", None),
         )

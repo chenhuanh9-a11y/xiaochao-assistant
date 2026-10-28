@@ -1,0 +1,11 @@
+# Reopen lifecycle: cancellation is not geometry failure
+
+Base: remote main 8469e664343813df13afca9a067f1281ceee0036. Separate branch from frozen PR27; no UI hotfix changes included.
+
+Production-method counterexample: structure-work-obsolete overwrote the same-frame failure record in nightmare mode for both fit and alignmentV2WorkerFit; difficult mode preserved it. The consumer also only discarded obsolete work in difficult mode. Unified the existing lifecycle policy, retaining all cycle/reset/map/floor/profile/open guards before requeue. Real geometry failures still record normally.
+
+Validation: 3 new lifecycle tests and 5 existing route-selection regression tests passed. Tests extract production methods with controlled boundaries; they do not run GUI, image fitting, or measure player-visible latency. Baseline produced two assertion failures for nightmare failure-state writes; the consumer escaped the cancellation boundary in nightmare. No geometry thresholds or floor sensors changed.
+
+Historical saved-event baseline, excluding first pose (nearest-rank p95): current old build 54 reopen worker cycles, 6 without commit. inputToPixelsMs n48 p50 552.1 / p95 852.1 / max 1097.8; worker compute n54 133.38 / 226.53 / 232.58; worker-done-to-commit n48 279.8 / 599.66 / 876.69 ms. Stable94 different map/sample n13 with 1 without commit; inputToPixelsMs n12 403.05 / 436.4 / 436.4. These are historical instrumentation events, not fresh screen observations or controlled before/after results. No-commit is not a verified no-display count; wrong-floor ground truth and complete stage spans are unavailable. 300ms target remains unverified. No private event logs or frames included.
+
+PR21 bridge counterexample: actual production commits of author-A F1 and shared fallback F2 followed by switching author-B yielded F2 scale 1.5 instead of 3. The new per-floor bridge is derived from committed canonical/render matrices and the shared basis. Counterexample now passes; shared root remains unchanged. One bridge test plus three lifecycle and five existing route tests pass. GUI and image-algorithm replay are not covered. Root fast-path reachability and floor single-frame policy remain follow-up work.
