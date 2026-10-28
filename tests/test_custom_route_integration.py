@@ -7,12 +7,14 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
+import json
+
 import cv2
 import numpy as np
 
 APP = Path(__file__).resolve().parents[1] / 'app'
 sys.path.insert(0, str(APP))
-from custom_routes import FloorRoute, RoutePathError
+from custom_maps import RouteError, gallery_of, profile_id as custom_profile_id
 
 
 def methods(filename, names, namespace):
@@ -33,10 +35,10 @@ NAMES = ['_shared_display_layer', '_custom_route_image', '_display_route_context
 
 class IntegrationTests(unittest.TestCase):
     def setUp(self):
-        self.render = Mock(side_effect=lambda mask, route, walk: np.full((*mask.shape, 4), 9, np.uint8))
-        self.ns = dict(np=np, cv2=cv2, Path=Path, SHARED_STRUCTURE_PROFILE_ID='shared',
-                       ROUTE_PROFILE_LABELS={}, render_custom_route=self.render,
-                       CustomRouteWalkable=Mock(), ACTION_ORDER=('action',))
+        self.render = Mock(side_effect=lambda library, map_id, floor, points: np.full((4, 4, 4), 9, np.uint8))
+        self.ns = dict(np=np, cv2=cv2, Path=Path, json=json, SHARED_STRUCTURE_PROFILE_ID='shared',
+                       ROUTE_PROFILE_LABELS={}, render_custom_map_layer=self.render,
+                       CustomRouteError=RouteError, ACTION_ORDER=('action',))
         self.subject = methods('identityv_daily_assistant.py', NAMES, self.ns)()
         s = self.subject
         s.shared_structure_resources = object()
@@ -49,11 +51,15 @@ class IntegrationTests(unittest.TestCase):
         s._shared_structure_reference = lambda profile, map_id, floor: self.refs[str(map_id)]
         s._shared_structure_lookup_binding = lambda *args: dict(profile='shared', variant='v')
         s._custom_route_active = lambda map_id, floor: self.enabled
-        s.custom_route_store = lambda: SimpleNamespace(route=lambda map_id, floor: self.routes[str(map_id)])
+        s._custom_route_key = lambda map_id: ('gallery', json.dumps(self.routes[str(map_id)]), 'v1')
+        self.validate_reference = Mock()
+        s.custom_map_library = lambda: SimpleNamespace(version='v1', validate_reference=self.validate_reference)
+        s.preferred_route_profile_id = 'custom:gallery'
+        s._route_profile_label = lambda profile: '自定义 · 测试'
         s._shared_display_profile_id = lambda: 'shared'
         for i in range(9):
             self.refs[str(i)] = SimpleNamespace(shape=(4, 4), clean_mask=np.ones((4, 4), np.uint8), path=Path('mask'))
-            self.routes[str(i)] = FloorRoute(((1, 1),), snap=False)
+            self.routes[str(i)] = [dict(floor='1', x=1.0, y=1.0, kind='via', room=None, color='#63CAFF')]
 
     def layer(self, key='0'):
         return self.subject._shared_display_layer('shared', key, '1')
@@ -75,7 +81,7 @@ class IntegrationTests(unittest.TestCase):
         s = self.subject
         first = self.layer()['routeSource']
         self.assertEqual(s._display_route_context(first), ('shared', '0', '1'))
-        self.routes['0'] = FloorRoute(((2, 2),), snap=False)
+        self.routes['0'] = [dict(floor='1', x=2.0, y=2.0, kind='via', room=None, color='#63CAFF')]
         self.assertIsNone(s._display_route_context(first))
         second = self.layer()['routeSource']
         self.assertIsNot(first, second)
@@ -86,21 +92,38 @@ class IntegrationTests(unittest.TestCase):
         s.shared_structure_resources = object()
         self.assertIsNone(s._display_route_context(third))
 
-    def test_failed_snap_hides_old_layer_and_reports_reason(self):
+    def test_failed_render_hides_old_layer_and_reports_reason(self):
         s = self.subject
         old = self.layer()['routeSource']
-        self.routes['0'] = FloorRoute(((1, 1), (3, 3)), snap=True)
-        self.render.side_effect = RoutePathError('no_path', segment_index=0)
+        self.routes['0'] = self.routes['0'] + [dict(floor='1', x=3.0, y=3.0, kind='via', room=None, color='#63CAFF')]
+        self.render.side_effect = RouteError('第1段：这两个位置之间没有已确认的通路')
         self.assertIsNone(self.layer())
         self.assertIsNone(s._display_route_context(old))
         s.gate = SimpleNamespace(confirmed_id='0')
         s.current_floor = '1'
         self.assertIn('自定义路线无法显示', s._route_author_fallback_notice())
-        self.assertEqual(self.render.call_count, 2)
+        self.render.side_effect = None
+        self.render.return_value = np.full((5, 5, 4), 9, np.uint8)
+        self.routes['0'] = [dict(floor='1', x=4.0, y=4.0, kind='via', room=None, color='#63CAFF')]
+        self.assertIsNone(self.layer(), 'art on a different canvas size is rejected')
+        self.render.return_value = None
+        self.render.side_effect = RouteError('第1段：这两个位置之间没有已确认的通路')
+        self.routes['0'] = self.routes['0'][:0] + [dict(floor='1', x=1.0, y=1.0, kind='via', room=None, color='#63CAFF'),
+                                                   dict(floor='1', x=3.0, y=3.0, kind='via', room=None, color='#63CAFF')]
+        calls = self.render.call_count
         self.assertIsNone(self.layer())
-        self.assertEqual(self.render.call_count, 2, 'same failed route is cached without repeated rendering')
+        self.assertEqual(self.render.call_count, calls + 1)
+        self.assertIsNone(self.layer())
+        self.assertEqual(self.render.call_count, calls + 1, 'same failed route is cached without repeated rendering')
         self.enabled = False
         self.assertEqual(self.layer()['displayKind'], 'shared-structure')
+
+    def test_same_shape_changed_mask_rejects_cached_layer(self):
+        old = self.layer()['routeSource']
+        self.validate_reference.side_effect = ValueError('mask hash mismatch')
+        self.assertIsNone(self.layer())
+        self.assertEqual(self.render.call_count, 1)
+        self.assertIsNone(self.subject._display_route_context(old))
 
     def test_combination_shortcuts_reserve_primary_keys(self):
         s = self.subject
@@ -127,6 +150,40 @@ class IntegrationTests(unittest.TestCase):
         s.chest_auto_tap.reconcile_reserved.assert_called_once_with()
         self.assertEqual(s._chest_auto_tap_reserved()[70], '星图快捷键 Ctrl+F')
         self.assertEqual(s.hotkey_settings_warning, 'conflict')
+
+
+class GalleryPreferenceTests(unittest.TestCase):
+    def subject(self):
+        return methods('identityv_daily_assistant.py',
+                       ['_restore_route_profile_preference', '_route_profile_label', 'use_custom_gallery'],
+                       dict(normalize_route_profile_id=lambda v:v, DEFAULT_ROUTE_PROFILE_ID='suju',
+                            gallery_of=gallery_of, custom_profile_id=custom_profile_id,
+                            ROUTE_PROFILE_LABELS={}))()
+
+    def test_startup_without_author_catalog_preserves_custom_preference(self):
+        s=self.subject()
+        s.game_mode='nightmare'
+        s.settings={'routeProfileId':'custom:two'}
+        s.author_route_catalog=None
+        s._restore_route_profile_preference()
+        self.assertEqual(s.route_profile_id,'custom:two')
+        s.game_mode='difficult'
+        s._restore_route_profile_preference()
+        self.assertEqual(s.route_profile_id,'zhan10-speed')
+
+    def test_duplicate_names_have_unique_labels_and_use_passes_id(self):
+        s=self.subject()
+        s.settings_path=Path('fixture/settings.json')
+        s.custom_galleries=lambda:SimpleNamespace(name=lambda _id:'Same',
+            galleries=lambda:[('one','Same',True),('two','Same',False)])
+        first=s._route_profile_label('custom:one')
+        second=s._route_profile_label('custom:two')
+        self.assertNotEqual(first,second)
+        s._custom_maps_ready=lambda:True
+        s.route_profile_var=Mock()
+        s._apply_route_profile_setting=Mock()
+        self.assertTrue(s.use_custom_gallery('one')['success'])
+        s._apply_route_profile_setting.assert_called_once_with(profile_id='custom:one')
 
 
 class StatusTests(unittest.TestCase):
