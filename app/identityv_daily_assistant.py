@@ -126,6 +126,7 @@ from nightmare_candidate import (
 )
 from release_identity import load_runtime_app_version, load_runtime_display_version
 from native_similarity_groups import NativeSimilarityState
+from reference_position_editor import ReferencePositionEdit, ReferencePointerMailbox
 from native_ui_layout import (
     MonitorContext,
     RectPx,
@@ -1920,7 +1921,7 @@ def sheet_visibility_status_text(text: str, enabled: bool) -> str:
     if enabled or not any(fragment in value for fragment in SHEET_VISIBLE_STATUS_FRAGMENTS):
         return value
     for fragment in SHEET_VISIBLE_STATUS_FRAGMENTS:
-        value = value.replace(fragment, "参考图按设置隐藏")
+        value = value.replace(fragment, "定点地图按设置隐藏")
     return value
 
 
@@ -6546,8 +6547,6 @@ class DailyAssistant:
         self.sheet_drag_origin = (0, 0)
         self.sheet_move_mode = False
         self.sheet_move_generation = 0
-        self._reference_move_after_ids = {}
-        self._reference_move_context = None
         self._reference_pointer_mailbox = None
         self._reference_visibility_generation = 0
         self.settings_path = Path(settings_path) if settings_path is not None else (
@@ -29917,7 +29916,7 @@ class DailyAssistant:
                 try:
                     if self.closed or request['cancelled']:
                         raise RuntimeError('capture cancelled before display exclusion')
-                    for name in ('aligned_overlay', 'reference_surface'):
+                    for name in ('aligned_overlay', 'reference_surface', 'reference_editor_surface'):
                         self._protect_display_window(name, getattr(getattr(self, name, None), 'hwnd', None))
                     for name in ('sheet_window', 'route_toast_window'):
                         shell = getattr(self, name, None)
@@ -31649,6 +31648,8 @@ class DailyAssistant:
         return (path, f"{profile.display_name}{variant_suffix}") if path is not None else None
 
     def show_sheet(self) -> bool:
+        if getattr(self, 'sheet_move_mode', False):
+            return False  # The explicit editor preview has a separate native owner.
         visibility_generation = int(getattr(
             self, "surface_visibility_generation", 0,
         ))
@@ -31674,7 +31675,7 @@ class DailyAssistant:
             path,
             (f"结构图 · {item.name} · {route_label} · 游戏{self.current_floor}层"
                 if source_structure else
-                f"参考路线图 · {item.name} · {route_label} · {self.current_floor}层") + closed_suffix,
+                f"定点地图 · {item.name} · {route_label} · {self.current_floor}层") + closed_suffix,
             scaled_sheet_max_size(self.sheet_scale),
             visibility_generation=visibility_generation,
             reference_context=self._reference_sheet_context(),
@@ -31718,9 +31719,13 @@ class DailyAssistant:
         return bool(self.show_sheet())
 
     def reference_sheet_snapshot(self) -> dict:
+        editor = getattr(self, '_reference_position_edit', None)
         return dict(enabled=bool(getattr(self, 'reference_sheet_visibility_enabled', True)),
             visible=self._reference_sheet_is_visible(), adjusting=bool(getattr(self, 'sheet_move_mode', False)),
-            canAdjust=False, position=getattr(self, 'sheet_position', None))
+            canAdjust=self._reference_editor_available(),
+            position=editor.position if editor is not None and editor.active else getattr(self, 'sheet_position', None),
+            editingPreview=bool(editor is not None and editor.active),
+            message='拖动定点地图后点击“完成”；松手不会退出编辑' if editor is not None and editor.active else '编辑定点地图位置')
 
     def set_reference_sheet_visible(self, visible: bool) -> dict:
         enabled = bool(visible)
@@ -31732,7 +31737,7 @@ class DailyAssistant:
         else:
             shown = bool(self.show_sheet())
         saved = self._save_settings()
-        message = ('参考小抄已显示' if shown else '已允许参考小抄，等待当前地图核对') if enabled else '参考小抄已隐藏，空间路线不受影响'
+        message = ('定点地图已显示' if shown else '已允许定点地图，等待当前地图核对') if enabled else '定点地图已隐藏，空间路线不受影响'
         if not saved:
             message += '；本次已生效，保存失败'
         result = self._report_control_action_result(saved,
@@ -31744,274 +31749,170 @@ class DailyAssistant:
 
     def _reference_move_request_context(self):
         return (self._reference_sheet_context(), getattr(self, 'active_map_cycle_id', None),
-            int(getattr(self, 'surface_visibility_generation', 0)), getattr(self, 'game_hwnd', None))
+            int(getattr(self, 'surface_visibility_generation', 0)), getattr(self, 'game_hwnd', None),
+            id(getattr(self, 'pack', None)), getattr(getattr(self, 'gate', None), 'selected_id', None))
+
+    def _reference_editor_available(self):
+        return bool(not getattr(self, 'closed', False)
+            and not getattr(self, 'hotkey_capture_active', False)
+            and not getattr(self, 'capture_in_progress', False)
+            and not getattr(self, '_display_capture_active', False)
+            and getattr(self, 'sheet_visibility_enabled', True)
+            and getattr(self, 'reference_sheet_visibility_enabled', True)
+            and getattr(getattr(self, 'pack', None), 'maps', ()))
+
+    def _reference_editor_focus_allowed(self):
+        foreground = ctypes.windll.user32.GetForegroundWindow()
+        return bool(foreground and (foreground == getattr(self, 'game_hwnd', None)
+            or window_process_id(foreground) == os.getpid()))
+
+    def _reference_editor_is_current(self):
+        editor = getattr(self, '_reference_position_edit', None)
+        surface = getattr(self, 'reference_editor_surface', None)
+        return bool(editor is not None and editor.active and self.sheet_move_mode
+            and surface is not None and surface.hwnd
+            and self._reference_editor_available()
+            and not getattr(surface, '_pointer_failed', False)
+            and editor.context == self._reference_move_request_context()
+            and self._reference_editor_focus_allowed())
+
+    def _reference_editor_pixels(self):
+        """An installed display-only preview; never sets identity, floor or a pose."""
+        preferred = (getattr(self.gate, 'confirmed_id', None), getattr(self.gate, 'selected_id', None))
+        map_id = next((key for key in preferred if key in self.pack.by_id), self.pack.maps[0].id)
+        item = self.pack.by_id[map_id]
+        floor = str(getattr(self, 'current_floor', self.pack.default_entry_floor))
+        if floor not in item.layers:
+            floor = str(self.pack.default_entry_floor)
+        if self._shared_structure_mode_enabled():
+            layer = self._shared_display_layer(self.route_profile_id, map_id, floor)
+            if layer is None:
+                raise ValueError('所选来源没有可浏览的定点地图')
+            pixels = layer['routeSource']
+        else:
+            catalog = getattr(self, 'author_route_catalog', None)
+            path = catalog.route_path(self.route_profile_id, map_id, floor, include_inactive=True) if catalog is not None else None
+            path = path or item.layers.get(floor)
+            if path is None:
+                raise ValueError('所选来源没有可浏览的定点地图')
+            pixels = self._display_pixels_for_source(path, 'minimap')
+        pixels = fit_display_bgra(pixels, scaled_sheet_max_size(self.sheet_scale)).copy()
+        pixels[:2, :] = pixels[-2:, :] = (83, 196, 246, 255)
+        pixels[:, :2] = pixels[:, -2:] = (83, 196, 246, 255)
+        return pixels
+
+    def _check_reference_position_editor(self):
+        if getattr(self, 'sheet_move_mode', False) and not self._reference_editor_is_current():
+            self._set_sheet_move_mode(False)
 
     def _cancel_reference_move_jobs(self) -> None:
         self.sheet_move_generation = int(getattr(self, 'sheet_move_generation', 0)) + 1
         mailbox = getattr(self, '_reference_pointer_mailbox', None)
         self._reference_pointer_mailbox = None
         if mailbox is not None:
-            with mailbox['lock']:
-                mailbox['events'].clear()
-        jobs = getattr(self, '_reference_move_after_ids', {})
-        self._reference_move_after_ids = {}
-        for after_id in jobs.values():
-            try:
-                self.root.after_cancel(after_id)
-            except (tk.TclError, ValueError):
-                pass
-        self._reference_move_context = None
-
-    def _schedule_reference_move_job(self, name, delay_ms, callback):
-        generation = self.sheet_move_generation
-        context = self._reference_move_request_context()
-        jobs = self._reference_move_after_ids
-        def run():
-            if jobs.get(name) != after_id:
-                return
-            jobs.pop(name, None)
-            if generation != self.sheet_move_generation:
-                return
-            if context != self._reference_move_request_context() or not self._reference_sheet_may_show():
-                self._set_sheet_move_mode(False)
-                return
-            callback()
-        after_id = self.root.after(delay_ms, run)
-        jobs[name] = after_id
+            mailbox.close()
 
     def move_sheet(self) -> dict:
-        self._set_sheet_move_mode(False)
-        return self._report_control_action_result(False, 'reference-move-disabled',
-            '当前版本暂不支持调整参考图位置；参考图显示和隐藏仍可使用。')
+        if getattr(self, 'sheet_move_mode', False) and self._reference_editor_is_current():
+            return dict(success=True, adjusting=True, reason='reference-move-active', message='拖动定点地图后点击“完成”')
+        if not self._reference_editor_available() or not self._reference_editor_focus_allowed():
+            return dict(success=False, adjusting=False, reason='reference-move-unavailable', message='请在助手或游戏中编辑定点地图；采集或快捷键录入时请稍后再试')
+        try:
+            applied = self._set_sheet_move_mode(True)
+        except (OSError, ValueError, KeyError, TypeError, cv2.error) as error:
+            self._set_sheet_move_mode(False)
+            return dict(success=False, adjusting=False, reason='reference-preview-unavailable', message=f'定点地图预览不可用：{error}')
+        return dict(success=applied, adjusting=applied, reason='reference-move-started' if applied else 'reference-move-unavailable',
+            message='正在编辑定点地图位置 · 拖动后点击“完成”，松手不会退出' if applied else '当前无法编辑定点地图位置')
 
     def finish_reference_sheet_move(self) -> dict:
-        saved = True
-        if getattr(self, 'sheet_move_mode', False):
-            self.sheet_position = getattr(self, '_reference_origin', self.sheet_position)
-            saved = self._save_settings()
+        mailbox = getattr(self, '_reference_pointer_mailbox', None)
+        if mailbox is not None:
+            self._consume_reference_pointer_events(dict(generation=mailbox.generation, hwnd=mailbox.hwnd))
+        if not self._reference_editor_is_current():
+            self._set_sheet_move_mode(False)
+            return dict(success=False, persisted=False, adjusting=False, reason='reference-move-cancelled', message='编辑已取消，请重新编辑定点地图位置')
+        editor = self._reference_position_edit
+        self.sheet_position = self._clamp_reference_sheet_position(editor.position, editor.size)
+        saved = self._save_settings()
         self._set_sheet_move_mode(False)
-        return dict(success=saved, persisted=saved, reason='reference-move-finished',
-            message='已结束调整参考小抄' if saved else '本次位置已调整，保存失败')
+        self.show_sheet()
+        return dict(success=saved, persisted=saved, adjusting=False, reason='reference-move-finished',
+            message='定点地图位置已保存，已恢复鼠标穿透' if saved else '本次定点地图位置已应用，保存失败')
 
     def _set_sheet_move_mode(self, enabled: bool) -> bool:
-        if enabled:
-            self._set_sheet_move_mode(False)
-            return False
-        was_enabled = bool(getattr(self, 'sheet_move_mode', False))
         self._cancel_reference_move_jobs()
+        editor = getattr(self, '_reference_position_edit', None)
+        if editor is not None:
+            editor.cancel()
+        self._reference_position_edit = None
         self.sheet_move_mode = False
+        surface = getattr(self, 'reference_editor_surface', None)
+        if surface is not None:
+            surface.set_pointer_mailbox(None)
+            surface.hide()
         if not enabled:
-            self._reference_dragging = False
-            if not was_enabled:
-                return True
-        if enabled and (not self._reference_sheet_may_show()
-                or not self._reference_sheet_is_visible()
-                or not tk_widget_exists(getattr(self, 'sheet_window', None))):
-            if was_enabled:
-                self._apply_sheet_move_mode(False)
+            return True
+        if not self._reference_editor_available() or not self._reference_editor_focus_allowed():
             return False
-        self.sheet_move_mode = bool(enabled)
-        if enabled:
-            self._reference_move_context = self._reference_move_request_context()
-            self._reference_pointer_mailbox = dict(generation=self.sheet_move_generation,
-                lock=threading.Lock(), events=[], queued=False)
-        applied = self._apply_sheet_move_mode(enabled)
-        if enabled and applied:
-            self._schedule_reference_move_job('timeout', 8000,
-                lambda: self._finish_sheet_move_timeout(self.sheet_move_generation))
-        elif enabled:
-            self.sheet_move_mode = False
-            self._reference_move_context = None
-            self._reference_pointer_mailbox = None
+        generation = self.sheet_move_generation
+        context = self._reference_move_request_context()
+        pixels = self._reference_editor_pixels()
+        size = pixels.shape[1::-1]
+        position = self._reference_editor_initial_position(size)
+        if surface is None or not surface.hwnd:
+            if surface is not None:
+                surface.close()
+            surface = LayeredOverlay()
+            self.reference_editor_surface = surface
+        self._protect_display_window('reference_editor_surface', surface.hwnd)
+        normal = getattr(self, 'reference_surface', None)
+        if normal is not None:
+            normal.hide()
+        if tk_widget_exists(getattr(self, 'sheet_window', None)):
+            self.sheet_window.withdraw()
+        if (generation != self.sheet_move_generation or context != self._reference_move_request_context()
+                or not self._reference_editor_available() or not self._reference_editor_focus_allowed()):
+            return False
+        self._reference_position_edit = ReferencePositionEdit(generation, context, position, size)
+        self.sheet_move_mode = True
+        self._reference_pointer_mailbox = ReferencePointerMailbox(generation, surface.hwnd,
+            getattr(self, 'urgent_events', None) or self.events)
+        surface.visibility_guard = self._reference_editor_is_current
+        surface.set_pointer_mailbox(self._reference_pointer_mailbox)
+        applied = surface.show_bgra(pixels, position, opacity=max(.4, float(self.sheet_opacity)))
+        if not applied:
+            self._set_sheet_move_mode(False)
         return bool(applied)
 
-    @display_presentation('reference_surface')
-    def _apply_sheet_move_mode(self, enabled: bool) -> bool:
-        window = getattr(self, 'sheet_window', None)
-        exists = window is not None and window.winfo_exists()
-        if enabled and not exists:
-            return False
-        if exists:
-            self._set_clickthrough(window, not enabled)
-        surface = getattr(self, 'reference_surface', None)
-        if surface is not None and surface.hwnd:
-            user32 = ctypes.windll.user32
-            style = user32.GetWindowLongW(surface.hwnd, -20)
-            user32.SetWindowLongW(surface.hwnd, -20,
-                (style & ~0x20 if enabled else style | 0x20) | 0x08000000)
-        if exists and tk_widget_exists(getattr(self, 'sheet_label', None)):
-            self.sheet_label.configure(
-                highlightthickness=2 if enabled else 0,
-                highlightbackground="#f6c453",
-            )
-        if enabled and exists:
-            self._protect_display_window('reference-controls',
-                ctypes.windll.user32.GetAncestor(self.sheet_window.winfo_id(), 2))
-            _NonActivatingWindow(self.sheet_window).show()
-            self._set_status("拖动小抄边框或路线，松手即可", "#f6c453")
-        else:
-            if exists:
-                window.withdraw()
-            self._reference_dragging = False
-            if surface is not None and ctypes.windll.user32.GetCapture() == surface.hwnd:
-                ctypes.windll.user32.ReleaseCapture()
-        self._log("sheet-move-mode", enabled=enabled)
-        return bool(exists or not enabled)
-
-    def _finish_sheet_move_timeout(self, generation: int) -> None:
-        if generation == self.sheet_move_generation and self.sheet_move_mode:
+    @display_presentation('reference_editor_surface')
+    def _reference_editor_pointer(self, phase, x, y):
+        if not self._reference_editor_is_current() or phase == 'cancel':
             self._set_sheet_move_mode(False)
-            self._set_status("已结束移动小抄", "#5ee0a3")
-
-    def _begin_sheet_drag(self, event) -> None:
-        if (self.sheet_move_mode and self.sheet_window is not None
-            and self._reference_move_context == self._reference_move_request_context()
-            and self._reference_sheet_may_show()):
-            self.sheet_drag_origin = (
-                event.x_root - self.sheet_window.winfo_x(),
-                event.y_root - self.sheet_window.winfo_y(),
-            )
-            self._reference_dragging = True
-
-    @display_presentation('reference_surface')
-    def _drag_sheet(self, event) -> None:
-        if (self.sheet_move_mode and self.sheet_window is not None
-            and getattr(self, '_reference_dragging', False)
-            and self._reference_move_context == self._reference_move_request_context()
-            and self._reference_sheet_may_show()):
-            position = (event.x_root-self.sheet_drag_origin[0], event.y_root-self.sheet_drag_origin[1])
-            position = self._clamp_reference_sheet_position(position,
-                getattr(self, '_reference_pixels', None).shape[1::-1] if isinstance(getattr(self, '_reference_pixels', None), np.ndarray)
-                else (self.sheet_window.winfo_width(), self.sheet_window.winfo_height()))
-            self.sheet_window.geometry(f"{position[0]:+d}{position[1]:+d}")
-            previous = getattr(self, '_reference_origin', position)
-            surface = getattr(self, 'reference_surface', None)
-            if surface is not None:
-                surface.move_by(position[0]-previous[0], position[1]-previous[1])
-            self._reference_origin = position
-
-    @display_presentation('reference_surface')
-    def _end_sheet_drag(self, _event=None) -> None:
-        if (not self.sheet_move_mode or self.sheet_window is None
-            or self._reference_move_context != self._reference_move_request_context()
-            or not self._reference_sheet_may_show()):
             return
-        self.sheet_position = getattr(self, '_reference_origin', (self.sheet_window.winfo_x(), self.sheet_window.winfo_y()))
-        self._reference_dragging = False
-        saved = self._save_settings()
-        self._schedule_reference_move_job('finish', 120, lambda: self._set_sheet_move_mode(False))
-        self._set_status("小抄位置已保存；即将恢复鼠标穿透" if saved else "本次位置已调整，保存失败", "#5ee0a3" if saved else "#f6c453")
-
-    def _install_reference_pointer_bridge(self, surface) -> None:
-        """Keep existing Tk move controls while the pixels belong to native BGRA."""
-        user32 = ctypes.WinDLL('user32', use_last_error=True)
-        setter = user32.SetWindowLongPtrW
-        setter.argtypes = (wintypes.HWND, ctypes.c_int, ctypes.c_void_p)
-        setter.restype = ctypes.c_void_p
-        call = user32.CallWindowProcW
-        call.argtypes = (ctypes.c_void_p, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
-        call.restype = ctypes.c_ssize_t
-        callback_type = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
-        previous = None
-        gesture = dict(active=False, generation=None)
-        def process(hwnd, message, wp, lp):
-            if message == 0x0021:  # WM_MOUSEACTIVATE / MA_NOACTIVATE
-                return 3
-            try:
-                if message in (0x001f, 0x0215, 0x0082) and gesture['active']:
-                    gesture['active'] = False
-                    self._queue_reference_pointer_event(hwnd, 'cancel', 0, 0, gesture['generation'])
-                    if user32.GetCapture() == hwnd:
-                        user32.ReleaseCapture()
-                if self.sheet_move_mode and message in (0x0201, 0x0200, 0x0202):
-                    point = wintypes.POINT(ctypes.c_short(lp & 0xffff).value, ctypes.c_short((lp >> 16) & 0xffff).value)
-                    user32.ClientToScreen(hwnd, ctypes.byref(point))
-                    if message == 0x0201:
-                        gesture['generation'] = self.sheet_move_generation
-                        gesture['active'] = self._queue_reference_pointer_event(
-                            hwnd, 'down', point.x, point.y, gesture['generation'])
-                        if gesture['active']:
-                            user32.SetCapture(hwnd)
-                        return 0
-                    if message == 0x0200 and gesture['active']:
-                        if not self._queue_reference_pointer_event(hwnd, 'move', point.x, point.y, gesture['generation']):
-                            gesture['active'] = False
-                            if user32.GetCapture() == hwnd:
-                                user32.ReleaseCapture()
-                        return 0
-                    if message == 0x0202 and gesture['active']:
-                        gesture['active'] = False
-                        self._queue_reference_pointer_event(hwnd, 'up', point.x, point.y, gesture['generation'])
-                        if user32.GetCapture() == hwnd:
-                            user32.ReleaseCapture()
-                        return 0
-            except Exception:
-                # A ctypes callback entered by Tcl's native message dispatch
-                # must not call Tk (including after/log presentation). Leave
-                # all controller work to the existing owner event poll.
-                gesture['active'] = False
-                self._queue_reference_pointer_event(hwnd, 'cancel', 0, 0, gesture['generation'])
-                if user32.GetCapture() == hwnd:
-                    user32.ReleaseCapture()
-            return call(previous, hwnd, message, wp, lp)
-        callback = callback_type(process)
-        previous = setter(surface.hwnd, -4, ctypes.cast(callback, ctypes.c_void_p))
-        if not previous:
-            raise ctypes.WinError(ctypes.get_last_error())
-        # Keep both procedures alive until this particular HWND is destroyed.
-        surface._reference_pointer_callback = callback
-        surface._reference_previous_wndproc = previous
-
-    def _queue_reference_pointer_event(self, hwnd, phase, x, y, generation) -> bool:
-        mailbox = getattr(self, '_reference_pointer_mailbox', None)
-        if (mailbox is None or not getattr(self, 'sheet_move_mode', False)
-                or generation != mailbox['generation']):
-            return False
-        event = dict(hwnd=int(hwnd), phase=phase, x=int(x), y=int(y))
-        with mailbox['lock']:
-            events = mailbox['events']
-            if phase == 'move' and events and events[-1]['phase'] == 'move':
-                events[-1] = event
-            elif len(events) >= 64:
-                events[:] = [dict(event, phase='cancel')]
-                phase = 'cancel'
-            else:
-                events.append(event)
-            enqueue = not mailbox['queued']
-            mailbox['queued'] = True
-        if enqueue:
-            self._queue_urgent_event(dict(kind='reference-pointer', mailbox=mailbox))
-        return phase != 'cancel'
-
-    def _consume_reference_pointer_events(self, mailbox) -> None:
-        if mailbox is not getattr(self, '_reference_pointer_mailbox', None):
-            return
-        with mailbox['lock']:
-            events, mailbox['events'] = mailbox['events'], []
-            mailbox['queued'] = False
-        for event in events:
-            surface = getattr(self, 'reference_surface', None)
-            if (mailbox is not getattr(self, '_reference_pointer_mailbox', None)
-                    or mailbox['generation'] != self.sheet_move_generation):
-                return
-            if (not self.sheet_move_mode or surface is None or surface.hwnd != event['hwnd']
-                    or self._reference_move_context != self._reference_move_request_context()
-                    or not self._reference_sheet_may_show() or event['phase'] == 'cancel'):
-                self._log('reference-pointer-consumed', phase='cancel', generation=mailbox['generation'])
+        editor = self._reference_position_edit
+        position = editor.pointer(phase, x, y)
+        if position is not None:
+            position = self._clamp_reference_sheet_position(position, editor.size)
+            surface = self.reference_editor_surface
+            if not surface.move_by(position[0]-editor.position[0], position[1]-editor.position[1]):
                 self._set_sheet_move_mode(False)
                 return
-            pointer = type('ReferencePointer', (), dict(x_root=event['x'], y_root=event['y']))()
-            if event['phase'] == 'down':
-                self._log('reference-pointer-consumed', phase='down', generation=mailbox['generation'])
-                self._begin_sheet_drag(pointer)
-            elif event['phase'] == 'move':
-                self._drag_sheet(pointer)
-            elif event['phase'] == 'up':
-                # Release can arrive before a queued motion; use its final
-                # coordinates, preserving the original drag/save methods.
-                self._drag_sheet(pointer)
-                self._end_sheet_drag(pointer)
-                self._log('reference-pointer-consumed', phase='up', generation=mailbox['generation'], position=list(self.sheet_position))
+            editor.place(position)
+
+    def _consume_reference_pointer_events(self, event) -> None:
+        mailbox = getattr(self, '_reference_pointer_mailbox', None)
+        if (mailbox is None or event.get('generation') != mailbox.generation
+                or event.get('hwnd') != mailbox.hwnd):
+            return
+        for phase, x, y in mailbox.take():
+            if mailbox is not getattr(self, '_reference_pointer_mailbox', None):
+                return
+            surface = getattr(self, 'reference_editor_surface', None)
+            if surface is None or surface.hwnd != mailbox.hwnd:
+                self._set_sheet_move_mode(False)
+                return
+            self._reference_editor_pointer(phase, x, y)
 
     @display_presentation('aligned_overlay')
     def _move_display_surface(self, name: str, dx: float, dy: float) -> bool:
@@ -32038,18 +31939,30 @@ class DailyAssistant:
         fitted = clamp_rect_to_work_area(candidate, monitor.work_area_px, margin_px=5)
         return fitted.left, fitted.top
 
+    def _reference_editor_initial_position(self, size):
+        width, height = size
+        position = getattr(self, 'sheet_position', None)
+        pixels = getattr(self, '_reference_pixels', None)
+        if (position is None and getattr(self, '_sheet_visible_reference', None) == self._reference_sheet_context()[1:]
+                and isinstance(pixels, np.ndarray) and pixels.shape[1::-1] == size):
+            position = getattr(self, '_reference_origin', None)
+        bounds = getattr(self, 'current_bounds', None)
+        anchor = (RectPx(*position, position[0]+width, position[1]+height) if position is not None else
+            RectPx(*(int(v) for v in bounds)) if isinstance(bounds, (list, tuple)) and len(bounds) == 4
+                and bounds[2] > bounds[0] and bounds[3] > bounds[1] else self._rect_for_window(self.root))
+        work = select_monitor_for_rect(anchor, self.ui_monitors).work_area_px
+        position = position or (max(work.left+10, work.right-width-20), work.top+35)
+        return self._clamp_reference_sheet_position(position, size)
+
     @display_presentation('reference_surface')
     def _show_image(
         self, path: Path, title: str, max_size: tuple[int, int],
         *, visibility_generation: int | None = None,
         reference_context: tuple | None = None,
     ) -> bool:
-        if not getattr(self, "game_foreground", True):
+        if getattr(self, 'sheet_move_mode', False) or not getattr(self, "game_foreground", True):
             return False
         reference_generation = int(getattr(self, '_reference_visibility_generation', 0))
-        if (getattr(self, 'sheet_move_mode', False)
-            and self._reference_move_context != self._reference_move_request_context()):
-            self._set_sheet_move_mode(False)
         expected_generation = int(
             getattr(self, "surface_visibility_generation", 0)
             if visibility_generation is None else visibility_generation
@@ -32090,21 +32003,13 @@ class DailyAssistant:
                 self._protect_display_window('reference-controls',
                     ctypes.windll.user32.GetAncestor(self.sheet_window.winfo_id(), 2))
                 self.sheet_window.protocol("WM_DELETE_WINDOW", lambda: self.set_reference_sheet_visible(False))
-                for sequence in ('<FocusOut>', '<Unmap>', '<Destroy>'):
-                    self.sheet_window.bind(sequence,
-                        lambda event: self._set_sheet_move_mode(False)
-                        if event.widget is self.sheet_window else None, add='+')
                 self.sheet_label = tk.Label(self.sheet_window, bg='#010203', bd=0)
                 self.sheet_label.pack(fill="both", expand=True)
-                self.sheet_label.bind("<ButtonPress-1>", self._begin_sheet_drag)
-                self.sheet_label.bind("<B1-Motion>", self._drag_sheet)
-                self.sheet_label.bind("<ButtonRelease-1>", self._end_sheet_drag)
             surface = getattr(self, 'reference_surface', None)
             if surface is None or not surface.hwnd:
                 surface = LayeredOverlay()
                 self.reference_surface = surface
                 self._protect_display_window('reference_surface', surface.hwnd)
-                self._install_reference_pointer_bridge(surface)
             current_bounds = getattr(self, "current_bounds", None)
             anchor = (
                 RectPx(int(self.sheet_position[0]), int(self.sheet_position[1]),
@@ -32167,7 +32072,7 @@ class DailyAssistant:
             return True
         except Exception as error:
             self.hide_sheet()
-            self._record_route_issue('resources', 'reference-image-unavailable', f'参考图读取失败：{error}')
+            self._record_route_issue('resources', 'reference-image-unavailable', f'定点地图读取失败：{error}')
             self._set_status(f"小抄读取失败：{error}", "#ff8a65")
             return False
 
@@ -34781,14 +34686,14 @@ class DailyAssistant:
                       'display': '路线显示失败', 'storage': '记录保存失败'}
             phase, severity, title, message = 'failed', 'error', titles.get(issue['phase'], '识别遇到问题'), issue['message']
             if locked and reference_visible:
-                message += ' · 参考图可继续查看'
+                message += ' · 定点地图可继续查看'
             if not user_visible:
                 message += ' · 路线仍按你的设置隐藏'
         elif not user_visible:
             phase, severity, title, message = 'hidden', 'normal', '路线按设置隐藏', '路线按设置隐藏，识别和后台贴合继续'
         elif not foreground or (not opened and not (getattr(self, 'capture_in_progress', False)
                                                      and getattr(self, 'active_map_cycle_id', None) is not None)):
-            phase, severity, title, message = 'waiting', 'normal', '路线状态', ('静态参考图保留 · 等待开图核验当前楼层' if reference_visible else '等待打开地图')
+            phase, severity, title, message = 'waiting', 'normal', '路线状态', ('静态定点地图保留 · 等待开图核验当前楼层' if reference_visible else '等待打开地图')
         elif getattr(self, 'floor_required', False):
             if pending:
                 phase, severity, title, message = 'working', 'normal', '正在确认楼层', '正在自动确认当前楼层，路线暂时隐藏'
@@ -34813,7 +34718,7 @@ class DailyAssistant:
         elif issue_current and issue.get('resolution') == 'resources-ready':
             phase, severity, title, message = 'recovered', 'normal', '资源已就绪', '资源检查完成，等待开图识别'
         elif issue_current and issue.get('resolution') == 'reference-image-ready':
-            phase, severity, title, message = 'recovered', 'normal', '参考图已恢复', '参考图读取已恢复'
+            phase, severity, title, message = 'recovered', 'normal', '定点地图已恢复', '定点地图读取已恢复'
         elif issue_current and issue.get('resolution') == 'transparent-display-ready':
             phase, severity, title, message = 'recovered', 'normal', '显示资源已恢复', '透明显示资源读取已恢复'
         elif issue_current and issue.get('resolution') == 'storage-saved':
@@ -36191,6 +36096,7 @@ class DailyAssistant:
         callback_started = time.perf_counter()
         scheduled_at = getattr(self, '_event_poll_due_at', callback_started)
         self._check_native_similarity_resources()
+        self._check_reference_position_editor()
         self._reap_cancelled_map_package_helper()
         self._drain_online_map_package_progress()
         self._service_display_capture()
@@ -36297,7 +36203,7 @@ class DailyAssistant:
                     self._consume_map_package_inspection(event)
                     continue
                 if kind == 'reference-pointer':
-                    self._consume_reference_pointer_events(event['mailbox'])
+                    self._consume_reference_pointer_events(event)
                     continue
                 if kind in ('round-locked-frame', 'map-probe') and getattr(self, 'runtime_timeline_enabled', True):
                     identity = dict(event.get('_timeline') or {})
@@ -39085,6 +38991,7 @@ class DailyAssistant:
                     return
                 self._dispose_display_surface('aligned_overlay', 'assistant-close')
                 self._dispose_display_surface('reference_surface', 'assistant-close')
+                self._dispose_display_surface('reference_editor_surface', 'assistant-close')
                 for surface in getattr(self, '_failed_native_surfaces', []):
                     try:
                         surface.close()

@@ -165,6 +165,22 @@ user32.TranslateMessage.argtypes = [ctypes.POINTER(MSG)]
 user32.TranslateMessage.restype = ctypes.c_bool
 user32.DispatchMessageW.argtypes = [ctypes.POINTER(MSG)]
 user32.DispatchMessageW.restype = ctypes.c_ssize_t
+user32.GetCapture.argtypes = []
+user32.GetCapture.restype = ctypes.c_void_p
+user32.SetCapture.argtypes = [ctypes.c_void_p]
+user32.SetCapture.restype = ctypes.c_void_p
+user32.ReleaseCapture.argtypes = []
+user32.ReleaseCapture.restype = ctypes.c_bool
+user32.ClientToScreen.argtypes = [ctypes.c_void_p, ctypes.POINTER(POINT)]
+user32.ClientToScreen.restype = ctypes.c_bool
+user32.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+user32.GetWindowLongW.restype = ctypes.c_long
+user32.SetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_long]
+user32.SetWindowLongW.restype = ctypes.c_long
+user32.GetForegroundWindow.argtypes = []
+user32.GetForegroundWindow.restype = ctypes.c_void_p
+user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+user32.GetWindowThreadProcessId.restype = ctypes.c_ulong
 
 
 def now_iso() -> str:
@@ -1279,6 +1295,8 @@ class LayeredOverlay:
         self.client_offset: tuple[int, int] | None = None
         self.visible = False
         self.visibility_guard = None
+        self._pointer_mailbox = None
+        self._pointer_dragging = False
         self._visibility_lock = threading.RLock()
         self._last_presented_bgra: np.ndarray | None = None
         self._last_presented_position: tuple[int, int] | None = None
@@ -1360,6 +1378,22 @@ class LayeredOverlay:
             )
 
     def _wndproc_callback(self, hwnd, msg, wp, lp):
+        try:
+            handled = self._reference_pointer_message(hwnd, int(msg), lp)
+        except Exception:
+            self._pointer_failed = True
+            self._pointer_dragging = False
+            try:
+                if hwnd and user32.GetCapture() == hwnd:
+                    user32.ReleaseCapture()
+            except Exception:
+                pass
+            return 0
+        if int(msg) == 0x0082:  # WM_NCDESTROY also covers destruction outside close().
+            self.hwnd = None
+            self.visible = False
+        if handled is not None:
+            return handled
         if int(msg) == int(self.WM_APP_HIDE):
             self._record_diagnostic(
                 "overlay-hide-request-consumed",
@@ -1368,6 +1402,68 @@ class LayeredOverlay:
             self.hide()
             return 0
         return user32.DefWindowProcW(hwnd, msg, wp, lp)
+
+    def set_pointer_mailbox(self, mailbox):
+        """UI owner installs a mailbox without an additional WndProc subclass."""
+        old = getattr(self, '_pointer_mailbox', None)
+        if old is None and mailbox is None:
+            return  # Preserve existing non-editor overlays' close behavior.
+        if threading.get_ident() != self._owner_thread_id:
+            raise RuntimeError('Native pointer mode belongs to the window owner')
+        old, self._pointer_mailbox = self._pointer_mailbox, mailbox
+        self._pointer_dragging = False
+        self._pointer_failed = False
+        if old is not None and old is not mailbox:
+            old.close()
+        if self.hwnd and user32.GetCapture() == self.hwnd:
+            user32.ReleaseCapture()
+        if self.hwnd:
+            style = user32.GetWindowLongW(self.hwnd, -20)
+            style = (style & ~self.WS_EX_TRANSPARENT) if mailbox is not None else (style | self.WS_EX_TRANSPARENT)
+            user32.SetWindowLongW(self.hwnd, -20, style | self.WS_EX_NOACTIVATE)
+
+    def _reference_pointer_message(self, hwnd, message, lp):
+        """Native messages may only touch Win32 input and the scalar mailbox."""
+        mailbox = getattr(self, '_pointer_mailbox', None)
+        if mailbox is None:
+            return None
+        if message == 0x0021:  # WM_MOUSEACTIVATE / MA_NOACTIVATE
+            return 3
+        if message in (0x001f, 0x0215, 0x0082):  # cancel/capture loss/destroy
+            if self._pointer_dragging or message == 0x0082:
+                self._pointer_dragging = False
+                mailbox.post('cancel')
+                if user32.GetCapture() == hwnd:
+                    user32.ReleaseCapture()
+            return None
+        if message not in (0x0201, 0x0200, 0x0202):
+            return None
+        try:
+            point = POINT(ctypes.c_short(lp & 0xffff).value, ctypes.c_short((lp >> 16) & 0xffff).value)
+            if not user32.ClientToScreen(hwnd, ctypes.byref(point)):
+                raise OSError('Pointer coordinates unavailable')
+            if message == 0x0201:
+                user32.SetCapture(hwnd)
+                self._pointer_dragging = bool(user32.GetCapture() == hwnd)
+                if not self._pointer_dragging or not mailbox.post('down', point.x, point.y):
+                    raise OSError('Pointer capture unavailable')
+            elif self._pointer_dragging:
+                if message == 0x0202:
+                    # ReleaseCapture can synchronously send WM_CAPTURECHANGED.
+                    # The gesture has already ended; it must not cancel editing.
+                    self._pointer_dragging = False
+                    mailbox.post('up', point.x, point.y)
+                    if user32.GetCapture() == hwnd:
+                        user32.ReleaseCapture()
+                elif not mailbox.post('move', point.x, point.y):
+                    raise OSError('Pointer mailbox full')
+            return 0
+        except Exception:
+            self._pointer_dragging = False
+            mailbox.post('cancel')
+            if user32.GetCapture() == hwnd:
+                user32.ReleaseCapture()
+            return 0
 
     def hide(self) -> None:
         with self._visibility_guard("hide"):
@@ -1595,6 +1691,7 @@ class LayeredOverlay:
             user32.DispatchMessageW(ctypes.byref(msg))
 
     def close(self) -> None:
+        self.set_pointer_mailbox(None)
         with self._visibility_guard("close"):
             if self.hwnd:
                 self.hide()
