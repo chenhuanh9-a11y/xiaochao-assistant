@@ -478,16 +478,18 @@ class DesktopMainUI:
             selected = page == self._page
             photo = self._icons.get(name, self._px(20), SIDEBAR_TEXT if selected else SIDEBAR_MUTED) if self._icons else None
             button._desktop_icon = photo
-            # ttk labels have no icon gap option; a leading space keeps text off the glyph.
+            # The narrow rail keeps labels below their icons at regular sizes.
             label = self._nav_labels[page]
-            button.configure(image=photo or "", text=label if compact and not photo else f"  {label}",
-                             compound="image" if compact and photo else "left",
-                             anchor="center" if compact else "w")
+            text = "" if compact and photo else label
+            if compact and not photo and len(text) > 4:
+                text = text[:3] + "\n" + text[3:]
+            button.configure(image=photo or "", text=text,
+                             compound="image" if compact and photo else "top", anchor="center")
         if hasattr(self, "exit_button"):
             photo = self._icons.get("exit", self._px(18), SIDEBAR_MUTED) if self._icons else None
             self.exit_button._desktop_icon = photo
-            self.exit_button.configure(image=photo or "", text="退出" if compact and not photo else " 退出",
-                                       compound="image" if compact and photo else "left")
+            self.exit_button.configure(image=photo or "", text="" if compact and photo else "退出",
+                                       compound="image" if compact and photo else "top")
         if hasattr(self, "brand_icon"):
             size = self._px(40 if not compact else 36)
             photo = self._brand_images.get("round", size)
@@ -514,17 +516,18 @@ class DesktopMainUI:
         height = self.window.winfo_height()
         if self._shell_layout is not None and (width <= 1 or height <= 1):
             return
-        compact = width / self._scale < 820
-        spacious = width / self._scale >= 1240
+        # Short windows need the existing icon-only mode to keep every page reachable.
+        compact = width / self._scale < 800 or height / self._scale < 660
+        spacious = width / self._scale >= 1200
         signature = compact, spacious, self._scale
         if signature == self._shell_layout:
             return
         self._shell_layout = signature
         self._compact = compact
         self.header.configure(height=self._px(60))
-        self.workspace.pack_configure(padx=self._px(40 if spacious else 22 if compact else 30))
-        self.rail.configure(width=self._px(76 if compact else 184))
-        rail_width = 76 if compact else 184
+        self.workspace.pack_configure(padx=self._px(48 if spacious else 28))
+        rail_width = 80 if compact else 96
+        self.rail.configure(width=self._px(rail_width))
         self._update_ui_signature = None  # Re-place the sidebar badge for the new rail.
         if compact:
             self.rail_update_badge.pack_forget()
@@ -533,23 +536,24 @@ class DesktopMainUI:
             self.rail_version.pack_forget()
             self.rail_status.pack_forget()
             self.rail_art.pack_forget()
-            self.exit_button.pack_configure(side="top")
+            self.exit_button.pack_configure(side="bottom", fill="x")
         else:
-            self.brand_text.pack(side="left", padx=(self._px(12), 0))
-            self.brand.pack_configure(padx=self._px(18), pady=(self._px(24), self._px(26)))
-            self.exit_button.pack_configure(side="right")
-            self.rail_version.pack(side="left", padx=(self._px(6), 0), before=self.exit_button)
-            self.rail_status.pack(side="bottom", fill="x", padx=self._px(12), pady=(0, self._px(12)),
+            self.brand_text.pack(side="top", padx=0, pady=(self._px(8), 0))
+            self.brand.pack_configure(padx=self._px(8), pady=(self._px(24), self._px(20)))
+            self.exit_button.pack_configure(side="bottom", fill="x")
+            self.rail_version.pack(side="top", padx=0, pady=(0, self._px(4)), before=self.exit_button)
+            self.rail_status.pack(side="bottom", fill="x", padx=self._px(8), pady=(0, self._px(8)),
                                   before=self.rail_art if self.rail_art.winfo_manager() else None)
-            self.home_setup_summary.configure(wraplength=self._px(rail_width - 48))
+            self.header_caption.configure(wraplength=self._px(rail_width - 32))
+            self.home_setup_summary.configure(wraplength=self._px(rail_width - 32))
             self._rail_art_photo = ImageTk.PhotoImage(
-                _sidebar_art(self._px(rail_width), self._px(150)), master=self.window)
+                _sidebar_art(self._px(rail_width), self._px(72)), master=self.window)
             self.rail_art.configure(image=self._rail_art_photo)
             self.rail_art.pack(side="bottom", fill="x")
-        self.rail_footer.pack_configure(padx=self._px(12), pady=(0, self._px(14)))
+        self.rail_footer.pack_configure(padx=self._px(8), pady=(0, self._px(14)))
         for button in self._nav_buttons.values():
-            button.pack_configure(padx=self._px(12), pady=self._px(2))
-            button.configure(padx=self._px(10 if compact else 16))
+            button.pack_configure(padx=self._px(8), pady=self._px(2))
+            button.configure(padx=self._px(4), pady=self._px(8))
         self._nav_mark.configure(width=self._px(3), height=self._px(16))
         self.root.after_idle(lambda: self._place_nav_mark(animate=False))
         self._apply_icons()
@@ -706,7 +710,7 @@ class DesktopMainUI:
     def _build(self) -> None:
         container = tk.Frame(self.window, bg=BG)
         container.pack(fill="both", expand=True)
-        rail = tk.Frame(container, bg=SIDEBAR, width=184)
+        rail = tk.Frame(container, bg=SIDEBAR, width=96)
         self.rail = rail
         rail._display_manual_geometry = True
         rail.pack(side="left", fill="y")
@@ -714,13 +718,13 @@ class DesktopMainUI:
         brand = tk.Frame(rail, bg=SIDEBAR)
         self.brand = brand
         brand._display_manual_geometry = True
-        brand.pack(fill="x", padx=18, pady=(26, 28))
+        brand.pack(fill="x", padx=8, pady=(24, 20))
         self.brand_icon = tk.Label(brand, bg=SIDEBAR, bd=0)
-        self.brand_icon.pack(side="left")
+        self.brand_icon.pack(side="top")
         self.brand_text = tk.Frame(brand, bg=SIDEBAR)
-        self.brand_text.pack(side="left", padx=(10, 0))
-        self._label(self.brand_text, "星图", size=14, bold=True, color=SIDEBAR_TEXT).pack(anchor="w")
-        self._label(self.brand_text, "地图与路线助手", size=8, color=SIDEBAR_MUTED).pack(anchor="w")
+        self.brand_text.pack(side="top", pady=(8, 0))
+        self._label(self.brand_text, "星图", size=14, bold=True, color=SIDEBAR_TEXT).pack(anchor="center")
+        self._label(self.brand_text, "地图与路线助手", size=8, color=SIDEBAR_MUTED).pack(anchor="center")
         self._nav_labels = {}
         for key, label in (("home", "主页面"), ("maps", "地图资源"), ("custom", "自定义地图"),
                            ("preferences", "设置"), ("help", "帮助")):
@@ -728,9 +732,9 @@ class DesktopMainUI:
                 rail, text=label, command=lambda page=key: self.show_page(page),
                 bg=SIDEBAR, fg=SIDEBAR_MUTED, activebackground=SIDEBAR_HOVER,
                 activeforeground=SIDEBAR_TEXT, highlightthickness=0, highlightbackground=SIDEBAR,
-                highlightcolor=NIGHT_ACCENT, font=(FONT, 10, "bold"), padx=16, pady=10,
-                anchor="w", cursor="hand2")
-            button.pack(fill="x", padx=12, pady=2)
+                highlightcolor=NIGHT_ACCENT, font=(FONT, 10, "bold"), padx=4, pady=8,
+                anchor="center", cursor="hand2")
+            button.pack(fill="x", padx=8, pady=2)
             button._display_manual_geometry = True
             self._nav_buttons[key] = button
             self._nav_labels[key] = label
@@ -743,10 +747,10 @@ class DesktopMainUI:
 
         footer = tk.Frame(rail, bg=SIDEBAR)
         self.rail_footer = footer
-        footer.pack(side="bottom", fill="x", padx=12, pady=(0, 14))
+        footer.pack(side="bottom", fill="x", padx=8, pady=(0, 14))
         self.rail_version = self._label(footer, f"版本 {self._display_version_text()}", size=8,
-                                        color=SIDEBAR_MUTED, anchor="w")
-        self.rail_version.pack(side="left", padx=(6, 0))
+                                        color=SIDEBAR_MUTED, anchor="center")
+        self.rail_version.pack(side="top", pady=(0, 4))
         self.rail_update_badge = tk.Label(footer, text="新版本", bg=STAR_GOLD, fg=NIGHT, bd=0,
                                           font=(FONT, 7, "bold"), padx=5, pady=1, cursor="hand2")
         for widget in (self.rail_version, self.rail_update_badge):
@@ -758,23 +762,23 @@ class DesktopMainUI:
             highlightthickness=0, highlightbackground=SIDEBAR, highlightcolor=NIGHT_ACCENT,
             font=(FONT, 9, "bold"), padx=10, pady=6, anchor="center", cursor="hand2")
         self.exit_button._display_manual_geometry = True
-        self.exit_button.pack(side="right")
+        self.exit_button.pack(side="bottom", fill="x")
 
         # Live game status stays visible on every page, not only on home.
-        status = RoundedFrame(rail, bg=SIDEBAR_HOVER, radius=12, padx=12, pady=10, highlightthickness=0)
+        status = RoundedFrame(rail, bg=SIDEBAR_HOVER, radius=12, padx=8, pady=8, highlightthickness=0)
         self.rail_status = status
         status._display_manual_geometry = True
-        status.pack(side="bottom", fill="x", padx=12, pady=(0, 12))
+        status.pack(side="bottom", fill="x", padx=8, pady=(0, 8))
         self.header_caption = tk.Label(status, text="○  等待连接游戏", bg=SIDEBAR_HOVER, fg=SIDEBAR_MUTED,
-                                       font=(FONT, 9, "bold"), anchor="w", bd=0)
+                                       font=(FONT, 9, "bold"), anchor="center", justify="center", bd=0, wraplength=64)
         self.header_caption.pack(fill="x")
         self.home_setup_summary = tk.Label(status, bg=SIDEBAR_HOVER, fg=SIDEBAR_MUTED, font=(FONT, 8),
-                                           anchor="w", justify="left", bd=0, wraplength=136)
+                                           anchor="center", justify="center", bd=0, wraplength=64)
         self.home_setup_summary.pack(fill="x", pady=(4, 0))
         self.rail_art = tk.Label(rail, bg=SIDEBAR, bd=0)
         self.rail_art.pack(side="bottom", fill="x")
         self.workspace = tk.Frame(container, bg=BG)
-        self.workspace.pack(side="left", fill="both", expand=True, padx=30, pady=(14, 14))
+        self.workspace.pack(side="left", fill="both", expand=True, padx=28, pady=(14, 14))
         header = tk.Frame(self.workspace, bg=BG, height=60)
         self.header = header
         header._display_manual_geometry = True
@@ -997,11 +1001,12 @@ class DesktopMainUI:
         if not hasattr(self, "home_grid"):
             return
         width = self.home_grid.winfo_width() / self._scale
-        wide, spacious = width >= 700, width >= 1180
-        side = max(240, round(width * .3)) if wide else 0
-        main = width - side - 4 if wide else width
+        wide, spacious = width >= 720, width >= 1200
+        side = max(250, round(width * .261)) if wide else 0
+        gap = round(width * .034) if wide else 0
+        main = width - side - gap if wide else width
         # The hero art follows the main column, so bucket its width into the signature.
-        signature = wide, spacious, self._scale, side, round(main / 40)
+        signature = wide, spacious, self._scale, side, gap, round(main / 40)
         if signature == self._home_layout:
             return
         self._home_layout = signature
@@ -1010,7 +1015,7 @@ class DesktopMainUI:
         for frame in (self.home_main, self.home_side):
             frame.grid_forget()
         if wide:
-            self.home_main.grid(row=0, column=0, sticky="new", padx=(0, self._px(4)))
+            self.home_main.grid(row=0, column=0, sticky="new", padx=(0, self._px(gap)))
             self.home_side.grid(row=0, column=1, sticky="new")
         else:
             self.home_main.grid(row=0, column=0, sticky="ew")
@@ -2105,7 +2110,7 @@ class DesktopMainUI:
         self._update_ui_signature = signature
         # Sidebar: version line plus a gold "新版本" pill while the notes are unread.
         if available and service.has_unread and self.rail_version.winfo_manager():
-            self.rail_update_badge.pack(side="left", padx=(6, 0), after=self.rail_version)
+            self.rail_update_badge.pack(side="top", pady=(0, self._px(4)), after=self.rail_version)
         else:
             self.rail_update_badge.pack_forget()
         # Home banner: a quiet reminder that stays until the version is skipped.
