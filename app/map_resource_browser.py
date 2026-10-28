@@ -132,6 +132,8 @@ class MapResourceBrowser(tk.Frame):
         self.mode_label.pack(side="right")
         self.import_button = _button(top, "导入资源包", self._choose_map_package)
         self.import_button.pack(side="right", padx=(8, 0))
+        self.manage_button = _button(top, "管理已安装资源", self._toggle_managed_packages)
+        self.manage_button.pack(side="right", padx=(8, 0))
         self.overview_button = _button(top, "资源概览", self._show_overview)
         self.online_bar = tk.Frame(self, bg=BG)
         self.online_bar.pack(fill="x", padx=20, pady=(0, 10))
@@ -201,6 +203,16 @@ class MapResourceBrowser(tk.Frame):
         self._import_signature = None
         self._import_message_text = ""
         self.import_surface.bind("<Configure>", self._fit_import_text, add="+")
+        self.managed_surface = tk.Frame(self, bg=BG)
+        self.managed_message = _label(self.managed_surface, color=MUTED, anchor="w", justify="left", wraplength=500)
+        self.managed_message.pack(fill="x")
+        self.managed_list = tk.Frame(self.managed_surface, bg=BG)
+        self.managed_list.pack(fill="x")
+        self.managed_confirm = _button(self.managed_surface, "确认移除作者资源", self._confirm_managed_removal)
+        self._managed_open = False
+        self._managed_signature = None
+        self._managed_rows = {}
+        self._managed_ready = None
         self.filter_host = tk.Frame(self, bg=BG)
         self.filter_host.pack(fill="x", padx=SHADOW_DIP)
         controls = tk.Frame(self.filter_host, bg=BG)
@@ -293,6 +305,7 @@ class MapResourceBrowser(tk.Frame):
         self._active = True
         self.sync_map_package_import()
         self.sync_online_packages()
+        self.sync_managed_packages()
         pack = self.assistant.pack
         catalog = getattr(self.assistant, "author_route_catalog", None)
         context = (id(pack), id(catalog))
@@ -400,6 +413,86 @@ class MapResourceBrowser(tk.Frame):
     def _map_package_snapshot(self):
         getter = getattr(self.assistant, "map_package_import_snapshot", None)
         return getter() if callable(getter) else {}
+
+    def _toggle_managed_packages(self):
+        self._managed_open = not self._managed_open
+        if self._managed_open:
+            callback = getattr(self.assistant, 'managed_author_packages_snapshot', None)
+            if callable(callback):
+                callback(refresh=True)
+        self.sync_managed_packages()
+
+    def sync_managed_packages(self):
+        if self._closed or not hasattr(self, 'managed_surface'):
+            return
+        getter = getattr(self.assistant, 'managed_author_packages_snapshot', None)
+        state = getter() if callable(getter) else {}
+        ready = state.get('ready') if isinstance(state.get('ready'), dict) else None
+        self._managed_ready = ready
+        busy = bool(state.get('busy'))
+        rows = tuple((p['packageId'], p.get('title', p['packageId']),
+                      p.get('status', 'unverified'), bool(p.get('canRemove')), p.get('reason', ''))
+                     for p in state.get('packages', ()) if isinstance(p, dict) and p.get('packageId'))
+        message = str(state.get('message') or
+                      ('读取本机安装记录，不依赖在线下载列表。只移除受管理作者资源，保留结构、自定义路线和预制数据。'
+                       if callable(getter) else '当前版本尚未接入资源管理。'))
+        if ready is not None:
+            message = (f"确认移除 {ready.get('title', ready.get('packageId', ''))} 的 "
+                       f"{ready.get('fileCount', 0)} 个作者文件？文件将移到本机备份，可恢复；"
+                       "结构底图、预制数据、编辑器与自定义路线保留。无需重启。")
+        signature = rows, message, busy, self._managed_open, repr(ready)
+        if signature == self._managed_signature:
+            return
+        self._managed_signature = signature
+        self.managed_message.configure(text=message)
+        labels = {'installed': '已安装', 'update-available': '可更新', 'incomplete': '需修复',
+                  'unverified': '本地检查未完成', 'not-installed': '未安装', 'unmanaged': '旧资源未登记'}
+        ids = {r[0] for r in rows}
+        for package_id in tuple(self._managed_rows):
+            if package_id not in ids:
+                self._managed_rows.pop(package_id)['frame'].destroy()
+        for package_id, title, status, removable, reason in rows:
+            row = self._managed_rows.get(package_id)
+            if row is None:
+                frame = tk.Frame(self.managed_list, bg=BG)
+                button = _button(frame, '删除…', lambda value=package_id: self._inspect_managed_removal(value))
+                button.pack(side='right', padx=(10, 0))
+                label = _label(frame, anchor='w', justify='left', wraplength=450)
+                label.pack(side='left', fill='x', expand=True)
+                row = self._managed_rows[package_id] = dict(frame=frame, label=label, button=button)
+            suffix = ('；缺少安装记录，不能安全删除或覆盖' if status == 'unmanaged'
+                      else '；文件已改动，已保留' if str(reason).startswith('modified-author-file:') else '')
+            row['label'].configure(text=f"{title} · {labels.get(status, '本地检查失败')}{suffix}")
+            row['button'].configure(state='normal' if removable and not busy else 'disabled')
+            row['frame'].pack(fill='x', pady=(7, 0))
+        if ready is not None:
+            self.managed_confirm.configure(state='disabled' if busy else 'normal')
+            self.managed_confirm.pack(anchor='w', pady=(8, 0))
+        else:
+            self.managed_confirm.pack_forget()
+        if self._managed_open:
+            self.managed_surface.pack(fill='x', padx=20, pady=(0, 12), before=self.filter_host)
+        else:
+            self.managed_surface.pack_forget()
+
+    def _inspect_managed_removal(self, package_id):
+        callback = getattr(self.assistant, 'inspect_author_package_removal', None)
+        result = None
+        if callable(callback):
+            result = callback(package_id)
+        self.sync_managed_packages()
+        if isinstance(result, dict) and result.get('success') is False:
+            self.managed_message.configure(text=str(result.get('message') or '当前不能移除资源。'))
+
+    def _confirm_managed_removal(self):
+        ready = self._managed_ready
+        callback = getattr(self.assistant, 'confirm_author_package_removal', None)
+        result = None
+        if ready is not None and callable(callback):
+            result = callback(ready['packageId'], expected_receipt_sha256=ready['receiptSha256'])
+        self.sync_managed_packages()
+        if isinstance(result, dict) and result.get('success') is False:
+            self.managed_message.configure(text=str(result.get('message') or '当前不能移除资源。'))
 
     def _fit_import_text(self, event):
         if self._closed:
@@ -1076,6 +1169,8 @@ class MapResourceBrowser(tk.Frame):
                                  WARNING if any(word in widget._success_status for word in ("缺失", "未核对")) else MUTED))
 
     def _drain(self):
+        if getattr(self, '_active', False):
+            self.sync_managed_packages()
         deadline = time.perf_counter() + .006
         # Limit both elapsed time and number of Tk image uploads per turn.
         for _ in range(2):
