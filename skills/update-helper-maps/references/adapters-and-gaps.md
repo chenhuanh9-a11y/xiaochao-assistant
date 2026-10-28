@@ -18,3 +18,12 @@
 完整命令与前置条件见仓库 `docs/map-processing.md`。无完整合法资源时，只运行help、语法检查和合成fixture。不要将历史脚本指向活动源目录，不为查参数执行未经审查的顶层脚本。
 
 中间清单收集、作者显示验收和生产runtime接入是不同状态。源包体→规范化schema、完整语义提取、代表难图核心验收、生产增量安装及回退仍需逐批适配；不存在promote命令。源码中保留的历史批次数字不是以后目标数量。
+
+
+## 2026-10-29 入口候选增量与来源审计
+
+`tools/maps/build_entry_candidates.py` 与 `tools/maps/audit_entry_sources.py` 已提供独立 CLI，见 [维护用法](../../../docs/entry-candidate-preprocessing.md)。候选 schema 为 entry-candidates/1，不与 runtime NPZ 或本技能 manifest schema 2 混用。9 项定向测试通过；132楼层/246邻域已生成，二次132复用。后续只读闭包审计未重生成候选。
+
+已核查：130原生楼层 metadata 的 layout/worldFloor 与条目一致，130次源catalog SHA256匹配；困难map29两层 legacy NPZ SHA256匹配记录，但 examined source/index/provenance 没有原生layout绑定。map29维持legacy/manual working-draft，不从图像相似或地图序号猜原生ID，不阻断其他候选。
+
+仍未闭合：旧catalog七个相对原始模块在其vendor根/data下未找到，不能把嵌入的literal exports当成原二进制存在证明；贴图字节、renderer模块根及source-to-product重放还需补证。当前包体噩梦图像亦明确来自旧vendor资产，不能仅凭mapImages字段相同宣称当前版本纹理字节已重提取。审计只报告部分来源证据，不设置full closure已验证。

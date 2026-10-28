@@ -42,3 +42,16 @@ python scripts/test_map_update.py
 ## 完成与窄维护
 
 每次回报目标与实际覆盖、diff分类、缓存失效、canonical选择、执行入口/版本、候选路径、抽样/定向范围、已知失败和回退基线；共享核心验收、作者资源可用、runtime接入分列。主线接入完成后，只按新验证证据窄更新 [适配与缺口](references/adapters-and-gaps.md) 与对应适配器/测试，禁止把候选接口描述成已存在的全自动流程。
+
+
+## 入口候选增量维护（PR29，离线）
+
+仓库根入口 `tools/maps/build_entry_candidates.py` 使用同一 schema 处理所有模式，配置示例及状态边界见 [入口候选维护](../../docs/entry-candidate-preprocessing.md)。它与本技能中间 manifest schema 2、PR18 runtime NPZ 不可互换。先执行 `tools/maps/audit_entry_sources.py` 核查明确来源，再按指纹增量生成；审计不会运行提取器或游戏。
+
+- 维护配置显式绑定资源根、entries/index、可选 anchors 和已知依赖。使用新的/既有内容寻址 staging，输出不得位于源树内。
+- 输入内容、源结构、坐标、编译器或参数改变才产生新候选；未变文件精确校验后复用，不重复生成。非空 dependencies 仅表明声明子集已哈希，不能证明完整原始闭包。
+- 缺失语义、legacy map29 或相似邻域不能变成唯一识别结论；保留完整竞争回退，132条记录不等于132条原生闭包已验证。
+- 损坏缓存报错后保留现场，使用新 staging 重建或先人工隔离已证实损坏的单文件；不覆盖旧包、不清理用户路线、不自动删除旧指纹。输入 mismatch 先修正来源绑定，禁止修改版本字段掩盖问题。
+- 审计输出采用独占创建；每次审计指定新报告名。输出只保留元数据和hash，不上传原始游戏文件。接入与明早维护以实际报告缺口为准，runtime消费者由原owner管理。
+
+- 消费者最小契约和 `plan_entry_candidate_changes.py` 事件见仓库入口候选维护文档。缺失原始输入对应项只失效可选加速并回退，不能凭空重算；其余身份复用。共享依赖影响全部关联项，无细粒度映射时按来源scope保守失效。禁止把事件计划当作runtime已接入。
