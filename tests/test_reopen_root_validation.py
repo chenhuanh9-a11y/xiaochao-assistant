@@ -74,4 +74,25 @@ class ReopenRootTests(unittest.TestCase):
         np.testing.assert_allclose(self.verify.call_args.args[3],self.canonical@self.shared)
         np.testing.assert_allclose(self.s._rendered_profile_current_frame_residual.call_args.args[2],self.matrix)
 
+    def test_epoch_changes_during_validation_never_reach_solve(self):
+        for mode in ('nightmare', 'difficult'):
+            for changed in ('group', 'generation', 'surface'):
+                for round_number in range(20):
+                    with self.subTest(mode=mode, changed=changed, round=round_number):
+                        self.s.game_mode = mode
+                        self.s._active_round_layer_group = lambda *a: self.group
+                        def verify(*args, **kwargs):
+                            if changed == 'group':
+                                self.s._active_round_layer_group = lambda *a: None
+                            elif changed == 'generation':
+                                self.group.generation += 1
+                            else:
+                                self.s.surface_visibility_generation += 1
+                            return {'success': True}
+                        self.verify.side_effect = verify
+                        result = self.run_fit()
+                        self.assertEqual(result['reason'], 'structure-work-obsolete')
+                        self.solve.assert_not_called()
+                        self.rank.assert_not_called()
+
 if __name__=='__main__':unittest.main()
