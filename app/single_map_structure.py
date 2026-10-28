@@ -1184,12 +1184,15 @@ def solve(assistant, frame, map_id, floor, profile, route, *, cancelled=None, _c
     assistant._single_map_structure_diagnostics = None
     group = assistant._active_round_layer_group(map_id)
     view = assistant._round_group_floor_view(map_id, floor, render_overlay=False) if group else None
+    shared = bool(getattr(assistant, '_shared_structure_mode_enabled', lambda: False)())
     failure = dict(success=False, reason='structure-no-reliable-scale')
     obsolete = dict(success=False, reason='structure-work-obsolete')
     if cancelled and cancelled(): return obsolete
-    if not view or not group.verified_floors or group.route_profile_id != profile:
+    if not view or not group.verified_floors or (not shared and group.route_profile_id != profile):
         return failure
-    base = np.asarray(view['matrixSourceToClient'], dtype=np.float64)
+    # Shared products and route pixels are in the native reference domain.
+    # Author display matrices are static adapters, never solver coordinates.
+    base = np.asarray(view['recognitionMatrixSourceToClient'] if shared else view['matrixSourceToClient'], dtype=np.float64)
     product = assistant._author_route_clean_product_for_route(route, profile, map_id, floor)
     context=_context if _context is not None else current_geometry(frame)
     if product is None or product.clean_mask is None:
@@ -1361,9 +1364,12 @@ def solve(assistant, frame, map_id, floor, profile, route, *, cancelled=None, _c
                 assistant._single_map_structure_diagnostics=diagnostics
                 return dict(success=True,reason='difficult-entry-scale-relocalization',
                     matrixSourceToClient=np.asarray(checked['matrixSourceToClient']),
-                    coordinateSpace='author-render-to-client',routeProfileId=profile,
+                    coordinateSpace='shared-structure-to-client' if shared else 'author-render-to-client',
+                    routeProfileId='shared-structure' if shared else profile,
                     selectedRouteCurrentFrameResidual=dict(checked['residual'],
-                        validationBasis='actual-rendered-profile-structural-mask',poseVerifiedAgainstRenderedProfile=True),
+                        validationBasis='shared-canonical-geometry-current-frame' if shared else 'actual-rendered-profile-structural-mask',
+                        poseVerifiedAgainstRenderedProfile=not shared,
+                        **(dict(poseVerifiedAgainstCanonicalGeometry=True,poseVerifiedAgainstSharedStructure=True) if shared else {})),
                     difficultEntryValidation=checked)
     if not accepted and bool(getattr(assistant,'settings',{}).get(
             'poseIndexCandidatesEnabled',getattr(assistant,'settings',{}).get('difficultGridEnabled',False))):
@@ -1426,6 +1432,16 @@ def solve(assistant, frame, map_id, floor, profile, route, *, cancelled=None, _c
             sharedProjectionGeometryInsufficient=insufficient)
     target, candidate = accepted[0]
     residual=candidate['residual']
+    if shared:
+        return dict(success=True, matrixSourceToClient=target,
+            coordinateSpace='shared-structure-to-client', routeProfileId='shared-structure',
+            inliers=candidate['support'], structureProposalOrigin=candidate.get('origin'),
+            structureModel=(candidate.get('pointGeometry') or {}).get('structureModel'),
+            currentFrameScaleObservation=candidate.get('currentFrameScaleObservation'),
+            selectedRouteCurrentFrameResidual=dict(residual,
+                validationBasis='shared-canonical-geometry-current-frame',
+                poseVerifiedAgainstCanonicalGeometry=True, poseVerifiedAgainstSharedStructure=True,
+                poseVerifiedAgainstRenderedProfile=False))
     # validate() measured the actual selected author route at this exact
     # matrix. Preserve that evidence through the shared consumer for every mode.
     residual=dict(residual,validationBasis='actual-rendered-profile-structural-mask',
