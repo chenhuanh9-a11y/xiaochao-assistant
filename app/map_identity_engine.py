@@ -43,7 +43,11 @@ def entry_rank_diagnostics(evidence, *, side_error=None):
               'poseRecoveryEvaluated', 'poseRecoveryCandidates', 'poseRecoveryEquivalent',
               'entryInventoryComplete', 'entryInventoryExpectedMapIds',
               'entryInventoryAvailableMapIds', 'entryInventoryMissingMapIds',
-              'entryInventoryUnexpectedMapIds', 'entryInventoryProposalOnly')
+              'entryInventoryUnexpectedMapIds', 'entryInventoryProposalOnly',
+              'sideDoorPath', 'sideDoorResourceError', 'seedCorrespondences',
+              'sideLocalIndexError', 'localSearchMaps', 'localSeedTotal',
+              'outsideSeedsScreened', 'outsideSeedsRejected', 'ringEvaluations',
+              'sideOptionalDoorMs', 'sideOptionalDoorUsed', 'sideOptionalDoorError')
     result = {'sideResourceError': side_error, **evidence.get('recognitionPath', {})}
     for label, diagnostic_key, rows_key in (
         ('passport', 'entryPassport', 'entryPassportCandidates'),

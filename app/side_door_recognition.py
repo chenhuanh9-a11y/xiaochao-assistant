@@ -438,11 +438,17 @@ class SideDoorRecognizer:
 
     def find_anchors(
         self, frame_bgr: np.ndarray, allow_unusual_scales: bool = True,
-        *, match_workers: int = 1,
+        *, match_workers: int = 1, search_bounds=None,
     ) -> list[dict]:
         frame_height, frame_width = frame_bgr.shape[:2]
         roi_x0, roi_x1 = round(frame_width * 0.18), round(frame_width * 0.84)
         roi_y0, roi_y1 = round(frame_height * 0.10), round(frame_height * 0.84)
+        if search_bounds is not None:
+            x0, y0, x1, y1 = map(int, search_bounds)
+            roi_x0, roi_y0 = max(roi_x0, x0), max(roi_y0, y0)
+            roi_x1, roi_y1 = min(roi_x1, x1), min(roi_y1, y1)
+        if roi_x1 <= roi_x0 or roi_y1 <= roi_y0:
+            return []
         gray = cv2.cvtColor(frame_bgr[roi_y0:roi_y1, roi_x0:roi_x1], cv2.COLOR_BGR2GRAY)
 
         def search(scales: tuple[float, ...]) -> list[dict]:
@@ -451,10 +457,14 @@ class SideDoorRecognizer:
             def correlate(scale):
                 width = max(4, round(self.exit_icon.shape[1] * scale))
                 height = max(4, round(self.exit_icon.shape[0] * scale))
+                if width > gray.shape[1] or height > gray.shape[0]:
+                    return width, height, None
                 template = cv2.resize(self.exit_icon, (width, height), interpolation=cv2.INTER_AREA)
                 return width, height, cv2.matchTemplate(gray, template, cv2.TM_CCOEFF_NORMED)
 
             def consume(width, height, result):
+                if result is None:
+                    return
                 for _ in range(5):
                     _, score, _, point = cv2.minMaxLoc(result)
                     if score < 0.30:
