@@ -96,3 +96,60 @@ resource backend/UI and existing import suites were also run after integration.
 New draft PR creation was rejected by automatic approval review; no PR was
 created and the operation was not retried. Further publication awaits the
 coordinator's requested explicit authorization. No new installer was built.
+
+## Follow-up recovery investigation (same local session)
+
+The later valid frames are distinct from the empty cycle 56 frame:
+
+| Cycle | Valid B1 probe dispositions | Rankings | Verified identity candidates | Overlay commits |
+|---|---:|---:|---|---:|
+| 58 | 18 | 1 | none; 11 competition-limit hypotheses | 0 |
+| 60 | 11 | 1 | none; 11 competition-limit hypotheses | 0 |
+| 62 | 10 | 1 | none; 11 competition-limit hypotheses | 0 |
+| 64 | 19 | 1 | none; 11 competition-limit hypotheses | 0 |
+| 66 | 9 | 1 | none; 14 competition-limit hypotheses | 0 |
+| 68 | 25 | 1 | nightmare-04; 2 competitive hypotheses tested | 11 |
+
+Cycle 58 accepted B1 at 02:23:52.484 and reset the F1 provisional group.
+That reset is justified: F1 group evidence cannot establish a unique B1 map.
+The probe consumer subsequently observed valid B1 repeatedly but same-floor
+observations returned without another identity ranking. The pose/provisional/
+drift recovery paths all require a known map/group. This is a same-open
+recognition retry gap, not a missing callback or stopped capture. Reopening
+did rerank. In cycle 68, `map-locked` explicitly says `automatic-hard-gate`
+and `complete-unique-side-structure-and-current-author`; no manual confirmation
+was needed to recover. The earlier brief report did not establish this detail.
+
+Added a shared unconfirmed-identity retry on changed probe pixels. It requires
+current-frame floor evidence and an open foreground cycle, preserves all
+identity/display gates, allows one recovery worker, and schedules at most once
+per second using the existing passive-drift change threshold. Unchanged failed
+evidence is not repeatedly ranked. The initial ambiguous ranking seeds the
+comparison baseline. Import/removal idle checks include this worker.
+
+Recovery rank deliveries additionally require the same cycle/floor/pack/mode/
+surface, no newer identity, equal client bounds, and exact current pixel equality.
+They cannot rewind the live frame. Changed late deliveries request a bounded
+fresh retry. Exact equality is deliberately conservative: continuously animated
+frames may delay acceptance. Exceptions emit a terminal diagnostic and release
+the thread; future changed pixels can retry. Existing manual reranking semantics
+are unchanged.
+
+Eight synthetic production-method/state tests cover group reset, initial rank
+baseline, unchanged/changed probes in both modes, single-worker/rate limits,
+floor/lifecycle guards, late pixel changes, and worker errors. No recorded-frame
+replay demonstrates that the newly added retries would have uniquely identified
+cycles 58–66: those logs explicitly lack verified candidates. Thus this closes
+the scheduling gap, not a claim of complete disappearance resolution or latency.
+
+A provisional reference image is a separate presentation decision. It could be
+shown only with a persistent “temporary candidate, map unconfirmed” label and
+explicit floor/source state, with no implication of route authorization. The
+current reference surface has no such label contract, so this patch preserves
+its non-provisional gate. Automatically showing the top B1 candidate would have
+shown nightmare-09 in cycles 58–62 while cycle 68 proved nightmare-04; it is not
+a safe substitute for recovery.
+
+Animation owner commit `718ae78` is also adopted without altering runtime
+ownership. New repository authorization permits pushing this branch; the main
+coordinator owns the one PR-creation retry and merge/build, avoiding duplicates.

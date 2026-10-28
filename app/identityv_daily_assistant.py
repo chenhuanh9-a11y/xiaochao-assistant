@@ -9815,6 +9815,13 @@ class DailyAssistant:
         # inconclusive automatic frame keeps monitoring without opening a
         # focusable candidate panel over the game.
         active = self._round_identity_lock_context()
+        if active is None and reason in {'unlocked-ranked-candidates-ready', 'unlocked-ranking-uncertain'}:
+            signature = map_frame_signature(getattr(self, 'current_frame', None))
+            if isinstance(signature, np.ndarray):
+                key = (self.active_map_cycle_id, str(self.current_floor), id(self.pack),
+                    getattr(self, 'game_mode', None), getattr(self, 'surface_visibility_generation', 0))
+                self._unconfirmed_identity_probe = (key, signature.copy(), time.monotonic())
+                self._unconfirmed_identity_retry_pending = False
         self._log("candidate-shell-auto-open-suppressed",
             cycleId=getattr(self, "active_map_cycle_id", None),
             mapId=(active or {}).get("mapId"), reason=str(reason),
@@ -10170,8 +10177,10 @@ class DailyAssistant:
             return False
         lock = getattr(self, '_capture_request_lock', None)
         worker = getattr(self, 'secondary_preload_worker', None)
+        identity_worker = getattr(self, '_unconfirmed_identity_worker', None)
         return not ((lock is not None and lock.locked())
-                    or (worker is not None and worker.is_alive()))
+                    or (worker is not None and worker.is_alive())
+                    or (identity_worker is not None and identity_worker.is_alive()))
 
     def map_package_import_snapshot(self) -> dict:
         self._ensure_map_package_import_state()
@@ -19898,7 +19907,7 @@ class DailyAssistant:
                 fg=floating_theme.GOLD,
             )
 
-    def _rerank_current(self, floor: str, floor_source: str) -> None:
+    def _rerank_current(self, floor: str, floor_source: str, *, recovery_context=None):
         if self.current_frame is None:
             return
         native_recheck=bool((self._front_group_provisional_lock_context() or {}).get('nativeSimilarity'))
@@ -19932,9 +19941,90 @@ class DailyAssistant:
                 "rankingPreload": preload_status,
                 "seconds": completed - started,
                 "nativeSimilarityRecheck": native_recheck,
+                "unconfirmedRecoveryContext": recovery_context,
             })
 
-        threading.Thread(target=run, daemon=True).start()
+        def guarded_run():
+            try:
+                run()
+            except Exception as error:
+                if recovery_context is None:
+                    raise
+                self.events.put(dict(kind='unconfirmed-identity-rank-error',
+                    recoveryContext=recovery_context, errorType=type(error).__name__))
+
+        worker = threading.Thread(target=guarded_run, daemon=True)
+        worker.start()
+        return worker
+
+    def _retry_unconfirmed_changed_frame(self) -> bool:
+        """Revisit ambiguous identity on new pixels, without flooding rank work."""
+        if (not getattr(self, 'map_is_open', False)
+            or not getattr(self, 'game_foreground', False)
+            or getattr(self, 'map_visual_suppressed', False)
+            or getattr(self, 'floor_required', True)
+            or getattr(self, 'capture_in_progress', False)
+            or getattr(self, 'alignment_in_progress', False)
+            or getattr(self, 'active_confirmation', None)
+            or getattr(self, '_map_package_live_request', None) is not None
+            or getattr(getattr(self, 'gate', None), 'confirmed_id', None) is not None
+            or not isinstance(getattr(self, 'current_frame', None), np.ndarray)):
+            return False
+        observed = getattr(self, 'current_frame_floor_observation', None)
+        floor = str(getattr(self, 'current_floor', ''))
+        expected = {'1': 1, '2': 2, 'B1': -1}.get(floor)
+        if observed != (self.active_map_cycle_id, self.current_frame_generation, expected) or expected is None:
+            return False
+        signature = map_frame_signature(self.current_frame)
+        if not isinstance(signature, np.ndarray):
+            return False
+        key = (self.active_map_cycle_id, floor, id(self.pack), getattr(self, 'game_mode', None),
+               getattr(self, 'surface_visibility_generation', 0))
+        now = time.monotonic()
+        previous = getattr(self, '_unconfirmed_identity_probe', None)
+        if previous is None or previous[0] != key:
+            self._unconfirmed_identity_probe = (key, signature.copy(), now)
+            self._unconfirmed_identity_retry_pending = False
+            return False
+        worker = getattr(self, '_unconfirmed_identity_worker', None)
+        if ((worker is not None and worker.is_alive()) or now - previous[2] < 1.0
+                or (not getattr(self, '_unconfirmed_identity_retry_pending', False)
+                    and map_frame_change_score(previous[1], signature) < 0.015)):
+            return False
+        # Same change threshold as passive map-drift recovery. This only
+        # schedules recognition; it grants neither identity nor display.
+        self._unconfirmed_identity_probe = (key, signature.copy(), now)
+        self._unconfirmed_identity_retry_pending = False
+        self._unconfirmed_identity_worker = self._rerank_current(floor, 'automatic-stable', recovery_context=key)
+        self._log_core_chain_event('unconfirmed-identity-changed-frame-retry',
+            cycleId=self.active_map_cycle_id, floor=floor,
+            sourceFrameGeneration=self.current_frame_generation,
+            identityAuthorized=False, displayAuthorized=False)
+        return True
+
+    def _accept_unconfirmed_recovery_result(self, event: dict) -> bool:
+        context = event.get('unconfirmedRecoveryContext')
+        if context is None:
+            return True
+        current = (self.active_map_cycle_id, str(self.current_floor), id(self.pack),
+                   getattr(self, 'game_mode', None), getattr(self, 'surface_visibility_generation', 0))
+        if (tuple(context) != current or not self.map_is_open or not self.game_foreground
+            or getattr(self, 'map_visual_suppressed', False)
+            or getattr(self, 'floor_required', True)
+            or getattr(self.gate, 'confirmed_id', None) is not None):
+            return False
+        if not (isinstance(event.get('frame'), np.ndarray)
+                and np.array_equal(event['frame'], self.current_frame)
+                and tuple(event.get('bounds') or ()) == tuple(self.current_bounds or ())):
+            # Never rewind the live frame to a late rank's captured pixels.
+            # A changed frame may be retried once the bounded lane is free.
+            self._unconfirmed_identity_retry_pending = True
+            return False
+        event['equivalentRankSourceFrameGeneration'] = event.get('rankSourceFrameGeneration')
+        event['rankSourceFrameGeneration'] = self.current_frame_generation
+        event['frame'] = self.current_frame
+        event['frameCapturedAtUtc'] = getattr(self, 'current_frame_captured_at_utc', None)
+        return True
 
     def _consider_provisional_floor_evidence(
         self, frame, bounds, cycle_id: int | None,
@@ -36639,6 +36729,8 @@ class DailyAssistant:
             self._consider_floor_observation(
                 event.get("frame"), event.get("bounds"), event.get("token"),
             )
+            if self._retry_unconfirmed_changed_frame():
+                return
             if self._alignment_v2_runtime_is_enabled():
                 map_id = getattr(getattr(self, "gate", None), "confirmed_id", None)
                 floor = getattr(self, "current_floor", None)
@@ -37433,7 +37525,17 @@ class DailyAssistant:
                                 source="map-reopen-no-reusable-layer",
                                 budgetMs=LOCKED_ROUND_RECOVERY_BUDGET_MS,
                             )
+                elif kind == 'unconfirmed-identity-rank-error':
+                    self._log('unconfirmed-identity-rank-error',
+                        recoveryContext=event.get('recoveryContext'), errorType=event.get('errorType'))
+                    context = (self.active_map_cycle_id, str(self.current_floor), id(self.pack),
+                        getattr(self, 'game_mode', None), getattr(self, 'surface_visibility_generation', 0))
+                    if (event.get('recoveryContext') == context and self.map_is_open
+                            and getattr(self.gate, 'confirmed_id', None) is None):
+                        self._set_status('本次识别未完成 · 地图画面变化后自动重试', '#f6c453')
                 elif kind == "ranked":
+                    if not self._accept_unconfirmed_recovery_result(event):
+                        continue
                     round_lock = self._round_identity_lock_context()
                     owner_pending = self._front_group_ranked_owner_pending(
                         event, round_lock,
