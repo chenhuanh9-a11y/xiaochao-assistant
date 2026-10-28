@@ -7,6 +7,7 @@ calls ``attach_desktop_main_ui`` after building the existing Tk controls.
 from __future__ import annotations
 
 import math
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 import random
 import tkinter as tk
@@ -521,16 +522,29 @@ class DesktopMainUI:
             self.brand_icon.configure(image=photo)
         if getattr(self, "_step_badges", None):
             size = self._px(22)
-            circle = Image.new("L", (size * 4, size * 4), 0)
-            ImageDraw.Draw(circle).ellipse((0, 0, size * 4 - 1, size * 4 - 1), fill=255)
-            image = Image.new("RGB", (size, size), SURFACE)
-            image.paste(BUTTON_BG, mask=circle.resize((size, size), Image.Resampling.LANCZOS))
-            self._step_badge_photo = ImageTk.PhotoImage(image, master=self.window)
+            badge_key = (size, SURFACE, BUTTON_BG)
+            if badge_key != getattr(self, '_step_badge_key', None):
+                circle = Image.new("L", (size * 4, size * 4), 0)
+                ImageDraw.Draw(circle).ellipse((0, 0, size * 4 - 1, size * 4 - 1), fill=255)
+                image = Image.new("RGB", (size, size), SURFACE)
+                image.paste(BUTTON_BG, mask=circle.resize((size, size), Image.Resampling.LANCZOS))
+                self._step_badge_photo = ImageTk.PhotoImage(image, master=self.window)
+                self._step_badge_key = badge_key
             for badge in self._step_badges:
                 badge.configure(image=self._step_badge_photo)
+        tile_context = (id(self._icons), self._px(36), SURFACE, BUTTON_BG, PRIMARY,
+                        tuple((tile._xingtu_icon, id(getattr(self._icons, '_masks', {}).get(
+                            tile._xingtu_icon, _GLYPHS.get(tile._xingtu_icon))))
+                              for tile in getattr(self, '_icon_tiles', ())))
+        if tile_context != getattr(self, '_icon_tile_context', None):
+            self._icon_tile_context = tile_context
+            self._icon_tile_photos = {}
         for tile in getattr(self, "_icon_tiles", ()):
-            tile._desktop_icon = ImageTk.PhotoImage(_icon_tile(self._icons, tile._xingtu_icon, self._px(36)),
-                                                    master=self.window)
+            key = tile._xingtu_icon
+            if key not in self._icon_tile_photos:
+                self._icon_tile_photos[key] = ImageTk.PhotoImage(
+                    _icon_tile(self._icons, key, self._px(36)), master=self.window)
+            tile._desktop_icon = self._icon_tile_photos[key]
             tile.configure(image=tile._desktop_icon)
 
     def _layout_shell(self):
@@ -1068,6 +1082,11 @@ class DesktopMainUI:
         # Tile dimensions, pack and author own preview invalidation independently.
 
     def _poll_home_previews(self):
+        # Decoding can finish in parallel; defer only noncritical Tk uploads
+        # until both page motions finish. Keep the latest context check below.
+        if (not self._closed and (getattr(self, '_nav_mark_animating', False)
+                                 or getattr(self, '_page_motion_animating', False))):
+            return
         future = getattr(self, '_home_preview_future', None)
         if future is not None:
             if not future.done():
@@ -2055,11 +2074,10 @@ class DesktopMainUI:
             self._refresh_job = None
         if self._update_dialog is not None and self._update_dialog.winfo_exists():
             self._update_dialog.destroy()
-        for name in ("_nav_mark_job", "_page_motion_job"):
-            job = getattr(self, name, None)
-            if job is not None:
-                self.root.after_cancel(job)
-                setattr(self, name, None)
+        for name in ('nav_mark', 'page_motion'):
+            self._cancel_view_animation(name)
+        self._icon_tile_photos = {}
+        self._step_badge_photo = None
         for page in self._scroll_pages.values():
             if len(page) == 4:
                 self.root.unbind_class(page[2], "<MouseWheel>")
@@ -2320,43 +2338,112 @@ class DesktopMainUI:
         self.show_page("help")
         self.root.after(60, lambda: self._scroll_pages["help"][0].yview_moveto(0))
 
+    def _cancel_view_animation(self, name):
+        generation = int(getattr(self, f'_{name}_generation', 0)) + 1
+        setattr(self, f'_{name}_generation', generation)
+        setattr(self, f'_{name}_animating', False)
+        job = getattr(self, f'_{name}_job', None)
+        setattr(self, f'_{name}_job', None)
+        if job is not None:
+            try:
+                self.root.after_cancel(job)
+            except tk.TclError:
+                pass
+        return generation
+
+    def _animate_view(self, name, duration_ms, render):
+        """One cancellable timer per motion; late callbacks skip old frames."""
+        generation = self._cancel_view_animation(name)
+        setattr(self, f'_{name}_animating', True)
+        started = time.perf_counter_ns()
+        previous = None
+        duration_ns = max(1, round(duration_ms * 1_000_000))
+
+        def step():
+            nonlocal previous
+            if self._closed or generation != getattr(self, f'_{name}_generation', None):
+                return
+            setattr(self, f'_{name}_job', None)
+            now = time.perf_counter_ns()
+            progress = min(1.0, max(0.0, (now-started) / duration_ns))
+            rendered = False
+            try:
+                render(progress)
+                rendered = True
+            finally:
+                if not rendered and generation == getattr(self, f'_{name}_generation', None):
+                    # A destroyed widget must not leave previews suspended.
+                    # Preserve the exception and any newer reentrant motion.
+                    self._cancel_view_animation(name)
+            if not self._closed and generation == getattr(self, f'_{name}_generation', None):
+                if progress < 1.0:
+                    setattr(self, f'_{name}_job', self.root.after(16, step))
+                else:
+                    setattr(self, f'_{name}_animating', False)
+                    if (not getattr(self, '_nav_mark_animating', False)
+                        and not getattr(self, '_page_motion_animating', False)):
+                        self._poll_home_previews()
+            # Include the final deferred upload in the callback cost; otherwise
+            # the timing would conceal work sharing this same Tk callback.
+            ended = time.perf_counter_ns()
+            if not hasattr(self, '_animation_timings'):
+                self._animation_timings = deque(maxlen=240)
+            self._animation_timings.append(dict(
+                motion=name, generation=generation, elapsedMs=(now-started)/1_000_000,
+                intervalMs=None if previous is None else (now-previous)/1_000_000,
+                callbackMs=(ended-now)/1_000_000, complete=progress >= 1.0))
+            previous = now
+        step()
+
+    def animation_timing_snapshot(self, *, clear=False):
+        """Bounded callback timings, not display FPS; never writes per frame."""
+        rows = tuple(dict(row) for row in getattr(self, '_animation_timings', ()))
+        if clear and hasattr(self, '_animation_timings'):
+            self._animation_timings.clear()
+        return rows
+
     def _place_nav_mark(self, *, animate=True):
         """Ease the gold marker to the current nav item; snaps when not yet mapped."""
         if self._closed or not self.window.winfo_exists():
             return
         button = self._nav_buttons[self._page]
-        if self._nav_mark_job is not None:
-            self.root.after_cancel(self._nav_mark_job)
-            self._nav_mark_job = None
+        generation = self._cancel_view_animation('nav_mark')
         if button.winfo_height() <= 1:
-            self._nav_mark_job = self.root.after(60, lambda: self._place_nav_mark(animate=False))
+            def retry():
+                if not self._closed and generation == self._nav_mark_generation:
+                    self._nav_mark_job = None
+                    self._place_nav_mark(animate=False)
+            self._nav_mark_job = self.root.after(60, retry)
             return
         x = button.winfo_x() + self._px(5)
         target = button.winfo_y() + button.winfo_height() // 2
         start = self._nav_mark_y if animate and self._nav_mark_y is not None else target
 
-        def step(index, frames=8):
-            progress = 1 - (1 - index / frames) ** 3
-            y = round(start + (target - start) * progress)
+        def render(progress):
+            y = round(start + (target - start) * (1 - (1-progress) ** 3))
             self._nav_mark.place(in_=self.rail, x=x, y=y, anchor="w")
             self._nav_mark.lift()
             self._nav_mark_y = y
-            self._nav_mark_job = self.root.after(16, step, index + 1) if index < frames else None
-        step(0 if start != target else 8)
+        if start != target:
+            self._animate_view('nav_mark', 128, render)
+        else:
+            render(1.0)
 
     def _rise_page(self):
         """A short upward settle when switching pages; layout ends exactly where it began."""
-        if self._page_motion_job is not None:
-            self.root.after_cancel(self._page_motion_job)
-            self._page_motion_job = None
+        active = getattr(self, '_page_motion_job', None) is not None
+        self._cancel_view_animation('page_motion')
         if not self.window.winfo_viewable():
             self.body.pack_configure(pady=0)
+            self._page_motion_offset = 0
             return
 
-        def step(offsets):
-            self.body.pack_configure(pady=(self._px(offsets[0]), 0))
-            self._page_motion_job = self.root.after(16, step, offsets[1:]) if len(offsets) > 1 else None
-        step((14, 9, 5, 2, 1, 0))
+        start = getattr(self, '_page_motion_offset', 14) if active else 14
+        def render(progress):
+            offset = round(start * (1-progress) ** 3)
+            self._page_motion_offset = offset
+            self.body.pack_configure(pady=(self._px(offset), 0))
+        self._animate_view('page_motion', 80, render)
 
     def show(self) -> None:
         if not self.window.winfo_exists():

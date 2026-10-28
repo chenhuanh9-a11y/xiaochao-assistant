@@ -7344,6 +7344,7 @@ class DailyAssistant:
             self.assistant_shell_body, opacity_var=self.opacity_var,
             commands={
                 "toggle_sheet_visibility": self.toggle_sheet_visibility,
+                "set_reference_sheet_visible": self.set_reference_sheet_visible,
                 "change_sheet_opacity": self.change_sheet_opacity,
                 "_save_settings": self._commit_game_control_opacity,
                 "get_control_snapshot": self._route_presentation_snapshot,
@@ -9814,6 +9815,13 @@ class DailyAssistant:
         # inconclusive automatic frame keeps monitoring without opening a
         # focusable candidate panel over the game.
         active = self._round_identity_lock_context()
+        if active is None and reason in {'unlocked-ranked-candidates-ready', 'unlocked-ranking-uncertain'}:
+            signature = map_frame_signature(getattr(self, 'current_frame', None))
+            if isinstance(signature, np.ndarray):
+                key = (self.active_map_cycle_id, str(self.current_floor), id(self.pack),
+                    getattr(self, 'game_mode', None), getattr(self, 'surface_visibility_generation', 0))
+                self._unconfirmed_identity_probe = (key, signature.copy(), time.monotonic())
+                self._unconfirmed_identity_retry_pending = False
         self._log("candidate-shell-auto-open-suppressed",
             cycleId=getattr(self, "active_map_cycle_id", None),
             mapId=(active or {}).get("mapId"), reason=str(reason),
@@ -9952,16 +9960,15 @@ class DailyAssistant:
         if enabled:
             restored = self._restore_sheet_visibility()
             self._set_status(
-                "小抄显影已恢复 · 当前路线已显示"
-                if restored else "小抄显影已恢复 · 下次开图自动显示",
+                "贴合显影已恢复 · 当前路线已显示"
+                if restored else "贴合显影已恢复 · 等待当前地图核对",
                 "#5ee0a3",
             )
         else:
             if getattr(self, "aligned_overlay", None) is not None:
                 self.aligned_overlay.hide()
-            self.hide_sheet()
             self._set_status(
-                "小抄显影已关闭 · 识别、锁图与后台贴合仍继续",
+                "贴合显影已关闭 · 定点图设置不变，后台识别仍继续",
                 "#f6c453",
             )
         self._save_settings()
@@ -10170,8 +10177,11 @@ class DailyAssistant:
             return False
         lock = getattr(self, '_capture_request_lock', None)
         worker = getattr(self, 'secondary_preload_worker', None)
+        identity_worker = getattr(self, '_unconfirmed_identity_worker', None)
         return not ((lock is not None and lock.locked())
-                    or (worker is not None and worker.is_alive()))
+                    or (worker is not None and worker.is_alive())
+                    or getattr(self, '_identity_rank_request', None) is not None
+                    or (identity_worker is not None and identity_worker.is_alive()))
 
     def map_package_import_snapshot(self) -> dict:
         self._ensure_map_package_import_state()
@@ -10248,6 +10258,7 @@ class DailyAssistant:
         # Construct before publishing. No recognition, pose, custom route or
         # preference is rewritten: this operation is allowed only outside a round.
         self._install_map_mode(self.game_mode)
+        self._managed_author_packages_state = None
         self._invalidate_author_browser()
         self.route_profile_var.set(self._route_profile_label(self._shown_route_profile()))
         for name in ('route_profile_box', 'onboarding_route_box'):
@@ -10304,6 +10315,127 @@ class DailyAssistant:
             browser.sync_online_packages()
         self._map_package_import_state.update(stage='complete', ready=None,
             message=f"作者资源已导入并刷新（新增 {result['authorFilesAdded']} 个文件），无需重启。请在“实际使用路线”选择作者。")
+
+        if getattr(getattr(getattr(self, 'desktop_main_ui', None), 'map_browser', None), '_managed_open', False):
+            self.managed_author_packages_snapshot(refresh=True)
+
+    def managed_author_packages_snapshot(self, refresh: bool = False) -> dict:
+        state = getattr(self, '_managed_author_packages_state', None)
+        if state is None:
+            state = dict(stage='idle', packages=[], ready=None, message='')
+            self._managed_author_packages_state = state
+        if refresh:
+            result = self._begin_author_package_management('list')
+            if not result.get('success'):
+                self._managed_author_packages_state['message'] = result['message']
+        return dict(copy.deepcopy(self._managed_author_packages_state),
+            busy=getattr(self, '_map_package_live_request', None) is not None)
+
+    def inspect_author_package_removal(self, package_id: str) -> dict:
+        return self._begin_author_package_management('inspect', package_id)
+
+    def confirm_author_package_removal(self, package_id: str, *, expected_receipt_sha256: str) -> dict:
+        ready = (getattr(self, '_managed_author_packages_state', None) or {}).get('ready') or {}
+        if (ready.get('packageId') != package_id or not expected_receipt_sha256
+                or ready.get('receiptSha256') != expected_receipt_sha256
+                or getattr(self, '_managed_author_ready_context', None) != self._author_management_context()):
+            return dict(success=False, reason='removal-reinspection-required', message='资源状态已变化，请重新检查后确认。')
+        return self._begin_author_package_management('remove', package_id, expected_receipt_sha256)
+
+    def _author_management_context(self) -> tuple:
+        return (str(Path(ROOT).resolve()), str(Path(RESOURCE_ROOT).resolve()),
+            id(self.pack), self.game_mode, getattr(self, '_map_package_import_generation', 0))
+
+    def _begin_author_package_management(self, operation: str, package_id: str = '', receipt: str | None = None) -> dict:
+        self._ensure_map_package_import_state()
+        if (getattr(self, '_map_package_live_request', None) is not None
+                or self._map_package_helper_request is not None
+                or self._map_package_import_worker is not None):
+            return dict(success=False, reason='resource-operation-busy', message='资源任务尚未结束，请稍后重试。')
+        if not self._author_import_idle():
+            return dict(success=False, reason='resource-operation-requires-idle', message='请先结束本局并等待后台任务完成。')
+        self.managed_author_packages_snapshot()
+        if operation == 'remove':
+            self._ensure_online_map_package_state()
+            self._online_map_package_generation += 1
+            self._online_map_package_cancel.set()
+            self._map_package_import_generation += 1
+            self._map_package_import_cancel.set()
+            self._map_package_import_pending = None
+            self._map_package_import_result = None
+            self._map_package_import_state.update(stage='idle', ready=None)
+        request = dict(operation=operation, packageId=package_id, context=self._author_management_context(),
+                       cancelled=threading.Event())
+        self._map_package_live_request = request
+        self._map_package_import_cancel = request['cancelled']
+        self._managed_author_packages_state.update(stage='removing' if operation == 'remove' else 'checking',
+            ready=None, message='正在移出已登记作者资源并保留备份。' if operation == 'remove' else '正在核对本地已登记资源。')
+        if operation == 'remove':
+            self._invalidate_capture_work()
+            self._invalidate_author_browser()
+
+        def run():
+            event = dict(kind='author-package-removed' if operation == 'remove' else 'author-package-management-result', request=request)
+            try:
+                from author_package_management import (managed_author_packages_snapshot,
+                    inspect_author_package_removal, remove_author_package_live)
+                if request['cancelled'].is_set():
+                    event['cancelled'] = True
+                elif operation == 'list':
+                    event['packages'] = managed_author_packages_snapshot(request['context'][0], cancelled=request['cancelled'].is_set)
+                elif operation == 'inspect':
+                    event['ready'] = inspect_author_package_removal(request['context'][0], package_id)
+                else:
+                    event['result'] = remove_author_package_live(request['context'][0], package_id,
+                        application_idle=True, expected_receipt_sha256=receipt, cancelled=request['cancelled'].is_set)
+            except Exception as error:
+                event['error'] = f'{type(error).__name__}: {error}'
+            event['cancelled'] = request['cancelled'].is_set()
+            self.events.put(event)
+
+        try:
+            threading.Thread(target=run, name='author-package-management', daemon=True).start()
+        except RuntimeError:
+            self._map_package_live_request = None
+            self._managed_author_packages_state.update(stage='error', message='无法启动资源任务，请重试。')
+            return dict(success=False, reason='resource-worker-unavailable', message='无法启动资源任务，请重试。')
+        return dict(success=True, reason='resource-management-started', message=self._managed_author_packages_state['message'])
+
+    def _consume_author_package_management(self, event: dict) -> None:
+        request = event.get('request')
+        if request is None or request is not getattr(self, '_map_package_live_request', None):
+            return
+        self._map_package_live_request = None
+        if self._map_package_import_state.get('stage') == 'cancelling':
+            self._map_package_import_state.update(stage='idle', ready=None)
+        state = self._managed_author_packages_state
+        if self.closed or request['context'] != self._author_management_context():
+            state.update(stage='error', ready=None, message='资源上下文已改变，未应用旧结果，请重新检查。')
+            return
+        removed = isinstance(event.get('result'), dict) and event['result'].get('status') == 'author-removed-live'
+        if not removed and (event.get('cancelled') or event.get('error')):
+            state.update(stage='error' if event.get('error') else 'idle', ready=None,
+                message=f"资源操作未完成：{event.get('error') or '已取消'}")
+            return
+        if removed:
+            # The writer has finished (including rollback) before the UI lease
+            # is released. Resource publication stays on the Tk consumer.
+            self._online_installed_packages = getattr(self, '_online_installed_packages', {})
+            self._online_installed_packages[request['packageId']] = dict(status='not-installed')
+            try:
+                self._refresh_imported_author_resources()
+            except Exception as error:
+                state.update(stage='error', ready=None, message=f'文件已移出并保留备份，但界面刷新失败：{type(error).__name__}')
+                self._managed_author_packages_state = state
+                return
+            self._managed_author_packages_state = dict(stage='complete', packages=[], ready=None,
+                message='作者资源已移出并保留备份；结构与自定义路线保留。')
+            self.managed_author_packages_snapshot(refresh=True)
+        elif request['operation'] == 'inspect':
+            state.update(stage='ready', ready=event.get('ready'), message='已核对归属与文件，请确认移出作者资源。')
+            self._managed_author_ready_context = self._author_management_context()
+        else:
+            state.update(stage='ready', packages=event.get('packages', []), ready=None, message='本地资源状态已更新。')
 
     def inspect_map_package(self, path: str | Path, *, _expected_archive: dict | None = None) -> dict:
         if getattr(self, '_map_package_live_request', None) is not None:
@@ -10385,9 +10517,10 @@ class DailyAssistant:
                 and event.get('resourceRoot') == str(Path(RESOURCE_ROOT).resolve())):
             result = event.get('result')
             if event.get('error') or not isinstance(result, dict):
+                from author_package_management import package_inspection_message
                 self._map_package_import_result = None
                 self._map_package_import_state.update(stage='error', ready=None,
-                    message=f"地图包检查失败：{event.get('error') or '没有返回检查结果'}")
+                    message=package_inspection_message(event.get('error') or '没有返回检查结果'))
             else:
                 self._map_package_import_result = dict(event, result=copy.deepcopy(result))
                 title = {'nightmare-suju': '噩梦地图资源', 'difficult-zhan10': '困难地图资源'}.get(
@@ -16312,7 +16445,9 @@ class DailyAssistant:
         ):
             return False
         if not bool(getattr(self, "sheet_visibility_enabled", True)):
-            self.hide_sheet()
+            aligned = getattr(self, "aligned_overlay", None)
+            if aligned is not None:
+                aligned.hide()
             return True
         aligned = getattr(self, "aligned_overlay", None)
         if aligned is None:
@@ -17084,6 +17219,36 @@ class DailyAssistant:
                 currentFrameGeneration=getattr(self, 'current_frame_generation', None),
                 geometryVerdict=False, retryFailureRecorded=False)
             return {'handled': True, 'success': False, 'reason': 'structure-work-obsolete'}
+        if has_worker_result:
+            token = tuple(event_data.get('workerToken') or ())
+            stale_failure = (
+                len(token) == 6
+                and (token[0] != getattr(self, 'active_map_cycle_id', None)
+                     or token[5] != getattr(self, '_alignment_v2_reset_generation', 0)
+                     or event_data.get('sourceFrameGeneration') != getattr(self, 'current_frame_generation', None))
+                and not self._alignment_v2_worker_fit_usable(event_data.get('alignmentV2WorkerFit'))
+                and not self._alignment_v2_worker_fit_usable(event_data.get('alignmentV2WorkerRecoveryFit'))
+            )
+            if stale_failure:
+                # A failed old frame has no pose to cache and no verdict on
+                # the current pixels. In particular, do not open/reject the
+                # current observation or hide its already accepted display.
+                if (token[0] == getattr(self, 'active_map_cycle_id', None)
+                    and token[5] == getattr(self, '_alignment_v2_reset_generation', 0)
+                    and token[1:3] == (str(map_id), str(floor))
+                    and str(map_id) == getattr(getattr(self, 'gate', None), 'confirmed_id', None)
+                    and str(floor) == getattr(self, 'current_floor', None)
+                    and event_data.get('routeProfileId') == getattr(self, 'route_profile_id', None)
+                    and getattr(self, 'map_is_open', False)
+                    and not getattr(self, 'map_visual_suppressed', False)):
+                    self._alignment_v2_requeue_latest_pose_recovery(
+                        str(map_id), str(floor), previous_floor, event_data)
+                self._log_core_chain_event('alignment-v2-stale-failure-discarded',
+                    mapId=str(map_id), floor=str(floor),
+                    sourceFrameGeneration=event_data.get('sourceFrameGeneration'),
+                    currentFrameGeneration=getattr(self, 'current_frame_generation', None),
+                    geometryVerdict=False, retryFailureRecorded=False)
+                return {'handled': True, 'success': False, 'reason': 'stale-worker-failure'}
         if (
             not bool(getattr(self, "map_is_open", False))
             or bool(getattr(self, "map_visual_suppressed", False))
@@ -18539,6 +18704,7 @@ class DailyAssistant:
         if cancelled is not None:
             cancelled.set()
         self._pending_capture_request = None
+        self._cancel_rerank_work()
         if not preserve_locked_alignment:
             self._invalidate_alignment_work()
         self._invalidate_round_group_edge_correction()
@@ -19743,10 +19909,70 @@ class DailyAssistant:
                 fg=floating_theme.GOLD,
             )
 
-    def _rerank_current(self, floor: str, floor_source: str) -> None:
+    def _rerank_scope(self, floor: str) -> tuple:
+        return (self.active_map_cycle_id, self.capture_generation, str(floor),
+            id(self.pack), id(self.engine), getattr(self, 'game_mode', None),
+            getattr(self, 'surface_visibility_generation', 0),
+            getattr(self.gate, 'confirmed_id', None), getattr(self, 'route_profile_id', None))
+
+    def _cancel_rerank_work(self) -> None:
+        request = getattr(self, '_identity_rank_request', None)
+        if request is not None:
+            request['cancelled'].set()
+        # Keep the slot until its terminal is consumed, even after cancel.
+        self._pending_rerank_request = None
+        self._unconfirmed_identity_retry_pending = False
+
+    def _finish_rerank_request(self, event: dict) -> bool:
+        request = event.get('rankRequest')
+        if request is None:
+            return True
+        if request is not getattr(self, '_identity_rank_request', None):
+            return False
+        self._identity_rank_request = None
+        self._unconfirmed_identity_worker = None
+        return bool(not request['cancelled'].is_set()
+            and request['scope'] == self._rerank_scope(self.current_floor)
+            and self.map_is_open and not getattr(self, 'closed', False))
+
+    def _drain_pending_rerank(self) -> None:
+        if getattr(self, '_identity_rank_request', None) is not None:
+            return
+        pending = getattr(self, '_pending_rerank_request', None)
+        if pending is None:
+            return
+        if (pending['scope'] != self._rerank_scope(self.current_floor)
+            or not self.map_is_open or getattr(self, 'closed', False)):
+            self._pending_rerank_request = None
+            return
+        if getattr(self, 'capture_in_progress', False) or getattr(self, '_map_package_live_request', None) is not None:
+            return
+        if (not getattr(self, 'game_foreground', False)
+            or getattr(self, 'map_visual_suppressed', False)
+            or getattr(self, 'floor_required', True)):
+            return
+        if pending['floorSource'] != 'manual':
+            observed = {'1': 1, '2': 2, 'B1': -1}.get(str(self.current_floor))
+            if observed is None or getattr(self, 'current_frame_floor_observation', None) != (
+                    self.active_map_cycle_id, self.current_frame_generation, observed):
+                return
+        self._pending_rerank_request = None
+        self._rerank_current(pending['floor'], pending['floorSource'])
+
+    def _rerank_current(self, floor: str, floor_source: str, *, recovery_context=None):
         if self.current_frame is None:
             return
+        scope = self._rerank_scope(floor)
+        active = getattr(self, '_identity_rank_request', None)
+        if active is not None:
+            self._pending_rerank_request = dict(scope=scope, floor=floor, floorSource=floor_source)
+            return active.get('worker')
+        if getattr(self.gate, 'confirmed_id', None) is None:
+            # All unconfirmed producers, including first valid floor recovery.
+            recovery_context = (self.active_map_cycle_id, str(floor), id(self.pack),
+                getattr(self, 'game_mode', None), getattr(self, 'surface_visibility_generation', 0))
         native_recheck=bool((self._front_group_provisional_lock_context() or {}).get('nativeSimilarity'))
+        engine = self.engine
         frame = self.current_frame.copy()
         bounds = self.current_bounds
         cycle_id = self.active_map_cycle_id
@@ -19754,32 +19980,116 @@ class DailyAssistant:
         frame_captured_at = getattr(self, 'current_frame_captured_at_utc', None)
         frame_generation = getattr(self, 'current_frame_generation', None)
         surface_generation = getattr(self, 'surface_visibility_generation', None)
+        request = dict(scope=scope, cancelled=threading.Event(), worker=None)
+        self._identity_rank_request = request
 
         def run() -> None:
             started = time.perf_counter()
-            preload_status = self.engine.preload_status(floor)
-            ranked = self.engine.rank(
-                frame, floor=floor, limit=13,
-                budget_seconds=AUTO_IDENTITY_BUDGET_SECONDS,
-            )
-            completed = time.perf_counter()
-            self.events.put({
-                "kind": "ranked", "ranked": ranked, "frame": frame,
+            event = {
+                "kind": "ranked", "frame": frame, "rankRequest": request,
                 "frameCapturedAtUtc": frame_captured_at,
                 "rankStartedMonotonicAt": started,
-                "rankCompletedMonotonicAt": completed,
                 "rankSourceFrameGeneration": frame_generation,
                 "rankSourceSurfaceGeneration": surface_generation,
                 "bounds": bounds, "floor": floor, "observedFloor": None,
                 "floorSource": floor_source, "probable": True,
                 "token": cycle_id if cycle_id is not None else capture_generation,
                 "cycleId": cycle_id, "mapOpen": True,
-                "rankingPreload": preload_status,
-                "seconds": completed - started,
                 "nativeSimilarityRecheck": native_recheck,
-            })
+                "unconfirmedRecoveryContext": recovery_context,
+            }
+            try:
+                if not request['cancelled'].is_set():
+                    event['rankingPreload'] = engine.preload_status(floor)
+                    event['ranked'] = engine.rank(frame, floor=floor, limit=13,
+                        budget_seconds=AUTO_IDENTITY_BUDGET_SECONDS)
+            except Exception as error:
+                event.update(kind='unconfirmed-identity-rank-error',
+                    recoveryContext=recovery_context, errorType=type(error).__name__)
+            finally:
+                completed = time.perf_counter()
+                event.update(rankCompletedMonotonicAt=completed, seconds=completed-started)
+                self.events.put(event)
 
-        threading.Thread(target=run, daemon=True).start()
+        worker = threading.Thread(target=run, daemon=True)
+        request['worker'] = worker
+        self._unconfirmed_identity_worker = worker
+        try:
+            worker.start()
+        except RuntimeError as error:
+            self.events.put(dict(kind='unconfirmed-identity-rank-error', rankRequest=request,
+                recoveryContext=recovery_context, errorType=type(error).__name__))
+        return worker
+
+    def _retry_unconfirmed_changed_frame(self) -> bool:
+        """Revisit ambiguous identity on new pixels, without flooding rank work."""
+        if (not getattr(self, 'map_is_open', False)
+            or not getattr(self, 'game_foreground', False)
+            or getattr(self, 'map_visual_suppressed', False)
+            or getattr(self, 'floor_required', True)
+            or getattr(self, 'capture_in_progress', False)
+            or getattr(self, 'alignment_in_progress', False)
+            or getattr(self, 'active_confirmation', None)
+            or getattr(self, '_map_package_live_request', None) is not None
+            or getattr(getattr(self, 'gate', None), 'confirmed_id', None) is not None
+            or not isinstance(getattr(self, 'current_frame', None), np.ndarray)):
+            return False
+        observed = getattr(self, 'current_frame_floor_observation', None)
+        floor = str(getattr(self, 'current_floor', ''))
+        expected = {'1': 1, '2': 2, 'B1': -1}.get(floor)
+        if observed != (self.active_map_cycle_id, self.current_frame_generation, expected) or expected is None:
+            return False
+        signature = map_frame_signature(self.current_frame)
+        if not isinstance(signature, np.ndarray):
+            return False
+        key = (self.active_map_cycle_id, floor, id(self.pack), getattr(self, 'game_mode', None),
+               getattr(self, 'surface_visibility_generation', 0))
+        now = time.monotonic()
+        previous = getattr(self, '_unconfirmed_identity_probe', None)
+        if previous is None or previous[0] != key:
+            self._unconfirmed_identity_probe = (key, signature.copy(), now)
+            self._unconfirmed_identity_retry_pending = False
+            return False
+        worker = getattr(self, '_unconfirmed_identity_worker', None)
+        if (getattr(self, '_identity_rank_request', None) is not None
+                or (worker is not None and worker.is_alive()) or now - previous[2] < 1.0
+                or (not getattr(self, '_unconfirmed_identity_retry_pending', False)
+                    and map_frame_change_score(previous[1], signature) < 0.015)):
+            return False
+        # Same change threshold as passive map-drift recovery. This only
+        # schedules recognition; it grants neither identity nor display.
+        self._unconfirmed_identity_probe = (key, signature.copy(), now)
+        self._unconfirmed_identity_retry_pending = False
+        self._unconfirmed_identity_worker = self._rerank_current(floor, 'automatic-stable', recovery_context=key)
+        self._log_core_chain_event('unconfirmed-identity-changed-frame-retry',
+            cycleId=self.active_map_cycle_id, floor=floor,
+            sourceFrameGeneration=self.current_frame_generation,
+            identityAuthorized=False, displayAuthorized=False)
+        return True
+
+    def _accept_unconfirmed_recovery_result(self, event: dict) -> bool:
+        context = event.get('unconfirmedRecoveryContext')
+        if context is None:
+            return True
+        current = (self.active_map_cycle_id, str(self.current_floor), id(self.pack),
+                   getattr(self, 'game_mode', None), getattr(self, 'surface_visibility_generation', 0))
+        if (tuple(context) != current or not self.map_is_open or not self.game_foreground
+            or getattr(self, 'map_visual_suppressed', False)
+            or getattr(self, 'floor_required', True)
+            or getattr(self.gate, 'confirmed_id', None) is not None):
+            return False
+        if not (isinstance(event.get('frame'), np.ndarray)
+                and np.array_equal(event['frame'], self.current_frame)
+                and tuple(event.get('bounds') or ()) == tuple(self.current_bounds or ())):
+            # Never rewind the live frame to a late rank's captured pixels.
+            # A changed frame may be retried once the bounded lane is free.
+            self._unconfirmed_identity_retry_pending = True
+            return False
+        event['equivalentRankSourceFrameGeneration'] = event.get('rankSourceFrameGeneration')
+        event['rankSourceFrameGeneration'] = self.current_frame_generation
+        event['frame'] = self.current_frame
+        event['frameCapturedAtUtc'] = getattr(self, 'current_frame_captured_at_utc', None)
+        return True
 
     def _consider_provisional_floor_evidence(
         self, frame, bounds, cycle_id: int | None,
@@ -27985,6 +28295,10 @@ class DailyAssistant:
         miss must schedule the bounded V2 wide worker rather than silently
         falling back to another unbounded group-recovery poll.
         """
+        if isinstance(runtime_result, dict) and runtime_result.get('reason') in {
+            'stale-worker-failure', 'structure-work-obsolete', 'presentation-profile-stale',
+        }:
+            return False
         map_id = str(event.get("mapId") or "")
         if str(event.get("floor") or "") != "B1":
             return False
@@ -32154,14 +32468,14 @@ class DailyAssistant:
         return shown
 
     def _restore_sheet_visibility(self) -> bool:
-        """Restore the best already-known route without restarting recognition."""
+        """Restore only the aligned route; reference visibility is independent."""
         if (
             not bool(getattr(self, "sheet_visibility_enabled", True))
             or not bool(getattr(self, "game_foreground", False))
         ):
             return False
         if not bool(getattr(self, "map_is_open", False)):
-            return bool(self.show_sheet())
+            return False
         if bool(getattr(self, "map_visual_suppressed", False)):
             return False
         overlay = getattr(self, "drag_current_overlay", None)
@@ -32173,9 +32487,8 @@ class DailyAssistant:
                 overlay = (view or {}).get("overlay")
         if isinstance(overlay, np.ndarray) and self.current_bounds is not None:
             if self._show_aligned_overlay(overlay, tuple(self.current_bounds[:2])):
-                self.show_sheet()
                 return True
-        return bool(self.show_sheet())
+        return False
 
     def reference_sheet_snapshot(self) -> dict:
         editor = getattr(self, '_reference_position_edit', None)
@@ -32216,7 +32529,6 @@ class DailyAssistant:
             and not getattr(self, 'hotkey_capture_active', False)
             and not getattr(self, 'capture_in_progress', False)
             and not getattr(self, '_display_capture_active', False)
-            and getattr(self, 'sheet_visibility_enabled', True)
             and getattr(self, 'reference_sheet_visibility_enabled', True)
             and getattr(getattr(self, 'pack', None), 'maps', ()))
 
@@ -32618,7 +32930,6 @@ class DailyAssistant:
         if not bool(getattr(self, "sheet_visibility_enabled", True)):
             if self.aligned_overlay is not None:
                 self.aligned_overlay.hide()
-            self.hide_sheet()
             # Visibility is a player presentation preference, not an
             # alignment failure. Report success so recognition state and the
             # verified pose stay warm for an instant later restore.
@@ -32681,7 +32992,6 @@ class DailyAssistant:
         if not bool(getattr(self, "sheet_visibility_enabled", True)):
             if aligned_overlay is not None:
                 aligned_overlay.hide()
-            self.hide_sheet()
             return True
         restore = getattr(aligned_overlay, "restore", None)
         expected_generation = int(getattr(
@@ -34926,7 +35236,6 @@ class DailyAssistant:
             not getattr(self, 'closed', False)
             and map_id in getattr(getattr(self, 'pack', None), 'by_id', {})
             and not (lock or {}).get('provisional')
-            and getattr(self, 'sheet_visibility_enabled', True)
             and getattr(self, 'reference_sheet_visibility_enabled', True)
             and getattr(self, 'game_foreground', False)
             and not getattr(self, 'floor_required', False)
@@ -36485,6 +36794,8 @@ class DailyAssistant:
             self._consider_floor_observation(
                 event.get("frame"), event.get("bounds"), event.get("token"),
             )
+            if self._retry_unconfirmed_changed_frame():
+                return
             if self._alignment_v2_runtime_is_enabled():
                 map_id = getattr(getattr(self, "gate", None), "confirmed_id", None)
                 floor = getattr(self, "current_floor", None)
@@ -36560,6 +36871,7 @@ class DailyAssistant:
     def _poll_events(self) -> None:
         if self.closed:
             return
+        self._drain_pending_rerank()
         callback_started = time.perf_counter()
         scheduled_at = getattr(self, '_event_poll_due_at', callback_started)
         self._check_native_similarity_resources()
@@ -36663,6 +36975,8 @@ class DailyAssistant:
                     kind = event["kind"]
                 current_kind = str(kind)
                 event_processing = (event_dequeued_at, current_kind)
+                if not self._finish_rerank_request(event):
+                    continue
                 if kind == 'online-map-packages-completed':
                     self._consume_online_map_package_result(event)
                     continue
@@ -36671,6 +36985,9 @@ class DailyAssistant:
                     continue
                 if kind == 'map-package-inspected':
                     self._consume_map_package_inspection(event)
+                    continue
+                if kind in {'author-package-removed', 'author-package-management-result'}:
+                    self._consume_author_package_management(event)
                     continue
                 if kind == 'reference-pointer':
                     self._consume_reference_pointer_events(event)
@@ -37276,7 +37593,17 @@ class DailyAssistant:
                                 source="map-reopen-no-reusable-layer",
                                 budgetMs=LOCKED_ROUND_RECOVERY_BUDGET_MS,
                             )
+                elif kind == 'unconfirmed-identity-rank-error':
+                    self._log('unconfirmed-identity-rank-error',
+                        recoveryContext=event.get('recoveryContext'), errorType=event.get('errorType'))
+                    context = (self.active_map_cycle_id, str(self.current_floor), id(self.pack),
+                        getattr(self, 'game_mode', None), getattr(self, 'surface_visibility_generation', 0))
+                    if (event.get('recoveryContext') == context and self.map_is_open
+                            and getattr(self.gate, 'confirmed_id', None) is None):
+                        self._set_status('本次识别未完成 · 地图画面变化后自动重试', '#f6c453')
                 elif kind == "ranked":
+                    if not self._accept_unconfirmed_recovery_result(event):
+                        continue
                     round_lock = self._round_identity_lock_context()
                     owner_pending = self._front_group_ranked_owner_pending(
                         event, round_lock,
