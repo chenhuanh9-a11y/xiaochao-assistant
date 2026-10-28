@@ -1,7 +1,7 @@
 """Isolate a native group switch until its new surface has accepted the pixels.
 
 The source core, grant and HWND are never used as scratch space. This boundary
-is synchronous under the owner's alignment lock; workers still only propose fits.
+runs synchronously in the UI owner with close-edge context guards; workers only propose fits.
 """
 import copy
 from functools import wraps
@@ -37,6 +37,7 @@ class NativeSiblingTransaction:
     def __init__(self, owner):
         self.owner = owner
         self.before = {key: getattr(owner, key, _MISSING) for key in self.FIELDS}
+        self.source_alignment_succeeded = getattr(owner, 'alignment_succeeded', False)
         self.core = owner.alignment_core_v2
         self.source_surface = getattr(owner, 'aligned_overlay', None)
         self.target_surface = None
@@ -198,6 +199,12 @@ class NativeSiblingTransaction:
                 else:
                     setattr(o, key, value)
             o.aligned_overlay = self.source_surface
+            token = self.core.display_authorization
+            o.alignment_succeeded = bool(
+                self.source_alignment_succeeded and token is not None
+                and self.source_authorized(token.authorization_id))
+            # alignment_in_progress/candidate_found describe the target task,
+            # not the source pixels. Keep its terminal/newer-task disposition.
             if not valid:
                 self.core.close(reason='native-sibling-context-expired')
                 if self.source_surface is not None:

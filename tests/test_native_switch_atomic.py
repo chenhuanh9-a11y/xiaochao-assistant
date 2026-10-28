@@ -105,6 +105,35 @@ class NativeSwitchAtomicTests(unittest.TestCase):
             h._run_alignment_v2_for_current_frame_unlocked(fixture.IDS[1],'1','1',e)
         self.assertEqual(s(),b)
 
+    def test_candidate_unavailable_preserves_source_opacity_and_drag_consumers(self):
+        h,c,g,s,e=prepare(self)
+        h.alignment_succeeded=True;h.alignment_in_progress=True
+        h.closed=False;h.drag_current_overlay=np.ones((40,40,4),np.uint8)
+        h.drag_transform=np.eye(3)
+        h.root=SimpleNamespace(after_cancel=lambda *a:None)
+        h._refresh_visible_sheet_after_route_setting=lambda:None
+        calls=[];h._show_aligned_overlay=lambda *a,**kw:calls.append(True)
+        h._alignment_v2_current_frame_candidate=lambda *a:None
+        h._run_alignment_v2_for_current_frame_unlocked(fixture.IDS[1],'1','1',e)
+        h._sheet_opacity_after_id=1;h._flush_sheet_opacity_update()
+        self.assertEqual(len(calls),1)
+        self.assertTrue(h.alignment_succeeded)
+        self.assertFalse(h.alignment_in_progress)
+        h._cancel_post_drag_probe=lambda:None
+        h._cancel_mouse_drag_source_refresh=lambda:None
+        self.assertTrue(h._begin_mouse_drag_prediction(h.active_map_cycle_id,probe_generation=0))
+
+    def test_failed_target_does_not_restore_success_after_context_expires(self):
+        for field,value in (('map_is_open',False),('current_floor','2'),
+                            ('surface_visibility_generation',999)):
+            with self.subTest(field=field):
+                def expire(h): setattr(h,field,value);return False
+                h,c,g,s,e,b=self.run_case(expire)
+                h.alignment_succeeded=True
+                h._run_alignment_v2_for_current_frame_unlocked(fixture.IDS[1],'1','1',e)
+                self.assertFalse(h.alignment_succeeded)
+                self.assertFalse(g.active)
+
     def test_failed_target_tokens_are_not_recycled(self):
         h,c,g,s,e,b=self.run_case(lambda h:False)
         old_id=c._next_authorization_id
