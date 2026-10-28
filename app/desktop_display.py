@@ -10,8 +10,9 @@ from native_ui_layout import (MonitorContext, RectPx, UiDpiContext,
                               clamp_rect_to_work_area, format_tk_geometry)
 
 
-def window_context(assistant, window):
-    getter = getattr(assistant, "_ui_context_for_window", None)
+def window_context(assistant, window, *, sync_layout=True):
+    getter = getattr(assistant, "_ui_context_for_window_snapshot", None) if not sync_layout else None
+    getter = getter or getattr(assistant, "_ui_context_for_window", None)
     if callable(getter):
         return getter(window)
     try:
@@ -167,7 +168,7 @@ class WindowDisplay:
             return
         self._updating = True
         try:
-            context = window_context(self.assistant, self.window)
+            context = window_context(self.assistant, self.window, sync_layout=False)
             signature = context.monitor.monitor_id, context.dpi, context.monitor.work_area_px
             if signature == self._signature:
                 return

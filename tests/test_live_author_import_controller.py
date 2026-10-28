@@ -1,5 +1,6 @@
 """Idle importer/controller and resource-browser lifetime tests; no Tk creation."""
 import ast
+from concurrent.futures import Future
 import copy
 from pathlib import Path
 import queue
@@ -192,7 +193,7 @@ class ControllerTests(unittest.TestCase):
 
 class BrowserTests(unittest.TestCase):
     def setUp(self):
-        cls=subject('map_resource_browser.py',{'invalidate_resource_context','sync_map_package_import',
+        cls=subject('map_resource_browser.py',{'invalidate_resource_context','_cancel_preview_work','sync_map_package_import',
                                             '_confirm_map_package'},dict(Path=Path,SHADOW_DIP=1))
         self.s=cls();s=self.s;s._closed=False;s._import_signature=None
         for name in ('import_message','import_title','import_summary','import_feedback','import_surface',
@@ -219,9 +220,13 @@ class BrowserTests(unittest.TestCase):
 
     def test_context_invalidation_drops_old_photo_callbacks_and_caches(self):
         s=self.s;s._generation=4;s._pending={'old':[object()]};s._cache={'old':object()}
+        queued=Future();running=Future();running.set_running_or_notify_cancel()
+        s._preview_futures={'queued':queued,'running':running};s._preview_waiting={'old':object()}
         s._close_preview=Mock();s._context=('old',);s._runtime_route_signature=('old',)
         s.invalidate_resource_context()
         self.assertEqual(s._generation,5);self.assertFalse(s._pending);self.assertFalse(s._cache)
+        self.assertFalse(s._preview_waiting);self.assertTrue(queued.cancelled())
+        self.assertFalse(running.cancelled());running.set_result(None)
         self.assertIsNone(s._context);self.assertIsNone(s._runtime_route_signature)
         s._close_preview.assert_called_once()
 

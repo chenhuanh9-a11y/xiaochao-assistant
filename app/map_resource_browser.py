@@ -5,6 +5,7 @@ from collections import OrderedDict
 from concurrent.futures import CancelledError, ThreadPoolExecutor
 from pathlib import Path
 import queue
+import time
 import tkinter as tk
 from tkinter import ttk, filedialog
 
@@ -58,6 +59,8 @@ class MapResourceBrowser(tk.Frame):
         self._results = queue.Queue()
         self._cache = OrderedDict()
         self._pending = {}
+        self._preview_futures = {}
+        self._preview_waiting = OrderedDict()
         self._cards = []
         self._jobs = set()
         # The runtime cancels interpreter-wide timers through the Tk root on
@@ -279,7 +282,7 @@ class MapResourceBrowser(tk.Frame):
 
     def invalidate_resource_context(self):
         self._generation += 1
-        self._pending.clear()
+        self._cancel_preview_work()
         self._cache.clear()
         self._close_preview()
         self._context = None
@@ -824,7 +827,7 @@ class MapResourceBrowser(tk.Frame):
         self._overview_rendered = None
         self._generation += 1
         self._cards = []
-        self._pending.clear()
+        self._cancel_preview_work()
         for child in self.content.winfo_children():
             child.destroy()
 
@@ -1025,19 +1028,42 @@ class MapResourceBrowser(tk.Frame):
             self._apply_image(widget, self._cache[key], caption)
             return
         widget.configure(image="", text="正在加载图片…")
-        callbacks = self._pending.setdefault(key, [])
-        callbacks.append((generation, widget, caption))
-        if len(callbacks) > 1:
-            return
-        future = self._executor.submit(load_preview, path, size)
-        def done(result):
-            try:
-                self._results.put((key, generation, result.result(), None))
-            except CancelledError:
-                pass
-            except (OSError, ValueError, UnidentifiedImageError, Image.DecompressionBombError) as error:
-                self._results.put((key, generation, None, str(error)))
-        future.add_done_callback(done)
+        # One latest request per widget; at most two submitted decodes.
+        self._preview_waiting[widget] = (generation, key, path, size, caption)
+        self._preview_waiting.move_to_end(widget)
+        while len(self._preview_waiting) > 64:
+            old_widget, _ = self._preview_waiting.popitem(last=False)
+            old_widget._image_request = None
+            for row in self._cards:
+                if row.get("thumb") is old_widget:
+                    row["loaded"] = False
+        self._pump_preview_work()
+
+    def _cancel_preview_work(self):
+        self._pending.clear()
+        self._preview_waiting.clear()
+        for future in self._preview_futures.values():
+            future.cancel()
+
+    def _pump_preview_work(self):
+        while self._preview_waiting and len(self._preview_futures) < 2:
+            widget, request = self._preview_waiting.popitem(last=False)
+            generation, key, path, size, caption = request
+            if (generation != self._generation or not widget.winfo_exists()
+                    or widget._image_request != (generation, key)):
+                continue
+            token = object()
+            self._pending[token] = (generation, key, widget, caption)
+            future = self._executor.submit(load_preview, path, size)
+            self._preview_futures[token] = future
+            def done(result, token=token):
+                try:
+                    self._results.put((token, result.result(), None))
+                except CancelledError:
+                    self._results.put((token, None, None))
+                except Exception as error:
+                    self._results.put((token, None, str(error)))
+            future.add_done_callback(done)
 
     def _apply_image(self, widget, pixels, caption):
         photo = ImageTk.PhotoImage(pixels, master=self)
@@ -1050,30 +1076,37 @@ class MapResourceBrowser(tk.Frame):
                                  WARNING if any(word in widget._success_status for word in ("缺失", "未核对")) else MUTED))
 
     def _drain(self):
-        while True:
+        deadline = time.perf_counter() + .006
+        # Limit both elapsed time and number of Tk image uploads per turn.
+        for _ in range(2):
+            if time.perf_counter() >= deadline:
+                break
             try:
-                key, generation, pixels, error = self._results.get_nowait()
+                token, pixels, error = self._results.get_nowait()
             except queue.Empty:
                 break
-            if generation != self._generation:
+            self._preview_futures.pop(token, None)
+            request = self._pending.pop(token, None)
+            if request is None:
                 continue
-            callbacks = self._pending.pop(key, [])
+            generation, key, widget, caption = request
+            if (generation != self._generation or not widget.winfo_exists()
+                    or getattr(widget, "_image_request", None) != (generation, key)):
+                continue
             if pixels is not None:
                 self._cache[key] = pixels
-                while len(self._cache) > 48:
+                while (len(self._cache) > 48 or
+                       sum(im.width * im.height * len(im.getbands())
+                           for im in self._cache.values()) > 32 * 1024 * 1024):
                     self._cache.popitem(last=False)
-            for revision, widget, caption in callbacks:
-                if (revision != self._generation or not widget.winfo_exists()
-                        or getattr(widget, "_image_request", None) != (revision, key)):
-                    continue
-                if error:
-                    widget.configure(image="", text="图片无法读取\n请检查资源文件后重新打开")
-                    status = getattr(widget, "_status_widget", None)
-                    if status is not None:
-                        status.configure(text=widget._error_status, fg=WARNING)
-                else:
-                    self._apply_image(widget, pixels, caption)
-        self._schedule(50, self._drain)
+                self._apply_image(widget, pixels, caption)
+            elif error:
+                widget.configure(image="", text="图片无法读取\n请检查资源文件或重新下载")
+                status = getattr(widget, "_status_widget", None)
+                if status is not None:
+                    status.configure(text=widget._error_status, fg=WARNING)
+        self._pump_preview_work()
+        self._schedule(10 if self._preview_futures else 50, self._drain)
 
     def _show_detail(self, item):
         self._clear_content()
@@ -1143,7 +1176,7 @@ class MapResourceBrowser(tk.Frame):
         self._resize_job = None
         self._close_preview()
         self._generation += 1
-        self._pending.clear()
+        self._cancel_preview_work()
         floor_index = self.detail_floor_box.current()
         self._detail_path = None
         if self._variant is not None and floor_index >= 0:
@@ -1272,4 +1305,5 @@ class MapResourceBrowser(tk.Frame):
         for job in tuple(self._jobs):
             self._scheduler.after_cancel(job)
         self._jobs.clear()
+        self._cancel_preview_work()
         self._executor.shutdown(wait=False, cancel_futures=True)

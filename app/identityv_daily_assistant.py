@@ -7077,8 +7077,9 @@ class DailyAssistant:
         }
 
     @staticmethod
-    def _rect_for_window(window: tk.Misc) -> RectPx:
-        window.update_idletasks()
+    def _rect_for_window(window: tk.Misc, *, sync_layout: bool = True) -> RectPx:
+        if sync_layout:
+            window.update_idletasks()
         left = int(window.winfo_x())
         top = int(window.winfo_y())
         width = max(1, int(window.winfo_width()))
@@ -7086,9 +7087,14 @@ class DailyAssistant:
         return RectPx(left, top, left + width, top + height)
 
     def _ui_context_for_window(self, window: tk.Misc) -> UiDpiContext:
-        rect = self._rect_for_window(window)
+        window.update_idletasks()
+        return self._ui_context_for_window_snapshot(window)
+
+    def _ui_context_for_window_snapshot(self, window: tk.Misc) -> UiDpiContext:
+        """Read settled geometry without recursively draining Tk idle work."""
+        rect = self._rect_for_window(window, sync_layout=False)
         monitor = select_monitor_for_rect(rect, self.ui_monitors)
-        hwnd = self._native_window_handle(window)
+        hwnd = self._native_window_handle(window, sync_layout=False)
         return UiDpiContext(monitor=monitor, dpi=window_dpi(hwnd) or monitor.dpi)
 
     def _apply_ui_dpi(self, dpi: int) -> None:
