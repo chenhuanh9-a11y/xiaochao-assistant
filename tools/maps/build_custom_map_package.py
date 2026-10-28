@@ -7,6 +7,8 @@ Inputs (all local, paths are arguments):
   --structures the assembled public structure release (structure-index.json)
 
 Output: a new directory with manifest.json, images/, topology/ and exit-icon.png.
+Images are re-encoded as WebP (lossless alpha) and topology keeps only the
+road graph the app reads, so the installed package stays small.
 
 Each legacy floor image is registered onto its native structure canvas: an
 initial centroid/area similarity refined by ECC (affine) on the image alpha
@@ -26,6 +28,7 @@ import zipfile
 
 import cv2
 import numpy as np
+from PIL import Image
 
 SCHEMA = "xingtu-custom-maps-v1"
 # Legacy template number -> runtime nightmare map id (templates 17-19 have no map).
@@ -39,6 +42,9 @@ TEMPLATE_MAPS = {
 }
 FLOORS = {"minus-1": "B1", "1": "1", "2": "2"}
 MIN_OVERLAP = 0.8
+QUALITY = 90
+# Topology fields the app reads; the rest is provenance kept in the game data.
+TOPOLOGY_KEYS = ("mapId", "floor", "shape", "maskSha256", "points", "pointRooms", "links")
 
 
 def sha256(path: Path) -> str:
@@ -104,6 +110,20 @@ def register(image_alpha: np.ndarray, native: np.ndarray) -> tuple[np.ndarray, f
     return best, best_overlap
 
 
+def write_image(source: Path, target: Path, quality: int) -> None:
+    """WebP with exact alpha; quality 0 keeps the colours lossless too."""
+    with Image.open(source) as image:
+        options = dict(lossless=True) if quality == 0 else dict(quality=quality, alpha_quality=100)
+        image.convert("RGBA").save(target, "WEBP", method=6, **options)
+
+
+def write_topology(source: Path, target: Path) -> None:
+    data = json.loads(source.read_text("utf-8"))
+    slim = {key: data[key] for key in TOPOLOGY_KEYS}
+    slim["points"] = [[round(float(x), 1), round(float(y), 1)] for x, y in slim["points"]]
+    target.write_text(json.dumps(slim, ensure_ascii=False, separators=(",", ":")), "utf-8")
+
+
 def cell_to_image(nav: dict, cell: int) -> tuple[float, float]:
     step = nav["step"]
     return (min(nav["width"] - 1, cell % nav["cols"] * step + step / 2),
@@ -119,6 +139,7 @@ def main(argv=None) -> int:
     parser.add_argument("--version", required=True, help="package version label, e.g. 20261028-1")
     parser.add_argument("--review", type=Path, help="optional folder for registration overlays")
     parser.add_argument("--zip", type=Path, help="also write the release archive and its SHA256SUMS here")
+    parser.add_argument("--quality", type=int, default=QUALITY, help="WebP colour quality 1-100, 0 for lossless")
     args = parser.parse_args(argv)
     if args.out.exists():
         parser.error("--out must be a new directory")
@@ -160,12 +181,12 @@ def main(argv=None) -> int:
             if overlap < MIN_OVERLAP:
                 raise ValueError(f"registration too weak for {template['id']}/{floor['id']}: {overlap:.3f}")
             matrices[floor["id"]] = matrix
-            image_rel = f"images/{map_id}/{key}.png"
+            image_rel = f"images/{map_id}/{key}.webp"
             topology_rel = f"topology/{map_id}/{key}.json"
             (out / image_rel).parent.mkdir(exist_ok=True)
             (out / topology_rel).parent.mkdir(exist_ok=True)
-            shutil.copyfile(source, out / image_rel)
-            shutil.copyfile(topology_path, out / topology_rel)
+            write_image(source, out / image_rel, args.quality)
+            write_topology(topology_path, out / topology_rel)
             floors[key] = dict(
                 image=image_rel, imageSha256=sha256(out / image_rel), imageSize=[image.shape[1], image.shape[0]],
                 matrixImageToNative=[[round(float(v), 6) for v in r] for r in matrix],
@@ -209,10 +230,12 @@ def main(argv=None) -> int:
     if args.zip:
         archive = args.zip / f"xingtu-custom-maps-{args.version}.zip"
         args.zip.mkdir(parents=True, exist_ok=True)
-        with zipfile.ZipFile(archive, "w", zipfile.ZIP_STORED) as handle:
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as handle:
             for path in sorted(out.rglob("*")):
                 if path.is_file():
-                    handle.write(path, path.relative_to(out).as_posix())
+                    # Images are already compressed; only the JSON benefits from deflate.
+                    kind = zipfile.ZIP_STORED if path.suffix in (".webp", ".png") else zipfile.ZIP_DEFLATED
+                    handle.write(path, path.relative_to(out).as_posix(), compress_type=kind)
         (args.zip / f"SHA256SUMS-custom-maps-{args.version}.txt").write_text(
             f"{sha256(archive)}  {archive.name}\n", "utf-8")
         print(f"archive {archive} ({archive.stat().st_size} bytes)")
