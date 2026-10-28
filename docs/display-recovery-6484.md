@@ -73,3 +73,26 @@ replays or game end-to-end timings.
 
 No live GUI/game acceptance, installer, release, or 300 ms claim. Private raw
 logs and captured pixels are excluded from the repository.
+
+## Follow-up resource/controller integration
+
+Adopted the stopped owners' local commits: visibility controls `4ad57e7`
+and managed author resources `17a5084`. The daily controller implements the
+three browser APIs using background workers, cached snapshots, existing idle
+gate and live-import lease. Only the matching completion can release that
+lease; cancellation retains it until the writer has stopped. Removal requires
+the inspected receipt hash and unchanged resource context. File publication
+and resource factory refresh are consumed on the UI thread. Read-only listing
+does not discard an already reviewed ZIP import. Removed files stay in the
+module's recoverable backup; no user's installation was modified for tests.
+
+`test_author_management_controller.py` adds eight controller cases, including
+two real temporary-install/import/remove/reimport cycles through the actual
+backend. Only the UI resource-factory IO is replaced for those cycles. Other
+cases exercise off-UI inspection, receipt/idle checks, cancellation, stale
+completion, context changes and preservation of reviewed imports. Control UI,
+resource backend/UI and existing import suites were also run after integration.
+
+New draft PR creation was rejected by automatic approval review; no PR was
+created and the operation was not retried. Further publication awaits the
+coordinator's requested explicit authorization. No new installer was built.

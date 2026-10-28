@@ -10248,6 +10248,7 @@ class DailyAssistant:
         # Construct before publishing. No recognition, pose, custom route or
         # preference is rewritten: this operation is allowed only outside a round.
         self._install_map_mode(self.game_mode)
+        self._managed_author_packages_state = None
         self._invalidate_author_browser()
         self.route_profile_var.set(self._route_profile_label(self._shown_route_profile()))
         for name in ('route_profile_box', 'onboarding_route_box'):
@@ -10304,6 +10305,127 @@ class DailyAssistant:
             browser.sync_online_packages()
         self._map_package_import_state.update(stage='complete', ready=None,
             message=f"作者资源已导入并刷新（新增 {result['authorFilesAdded']} 个文件），无需重启。请在“实际使用路线”选择作者。")
+
+        if getattr(getattr(getattr(self, 'desktop_main_ui', None), 'map_browser', None), '_managed_open', False):
+            self.managed_author_packages_snapshot(refresh=True)
+
+    def managed_author_packages_snapshot(self, refresh: bool = False) -> dict:
+        state = getattr(self, '_managed_author_packages_state', None)
+        if state is None:
+            state = dict(stage='idle', packages=[], ready=None, message='')
+            self._managed_author_packages_state = state
+        if refresh:
+            result = self._begin_author_package_management('list')
+            if not result.get('success'):
+                self._managed_author_packages_state['message'] = result['message']
+        return dict(copy.deepcopy(self._managed_author_packages_state),
+            busy=getattr(self, '_map_package_live_request', None) is not None)
+
+    def inspect_author_package_removal(self, package_id: str) -> dict:
+        return self._begin_author_package_management('inspect', package_id)
+
+    def confirm_author_package_removal(self, package_id: str, *, expected_receipt_sha256: str) -> dict:
+        ready = (getattr(self, '_managed_author_packages_state', None) or {}).get('ready') or {}
+        if (ready.get('packageId') != package_id or not expected_receipt_sha256
+                or ready.get('receiptSha256') != expected_receipt_sha256
+                or getattr(self, '_managed_author_ready_context', None) != self._author_management_context()):
+            return dict(success=False, reason='removal-reinspection-required', message='资源状态已变化，请重新检查后确认。')
+        return self._begin_author_package_management('remove', package_id, expected_receipt_sha256)
+
+    def _author_management_context(self) -> tuple:
+        return (str(Path(ROOT).resolve()), str(Path(RESOURCE_ROOT).resolve()),
+            id(self.pack), self.game_mode, getattr(self, '_map_package_import_generation', 0))
+
+    def _begin_author_package_management(self, operation: str, package_id: str = '', receipt: str | None = None) -> dict:
+        self._ensure_map_package_import_state()
+        if (getattr(self, '_map_package_live_request', None) is not None
+                or self._map_package_helper_request is not None
+                or self._map_package_import_worker is not None):
+            return dict(success=False, reason='resource-operation-busy', message='资源任务尚未结束，请稍后重试。')
+        if not self._author_import_idle():
+            return dict(success=False, reason='resource-operation-requires-idle', message='请先结束本局并等待后台任务完成。')
+        self.managed_author_packages_snapshot()
+        if operation == 'remove':
+            self._ensure_online_map_package_state()
+            self._online_map_package_generation += 1
+            self._online_map_package_cancel.set()
+            self._map_package_import_generation += 1
+            self._map_package_import_cancel.set()
+            self._map_package_import_pending = None
+            self._map_package_import_result = None
+            self._map_package_import_state.update(stage='idle', ready=None)
+        request = dict(operation=operation, packageId=package_id, context=self._author_management_context(),
+                       cancelled=threading.Event())
+        self._map_package_live_request = request
+        self._map_package_import_cancel = request['cancelled']
+        self._managed_author_packages_state.update(stage='removing' if operation == 'remove' else 'checking',
+            ready=None, message='正在移出已登记作者资源并保留备份。' if operation == 'remove' else '正在核对本地已登记资源。')
+        if operation == 'remove':
+            self._invalidate_capture_work()
+            self._invalidate_author_browser()
+
+        def run():
+            event = dict(kind='author-package-removed' if operation == 'remove' else 'author-package-management-result', request=request)
+            try:
+                from author_package_management import (managed_author_packages_snapshot,
+                    inspect_author_package_removal, remove_author_package_live)
+                if request['cancelled'].is_set():
+                    event['cancelled'] = True
+                elif operation == 'list':
+                    event['packages'] = managed_author_packages_snapshot(request['context'][0], cancelled=request['cancelled'].is_set)
+                elif operation == 'inspect':
+                    event['ready'] = inspect_author_package_removal(request['context'][0], package_id)
+                else:
+                    event['result'] = remove_author_package_live(request['context'][0], package_id,
+                        application_idle=True, expected_receipt_sha256=receipt, cancelled=request['cancelled'].is_set)
+            except Exception as error:
+                event['error'] = f'{type(error).__name__}: {error}'
+            event['cancelled'] = request['cancelled'].is_set()
+            self.events.put(event)
+
+        try:
+            threading.Thread(target=run, name='author-package-management', daemon=True).start()
+        except RuntimeError:
+            self._map_package_live_request = None
+            self._managed_author_packages_state.update(stage='error', message='无法启动资源任务，请重试。')
+            return dict(success=False, reason='resource-worker-unavailable', message='无法启动资源任务，请重试。')
+        return dict(success=True, reason='resource-management-started', message=self._managed_author_packages_state['message'])
+
+    def _consume_author_package_management(self, event: dict) -> None:
+        request = event.get('request')
+        if request is None or request is not getattr(self, '_map_package_live_request', None):
+            return
+        self._map_package_live_request = None
+        if self._map_package_import_state.get('stage') == 'cancelling':
+            self._map_package_import_state.update(stage='idle', ready=None)
+        state = self._managed_author_packages_state
+        if self.closed or request['context'] != self._author_management_context():
+            state.update(stage='error', ready=None, message='资源上下文已改变，未应用旧结果，请重新检查。')
+            return
+        removed = isinstance(event.get('result'), dict) and event['result'].get('status') == 'author-removed-live'
+        if not removed and (event.get('cancelled') or event.get('error')):
+            state.update(stage='error' if event.get('error') else 'idle', ready=None,
+                message=f"资源操作未完成：{event.get('error') or '已取消'}")
+            return
+        if removed:
+            # The writer has finished (including rollback) before the UI lease
+            # is released. Resource publication stays on the Tk consumer.
+            self._online_installed_packages = getattr(self, '_online_installed_packages', {})
+            self._online_installed_packages[request['packageId']] = dict(status='not-installed')
+            try:
+                self._refresh_imported_author_resources()
+            except Exception as error:
+                state.update(stage='error', ready=None, message=f'文件已移出并保留备份，但界面刷新失败：{type(error).__name__}')
+                self._managed_author_packages_state = state
+                return
+            self._managed_author_packages_state = dict(stage='complete', packages=[], ready=None,
+                message='作者资源已移出并保留备份；结构与自定义路线保留。')
+            self.managed_author_packages_snapshot(refresh=True)
+        elif request['operation'] == 'inspect':
+            state.update(stage='ready', ready=event.get('ready'), message='已核对归属与文件，请确认移出作者资源。')
+            self._managed_author_ready_context = self._author_management_context()
+        else:
+            state.update(stage='ready', packages=event.get('packages', []), ready=None, message='本地资源状态已更新。')
 
     def inspect_map_package(self, path: str | Path, *, _expected_archive: dict | None = None) -> dict:
         if getattr(self, '_map_package_live_request', None) is not None:
@@ -10385,9 +10507,10 @@ class DailyAssistant:
                 and event.get('resourceRoot') == str(Path(RESOURCE_ROOT).resolve())):
             result = event.get('result')
             if event.get('error') or not isinstance(result, dict):
+                from author_package_management import package_inspection_message
                 self._map_package_import_result = None
                 self._map_package_import_state.update(stage='error', ready=None,
-                    message=f"地图包检查失败：{event.get('error') or '没有返回检查结果'}")
+                    message=package_inspection_message(event.get('error') or '没有返回检查结果'))
             else:
                 self._map_package_import_result = dict(event, result=copy.deepcopy(result))
                 title = {'nightmare-suju': '噩梦地图资源', 'difficult-zhan10': '困难地图资源'}.get(
@@ -36702,6 +36825,9 @@ class DailyAssistant:
                     continue
                 if kind == 'map-package-inspected':
                     self._consume_map_package_inspection(event)
+                    continue
+                if kind in {'author-package-removed', 'author-package-management-result'}:
+                    self._consume_author_package_management(event)
                     continue
                 if kind == 'reference-pointer':
                     self._consume_reference_pointer_events(event)
