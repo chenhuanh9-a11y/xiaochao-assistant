@@ -24,7 +24,7 @@ class SurfaceIO:
     def hide(self): self.visible = False
     def close(self): self.set_pointer_mailbox(None); self.hide(); self.hwnd = None; self.closed = True
     def show_bgra(self, pixels, position, **kwargs):
-        self.pixels = pixels.copy(); self.position = position
+        self.pixels = pixels.copy(); self.position = position; self.opacity = kwargs.get("opacity")
         self.visible = bool(self.visibility_guard()); return self.visible
     def move_by(self, dx, dy):
         if not self.visible: return False
@@ -46,7 +46,7 @@ class PositionControllerTests(unittest.TestCase):
         a.current_floor = '1'; a.current_bounds = (0, 0, 1920, 1080)
         a.route_profile_id = a.preferred_route_profile_id = 'wang-qingxin'
         a.author_route_catalog = None
-        a.sheet_position = None; a.sheet_scale = 1.; a.sheet_opacity = .7
+        a.sheet_position = None; a.sheet_scale = 1.; a.sheet_opacity = .7; a.reference_opacity = .7
         a.sheet_move_mode = False; a.sheet_move_generation = 0; a._reference_pointer_mailbox = None
         a.reference_surface = None; a.sheet_window = None; a.active_map_cycle_id = None
         a.surface_visibility_generation = 0; a.map_is_open = False; a.floor_required = False
@@ -68,6 +68,23 @@ class PositionControllerTests(unittest.TestCase):
         for target in ('tkinter.Tk','tkinter.Toplevel'):
             guard = patch(target,side_effect=AssertionError('No GUI')); guard.start(); self.addCleanup(guard.stop)
         factory = patch.object(app,'LayeredOverlay',SurfaceIO); factory.start(); self.addCleanup(factory.stop)
+
+    def test_zero_reference_edit_finish_and_cancel_preserve_independent_saved_alpha(self):
+        a = self.a
+        a.reference_opacity = 0
+        self.assertTrue(a.move_sheet()['success'])
+        self.assertEqual(a.reference_editor_surface.opacity, .4)
+        self.assertEqual(a.reference_opacity, 0)
+        self.assertTrue(a.finish_reference_sheet_move()['persisted'])
+        saved = json.loads(a.settings_path.read_text('utf8'))
+        self.assertEqual((saved['sheetOpacity'], saved['referenceOpacity']), (.7, 0))
+        self.assertFalse(a.reference_editor_surface.visible)
+        self.assertIsNone(a._reference_editor_presented_pixels)
+        self.assertTrue(a.move_sheet()['success'])
+        a._set_sheet_move_mode(False)
+        self.assertEqual(a.reference_opacity, 0)
+        self.assertFalse(a.reference_editor_surface.visible)
+        self.assertIsNone(a._reference_editor_presented_pixels)
 
     def send(self, *samples):
         box = self.a._reference_pointer_mailbox
