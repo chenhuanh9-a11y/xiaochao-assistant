@@ -24,10 +24,11 @@ def _fact(snapshot, name, yes, no):
 def display_summary(snapshot):
     """Report supplied logical conditions, never claim native pixels appeared."""
     intent = _fact(snapshot, "userVisible", "开", "关")
+    reference_intent = _fact(snapshot, "referenceEnabled", "开", "关")
     pose = _fact(snapshot, "verified", "已核对", "待核对")
     overlay = _fact(snapshot, "overlayVisible", "条件满足", "条件未满足")
     reference = _fact(snapshot, "referenceVisible", "条件满足", "条件未满足")
-    return f"显影开关：{intent} · 位置：{pose}\n贴合显示：{overlay} · 定点地图：{reference}"
+    return f"贴合开关：{intent} · 定点开关：{reference_intent} · 位置：{pose}\n贴合显示：{overlay} · 定点地图：{reference}"
 
 
 def identity_summary(snapshot, map_name):
@@ -87,17 +88,29 @@ class GameControlView(tk.Frame):
             self.mode_buttons[mode] = button
         self.identity_label = self._label(context, "楼层待核对", color=MUTED)
         self.identity_label.pack(side="right")
-        self.reference_adjust_button = self._button(context, "编辑位置", "move_sheet", padx=7, pady=6)
-        self.reference_adjust_button.configure(command=self._adjust_reference)
-        self.reference_adjust_button.pack(side="right", padx=(4, 6))
-
         self.controls = tk.Frame(self.expanded_frame, bg=SURFACE)
         self.controls.grid(row=2, column=0, sticky="ew", padx=12, pady=(8, 0))
+        self.visibility_controls = tk.Frame(self.controls, bg=SURFACE)
+        self.visibility_controls.pack(fill="x")
+        for column in (0, 1):
+            self.visibility_controls.columnconfigure(column, weight=1, uniform="visibility")
         self.quick_sheet_visibility_button = self._button(
-            self.controls, "小抄显影：未知", "toggle_sheet_visibility", pady=8)
-        self.quick_sheet_visibility_button.configure(anchor="w")
-        self.quick_sheet_visibility_button.pack(fill="x")
+            self.visibility_controls, "贴合 · 未知", "toggle_sheet_visibility", padx=7, pady=8)
+        self.quick_sheet_visibility_button.configure(anchor="w", width=0)
+        self.quick_sheet_visibility_button.grid(row=0, column=0, sticky="ew", padx=(0, 3))
         self._visibility_key = self._keycap(self.quick_sheet_visibility_button)
+        self.reference_controls = tk.Frame(self.visibility_controls, bg=SURFACE)
+        self.reference_controls.grid(row=0, column=1, sticky="ew", padx=(3, 0))
+        self.reference_controls.columnconfigure(0, weight=1)
+        self.quick_reference_visibility_button = self._button(
+            self.reference_controls, "定点 · 未知", "set_reference_sheet_visible", padx=5, pady=8)
+        self.quick_reference_visibility_button.configure(command=self._toggle_reference_visibility, anchor="w", width=0)
+        self.quick_reference_visibility_button.grid(row=0, column=0, sticky="ew")
+        # 编辑位置复用现有 controller，入口紧邻定点地图开关。
+        self.reference_adjust_button = self._button(
+            self.reference_controls, "", "move_sheet", padx=5, pady=8)
+        self.reference_adjust_button.configure(command=self._adjust_reference, width=0)
+        self.reference_adjust_button.grid(row=0, column=1, sticky="ns", padx=(3, 0))
         opacity_heading = tk.Frame(self.controls, bg=SURFACE)
         opacity_heading.pack(fill="x", pady=(8, 0))
         self.quick_opacity_label = self._label(opacity_heading, "不透明度 · 0–100", color=MUTED)
@@ -185,8 +198,41 @@ class GameControlView(tk.Frame):
         action = "finish_reference_sheet_move" if adjusting else "move_sheet"
         enabled = (self._has("get_control_snapshot") and self._has(action)
                    and (adjusting or snapshot.get("referenceCanAdjust") is True))
-        self.reference_adjust_button.configure(text="完成" if adjusting else "编辑位置",
+        self.reference_adjust_button.configure(text="完成" if adjusting else "",
+                                              image="" if adjusting else getattr(self, "_reference_edit_icon", ""),
                                               state="normal" if enabled else "disabled")
+
+    def _toggle_reference_visibility(self):
+        getter = self._command("get_control_snapshot")
+        if getter is None:
+            return None
+        enabled = getter().get("referenceEnabled")
+        if not isinstance(enabled, bool):
+            return None
+        return self._call("set_reference_sheet_visible", not enabled)
+
+    def _sync_visibility_controls(self, snapshot):
+        for button, label, intent_key, visible_key, command in (
+            (self.quick_sheet_visibility_button, "贴合", "userVisible", "overlayVisible", "toggle_sheet_visibility"),
+            (self.quick_reference_visibility_button, "定点", "referenceEnabled", "referenceVisible", "set_reference_sheet_visible"),
+        ):
+            intent = snapshot.get(intent_key)
+            actual_visible = snapshot.get(visible_key) is True
+            status = ("开" if actual_visible else "等待") if intent is True else "关" if intent is False else "未知"
+            available = isinstance(intent, bool) and self._has(command)
+            if command == "set_reference_sheet_visible":
+                available = available and self._has("get_control_snapshot")
+            button.configure(text=f"{label} · {status}",
+                             state="normal" if available else "disabled",
+                             bg=PRIMARY if intent is True else BUTTON_BG,
+                             fg="white" if intent is True else BUTTON_TEXT,
+                             activebackground=PRIMARY if intent is True else BUTTON_HOVER,
+                             activeforeground="white" if intent is True else BUTTON_TEXT)
+            icons = getattr(self, "_icons", None)
+            if icons is not None:
+                name = "map" if command == "set_reference_sheet_visible" else "eye" if intent is True else "eye-off"
+                button._lucide_image = icons.get(name, round(17*self._scale), "white" if intent is True else BUTTON_TEXT)
+                button.configure(image=button._lucide_image, compound="left")
 
     def _opacity_key_released(self, event):
         if event.keysym in {"Left", "Right", "Up", "Down", "Prior", "Next", "Home", "End"}:
@@ -266,10 +312,13 @@ class GameControlView(tk.Frame):
             button._lucide_image = self._icons.get(name, round(17*self._scale), BUTTON_TEXT)
             button.configure(image=button._lucide_image, compound="none")
         for button, name, color in ((self.quick_sheet_visibility_button, "eye", BUTTON_TEXT),
+                                    (self.quick_reference_visibility_button, "map", BUTTON_TEXT),
                                     (self.quick_start_round_button, "play", "white"),
                                     (self.quick_end_round_button, "stop", BUTTON_TEXT)):
             button._lucide_image = self._icons.get(name, round(17*self._scale), color)
             button.configure(image=button._lucide_image, compound="left")
+        self._reference_edit_icon = self._icons.get("settings", round(17*self._scale), BUTTON_TEXT)
+        self.reference_adjust_button.configure(image=self._reference_edit_icon, compound="none")
         self.quick_opacity_scale.configure(width=max(1, round(self.OPACITY_WIDTH_DIP*self._scale)),
                                           sliderlength=max(1, round(self.OPACITY_SLIDER_LENGTH_DIP*self._scale)))
 
@@ -292,10 +341,7 @@ class GameControlView(tk.Frame):
                              bg=PRIMARY if selected else BUTTON_BG,
                              fg="white" if selected else BUTTON_TEXT,
                              state="normal" if self._has("set_game_mode") and snapshot.get("modeChangeEnabled") is not False else "disabled")
-        visible = snapshot.get("userVisible")
-        self.quick_sheet_visibility_button.configure(
-            text="小抄显影：开" if visible is True else "小抄显影：关" if visible is False else "小抄显影：未知",
-            state="normal" if isinstance(visible, bool) and self._has("toggle_sheet_visibility") else "disabled")
+        self._sync_visibility_controls(snapshot)
         try:
             percent = round(float(self.opacity_var.get() if self.opacity_var is not None else snapshot["sheetOpacityPercent"]))
             opacity_text = f"{percent}%"

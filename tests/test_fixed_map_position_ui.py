@@ -176,11 +176,11 @@ class FixedMapPositionUITests(unittest.TestCase):
         controller = ReferenceControllerIO()
         view, snapshot = self.gcv(controller)
         view._sync_reference_action(snapshot())
-        self.assertEqual(view.reference_adjust_button.values, dict(text="编辑位置", state="normal"))
+        self.assertEqual(view.reference_adjust_button.values, dict(text="", image="", state="normal"))
         view._adjust_reference()
         controller.state["canAdjust"] = False
         view._sync_reference_action(snapshot())
-        self.assertEqual(view.reference_adjust_button.values, dict(text="完成", state="normal"))
+        self.assertEqual(view.reference_adjust_button.values, dict(text="完成", image="", state="normal"))
         view._adjust_reference()
         self.assertEqual(controller.calls, ["move_sheet", "finish_reference_sheet_move"])
 
