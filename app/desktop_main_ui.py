@@ -7,6 +7,7 @@ calls ``attach_desktop_main_ui`` after building the existing Tk controls.
 from __future__ import annotations
 
 import math
+from concurrent.futures import ThreadPoolExecutor
 import random
 import tkinter as tk
 from tkinter import ttk
@@ -39,6 +40,25 @@ from map_resource_model import MapResourceModel, choose_resource, floor_label, r
 from map_resource_overview import structure_previews, load_structure_preview
 from update_service import UpdateService
 from support_window import open_support_window
+
+
+def _load_home_previews(jobs, size, radius):
+    """Decode a bounded three-tile batch without any Tk calls."""
+    results = []
+    for kind, source in jobs:
+        try:
+            if kind == 'structure':
+                image = load_structure_preview(source, size)
+            else:
+                with Image.open(source) as original:
+                    image = original.convert('RGBA')
+            tile = Image.new('RGB', size, IMAGE_BG)
+            fitted = ImageOps.contain(image.convert('RGBA'), size, Image.Resampling.LANCZOS)
+            tile.paste(fitted, ((size[0]-fitted.width)//2, (size[1]-fitted.height)//2), fitted)
+            results.append(_rounded_image(tile, radius, SURFACE))
+        except (OSError, ValueError, KeyError, Image.DecompressionBombError):
+            results.append(None)
+    return results
 
 
 ACTION_NAMES = {"map": "游戏地图键", "toggle-panel": "呼出/收起游戏控件", "candidate-prev": "上一个候选",
@@ -996,16 +1016,27 @@ class DesktopMainUI:
             self._label(row, "›", size=14, color=SUBTLE).pack(side="right")
             self._clickable(row, lambda: self.show_page("help"))
             self._icon_tiles.append(tile)
-        self.home_grid.bind("<Configure>", lambda _e: self._layout_home(), add="+")
+        self.home_grid.bind("<Configure>", self._schedule_home_layout, add="+")
         self._finish_scroll_page("home")
+
+    def _schedule_home_layout(self, _event=None):
+        job = getattr(self, '_home_layout_job', None)
+        if job is not None:
+            self.root.after_cancel(job)
+        self._home_layout_job = self.root.after(80, self._finish_home_layout)
+
+    def _finish_home_layout(self):
+        self._home_layout_job = None
+        if not self._closed:
+            self._layout_home()
 
     def _layout_home(self):
         if not hasattr(self, "home_grid"):
             return
         width = self.home_grid.winfo_width() / self._scale
         wide, spacious = width >= 720, width >= 1200
-        side = max(250, round(width * .261)) if wide else 0
-        gap = round(width * .034) if wide else 0
+        side = max(250, round(width * .261 / 8) * 8) if wide else 0
+        gap = round(width * .034 / 8) * 8 if wide else 0
         main = width - side - gap if wide else width
         # The hero art follows the main column, so bucket its width into the signature.
         signature = wide, spacious, self._scale, side, gap, round(main / 40)
@@ -1023,15 +1054,58 @@ class DesktopMainUI:
             self.home_main.grid(row=0, column=0, sticky="ew")
             self.home_side.grid(row=1, column=0, sticky="ew")
         self.hero_title.configure(font=(FONT, -self._px(34 if spacious else 30 if main >= 560 else 26), "bold"))
-        art = (round(min(280, max(170, main * .36))), 0) if main >= 480 else None
+        art = (round(min(280, max(170, main * .36)) / 8) * 8, 0) if main >= 480 else None
         if art:
             art = art[0], round(art[0] * .6)
-            self._hero_art_photo = ImageTk.PhotoImage(_hero_art(self._px(art[0]), self._px(art[1])), master=self.window)
-            self.hero_art.configure(image=self._hero_art_photo)
+            art_size = self._px(art[0]), self._px(art[1])
+            if art_size != getattr(self, '_hero_art_size', None):
+                self._hero_art_photo = ImageTk.PhotoImage(_hero_art(*art_size), master=self.window)
+                self._hero_art_size = art_size
+                self.hero_art.configure(image=self._hero_art_photo)
             self.hero_art.grid()
         else:
             self.hero_art.grid_remove()
-        self._home_preview_context = None
+        # Tile dimensions, pack and author own preview invalidation independently.
+
+    def _poll_home_previews(self):
+        future = getattr(self, '_home_preview_future', None)
+        if future is not None:
+            if not future.done():
+                return
+            self._home_preview_future = None
+            context, labels = self._home_preview_active
+            self._home_preview_active = None
+            if not future.cancelled():
+                results = future.result()
+                if context == self._home_preview_context and not self._closed:
+                    for label, pixels in zip(labels, results):
+                        if pixels is not None and label.winfo_exists():
+                            label._home_photo = ImageTk.PhotoImage(pixels, master=self.window)
+                            label.configure(image=label._home_photo, text="")
+        pending = getattr(self, '_home_preview_pending', None)
+        if pending is not None and not self._closed:
+            self._home_preview_pending = None
+            context, labels, jobs, size, radius = pending
+            if not hasattr(self, '_home_preview_executor'):
+                self._home_preview_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='home-preview')
+            self._home_preview_active = context, labels
+            self._home_preview_future = self._home_preview_executor.submit(
+                _load_home_previews, jobs, size, radius)
+
+    def _close_home_previews(self):
+        self._home_preview_pending = None
+        future = getattr(self, '_home_preview_future', None)
+        if future is not None:
+            future.cancel()
+        self._home_preview_future = None
+        self._home_preview_active = None
+        executor = getattr(self, '_home_preview_executor', None)
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
+        job = getattr(self, '_home_layout_job', None)
+        if job is not None:
+            self.root.after_cancel(job)
+            self._home_layout_job = None
 
     def _refresh_home_resources(self):
         pack = self.assistant.pack
@@ -1087,13 +1161,7 @@ class DesktopMainUI:
             label._home_photo = ImageTk.PhotoImage(image, master=self.window)
             label.configure(image=label._home_photo, text="")
 
-        def framed(image):
-            # Center the picture on a soft tile so every thumbnail shares one shape.
-            tile_image = Image.new("RGB", preview_size, IMAGE_BG)
-            fitted = ImageOps.contain(image.convert("RGBA"), preview_size, Image.Resampling.LANCZOS)
-            tile_image.paste(fitted, ((preview_size[0] - fitted.width) // 2,
-                                      (preview_size[1] - fitted.height) // 2), fitted)
-            return _rounded_image(tile_image, radius, SURFACE)
+        jobs, labels = [], []
 
         for index, (label, caption) in enumerate(self.home_thumbnails):
             show(label, empty)
@@ -1101,10 +1169,8 @@ class DesktopMainUI:
             if structure and index < len(structure):
                 asset = structure[index]
                 caption.configure(text=f"{asset.name}\n{floor_label(asset.floor)} · 结构图", fg=MUTED)
-                try:
-                    show(label, framed(load_structure_preview(asset, preview_size)))
-                except (OSError, ValueError, KeyError):
-                    caption.configure(text=f"{asset.name}\n结构图不可用")
+                jobs.append(('structure', asset))
+                labels.append(label)
                 continue
             if index >= len(rows):
                 continue
@@ -1114,11 +1180,12 @@ class DesktopMainUI:
                 continue
             _variant, floor, path = chosen
             caption.configure(text=f"{item.name}\n{floor_label(floor, source=item.structure)}")
-            try:
-                with Image.open(path) as original:
-                    show(label, framed(original))
-            except (OSError, ValueError):
-                caption.configure(text=f"{item.name}\n图片不可用")
+            jobs.append(('image', path))
+            labels.append(label)
+        # Keep one active batch and one replaceable latest batch. Workers own
+        # only immutable paths/assets and PIL pixels; Tk stays on this thread.
+        self._home_preview_pending = (context, labels, jobs, preview_size, radius)
+        self._poll_home_previews()
 
     def _open_control(self):
         callback = getattr(self.assistant, "set_control_visible", None)
@@ -1961,6 +2028,7 @@ class DesktopMainUI:
         if self._closed:
             return
         self._poll_updates()
+        self._poll_home_previews()
         if self.window.winfo_viewable():
             self.display.refresh()
             self._layout_shell()
@@ -1971,6 +2039,7 @@ class DesktopMainUI:
         if event.widget is not self.window:
             return
         self._closed = True
+        self._close_home_previews()
         if self._support_window is not None:
             self._support_window.close()
             self._support_window = None
