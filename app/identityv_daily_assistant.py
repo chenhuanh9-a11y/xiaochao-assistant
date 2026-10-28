@@ -13383,11 +13383,6 @@ class DailyAssistant:
             or str(getattr(self, 'current_floor', '')) != str(floor)):
             return {'success': False, 'reason': 'initial-structure-identity-not-current'}
         root_attempt = None
-        if (entry_first and entry_seed is None and group is not None
-                and str(floor) in group.verified_floors and group.route_profile_id==profile):
-            # Confirmed same-floor recovery is translation-only, including a
-            # miss. It must not restart identity or scale estimation.
-            return solve(self,frame,map_id,floor,profile,route,cancelled=cancelled,_context=context)
         verify_root = getattr(getattr(self.engine, 'side_entry_identity', None), 'verify_existing_pose', None)
         if (entry_first and entry_seed is None and callable(verify_root)
             and group is not None and str(floor) in group.verified_floors
@@ -13406,7 +13401,15 @@ class DailyAssistant:
                 if cancelled and cancelled():
                     return dict(success=False, reason='structure-work-obsolete')
                 try:
-                    root_attempt = verify_root(frame, map_id, floor, np.asarray(matrix).copy())
+                    validation_matrix = matrix
+                    if self._shared_structure_mode_enabled():
+                        canonical = group.canonical_pose_for_floor(floor)
+                        shared_basis = self.author_coordinate_adapters.matrix_profile_to_canonical(
+                            SHARED_STRUCTURE_PROFILE_ID, map_id, floor)
+                        if canonical is None or shared_basis is None:
+                            raise ValueError('existing-root-shared-basis-unavailable')
+                        validation_matrix = np.asarray(canonical) @ np.asarray(shared_basis)
+                    root_attempt = verify_root(frame, map_id, floor, np.asarray(validation_matrix).copy())
                     if root_attempt.get('success'):
                         residual = self._rendered_profile_current_frame_residual(
                             frame, route, matrix, profile_id=profile)
@@ -13426,6 +13429,11 @@ class DailyAssistant:
                         routeProfileId=profile, rootPoseValidation=root_attempt,
                         selectedRouteCurrentFrameResidual=dict(residual,
                             validationBasis='actual-rendered-profile-structural-mask',poseVerifiedAgainstRenderedProfile=True))
+        if (entry_first and entry_seed is None and group is not None
+                and str(floor) in group.verified_floors and group.route_profile_id==profile):
+            # Confirmed same-floor recovery is translation-only, including a
+            # miss. It must not restart identity or scale estimation.
+            return solve(self,frame,map_id,floor,profile,route,cancelled=cancelled,_context=context)
         fresh_entry_verification = False
         if isinstance(entry_seed,dict) and entry_seed.get('locatorKind')=='side':
             candidate=entry_seed.get('sideCandidate') or {}
