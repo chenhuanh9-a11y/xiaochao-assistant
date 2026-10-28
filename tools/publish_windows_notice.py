@@ -36,7 +36,7 @@ sys.path.insert(0, str(ROOT / "app"))
 from update_service import is_newer, version_key  # noqa: E402
 
 SERVER = "https://api.xingchenmap.cn"
-QUARK_LINE = "夸克网盘链接：https://pan.quark.cn/s/4cec4ca814f7"
+QUARK_LINE = "夸克网盘链接：https://pan.quark.cn/s/de934000142f"
 UC_LINE = "UC网盘链接：https://drive.uc.cn/s/df8af96910bb4?public=1"
 MAX_NOTES = 600
 MAX_INSTALLER = 1024 ** 3
