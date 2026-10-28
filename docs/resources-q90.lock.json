@@ -1,0 +1,473 @@
+{
+  "schemaVersion": 1,
+  "resourceSet": "display-q90-r1",
+  "sourceCodeBaseline": "d61c9c4d1075ea4c622fd39034964a7bfe25877f",
+  "requiredImporterFeature": "receipt-owned-upgrade-v1",
+  "recipe": {
+    "difficultWebPQuality": 90,
+    "dimensions": "unchanged",
+    "alpha": "exact",
+    "otherPNG": "lossless-optimize",
+    "recognitionAndStructure": "byte-identical"
+  },
+  "packages": [
+    {
+      "packageId": "difficult-zhan10",
+      "archive": "packages/difficult-zhan10-display-optimized-r1.zip",
+      "bytes": 24802823,
+      "sha256": "3131df907a99ab685a2b78d5cdf222c33e4eeb7738ddf3502119d033a3d4175d",
+      "default": true
+    },
+    {
+      "packageId": "nightmare-nightingale",
+      "archive": "packages/nightmare-nightingale-display-optimized-r1.zip",
+      "bytes": 46256010,
+      "sha256": "c42cc87c6d482847c6ea9a533469ac21f06fb2dcd91072cd742107bae48647c8",
+      "default": false
+    },
+    {
+      "packageId": "nightmare-suju",
+      "archive": "packages/nightmare-suju-display-optimized-r1.zip",
+      "bytes": 31088918,
+      "sha256": "0707db037bb231b018b858800ff5d9df06253740a6425603c956cdc6d79916ab",
+      "default": true
+    },
+    {
+      "packageId": "nightmare-wang-qingxin",
+      "archive": "packages/nightmare-wang-qingxin-display-optimized-r1.zip",
+      "bytes": 66571840,
+      "sha256": "05988433c8e7e15951b3deb4fd4d37bceee59e25ffba03e17d5ca4ffe9dd32a6",
+      "default": false
+    }
+  ],
+  "defaultPackages": [
+    "difficult-zhan10",
+    "nightmare-suju"
+  ],
+  "baseOverlay": {
+    "path": "_internal/references/nightmare-author-route-catalog.json",
+    "bytes": 62805,
+    "sha256": "5ad8341be9eac57dc6e5ad9c1f74c6d5a418ff9d35fe1dffb2f3ef22fe4d66cd",
+    "previousSha256": "2f3f5987343222d319601891cec840efd4cd3ac7485864b11e36d0dc35c2bbe4",
+    "owner": "program-build; never overwritten by a map archive"
+  },
+  "requiredBaseFiles": [
+    {
+      "path": "_internal/references/nightmare-author-route-catalog.json",
+      "bytes": 62805,
+      "sha256": "5ad8341be9eac57dc6e5ad9c1f74c6d5a418ff9d35fe1dffb2f3ef22fe4d66cd"
+    },
+    {
+      "path": "_internal/references/nightmare-canonical-coordinate-pack.json",
+      "bytes": 396848,
+      "sha256": "b47fa0f94389d3f08a1c9c5a7ea2136c271002f3aa63662c334f75f6ed68b4b1"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/33956dfb-8e0d-4627-a26c-e1904d687084-1-shared.npz",
+      "bytes": 30137,
+      "sha256": "9f23feb71c9fb819316f1b23634b7f934979481ece0a232dfd676fa3f89b102e"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/33956dfb-8e0d-4627-a26c-e1904d687084-2-shared.npz",
+      "bytes": 26901,
+      "sha256": "4ceb6f85eae2e3e59c1957d7c1b843672c8e5830d7a9c844f51d18133da193aa"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/33956dfb-8e0d-4627-a26c-e1904d687084-B1-shared.npz",
+      "bytes": 11660,
+      "sha256": "dfef73f689f68843112490cc0e605fba06753c42bd4611bb7a5ecb85a2decd99"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/37d291a1-529d-4a0e-8938-e4754e5f7a0d-1-shared.npz",
+      "bytes": 30345,
+      "sha256": "ff9b7455d60466afd7bbf501b277fb15ac6ab5ae6222d60a5a207c65fe1e1e09"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/37d291a1-529d-4a0e-8938-e4754e5f7a0d-2-shared.npz",
+      "bytes": 26116,
+      "sha256": "e3598d8da690a7f9d065a0892fdebe91d30f88adb290f789aa8f45da1dfd812b"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/37d291a1-529d-4a0e-8938-e4754e5f7a0d-B1-shared.npz",
+      "bytes": 11025,
+      "sha256": "4a4aa70e2857f1063170b1ebc004d15d0216bb6d17c6a8b9caedc0691d752610"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/4f5d6ac0-b1ae-4338-8d6e-b67cd1e3af51-1-shared.npz",
+      "bytes": 27875,
+      "sha256": "d9bb4038c21e91fa13b0342ca52c8d0bcdd92dfe80461f16e9bd4d4e5bbfdcf6"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/4f5d6ac0-b1ae-4338-8d6e-b67cd1e3af51-2-shared.npz",
+      "bytes": 19048,
+      "sha256": "f10402d9bb485c536c15ca814b6489381ee7cbebcb9d4e0e3768381c2c2483ea"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/4f5d6ac0-b1ae-4338-8d6e-b67cd1e3af51-B1-shared.npz",
+      "bytes": 10928,
+      "sha256": "1431af705e23960a21c32c7f09b0fd24f5838943e340481b84fdf6121b3e1eb1"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/entries.json",
+      "bytes": 1511641,
+      "sha256": "61b873efaba0e3d204ef7d0b815b537362544c575bad77bf09397e23a4751420"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/entry-passports.json",
+      "bytes": 28390,
+      "sha256": "c3e47d4823c9af6546297bbe7f126fb521c9b49ea78435b0ee927c47b0e8c336"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-01-1-shared.npz",
+      "bytes": 37596,
+      "sha256": "85525b02f030b989e4d62b357e5ccd7563036e9ffc41b01dc2b3b0055bae2b62"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-01-2-shared.npz",
+      "bytes": 28706,
+      "sha256": "7942d33cd5af83031217e5101765ea22ee98b12baf6e08d405213803805f3c83"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-01-B1-shared.npz",
+      "bytes": 13874,
+      "sha256": "b17b8b01dae41a453d63bc19bd8474f00408001409d549cb143bb6b2fa401f59"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-02-1-shared.npz",
+      "bytes": 30991,
+      "sha256": "44ce05ed376e37c236079458e2d9778299d6e8152c9fb8d6ba3d10375aab1f77"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-02-2-shared.npz",
+      "bytes": 26693,
+      "sha256": "5a5a1167a8d58c0f0d34ad5f92d08d7f5717a6fa49d8e77ca71679983c0e77fa"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-02-B1-shared.npz",
+      "bytes": 14774,
+      "sha256": "cb1fc8556c0811b8deb032b4e63f08f1e361d483b723c0739d5606156ff552b5"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-03-1-shared.npz",
+      "bytes": 28855,
+      "sha256": "21658532b8df4e2f4b610553fb3ed7f115c88cca3fa9ec4ee826c241e193897f"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-03-2-shared.npz",
+      "bytes": 21966,
+      "sha256": "af338fedc033ec9c6e9d49971e5920d15b1dbd74702bc3ebd731ee308915ef39"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-03-B1-shared.npz",
+      "bytes": 12633,
+      "sha256": "1d25b27cd80e05e5e4e9abeeb2bff0147aad8b352da91e45d27fe95614b45537"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-04-1-shared.npz",
+      "bytes": 26187,
+      "sha256": "48b9197ab3c605cc66ab2b3fb8d8e7008a5d717a40970a0e66cf88baee18c359"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-04-2-shared.npz",
+      "bytes": 25088,
+      "sha256": "4df14db36e495acdfe831078c58324adb721854b57e57ce645fd1d45114e44e3"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-04-B1-shared.npz",
+      "bytes": 12718,
+      "sha256": "90ecfabe77481e3aa13ccba0b8e5d757683a38b77a51575fec499add126d7100"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-05-1-shared.npz",
+      "bytes": 32295,
+      "sha256": "59aafe9185ceb3a19758cefd2229d213df72926096bb609c0df25468a1f40638"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-05-2-shared.npz",
+      "bytes": 24647,
+      "sha256": "01dc7d00188f9f4b0b97bdeb2e1991b9d5949dd8d307eb7d7872040975a7f1d1"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-05-B1-shared.npz",
+      "bytes": 16596,
+      "sha256": "448571f56dcdc321e939a61d321281b68a1d5bb2ad02714c386c8060f4044583"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-06-1-shared.npz",
+      "bytes": 24108,
+      "sha256": "c7913d70921ceda150df43a5819c3e5c1b605641ab7a659513839e2cd33d94d7"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-06-2-shared.npz",
+      "bytes": 16784,
+      "sha256": "44240263b3f329466c49a36b6d2028558775409c3da242e4d7af48141ddb3c7e"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-06-B1-shared.npz",
+      "bytes": 11987,
+      "sha256": "a17d906d526fe57cd3ab65f3afd6aa7b56a29588d98ed94528adcdbf1db2f8cc"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-07-1-shared.npz",
+      "bytes": 30183,
+      "sha256": "18c798a32f6e4f46c8480fbcbd67d91ed3a3cc7e07660eafac3e5daa06de0203"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-07-2-shared.npz",
+      "bytes": 24712,
+      "sha256": "ae712609ba6561bc57561cb1be8cda2e80243106ffe605d72558a69684743c37"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-07-B1-shared.npz",
+      "bytes": 12664,
+      "sha256": "5f014beb44d12cc8f79e01d15431501fd8893e8ea2ccee963a1268da99b5b0fc"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-08-1-shared.npz",
+      "bytes": 33756,
+      "sha256": "174817a46541eeb6bca98e15270698c1f2595c3461c41558d2cb893db9ea8f29"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-08-2-shared.npz",
+      "bytes": 27871,
+      "sha256": "28431660e169b0d407a2a7d42b0b1f85cfc1c7e93574f03b087922cc9de576a4"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-08-B1-shared.npz",
+      "bytes": 12172,
+      "sha256": "cbbd5abe782d628e08716f03302c2ed0f79537c217e402de9ab62d27660d70af"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-09-1-shared.npz",
+      "bytes": 30135,
+      "sha256": "f297a4562c053913d7850533a655270373e4e69c97e75be9c5e77f02407ad661"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-09-2-shared.npz",
+      "bytes": 23875,
+      "sha256": "2c3706f679cdea71f7c61fcd007646955fc237a4642fe817c65765a1d64f831e"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-09-B1-shared.npz",
+      "bytes": 13399,
+      "sha256": "32a9e4a87b8117ded7810a5f5d4344ebd53f67282a642a60adebc9718610f056"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-10-1-shared.npz",
+      "bytes": 27050,
+      "sha256": "bb53a48d474677feef693b0b8fffb796d56f031a14432bf7bb46b44bb3d39b3b"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-10-2-shared.npz",
+      "bytes": 24101,
+      "sha256": "080a6fb0df81cddb6f2f9e4edaaf84d22462bda888474d743172cc54dab28657"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-10-B1-shared.npz",
+      "bytes": 11194,
+      "sha256": "5a11769df2a698454dd42f042b488efe50dd3be657541a8c6cb0b28fa4c078e3"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-11-1-shared.npz",
+      "bytes": 32593,
+      "sha256": "f07e066c11f6241c51f514d5d0f0e35edddbb15b4fd1797f273d7dc8b791c803"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-11-2-shared.npz",
+      "bytes": 28077,
+      "sha256": "b25d48e14541c1b150abfb7ad8e68498a3aae8240844de1a640a934c59eeeae7"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-11-B1-shared.npz",
+      "bytes": 12529,
+      "sha256": "8ad3a8a688aed596c734bef3cb90d2199ed5611822fb854c4ebb35c1a150d9be"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-12-1-shared.npz",
+      "bytes": 25483,
+      "sha256": "584fc95bc4e4a3ea81d7c7a55b382d1eff848082856779d7ba6fad71f52781a1"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-12-2-shared.npz",
+      "bytes": 22254,
+      "sha256": "a2cc1b0389bb20e9e70929dcc4f7595ce66dee9104d6dd751bfda6eedc240a25"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-12-B1-shared.npz",
+      "bytes": 14714,
+      "sha256": "e0d6f5faa4cb48c14fb8e35867f65e556be46d428d3b4c9a63a3211e2ddca13e"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-13-1-shared.npz",
+      "bytes": 31964,
+      "sha256": "828d91ab30a24d22bf64716858db5d87084dcfe7006bc294e7e596bc06c8dd42"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-13-2-shared.npz",
+      "bytes": 25851,
+      "sha256": "3a899595abbab4c03c9518a1ee2898610b0acc5e3146e9c62e20bb20d0567567"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-13-B1-shared.npz",
+      "bytes": 15200,
+      "sha256": "c3853f2c1858ac1d565657435b0e6811a536846381413c24fc602d4967a22dca"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-14-1-shared.npz",
+      "bytes": 27804,
+      "sha256": "6d50bc885f00699697b3f206ea147b94f724f573c53a51e0818edb1fcb47a45f"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-14-2-shared.npz",
+      "bytes": 28012,
+      "sha256": "58c18f9407718c45434a6097bb0a2044887dbe0df8fd1aae8003784f9cd0f7a4"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-14-B1-shared.npz",
+      "bytes": 14351,
+      "sha256": "5d2fb76f4d5fe10d22db146534a5e44aa3c90b0b7f6dda1d47596b1c253b7f4c"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-15-1-shared.npz",
+      "bytes": 28537,
+      "sha256": "0751e39e7b8abab91334024bb85faad47256a1b15065b8edaf722d0346f5c9e4"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-15-2-shared.npz",
+      "bytes": 24385,
+      "sha256": "9c195411069c280d0e7d931dcc117f6a7dbfc8690c8cd1976ea05d1e24cbbe8b"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-15-B1-shared.npz",
+      "bytes": 13659,
+      "sha256": "8cb466c23382046a9b72b2dd17556033907f82d063b7ab64b46f8b1589b6ad6a"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-16-1-shared.npz",
+      "bytes": 32094,
+      "sha256": "19922833b57f6c229e045f2d54709411e6665b5d666d36b17319fb80bdab3cd1"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-16-2-shared.npz",
+      "bytes": 30407,
+      "sha256": "669f9b05b196f4d96b624336befec3ab3e9cab4794ef65d9e16fc0504ef3196d"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-16-B1-shared.npz",
+      "bytes": 11094,
+      "sha256": "88eece75f3302cf28a8b7b08df77834e9a855e0c321c2aa266af39102ffcdadb"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-17-1-shared.npz",
+      "bytes": 34741,
+      "sha256": "7e702d7f46572be1dbddb94e927cb25699029a86a4295b4c93759f9a33fb5aaf"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-17-2-shared.npz",
+      "bytes": 21927,
+      "sha256": "c9bfbf50f74df24d4ba4f69f055587bf242e2960f16ae90d66cf53288e621840"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-17-B1-shared.npz",
+      "bytes": 14658,
+      "sha256": "c0f88d3bd5cc804d5b20a96505dce45d28b16be1ab9a4cefbc440727dd89eecc"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-18-1-shared.npz",
+      "bytes": 34955,
+      "sha256": "a9a6a2c5c0ae0371a4e4da630b2621a5290edbcc639f57b6d3fd5b81c6eae27a"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-18-2-shared.npz",
+      "bytes": 29866,
+      "sha256": "5b3f73552fcea47fb8414b528a771444be9ebc78b0b87bbacf5f302f4519a1cf"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-18-B1-shared.npz",
+      "bytes": 13120,
+      "sha256": "63eadabda2d71d9a7da4d6db894066c2575d2a52cabaee17735eefdebd58e2de"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-19-1-shared.npz",
+      "bytes": 26696,
+      "sha256": "20a992b3165f623bc2c03aaf92442972d6a006f82e85fd55bdb5015005decdad"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-19-2-shared.npz",
+      "bytes": 23312,
+      "sha256": "26947d0dc5d8234d10f6f51f210396ec1acf14123f26bee038b0e2e88c321be4"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-19-B1-shared.npz",
+      "bytes": 12547,
+      "sha256": "a4bd4d1d4d8bcd1d80c13b712213ed4a70940098cb1f8c1149813be4c3ea5f19"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-20-1-shared.npz",
+      "bytes": 30422,
+      "sha256": "85ec05159f052942fa5b20cd0750a0c9abb5510b212a48e9d3a5fb4084c9a4fb"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-20-2-shared.npz",
+      "bytes": 23983,
+      "sha256": "8b2df79d8813758784f2f54b2156fe0b1e31cd5e02429bad31707d2c74472904"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-20-B1-shared.npz",
+      "bytes": 11174,
+      "sha256": "8c806500096f59eb69dcc6f46e8f95535d098bd86b2d3510adebb17d67b4b991"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-21-1-shared.npz",
+      "bytes": 26882,
+      "sha256": "65d30d77b7e28f33dd59b72fa1f253cbdc38b07f45efe0a6b81e1161422d20c5"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-21-2-shared.npz",
+      "bytes": 21739,
+      "sha256": "784b0b82964e810f9d771168046fb54eccc154c1efcdd3789139d43ad3d7776d"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/nightmare-21-B1-shared.npz",
+      "bytes": 12977,
+      "sha256": "5502ce44afa5a836e67b4b597f94332376b1401cf30784396da9896d013d0b00"
+    },
+    {
+      "path": "_internal/references/nightmare-entries/side-entries.json",
+      "bytes": 3947006,
+      "sha256": "4675205f19e1a5f23b4d379defd945d073ea0593bb7ad6c623e26be86c37f935"
+    },
+    {
+      "path": "_internal/references/nightmare-map-pack.json",
+      "bytes": 32786,
+      "sha256": "9a003447dd2db10725db2b9036ba6f44ff922aee9adfa06f71fd4be2273fa7c1"
+    },
+    {
+      "path": "_internal/references/nightmare-shared-structure-index.json",
+      "bytes": 29777,
+      "sha256": "e1b2d91029f15ff8f8facb08e3c73b12ffecf2acc5408072e2bb56f4e545fbea"
+    },
+    {
+      "path": "_internal/references/nightmare-source-candidate-index.json",
+      "bytes": 183,
+      "sha256": "3e88e2147ffee14d4aad51e64e1aed074f57e675fc9551974155d2ab8cb6c4a0"
+    },
+    {
+      "path": "_internal/references/nightmare-structure-display.json",
+      "bytes": 96854,
+      "sha256": "5f0a482441fab0b683cb9c5ead14e328eee775b1b53ec12d0ed2697585ee40a2"
+    },
+    {
+      "path": "_internal/references/nightmare-structure-version-bindings.json",
+      "bytes": 181120,
+      "sha256": "0328dfb55fba8d6286b73c26dcb24cdb2a4b854d67238761427fb532bbe822e2"
+    }
+  ],
+  "resourceFilesManifest": {
+    "path": "default-resource-files.json",
+    "bytes": 90937,
+    "sha256": "8247437f63ed5dd4befbaaf4340cb54845c0d5df09fe4a2409c928f95b6be07c",
+    "count": 465
+  },
+  "distribution": "local build inputs only; author artwork is not published with source"
+}

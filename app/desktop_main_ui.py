@@ -33,11 +33,12 @@ from desktop_theme import (BG, SURFACE, CARD, TINT, LINE, TEXT, MUTED, SUBTLE, G
                            SHADOW_DIP,
                            status_color)
 from chest_auto_tap import TAP_KEYS, TRIGGER_KEYS
-from custom_route_editor import CustomRouteEditor
+from custom_map_editor import CustomMapEditor
 from map_resource_browser import MapResourceBrowser
 from map_resource_model import MapResourceModel, choose_resource, floor_label, resource_inventory
 from map_resource_overview import structure_previews, load_structure_preview
 from update_service import UpdateService
+from support_window import open_support_window
 
 
 ACTION_NAMES = {"map": "游戏地图键", "toggle-panel": "呼出/收起游戏控件", "candidate-prev": "上一个候选",
@@ -436,6 +437,7 @@ class DesktopMainUI:
         self._refresh_job = None
         self._shell_layout = None
         self._close_choice_window = None
+        self._support_window = None
         self._icons = DesktopIcons(self.root) if DesktopIcons is not None else None
         if self._icons is not None:
             self._icons._masks.setdefault("route", _route_mask())
@@ -478,16 +480,18 @@ class DesktopMainUI:
             selected = page == self._page
             photo = self._icons.get(name, self._px(20), SIDEBAR_TEXT if selected else SIDEBAR_MUTED) if self._icons else None
             button._desktop_icon = photo
-            # ttk labels have no icon gap option; a leading space keeps text off the glyph.
+            # The narrow rail keeps labels below their icons at regular sizes.
             label = self._nav_labels[page]
-            button.configure(image=photo or "", text=label if compact and not photo else f"  {label}",
-                             compound="image" if compact and photo else "left",
-                             anchor="center" if compact else "w")
+            text = "" if compact and photo else label
+            if compact and not photo and len(text) > 4:
+                text = text[:3] + "\n" + text[3:]
+            button.configure(image=photo or "", text=text,
+                             compound="image" if compact and photo else "top", anchor="center")
         if hasattr(self, "exit_button"):
             photo = self._icons.get("exit", self._px(18), SIDEBAR_MUTED) if self._icons else None
             self.exit_button._desktop_icon = photo
-            self.exit_button.configure(image=photo or "", text="退出" if compact and not photo else " 退出",
-                                       compound="image" if compact and photo else "left")
+            self.exit_button.configure(image=photo or "", text="" if compact and photo else "退出",
+                                       compound="image" if compact and photo else "top")
         if hasattr(self, "brand_icon"):
             size = self._px(40 if not compact else 36)
             photo = self._brand_images.get("round", size)
@@ -514,17 +518,18 @@ class DesktopMainUI:
         height = self.window.winfo_height()
         if self._shell_layout is not None and (width <= 1 or height <= 1):
             return
-        compact = width / self._scale < 820
-        spacious = width / self._scale >= 1240
+        # Short windows need the existing icon-only mode to keep every page reachable.
+        compact = width / self._scale < 800 or height / self._scale < 660
+        spacious = width / self._scale >= 1200
         signature = compact, spacious, self._scale
         if signature == self._shell_layout:
             return
         self._shell_layout = signature
         self._compact = compact
         self.header.configure(height=self._px(60))
-        self.workspace.pack_configure(padx=self._px(40 if spacious else 22 if compact else 30))
-        self.rail.configure(width=self._px(76 if compact else 184))
-        rail_width = 76 if compact else 184
+        self.workspace.pack_configure(padx=self._px(48 if spacious else 28))
+        rail_width = 80 if compact else 96
+        self.rail.configure(width=self._px(rail_width))
         self._update_ui_signature = None  # Re-place the sidebar badge for the new rail.
         if compact:
             self.rail_update_badge.pack_forget()
@@ -533,23 +538,24 @@ class DesktopMainUI:
             self.rail_version.pack_forget()
             self.rail_status.pack_forget()
             self.rail_art.pack_forget()
-            self.exit_button.pack_configure(side="top")
+            self.exit_button.pack_configure(side="bottom", fill="x")
         else:
-            self.brand_text.pack(side="left", padx=(self._px(12), 0))
-            self.brand.pack_configure(padx=self._px(18), pady=(self._px(24), self._px(26)))
-            self.exit_button.pack_configure(side="right")
-            self.rail_version.pack(side="left", padx=(self._px(6), 0), before=self.exit_button)
-            self.rail_status.pack(side="bottom", fill="x", padx=self._px(12), pady=(0, self._px(12)),
+            self.brand_text.pack(side="top", padx=0, pady=(self._px(8), 0))
+            self.brand.pack_configure(padx=self._px(8), pady=(self._px(24), self._px(20)))
+            self.exit_button.pack_configure(side="bottom", fill="x")
+            self.rail_version.pack(side="top", padx=0, pady=(0, self._px(4)), before=self.exit_button)
+            self.rail_status.pack(side="bottom", fill="x", padx=self._px(8), pady=(0, self._px(8)),
                                   before=self.rail_art if self.rail_art.winfo_manager() else None)
-            self.home_setup_summary.configure(wraplength=self._px(rail_width - 48))
+            self.header_caption.configure(wraplength=self._px(rail_width - 32))
+            self.home_setup_summary.configure(wraplength=self._px(rail_width - 32))
             self._rail_art_photo = ImageTk.PhotoImage(
-                _sidebar_art(self._px(rail_width), self._px(150)), master=self.window)
+                _sidebar_art(self._px(rail_width), self._px(72)), master=self.window)
             self.rail_art.configure(image=self._rail_art_photo)
             self.rail_art.pack(side="bottom", fill="x")
-        self.rail_footer.pack_configure(padx=self._px(12), pady=(0, self._px(14)))
+        self.rail_footer.pack_configure(padx=self._px(8), pady=(0, self._px(14)))
         for button in self._nav_buttons.values():
-            button.pack_configure(padx=self._px(12), pady=self._px(2))
-            button.configure(padx=self._px(10 if compact else 16))
+            button.pack_configure(padx=self._px(8), pady=self._px(2))
+            button.configure(padx=self._px(4), pady=self._px(8))
         self._nav_mark.configure(width=self._px(3), height=self._px(16))
         self.root.after_idle(lambda: self._place_nav_mark(animate=False))
         self._apply_icons()
@@ -706,7 +712,7 @@ class DesktopMainUI:
     def _build(self) -> None:
         container = tk.Frame(self.window, bg=BG)
         container.pack(fill="both", expand=True)
-        rail = tk.Frame(container, bg=SIDEBAR, width=184)
+        rail = tk.Frame(container, bg=SIDEBAR, width=96)
         self.rail = rail
         rail._display_manual_geometry = True
         rail.pack(side="left", fill="y")
@@ -714,13 +720,13 @@ class DesktopMainUI:
         brand = tk.Frame(rail, bg=SIDEBAR)
         self.brand = brand
         brand._display_manual_geometry = True
-        brand.pack(fill="x", padx=18, pady=(26, 28))
+        brand.pack(fill="x", padx=8, pady=(24, 20))
         self.brand_icon = tk.Label(brand, bg=SIDEBAR, bd=0)
-        self.brand_icon.pack(side="left")
+        self.brand_icon.pack(side="top")
         self.brand_text = tk.Frame(brand, bg=SIDEBAR)
-        self.brand_text.pack(side="left", padx=(10, 0))
-        self._label(self.brand_text, "星图", size=14, bold=True, color=SIDEBAR_TEXT).pack(anchor="w")
-        self._label(self.brand_text, "地图与路线助手", size=8, color=SIDEBAR_MUTED).pack(anchor="w")
+        self.brand_text.pack(side="top", pady=(8, 0))
+        self._label(self.brand_text, "星图", size=14, bold=True, color=SIDEBAR_TEXT).pack(anchor="center")
+        self._label(self.brand_text, "地图与路线助手", size=8, color=SIDEBAR_MUTED).pack(anchor="center")
         self._nav_labels = {}
         for key, label in (("home", "主页面"), ("maps", "地图资源"), ("custom", "自定义地图"),
                            ("preferences", "设置"), ("help", "帮助")):
@@ -728,9 +734,9 @@ class DesktopMainUI:
                 rail, text=label, command=lambda page=key: self.show_page(page),
                 bg=SIDEBAR, fg=SIDEBAR_MUTED, activebackground=SIDEBAR_HOVER,
                 activeforeground=SIDEBAR_TEXT, highlightthickness=0, highlightbackground=SIDEBAR,
-                highlightcolor=NIGHT_ACCENT, font=(FONT, 10, "bold"), padx=16, pady=10,
-                anchor="w", cursor="hand2")
-            button.pack(fill="x", padx=12, pady=2)
+                highlightcolor=NIGHT_ACCENT, font=(FONT, 10, "bold"), padx=4, pady=8,
+                anchor="center", cursor="hand2")
+            button.pack(fill="x", padx=8, pady=2)
             button._display_manual_geometry = True
             self._nav_buttons[key] = button
             self._nav_labels[key] = label
@@ -743,10 +749,10 @@ class DesktopMainUI:
 
         footer = tk.Frame(rail, bg=SIDEBAR)
         self.rail_footer = footer
-        footer.pack(side="bottom", fill="x", padx=12, pady=(0, 14))
+        footer.pack(side="bottom", fill="x", padx=8, pady=(0, 14))
         self.rail_version = self._label(footer, f"版本 {self._display_version_text()}", size=8,
-                                        color=SIDEBAR_MUTED, anchor="w")
-        self.rail_version.pack(side="left", padx=(6, 0))
+                                        color=SIDEBAR_MUTED, anchor="center")
+        self.rail_version.pack(side="top", pady=(0, 4))
         self.rail_update_badge = tk.Label(footer, text="新版本", bg=STAR_GOLD, fg=NIGHT, bd=0,
                                           font=(FONT, 7, "bold"), padx=5, pady=1, cursor="hand2")
         for widget in (self.rail_version, self.rail_update_badge):
@@ -758,23 +764,23 @@ class DesktopMainUI:
             highlightthickness=0, highlightbackground=SIDEBAR, highlightcolor=NIGHT_ACCENT,
             font=(FONT, 9, "bold"), padx=10, pady=6, anchor="center", cursor="hand2")
         self.exit_button._display_manual_geometry = True
-        self.exit_button.pack(side="right")
+        self.exit_button.pack(side="bottom", fill="x")
 
         # Live game status stays visible on every page, not only on home.
-        status = RoundedFrame(rail, bg=SIDEBAR_HOVER, radius=12, padx=12, pady=10, highlightthickness=0)
+        status = RoundedFrame(rail, bg=SIDEBAR_HOVER, radius=12, padx=8, pady=8, highlightthickness=0)
         self.rail_status = status
         status._display_manual_geometry = True
-        status.pack(side="bottom", fill="x", padx=12, pady=(0, 12))
+        status.pack(side="bottom", fill="x", padx=8, pady=(0, 8))
         self.header_caption = tk.Label(status, text="○  等待连接游戏", bg=SIDEBAR_HOVER, fg=SIDEBAR_MUTED,
-                                       font=(FONT, 9, "bold"), anchor="w", bd=0)
+                                       font=(FONT, 9, "bold"), anchor="center", justify="center", bd=0, wraplength=64)
         self.header_caption.pack(fill="x")
         self.home_setup_summary = tk.Label(status, bg=SIDEBAR_HOVER, fg=SIDEBAR_MUTED, font=(FONT, 8),
-                                           anchor="w", justify="left", bd=0, wraplength=136)
+                                           anchor="center", justify="center", bd=0, wraplength=64)
         self.home_setup_summary.pack(fill="x", pady=(4, 0))
         self.rail_art = tk.Label(rail, bg=SIDEBAR, bd=0)
         self.rail_art.pack(side="bottom", fill="x")
         self.workspace = tk.Frame(container, bg=BG)
-        self.workspace.pack(side="left", fill="both", expand=True, padx=30, pady=(14, 14))
+        self.workspace.pack(side="left", fill="both", expand=True, padx=28, pady=(14, 14))
         header = tk.Frame(self.workspace, bg=BG, height=60)
         self.header = header
         header._display_manual_geometry = True
@@ -795,7 +801,7 @@ class DesktopMainUI:
         self._build_preferences()
         self._build_maps()
         self._build_help()
-        self.custom_editor = CustomRouteEditor(self.body, self)
+        self.custom_editor = CustomMapEditor(self.body, self)
         self._page_frames["custom"] = self.custom_editor
         self.show_page("home")
         self.window.bind("<Configure>", lambda event: self._layout_shell()
@@ -997,11 +1003,12 @@ class DesktopMainUI:
         if not hasattr(self, "home_grid"):
             return
         width = self.home_grid.winfo_width() / self._scale
-        wide, spacious = width >= 700, width >= 1180
-        side = max(240, round(width * .3)) if wide else 0
-        main = width - side - 4 if wide else width
+        wide, spacious = width >= 720, width >= 1200
+        side = max(250, round(width * .261)) if wide else 0
+        gap = round(width * .034) if wide else 0
+        main = width - side - gap if wide else width
         # The hero art follows the main column, so bucket its width into the signature.
-        signature = wide, spacious, self._scale, side, round(main / 40)
+        signature = wide, spacious, self._scale, side, gap, round(main / 40)
         if signature == self._home_layout:
             return
         self._home_layout = signature
@@ -1010,7 +1017,7 @@ class DesktopMainUI:
         for frame in (self.home_main, self.home_side):
             frame.grid_forget()
         if wide:
-            self.home_main.grid(row=0, column=0, sticky="new", padx=(0, self._px(4)))
+            self.home_main.grid(row=0, column=0, sticky="new", padx=(0, self._px(gap)))
             self.home_side.grid(row=0, column=1, sticky="new")
         else:
             self.home_main.grid(row=0, column=0, sticky="ew")
@@ -1193,7 +1200,7 @@ class DesktopMainUI:
         self.preferences_display = self._card(self.preferences_surface, padx=24, pady=22)
         heading, _ = self._card_heading(self.preferences_keys, "快捷键", "点击键帽录入新组合，核对后确认。", "keyboard")
         heading.pack(fill="x", pady=(0, 16))
-        heading, _ = self._card_heading(self.preferences_display, "小抄显示", "显影、参考小抄、透明度与大小。", "eye")
+        heading, _ = self._card_heading(self.preferences_display, "小抄显示", "显影、定点地图、透明度与大小。", "eye")
         heading.pack(fill="x", pady=(0, 16))
         common = ("map", "toggle-panel", "toggle-round", "toggle-sheet-visibility")
         advanced = tuple(target for target in ACTION_NAMES if target not in common)
@@ -1207,7 +1214,7 @@ class DesktopMainUI:
         self.save_shortcuts_button = self.hotkey_editor.confirm_button
 
         display = self.preferences_display
-        visibility = self._setting_row(display, "总显影", "同时控制参考小抄和贴合显示。")
+        visibility = self._setting_row(display, "总显影", "同时控制定点地图和贴合显示。")
         self.preferences_visibility_button = _button(visibility, "未知", self._toggle_visibility)
         self.preferences_visibility_button.configure(padx=18)
         self.preferences_visibility_button.pack(side="right")
@@ -1216,16 +1223,16 @@ class DesktopMainUI:
         reference.pack(fill="x", pady=(0, 14))
         reference_heading = tk.Frame(reference, bg=SURFACE)
         reference_heading.pack(fill="x")
-        self._label(reference_heading, "参考小抄", size=10).pack(side="left")
+        self._label(reference_heading, "定点地图", size=10).pack(side="left")
         self.reference_status = self._label(reference_heading, size=9, color=SUBTLE)
         self.reference_status.pack(side="right")
         reference_actions = tk.Frame(reference, bg=SURFACE)
         reference_actions.pack(fill="x", pady=(8, 0))
         self.reference_visibility_button = _button(reference_actions, "显示", self._toggle_reference_visibility)
         self.reference_visibility_button.pack(side="left")
-        self.reference_adjust_button = _button(reference_actions, "调整位置", self._adjust_reference_position)
+        self.reference_adjust_button = _button(reference_actions, "编辑位置", self._adjust_reference_position)
         self.reference_adjust_button.pack(side="left", padx=(8, 0))
-        self._label(reference, "从首页切回游戏后，在悬浮面板点“调整小抄”；拖动后点“完成调整”。", size=8,
+        self._label(reference, "点击“编辑位置”后移动定点地图；调整完后点击“完成”。", size=8,
                     color=SUBTLE, anchor="w", justify="left", wraplength=400).pack(fill="x", pady=(8, 0))
         self.reference_feedback = self._label(reference, size=9, color=GOLD, anchor="w", justify="left", wraplength=400)
         self._reference_controls_signature = None
@@ -1472,7 +1479,7 @@ class DesktopMainUI:
                 ("使用当前“呼出/收起控件”绑定，显示或隐藏整个游戏控件。", ("toggle-panel",), None),
                 ("“收成球”仅折叠控件，球上的“展开”恢复面板；这与整个控件隐藏不同。录入地图键时收成球，会取消本次录入，已保存的地图键不变。", (), None),
                 ("使用当前“显示/隐藏小抄”绑定改变贴图显隐；隐藏后识别、锁图和后台贴合继续。", ("toggle-sheet-visibility",), None),
-                ("参考小抄可在设置中单独显示或隐藏；总显影仍同时控制参考和贴合显示。切回游戏后，在悬浮面板点“调整小抄”，拖动后点“完成调整”恢复鼠标穿透。", (), None),
+                ("定点地图可在设置中单独显示或隐藏；总显影仍同时控制定点地图和贴合显示。点击“编辑位置”开始编辑，移动后仍保持编辑状态，点击“完成”恢复鼠标穿透。", (), None),
             )),
             ("resources-opacity", "资源与透明度", "先看当前模式的资源状态；不透明度越高，小抄越实。", "map", (
                 ("噩梦作者路线未安装时，结构底图仍可独立浏览；资源未就绪时先查看当前模式的缺失提示。", (), "maps"),
@@ -1531,6 +1538,12 @@ class DesktopMainUI:
             self._help_images[topic] = dict(toggle=image_toggle, holder=holder, label=image_label,
                 opened=False, source=None, photo=None, job=None, generation=0, size=None)
             holder.bind("<Configure>", lambda event, topic=topic: self._queue_help_image(topic), add="+")
+        support = self._card(content, padx=24, pady=18)
+        support.pack(fill="x", pady=(14, 2))
+        self._label(support, "支持开发", size=13, bold=True, anchor="w").pack(fill="x")
+        self._label(support, "星图免费使用，赞赏完全自愿。", size=9, color=MUTED,
+                    anchor="w").pack(fill="x", pady=(6, 10))
+        self._ghost(support, "打开赞赏窗口", self._open_support_window, size=9).pack(anchor="w")
         tk.Frame(content, bg=BG, height=14).pack(fill="x")
         self._finish_scroll_page("help")
 
@@ -1626,31 +1639,36 @@ class DesktopMainUI:
         visible = state.get("visible") is True
         adjusting = state.get("adjusting") is True
         can_adjust = state.get("canAdjust") is True
+        message = str(state.get("message") or "")
         toggle = callable(getattr(self.assistant, "toggle_reference_sheet_visibility", None))
         adjust = callable(getattr(self.assistant, "finish_reference_sheet_move" if adjusting else "move_sheet", None))
-        signature = enabled, visible, adjusting, can_adjust, toggle, adjust
+        signature = enabled, visible, adjusting, can_adjust, toggle, adjust, message
         if signature == self._reference_controls_signature:
             return
         self._reference_controls_signature = signature
         known = isinstance(enabled, bool)
         self.reference_visibility_button.configure(text="隐藏" if enabled is True else "显示",
             state="normal" if known and toggle else "disabled")
-        self.reference_adjust_button.configure(text="完成" if adjusting else "调整位置",
+        self.reference_adjust_button.configure(text="完成" if adjusting else "编辑位置",
             state="normal" if known and adjust and (adjusting or can_adjust) else "disabled")
-        text = ("状态未读取" if not known else "调整中" if visible and adjusting else "显示中" if visible
+        text = ("状态未读取" if not known else "编辑中" if adjusting else "显示中" if visible
                 else "已允许，当前隐藏" if enabled else "已隐藏")
         self.reference_status.configure(text=text)
+        self._set_reference_feedback(message)
 
-    def _reference_action(self, method):
-        callback = getattr(self.assistant, method, None)
-        result = callback() if callable(callback) else dict(success=False, message="参考小抄暂不可用")
-        message = str(result.get("message") or "") if isinstance(result, dict) else ""
+    def _set_reference_feedback(self, message):
         self.reference_feedback.configure(text=message)
         if message:
             self.reference_feedback.pack(fill="x", pady=(4, 0))
         else:
             self.reference_feedback.pack_forget()
+
+    def _reference_action(self, method):
+        callback = getattr(self.assistant, method, None)
+        result = callback() if callable(callback) else dict(success=False, message="定点地图暂不可用")
         self._sync_reference_controls()
+        if isinstance(result, dict) and "message" in result:
+            self._set_reference_feedback(str(result.get("message") or ""))
 
     def _toggle_reference_visibility(self):
         self._reference_action("toggle_reference_sheet_visibility")
@@ -1934,6 +1952,10 @@ class DesktopMainUI:
         # Canvas item's allocation. Reconcile through the existing refresh.
         self._fit_home_canvas()
 
+    def _open_support_window(self):
+        self._support_window = open_support_window(
+            self.window, self._support_window, context_provider=self.assistant)
+
     def _refresh_view(self):
         self._refresh_job = None
         if self._closed:
@@ -1949,6 +1971,9 @@ class DesktopMainUI:
         if event.widget is not self.window:
             return
         self._closed = True
+        if self._support_window is not None:
+            self._support_window.close()
+            self._support_window = None
         self._brand_images.close()
         self._window_brand_icons = ()
         self.brand_icon._desktop_icon = None
@@ -2105,7 +2130,7 @@ class DesktopMainUI:
         self._update_ui_signature = signature
         # Sidebar: version line plus a gold "新版本" pill while the notes are unread.
         if available and service.has_unread and self.rail_version.winfo_manager():
-            self.rail_update_badge.pack(side="left", padx=(6, 0), after=self.rail_version)
+            self.rail_update_badge.pack(side="top", pady=(0, self._px(4)), after=self.rail_version)
         else:
             self.rail_update_badge.pack_forget()
         # Home banner: a quiet reminder that stays until the version is skipped.

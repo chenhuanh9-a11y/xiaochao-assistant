@@ -16,15 +16,9 @@ def main() -> None:
         parser.error('This application uses Windows APIs; build it on Windows.')
     command = [
         sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean',
-        '--onedir', '--windowed', '--name', 'xiaochao-assistant',
         '--distpath', str(root / 'dist'), '--workpath', str(root / 'build' / 'pyinstaller'),
-        '--specpath', str(root / 'build'), '--paths', str(root / 'app'),
-        '--manifest', str(root / 'tools' / 'identityv-assistant.manifest'),
-        '--add-data', f'{root / "version.json"};.',
+        str(root / 'tools' / 'xiaochao-assistant.spec'),
     ]
-    for name in ('THIRD_PARTY_LUCIDE_LICENSE.txt', 'THIRD_PARTY_FLUENT_LICENSE.txt', 'THIRD_PARTY_NOTICES.md'):
-        command.extend(['--add-data', f'{root / name};.'])
-    command.append(str(root / 'app' / 'identityv_daily_assistant.py'))
     if args.dry_run:
         print(subprocess.list2cmdline(command))
         return

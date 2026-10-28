@@ -27,7 +27,7 @@ def display_summary(snapshot):
     pose = _fact(snapshot, "verified", "已核对", "待核对")
     overlay = _fact(snapshot, "overlayVisible", "条件满足", "条件未满足")
     reference = _fact(snapshot, "referenceVisible", "条件满足", "条件未满足")
-    return f"显影开关：{intent} · 位置：{pose}\n贴合显示：{overlay} · 参考：{reference}"
+    return f"显影开关：{intent} · 位置：{pose}\n贴合显示：{overlay} · 定点地图：{reference}"
 
 
 def identity_summary(snapshot, map_name):
@@ -87,7 +87,7 @@ class GameControlView(tk.Frame):
             self.mode_buttons[mode] = button
         self.identity_label = self._label(context, "楼层待核对", color=MUTED)
         self.identity_label.pack(side="right")
-        self.reference_adjust_button = self._button(context, "调整小抄", "move_sheet", padx=7, pady=6)
+        self.reference_adjust_button = self._button(context, "编辑位置", "move_sheet", padx=7, pady=6)
         self.reference_adjust_button.configure(command=self._adjust_reference)
         self.reference_adjust_button.pack(side="right", padx=(4, 6))
 
@@ -185,7 +185,7 @@ class GameControlView(tk.Frame):
         action = "finish_reference_sheet_move" if adjusting else "move_sheet"
         enabled = (self._has("get_control_snapshot") and self._has(action)
                    and (adjusting or snapshot.get("referenceCanAdjust") is True))
-        self.reference_adjust_button.configure(text="完成调整" if adjusting else "调整小抄",
+        self.reference_adjust_button.configure(text="完成" if adjusting else "编辑位置",
                                               state="normal" if enabled else "disabled")
 
     def _opacity_key_released(self, event):

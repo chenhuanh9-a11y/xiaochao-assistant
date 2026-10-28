@@ -43,7 +43,11 @@ def entry_rank_diagnostics(evidence, *, side_error=None):
               'poseRecoveryEvaluated', 'poseRecoveryCandidates', 'poseRecoveryEquivalent',
               'entryInventoryComplete', 'entryInventoryExpectedMapIds',
               'entryInventoryAvailableMapIds', 'entryInventoryMissingMapIds',
-              'entryInventoryUnexpectedMapIds', 'entryInventoryProposalOnly')
+              'entryInventoryUnexpectedMapIds', 'entryInventoryProposalOnly',
+              'sideDoorPath', 'sideDoorResourceError', 'seedCorrespondences',
+              'sideLocalIndexError', 'localSearchMaps', 'localSeedTotal',
+              'outsideSeedsScreened', 'outsideSeedsRejected', 'ringEvaluations',
+              'sideOptionalDoorMs', 'sideOptionalDoorUsed', 'sideOptionalDoorError')
     result = {'sideResourceError': side_error, **evidence.get('recognitionPath', {})}
     for label, diagnostic_key, rows_key in (
         ('passport', 'entryPassport', 'entryPassportCandidates'),
@@ -248,8 +252,16 @@ class MapIdentityEngine(NightmareCandidateEngine):
                  identity_floors=('1','2'), exit_icon_path=None, entry_advisory=None,
                  entry_structure_store=None, entry_route_loader=None,
                  entry_shared_reference_provider=None,
+                 native_similarity_root=None, native_similarity_priority_provider=None,
+                 native_similarity_binding_provider=None,native_similarity_context_provider=None,
                  entry_context_is_current=None, **kwargs):
         super().__init__(*args, **kwargs)
+        from native_similarity_groups import NativeSimilarityGroups
+        self.native_similarity_index = (NativeSimilarityGroups(native_similarity_root,self.pack,
+            binding_provider=native_similarity_binding_provider)
+            if native_similarity_root is not None else None)
+        self.native_similarity_priority_provider = native_similarity_priority_provider
+        self.native_similarity_context_provider = native_similarity_context_provider
         self.identity_profile_id = identity_profile_id
         self.identity_floors = tuple(identity_floors)
         self.entry_advisory = entry_advisory
@@ -281,6 +293,57 @@ class MapIdentityEngine(NightmareCandidateEngine):
                 structure_store=self.entry_identity.structures,profile_for_map=self.identity_profile_for_map)
         except (ImportError,OSError,ValueError,KeyError,TypeError) as error:
             self.side_entry_error = str(error)
+
+    def _native_similarity_prioritize(self, proposals, floor):
+        """Only reorder the existing bounded recovery set, never omit a rival."""
+        hint = self.native_similarity_priority_provider() if self.native_similarity_priority_provider else None
+        index = self.native_similarity_index
+        if not hint or index is None:
+            return proposals
+        if index.condition_index is not None:
+            try:
+                if str(hint[2])!=str(floor):return proposals
+                return index.condition_index.prioritize(proposals,hint,self.entry_shared_reference_provider)
+            except (OSError,ValueError,KeyError,TypeError):return proposals
+        mode,key,hint_floor,group_id,members=hint
+        group=next((g for g in index.groups if g['groupId']==group_id),None)
+        try:
+            if (mode!=self.pack.mode or str(hint_floor)!=str(floor) or group is None
+                    or not any(str(f['floor'])==str(floor) for f in group['floors'])
+                    or index.validate(group,self.entry_shared_reference_provider)!=key):
+                return proposals
+        except (OSError,ValueError,KeyError,TypeError):
+            return proposals
+        order={mid:i for i,mid in enumerate(members)}
+        return sorted(proposals,key=lambda row:order.get(row['mapId'],len(order)))
+
+    @staticmethod
+    def _side_recovery_proposals(rows):
+        """The existing three-slot/profile/repeated-room selection, unchanged."""
+        top=max((float(r['score']) for r in rows),default=0.)
+        band=max(6,top*.65)
+        proposals=[];represented=set()
+        for row in rows:
+            if float(row['score'])<6:continue
+            profile=row.get('profileId')
+            if profile not in represented:
+                represented.add(profile)
+                if not (row.get('continuousRefinementReason')
+                    and not (row.get('verification') or {}).get('success')):
+                    proposals.append(row)
+        proposals=proposals[:3]
+        for first in sorted(proposals,key=lambda row:float(row['score'])):
+            if len(proposals)>=3:break
+            second=next((row for row in rows
+                if row['mapId']==first['mapId'] and row['floor']==first['floor']
+                and row is not first),None)
+            if second is not None:proposals.append(second)
+        for row in rows:
+            if len(proposals)>=3:break
+            if (float(row['score'])>=band and not row.get('continuousRefinementReason')
+                    and not any(row is picked for picked in proposals)):
+                proposals.append(row)
+        return proposals
 
     def _shared_entry_inventory(self, floor):
         """Describe whether shared entry proposals cover this pack floor.
@@ -700,6 +763,7 @@ class MapIdentityEngine(NightmareCandidateEngine):
                     if row['entryCrossCheck'].get('contradicted') is True:
                         row['identityVerified']=False;row['poseVerified']=False
         side_producer='not-run'
+        original_group_recovery=[]
         side_rows=[];side_diagnostics=(dict(reason='side-resource-unavailable',error=self.side_entry_error,complete=False)
             if self.side_entry_identity is None else None);side_winner=None
         if passport_selected:
@@ -736,35 +800,14 @@ class MapIdentityEngine(NightmareCandidateEngine):
                     # Every proposal still takes the identical current-frame
                     # wall/author/identity verification below.
                     top=max((float(r['score']) for r in side_rows),default=0.)
-                    band=max(6,top*.65)
-                    proposals=[];represented=set()
-                    for row in side_rows:
-                        if float(row['score'])<6:continue
-                        profile=row.get('profileId')
-                        if profile not in represented:
-                            represented.add(profile)
-                            # The highest-count pose was already checked and
-                            # refined above. Its concrete wall contradiction
-                            # must not consume a recovery slot again.
-                            if not (row.get('continuousRefinementReason')
-                                and not (row.get('verification') or {}).get('success')):
-                                proposals.append(row)
-                    proposals=proposals[:3]
-                    # Repeated rooms may yield two distinct poses for the
-                    # same lower-density map. Compare both before spending
-                    # the final slot on another high-count false match.
-                    for first in sorted(proposals,key=lambda row:float(row['score'])):
-                        if len(proposals)>=3:break
-                        second=next((row for row in side_rows
-                            if row['mapId']==first['mapId'] and row['floor']==first['floor']
-                            and row is not first),None)
-                        if second is not None:proposals.append(second)
-                    for row in side_rows:
-                        if len(proposals)>=3:break
-                        if (float(row['score'])>=band and not row.get('continuousRefinementReason')
-                                and not any(row is picked for picked in proposals)):
-                            proposals.append(row)
+                    original_proposals=self._side_recovery_proposals(side_rows)
+                    original_group_recovery=original_proposals
+                    recovery_rows=self._native_similarity_prioritize(side_rows,floor)
+                    group_priority_applied=any(a is not b for a,b in zip(recovery_rows,side_rows))
+                    proposals=(self._side_recovery_proposals(recovery_rows)
+                        if group_priority_applied else original_proposals)
                     accepted=[];evaluated=0
+                    completed=set()
                     for candidate in proposals[:3]:
                         if remaining()<=0:break
                         if not (candidate.get('verification') or {}).get('evaluated',True):
@@ -776,11 +819,34 @@ class MapIdentityEngine(NightmareCandidateEngine):
                         if check_entry is not None and passport_diagnostics is not None:
                             candidate['entryCrossCheck']=check_entry(frame,candidate,observation=passport_diagnostics)
                         evaluated+=1
+                        completed.add(id(candidate))
                         if (candidate['verification'].get('success')
                             and (candidate.get('entryCrossCheck') or {}).get('contradicted') is not True):
                             accepted.append(candidate)
                     side_diagnostics=dict(side_diagnostics,poseRecoveryEvaluated=evaluated,
                         poseRecoveryCandidates=len(proposals))
+                    unresolved=[]
+                    if group_priority_applied:
+                        # Reordering work cannot erase original required
+                        # recovery paths or any already successful rival.
+                        # An initial failed verify is not a finished rejection
+                        # when the original path still owes refinement.
+                        required=list(original_proposals)
+                        for row in side_rows:
+                            if ((row.get('verification') or {}).get('success')
+                                    or float(row['score'])>=max(4,top-1)):
+                                if not any(row is old for old in required):required.append(row)
+                        unresolved=[row['mapId'] for row in required
+                            if id(row) not in completed
+                            and not (row.get('verification') or {}).get('success')
+                            and (not row.get('continuousRefinementReason')
+                                 or (row.get('verification') or {}).get('evaluated',True) is False)]
+                        for row in required:
+                            if ((row.get('verification') or {}).get('success')
+                                    and (row.get('entryCrossCheck') or {}).get('contradicted') is not True
+                                    and not any(row is old for old in accepted)):
+                                accepted.append(row)
+                        side_diagnostics['groupPriorityUnverifiedCompetitors']=unresolved
                     equivalent=len(accepted)==1
                     if len(accepted)>1 and len({r['mapId'] for r in accepted})==1:
                         # Compare actual observed client positions, not remote
@@ -790,6 +856,7 @@ class MapIdentityEngine(NightmareCandidateEngine):
                         _,nodes,_=self.side_entry_identity._observe(frame)
                         points=np.array([[*n['point'],1.] for n in nodes])
                         equivalent=equivalent_observed_poses(accepted,points)
+                    if unresolved:equivalent=False
                     side_diagnostics['poseRecoveryEquivalent']=equivalent
                     if evaluated==len(proposals) and accepted and equivalent:
                         candidate=dict(accepted[0],poseAmbiguous=False)
@@ -876,13 +943,86 @@ class MapIdentityEngine(NightmareCandidateEngine):
                 identityBudgetExceeded=False)
         rows.sort(key=lambda row:row['score'],reverse=True)
         diagnostics = entry_rank_diagnostics(evidence, side_error=self.side_entry_error)
-        diagnostics['elapsedMs'] = (time.perf_counter()-started)*1000
         for row in rows:
             row['difficultRecognition'] = diagnostics
+        if rows:
+            # Reuse the existing entry competitive band and original side
+            # band/recovery set. Raw weak hypotheses remain on all rows, but
+            # do not become new mandatory group competitors merely by existing.
+            front_top=max((float(r['score']) for r in entry_rows),default=0.)
+            side_top=max((float(r['score']) for r in side_rows),default=0.)
+            group_required={r['mapId'] for r in entry_rows if float(r['score'])>=max(10,front_top*.65)}
+            group_required.update(r['mapId'] for r in side_rows if float(r['score'])>=max(4,side_top-1)
+                or (r.get('verification') or {}).get('success'))
+            group_required.update(r['mapId'] for r in original_group_recovery)
+            rows[0]['nativeSimilarity'] = self.native_similarity_index.propose(
+                rows, entry_rows, entry_diagnostics, str(floor),
+                self.entry_shared_reference_provider, lambda:self.entry_identity.geometry(frame),
+                side_rows=side_rows,side_diagnostics=side_diagnostics,
+                deadline=started+budget,prior=(self.native_similarity_context_provider()
+                    if getattr(self,'native_similarity_context_provider',None) else None),
+                required_map_ids=tuple(sorted(group_required))) if self.native_similarity_index is not None else dict(status='none',reason='similarity-root-not-configured')
+        diagnostics['elapsedMs'] = (time.perf_counter()-started)*1000
         return rows[:limit]
 
     def identity_profile_for_map(self, map_id):
         return getattr(self.pack, 'identity_profiles', {}).get(map_id, self.identity_profile_id)
+
+    def native_similarity_pose_observation(self, frame, map_id, floor, matrix, *, prior, deadline):
+        """Continue an established entrance using one independently checked pose.
+
+        This does not retrieve a new group or authorize identity/route pixels.
+        The caller owns the current-frame/global validation of this matrix.
+        """
+        index=getattr(self,'native_similarity_index',None)
+        conditions=getattr(index,'condition_index',None)
+        if conditions is None or str(floor)!='1' or not prior:
+            return None
+        rid=f'{self.pack.mode}/{map_id}/{floor}'
+        reference=conditions.references.get(rid)
+        if reference is None:return None
+        side=reference['features'].get('side') or {}
+        row=dict(mapId=map_id,profileId=reference['profile'],
+            sourceProduct=side.get('sourceProduct',reference['resourcePath']),
+            verification=dict(success=True,residual=dict(verified=True),
+                matrixSourceToClient=np.asarray(matrix,dtype=float).tolist()))
+        cohorts=[{conditions.references[conditions.poses[p]['target']]['mapId']
+            for p in map(str,conditions.conditions[cid]['poseIds'])}
+            for did,cids in prior[3] if did in conditions.domains
+            for cid in cids if cid in conditions.conditions]
+        members=set.intersection(*cohorts) if cohorts else set()
+        if map_id not in members:return None
+        return index.propose([],[],dict(complete=True,entryInventoryComplete=True),str(floor),
+            self.entry_shared_reference_provider,lambda:self.entry_identity.geometry(frame),
+            side_rows=[row],side_diagnostics=dict(complete=True),deadline=deadline,
+            prior=prior,required_map_ids=tuple(sorted(members)))
+
+    def native_similarity_recover_observation(self, frame, floor, *, prior, deadline):
+        """Ask the existing local locator only within the established family."""
+        index=getattr(self,'native_similarity_index',None)
+        conditions=getattr(index,'condition_index',None)
+        if conditions is None or str(floor)!='1' or not prior:return None
+        cohorts=[{conditions.references[conditions.poses[p]['target']]['mapId']
+            for p in map(str,conditions.conditions[cid]['poseIds'])}
+            for did,cids in prior[3] if did in conditions.domains
+            for cid in cids if cid in conditions.conditions]
+        members=set.intersection(*cohorts) if cohorts else set()
+        current=[]
+        for member in sorted(members):
+            remaining=deadline-time.perf_counter()
+            if remaining<=0:return None
+            rows,diagnostic=self.side_entry_identity.rank(frame,str(floor),map_id=member,
+                budget_seconds=remaining)
+            if diagnostic.get('complete') is not True or diagnostic.get('verificationComplete') is not True:
+                return None
+            current.extend(r for r in rows if not r.get('poseAmbiguous')
+                and (r.get('verification') or {}).get('success') is True
+                and ((r.get('verification') or {}).get('residual') or {}).get('verified') is True)
+        if not current or time.perf_counter()>=deadline:return None
+        return index.propose([],[],dict(complete=True,entryInventoryComplete=True),str(floor),
+            self.entry_shared_reference_provider,lambda:self.entry_identity.geometry(frame),
+            side_rows=current,side_diagnostics=dict(complete=True),deadline=deadline,
+            prior=prior,required_map_ids=tuple(sorted(members)))
 
     def preload(self,floor='1'):
         if floor not in self.identity_floors:return 0

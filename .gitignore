@@ -49,6 +49,9 @@ secrets*
 # Resources are supplied separately; only documentation is versioned
 /assets/**
 !/assets/README.md
+!/assets/support/
+!/assets/support/wechat.png
+!/assets/support/alipay.png
 /references/**
 !/references/README.md
 /resources-private/
@@ -58,6 +61,9 @@ secrets*
 /.structure-*
 Thumbs.db
 Desktop.ini
+
+# This hand-maintained recipe is source, unlike generated PyInstaller specs.
+!/tools/xiaochao-assistant.spec
 
 # Windows update notice drafts (tools/publish_windows_notice.py)
 /notes.txt

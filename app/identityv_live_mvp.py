@@ -165,6 +165,22 @@ user32.TranslateMessage.argtypes = [ctypes.POINTER(MSG)]
 user32.TranslateMessage.restype = ctypes.c_bool
 user32.DispatchMessageW.argtypes = [ctypes.POINTER(MSG)]
 user32.DispatchMessageW.restype = ctypes.c_ssize_t
+user32.GetCapture.argtypes = []
+user32.GetCapture.restype = ctypes.c_void_p
+user32.SetCapture.argtypes = [ctypes.c_void_p]
+user32.SetCapture.restype = ctypes.c_void_p
+user32.ReleaseCapture.argtypes = []
+user32.ReleaseCapture.restype = ctypes.c_bool
+user32.ClientToScreen.argtypes = [ctypes.c_void_p, ctypes.POINTER(POINT)]
+user32.ClientToScreen.restype = ctypes.c_bool
+user32.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+user32.GetWindowLongW.restype = ctypes.c_long
+user32.SetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_long]
+user32.SetWindowLongW.restype = ctypes.c_long
+user32.GetForegroundWindow.argtypes = []
+user32.GetForegroundWindow.restype = ctypes.c_void_p
+user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+user32.GetWindowThreadProcessId.restype = ctypes.c_ulong
 
 
 def now_iso() -> str:
@@ -485,6 +501,17 @@ def capture_client_gdi(hwnd: int) -> tuple[np.ndarray, tuple[int, int, int, int]
             user32.ReleaseDC(None, screen_dc)
 
 
+def client_frame_is_blank(frame: np.ndarray) -> bool:
+    """Keep the all-BGR-sample blank test without NumPy's full float64 copy."""
+    mean, deviation = cv2.meanStdDev(frame.reshape(-1, 1))
+    mean, deviation = float(mean[0, 0]), float(deviation[0, 0])
+    # E[x*x]-E[x]**2 can round differently from NumPy at the strict boundary.
+    # Retain the original decision there, including its short-circuit behavior.
+    if abs(mean - 1.0) <= 1e-8 or abs(deviation - 1.0) <= 1e-8:
+        return bool(float(frame.mean()) < 1.0 or float(frame.std()) < 1.0)
+    return mean < 1.0 or deviation < 1.0
+
+
 def capture_client_window_dc(hwnd: int) -> tuple[np.ndarray, tuple[int, int, int, int]]:
     """Capture the game client DC without compositing unrelated top windows."""
     if user32.IsIconic(hwnd):
@@ -520,7 +547,7 @@ def capture_client_window_dc(hwnd: int) -> tuple[np.ndarray, tuple[int, int, int
             buffer_type.from_address(bits.value),
         ).reshape(height, width, 4)
         frame = np.ascontiguousarray(bgra[:, :, :3])
-        if float(frame.mean()) < 1.0 or float(frame.std()) < 1.0:
+        if client_frame_is_blank(frame):
             raise RuntimeError("game-client-dc-returned-blank-frame")
         return frame, bounds
     finally:
@@ -647,6 +674,7 @@ def _floor_button_layout_in_geometry(
     density = cv2.boxFilter((gray > 60).astype(np.float32), -1, (kw, kh), normalize=True)
     _, _, stats, _ = cv2.connectedComponentsWithStats((density > 0.70).astype(np.uint8), 8)
     best = None
+    filled_floors = set()
     for bx, by, bw, bh, _area in stats[1:]:
         tile_width, tile_height = bw + kw * 0.5, bh + kh * 0.5
         if not (w * 0.020 <= tile_width <= w * 0.060
@@ -690,10 +718,14 @@ def _floor_button_layout_in_geometry(
                     uneven = abs(left - right) / max(left, right)
                     if uneven > 0.28:
                         continue
+                    filled_floors.add((-1, 1, 2)[(first, second, third).index(anchor)])
                     score = float(smooth[first] + smooth[second] + smooth[third]) - 35.0 * uneven
                     if best is None or score > best[0]:
                         best = (score, [float((x0 + index) / w) for index in (first, second, third)], measured)
-    return (best[1], best[2]) if best is not None else None
+    if best is None:
+        return None
+    return best[1], dict(best[2], filledFloor=(next(iter(filled_floors))
+                                             if len(filled_floors) == 1 else None))
 
 
 def _locate_floor_button_centers_in_geometry(
@@ -827,7 +859,7 @@ def map_interface_shape(width: int, height: int) -> dict:
     }
 
 
-def detect_map_interface(frame: np.ndarray) -> dict:
+def detect_map_interface(frame: np.ndarray, *, floor_read: dict | None = None) -> dict:
     h, w = frame.shape[:2]
     shape = map_interface_shape(w, h)
     if not shape["shapeAccepted"]:
@@ -856,6 +888,12 @@ def detect_map_interface(frame: np.ndarray) -> dict:
         tinted_ratios = {name: neutral_ratio(frame, region, True) for name, region in MAP_REGIONS.items()}
         tinted_count = sum(tinted_ratios[name] >= MAP_REGIONS[name][4] for name in MAP_REGIONS)
     damage = strong and tinted_count >= 3
+    # The broad tinted color bands can also match ordinary dark gameplay.
+    # Require the actual map-only button triplet for this tolerant branch.
+    floor_controls = None
+    if damage:
+        floor_controls = (floor_read if floor_read is not None else detect_selected_floor(frame))
+    tinted_controls_present = bool(floor_controls and floor_controls.get('layout') == 'localized-triplet')
     matched = max(neutral_count, tinted_count if damage else 0)
     required_backdrop = (
         MAP_INTERFACE_NARROW_BACKDROP
@@ -863,7 +901,7 @@ def detect_map_interface(frame: np.ndarray) -> dict:
     )
     detected = bool(
         flat_map_canvas and backdrop >= required_backdrop
-        and (neutral_count >= 3 or damage)
+        and (neutral_count >= 3 or (damage and tinted_controls_present))
     )
     if detected:
         reason = "map-interface-detected"
@@ -873,6 +911,8 @@ def detect_map_interface(frame: np.ndarray) -> dict:
         reason = "map-backdrop-insufficient"
     elif matched < 3:
         reason = "map-anchors-insufficient"
+    elif damage and not tinted_controls_present:
+        reason = "tinted-map-controls-unlocalized"
     else:
         reason = "map-evidence-insufficient"
     return {
@@ -888,6 +928,7 @@ def detect_map_interface(frame: np.ndarray) -> dict:
         "backdropTexture": texture,
         "flatMapCanvas": flat_map_canvas,
         "detectionMode": "damage-tint" if damage else "neutral",
+        "tintedControlsLocalized": tinted_controls_present if damage else None,
         "requiredBackdropRatio": required_backdrop,
         "clientCoordinatePolicies": dict(CLIENT_COMPONENT_POLICIES),
     }
@@ -939,7 +980,13 @@ def detect_selected_floor(frame: np.ndarray) -> dict:
     ordered = sorted(scores, key=scores.get, reverse=True)
     top, second = ordered[0], ordered[1]
     margin = scores[top] - scores[second]
-    selected = top if scores[top] >= 25.0 and margin >= 8.0 else None
+    # Preserve the absolute-contrast path. At lower contrast, require two
+    # independent observations to agree: the unique filled tile that anchored
+    # the layout, and a texture score at least three times the other buttons.
+    # A remembered floor, a lone glyph, or an ambiguous tile cannot qualify.
+    filled_floor = vertical.get('filledFloor')
+    filled_highlight = bool(filled_floor == top and scores[top] >= 3.0 * scores[second])
+    selected = top if margin >= 8.0 and (scores[top] >= 25.0 or filled_highlight) else None
     return {
         "selectedFloor": selected,
         "scores": {str(key): value for key, value in scores.items()},
@@ -947,6 +994,9 @@ def detect_selected_floor(frame: np.ndarray) -> dict:
         "confidence": min(1.0, max(0.0, margin / 25.0)) if selected else 0.0,
         "reason": "highlight-detected" if selected else "floor-controls-unavailable-or-ambiguous",
         "layout": layout,
+        "filledFloor": filled_floor,
+        "highlightEvidence": ("absolute-contrast" if selected and scores[top] >= 25.0
+                              else "filled-tile-and-relative-contrast" if selected else None),
         "centers": centers,
         "layoutFamily": vertical["layoutFamily"],
         "safeTop": vertical["safeTop"],
@@ -1245,6 +1295,8 @@ class LayeredOverlay:
         self.client_offset: tuple[int, int] | None = None
         self.visible = False
         self.visibility_guard = None
+        self._pointer_mailbox = None
+        self._pointer_dragging = False
         self._visibility_lock = threading.RLock()
         self._last_presented_bgra: np.ndarray | None = None
         self._last_presented_position: tuple[int, int] | None = None
@@ -1326,6 +1378,22 @@ class LayeredOverlay:
             )
 
     def _wndproc_callback(self, hwnd, msg, wp, lp):
+        try:
+            handled = self._reference_pointer_message(hwnd, int(msg), lp)
+        except Exception:
+            self._pointer_failed = True
+            self._pointer_dragging = False
+            try:
+                if hwnd and user32.GetCapture() == hwnd:
+                    user32.ReleaseCapture()
+            except Exception:
+                pass
+            return 0
+        if int(msg) == 0x0082:  # WM_NCDESTROY also covers destruction outside close().
+            self.hwnd = None
+            self.visible = False
+        if handled is not None:
+            return handled
         if int(msg) == int(self.WM_APP_HIDE):
             self._record_diagnostic(
                 "overlay-hide-request-consumed",
@@ -1334,6 +1402,68 @@ class LayeredOverlay:
             self.hide()
             return 0
         return user32.DefWindowProcW(hwnd, msg, wp, lp)
+
+    def set_pointer_mailbox(self, mailbox):
+        """UI owner installs a mailbox without an additional WndProc subclass."""
+        old = getattr(self, '_pointer_mailbox', None)
+        if old is None and mailbox is None:
+            return  # Preserve existing non-editor overlays' close behavior.
+        if threading.get_ident() != self._owner_thread_id:
+            raise RuntimeError('Native pointer mode belongs to the window owner')
+        old, self._pointer_mailbox = self._pointer_mailbox, mailbox
+        self._pointer_dragging = False
+        self._pointer_failed = False
+        if old is not None and old is not mailbox:
+            old.close()
+        if self.hwnd and user32.GetCapture() == self.hwnd:
+            user32.ReleaseCapture()
+        if self.hwnd:
+            style = user32.GetWindowLongW(self.hwnd, -20)
+            style = (style & ~self.WS_EX_TRANSPARENT) if mailbox is not None else (style | self.WS_EX_TRANSPARENT)
+            user32.SetWindowLongW(self.hwnd, -20, style | self.WS_EX_NOACTIVATE)
+
+    def _reference_pointer_message(self, hwnd, message, lp):
+        """Native messages may only touch Win32 input and the scalar mailbox."""
+        mailbox = getattr(self, '_pointer_mailbox', None)
+        if mailbox is None:
+            return None
+        if message == 0x0021:  # WM_MOUSEACTIVATE / MA_NOACTIVATE
+            return 3
+        if message in (0x001f, 0x0215, 0x0082):  # cancel/capture loss/destroy
+            if self._pointer_dragging or message == 0x0082:
+                self._pointer_dragging = False
+                mailbox.post('cancel')
+                if user32.GetCapture() == hwnd:
+                    user32.ReleaseCapture()
+            return None
+        if message not in (0x0201, 0x0200, 0x0202):
+            return None
+        try:
+            point = POINT(ctypes.c_short(lp & 0xffff).value, ctypes.c_short((lp >> 16) & 0xffff).value)
+            if not user32.ClientToScreen(hwnd, ctypes.byref(point)):
+                raise OSError('Pointer coordinates unavailable')
+            if message == 0x0201:
+                user32.SetCapture(hwnd)
+                self._pointer_dragging = bool(user32.GetCapture() == hwnd)
+                if not self._pointer_dragging or not mailbox.post('down', point.x, point.y):
+                    raise OSError('Pointer capture unavailable')
+            elif self._pointer_dragging:
+                if message == 0x0202:
+                    # ReleaseCapture can synchronously send WM_CAPTURECHANGED.
+                    # The gesture has already ended; it must not cancel editing.
+                    self._pointer_dragging = False
+                    mailbox.post('up', point.x, point.y)
+                    if user32.GetCapture() == hwnd:
+                        user32.ReleaseCapture()
+                elif not mailbox.post('move', point.x, point.y):
+                    raise OSError('Pointer mailbox full')
+            return 0
+        except Exception:
+            self._pointer_dragging = False
+            mailbox.post('cancel')
+            if user32.GetCapture() == hwnd:
+                user32.ReleaseCapture()
+            return 0
 
     def hide(self) -> None:
         with self._visibility_guard("hide"):
@@ -1561,6 +1691,7 @@ class LayeredOverlay:
             user32.DispatchMessageW(ctypes.byref(msg))
 
     def close(self) -> None:
+        self.set_pointer_mailbox(None)
         with self._visibility_guard("close"):
             if self.hwnd:
                 self.hide()

@@ -1,0 +1,4 @@
+/output/
+/local-*/
+/node_modules/
+*.bin

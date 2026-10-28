@@ -1,0 +1,12 @@
+{
+  "source": "standalone map-config-extractor-share, 2026-10-25",
+  "files": {
+    "extract-map-configs.cjs": "790118881a274dd9e807b0eeb1884bf3a68a35d52df8d8885e78640f0ab36ca7",
+    "lib/marshal.js": "fdab3265ecaaff9b4e506981d6de4f44f1b563c566c3ec2347c781a9b29f3aa8",
+    "lib/netease_opmap.py": "01f6c771dfa20c0f2e39314f24e797e9f8022fb93fbf74e11b9bd14c390df5e8",
+    "lib/recover_source_literals.js": "70c93debc4aae8422405d8efef02c86078a1daae79f7dc4a0569042f6471aa92",
+    "lib/resource-codec.cjs": "e0daa8e65b00c9716ae956e69b50689a0ca5f9a4f6fa95a4e9acd1f51216ad6c"
+  },
+  "change": "Unmodified copies; data, resources and historical validation outputs excluded.",
+  "hashDomain": "UTF-8 source bytes with CRLF normalized to LF, matching Git text blobs"
+}
