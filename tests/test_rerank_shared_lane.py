@@ -13,7 +13,7 @@ class Host:
     pass
 
 
-for name in ('_rerank_scope', '_rerank_current', '_cancel_rerank_work',
+for name in ('_established_group_prior', '_rerank_scope', '_rerank_current', '_cancel_rerank_work',
              '_finish_rerank_request', '_drain_pending_rerank',
              '_retry_unconfirmed_changed_frame', '_accept_unconfirmed_recovery_result',
              '_consider_floor_observation'):

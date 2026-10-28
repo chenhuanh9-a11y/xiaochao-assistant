@@ -115,6 +115,8 @@ class Recovery(unittest.TestCase):
         scope = method('_rerank_scope')
         state._rerank_scope = lambda floor: scope(state, floor)
         state._front_group_provisional_lock_context=lambda: None
+        prior = method('_established_group_prior')
+        state._established_group_prior=lambda: prior(state)
         state.engine=SimpleNamespace(preload_status=lambda _: {}, rank=Mock(side_effect=ValueError('fixture')))
         context=self.event(state)['unconfirmedRecoveryContext']
         worker=call(state,'B1','automatic-stable',recovery_context=context)

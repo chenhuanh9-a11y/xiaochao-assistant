@@ -60,8 +60,9 @@ class NativeDifficultPack:
 
 class NativeDifficultCandidateEngine(MapIdentityEngine):
     """Original ranking/validators, with the complete declared competitor scope."""
-    def rank(self, frame, floor='1', limit=30, *, budget_seconds=None):
-        rows = super().rank(frame, floor=floor, limit=limit, budget_seconds=budget_seconds)
+    def rank(self, frame, floor='1', limit=30, *, budget_seconds=None, _established_members=None):
+        rows = super().rank(frame, floor=floor, limit=limit, budget_seconds=budget_seconds,
+                            _established_members=_established_members)
         # A missing native competitor cannot disappear from a uniqueness
         # decision. Preserve scores/order and expose the successful partial
         # fits as proposals, just as the existing shared entry inventory does.
