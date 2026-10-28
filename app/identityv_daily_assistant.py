@@ -6124,9 +6124,9 @@ class DailyAssistant:
         self.route_profile_id = selected
 
     def _shown_route_profile(self):
-        """The selected gallery stays the shown choice while its maps use the structure basis."""
+        """Keep the preference visible even when this floor needs a fallback."""
         preferred = getattr(self, 'preferred_route_profile_id', None)
-        return preferred if gallery_of(preferred) else self.route_profile_id
+        return preferred if preferred in dict(self._mode_route_options()) else self.route_profile_id
 
     def _author_route_options(self):
         if self._shared_structure_mode_enabled():
@@ -9440,8 +9440,143 @@ class DailyAssistant:
         # and the user's visibility intent. It also hides a now-missing route.
         self.show_sheet()
 
+    def route_selection_snapshot(self) -> dict:
+        options = tuple(self._mode_route_options())
+        selected = self._shown_route_profile()
+        effective = self.route_profile_id
+        map_id = getattr(getattr(self, 'gate', None), 'confirmed_id', None)
+        floor = str(getattr(self, 'current_floor', '1'))
+        fallback = bool(map_id and selected != effective and not gallery_of(selected))
+        message = ('所选作者没有当前地图／楼层的可用路线，当前显示结构底图。'
+                   if fallback else '选择实际用于定点地图和游戏贴合的路线；浏览来源只影响预览。')
+        return dict(mode=getattr(self, 'game_mode', None), options=options,
+                    selected=selected, effective=effective, fallback=fallback,
+                    mapId=map_id, floor=floor, message=message)
+
+    def select_route_profile(self, profile_id: str) -> dict:
+        """One owner-thread settings action shared by settings and resources."""
+        if profile_id not in dict(self._mode_route_options()):
+            return dict(success=False, message='当前模式尚未安装这份路线，请先导入资源包。')
+        try:
+            self._apply_route_profile_setting(profile_id=profile_id)
+        except (OSError, ValueError, TypeError) as error:
+            return dict(success=False, message=f'路线设置未完成：{type(error).__name__}')
+        return dict(success=True, **self.route_selection_snapshot())
+
+    def _shared_display_bridge(self, profile, map_id, floor):
+        if profile == SHARED_STRUCTURE_PROFILE_ID:
+            return np.eye(3)
+        adapters = getattr(self, 'author_coordinate_adapters', None)
+        if adapters is None:
+            return None
+        source = adapters.matrix_profile_to_canonical(SHARED_STRUCTURE_PROFILE_ID, map_id, floor)
+        display = adapters.matrix_profile_to_canonical(profile, map_id, floor)
+        if source is None or display is None:
+            return None
+        return np.linalg.inv(source) @ display
+
+    def _refresh_shared_route_pixels(self, previous_profile: str) -> bool:
+        """Repaint author pixels through static bridges; never identify or fit."""
+        map_id = getattr(getattr(self, 'gate', None), 'confirmed_id', None)
+        floor = str(getattr(self, 'current_floor', '1'))
+        effective = self.route_profile_id
+        group = getattr(self, 'round_layer_group', None)
+        core = getattr(self, 'alignment_core_v2', None)
+        # Both pose stores use canonical geometry. Only their display-profile
+        # metadata changes; roots, floor relations, generations and grants stay.
+        if group is not None and group.map_id == map_id:
+            for tracked_floor, tracking in group.tracking_by_floor.items():
+                rebased = dict(tracking)
+                try:
+                    cached_bridge = tracking.get('routeDisplayBridge')
+                    old_bridge = (np.asarray(cached_bridge, dtype=np.float64) if cached_bridge is not None
+                                  else self._shared_display_bridge(group.route_profile_id, map_id, tracked_floor))
+                    new_profile = self._effective_route_profile(map_id, tracked_floor)
+                    new_layer = self._shared_display_layer(new_profile, map_id, tracked_floor)
+                    if (old_bridge is None or old_bridge.shape != (3, 3)
+                        or not np.isfinite(old_bridge).all() or new_layer is None):
+                        raise ValueError('display bridge unavailable')
+                    transport = np.linalg.inv(old_bridge) @ new_layer['matrixDisplayToReference']
+                    rebased['routeDisplayBridge'] = np.asarray(new_layer['matrixDisplayToReference']).tolist()
+                    for key in ('translationMaskMatrix', 'layoutAnchorMatrix'):
+                        if rebased.get(key) is None:
+                            continue
+                        matrix = np.asarray(rebased[key], dtype=np.float64)
+                        if matrix.shape != (3, 3) or not np.isfinite(matrix).all():
+                            raise ValueError('invalid display tracking matrix')
+                        rebased[key] = (matrix @ transport).tolist()
+                    point = rebased.get('verifiedPlayerAuthorPoint')
+                    if point is not None:
+                        point = np.asarray(point, dtype=np.float64)
+                        if point.shape != (2,) or not np.isfinite(point).all():
+                            raise ValueError('invalid display tracking point')
+                        projected = np.linalg.inv(transport) @ np.array([*point, 1.0])
+                        if abs(projected[2]) < 1e-12 or not np.isfinite(projected).all():
+                            raise ValueError('invalid transported display point')
+                        rebased['verifiedPlayerAuthorPoint'] = (projected[:2] / projected[2]).tolist()
+                except (OSError, ValueError, TypeError, KeyError, np.linalg.LinAlgError, cv2.error):
+                    # A render cache cannot undo an already-saved selection.
+                    # Drop only its author basis; retain canonical evidence.
+                    for key in ('translationMaskMatrix', 'layoutAnchorMatrix', 'verifiedPlayerAuthorPoint', 'routeDisplayBridge'):
+                        rebased.pop(key, None)
+                tracking.clear()
+                tracking.update(rebased)
+                tracking['poseVerifiedAgainstRenderedProfile'] = False
+                tracking.pop('renderedProfileResidual', None)
+            group.render_profile_verified_floors.clear()
+            group.route_profile_id = effective
+            group.displayed_overlay = None
+        pose = getattr(core, 'pose_by_map', {}).get(map_id) if core is not None else None
+        if pose is not None:
+            pose.route_profile_id = effective
+        displayed = getattr(self, 'current_alignment_candidate', None) or {}
+        authorization = getattr(core, 'display_authorization', None)
+        frame = getattr(self, 'current_frame', None)
+        bounds = getattr(self, 'current_bounds', None)
+        old_matrix = getattr(self, 'drag_transform', None)
+        if (not displayed.get('accepted') or displayed.get('mapId') != map_id
+            or displayed.get('floor') != floor or displayed.get('cycleId') != getattr(self, 'active_map_cycle_id', None)
+            or not isinstance(frame, np.ndarray) or bounds is None or old_matrix is None
+            or authorization is None or not self._display_authorization_is_current(authorization.authorization_id)):
+            return False
+        binding = (self.active_map_cycle_id, self.current_frame_generation,
+                   getattr(self, 'surface_visibility_generation', 0), authorization.authorization_id)
+        try:
+            old_profile = getattr(self, 'drag_route_profile_id', None) or displayed.get('routeProfileId') or previous_profile
+            old_bridge = self._shared_display_bridge(old_profile, map_id, floor)
+            if old_bridge is None:
+                return False
+            native = np.asarray(old_matrix, dtype=np.float64) @ np.linalg.inv(old_bridge)
+            spec = self._aligned_render_spec(map_id, floor, native, profile_id=effective)
+            if spec is None:
+                return False
+            overlay, _ = self._build_display_overlay(spec['routeSource'], spec['matrixSourceToClient'], frame.shape,
+                map_id=map_id, floor=floor, profile_id=effective, minimum_coverage=0.0, minimum_visible_pixels=1)
+            if overlay is None:
+                return False
+        except (OSError, ValueError, TypeError, KeyError, np.linalg.LinAlgError, cv2.error):
+            return False
+        if (binding != (self.active_map_cycle_id, self.current_frame_generation,
+                        getattr(self, 'surface_visibility_generation', 0),
+                        getattr(getattr(core, 'display_authorization', None), 'authorization_id', None))
+            or not self._display_authorization_is_current(authorization.authorization_id)):
+            return False
+        if not self._alignment_v2_show_overlay(overlay, tuple(bounds[:2]), authorization_id=authorization.authorization_id):
+            return False
+        self.drag_transform = np.asarray(spec['matrixSourceToClient']).copy()
+        self.drag_route_source = spec['routeSource']
+        self.drag_route_profile_id = spec['routeProfileId']
+        self.drag_display_label = spec.get('displayLabel')
+        self.drag_current_overlay = overlay.copy()
+        self.drag_overlay_base = overlay.copy()
+        self.drag_overlay_offset = np.zeros(2, dtype=np.float64)
+        self.current_alignment_candidate = dict(displayed,
+            matrixSourceToClient=self.drag_transform.tolist(), routeProfileId=spec['routeProfileId'])
+        return True
+
     def _apply_route_profile_setting(self, _event=None, *, profile_id=None) -> None:
         previous = self.route_profile_id
+        previous_preference = getattr(self, 'preferred_route_profile_id', previous)
         selected = profile_id or {label: key for key, label in self._mode_route_options()}.get(
             self.route_profile_var.get()) or ROUTE_PROFILE_IDS_BY_LABEL.get(
             self.route_profile_var.get(), DEFAULT_ROUTE_PROFILE_ID,
@@ -9458,9 +9593,30 @@ class DailyAssistant:
             selected = DEFAULT_ROUTE_PROFILE_ID
             self._set_status("作者路线目录不可用，已保留王清心路线", "#ffb84d")
         self.route_profile_id = selected
+        mode = getattr(self, 'game_mode', 'nightmare')
+        mode_profiles = dict(getattr(self, 'mode_route_profiles', {}))
+        previous_modes = dict(mode_profiles)
+        mode_profiles[mode] = selected
+        self.mode_route_profiles = mode_profiles
+        try:
+            if self._save_settings() is False:
+                raise OSError('route settings were not saved')
+        except (OSError, ValueError, TypeError):
+            self.preferred_route_profile_id = previous_preference
+            self.mode_route_profiles = previous_modes
+            self.route_profile_var.set(self._route_profile_label(self._shown_route_profile()))
+            raise
         self.route_profile_var.set(self._route_profile_label(selected))
         self._sync_route_settings_ui()
-        self._save_settings()
+        if self._shared_structure_mode_enabled():
+            painted = self._refresh_shared_route_pixels(previous)
+            if not painted:
+                self._hide_spatial_route('route-selection-awaiting-current-presentation')
+            self._refresh_visible_sheet_after_route_setting()
+            snapshot = self.route_selection_snapshot()
+            self._set_status(snapshot['message'] if snapshot['fallback'] else '实际使用路线已切换', '#ffb84d' if snapshot['fallback'] else '#36c990')
+            self._log('route-profile-setting', profileId=selected, displayOnly=True, repainted=painted)
+            return
         self._refresh_visible_sheet_after_route_setting()
         self._log("route-profile-setting", profileId=selected)
         if selected != previous:
@@ -16634,6 +16790,19 @@ class DailyAssistant:
         core = self.alignment_core_v2
         event_data = dict(event or {})
         has_worker_result = "alignmentV2WorkerFit" in event_data
+        if has_worker_result and self._shared_structure_mode_enabled():
+            worker_fit = event_data.get('alignmentV2WorkerRecoveryFit') or event_data.get('alignmentV2WorkerFit') or {}
+            bound_profile = (worker_fit.get('routeProfileId')
+                if worker_fit.get('coordinateSpace') == 'author-render-to-client'
+                else event_data.get('routeProfileId') if event_data.get('alignmentV2WorkerRecoveryFit') else None)
+            if bound_profile and bound_profile not in (SHARED_STRUCTURE_PROFILE_ID, self.route_profile_id):
+                # A completed author-basis job is not a new geometry failure.
+                # It cannot hide the freshly repainted current author. Neutral
+                # results still flow through normal current-frame validation.
+                self._log_core_chain_event('alignment-v2-author-result-discarded',
+                    mapId=map_id, floor=floor, sourceProfileId=bound_profile,
+                    currentProfileId=self.route_profile_id, geometryVerdict=False)
+                return dict(handled=True, success=False, reason='presentation-profile-stale')
         if (getattr(self, 'game_mode', 'nightmare') == 'difficult'
             and has_worker_result
             and (event_data.get('alignmentV2WorkerFit') or {}).get('reason') == 'structure-work-obsolete'):
@@ -21084,7 +21253,7 @@ class DailyAssistant:
             route_profile_id
             or getattr(self, "route_profile_id", DEFAULT_ROUTE_PROFILE_ID)
         )
-        if group.route_profile_id != selected:
+        if group.route_profile_id != selected and not self._shared_structure_mode_enabled():
             return None
         return group
 
@@ -21192,9 +21361,17 @@ class DailyAssistant:
         if group is None or floor not in ROUND_LAYER_FLOORS:
             return None
         adapters = getattr(self, "author_coordinate_adapters", None)
-        matrix = group.profile_pose_for_floor(adapters, floor)
-        recognition = group.recognition_pose_for_floor(adapters, floor)
         canonical = group.canonical_pose_for_floor(floor)
+        shared_spec = None
+        if self._shared_structure_mode_enabled() and canonical is not None:
+            reference_basis = adapters.matrix_profile_to_canonical(SHARED_STRUCTURE_PROFILE_ID, map_id, floor) if adapters is not None else np.eye(3)
+            recognition = canonical @ reference_basis if reference_basis is not None else None
+            shared_spec = (self._aligned_render_spec(map_id, floor, recognition,
+                           profile_id=self._effective_route_profile(map_id, floor)) if recognition is not None else None)
+            matrix = shared_spec['matrixSourceToClient'] if shared_spec is not None else None
+        else:
+            matrix = group.profile_pose_for_floor(adapters, floor)
+            recognition = group.recognition_pose_for_floor(adapters, floor)
         temporary_zoom = self._active_open_cycle_zoom_transform(map_id)
         if matrix is not None:
             matrix = temporary_zoom @ matrix
@@ -21213,9 +21390,9 @@ class DailyAssistant:
             canonical = translated_source_matrix(
                 canonical, float(transient_offset[0]), float(transient_offset[1]),
             )
-        route = self._aligned_author_route_image(
-            group.route_profile_id, map_id, floor,
-        )
+        display_profile = shared_spec['routeProfileId'] if shared_spec is not None else group.route_profile_id
+        route = shared_spec['routeSource'] if shared_spec is not None else self._aligned_author_route_image(
+            group.route_profile_id, map_id, floor)
         if matrix is None or canonical is None or route is None:
             return None
         tracking = group.tracking_for_floor(floor)
@@ -21231,7 +21408,7 @@ class DailyAssistant:
             and np.allclose(matrix[:2, :2], temporary_zoom[:2, :2] @ committed_render[:2, :2], rtol=0.0, atol=1e-10)
             and np.allclose([matrix[0, 1], matrix[1, 0]], 0.0, rtol=0.0, atol=1e-10)
         )
-        if not committed_axis_adapter:
+        if not committed_axis_adapter and shared_spec is None:
             prior_render = matrix
             matrix = axis_lock_author_floor_transform(prior_render, route.shape)
             # Axis locking changes this search/display seed, not the group's
@@ -21255,7 +21432,7 @@ class DailyAssistant:
         ):
             overlay, _meta = self._build_display_overlay(
                 route, matrix, self.current_frame.shape,
-                map_id=map_id, floor=floor, profile_id=group.route_profile_id,
+                map_id=map_id, floor=floor, profile_id=display_profile,
                 minimum_coverage=0.0, minimum_visible_pixels=1,
             )
         return {
@@ -21276,7 +21453,7 @@ class DailyAssistant:
                 recognition.tolist() if recognition is not None else None
             ),
             "canonicalMatrixSourceToClient": canonical.tolist(),
-            "routeProfileId": group.route_profile_id,
+            "routeProfileId": display_profile,
             "translationMask": tracking.get("translationMask"),
             "translationMaskMatrix": tracking.get("translationMaskMatrix"),
             "translationAnchorHistory": list(

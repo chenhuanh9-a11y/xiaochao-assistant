@@ -145,6 +145,20 @@ class MapResourceBrowser(tk.Frame):
         self.mode_feedback = _label(self, size=9, color=WARNING, anchor="w", justify="left", wraplength=460)
         self.mode_feedback.bind("<Configure>", lambda event: self.mode_feedback.configure(
             wraplength=max(100, event.width - 4)), add="+")
+        route_controls = tk.Frame(self, bg=BG)
+        route_controls.pack(fill='x', padx=20, pady=(0, 8))
+        _label(route_controls, '实际使用路线', size=9, color=MUTED).pack(side='left', padx=(0, 8))
+        self.runtime_route_var = tk.StringVar(self)
+        self.runtime_route_box = RoundedCombobox(route_controls, textvariable=self.runtime_route_var,
+                                                state='readonly', width=20)
+        self.runtime_route_box.pack(side='left', fill='x', expand=True)
+        self.runtime_route_box.bind('<<ComboboxSelected>>', self._select_runtime_route)
+        self.runtime_route_feedback = _label(self, size=9, color=MUTED, anchor='w', justify='left', wraplength=500)
+        self.runtime_route_feedback.pack(fill='x', padx=20, pady=(0, 8))
+        self.runtime_route_feedback.bind('<Configure>', lambda event: self.runtime_route_feedback.configure(
+            wraplength=max(100, event.width - 4)), add='+')
+        self._runtime_route_keys = ()
+        self._runtime_route_signature = None
         self.online_bar_status = _label(self.online_bar, size=9, color=MUTED, anchor="w",
                                         justify="left", wraplength=300)
         self.online_bar_status.pack(side="left", fill="x", expand=True, padx=(10, 0))
@@ -221,7 +235,7 @@ class MapResourceBrowser(tk.Frame):
         self.footer = footer
         footer._display_manual_geometry = True
         footer.pack(fill="x", padx=SHADOW_DIP, pady=(8, 12))
-        _label(footer, "浏览不更改游戏模式或作者偏好；资源包检查后需退出导入。", size=8, color=MUTED,
+        _label(footer, "“实际使用路线”影响定点地图和游戏贴合；“浏览来源”只切换预览。", size=8, color=MUTED,
                anchor="w", wraplength=500).pack(fill="x")
 
     def _layout_controls(self):
@@ -290,9 +304,42 @@ class MapResourceBrowser(tk.Frame):
                 self._layout_controls()
         self.sync_game_mode()
 
+    def sync_route_selection(self):
+        getter = getattr(self.assistant, 'route_selection_snapshot', None)
+        snapshot = getter() if callable(getter) else {}
+        options = tuple(snapshot.get('options') or ())
+        signature = (snapshot.get('mode'), options, snapshot.get('selected'),
+                     snapshot.get('effective'), snapshot.get('message'), snapshot.get('fallback'))
+        if signature == getattr(self, '_runtime_route_signature', None):
+            return
+        self._runtime_route_signature = signature
+        self._runtime_route_keys = tuple(key for key, _label in options)
+        self.runtime_route_box.configure(values=tuple(label for _key, label in options),
+            state='readonly' if options and callable(getattr(self.assistant, 'select_route_profile', None)) else 'disabled')
+        selected = snapshot.get('selected')
+        if selected in self._runtime_route_keys:
+            self.runtime_route_box.current(self._runtime_route_keys.index(selected))
+        else:
+            self.runtime_route_var.set('暂无可用路线，请先导入资源包')
+        self.runtime_route_feedback.configure(text=snapshot.get('message') or '路线选择暂不可用',
+            fg=WARNING if snapshot.get('fallback') else MUTED)
+
+    def _select_runtime_route(self, _event=None):
+        index = self.runtime_route_box.current()
+        if not 0 <= index < len(self._runtime_route_keys):
+            return
+        setter = getattr(self.assistant, 'select_route_profile', None)
+        if not callable(setter):
+            return
+        receipt = setter(self._runtime_route_keys[index]) or {}
+        self.sync_route_selection()
+        if not receipt.get('success'):
+            self.runtime_route_feedback.configure(text=receipt.get('message') or '路线切换未完成', fg=WARNING)
+
     def sync_game_mode(self, snapshot=None):
         if self._closed:
             return
+        self.sync_route_selection()
         if snapshot is None:
             getter = getattr(self.assistant, "_route_presentation_snapshot", None)
             snapshot = getter() if callable(getter) else {}
