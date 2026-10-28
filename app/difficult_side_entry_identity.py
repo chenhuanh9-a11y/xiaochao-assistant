@@ -298,7 +298,7 @@ class MapLocalEntryIdentity:
                     contradicted=any(c['contradicted'] for c in checks), checks=checks,
                     coverageComplete=inventory_complete)
 
-    def rank_entry(self, frame, floor=None, *, budget_seconds=None):
+    def rank_entry(self, frame, floor=None, *, budget_seconds=None, candidate_map_ids=None):
         """Exit-first local competition; no full-floor pose search or identity write."""
         from single_map_structure import current_part
         started = time.perf_counter()
@@ -364,6 +364,8 @@ class MapLocalEntryIdentity:
                             'N': [(l+r)/2, t+width/2], 'S': [(l+r)/2, b-width/2]}[outward]
             for item in self.passports:
                 if floor is not None and item['floor'] != str(floor):
+                    continue
+                if candidate_map_ids is not None and item['mapId'] not in candidate_map_ids:
                     continue
                 if time.perf_counter() >= deadline:
                     meta['complete'] = False
@@ -532,7 +534,7 @@ class MapLocalEntryIdentity:
         pairs = np.array([(lookup[i], lookup[nodes[i]['next']]) for i in ids if nodes[i]['next'] in lookup], int).reshape(-1, 2)
         return context, [nodes[i] for i in ids], pairs
 
-    def rank(self, frame, floor=None, *, budget_seconds=2.0, map_id=None):
+    def rank(self, frame, floor=None, *, budget_seconds=2.0, map_id=None, candidate_map_ids=None):
         started = time.perf_counter()
         deadline = started + max(0., float(budget_seconds))
         if floor is not None and str(floor) not in self.floors:
@@ -546,11 +548,13 @@ class MapLocalEntryIdentity:
         qr = np.array([n['rays'] for n in nodes])
         local_search = self.side_search if str(floor) == '2' and map_id is None else None
         rows, result = self._rank_observed(frame, floor, map_id, context, q, qr, qpairs,
-                                          started, deadline, local_search)
+                                          started, deadline, local_search,
+                                          candidate_map_ids=candidate_map_ids)
         return rows, dict(result, sideDoorPath='door-local-index' if local_search else 'ordinary-structure',
                           sideDoorResourceError=self.side_door_error, sideLocalIndexError=self.side_search_error)
 
-    def _rank_observed(self, frame, floor, map_id, context, q, qr, qpairs, started, deadline, local_search=None):
+    def _rank_observed(self, frame, floor, map_id, context, q, qr, qpairs, started, deadline, local_search=None,
+                       *, candidate_map_ids=None):
         """Door-neighbourhood proposals with complete conservative competition.
 
         All original source turns remain available to correspondence, continuous
@@ -564,6 +568,8 @@ class MapLocalEntryIdentity:
             if map_id is not None and item['mapId'] != map_id:
                 continue
             if floor is not None and item['floor'] != str(floor):
+                continue
+            if candidate_map_ids is not None and item['mapId'] not in candidate_map_ids:
                 continue
             if time.perf_counter() >= deadline:
                 complete = False

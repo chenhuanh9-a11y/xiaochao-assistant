@@ -24,7 +24,12 @@ def entry_geometry(frame):
     x,y,r,b=bounds
     visible=(frame[y:b,x:r],bounds,dict(area=int(stats[i,4]),center=centers[i],width=ww,height=hh))
     current=map_reuse_evidence(frame,maximum_width=w,visible_override=visible)['translationMask']
-    return dict(query=(current[0]>.22).astype(np.uint8),observationBounds=bounds) if current is not None else None
+    components=[(max(x0,int(stats[j,0])-8),max(y0,int(stats[j,1])-8),
+        min(x1,int(stats[j,0]+stats[j,2])+8),min(y1,int(stats[j,1]+stats[j,3])+8))
+        for j in sorted(valid,key=lambda j:-stats[j,4])
+        if j!=i and stats[j,2]>=48 and stats[j,3]>=64]
+    return dict(query=(current[0]>.22).astype(np.uint8),observationBounds=bounds,
+                otherObservationBounds=components) if current is not None else None
 
 
 def entry_corners(frame,context):
@@ -116,7 +121,7 @@ class MapEntryGeometryIdentity:
             context['authorVisible']=(visible[0].copy(),visible[1],visible[2]) if visible is not None else None
         return context['authorVisible']
 
-    def rank(self,frame,floor,*,budget_seconds=None,map_id=None,route=None):
+    def rank(self,frame,floor,*,budget_seconds=None,map_id=None,route=None,candidate_map_ids=None):
         started=time.perf_counter()
         if not any(item['floor']==str(floor) for item,*_ in self.entries):
             return [],dict(reason='entry-floor-not-indexed',complete=True,elapsedMs=0.)
@@ -128,10 +133,13 @@ class MapEntryGeometryIdentity:
         complete=True
         if len(query)<3:return [],dict(reason='entry-visible-structure-insufficient',elapsedMs=(time.perf_counter()-started)*1000)
         qpoints=np.array([q['point'] for q in query]);qrays=np.array([q['rays'] for q in query])
+        evaluated_map_ids=[]
         for item,source,rays,main in self.entries:
             if item['floor']!=str(floor):continue
             if map_id is not None and item['mapId']!=map_id:continue
+            if candidate_map_ids is not None and item['mapId'] not in candidate_map_ids:continue
             if time.perf_counter()-started>budget:complete=False;break
+            evaluated_map_ids.append(item['mapId'])
             source=source[:,1];hypotheses=[]
             oriented=np.min(np.sum(qrays[:,None]*rays[None],axis=3),axis=2)>=.95
             oriented_pairs=np.nonzero(oriented)
@@ -192,7 +200,8 @@ class MapEntryGeometryIdentity:
         return rows,dict(reason=('entry-known-identity-pose-verified' if map_id is not None and any(r['poseVerified'] for r in rows)
                          else 'entry-identity-verified' if any(r['identityVerified'] for r in rows)
                          else 'entry-neighborhood-candidates' if complete else 'entry-budget-incomplete'),
-                         complete=complete,queryChains=len(query),elapsedMs=(time.perf_counter()-started)*1000)
+                         complete=complete,queryChains=len(query),evaluatedMapIds=evaluated_map_ids,
+                         elapsedMs=(time.perf_counter()-started)*1000)
 
     def verify(self,frame,row,*,context=None,route=None):
         from single_map_structure import regional_validation,_static_validation_context,partial_wall_geometry
