@@ -39014,6 +39014,8 @@ class DailyAssistant:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="星图 · 第五人格地图与路线助手")
+    parser.add_argument('--disable-front-gate-prefilter', action='store_true',
+        help='对照测试：关闭自动正门门型预筛选，使用原全库结构识别')
     parser.add_argument("--version", action="store_true", help="输出版本号后退出")
     parser.add_argument("--build-id", action="store_true", help="输出当前源码构建指纹后退出")
     parser.add_argument("--validate-pack", action="store_true")

@@ -293,6 +293,8 @@ class MapIdentityEngine(NightmareCandidateEngine):
                 structure_store=self.entry_identity.structures,profile_for_map=self.identity_profile_for_map)
         except (ImportError,OSError,ValueError,KeyError,TypeError) as error:
             self.side_entry_error = str(error)
+        from front_gate_observation import FrontGatePrefilter
+        self.front_gate_prefilter=FrontGatePrefilter(self.pack,self.entry_identity.entries)
 
     def _native_similarity_prioritize(self, proposals, floor):
         """Only reorder the existing bounded recovery set, never omit a rival."""
@@ -726,13 +728,18 @@ class MapIdentityEngine(NightmareCandidateEngine):
     def rank(self,frame,floor='1',limit=30,*,budget_seconds=None):
         if floor not in self.identity_floors:return []
         started=time.perf_counter()
+        allowed=None;gate_report=None
+        prefilter=getattr(self,'front_gate_prefilter',None)
+        if prefilter is not None:
+            allowed,gate_report=prefilter.select(frame,floor,self.entry_identity.geometry)
+        gate_args=dict(candidate_map_ids=allowed) if allowed is not None else {}
         budget=1.0 if budget_seconds is None else max(0.,float(budget_seconds))
         remaining=lambda:max(0.,budget-(time.perf_counter()-started))
         passport_rows=[];passport_diagnostics=None
         rank_entry=getattr(self.side_entry_identity,'rank_entry',None)
         if rank_entry is not None:
             try:
-                passport_rows,passport_diagnostics=rank_entry(frame,floor,budget_seconds=remaining())
+                passport_rows,passport_diagnostics=rank_entry(frame,floor,budget_seconds=remaining(),**gate_args)
             except (ValueError,TypeError,KeyError,OSError,cv2.error) as error:
                 # A failed exit observation cannot authorize a generic identity.
                 passport_diagnostics=dict(reason='entry-resource-unavailable',error=str(error),
@@ -745,7 +752,7 @@ class MapIdentityEngine(NightmareCandidateEngine):
         if entry_unresolved:
             entry_diagnostics=dict(reason=passport_diagnostics['reason'],complete=False)
         if not passport_selected and not entry_unresolved:
-            entry_rows,entry_diagnostics=self.entry_identity.rank(frame,floor,budget_seconds=remaining())
+            entry_rows,entry_diagnostics=self.entry_identity.rank(frame,floor,budget_seconds=remaining(),**gate_args)
             self._apply_shared_entry_inventory(
                 entry_rows, entry_diagnostics, self._shared_entry_inventory(floor))
             check_entry=getattr(self.side_entry_identity,'check_entry_evidence',None)
@@ -774,7 +781,7 @@ class MapIdentityEngine(NightmareCandidateEngine):
                 and not any(row['identityVerified'] for row in entry_rows) and self.side_entry_identity is not None):
             side_producer='local-structure'
             try:
-                side_rows,side_diagnostics=self.side_entry_identity.rank(frame,floor,budget_seconds=remaining())
+                side_rows,side_diagnostics=self.side_entry_identity.rank(frame,floor,budget_seconds=remaining(),**gate_args)
                 # Refine one fully competed local hypothesis for any map. The
                 # bound, request budget and normal author/identity checks remain
                 # identical across resource families.
@@ -908,6 +915,7 @@ class MapIdentityEngine(NightmareCandidateEngine):
         suggestions={r['mapId']:r for r in evidence.get('candidates',[])}
         rows=[]
         for item in self.pack.maps:
+            if allowed is not None and item.id not in allowed:continue
             suggested=suggestions.get(item.id,{})
             rows.append(dict(mapId=item.id,name=item.name,score=float(suggested.get('score',0))*100,
                 strongSuggestion=False,identityHardGatePassed=False,inliers=0,
@@ -943,6 +951,16 @@ class MapIdentityEngine(NightmareCandidateEngine):
                 identityBudgetExceeded=False)
         rows.sort(key=lambda row:row['score'],reverse=True)
         diagnostics = entry_rank_diagnostics(evidence, side_error=self.side_entry_error)
+        diagnostics['elapsedMs'] = (time.perf_counter()-started)*1000
+        if gate_report is not None:
+            from front_gate_observation import record
+            gate_report.update(actualFloor=str(floor),rankElapsedMs=diagnostics['elapsedMs'],
+                evaluatedMainMapIds=entry_diagnostics.get('evaluatedMapIds',[]),
+                acceptedMapIds=[r['mapId'] for r in rows if r.get('identityHardGatePassed')],
+                mainComplete=entry_diagnostics.get('complete'),
+                sideComplete=(side_diagnostics or {}).get('complete'))
+            diagnostics['frontGateObservation']=gate_report
+            record(gate_report)
         for row in rows:
             row['difficultRecognition'] = diagnostics
         if rows:
