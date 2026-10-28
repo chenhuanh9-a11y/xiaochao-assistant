@@ -61,3 +61,6 @@ secrets*
 /.structure-*
 Thumbs.db
 Desktop.ini
+
+# This hand-maintained recipe is source, unlike generated PyInstaller specs.
+!/tools/xiaochao-assistant.spec
