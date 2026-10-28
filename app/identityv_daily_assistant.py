@@ -205,7 +205,7 @@ PROCESSED_AUTHOR_PROFILE_IDS = {"zhan10-speed", "zhan10-coffin"}
 ROUTE_PROFILE_OPTIONS = (
     (SUJU_ROUTE_PROFILE_ID, "滋酥居"),
     (DEFAULT_ROUTE_PROFILE_ID, "王清心（默认）"),
-    ('nightingale', '夜莺'),
+    ('nightingale', '爱吃醋'),
     ("zhan10-speed", "展十 · 速刷路线"),
     ("zhan10-coffin", "展十 · 全棺路线"),
     ("lianghapi-single", "凉哈皮 · 单人路线"),
