@@ -89,9 +89,13 @@ def export_failure_evidence(archive, roots, log_windows, redact, *, build_finger
                     continue
                 stamp = datetime.fromisoformat(row['recordedAt']).timestamp()
                 captured = datetime.fromisoformat(row.get('capturedAt') or row['recordedAt']).timestamp()
-                source_log = str(diagnostic.get('eventPath') or '').replace('\\', '/').rsplit('/', 1)[-1]
+                event_path = str(diagnostic.get('eventPath') or '')
+                source_log = event_path.replace('\\', '/').rsplit('/', 1)[-1]
                 window = log_windows.get(source_log)
                 if not window:
+                    # An explicit session must not be reassigned to an overlapping log.
+                    if event_path:
+                        continue
                     if diagnostic.get('buildFingerprint') != build_fingerprint:
                         continue
                     source_log = next((name for name, span in log_windows.items()
