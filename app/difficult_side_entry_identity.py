@@ -41,6 +41,8 @@ class MapLocalEntryIdentity:
             self.entries.append((item, points, rays, pairs))
         self.registered_floors=frozenset((str(item['mapId']),str(item['floor']))
             for item,_,_,_ in self.entries)
+        from side_entry_geometry import load_side_doors
+        self.side_doors, self.side_door_error = load_side_doors(self.root, self.entries, self.mode, self.profile_id)
         self.passports = []
         self.entry_coverage = []
         self.passport_error = None
@@ -58,17 +60,27 @@ class MapLocalEntryIdentity:
         """Whether the shared local-structure locator has data for this floor."""
         return (str(map_id),str(floor)) in self.registered_floors
 
-    def _entry_observations(self, frame):
+    def _entry_observations(self, frame, *, context=None):
         """Reuse actual exit/rectangle primitives without altering nightmare."""
         from side_door_recognition import SideDoorRecognizer
         from nightmare_candidate import visible_map_component, local_side_door_rectangle, live_side_door_direction
         if self._exit_recognizer is None:
             self._exit_recognizer = SideDoorRecognizer(self.exit_icon_path)
-        visible = visible_map_component(frame)
-        if visible is None:
-            return []
-        _, bounds, _ = visible
-        anchors = self._exit_recognizer.find_anchors(frame, match_workers=2)
+        bounds = context.get('observationBounds') if context is not None else None
+        if bounds is None:
+            visible = visible_map_component(frame)
+            if visible is None:
+                return []
+            _, bounds, _ = visible
+        # The current observation already located the map. Use the live UI
+        # probe and full-client coordinates; a missed icon keeps structure search.
+        search = None
+        if context is not None:
+            x0, y0, x1, y1 = bounds
+            padding = 2 * max(self._exit_recognizer.exit_icon.shape[:2])
+            search = (x0-padding, y0-padding, x1+padding, y1+padding)
+        anchors = self._exit_recognizer.find_anchors(frame, allow_unusual_scales=context is None,
+                                                    match_workers=2, search_bounds=search)
         observations = []
         for anchor in anchors:
             icon = dict(center=[anchor['x']+anchor['width']/2, anchor['y']+anchor['height']/2],
@@ -518,7 +530,6 @@ class MapLocalEntryIdentity:
     def rank(self, frame, floor=None, *, budget_seconds=2.0, map_id=None):
         started = time.perf_counter()
         deadline = started + max(0., float(budget_seconds))
-        rows, complete = [], True
         if floor is not None and str(floor) not in self.floors:
             return [], dict(reason='unsupported-floor', complete=True)
         if deadline <= started:
@@ -528,6 +539,47 @@ class MapLocalEntryIdentity:
             return [], dict(reason='side-visible-structure-insufficient', complete=True, queryTurns=len(nodes))
         q = np.array([n['point'] for n in nodes])
         qr = np.array([n['rays'] for n in nodes])
+        diagnostics = dict(sideDoorPath='ordinary-structure', sideDoorResourceError=self.side_door_error)
+        observed = None
+        if str(floor) == '2' and map_id is None and self.side_doors:
+            from side_entry_geometry import observed_side_boundary
+            observed_at = time.perf_counter()
+            try:
+                observed = observed_side_boundary(self._entry_observations(frame, context=context))
+            except (ValueError, TypeError, KeyError, OSError, cv2.error) as error:
+                diagnostics['sideDoorObservationError'] = str(error)
+            diagnostics['sideDoorObservationMs'] = (time.perf_counter()-observed_at)*1000
+            diagnostics['sideDoorObservation'] = observed
+        if observed is not None:
+            rows, local = self._rank_observed(frame, floor, map_id, context, q, qr, qpairs,
+                                              started, deadline, observed)
+            top = rows[0]['score'] if rows else 0
+            competitors = [r for r in rows if r['score'] >= max(4, top-1)]
+            # Only a complete, uniquely verified result can avoid the original
+            # search. The normal consumer still owns identity authorization.
+            usable = False
+            if local['complete'] and local['verificationComplete'] and len(competitors) == 1:
+                row = competitors[0]
+                h, checked = row['hypothesis'], row['verification']
+                usable = (h['chainCount'] >= 6 and min(h['extentGrid']) >= 2
+                          and checked.get('success') and (checked.get('residual') or {}).get('verified'))
+            if usable:
+                return rows, dict(local, **dict(diagnostics, sideDoorPath='door-anchored-full-structure'))
+            diagnostics.update(sideDoorPath='ordinary-structure-fallback',
+                               sideDoorFallbackReason=('incomplete-search' if not local['complete'] else
+                                   'no-unique-verified-pose'), sideDoorTrialMs=local['elapsedMs'])
+        rows, result = self._rank_observed(frame, floor, map_id, context, q, qr, qpairs, started, deadline)
+        return rows, dict(result, **diagnostics)
+
+    def _rank_observed(self, frame, floor, map_id, context, q, qr, qpairs, started, deadline, observed=None):
+        """Complete edge competition; door geometry only removes contrary seeds.
+
+        All original source turns remain available to correspondence, continuous
+        refinement and the unchanged full-image validators. No fixed-radius crop.
+        """
+        from side_entry_geometry import boundary_matches
+        rows, complete = [], True
+        seed_count = 0
         for item, source, rays, spairs in self.entries:
             if map_id is not None and item['mapId'] != map_id:
                 continue
@@ -538,6 +590,9 @@ class MapLocalEntryIdentity:
                 break
             if not len(spairs):
                 continue
+            door = self.side_doors.get(item['mapId']) if observed is not None else None
+            if door is not None and door['outwardDirection'] != observed['direction']:
+                continue
             compatible = np.min(np.sum(qr[:, None] * rays[None], axis=3), axis=2) >= .95
             # Incompatible turns can never be hits. Keep row-major pair order
             # while evaluating only the same orientation-compatible entries.
@@ -545,29 +600,33 @@ class MapLocalEntryIdentity:
             oriented_query, oriented_source = q[oriented_qids], source[oriented_sids]
             hypotheses = []
             seen = set()
+            # Static source differences are reused across every query edge.
+            deltas = source[spairs[:, 1]] - source[spairs[:, 0]]
+            denoms = np.sum(deltas*deltas, axis=1)
+            long_enough = denoms >= (.6 * item['unit']) ** 2
             for a, b in qpairs:
                 if time.perf_counter() >= deadline:
                     complete = False
                     break
-                selected = spairs[compatible[a, spairs[:, 0]] & compatible[b, spairs[:, 1]]]
-                for sa, sb in selected:
+                selected = compatible[a, spairs[:, 0]] & compatible[b, spairs[:, 1]] & long_enough
+                delta = deltas[selected]
+                scales = ((q[b]-q[a]) @ delta.T) / denoms[selected]
+                translations = q[a] - scales[:, None]*source[spairs[selected, 0]]
+                eligible = ((scales*item['unit'] >= 8) & (scales*item['unit'] <= min(frame.shape[:2])/4)
+                            & (np.linalg.norm(q[b]-q[a]-scales[:, None]*delta, axis=1) <= 3))
+                if door is not None:
+                    eligible &= boundary_matches(door, observed, scales, translations, item['unit'])
+                # Batch cheap residuals, preserve the original seed order and
+                # deduplication order. Expensive full correspondences are sparse.
+                for scale, translation in zip(scales[eligible], translations[eligible]):
                     if time.perf_counter() >= deadline:
                         complete = False
                         break
-                    delta = source[sb] - source[sa]
-                    denom = float(delta @ delta)
-                    if denom < (.6 * item['unit']) ** 2:
-                        continue
-                    scale = float((q[b] - q[a]) @ delta / denom)
-                    if not 8 <= scale * item['unit'] <= min(frame.shape[:2]) / 4:
-                        continue
-                    if np.linalg.norm(q[b] - q[a] - scale * delta) > 3:
-                        continue
-                    translation = q[a] - scale * source[sa]
                     key = tuple(np.rint(np.r_[scale * item['unit'] * 4, translation / 3]).astype(int))
                     if key in seen:
                         continue
                     seen.add(key)
+                    seed_count += 1
                     distances = np.linalg.norm(oriented_query - (oriented_source * scale + translation), axis=1)
                     hits = distances <= 3
                     hit_q, hit_s = oriented_qids[hits], oriented_sids[hits]
@@ -604,6 +663,7 @@ class MapLocalEntryIdentity:
                     if len(updated)<4:break
                     pairs=updated
                 if not 8<=s*item['unit']<=min(frame.shape[:2])/4:continue
+                if door is not None and not boundary_matches(door, observed, s, t, item['unit']):continue
                 continuous.append(dict(h,scale=s,translation=t.tolist(),pairs=pairs.tolist(),
                     chainCount=len(pairs),extentGrid=(np.ptp(source[pairs[:,1]],axis=0)/item['unit']).tolist()))
             finalists=[]
@@ -621,6 +681,9 @@ class MapLocalEntryIdentity:
                                  hypothesis=h, matrixSourceToClient=[[s, 0, x], [0, s, y], [0, 0, 1]],
                                  sideGates=gates, sourceProduct=item['sourceProduct'], identityVerified=False,
                                  evidenceScope='oriented measured wall candidates; side icon itself is not detected'))
+                if door is not None:
+                    rows[-1]['sideDoorConstraint'] = dict(door=door, observed=observed, unit=item['unit'])
+                    rows[-1]['evidenceScope'] = 'current doorway geometry plus full oriented structure'
         rows.sort(key=lambda r: -r['score'])
         top = rows[0]['score'] if rows else 0
         competitors = [r for r in rows if r['score'] >= max(4, top-1)]
@@ -647,7 +710,7 @@ class MapLocalEntryIdentity:
             row['competitionComplete'] = complete
             row['poseAmbiguous'] = sum(r['mapId'] == row['mapId'] and r['floor'] == row['floor'] for r in competitors) > 1
         return rows, dict(reason='side-local-candidates' if complete else 'side-budget-incomplete', complete=complete,
-                          queryTurns=len(nodes), competitiveHypotheses=len(competitors),
+                          queryTurns=len(q), competitiveHypotheses=len(competitors), seedCorrespondences=seed_count,
                           verificationComplete=verification_complete and len(competitors) <= 3,
                           identityAmbiguous=len({(r['mapId'], r['floor']) for r in competitors}) != 1,
                           elapsedMs=(time.perf_counter()-started)*1000)
@@ -730,6 +793,13 @@ class MapLocalEntryIdentity:
 
     def verify(self, frame, row, *, context=None, _route_cache=None):
         """Current-frame evidence only; the shared consumer must authorize display."""
+        constraint = row.get('sideDoorConstraint')
+        if constraint is not None:
+            from side_entry_geometry import boundary_matches
+            matrix = np.asarray(row['matrixSourceToClient'], float)
+            if not boundary_matches(constraint['door'], constraint['observed'], matrix[0, 0],
+                                    matrix[:2, 2], constraint['unit']):
+                return dict(success=False, reason='side-door-boundary-contradiction')
         profile = self.profile_for_map(row['mapId'])
         shared_reference = None
         if self.shared_reference_provider is not None:
