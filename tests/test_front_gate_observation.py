@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'app'))
 from front_gate_observation import FrontGatePrefilter, observe
+from difficult_side_entry_identity import MapLocalEntryIdentity
 
 
 def entrance(ports, *, brown_above=False):
@@ -77,5 +78,31 @@ class AutomaticGateTests(unittest.TestCase):
         frame=np.zeros((400,480,3),np.uint8)
         allowed,report=filter_for().select(frame,'1',lambda _:dict(query=np.zeros((400,480),np.uint8)))
         self.assertIsNone(allowed);self.assertFalse(report['applied'])
+
+    def local_ranker(self, entries):
+        identity=MapLocalEntryIdentity.__new__(MapLocalEntryIdentity)
+        identity.floors={'1','2'};identity.entries=entries;identity.side_search={}
+        identity.side_door_error=None;identity.side_search_error=None
+        nodes=[dict(point=[i*40,40],rays=[[1,0],[0,1]]) for i in range(4)]
+        # Only extraction is controlled. Exercise the actual rank wrapper and
+        # inner per-map loop introduced by the side-entry implementation.
+        identity._observe=lambda _:({},nodes,np.array([[0,1],[1,2],[2,3]]))
+        return identity
+
+    def test_gate_candidates_reach_inner_local_search_before_source_access(self):
+        class ExcludedPairs:
+            def __len__(self):raise AssertionError('Excluded map entered local search')
+        entries=[(dict(mapId='excluded',floor='1'),None,None,ExcludedPairs()),
+                 (dict(mapId='included',floor='1'),None,None,[])]
+        rows,diagnostic=self.local_ranker(entries).rank(np.zeros((100,100,3),np.uint8),
+            '1',candidate_map_ids={'included'})
+        self.assertEqual(rows,[]);self.assertTrue(diagnostic['complete'])
+        self.assertEqual(diagnostic['seedCorrespondences'],0)
+
+    def test_no_gate_candidates_keeps_default_local_search_callable(self):
+        for floor in ('1','2'):
+            rows,diagnostic=self.local_ranker([(dict(mapId='m',floor=floor),None,None,[])]).rank(
+                np.zeros((100,100,3),np.uint8),floor)
+            self.assertEqual(rows,[]);self.assertTrue(diagnostic['complete'])
 
 if __name__=='__main__':unittest.main()

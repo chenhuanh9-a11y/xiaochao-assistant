@@ -548,11 +548,13 @@ class MapLocalEntryIdentity:
         qr = np.array([n['rays'] for n in nodes])
         local_search = self.side_search if str(floor) == '2' and map_id is None else None
         rows, result = self._rank_observed(frame, floor, map_id, context, q, qr, qpairs,
-                                          started, deadline, local_search)
+                                          started, deadline, local_search,
+                                          candidate_map_ids=candidate_map_ids)
         return rows, dict(result, sideDoorPath='door-local-index' if local_search else 'ordinary-structure',
                           sideDoorResourceError=self.side_door_error, sideLocalIndexError=self.side_search_error)
 
-    def _rank_observed(self, frame, floor, map_id, context, q, qr, qpairs, started, deadline, local_search=None):
+    def _rank_observed(self, frame, floor, map_id, context, q, qr, qpairs, started, deadline, local_search=None,
+                       *, candidate_map_ids=None):
         """Door-neighbourhood proposals with complete conservative competition.
 
         All original source turns remain available to correspondence, continuous
