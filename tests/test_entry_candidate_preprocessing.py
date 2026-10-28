@@ -49,6 +49,15 @@ class PreprocessingTests(unittest.TestCase):
         self.write("config.json",self.config)
         _,rows=self.run_build()
         self.assertIn("raw-source-dependency-closure-unverified",rows[0]["semanticGaps"])
+    def test_dependency_event_scope(self):
+        import sys
+        sys.path.insert(0,str(Path(m.__file__).parent))
+        from plan_entry_candidate_changes import plan
+        rows=[dict(identity=["mode","p",k,"B1"],sha256=k) for k in ("a","b")]
+        manifest=dict(schema="entry-candidates/1",entries=rows)
+        events=plan(manifest,manifest,[rows[0]["identity"]])["events"]
+        self.assertEqual([e["action"] for e in events],["fallback","reuse"])
+        self.assertTrue(all(not e["deleteOldResource"] for e in events))
     def test_missing_binding_retained(self):
         self.write("index.json",dict(entries=[]))
         _,rows=self.run_build()
