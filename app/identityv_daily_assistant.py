@@ -125,6 +125,7 @@ from nightmare_candidate import (
     DEFAULT_CROSS_FLOOR_ATLAS,
 )
 from release_identity import load_runtime_app_version, load_runtime_display_version
+from native_similarity_groups import NativeSimilarityState
 from native_ui_layout import (
     MonitorContext,
     RectPx,
@@ -5945,7 +5946,33 @@ class DailyAssistant:
                 engine_options={'resource_root':RESOURCE_ROOT,'entry_structure_store':resources.tilemaps,
                     'entry_route_loader':entry_route_loader,
                     'entry_context_is_current':entry_context_is_current}
+        def similarity_binding_metadata(profile,map_id,floor):
+            """Use the same selected reference domain without decoding its pixels.
+
+            Positive comparison samples already bind the exact archive bytes.
+            Recognition/alignment keep the original full typed-product loader.
+            """
+            if not entry_context_is_current():return None
+            if native_context is not None:
+                key=next((k for k in native_context.legacy_bindings
+                    if k[0]==profile and k[1]==str(map_id) and k[3]==str(floor)),None)
+                if key is not None:
+                    canvas=native_context.legacy_bindings[key]
+                    return dict(path=native_context.local(canvas['resourcePath']),shape=canvas['shapeHW'],
+                        metadata=dict(binding=dict(profile=key[0],mapId=key[1],variant=key[2],floor=key[3]),
+                            **{n:canvas[n] for n in ('structureVersionKey','sourceVersion','baseSnapshot')}))
+            binding=self._shared_structure_lookup_binding(profile,map_id,floor,adapters=adapters)
+            key=tuple(binding[n] for n in ('profile','mapId','variant','floor'))
+            version=(shared_version_context or {}).get(key)
+            if version is None or version.get('sharedError'):return None
+            return dict(path=version['path'],shape=version['canvas']['shapeHW'],
+                metadata=dict(version['expected'],binding=binding))
         base=engine_type(pack,memory_store=memory,**engine_options,
+            native_similarity_root=(shared_resources.resource_root if shared_resources is not None else
+                nightmare_root if mode=='nightmare' else RESOURCE_ROOT),
+            native_similarity_priority_provider=lambda:getattr(self,'_native_similarity_priority',None),
+            native_similarity_binding_provider=similarity_binding_metadata if shared_resources is not None else None,
+            native_similarity_context_provider=lambda:getattr(self,'_native_similarity_condition_context',None),
             structure_resource_loader=self._author_route_clean_product_for_route,
             structure_direct_resource_loader=self._author_route_clean_product_direct,
             structure_profile_provider=lambda:getattr(self,'route_profile_id',DEFAULT_ROUTE_PROFILE_ID),
@@ -6033,6 +6060,9 @@ class DailyAssistant:
         self.round_start_intent = None
         self.author_route_catalog=catalog;self.author_coordinate_adapters=adapters
         self.author_structure_resources=resources;self.memory_store=memory;self.engine=engine
+        self.native_similarity_state = NativeSimilarityState()
+        self._native_similarity_priority = None
+        self._native_similarity_condition_context = None
         self.difficult_native_context = native_context
         self.difficult_identity_resources = difficult_identity_resources
         self.optional_author_displays = optional_author_displays
@@ -11542,6 +11572,13 @@ class DailyAssistant:
         new floor. The shared round pose remains intact for cross-floor
         recovery.
         """
+        native_group_state = getattr(self, 'native_similarity_state', None)
+        if native_group_state is not None:
+            self._native_similarity_floor_changed(str(floor))
+            if native_group_state.floor is not None:
+                native_group_state.reset()
+        self._native_similarity_priority = None
+        self._native_similarity_condition_context = None
         self.current_floor_authorization = None
         self.alignment_succeeded = False
         self.alignment_candidate_found = False
@@ -12149,6 +12186,8 @@ class DailyAssistant:
         )
         base_pose_context = self._alignment_v2_worker_base_pose_context(map_id)
         base_pose_context = dict(base_pose_context or {})
+        if (self._front_group_provisional_lock_context(str(map_id)) or {}).get('nativeSimilarity'):
+            base_pose_context['nativeSimilarityContext']=self._native_similarity_condition_context
         base_pose_context['_workerRequestedAt'] = time.perf_counter()
         base_pose_context['_timeline'] = self._runtime_trace_context()
         base_pose_context['frameCapturedAtUtc'] = getattr(self, 'current_frame_captured_at_utc', None)
@@ -13281,6 +13320,7 @@ class DailyAssistant:
         difference_evidence = None
         equivalence_source = None
         cached = None
+        native_proposal = None
         # Keep the available observation objects for this worker, not whichever
         # floor/pool is current when its result later reaches Tk.
         diagnostic_native, diagnostic_tracking = {}, {}
@@ -14127,6 +14167,15 @@ class DailyAssistant:
                 if not rendered_profile_residual_is_verified(residual):
                     fit.update(success=False, reason="worker-rendered-profile-unverified")
                     fit_usable = False
+            prior=base_pose_context.get('nativeSimilarityContext')
+            if prior and str(floor)=='1' and (fit or {}).get('reason')!='structure-work-obsolete':
+                deadline=worker_started_at+AUTO_IDENTITY_BUDGET_SECONDS
+                if fit_usable and fit.get('coordinateSpace')=='shared-structure-to-client':
+                    native_proposal=engine.native_similarity_pose_observation(frame,map_id,floor,
+                        fit['matrixSourceToClient'],prior=prior,deadline=deadline)
+                elif not fit_usable:
+                    native_proposal=engine.native_similarity_recover_observation(frame,floor,
+                        prior=prior,deadline=deadline)
             if mode == 'first-pose' and not fit_usable and difference_evidence is None and (fit or {}).get('reason') != 'structure-work-obsolete':
                 difference_evidence = self._alignment_v2_uncommitted_front_difference_sensor(
                     frame, map_id, floor, fit,
@@ -14163,6 +14212,7 @@ class DailyAssistant:
             "reason": reason,
             "sensorMode": mode,
             "frontGroupDifferenceEvidence": difference_evidence,
+            "nativeSimilarityProposal": native_proposal,
             "structureSourceFrame": (frame if getattr(self, 'game_mode', 'nightmare') == 'difficult' or (floor == '2' and
                 (difference_evidence or mode == 'front-group-sibling'
                  or (isinstance(fit,dict) and fit.get('sparseFloorEvidence')))) else None),
@@ -14374,6 +14424,141 @@ class DailyAssistant:
         except Exception:
             # A diagnostic copy/serialization error must not alter the result.
             pass
+
+    def similarity_group_snapshot(self):
+        state = getattr(self, 'native_similarity_state', None)
+        return state.snapshot() if state is not None else dict(state='UNLOCKED')
+
+    def _native_similarity_context(self):
+        return (getattr(self, 'game_mode', None), getattr(self, 'active_map_cycle_id', None),
+            str(getattr(self, 'current_floor', '')), getattr(self, 'current_frame_generation', None),
+            getattr(self, 'surface_visibility_generation', None))
+
+    def _native_similarity_floor_changed(self, floor):
+        state = getattr(self, 'native_similarity_state', None)
+        if state is not None and state.floor is not None and state.floor != str(floor):
+            if (state.condition_mode is not None and state.provisional_member_id
+                    and getattr(getattr(self,'gate',None),'confirmed_id',None)==state.provisional_member_id
+                    and not getattr(self,'active_confirmation',None)):
+                self.gate.hide_for_new_frame()
+                self.auto_lock_pending=None
+                self.map_identity_pose_pending=False
+                self._hide_spatial_route('front-group-floor-changed')
+            state.reset()
+            self._native_similarity_priority = None
+            self._native_similarity_condition_context = None
+
+    def _check_native_similarity_resources(self):
+        state = getattr(self, 'native_similarity_state', None)
+        index = getattr(getattr(self, 'engine', None), 'native_similarity_index', None)
+        if state is None or (not state.group_id and not state.condition_domains):
+            return
+        self._native_similarity_floor_changed(self.current_floor)
+        if not state.group_id:
+            return
+        try:
+            if index is None:
+                raise ValueError('similarity-context-changed')
+            index.validate_state(state,self.engine.entry_shared_reference_provider)
+        except (OSError,ValueError,KeyError,TypeError):
+            if (state.condition_mode is not None and state.provisional_member_id
+                    and getattr(self.gate,'confirmed_id',None)==state.provisional_member_id
+                    and not getattr(self,'active_confirmation',None)):
+                self.gate.hide_for_new_frame()
+                self.auto_lock_pending=None
+                self._hide_spatial_route('front-group-resource-changed')
+            state.reset()
+            self._native_similarity_priority = None
+            self._native_similarity_condition_context = None
+            self._log('similar-group-reset',reason='resource-binding-changed')
+
+    def _consume_native_similarity_ranked(self, event):
+        state = getattr(self, 'native_similarity_state', None)
+        if state is None:
+            return
+        if (not ranked_event_is_current(event.get('token'),self.capture_generation)
+                or event.get('frame') is not self.current_frame
+                or event.get('rankSourceFrameGeneration')!=self.current_frame_generation
+                or event.get('rankSourceSurfaceGeneration')!=self.surface_visibility_generation):
+            return
+        proposal = (event.get('ranked') or [{}])[0].get('nativeSimilarity') or dict(status='none')
+        if proposal.get('originalIdentityHardGatePassed'):
+            # The native difficult wrapper can suppress a base-engine result
+            # after rank. Only the final event rows own this actual verdict.
+            verified=[r for r in event.get('ranked',()) if r.get('identityHardGatePassed') is True]
+            if len(verified)!=1 or verified[0]['mapId']!=proposal.get('candidateMemberId'):
+                proposal=dict(proposal,originalIdentityHardGatePassed=False)
+        if (not self.map_is_open or self.floor_required
+                or (proposal.get('mode') and proposal['mode']!=self.game_mode)
+                or (proposal.get('floor') and proposal['floor']!=str(self.current_floor))):
+            state.reset();self._native_similarity_priority=None;self._native_similarity_condition_context=None;return
+        previous = state.snapshot()
+        current = state.accept(proposal,self._native_similarity_context(),
+            _map_frame_signature_token(map_frame_signature(self.current_frame)))
+        self._check_native_similarity_resources()
+        current=state.snapshot()
+        self._native_similarity_priority = state.priority(self.game_mode)
+        self._native_similarity_condition_context = state.context_snapshot()
+        provisional = current.get('provisionalMemberId')
+        selected=getattr(self.gate,'confirmed_id',None)
+        switching=bool(selected and selected==previous.get('provisionalMemberId')
+            and selected!=provisional and (state.condition_complete
+                or proposal.get('originalIdentityHardGatePassed') or selected not in state.member_ids))
+        if (str(self.current_floor) == '1' and current.get('state') == 'GROUP_LOCKED'
+                and provisional in state.member_ids and state.context_snapshot()
+                and (not selected or switching)
+                and not getattr(self, 'active_confirmation', None)):
+            # This is the same selection/session writer used by an explicit
+            # candidate choice. It does not change the ranker's hard verdict.
+            if switching:
+                self._invalidate_alignment_work()
+                self._alignment_v2_close('front-group-member-switch')
+                self._hide_spatial_route('front-group-member-switch')
+                self._clear_round_layer_group('front-group-member-switch')
+                self.current_alignment_candidate=None
+                self.background_alignment_cache={}
+                self.progressive_pose_seed_cache={}
+            self.gate.select(provisional)
+            if self.gate.confirm():
+                self.map_identity_pose_pending = True
+                self.auto_lock_pending = dict(
+                    mapId=provisional, floor=self.current_floor,
+                    cycleId=self.active_map_cycle_id, poseSeed=None,
+                    frontGroupState='GROUP_LOCKED', frontGroupId=current['groupId'],
+                    frontGroupProvisionalMemberId=provisional,
+                    frontGroupProvisional=True,
+                    frontGroupGroupGeneration=state.generation,
+                )
+                self._log('similar-group-provisional-selected', mapId=provisional,
+                    floor=self.current_floor, groupId=current['groupId'],
+                    provisional=True, identityHardGatePassed=False, poseVerified=False,
+                    previousMemberId=selected)
+        if current['groupId'] and current['groupId']!=previous.get('groupId'):
+            self._log('similar-group-created',**current,candidateOnly=True)
+        if current['provisionalMemberId']!=previous.get('provisionalMemberId'):
+            self._log('similar-group-provisional-changed',**current,previousMemberId=previous.get('provisionalMemberId'),
+                originalIdentityHardGatePassed=bool(proposal.get('originalIdentityHardGatePassed')),
+                positiveDifferences=(proposal.get('differenceEvidence') or {}),candidateOnly=True)
+
+    def _native_similarity_member_committed(self, map_id, floor, *, global_verified):
+        state = getattr(self, 'native_similarity_state', None)
+        if state is None or not global_verified or self.gate.confirmed_id!=map_id:
+            return False
+        self._check_native_similarity_resources()
+        core = self.alignment_core_v2
+        if not core.can_display(authorization=core.display_authorization,
+                cycle_id=self.active_map_cycle_id,map_id=map_id,floor=str(floor),
+                frame_generation=self.current_frame_generation):
+            return False
+        provisional=self._front_group_provisional_lock_context(map_id)
+        confirmed = state.confirm(map_id,str(floor),self._native_similarity_context())
+        if confirmed:
+            self._native_similarity_priority = None
+            if provisional and provisional.get('nativeSimilarity'):
+                self._remember_confirmation(map_id,str(floor))
+            self._log('similar-group-member-verified',**state.snapshot(),
+                originalIdentityHardGatePassed=True,currentFrameVerified=True,globalResidualVerified=True)
+        return confirmed
 
     def _record_unresolved_floor_capture(self, frame, bounds, *, map_id, remembered_floor,
                                          cycle_id, captured_at, floor_read, map_evidence,
@@ -16727,6 +16912,20 @@ class DailyAssistant:
                 "handled": True, "success": False,
                 "reason": "candidate-stale-pose",
             }
+        native_lock=self._front_group_provisional_lock_context(str(map_id))
+        proposal=event_data.get('nativeSimilarityProposal')
+        if (native_lock and native_lock.get('nativeSimilarity') and str(floor)=='1'
+                and isinstance(proposal,dict)
+                and event_data.get('sourceFrameGeneration')==self.current_frame_generation):
+            self._consume_native_similarity_ranked(dict(token=self.capture_generation,
+                frame=self.current_frame,rankSourceFrameGeneration=self.current_frame_generation,
+                rankSourceSurfaceGeneration=self.surface_visibility_generation,
+                ranked=[dict(nativeSimilarity=proposal)]))
+            if self.gate.confirmed_id!=str(map_id):
+                if self.gate.confirmed_id is None:
+                    return dict(handled=True,success=False,reason='front-group-resource-changed')
+                return self._start_alignment_v2_first_pose_worker(
+                    self.gate.confirmed_id,str(floor),str(floor),mode='first-pose')
         # Only an open, unsuppressed current-frame event may create the
         # one-shot transition token.  Closed/stale worker deliveries retain
         # their own explicit metadata but cannot consume fresh lifecycle
@@ -17465,11 +17664,7 @@ class DailyAssistant:
         front_group_state = getattr(
             getattr(self, "engine", None), "front_group_state", None,
         )
-        front_member_still_provisional = bool(
-            getattr(front_group_state, "state", None) == "GROUP_LOCKED"
-            and str(getattr(front_group_state, "provisional_member_id", ""))
-            == str(map_id)
-        )
+        front_member_still_provisional = bool(self._front_group_provisional_lock_context(str(map_id)))
         if not self._is_source_structure_identity(map_id) and not front_member_still_provisional and not (
             isinstance(active_confirmation, dict)
             and active_confirmation.get("mapId") == str(map_id)
@@ -17498,6 +17693,7 @@ class DailyAssistant:
             renderedMatrixSourceToClient=render_matrix.tolist(),
             canonicalMatrixSourceToClient=np.asarray(candidate.matrix_source_to_client).tolist(),
         )
+        self._native_similarity_member_committed(str(map_id),str(floor),global_verified=bool(candidate.global_residual_verified))
         return {
             "handled": True, "success": True,
             "reason": "alignment-v2-committed",
@@ -18952,6 +19148,7 @@ class DailyAssistant:
             )
             if observed in (-1, 1, 2):
                 self.current_floor = "B1" if observed == -1 else str(observed)
+                self._native_similarity_floor_changed(self.current_floor)
                 self.floor_required = False
                 self._set_status(f"恢复自动楼层：识别为 {self.current_floor} 层", "#5ee0a3")
                 self._rerank_current(self.current_floor, "automatic")
@@ -18968,6 +19165,7 @@ class DailyAssistant:
                 )
             return
         self.current_floor = self.manual_floor
+        self._native_similarity_floor_changed(self.current_floor)
         if self.current_floor != previous_floor:
             self.round_rejected_transforms = []
             self.current_floor_transaction_started_at = time.perf_counter()
@@ -19100,6 +19298,7 @@ class DailyAssistant:
     def _rerank_current(self, floor: str, floor_source: str) -> None:
         if self.current_frame is None:
             return
+        native_recheck=bool((self._front_group_provisional_lock_context() or {}).get('nativeSimilarity'))
         frame = self.current_frame.copy()
         bounds = self.current_bounds
         cycle_id = self.active_map_cycle_id
@@ -19129,6 +19328,7 @@ class DailyAssistant:
                 "cycleId": cycle_id, "mapOpen": True,
                 "rankingPreload": preload_status,
                 "seconds": completed - started,
+                "nativeSimilarityRecheck": native_recheck,
             })
 
         threading.Thread(target=run, daemon=True).start()
@@ -20901,6 +21101,15 @@ class DailyAssistant:
         lock context or they will reopen through the 13-map ranking path.
         """
         engine = getattr(self, "engine", None)
+        native = getattr(self, 'native_similarity_state', None)
+        if (getattr(native, 'state', None) == 'GROUP_LOCKED'
+                and getattr(native, 'floor', None) == str(getattr(self, 'current_floor', ''))
+                and native.floor == '1' and native.provisional_member_id
+                and getattr(getattr(self, 'gate', None), 'confirmed_id', None) == native.provisional_member_id
+                and (map_id is None or str(map_id) == native.provisional_member_id)):
+            return dict(mapId=native.provisional_member_id, floor=native.floor,
+                groupId=native.group_id, provisional=True, groupGeneration=native.generation,
+                nativeSimilarity=True)
         state = getattr(engine, "front_group_state", None)
         if getattr(state, "state", None) != "GROUP_LOCKED":
             return None
@@ -28146,6 +28355,7 @@ class DailyAssistant:
                 if game_intent_active else "automatic-floor-switch"
             ),
         )
+        map_id = self.gate.confirmed_id
         if game_intent_active:
             self._lock_automatic_floor_for_cycle(
                 target, source="game-floor-control", observed_floor=stable,
@@ -28893,6 +29103,7 @@ class DailyAssistant:
                 "rankingPreload": preload_status,
                 "frontPoseSeed": front_pose_seed,
                 "sourceStructureCandidate": source_structure_candidate,
+                "nativeSimilarityRecheck": bool((round_lock or {}).get('nativeSimilarity')),
                 "seconds": time.perf_counter()-started,
                 "stageTimingsMs": {
                     "screenshot": round(screenshot_ms, 2),
@@ -32302,6 +32513,7 @@ class DailyAssistant:
             )
             return
         self.current_floor = self.manual_floor or self.current_floor
+        self._native_similarity_floor_changed(self.current_floor)
         previous_confirmation = dict(
             getattr(self, "active_confirmation", None) or {}
         )
@@ -34270,6 +34482,11 @@ class DailyAssistant:
         self.last_alignment_failure_group_generation = None
         self.recognition_rank_history = []
         engine = getattr(self, "engine", None)
+        native_group_state = getattr(self, 'native_similarity_state', None)
+        if native_group_state is not None:
+            native_group_state.reset()
+        self._native_similarity_priority = None
+        self._native_similarity_condition_context = None
         if isinstance(engine, FrontDoorLiveTestEngine):
             engine.front_temporal_history = []
             engine.last_front_diagnostics = None
@@ -34603,6 +34820,10 @@ class DailyAssistant:
             phase, severity, title, message = 'recovered', 'normal', '记录已保存', '本次地图记录已成功保存'
         elif locked:
             phase, severity, title, message = 'waiting-fit', 'normal', '地图已锁定', '地图已锁定，等待当前画面核对'
+        elif self.similarity_group_snapshot().get('state') == 'GROUP_LOCKED':
+            candidate = self.pack.by_id.get(self.similarity_group_snapshot().get('provisionalMemberId'))
+            phase, severity, title = 'needs-user', 'normal', '相似地图待区分'
+            message = f"组内候选：{getattr(candidate, 'name', '待确认')} · 继续探索可见差异；当前尚未锁图"
         else:
             phase, severity, title, message = 'needs-user', 'normal', '地图待确认', '地图尚未确认，可查看候选地图'
         structure_display = bool(self._shared_structure_mode_enabled()
@@ -35969,6 +36190,7 @@ class DailyAssistant:
             return
         callback_started = time.perf_counter()
         scheduled_at = getattr(self, '_event_poll_due_at', callback_started)
+        self._check_native_similarity_resources()
         self._reap_cancelled_map_package_helper()
         self._drain_online_map_package_progress()
         self._service_display_capture()
@@ -36391,6 +36613,7 @@ class DailyAssistant:
                         continue
                     previous_floor = self.current_floor
                     self.current_floor = floor
+                    self._native_similarity_floor_changed(self.current_floor)
                     self.floor_hard_locked = False
                     self.floor_manual_override = False
                     self.manual_floor = None
@@ -36412,6 +36635,10 @@ class DailyAssistant:
                         observedFloor=event.get("observedFloor"),
                         hardLocked=self.floor_hard_locked,
                     )
+                    if (round_lock or {}).get('nativeSimilarity') and floor!='1':
+                        # A provisional F1 member is not F2 identity evidence.
+                        self._rerank_current(floor,'automatic')
+                        continue
                     if (active or {}).get("floor") != floor:
                         if (round_lock or {}).get("provisional"):
                             pending = getattr(self, "auto_lock_pending", None)
@@ -36678,7 +36905,9 @@ class DailyAssistant:
                     owner_pending = self._front_group_ranked_owner_pending(
                         event, round_lock,
                     )
-                    if bool((round_lock or {}).get("provisional")) and not owner_pending:
+                    native_recheck=bool((round_lock or {}).get('nativeSimilarity')
+                        and event.get('nativeSimilarityRecheck'))
+                    if bool((round_lock or {}).get("provisional")) and not owner_pending and not native_recheck:
                         self._log(
                             "ranked-provisional-group-stale-ignored",
                             cycleId=event.get("cycleId"),
@@ -36701,6 +36930,15 @@ class DailyAssistant:
                     self.front_group_sibling_pending = None
                     self.front_group_sibling_attempted_members = set()
                     self.map_probe_misses = 0
+                    # A rerank owns a copy of the then-current frame. Check its
+                    # original provenance before accepting that copy as a new
+                    # UI frame; do not rewrite the diagnostic event's source.
+                    native_similarity_source_current = bool(
+                        ranked_event_is_current(event.get('token'), self.capture_generation)
+                        and event.get('rankSourceSurfaceGeneration') == self.surface_visibility_generation
+                        and ('rankSourceFrameGeneration' not in event
+                             or event['rankSourceFrameGeneration'] == self.current_frame_generation)
+                    )
                     accepted_frame_generation = self._advance_current_frame(
                         event["frame"], event.get("bounds"),
                         captured_at_utc=event.get('frameCapturedAtUtc'),
@@ -36720,6 +36958,7 @@ class DailyAssistant:
                     self.floor_required = floor_source == "manual-required"
                     if not self.floor_required:
                         self.current_floor = ranked_floor
+                        self._native_similarity_floor_changed(self.current_floor)
                         if floor_source not in {"manual", "remembered-seed"}:
                             automatic_floor_accepted = self._lock_automatic_floor_for_cycle(
                                 ranked_floor,
@@ -36774,6 +37013,9 @@ class DailyAssistant:
                             self, "floor_hard_locked", False,
                         )),
                     )
+                    if native_similarity_source_current:
+                        self._consume_native_similarity_ranked(dict(event,
+                            rankSourceFrameGeneration=accepted_frame_generation))
                     fused_rows, self.recognition_rank_history, temporal_meta = (
                         fuse_temporal_candidate_evidence(
                             event["ranked"],
