@@ -19,7 +19,7 @@ NOTES = """更新公告：
 PC端 v1.0.2
 更新内容：
 1. 新增自定义地图。
-夸克网盘链接：https://pan.quark.cn/s/4cec4ca814f7
+夸克网盘链接：https://pan.quark.cn/s/de934000142f
 UC网盘链接：https://drive.uc.cn/s/df8af96910bb4?public=1
 """
 
