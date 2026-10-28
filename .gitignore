@@ -49,6 +49,9 @@ secrets*
 # Resources are supplied separately; only documentation is versioned
 /assets/**
 !/assets/README.md
+!/assets/support/
+!/assets/support/wechat.png
+!/assets/support/alipay.png
 /references/**
 !/references/README.md
 /resources-private/
