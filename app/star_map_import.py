@@ -26,7 +26,7 @@ AUTHOR_PACKAGES = {
 }
 AUTHOR_SIDECARS = {"catalog.json", "display-bindings.json"}
 PACKAGE_IDS = {"nightmare-suju", "difficult-zhan10"} | set(AUTHOR_PACKAGES)
-SUPPORTED_DISPLAY_VERSIONS = {"1.0", "1.0.1"}
+SUPPORTED_DISPLAY_VERSIONS = {"1.0", "1.0.1", "1.0.2"}
 CLIENT_COMPATIBILITY = {"displayVersion": "1.0", "numericLine": "1.0.0.N",
                         "minimumBuild": 1, "maximumBuild": 65535}
 BASE_DEPENDENCIES = {

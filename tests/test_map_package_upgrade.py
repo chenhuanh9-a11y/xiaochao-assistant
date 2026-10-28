@@ -68,6 +68,14 @@ class UpgradeTests(unittest.TestCase):
             importer.inspect_package(self.new, self.root)
         self.assertEqual((self.root / OLD_PATH).read_bytes(), b'old-route')
 
+    def test_102_version_retains_existing_package_layout_and_reimport(self):
+        self.write('_internal/version.json', json.dumps(dict(displayVersion='1.0.2', numericVersion='1.0.0.6')).encode())
+        result = importer.install_package(self.old, self.root, application_stopped=True)
+        self.assertEqual(result['packageId'], 'difficult-zhan10')
+        self.assertEqual(importer.inspect_package(self.old, self.root)['alreadyPresent'], 1)
+        again = importer.install_package(self.old, self.root, application_stopped=True)
+        self.assertEqual(again['status'], 'already-installed')
+
     def test_modified_owned_file_and_bad_receipt_remain_conflicts(self):
         self.installed_old()
         self.write(OLD_PATH, b'player-custom-route')
