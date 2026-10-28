@@ -42,6 +42,18 @@ python tools/maps/install_custom_maps.py --archive xingtu-custom-maps-VERSION.zi
 - 默认图库在 [custom_default_gallery.json](../app/custom_default_gallery.json)，只读；在编辑器里画好后“导出”，替换这个文件即可更新内置路线。玩家图库保存在设置目录的 `custom-galleries.json`，可新建、复制、改名、删除、导入、导出。
 - 设置里的“作者路线”会列出每个图库（“自定义 · 图库名”），自定义地图页的“在游戏中使用”也会切换到它。选中后，资源包里有的地图在游戏内显示该图库的底图和路线；没画路线的图只显示底图。
 
+## 画默认路线
+
+不用启动游戏，macOS 和 Windows 都能用：
+
+```
+python tools/draw_custom_routes.py
+```
+
+- 需要 Python 3.13（带 Tk）、Pillow、NumPy、OpenCV（版本见 `requirements.txt`），资源包已经安装到 `assets/custom-maps`。
+- 图库保存在 `work/custom-map-editor/`（不进 Git）。
+- 复制默认图库或新建一个图库，画好 24 张后点「写入默认图库」。工具会把当前图库写入 `app/custom_default_gallery.json`，名称和 ID 固定为「默认路线」/`default`。提交这个文件后，新打的安装包就会内置这套路线。
+
 ## 限制
 
 - 两段路线经过同一段走廊时会重叠，没有像旧版那样并排分道显示。
