@@ -117,18 +117,36 @@ def regional_validation(frame, query, projected, *, _context=None):
     if reusable and 'regional' in cached:return cached['regional']
     edge=current_part(frame,context,'edge')
     source_edge=cv2.morphologyEx(projected,cv2.MORPH_GRADIENT,np.ones((3,3),np.uint8))>0
-    distances=cv2.distanceTransform((~source_edge).astype(np.uint8),cv2.DIST_L2,3)
-    yy,xx=np.nonzero(edge)
+    edge_pixels=edge.view(np.uint8)
+    edge_count=cv2.countNonZero(edge_pixels)
+    edge_x,edge_y,edge_width,edge_height=cv2.boundingRect(edge_pixels)
     observed_edge=current_part(frame,context,'observed')
-    diagnostics=dict(regionalObservation=dict(maskEdges=len(xx),contrastSupportedEdges=int(observed_edge.sum())),regions=[])
-    if not len(xx):
+    diagnostics=dict(regionalObservation=dict(maskEdges=edge_count,contrastSupportedEdges=int(observed_edge.sum())),regions=[])
+    if not edge_count:
         return dict(**diagnostics,regionalEdgeVerified=False)
+    source_pixels=source_edge.view(np.uint8)
+    source_x,source_y,source_width,source_height=cv2.boundingRect(source_pixels)
+    if source_width and source_height:
+        # Only distances at query-edge pixels are consumed below. Keep every
+        # zero (source edge) and every query-edge pixel in the ROI so the
+        # DIST_L2/3 result at each consumed pixel is unchanged by cropping.
+        offset_y=min(edge_y,source_y)
+        offset_x=min(edge_x,source_x)
+        end_y=max(edge_y+edge_height,source_y+source_height)
+        end_x=max(edge_x+edge_width,source_x+source_width)
+        source_roi=source_edge[offset_y:end_y,offset_x:end_x]
+        distances=cv2.distanceTransform((~source_roi).astype(np.uint8),cv2.DIST_L2,3)
+    else:
+        # Preserve OpenCV's full-image all-nonzero behavior when the projected
+        # source has no edge pixels.
+        offset_y=offset_x=0
+        distances=cv2.distanceTransform((~source_edge).astype(np.uint8),cv2.DIST_L2,3)
     for gy in range(3):
         for gx in range(3):
-            y0,y1=[round(yy.min()+(yy.max()+1-yy.min())*(gy+i)/3) for i in (0,1)]
-            x0,x1=[round(xx.min()+(xx.max()+1-xx.min())*(gx+i)/3) for i in (0,1)]
-            values=distances[y0:y1,x0:x1][observed_edge[y0:y1,x0:x1]]
-            if len(values)>=max(30,int(len(xx)*.015)):
+            y0,y1=[round(edge_y+edge_height*(gy+i)/3) for i in (0,1)]
+            x0,x1=[round(edge_x+edge_width*(gx+i)/3) for i in (0,1)]
+            values=distances[y0-offset_y:y1-offset_y,x0-offset_x:x1-offset_x][observed_edge[y0:y1,x0:x1]]
+            if len(values)>=max(30,int(edge_count*.015)):
                 diagnostics['regions'].append(dict(cell=[gx,gy],count=len(values),median=float(np.median(values)),
                     within3=float(np.mean(values<=3)),within6=float(np.mean(values<=6))))
     diagnostics['regionalEdgeVerified']=bool(diagnostics['regions']) and all(
@@ -1161,7 +1179,7 @@ def partial_wall_geometry(frame,reference,target, *, _context=None, source_known
         matrix=target,diagnostics=diagnostics)
 
 
-def solve(assistant, frame, map_id, floor, profile, route, *, cancelled=None):
+def solve(assistant, frame, map_id, floor, profile, route, *, cancelled=None, _context=None):
     started = time.perf_counter()
     assistant._single_map_structure_diagnostics = None
     group = assistant._active_round_layer_group(map_id)
@@ -1173,7 +1191,7 @@ def solve(assistant, frame, map_id, floor, profile, route, *, cancelled=None):
         return failure
     base = np.asarray(view['matrixSourceToClient'], dtype=np.float64)
     product = assistant._author_route_clean_product_for_route(route, profile, map_id, floor)
-    context=current_geometry(frame)
+    context=_context if _context is not None else current_geometry(frame)
     if product is None or product.clean_mask is None:
         return dict(failure, reason='structure-clean-resource-unavailable')
     static_args={}

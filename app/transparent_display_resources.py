@@ -152,6 +152,77 @@ class TransparentDisplayStore:
             return pixels
 
 
+def unpremultiply_display_canvas(
+    warped: np.ndarray, source_shape: tuple, matrix: np.ndarray,
+) -> np.ndarray:
+    """Convert only a conservative support region of a full, unchanged warp.
+
+    Moving the warp's origin changes OpenCV interpolation rounding. Keep that
+    warp intact and reduce only the independent per-pixel alpha conversion.
+    Other transforms retain the original full-canvas path.
+    """
+    m = np.asarray(matrix, np.float64)
+    if (m.shape != (3, 3) or not np.isfinite(m).all()
+            or not np.array_equal(m[2], [0, 0, 1])
+            or m[0, 1] != 0 or m[1, 0] != 0 or m[0, 0] <= 0 or m[1, 1] <= 0):
+        return unpremultiply_display_bgra(warped)
+    height, width = warped.shape[:2]
+    sh, sw = source_shape[:2]
+    # Bilinear sampling can reach one source pixel beyond the canvas. Include
+    # that support, plus two destination pixels for boundary quantization.
+    with np.errstate(over='ignore', invalid='ignore'):
+        limits = np.array([m[0, 2] - m[0, 0], m[1, 2] - m[1, 1],
+                           m[0, 0] * sw + m[0, 2], m[1, 1] * sh + m[1, 2]])
+    if not np.isfinite(limits).all():
+        return unpremultiply_display_bgra(warped)
+    x0 = max(0, min(width, int(np.floor(limits[0])) - 2))
+    y0 = max(0, min(height, int(np.floor(limits[1])) - 2))
+    x1 = max(0, min(width, int(np.ceil(limits[2])) + 2))
+    y1 = max(0, min(height, int(np.ceil(limits[3])) + 2))
+    # A small trim does not repay the additional output copy. Empty or tiny
+    # regions also retain the existing conversion behavior.
+    if min(x1 - x0, y1 - y0) < 4 or (x1 - x0) * (y1 - y0) * 4 >= width * height * 3:
+        return unpremultiply_display_bgra(warped)
+    output = np.zeros(warped.shape, np.uint8)
+    output[y0:y1, x0:x1] = unpremultiply_display_bgra(warped[y0:y1, x0:x1])
+    return output
+
+
+def unpremultiply_display_bgra(warped: np.ndarray) -> np.ndarray:
+    """Return the same straight-alpha bytes using contiguous color planes.
+
+    ``warped`` is float32 BGR premultiplied by alpha in [0, 1]. Quantized-zero
+    alpha pixels are zero in the existing display contract, so their colors
+    need no division. Keep the float alpha divisor and NumPy rounding for the
+    remaining pixels; this must not change interpolation or client coordinates.
+    """
+    alpha = np.clip(cv2.extractChannel(warped, 3), 0.0, 1.0)
+    alpha_bytes = np.rint(alpha * 255.0).astype(np.uint8)
+    output = np.zeros(warped.shape, dtype=np.uint8)
+    x, y, width, height = cv2.boundingRect(alpha_bytes)
+    if width == 0 or height == 0:
+        return output
+    # Work across all three channels while a small strip is still hot, instead
+    # of repeatedly walking full-frame float buffers. Pixel arithmetic and the
+    # quantized-alpha visibility rule stay identical.
+    block_rows = max(1, 32768 // width)
+    for top in range(y, y + height, block_rows):
+        region = np.s_[top:min(top + block_rows, y + height), x:x + width]
+        divisor = np.ascontiguousarray(alpha[region])
+        positive = divisor > 0
+        visible = cv2.compare(alpha_bytes[region], 0, cv2.CMP_GT)
+        for channel in range(3):
+            premultiplied = cv2.extractChannel(warped[region], channel)
+            color = np.divide(premultiplied, divisor,
+                              out=np.zeros_like(premultiplied), where=positive)
+            np.rint(color, out=color)
+            np.clip(color, 0, 255, out=color)
+            output[region][:, :, channel] = cv2.bitwise_and(
+                color.astype(np.uint8), visible)
+        output[region][:, :, 3] = alpha_bytes[region]
+    return output
+
+
 def fit_display_bgra(pixels: np.ndarray, max_size: tuple[int, int]) -> np.ndarray:
     """Fit a straight-alpha BGRA canvas without dark transparent-edge fringes.
 
