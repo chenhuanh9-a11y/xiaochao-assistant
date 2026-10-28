@@ -20,6 +20,14 @@
 
 ## 资源包
 
+当前版本：[custom-maps-20261028-1](https://github.com/chenhuanh9-a11y/xiaochao-assistant/releases/tag/custom-maps-20261028-1)，`xingtu-custom-maps-20261028-1.zip`，56,790,370 字节，SHA-256 `d5dd4be7de77dd6ba248527d83cf05a51faf54e30127bd88abb31c7d3e47c466`。打包软件前下载并安装：
+
+```
+python tools/maps/install_custom_maps.py --archive xingtu-custom-maps-20261028-1.zip --sha256 d5dd4be7de77dd6ba248527d83cf05a51faf54e30127bd88abb31c7d3e47c466
+```
+
+重新构建：
+
 ```
 python tools/maps/build_custom_map_package.py --legacy 旧版/nightmare-route-editor --game-data 噩梦24图交接包 --structures 结构资源 --out 新目录 --version 20261028-1 --zip 发布目录 [--review 对比图目录]
 python tools/maps/install_custom_maps.py --archive xingtu-custom-maps-VERSION.zip --sha256 压缩包SHA256
