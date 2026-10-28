@@ -32,7 +32,7 @@ class LiveAuthorImportTests(unittest.TestCase):
         self.root = self.folder / 'install'
         self.root.mkdir()
         self.write('_internal/version.json', json.dumps(dict(
-            displayVersion='1.0.1', numericVersion='1.0.0.5')).encode())
+            displayVersion='1.0.2', numericVersion='1.0.0.6')).encode())
         self.dependencies = []
         for index, path in enumerate(sorted(importer.BASE_DEPENDENCIES)):
             data = f'base-{index}'.encode()
