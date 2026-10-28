@@ -41,6 +41,7 @@ MAX_POINTS = 128
 PICK_RADIUS = 45  # Native pixels: within one road tile (60 px) of a point.
 PROFILE_PREFIX = "custom:"
 DEFAULT_GALLERY_ID = "default"
+LEGACY_SCHEMA = "xingtu-custom-routes-v1"
 
 USER_ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]
 DEFAULT_LIBRARY_ROOT = Path(os.environ.get("XINGTU_CUSTOM_MAPS_ROOT", "") or USER_ROOT / "assets" / "custom-maps")
@@ -57,6 +58,14 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1 << 20), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def mask_sha256(mask) -> str:
+    """Hash the binary native canvas, independent of strides and 1/255 values."""
+    array = np.asarray(mask)
+    if array.ndim != 2:
+        raise ValueError("结构 mask 必须是二维数组")
+    return hashlib.sha256(np.ascontiguousarray(array > 0, dtype=np.uint8).tobytes()).hexdigest()
 
 
 def _rgb(color: str) -> tuple[int, int, int]:
@@ -156,6 +165,16 @@ class CustomMapLibrary:
                 while len(self._images) > 6:
                     self._images.pop(next(iter(self._images)))
             return image
+
+    def validate_reference(self, map_id, floor, clean_mask) -> None:
+        """Fail closed when the current runtime geometry differs from registration."""
+        row = self._maps[str(map_id)]["floors"][str(floor)]
+        if tuple(np.asarray(clean_mask).shape) != tuple(row["nativeShape"]):
+            raise ValueError("自定义地图与当前地图结构尺寸不一致")
+        expected = row.get("maskSha256")
+        if (not isinstance(expected, str) or len(expected) != 64
+                or mask_sha256(clean_mask) != expected):
+            raise ValueError("自定义地图与当前地图结构 mask 校验不一致，请更新资源包")
 
     def exit_icon(self) -> Image.Image | None:
         try:
@@ -261,7 +280,9 @@ class MapGraph:
         same_floor = start[0] == goal[0]
         target = self.floors[goal[0]].points[goal[1]]
         def heuristic(node):
-            if not same_floor or node[0] != goal[0]:
+            # Stairs may leave this floor and return near the goal for less
+            # than its Euclidean distance. Dijkstra is admissible in that case.
+            if self.links or not same_floor or node[0] != goal[0]:
                 return 0.0
             return float(math.hypot(*(self.floors[node[0]].points[node[1]] - target)))
         best = {start: 0.0}
@@ -463,10 +484,12 @@ def _clean_gallery(raw) -> dict | None:
 class GalleryStore:
     """A read-only default gallery plus the player's galleries in one JSON file."""
 
-    def __init__(self, path: Path, default_path: Path = DEFAULT_GALLERY_FILE):
+    def __init__(self, path: Path, default_path: Path = DEFAULT_GALLERY_FILE, *, legacy_path: Path | None = None):
         self.path = Path(path)
         self.revision = 0
         self._lock = threading.RLock()
+        self.migration_error = ""
+        self._legacy_migrations = []
         try:
             default = _clean_gallery(json.loads(Path(default_path).read_text("utf-8")))
         except (OSError, ValueError):
@@ -474,18 +497,84 @@ class GalleryStore:
         self.default = default or dict(id=DEFAULT_GALLERY_ID, name="默认路线", maps={})
         self.default["id"] = DEFAULT_GALLERY_ID
         self._galleries: list[dict] = []
+        migration_writable = not self.path.exists()
         try:
             raw = json.loads(self.path.read_text("utf-8"))
             if isinstance(raw, dict) and raw.get("schema") == GALLERY_SCHEMA:
+                migration_writable = True
+                migrations = raw.get("legacyRouteMigrations")
+                self._legacy_migrations = [value for value in (migrations if isinstance(migrations, list) else [])
+                                           if isinstance(value, str) and len(value) == 64]
                 for item in raw.get("galleries") or ():
                     gallery = _clean_gallery(item)
                     if gallery and gallery["id"] != DEFAULT_GALLERY_ID:
                         self._galleries.append(gallery)
         except (OSError, ValueError):
             pass
+        self._migrate_legacy(Path(legacy_path) if legacy_path is not None
+                             else self.path.with_name("custom-routes.json"), migration_writable)
+
+    def _migrate_legacy(self, source: Path, writable: bool) -> None:
+        """Copy legacy native waypoints into per-floor galleries; never move/edit source.
+
+        Separate galleries retain every floor's point budget and do not invent
+        cross-floor segments or auto-enable a route under the new planner.
+        The source remains the lossless backup (including snap/useInGame).
+        """
+        try:
+            data = source.read_bytes()
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            self.migration_error = f"旧路线无法读取：{error}"
+            return
+        digest = hashlib.sha256(data).hexdigest()
+        if digest in self._legacy_migrations:
+            return
+        if not writable or source.resolve() == self.path.resolve():
+            self.migration_error = "图库文件不可迁移；旧路线原文件已保留"
+            return
+        try:
+            raw = json.loads(data.decode("utf-8-sig"))
+            if not isinstance(raw, dict) or raw.get("schema") != LEGACY_SCHEMA or not isinstance(raw.get("maps"), dict):
+                raise ValueError("旧路线格式无效")
+            galleries = {}
+            for map_id, floors in raw["maps"].items():
+                if not isinstance(floors, dict):
+                    raise ValueError("旧路线楼层格式无效")
+                for floor, route in floors.items():
+                    if floor not in FLOORS or not isinstance(route, dict):
+                        raise ValueError("旧路线楼层无效")
+                    points = route.get("points", [])
+                    if not isinstance(points, list) or len(points) > MAX_POINTS:
+                        raise ValueError("旧路线点数或格式无效")
+                    converted = []
+                    for point in points:
+                        if (not isinstance(point, list) or len(point) != 2
+                                or any(type(value) not in (int, float) or not math.isfinite(value) for value in point)):
+                            raise ValueError("旧路线坐标无效")
+                        converted.append(dict(floor=floor, x=point[0], y=point[1], kind="via", room=None,
+                                              color=route.get("color") if _valid_color(route.get("color")) else DEFAULT_COLOR))
+                    if converted:
+                        converted[0]["start"] = True
+                        gallery = galleries.setdefault(floor, dict(id=f"legacy-import-{floor}-{digest[:12]}",
+                            name=f"旧路线 · {FLOOR_LABELS[floor]}", maps={}))
+                        gallery["maps"][str(map_id)] = dict(points=converted)
+            additions = list(galleries.values())
+            self._galleries.extend(additions)
+            self._legacy_migrations.append(digest)
+            if not self._save():
+                if additions:
+                    del self._galleries[-len(additions):]
+                self._legacy_migrations.remove(digest)
+                raise ValueError("迁移保存失败")
+            self.revision += 1
+        except (OSError, ValueError, TypeError, OverflowError) as error:
+            self.migration_error = f"旧路线迁移失败：{error}；原文件已保留"
 
     def _save(self) -> bool:
-        payload = dict(schema=GALLERY_SCHEMA, galleries=self._galleries)
+        payload = dict(schema=GALLERY_SCHEMA, galleries=self._galleries,
+                       legacyRouteMigrations=self._legacy_migrations)
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_suffix(".tmp")

@@ -6074,8 +6074,22 @@ class DailyAssistant:
         gallery = gallery_of(profile)
         if gallery:
             name = self.custom_galleries().name(gallery) if hasattr(self, 'settings_path') else None
-            return f'自定义 · {name or "已删除的图库"}'
+            duplicate = (name is not None and sum(item_name == name for _id, item_name, _ro
+                         in self.custom_galleries().galleries()) > 1)
+            suffix = f' [{gallery}]' if duplicate else ''
+            return f'自定义 · {name or "已删除的图库"}{suffix}'
         return ROUTE_PROFILE_LABELS.get(profile, str(profile))
+
+    def _restore_route_profile_preference(self):
+        selected = normalize_route_profile_id(self.settings.get('routeProfileId', DEFAULT_ROUTE_PROFILE_ID))
+        if self.game_mode == 'difficult':
+            selected = 'zhan10-speed'
+        elif not gallery_of(selected):
+            catalog = getattr(self, 'author_route_catalog', None)
+            available = {profile.id for profile in catalog.settings_choices()} if catalog is not None else set()
+            if selected != DEFAULT_ROUTE_PROFILE_ID and selected not in available:
+                selected = DEFAULT_ROUTE_PROFILE_ID
+        self.route_profile_id = selected
 
     def _shown_route_profile(self):
         """The selected gallery stays the shown choice while its maps use the structure basis."""
@@ -6554,18 +6568,7 @@ class DailyAssistant:
             and len(remembered_drag_environment) == 4
             else ()
         )
-        self.route_profile_id = normalize_route_profile_id(
-            self.settings.get("routeProfileId", DEFAULT_ROUTE_PROFILE_ID),
-        )
-        if self.game_mode=='difficult':self.route_profile_id='zhan10-speed'
-        selectable_profile_ids = {
-            profile.id for profile in self.author_route_catalog.settings_choices()
-        } if self.author_route_catalog is not None else set()
-        if (
-            self.route_profile_id != DEFAULT_ROUTE_PROFILE_ID
-            and self.route_profile_id not in selectable_profile_ids
-        ):
-            self.route_profile_id = DEFAULT_ROUTE_PROFILE_ID
+        self._restore_route_profile_preference()
         self.zhan10_coffin_variant_id = normalize_coffin_variant_id(
             self.settings.get("zhan10CoffinVariantId", "variant-01"),
         )
@@ -9406,9 +9409,9 @@ class DailyAssistant:
         # and the user's visibility intent. It also hides a now-missing route.
         self.show_sheet()
 
-    def _apply_route_profile_setting(self, _event=None) -> None:
+    def _apply_route_profile_setting(self, _event=None, *, profile_id=None) -> None:
         previous = self.route_profile_id
-        selected = {label: key for key, label in self._mode_route_options()}.get(
+        selected = profile_id or {label: key for key, label in self._mode_route_options()}.get(
             self.route_profile_var.get()) or ROUTE_PROFILE_IDS_BY_LABEL.get(
             self.route_profile_var.get(), DEFAULT_ROUTE_PROFILE_ID,
         )
@@ -29477,7 +29480,8 @@ class DailyAssistant:
         label = (self._route_profile_label(custom_profile_id(gallery_id)) if gallery_id is not None
                  else next((label for key, label in self._author_route_options()), ''))
         self.route_profile_var.set(label)
-        self._apply_route_profile_setting()
+        self._apply_route_profile_setting(profile_id=(custom_profile_id(gallery_id) if gallery_id is not None
+                                                else next((key for key, _label in self._author_route_options()), None)))
         return dict(success=True, message=f'游戏内已改用{label}。' if gallery_id is not None else '游戏内已恢复作者路线。')
 
     def _custom_route_key(self, map_id):
@@ -29499,9 +29503,10 @@ class DailyAssistant:
             if layers is None:
                 layers = self._custom_route_layers = {}
             cached = layers.get(key)
+        try:
+            self.custom_map_library().validate_reference(map_id, str(floor), reference.clean_mask)
             if cached is not None and cached['route'] == route and cached['reference'] is reference:
                 return cached['image']
-        try:
             points = json.loads(route[1])
             image = render_custom_map_layer(self.custom_map_library(), map_id, str(floor), points)
             if tuple(image.shape[:2]) != tuple(reference.shape):

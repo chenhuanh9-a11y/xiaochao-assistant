@@ -14,7 +14,7 @@ import numpy as np
 
 APP = Path(__file__).resolve().parents[1] / 'app'
 sys.path.insert(0, str(APP))
-from custom_maps import RouteError
+from custom_maps import RouteError, gallery_of, profile_id as custom_profile_id
 
 
 def methods(filename, names, namespace):
@@ -52,7 +52,8 @@ class IntegrationTests(unittest.TestCase):
         s._shared_structure_lookup_binding = lambda *args: dict(profile='shared', variant='v')
         s._custom_route_active = lambda map_id, floor: self.enabled
         s._custom_route_key = lambda map_id: ('gallery', json.dumps(self.routes[str(map_id)]), 'v1')
-        s.custom_map_library = lambda: SimpleNamespace(version='v1')
+        self.validate_reference = Mock()
+        s.custom_map_library = lambda: SimpleNamespace(version='v1', validate_reference=self.validate_reference)
         s.preferred_route_profile_id = 'custom:gallery'
         s._route_profile_label = lambda profile: '自定义 · 测试'
         s._shared_display_profile_id = lambda: 'shared'
@@ -117,6 +118,13 @@ class IntegrationTests(unittest.TestCase):
         self.enabled = False
         self.assertEqual(self.layer()['displayKind'], 'shared-structure')
 
+    def test_same_shape_changed_mask_rejects_cached_layer(self):
+        old = self.layer()['routeSource']
+        self.validate_reference.side_effect = ValueError('mask hash mismatch')
+        self.assertIsNone(self.layer())
+        self.assertEqual(self.render.call_count, 1)
+        self.assertIsNone(self.subject._display_route_context(old))
+
     def test_combination_shortcuts_reserve_primary_keys(self):
         s = self.subject
         s.hotkey_name, s.hotkey_vk = 'Ctrl+F', 70
@@ -142,6 +150,40 @@ class IntegrationTests(unittest.TestCase):
         s.chest_auto_tap.reconcile_reserved.assert_called_once_with()
         self.assertEqual(s._chest_auto_tap_reserved()[70], '星图快捷键 Ctrl+F')
         self.assertEqual(s.hotkey_settings_warning, 'conflict')
+
+
+class GalleryPreferenceTests(unittest.TestCase):
+    def subject(self):
+        return methods('identityv_daily_assistant.py',
+                       ['_restore_route_profile_preference', '_route_profile_label', 'use_custom_gallery'],
+                       dict(normalize_route_profile_id=lambda v:v, DEFAULT_ROUTE_PROFILE_ID='suju',
+                            gallery_of=gallery_of, custom_profile_id=custom_profile_id,
+                            ROUTE_PROFILE_LABELS={}))()
+
+    def test_startup_without_author_catalog_preserves_custom_preference(self):
+        s=self.subject()
+        s.game_mode='nightmare'
+        s.settings={'routeProfileId':'custom:two'}
+        s.author_route_catalog=None
+        s._restore_route_profile_preference()
+        self.assertEqual(s.route_profile_id,'custom:two')
+        s.game_mode='difficult'
+        s._restore_route_profile_preference()
+        self.assertEqual(s.route_profile_id,'zhan10-speed')
+
+    def test_duplicate_names_have_unique_labels_and_use_passes_id(self):
+        s=self.subject()
+        s.settings_path=Path('fixture/settings.json')
+        s.custom_galleries=lambda:SimpleNamespace(name=lambda _id:'Same',
+            galleries=lambda:[('one','Same',True),('two','Same',False)])
+        first=s._route_profile_label('custom:one')
+        second=s._route_profile_label('custom:two')
+        self.assertNotEqual(first,second)
+        s._custom_maps_ready=lambda:True
+        s.route_profile_var=Mock()
+        s._apply_route_profile_setting=Mock()
+        self.assertTrue(s.use_custom_gallery('one')['success'])
+        s._apply_route_profile_setting.assert_called_once_with(profile_id='custom:one')
 
 
 class StatusTests(unittest.TestCase):

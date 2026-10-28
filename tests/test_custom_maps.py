@@ -5,13 +5,14 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 from custom_maps import (CustomMapLibrary, GalleryStore, RouteError, gallery_of, insertion_index,  # noqa: E402
-                         marker_groups, profile_id, render_game_layer)
+                         marker_groups, profile_id, render_game_layer, FloorGraph, MapGraph, mask_sha256)
 
 # Two floors of a 4x3 tile road grid (60 px tiles). Room "big" is 2x2 tiles,
 # "hall" is a one-tile-wide corridor; a door joins them. Floor 2 is one room.
@@ -78,6 +79,34 @@ class LibraryTests(unittest.TestCase):
         self.assertEqual((corridor["kind"], corridor["x"], corridor["y"]), ("via", 150.0, 30.0))
         self.assertIsNone(graph.pick("1", 230, 170), "far from any road point")
 
+    def test_reference_requires_mask_identity_not_only_shape(self):
+        mask = np.ones((180, 240), np.uint8)
+        row = self.library._maps["m"]["floors"]["1"]
+        with self.assertRaises(ValueError):
+            self.library.validate_reference("m", "1", mask)  # Missing binding fails closed.
+        row["maskSha256"] = mask_sha256(mask)
+        self.library.validate_reference("m", "1", mask * 255)
+        self.assertEqual(mask_sha256(mask), mask_sha256(np.asfortranarray(mask)))
+        changed = mask.copy()
+        changed[10, 10] = 0
+        with self.assertRaises(ValueError):
+            self.library.validate_reference("m", "1", changed)
+        with self.assertRaises(ValueError):
+            self.library.validate_reference("m", "1", mask[:100])
+
+    def test_same_floor_shortest_path_can_leave_floor_away_from_goal(self):
+        lower = FloorGraph([[0, 0], [1000, 0], [-10, 0]], ["a", "b", "c"],
+                           [[0, 1, "road"], [0, 2, "road"]])
+        upper = FloorGraph([[0, 0]], ["d"], [])
+        graph = MapGraph({"1": lower, "2": upper}, [
+            dict(**{"from": dict(floor="1", x=-10, y=0), "to": dict(floor="2", x=0, y=0)},
+                 cost=1, bidirectional=False),
+            dict(**{"from": dict(floor="2", x=0, y=0), "to": dict(floor="1", x=1000, y=0)},
+                 cost=1, bidirectional=False)])
+        cells, cost = graph.path(("1", 0), ("1", 1))
+        self.assertEqual(cost, 12)
+        self.assertEqual(cells, [("1", 0), ("1", 2), ("2", 0), ("1", 1)])
+
     def test_plan_through_door_and_stairs(self):
         graph = self.library.graph("m")
         points = [target(graph, "1", 30, 90), target(graph, "1", 210, 30), target(graph, "2", 30, 30, "#FF6B81")]
@@ -130,6 +159,60 @@ class LibraryTests(unittest.TestCase):
 
 
 class GalleryTests(unittest.TestCase):
+    def test_legacy_routes_migrate_per_floor_without_changing_source_or_existing_gallery(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            path, source = folder / "g.json", folder / "custom-routes.json"
+            store = GalleryStore(path)
+            existing = store.create("existing")
+            legacy = dict(schema="xingtu-custom-routes-v1", useInGame=True, maps={"m": {
+                floor: dict(points=[[index, index + 1] for index in range(60)], color="#e03150", snap=False)
+                for floor in ("B1", "1", "2")}})
+            original = json.dumps(legacy).encode()
+            source.write_bytes(original)
+            migrated = GalleryStore(path)
+            self.assertEqual(migrated.migration_error, "")
+            self.assertEqual(migrated.name(existing), "existing")
+            additions = [(key, migrated.route(key, "m")) for key, _, readonly in migrated.galleries()
+                         if not readonly and key != existing]
+            self.assertEqual(len(additions), 3)
+            self.assertEqual(sum(len(points) for _, points in additions), 180)
+            for _, points in additions:
+                self.assertTrue(points[0]["start"])
+                self.assertEqual(points[-1]["x"], 59)
+                self.assertEqual(points[0]["color"], "#e03150")
+                self.assertEqual(len({point["floor"] for point in points}), 1)
+            self.assertEqual(source.read_bytes(), original)
+            before = path.read_bytes()
+            self.assertEqual(len(GalleryStore(path).galleries()), len(migrated.galleries()))
+            self.assertEqual(path.read_bytes(), before)
+            migrated.delete(additions[0][0])
+            self.assertEqual(len(GalleryStore(path).galleries()), len(migrated.galleries()))
+
+    def test_legacy_migration_failure_keeps_original_and_retries_after_save_recovers(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            source, path = folder / "custom-routes.json", folder / "g.json"
+            original = json.dumps(dict(schema="xingtu-custom-routes-v1", maps={"m": {
+                "1": dict(points=[[1, 2]], color="#abcdef")}})).encode()
+            source.write_bytes(original)
+            with mock.patch.object(GalleryStore, "_save", return_value=False):
+                store = GalleryStore(path)
+            self.assertTrue(store.migration_error)
+            self.assertEqual(len(store.galleries()), 1)
+            self.assertEqual(source.read_bytes(), original)
+            self.assertEqual(len(GalleryStore(path).galleries()), 2)
+
+    def test_legacy_migration_never_overwrites_unreadable_gallery(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            path = folder / "g.json"
+            path.write_bytes(b"unreadable existing galleries")
+            (folder / "custom-routes.json").write_text(json.dumps(dict(schema="xingtu-custom-routes-v1", maps={})))
+            store = GalleryStore(path)
+            self.assertTrue(store.migration_error)
+            self.assertEqual(path.read_bytes(), b"unreadable existing galleries")
+
     def test_default_is_readonly_and_player_galleries_persist(self):
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)

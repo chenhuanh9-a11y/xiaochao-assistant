@@ -45,6 +45,21 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def mask_sha256(mask: np.ndarray) -> str:
+    """Hash the native footprint as C-order binary uint8, shared with runtime."""
+    return hashlib.sha256(np.ascontiguousarray(mask > 0, dtype=np.uint8).tobytes()).hexdigest()
+
+
+def checked_mask_sha256(topology: dict, native: np.ndarray, map_id: str, floor: str) -> str:
+    """Bind the road graph to this exact canonical footprint, not just its size."""
+    if list(topology["shape"]) != list(native.shape):
+        raise ValueError(f"topology shape mismatch for {map_id}/{floor}")
+    digest = mask_sha256(native)
+    if topology.get("maskSha256") != digest:
+        raise ValueError(f"topology mask hash mismatch for {map_id}/{floor}")
+    return digest
+
+
 def read_image(path: Path) -> np.ndarray:
     image = cv2.imdecode(np.fromfile(str(path), np.uint8), cv2.IMREAD_UNCHANGED)
     if image is None or image.ndim != 3 or image.shape[2] != 4:
@@ -136,15 +151,15 @@ def main(argv=None) -> int:
                       else args.legacy / "blank" / template["id"] / f"{floor['id']}.png")
             image = read_image(source)
             row = structures[(map_id, key)]
-            native = np.load(args.structures / row["resourcePath"])["clean_mask"] > 0
+            with np.load(args.structures / row["resourcePath"], allow_pickle=False) as resource:
+                native = resource["clean_mask"] > 0
+            topology_path = topologies[(map_id, key)]
+            topology = json.loads(topology_path.read_text("utf-8"))
+            mask_hash = checked_mask_sha256(topology, native, map_id, key)
             matrix, overlap = register(image[:, :, 3] > 0, native)
             if overlap < MIN_OVERLAP:
                 raise ValueError(f"registration too weak for {template['id']}/{floor['id']}: {overlap:.3f}")
             matrices[floor["id"]] = matrix
-            topology_path = topologies[(map_id, key)]
-            topology = json.loads(topology_path.read_text("utf-8"))
-            if list(topology["shape"]) != list(native.shape):
-                raise ValueError(f"topology shape mismatch for {map_id}/{key}")
             image_rel = f"images/{map_id}/{key}.png"
             topology_rel = f"topology/{map_id}/{key}.json"
             (out / image_rel).parent.mkdir(exist_ok=True)
@@ -155,7 +170,7 @@ def main(argv=None) -> int:
                 image=image_rel, imageSha256=sha256(out / image_rel), imageSize=[image.shape[1], image.shape[0]],
                 matrixImageToNative=[[round(float(v), 6) for v in r] for r in matrix],
                 overlap=round(overlap, 4), nativeShape=list(native.shape),
-                topology=topology_rel, topologySha256=sha256(out / topology_rel), maskSha256=topology["maskSha256"],
+                topology=topology_rel, topologySha256=sha256(out / topology_rel), maskSha256=mask_hash,
                 entrances=[dict(label=e["label"], x=float(e["x"]), y=float(e["y"])) for e in floor.get("entrances", [])])
             if args.review:
                 warped = cv2.warpAffine(image, matrix[:2], (native.shape[1], native.shape[0]),

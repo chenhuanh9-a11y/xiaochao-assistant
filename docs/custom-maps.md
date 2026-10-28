@@ -59,3 +59,18 @@ python tools/draw_custom_routes.py
 - 两段路线经过同一段走廊时会重叠，没有像旧版那样并排分道显示。
 - 道路网的门是静态配对，实时开关状态未知；房间内部碰撞未完全建模。
 - 尚未在 Windows 实机和游戏内验证对齐效果。
+# 构建交接与兼容修复
+
+固定资源 Release：`custom-maps-20261028-1`，资源 ZIP `xingtu-custom-maps-20261028-1.zip`，56,790,370 字节，SHA256 `d5dd4be7de77dd6ba248527d83cf05a51faf54e30127bd88abb31c7d3e47c466`。Release 是编辑器资源包，不是软件安装包。
+
+```powershell
+python tools/maps/install_custom_maps.py --archive <下载的ZIP> --sha256 d5dd4be7de77dd6ba248527d83cf05a51faf54e30127bd88abb31c7d3e47c466 --root <干净构建输出根目录>
+```
+
+资源安装在应用根目录 `assets/custom-maps`，包含 manifest、图片和道路拓扑；`app/custom_default_gallery.json` 由构建脚本随程序收集。不要把验证目录、玩家图库或设置打进安装包。安装工具会替换目标资源目录，仅用于已确认的构建 stage；不应拿它覆盖未知用户自制资源。
+
+builder 验证道路拓扑声明的 shape 和 mask 哈希，并保存实际 mask 哈希；runtime 在缓存复用/显示前对当前结构执行同样检查。哈希算法是 `SHA256(ascontiguousarray(mask > 0, uint8).tobytes())`。公开包已含此字段，缺失字段或同尺寸不同结构均拒绝显示。
+
+旧设置目录中的 `custom-routes.json` 会按楼层迁移为独立可编辑图库，以保留全部原生坐标和颜色，不捏造跨楼层连接。原文件不移动、不改写，可恢复；迁移摘要写入新 `custom-galleries.json` 保证幂等，不自动切换玩家的游戏内选项。迁移失败保留原文件，原因可由 `GalleryStore.migration_error` 读取。自定义图库偏好不再因作者 catalog 缺失被启动重置，同名图库通过 ID 区分。
+
+存在楼梯链接时采用零启发式保证跨层路径的最短路条件。此次离线检查覆盖模型、迁移、无窗口编辑器和主程序集成、builder；公开包145文件校验，并对 nightmare-03 的 B1/1F 做实际结构哈希及同尺寸篡改拒绝检查。未执行 Windows GUI、游戏或实际输入，不据此宣称游戏内观感验收。
