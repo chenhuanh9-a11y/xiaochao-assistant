@@ -13409,7 +13409,9 @@ class DailyAssistant:
                         if canonical is None or shared_basis is None:
                             raise ValueError('existing-root-shared-basis-unavailable')
                         validation_matrix = np.asarray(canonical) @ np.asarray(shared_basis)
-                    root_attempt = verify_root(frame, map_id, floor, np.asarray(validation_matrix).copy())
+                    root_attempt = verify_root(frame, map_id, floor, np.asarray(validation_matrix).copy(), context=context)
+                    if cancelled and cancelled():
+                        return dict(success=False, reason='structure-work-obsolete', rootPoseValidation=root_attempt)
                     if root_attempt.get('success'):
                         residual = self._rendered_profile_current_frame_residual(
                             frame, route, matrix, profile_id=profile)

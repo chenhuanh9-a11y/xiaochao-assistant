@@ -60,15 +60,17 @@ class ReopenRootTests(unittest.TestCase):
         self.run_fit();self.verify.assert_not_called();self.assertEqual(self.solve.call_count,2)
     def test_cancel_after_verifier_has_no_geometry_verdict(self):
         cancelled=[False]
-        def verify(*a):cancelled[0]=True;return {'success':True}
+        def verify(*a, **kwargs):cancelled[0]=True;return {'success':True}
         self.verify.side_effect=verify
         result=self.run_fit(cancelled=lambda:cancelled[0])
         self.assertEqual(result['reason'],'structure-work-obsolete');self.solve.assert_not_called()
+        self.s._rendered_profile_current_frame_residual.assert_not_called()
     def test_shared_and_rendered_checks_use_distinct_bases(self):
         self.s._shared_structure_mode_enabled=lambda:True
         result=self.run_fit()
         self.assertTrue(result['success'])
         self.verify.assert_called_once()
+        self.assertIn('context', self.verify.call_args.kwargs)
         np.testing.assert_allclose(self.verify.call_args.args[3],self.canonical@self.shared)
         np.testing.assert_allclose(self.s._rendered_profile_current_frame_residual.call_args.args[2],self.matrix)
 
