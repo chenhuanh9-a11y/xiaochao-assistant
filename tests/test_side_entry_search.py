@@ -1,10 +1,12 @@
 """Local priorities must not conceal a valid rival outside the neighbourhood."""
 import copy
+import struct
 from pathlib import Path
 import sys
 import tempfile
 import time
 import unittest
+from zipfile import ZipFile
 
 import numpy as np
 
@@ -92,6 +94,24 @@ class PreparedSearchTests(unittest.TestCase):
         pairs=np.tile(self.pairs,(4,1))+np.repeat(np.arange(4)*len(self.points),len(self.pairs))[:,None]
         prepared=prepare_arrays(self.item,points,rays,pairs,self.door)
         self.assertLessEqual(len(prepared['lower']),len(self.prepared['lower']))
+
+    def test_damaged_deflate_stream_keeps_ordinary_search(self):
+        entries=[(self.item,self.points,self.rays,self.pairs)]
+        doors={'map-a':self.door}
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            path=root/'side-entry-search.npz'
+            write_index(path,entries,doors)
+            with ZipFile(path) as archive:
+                offset=archive.getinfo('metadata.npy').header_offset
+            damaged=bytearray(path.read_bytes())
+            name_length,extra_length=struct.unpack_from('<HH',damaged,offset+26)
+            # Valid ZIP directory, invalid DEFLATE block type in one member.
+            damaged[offset+30+name_length+extra_length]=7
+            path.write_bytes(damaged)
+            index,error=load_index(root,entries,doors)
+            self.assertEqual(index,{})
+            self.assertTrue(error)
 
 
 if __name__=='__main__':unittest.main()

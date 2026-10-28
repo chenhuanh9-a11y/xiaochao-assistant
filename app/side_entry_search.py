@@ -6,6 +6,7 @@ seed uses the original full reference and final competition is still complete.
 """
 import json
 import time
+import zlib
 from zipfile import BadZipFile
 from pathlib import Path
 
@@ -101,7 +102,7 @@ def load_index(root, entries, doors):
         if set(result) != set(targets):
             raise ValueError('side local index inventory incomplete')
         return result, None
-    except (OSError, ValueError, KeyError, TypeError, IndexError, BadZipFile) as error:
+    except (OSError, ValueError, KeyError, TypeError, IndexError, BadZipFile, zlib.error) as error:
         return {}, str(error)
 
 
