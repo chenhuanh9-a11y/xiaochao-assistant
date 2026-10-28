@@ -3,6 +3,7 @@ import copy
 from concurrent.futures import ThreadPoolExecutor
 import dis
 import hashlib
+import gzip
 import itertools
 import json
 import queue
@@ -87,6 +88,88 @@ class Fixture:
             floor, self.provider, lambda:dict(query=query, observationBounds=[0, 0, 8, 6]))
 
 
+class ConditionFixture(Fixture):
+    """Finite front windows with explicitly controlled current pose evidence."""
+    def __init__(self,root):
+        super().__init__(root)
+        features=[];references=[]
+        points=np.array([[0,0],[30,0],[30,30],[0,30],[0,90],[30,90]])
+        for i,mid in enumerate(IDS):
+            for floor in ('1','2'):
+                ref=self.refs[(mid,floor)]
+                mask=np.zeros((128,128),np.uint8);mask[:31,:31]=1
+                mask[60:71,30*i:30*i+10]=1;mask[80:91,30*i:30*i+10]=1
+                ref.shape=mask.shape
+                np.savez_compressed(ref.path,shared_mask=mask,metadata=json.dumps(ref.metadata))
+            ref=self.refs[(mid,'1')];product=ref.path.relative_to(root).as_posix()
+            chains=[dict(points=[points[(j-1)%6].tolist(),point.tolist(),points[(j+1)%6].tolist()],
+                rays=[[1,0],[0,1]]) for j,point in enumerate(points)]
+            features.append(dict(mapId=mid,floor='1',unit=60.,center=[0,0],outline=[[0,0],[30,0]],
+                chains=chains,sourceProduct=product))
+            references.append(dict(mode='nightmare',mapId=mid,floor='1',referenceId=f'nightmare/{mid}/1',
+                resourcePath=product,resourceSha256=self.sha(ref.path),shapeHW=list(ref.shape),
+                features={},**ref.metadata))
+        path=root/'references/entries.json'
+        path.write_text(json.dumps(dict(schemaVersion=1,entries=features)),encoding='utf8')
+        for i,r in enumerate(references):
+            r['features']['front']=dict(path='references/entries.json',sha256=self.sha(path),rowIndex=i,
+                unit=60.,sourceProduct=features[i]['sourceProduct'])
+        did='front-domain'
+        domain=dict(domainId=did,source=f'nightmare/{IDS[0]}/1',kind='front',sourceAnchorIndex=-1,anchorPointIds=[0,1],
+            unit=60.,centerReference=[0,0],sourceReferenceToCondition=np.eye(3).tolist())
+        poses=[dict(poseId=m,domainId=did,target=f'nightmare/{m}/1',targetReferenceToCondition=np.eye(3).tolist(),
+            windows=[],exactEquivalentSeeds=[]) for m in IDS]
+        conditions=[dict(conditionId=i,domainId=did,source=IDS[0],kind='front',mode='nightmare',floor='1',
+            radiusUnits=radius,poseIds=list(members),members=list(members),
+            completeForeignMapCompetition=True,sameMapAlternativePoses='UNKNOWN')
+            for i,radius,members in ((0,1,IDS),(1,2,IDS[:2]))]
+        sample_sets=[[],[[1,90]],[[31,90]],[[1,70]],[[61,90]],[[31,70]],[[61,70]]]
+        arrays=np.asarray([p for sample in sample_sets for p in sample],np.int32)
+        offsets=np.cumsum([0]+[len(s) for s in sample_sets],dtype=np.int64)
+        sample_path=root/'references/samples.npz';np.savez_compressed(sample_path,points=arrays,offsets=offsets)
+        comparisons=[]
+        for cid,pairs in ((0,((IDS[0],IDS[1],1,2),(IDS[0],IDS[2],3,4),(IDS[1],IDS[2],5,6))),
+                          (1,((IDS[0],IDS[1],1,2),))):
+            for a,b,sa,sb in pairs:
+                comparisons.append(dict(conditionId=cid,domainId=did,poseA=a,poseB=b,
+                    differenceScope='post-entry-positive-structure',observationBounds=[0,0,127,127],
+                    minimumPositiveDistancePixels=3.0,
+                    distanceEvaluationSpace='original-source-and-target-positive-pixel-centers',
+                    persistedSampleDistanceChecked=True,
+                    aOnly=dict(sampleSetId=sa,positivePixels=1),bOnly=dict(sampleSetId=sb,positivePixels=1)))
+        self.payload=dict(schemaVersion=2,resourceKind='native-similarity-conditions',references=references,
+            domains=[domain],poses=poses,conditions=conditions,comparisons=comparisons,
+            samples=dict(resourcePath='references/samples.npz',sha256=self.sha(sample_path),
+                pointsArray='points',offsetsArray='offsets'))
+        self.write()
+
+    def write(self,compressed=False):
+        path=self.root/'references/native-similarity-groups.json'
+        raw=json.dumps(self.payload).encode('utf8')
+        if compressed:path.with_suffix('.json.gz').write_bytes(gzip.compress(raw,mtime=0))
+        else:path.write_bytes(raw)
+        self.index=NativeSimilarityGroups(self.root,self.pack)
+
+    def front_rows(self,members=IDS,expanded=False):
+        return [dict(mapId=m,floor='1',profileId='zhan10-speed',score=20,
+            sourceProduct=self.refs[(m,'1')].path.relative_to(self.root).as_posix(),
+            hypothesis=dict(scale=1.,translation=[0,0],pairs=[[i,i] for i in range(6 if expanded else 4)]),
+            verification=dict(regions=dict(regionalEdgeVerified=True),residual=dict(verified=True),entryWalls=dict(verified=False),
+                matrixSourceToClient=np.eye(3).tolist())) for m in members]
+
+    def current_side(self,members=IDS[:2],verified=True):
+        return [dict(mapId=m,floor='1',profileId='zhan10-speed',score=20,
+            sourceProduct=self.refs[(m,'1')].path.relative_to(self.root).as_posix(),
+            verification=dict(success=verified,residual=dict(verified=verified),
+                matrixSourceToClient=np.eye(3).tolist())) for m in members]
+
+    def propose_condition(self,q,*,front=None,side=(),prior=None,deadline=None,rows=()):
+        return self.index.propose(rows,self.front_rows() if front is None else front,
+            dict(complete=True,entryInventoryComplete=True),'1',self.provider,
+            lambda:dict(query=q,observationBounds=[0,0,q.shape[1],q.shape[0]]),
+            side_rows=side,side_diagnostics=dict(complete=True),prior=prior,deadline=deadline)
+
+
 class NativeSimilarityRuntimeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -111,7 +194,9 @@ class NativeSimilarityRuntimeTests(unittest.TestCase):
         a.current_frame = np.full((64, 64, 3), shade, np.uint8)
         event = dict(kind='ranked', token=a.capture_generation, frame=a.current_frame,
             rankSourceFrameGeneration=a.current_frame_generation,
-            rankSourceSurfaceGeneration=a.surface_visibility_generation, ranked=[dict(nativeSimilarity=proposal)])
+            rankSourceSurfaceGeneration=a.surface_visibility_generation, ranked=[dict(nativeSimilarity=proposal,
+                mapId=proposal.get('candidateMemberId'),
+                identityHardGatePassed=bool(proposal.get('originalIdentityHardGatePassed')))])
         a._consume_native_similarity_ranked(event)
         return event
 
@@ -509,6 +594,231 @@ class NativeSimilarityRuntimeTests(unittest.TestCase):
             a_iterating.set(); b_finished.set()
             if a.ident is not None:a.join(3)
             b.join(3)
+
+
+class NativeFrontConditionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.f=ConditionFixture(Path(self.temp.name))
+        self.assertIsNone(self.f.index.error)
+
+    def test_nested_established_family_excludes_unestablished_member_and_pose(self):
+        self.f.payload['conditions'][1]['poseIds']=list(IDS[1:])
+        self.f.payload['conditions'][1]['members']=list(IDS[1:])
+        comparison=self.f.payload['comparisons'][-1]
+        comparison.update(poseA=IDS[1],poseB=IDS[2])
+        comparison['aOnly']['sampleSetId']=5;comparison['bOnly']['sampleSetId']=6
+        self.f.write()
+        state=NativeSimilarityState()
+        first=self.f.propose_condition(np.zeros((40,40),np.uint8),front=self.f.front_rows(IDS[1:]))
+        state.accept(first,('nightmare',10,'1',1,2),'nested-entry')
+        self.assertIn(state.provisional_member_id,IDS[1:])
+        self.assertEqual(state.member_ids,IDS[1:])
+        self.assertEqual(set(state.condition_domains['front-domain']['poses']),set(IDS[1:]))
+        # A later valid nested condition must also narrow an already-established
+        # wider family, including recovery requests and required pose pairs.
+        wide=NativeSimilarityState()
+        wide.accept(self.f.propose_condition(np.zeros((40,40),np.uint8)),
+            ('nightmare',10,'1',1,2),'wide')
+        self.assertEqual(wide.provisional_member_id,IDS[0])
+        wide.accept(first,('nightmare',10,'1',2,2),'nested')
+        self.assertEqual(wide.member_ids,IDS[1:])
+        self.assertIn(wide.provisional_member_id,IDS[1:])
+        state=wide
+        q=np.zeros((128,128),np.uint8);q[70,31]=1
+        second=self.f.propose_condition(q,front=[],side=self.f.current_side(IDS[1:]),prior=state.context_snapshot())
+        state.accept(second,('nightmare',10,'1',2,2),'nested-current')
+        self.assertEqual(state.priority('nightmare')[-1],IDS[1:])
+        engine=MapIdentityEngine.__new__(MapIdentityEngine)
+        engine.pack=self.f.pack;engine.native_similarity_index=self.f.index
+        engine.entry_shared_reference_provider=self.f.provider
+        engine.entry_identity=SimpleNamespace(geometry=lambda frame:dict(query=q,observationBounds=[0,0,128,128]))
+        calls=[]
+        def local(frame,floor,*,map_id,budget_seconds):
+            calls.append(map_id)
+            return self.f.current_side((map_id,)),dict(complete=True,verificationComplete=True)
+        engine.side_entry_identity=SimpleNamespace(rank=local)
+        engine.native_similarity_recover_observation(np.zeros((128,128,3),np.uint8),'1',
+            prior=state.context_snapshot(),deadline=__import__('time').perf_counter()+1)
+        self.assertEqual(calls,list(IDS[1:]))
+
+    def test_real_same_open_floor_observation_releases_provisional_before_f2(self):
+        host=runtime.DailyAssistant.__new__(runtime.DailyAssistant)
+        host.native_similarity_state=NativeSimilarityState()
+        host.native_similarity_state.accept(self.f.propose_condition(np.zeros((40,40),np.uint8)),
+            ('nightmare',10,'1',1,2),'entry')
+        host.gate=runtime.RouteDisplayGate(self.f.pack);host.gate.select(IDS[0]);host.gate.confirm()
+        host.pack=self.f.pack;host.engine=None;host.active_confirmation=None;host.game_mode='nightmare'
+        host.current_floor='1';host.current_frame=np.zeros((40,40,3),np.uint8)
+        host.current_bounds=(0,0,40,40);host.map_is_open=True;host.active_map_cycle_id=10
+        host.auto_lock_pending=dict(mapId=IDS[0],frontGroupProvisional=True)
+        host.floor_observations=[];host.floor_manual_override=False;host.floor_hard_locked=False
+        host.manual_floor_hold_until=0;host.manual_floor=None;host.floor_required=False
+        host.runtime_timeline_enabled=False;host.floor_var=SimpleNamespace(set=lambda value:None)
+        host._mode_selected_floor=lambda frame:dict(selectedFloor=2,layout='localized-triplet',margin=20,scores={'2':40})
+        for name in ('_log','_log_core_chain_event','_hide_spatial_route','_update_floor_buttons',
+            '_bind_current_frame','_set_status','_reset_drag_follow','show_sheet','_save_settings',
+            '_hide_round_recovery','_note_route_identity_notification'):
+            setattr(host,name,lambda *a,**kw:None)
+        host._alignment_v2_runtime_is_enabled=lambda:True
+        host._current_frame_floor_conflicts=lambda floor:False
+        host._cross_floor_seed_from_group=lambda *a:None
+        host._prepare_cross_floor_seed_for_frame=lambda *a,**kw:None
+        host._alignment_v2_observation=lambda *a,**kw:None
+        host._alignment_v2_show_shared_projection=lambda *a:False
+        host._alignment_v2_show_marker_projection=lambda *a:False
+        host._try_show_cross_floor_prediction=lambda *a:False
+        host._try_reuse_round_layer_group=lambda *a:False
+        host._active_round_layer_group=lambda *a:None
+        host._locked_round_group_tracking_active=lambda *a:False
+        scheduled=[];reranked=[]
+        host._start_alignment_after_settle=lambda *a,**kw:scheduled.append(a[:2])
+        host._rerank_current=lambda *a:reranked.append(a)
+        host._consider_floor_observation(host.current_frame,host.current_bounds,10)
+        self.assertIsNone(host.active_confirmation)
+        self.assertIsNone(host.gate.confirmed_id)
+        self.assertIsNone(host.auto_lock_pending)
+        self.assertEqual(scheduled,[])
+        self.assertEqual(reranked,[('2','automatic-stable')])
+
+    def test_front_small_to_large_window_keeps_points_after_entrance_leaves_view(self):
+        state=NativeSimilarityState();q=np.zeros((40,40),np.uint8);q[:31,:31]=1
+        first=self.f.propose_condition(q)
+        self.assertEqual({o['conditionId'] for o in first['conditionObservations']},{'0','1'})
+        state.accept(first,('nightmare',10,'1',1,2),'first')
+        before=state.snapshot()['positiveSampleCount']
+        self.assertEqual(before,0);self.assertIsNone(state.priority('nightmare'))
+        self.assertEqual(state.provisional_member_id,IDS[0])
+        # The smaller AB condition still has required rival C outside it.
+        # Keep the complete ABC entrance, without establishing the AB subset.
+        self.assertEqual(state.condition_domains['front-domain']['established'],{'0'})
+        # Entrance is no longer observed. This frame has only a different
+        # positive point and independently verified current ordinary poses.
+        q=np.zeros((96,96),np.uint8);q[70,1]=1
+        second=self.f.propose_condition(q,front=[],side=self.f.current_side(),prior=state.context_snapshot())
+        self.assertEqual({o['conditionId'] for o in second['conditionObservations']},{'0'})
+        state.accept(second,('nightmare',10,'1',2,2),'second')
+        self.assertGreater(state.snapshot()['positiveSampleCount'],before)
+        before=state.snapshot()['positiveSampleCount']
+        self.assertIsNone(state.priority('nightmare'))
+        q=np.zeros((128,128),np.uint8);q[90,1]=1
+        third=self.f.propose_condition(q,front=[],side=self.f.current_side(),prior=state.context_snapshot())
+        state.accept(third,('nightmare',10,'1',3,2),'third')
+        self.assertGreater(state.snapshot()['positiveSampleCount'],before)
+        self.assertEqual(state.priority('nightmare')[-1][0],IDS[0])
+        self.assertEqual(state.snapshot()['domainCount'],1)
+        self.assertIsNone(state.verified_member_id)
+
+    def test_front_entrance_selects_real_gate_before_fit_and_retains_choice_on_rejection(self):
+        host=runtime.DailyAssistant.__new__(runtime.DailyAssistant)
+        host.native_similarity_state=NativeSimilarityState()
+        host.engine=SimpleNamespace(native_similarity_index=self.f.index,
+            entry_shared_reference_provider=self.f.provider)
+        host.gate=runtime.RouteDisplayGate(self.f.pack)
+        host.game_mode='nightmare';host.current_floor='1';host.floor_required=False
+        host.map_is_open=True;host.capture_generation=10;host.active_map_cycle_id=10
+        host.current_frame_generation=1;host.surface_visibility_generation=2
+        host.current_frame=np.zeros((40,40,3),np.uint8)
+        host._log=lambda *args,**kw:None
+        proposal=self.f.propose_condition(np.zeros((40,40),np.uint8))
+        rows=[dict(mapId=IDS[1],nativeSimilarity=proposal,identityHardGatePassed=False)]
+        host._consume_native_similarity_ranked(dict(token=10,frame=host.current_frame,
+            rankSourceFrameGeneration=1,rankSourceSurfaceGeneration=2,ranked=rows))
+        self.assertEqual(host.gate.confirmed_id,IDS[0])
+        self.assertTrue(host._round_identity_lock_context()['provisional'])
+        # Deliver a failed current-frame sensor result through the production
+        # V2 consumer. Only this negative sensor input is controlled here.
+        host.alignment_core_v2=AlignmentCoreV2();host.alignment_v2_runtime_enabled=True
+        host.round_layer_group=None;host.front_group_sibling_pending=None
+        host._log_core_chain_event=host._log
+        result=host._run_alignment_v2_for_current_frame(IDS[0],'1','1',dict(
+            sourceFrameGeneration=1,alignmentV2WorkerFit=dict(success=False,
+                reason='controlled-current-geometry-rejected')))
+        self.assertFalse(result['success'])
+        self.assertEqual(host.gate.confirmed_id,IDS[0])
+        self.assertTrue(host._round_identity_lock_context()['provisional'])
+        self.assertTrue(host.auto_lock_pending['frontGroupProvisional'])
+        self.assertFalse(rows[0]['identityHardGatePassed'])
+
+    def test_explicit_entry_contradiction_cannot_establish_a_provisional_group(self):
+        front=self.f.front_rows()
+        for row in front:
+            row.update(entryCrossCheck=dict(contradicted=True),identityVerified=False,poseVerified=False)
+        proposal=self.f.propose_condition(np.zeros((40,40),np.uint8),front=front)
+        state=NativeSimilarityState();state.accept(proposal,('nightmare',10,'1',1,2),'contradicted')
+        self.assertEqual(state.state,'UNLOCKED')
+        self.assertIsNone(state.provisional_member_id)
+
+    def test_missing_member_outside_rival_and_untrusted_current_pose_stay_unknown(self):
+        q=np.ones((40,40),np.uint8)
+        missing=self.f.propose_condition(q,front=self.f.front_rows(IDS[:2]))
+        state=NativeSimilarityState();state.accept(missing,('nightmare',10,'1',1,2),'partial')
+        self.assertFalse(state.snapshot()['conditionComparisonComplete'])
+        self.assertIsNone(state.priority('nightmare'))
+        q=np.zeros((96,96),np.uint8);q[1,1]=1
+        outside=self.f.propose_condition(q,front=[],side=self.f.current_side(IDS),prior=state.context_snapshot())
+        state.accept(outside,('nightmare',10,'1',2,2),'outside')
+        self.assertFalse(state.snapshot()['conditionComparisonComplete'])
+        self.assertIsNone(state.priority('nightmare'))
+        prior=state.context_snapshot();count=state.snapshot()['positiveSampleCount']
+        unreliable=self.f.propose_condition(q,front=[],side=self.f.current_side(verified=False),prior=prior)
+        state.accept(unreliable,('nightmare',10,'1',3,2),'no-pose')
+        self.assertEqual(state.snapshot()['positiveSampleCount'],count)
+        self.assertEqual(state.snapshot()['domainCount'],1)
+        self.assertIsNone(state.priority('nightmare'))
+
+    def test_unique_original_winner_bypasses_group_budget_without_authorizing_display(self):
+        import time
+        rows=[dict(mapId=IDS[1],identityHardGatePassed=True)]
+        with patch.object(self.f.index.condition_index,'match',side_effect=AssertionError('No group scan')):
+            result=self.f.propose_condition(np.zeros((40,40),np.uint8),rows=rows,deadline=time.perf_counter()-1)
+        self.assertTrue(result['originalIdentityHardGatePassed'])
+        self.assertEqual(result['candidateMemberId'],IDS[1])
+        self.assertEqual(result['conditionObservations'],[])
+        self.assertFalse(result['authorizesIdentity']);self.assertFalse(result['authorizesPose'])
+
+    def test_expired_budget_is_incomplete_without_cold_sample_decode(self):
+        import time
+        with patch.object(self.f.index.condition_index,'samples',side_effect=AssertionError('No late decode')):
+            result=self.f.propose_condition(np.zeros((40,40),np.uint8),deadline=time.perf_counter()-1)
+        self.assertFalse(result['complete']);self.assertEqual(result['conditionObservations'],[])
+
+    def test_compressed_precedence_corruption_and_plain_v2_compatibility(self):
+        self.assertIsNotNone(self.f.index.condition_index)
+        self.f.write(compressed=True)
+        self.assertTrue(str(self.f.index.index_path).endswith('.json.gz'))
+        (self.f.root/'references/native-similarity-groups.json').write_text('old invalid plain',encoding='utf8')
+        good=NativeSimilarityGroups(self.f.root,self.f.pack)
+        self.assertIsNone(good.error)
+        compressed=self.f.root/'references/native-similarity-groups.json.gz'
+        compressed.write_bytes(compressed.read_bytes()[:15])
+        bad=NativeSimilarityGroups(self.f.root,self.f.pack)
+        self.assertIsNotNone(bad.error);self.assertIsNone(bad.condition_index)
+
+    def test_invalid_deflate_is_unavailable_without_plain_fallback(self):
+        self.f.write(compressed=True)
+        path=self.f.root/'references/native-similarity-groups.json.gz'
+        data=bytearray(path.read_bytes());data[10]=(data[10]&0xf8)|6;path.write_bytes(data)
+        bad=NativeSimilarityGroups(self.f.root,self.f.pack)
+        self.assertIsNotNone(bad.error)
+        self.assertIsNone(bad.condition_index)
+        self.assertEqual(bad.index_path,path)
+
+    def test_untrusted_or_post_match_expired_views_do_not_decode_samples(self):
+        index=self.f.index.condition_index
+        front=self.f.front_rows()
+        for row in front:row['verification']['regions']['regionalEdgeVerified']=False
+        with patch.object(index,'samples',side_effect=AssertionError('No unusable sample decode')):
+            result=self.f.propose_condition(np.zeros((40,40),np.uint8),front=front)
+        self.assertEqual(result['conditionObservations'],[])
+        clock=[0.];original=index.match
+        def expired_match(*args):
+            matched=original(*args);clock[0]=2.;return matched
+        with patch('native_similarity_groups.time.perf_counter',side_effect=lambda:clock[0]), \
+             patch.object(index,'match',side_effect=expired_match), \
+             patch.object(index,'samples',side_effect=AssertionError('No decode after match expiry')):
+            result=self.f.propose_condition(np.zeros((40,40),np.uint8),deadline=1.)
+        self.assertFalse(result['complete'])
 
 
 if __name__ == '__main__':

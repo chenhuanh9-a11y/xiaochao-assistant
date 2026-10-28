@@ -1,0 +1,4 @@
+# Offline map analysis tools only; these are not runtime application dependencies.
+# Versions used by the full-library similarity scan on Python 3.13.
+-r ../../requirements.txt
+scipy==1.15.3
