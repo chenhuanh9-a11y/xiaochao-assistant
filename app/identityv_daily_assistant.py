@@ -10296,9 +10296,11 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         self._ensure_map_package_import_state()
         from star_map_import import supports_live_author_import
         state = copy.deepcopy(self._map_package_import_state)
-        helper = self._map_package_helper_path()
-        available = helper.is_file() and helper.resolve() != Path(sys.executable).resolve()
         checked = self._map_package_import_result
+        # Availability belongs to the inspected package snapshot. Repeated UI
+        # reads must not stat the helper executable on the owner thread. The
+        # existing confirm/launcher path still validates the real executable.
+        available = bool(checked and checked.get('helperAvailable'))
         live = bool(checked and supports_live_author_import(checked['result']))
         idle = self._author_import_idle()
         busy = state['stage'] in {'checking', 'installing', 'cancelling'}
@@ -10425,7 +10427,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         if browser is not None:
             browser.sync_online_packages()
         self._map_package_import_state.update(stage='complete', ready=None,
-            message=f"作者资源已导入并刷新（新增 {result['authorFilesAdded']} 个文件），无需重启。请在“实际使用路线”选择作者。")
+            message=f"作者资源已导入并刷新（新增 {result['authorFilesAdded']} 个文件），无需重启。请在“地图资源”中查看图包并点击“使用”。")
 
         if getattr(getattr(getattr(self, 'desktop_main_ui', None), 'map_browser', None), '_managed_open', False):
             self.managed_author_packages_snapshot(refresh=True)
@@ -10615,7 +10617,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                             or result.get('archiveSha256') != expected['sha256']
                             or result.get('packageId') != expected['packageId']):
                         raise ValueError('实际地图包检查结果与所选下载列表的长度、SHA或地图标识不一致。')
-                    event.update(result=result, fileIdentity=after)
+                    helper = self._map_package_helper_path()
+                    available = helper.is_file() and helper.resolve() != Path(sys.executable).resolve()
+                    event.update(result=result, fileIdentity=after, helperAvailable=available)
             except Exception as error:
                 event['error'] = f'{type(error).__name__}: {error}'
             event['cancelled'] = request['cancelled'].is_set()
@@ -10834,15 +10838,15 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         state = copy.deepcopy(self._online_map_package_state)
         for package in state.get('packages', []):
             package['installation'] = dict(getattr(self, '_online_installed_packages', {}).get(package['packageId'], {}))
-        busy = (self._online_map_package_worker is not None or self._online_map_inspection is not None
-                or getattr(self, '_map_package_live_request', None) is not None)
+        online_busy = self._online_map_package_worker is not None or self._online_map_inspection is not None
+        busy = online_busy or getattr(self, '_map_package_live_request', None) is not None
         configured = bool(ONLINE_MAP_PACKAGE_INDEX_URL)
         service = self._online_map_service_adapter()
         available = service is not None and service.configured
         usable = configured and available and not self.closed
         state.update(busy=busy, canCheck=usable and not busy,
             canDownload=usable and not busy and bool(self._online_map_package_entries),
-            canCancel=busy and not self._online_map_package_cancel.is_set())
+            canCancel=online_busy and not self._online_map_package_cancel.is_set())
         if not configured:
             state.update(packages=[], selectedPackageId='',
                 message='尚未配置地图下载地址；可继续使用内置地图或本地导入。')

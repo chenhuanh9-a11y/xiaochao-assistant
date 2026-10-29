@@ -50,6 +50,7 @@ class ControllerTests(unittest.TestCase):
         s._map_package_import_result=self.checked
         s._map_package_import_state.update(stage='ready',ready=dict(title='author',summary='ok'))
         s._invalidate_capture_work=Mock(); s._invalidate_author_browser=Mock()
+        s._invalidate_native_resource_context=Mock(); s._invalidate_base_display=Mock()
         s._refresh_imported_author_resources=Mock()
 
     def test_import_invalidates_only_target_and_obsoletes_online_worker(self):
@@ -88,6 +89,16 @@ class ControllerTests(unittest.TestCase):
         state=self.s.map_package_import_snapshot()
         self.assertFalse(state['liveAvailable']);self.assertTrue(state['restartRequired'])
         self.assertFalse(state['canImport'])
+
+    def test_repeated_snapshot_does_not_probe_helper_on_ui_thread(self):
+        self.checked['helperAvailable'] = True
+        self.checked['result']['missingFiles']=[dict(path='_internal/references/core.json')]
+        with patch.object(Path, 'stat', side_effect=AssertionError('snapshot filesystem I/O')):
+            for _ in range(20):
+                state=self.s.map_package_import_snapshot()
+                self.assertTrue(state['helperAvailable']); self.assertTrue(state['canImport'])
+        self.checked['helperAvailable'] = False
+        self.assertFalse(self.s.map_package_import_snapshot()['canImport'])
 
     def test_idle_checks_round_locks_prepared_capture_and_preload(self):
         for name,value in [('round_work_active',True),('map_is_open',True),

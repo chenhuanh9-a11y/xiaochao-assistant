@@ -36,7 +36,7 @@ from desktop_theme import (BG, SURFACE, CARD, TINT, LINE, TEXT, MUTED, SUBTLE, G
                            status_color)
 from chest_auto_tap import TAP_KEYS, TRIGGER_KEYS
 from custom_map_editor import CustomMapEditor
-from map_resource_browser import MapResourceBrowser
+from map_resources_page import MapResourcesPage
 from map_resource_model import MapResourceModel, choose_resource, floor_label, resource_inventory
 from map_resource_overview import structure_previews, load_structure_preview
 from update_service import UpdateService
@@ -1797,7 +1797,7 @@ class DesktopMainUI:
                 label.configure(text=f"当前绑定：{text}")
 
     def _build_maps(self) -> None:
-        self.map_browser = MapResourceBrowser(self.body, self.assistant)
+        self.map_browser = MapResourcesPage(self.body, self.assistant)
         self._page_frames["maps"] = self.map_browser
         # This existing row owns page-top blank space; its Button remains excluded.
         heading = self.map_browser.heading

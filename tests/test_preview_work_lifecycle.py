@@ -24,7 +24,7 @@ class PreviewLifecycleTests(unittest.TestCase):
         tree=ast.parse(SOURCE.read_text(encoding='utf-8'))
         cls=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='MapResourceBrowser')
         namespace={'time':time,'queue':queue,'CancelledError':CancelledError,'load_preview':lambda *a:None, 'WARNING':'orange'}
-        wanted={'_request','_pump_preview_work','_cancel_preview_work','_drain','invalidate_resource_context'}
+        wanted={'_request','_preview_stamp','_pump_preview_work','_cancel_preview_work','_drain','invalidate_resource_context'}
         for method in cls.body:
             if isinstance(method,ast.FunctionDef) and method.name in wanted:
                 exec(compile(ast.Module(body=[method],type_ignores=[]),str(SOURCE),'exec'),namespace)
