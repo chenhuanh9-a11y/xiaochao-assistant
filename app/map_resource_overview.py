@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 from zipfile import BadZipFile
+import zlib
 
 import numpy as np
 from PIL import Image, ImageOps
@@ -79,7 +80,7 @@ def load_structure_preview(asset, size):
                 raise ValueError("结构图数组无效")
             pixels = np.full((*mask.shape, 3), 241, dtype=np.uint8)
             pixels[mask > 0] = (57, 77, 103)
-    except BadZipFile as error:
+    except (BadZipFile, zlib.error, EOFError) as error:
         raise ValueError("结构图文件损坏") from error
     return ImageOps.contain(Image.fromarray(pixels), size, Image.Resampling.LANCZOS)
 

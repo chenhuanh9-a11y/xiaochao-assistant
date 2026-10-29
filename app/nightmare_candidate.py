@@ -1278,9 +1278,22 @@ class NightmarePack:
         self.source_candidates=NightmareSourceCandidateStore(self.resource_root)
         configured = os.environ.get("IDENTITYV_NIGHTMARE_MAPS")
         bundled = USER_ROOT / "assets" / "nightmare-maps"
-        self.source_root = Path(configured) if configured else (
-            bundled if bundled.is_dir() else Path(raw["sourceRoot"])
-        )
+        # A producer's sourceRoot is provenance for resource-root manifests,
+        # not an installed resource location (nor a useful preload diagnostic).
+        uses_source_root = any(item.get("resourceBase", "source-root") == "source-root"
+                               for item in raw["maps"])
+        if not uses_source_root:
+            self.source_root = self.resource_root
+        elif configured:
+            self.source_root = Path(configured)
+        elif bundled.is_dir():
+            self.source_root = bundled
+        elif getattr(sys, "frozen", False):
+            # Missing installed assets must remain missing, even when the
+            # producer's development tree happens to exist on this machine.
+            self.source_root = self.resource_root / "assets" / "nightmare-maps"
+        else:
+            self.source_root = Path(raw["sourceRoot"])
         self.pack_id = raw["packId"]
         self.display_name = raw["displayName"]
         self.default_entry_floor = int(raw.get("defaultEntryFloor", 2))
