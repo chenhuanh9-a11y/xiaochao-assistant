@@ -102,6 +102,7 @@ from session_state_machine import (
 )
 from async_event_log import AsyncEventLog
 from native_resource_validation import NativeResourceValidationMixin
+from base_display_integration import BaseDisplayIntegrationMixin, display_source_guard
 from runtime_timeline import context as runtime_log_context
 from runtime_timeline import (RuntimeTimeline, observe as observe_runtime,
                               observe_function, floor_vote_evidence, context as runtime_trace_context)
@@ -5595,7 +5596,7 @@ def display_presentation(surface_name):
     return decorate
 
 
-class DailyAssistant(NativeResourceValidationMixin):
+class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin):
     @staticmethod
     def display_version_label():
         return APP_DISPLAY_VERSION
@@ -5664,7 +5665,8 @@ class DailyAssistant(NativeResourceValidationMixin):
             optional = getattr(self,'optional_author_displays',None)
             preferred = getattr(self,'preferred_route_profile_id',None)
             if optional is not None and preferred in optional.profiles and self.route_profile_id == SHARED_STRUCTURE_PROFILE_ID:
-                return '所选作者该层未通过配准 · 当前使用结构底图，原图仍可浏览'
+                display = self._current_display_descriptor(getattr(gate, 'confirmed_id', None), str(getattr(self, 'current_floor', '1')))
+                return self._committed_display_feedback(getattr(gate, 'confirmed_id', None), str(getattr(self, 'current_floor', '1'))).status if display else ''
             return ''
         actual=self.route_profile_id
         if actual==getattr(self,'preferred_route_profile_id',actual):return ''
@@ -6075,6 +6077,7 @@ class DailyAssistant(NativeResourceValidationMixin):
         if before_publish is not None:
             before_publish()
         self._invalidate_native_resource_context('resource-context-published')
+        self._invalidate_base_display()
         self._native_resource_rejected = False
         self.game_mode=mode;self.pack=pack;self.gate=RouteDisplayGate(pack)
         self.round_start_intent = None
@@ -9483,8 +9486,9 @@ class DailyAssistant(NativeResourceValidationMixin):
         map_id = getattr(getattr(self, 'gate', None), 'confirmed_id', None)
         floor = str(getattr(self, 'current_floor', '1'))
         fallback = bool(map_id and selected != effective and not gallery_of(selected))
-        message = ('所选作者没有当前地图／楼层的可用路线，当前显示结构底图。'
-                   if fallback else '选择实际用于定点地图和游戏贴合的路线；浏览来源只影响预览。')
+        display = self._current_display_descriptor(map_id, floor)
+        message = (self._committed_display_feedback(map_id, floor).status if display
+                   else '选择实际用于定点地图和游戏贴合的路线；浏览来源只影响预览。')
         return dict(mode=getattr(self, 'game_mode', None), options=options,
                     selected=selected, effective=effective, fallback=fallback,
                     mapId=map_id, floor=floor, message=message)
@@ -9588,7 +9592,7 @@ class DailyAssistant(NativeResourceValidationMixin):
             spec = self._aligned_render_spec(map_id, floor, native, profile_id=effective)
             if spec is None:
                 return False
-            overlay, _ = self._build_display_overlay(spec['routeSource'], spec['matrixSourceToClient'], frame.shape,
+            overlay, display_meta = self._build_display_overlay(spec['routeSource'], spec['matrixSourceToClient'], frame.shape,
                 map_id=map_id, floor=floor, profile_id=effective, minimum_coverage=0.0, minimum_visible_pixels=1)
             if overlay is None:
                 return False
@@ -9609,7 +9613,10 @@ class DailyAssistant(NativeResourceValidationMixin):
         self.drag_overlay_base = overlay.copy()
         self.drag_overlay_offset = np.zeros(2, dtype=np.float64)
         self.current_alignment_candidate = dict(displayed,
-            matrixSourceToClient=self.drag_transform.tolist(), routeProfileId=spec['routeProfileId'])
+            matrixSourceToClient=self.drag_transform.tolist(), routeProfileId=spec['routeProfileId'],
+            **{key: display_meta.get(key) for key in ('displayKind', 'displayLabel', 'displayResourceKey', 'authorStatus', 'displayContext')})
+        self._record_display_commit(display_meta, map_id, floor)
+        self._note_route_pose_verified()
         return True
 
     def _apply_route_profile_setting(self, _event=None, *, profile_id=None) -> None:
@@ -9646,6 +9653,7 @@ class DailyAssistant(NativeResourceValidationMixin):
             self.mode_route_profiles = previous_modes
             self.route_profile_var.set(self._route_profile_label(self._shown_route_profile()))
             raise
+        self._committed_display = None
         self.route_profile_var.set(self._route_profile_label(selected))
         self._sync_route_settings_ui()
         if self._shared_structure_mode_enabled():
@@ -10245,6 +10253,7 @@ class DailyAssistant(NativeResourceValidationMixin):
             installRoot=checked['installRoot'], resourceRoot=checked['resourceRoot'],
             pack=self.pack, mode=self.game_mode, packageId=checked['result']['packageId'], cancelled=threading.Event())
         self._invalidate_native_resource_context('resource-import-started')
+        self._invalidate_base_display()
         self._invalidate_capture_work()
         self._invalidate_author_browser()
         self._map_package_live_request = request
@@ -10400,6 +10409,7 @@ class DailyAssistant(NativeResourceValidationMixin):
             ready=None, message='正在移出已登记作者资源并保留备份。' if operation == 'remove' else '正在核对本地已登记资源。')
         if operation == 'remove':
             self._invalidate_native_resource_context('resource-removal-started')
+            self._invalidate_base_display()
             self._invalidate_capture_work()
             self._invalidate_author_browser()
 
@@ -13918,6 +13928,9 @@ class DailyAssistant(NativeResourceValidationMixin):
             profile = normalize_route_profile_id(getattr(
                 self, "route_profile_id", DEFAULT_ROUTE_PROFILE_ID,
             ))
+            if self._shared_structure_mode_enabled():
+                reference = self._shared_structure_reference(SHARED_STRUCTURE_PROFILE_ID, map_id, floor)
+                self._prepare_base_map_display(map_id, floor, reference)
             route = self._alignment_reference_image(profile, map_id, floor)
             engine = getattr(self, "engine", None)
             if profile == SOURCE_STRUCTURE_PROFILE_ID and self._is_source_structure_identity(map_id):
@@ -15718,7 +15731,7 @@ class DailyAssistant(NativeResourceValidationMixin):
                         current_frame_verified=True, residual_verified=True,
                         global_residual_verified=True, translation_only=False,
                         metadata={'routeProfileId': render_spec['routeProfileId'],
-                            'displayKind': render_spec['displayKind'], 'displayLabel': render_spec['displayLabel'],
+                            **{key: render_spec.get(key) for key in ('displayKind', 'displayLabel', 'displayResourceKey', 'authorStatus', 'displayContext')},
                             'coordinateSpace': 'shared-structure-to-client',
                             'sourceCoordinateSpace': render_spec['sourceCoordinateSpace'],
                             'firstPoseSensor': 'initial-structure', 'independentFloorAnchor': True,
@@ -16695,6 +16708,7 @@ class DailyAssistant(NativeResourceValidationMixin):
 
     @observe_runtime('compositor')
     @display_presentation('aligned_overlay')
+    @display_source_guard
     def _alignment_v2_show_overlay(
         self, overlay: np.ndarray, client_origin: tuple[int, int],
         *, authorization_id: int,
@@ -18529,6 +18543,7 @@ class DailyAssistant(NativeResourceValidationMixin):
                 "candidate": candidate.source,
             }
             self.current_alignment_candidate.update(
+                **{key: render_meta.get(key) for key in ('displayKind', 'displayLabel', 'displayResourceKey', 'authorStatus', 'displayContext')},
                 verifiedFrame=frame, verifiedFrameContext={},
                 routeProfileId=self.drag_route_profile_id,
                 surfaceGeneration=int(getattr(self, 'surface_visibility_generation', 0)))
@@ -18542,6 +18557,7 @@ class DailyAssistant(NativeResourceValidationMixin):
             )
         finally:
             self._v2_compositor_active = False
+        self._record_display_commit(render_meta, map_id, floor)
         # V2 now owns the complete current-frame transaction.  Persist the
         # already-confirmed map/floor at the same successful commit boundary
         # used by the legacy direct-pose path, so a normal close hides pixels
@@ -19896,6 +19912,8 @@ class DailyAssistant(NativeResourceValidationMixin):
                 return start_failed(error)
             round_started = not bool(getattr(self, 'round_work_active', False))
             self.round_work_active = True
+            if round_started:
+                self._begin_display_round()
             if getattr(self, 'round_start_intent', None) is not None:
                 self.round_start_intent = None
                 self._runtime_cycle_origin['preparedStart'] = True
@@ -22164,6 +22182,8 @@ class DailyAssistant(NativeResourceValidationMixin):
             flags=cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0, 0),
         )
+        shifted = self._remember_display_output(
+            shifted, self._display_output_metadata(self.drag_overlay_base) or {})
         try:
             shown = bool(
                 self._show_aligned_overlay(
@@ -30777,6 +30797,11 @@ class DailyAssistant(NativeResourceValidationMixin):
             return store
 
     def _shared_display_layer(self, profile_id, map_id, floor):
+        context = self._display_notice_context(map_id, floor)
+        layer = self._resolve_shared_display_layer(profile_id, map_id, floor)
+        return dict(layer, displayContext=context) if layer is not None else None
+
+    def _resolve_shared_display_layer(self, profile_id, map_id, floor):
         """Display-only pixels and their explicit bridge into the typed N canvas."""
         reference = self._shared_structure_reference(SHARED_STRUCTURE_PROFILE_ID, map_id, floor)
         if reference is None:
@@ -30801,7 +30826,8 @@ class DailyAssistant(NativeResourceValidationMixin):
                         and self._route_profile_validation_spec(profile_id, map_id, floor, np.eye(3), image) is not None):
                     return dict(routeSource=image, sourcePath=Path(path), routeProfileId=profile_id,
                         matrixDisplayToReference=np.linalg.inv(source_basis) @ display_basis,
-                        displayKind='author-route', displayLabel=ROUTE_PROFILE_LABELS.get(profile_id, profile_id))
+                        displayKind='author-route', displayLabel=ROUTE_PROFILE_LABELS.get(profile_id, profile_id),
+                        authorStatus='none', displayResourceKey=(getattr(self, '_base_display_epoch', 0), profile_id, str(path), id(image)))
             except (OSError, ValueError, KeyError, TypeError, cv2.error):
                 pass # Keep recognition independent of optional display files.
         key = (id(getattr(self, 'shared_structure_resources', None)), str(map_id), str(floor))
@@ -30809,9 +30835,17 @@ class DailyAssistant(NativeResourceValidationMixin):
         custom = self._custom_route_image(map_id, floor, reference)
         if custom is not None:
             return dict(routeSource=custom, sourcePath=reference.path, routeProfileId=SHARED_STRUCTURE_PROFILE_ID,
-                matrixDisplayToReference=np.eye(3), displayKind='custom-route', displayLabel='自定义路线')
+                matrixDisplayToReference=np.eye(3), displayKind='custom-route', displayLabel='自定义路线',
+                authorStatus='none', displayResourceKey=('custom', id(custom), getattr(self, '_base_display_epoch', 0)))
         if self._custom_route_active(map_id, floor):
             return None  # A failed snapped route must never become a straight/old route.
+        author_status = self._base_author_status(map_id, floor)
+        if author_status == 'missing':
+            base = self._peek_base_map_display(map_id, floor, reference)
+            if base is not None:
+                return dict(base, routeProfileId=SHARED_STRUCTURE_PROFILE_ID, authorStatus=author_status)
+        elif author_status == 'available':
+            author_status = 'load-error' if author_available else 'registration-failed'
         with self.aligned_author_route_lock:
             cache = self._shared_structure_display_cache
             image = cache.get(key)
@@ -30824,6 +30858,7 @@ class DailyAssistant(NativeResourceValidationMixin):
                 cache.pop(next(iter(cache)))
         return dict(routeSource=image, sourcePath=reference.path, routeProfileId=SHARED_STRUCTURE_PROFILE_ID,
             matrixDisplayToReference=np.eye(3), displayKind='shared-structure',
+            authorStatus=author_status, displayResourceKey=('structure', key, id(reference), getattr(self, '_base_display_epoch', 0)),
             displayLabel=('结构底图（作者路线版本不匹配）' if version.get('authorError') == 'author-structure-version-or-base-snapshot-mismatch'
                           else '结构底图（作者路线不可用）'))
 
@@ -31176,7 +31211,15 @@ class DailyAssistant(NativeResourceValidationMixin):
         self._prepared_display_pixels = cache
         return source, cache, False
 
-    def _build_display_overlay(self, route_source, matrix, frame_shape, *,
+    def _build_display_overlay(self, route_source, matrix, frame_shape, **options):
+        output, metadata = self._build_display_overlay_unchecked(route_source, matrix, frame_shape, **options)
+        if metadata.get('displayContext'):
+            if not self._display_descriptor_is_current(metadata):
+                return None, dict(success=False, reason='display-source-context-expired')
+            output = self._remember_display_output(output, metadata)
+        return output, metadata
+
+    def _build_display_overlay_unchecked(self, route_source, matrix, frame_shape, *,
                                map_id=None, floor=None, profile_id=None, **options):
         """Build display pixels using the active reference's coverage basis."""
         map_id = map_id or getattr(self.gate, 'confirmed_id', None)
@@ -31216,7 +31259,8 @@ class DailyAssistant(NativeResourceValidationMixin):
                     raise ValueError('shared display has no declared native coordinate bridge')
                 from idvb0059_runtime import build_display
                 retained = build_display(self, display, matrix, frame_shape,
-                    (str(self.game_mode), str(map_id), str(floor), str(profile_id), str(path)), **options)
+                    (str(self.game_mode), str(map_id), str(floor), str(profile_id), str(path),
+                     layer.get('displayKind'), layer.get('displayResourceKey')), **options)
                 if retained is not None:
                     output, metadata = retained
                     self._log('idvb0059-display-built', mapId=map_id, floor=str(floor),
@@ -31226,12 +31270,13 @@ class DailyAssistant(NativeResourceValidationMixin):
                             originalPath=str(path.resolve()).casefold()))
                     return output, {**metadata, 'displayPixelsDerived': True,
                         'validationPixelsUnmodified': True, 'displayOriginalPath': str(path),
-                        'displayKind': layer['displayKind'], 'displayLabel': layer['displayLabel']}
+                        **self._display_descriptor(layer, map_id, floor)}
             reuse = bool(shared_display and os.environ.get('IDENTITYV_REOPEN_DISPLAY_CACHE', '1') != '0')
             source, pixel_cache, source_reused = self._prepare_display_pixel_source(display, reuse=reuse)
             render_key = None
             if (pixel_cache is not None and set(options) <= {'minimum_coverage', 'minimum_visible_pixels'}):
                 render_key = (self.game_mode, map_id, floor, profile_id, tuple(frame_shape[:2]),
+                    layer.get('displayKind'), layer.get('displayResourceKey'),
                     tuple(np.asarray(matrix, np.float64).ravel()), tuple(spec['sharedReference'].shape),
                     tuple(np.asarray(spec['matrixSourceToClient'], np.float64).ravel()),
                     options.get('minimum_coverage', .08), options.get('minimum_visible_pixels', 500))
@@ -31267,7 +31312,7 @@ class DailyAssistant(NativeResourceValidationMixin):
                 originalPath=str(path.resolve()).casefold()))
             return output, {**metadata, 'displayPixelsDerived': True, 'validationPixelsUnmodified': True,
                             'displayOriginalPath': str(path),
-                            **({'displayKind': layer['displayKind'], 'displayLabel': layer['displayLabel']} if shared_display else {})}
+                            **(self._display_descriptor(layer, map_id, floor) if shared_display else {})}
         except (OSError, ValueError, KeyError, TypeError) as error:
             self.events.put(dict(kind='display-resource-error', **context,
                 originalPath=str(path.resolve()).casefold() if path is not None else None,
@@ -31998,7 +32043,7 @@ class DailyAssistant(NativeResourceValidationMixin):
                 recognitionMatrixSourceToClient=recognition, canonicalMatrixSourceToClient=canonical,
                 routeProfileId=layer['routeProfileId'], adapterUsed=layer['displayKind']=='author-route',
                 coordinatePackId=getattr(adapters, 'canonical_pack_id', self.pack.pack_id),
-                displayKind=layer['displayKind'], displayLabel=layer['displayLabel'],
+                **self._display_descriptor(layer, map_id, floor),
                 sourceCoordinateSpace=(reference.metadata.get('canvas') or {}).get('coordinateSpace'))
         if selected == SOURCE_STRUCTURE_PROFILE_ID:
             if not self._is_source_structure_identity(map_id):return None
@@ -32360,6 +32405,7 @@ class DailyAssistant(NativeResourceValidationMixin):
             "front-anchor-direct-pose",
             current_floor_authorized=True,
         )
+        self._record_display_commit(render_meta, map_id, floor)
         self.map_identity_pose_pending = False
         self.auto_lock_pending = None
         getattr(self, "progressive_pose_seed_cache", {}).pop(
@@ -33173,10 +33219,18 @@ class DailyAssistant(NativeResourceValidationMixin):
                 role = 'runtime-bound-source-display'
             provisional = bool(reference_context is not None
                 and (self._round_identity_lock_context() or {}).get('provisional'))
-            cache_key = (str(path), tuple(max_size), role, provisional)
+            sheet_layer = None
+            sheet_map = getattr(self.gate, 'confirmed_id', None) or getattr(self.gate, 'selected_id', None)
+            if self._shared_structure_mode_enabled() and Path(path).suffix.lower() == '.npz':
+                sheet_layer = self._shared_display_layer(SHARED_STRUCTURE_PROFILE_ID, sheet_map, self.current_floor)
+                if sheet_layer is None or Path(path) != Path(sheet_layer['sourcePath']):
+                    raise ValueError('reference display binding changed')
+            sheet_descriptor = self._display_descriptor(sheet_layer, sheet_map, self.current_floor) if sheet_layer else {}
+            source_key = (sheet_descriptor.get('displayKind'), sheet_descriptor.get('displayResourceKey'))
+            cache_key = (str(path), tuple(max_size), role, provisional, source_key)
             pixels = self.sheet_photo_cache.get(cache_key)
             if pixels is None:
-                pixels = fit_display_bgra(self._display_pixels_for_source(path, role), max_size)
+                pixels = fit_display_bgra(sheet_layer['routeSource'] if sheet_layer else self._display_pixels_for_source(path, role), max_size)
                 if provisional:
                     pixels = self._mark_provisional_reference(pixels)
                 pixels.setflags(write=False)
@@ -33226,7 +33280,7 @@ class DailyAssistant(NativeResourceValidationMixin):
             fitted = clamp_rect_to_work_area(candidate, work, margin_px=5)
             x, y = fitted.left, fitted.top
             self.sheet_position = (x, y)
-            render_key = (str(path), tuple(max_size), title, provisional, image_width, image_height,
+            render_key = (str(path), tuple(max_size), title, provisional, source_key, image_width, image_height,
                 float(self.reference_opacity), x, y, bool(self.sheet_move_mode),
                 getattr(getattr(self, 'gate', None), 'confirmed_id', None),
                 str(getattr(self, 'current_floor', '')), getattr(self, 'route_profile_id', None),
@@ -33238,6 +33292,8 @@ class DailyAssistant(NativeResourceValidationMixin):
             if (render_key == getattr(self, '_sheet_render_key', None) and self._reference_sheet_is_visible()
                 and getattr(self, '_reference_origin', None) == (x, y)
                 and actual_geometry == expected_geometry):
+                self._committed_reference_display = sheet_descriptor
+                self._note_reference_fallback_committed(sheet_descriptor, provisional=provisional)
                 return True
             self.sheet_window.title(title)
             self.sheet_window.geometry(format_tk_geometry(fitted))
@@ -33253,6 +33309,8 @@ class DailyAssistant(NativeResourceValidationMixin):
             if not visibility_is_current():
                 surface.hide()
                 return False
+            self._committed_reference_display = sheet_descriptor
+            self._note_reference_fallback_committed(sheet_descriptor, provisional=provisional)
             self._reference_origin = (x, y)
             self._reference_pixels = pixels
             self._sheet_render_key = render_key
@@ -33282,6 +33340,7 @@ class DailyAssistant(NativeResourceValidationMixin):
             self._log("sheet-hidden", cycleId=self.active_map_cycle_id)
 
     @display_presentation('aligned_overlay')
+    @display_source_guard
     def _show_aligned_overlay(
         self,
         image: np.ndarray,
@@ -35546,6 +35605,10 @@ class DailyAssistant(NativeResourceValidationMixin):
             "round", target_state="ended", visual_state="已结束本局",
         )
         previous = self.active_confirmation
+        tracker = getattr(self, '_fallback_notice_tracker', None)
+        if tracker is not None:
+            tracker.end_round()
+        self._invalidate_base_display()
         self._resolve_route_issue('round-ended')
         self.candidate_edit_mode = False
         self._invalidate_capture_work()
@@ -35962,10 +36025,10 @@ class DailyAssistant(NativeResourceValidationMixin):
             message = f"组内候选：{getattr(candidate, 'name', '待确认')} · 继续探索可见差异；当前尚未锁图"
         else:
             phase, severity, title, message = 'needs-user', 'normal', '地图待确认', '地图尚未确认，可查看候选地图'
-        structure_display = bool(self._shared_structure_mode_enabled()
-            and getattr(self, 'drag_route_profile_id', None) == SHARED_STRUCTURE_PROFILE_ID)
-        if verified and structure_display:
-            title, message = '结构底图已核对', (getattr(self, 'drag_display_label', None) or '作者路线不可用，当前显示结构底图')
+        display = self._current_display_descriptor(map_id, floor)
+        if verified and display:
+            feedback = self._committed_display_feedback(map_id, floor)
+            title, message = feedback.title, feedback.status
         color = '#ff8a65' if failed else '#93c5fd' if phase == 'working' else '#5ee0a3' if phase in {'ready', 'recovered'} else '#f6c453' if phase == 'needs-user' else '#94a3b8'
         retry_enabled = bool(failed and issue.get('phase') in {'alignment', 'recognition'} and opened and foreground and not pending)
         round_active = bool(getattr(self, "round_work_active", False))
@@ -35987,8 +36050,7 @@ class DailyAssistant(NativeResourceValidationMixin):
             modeChangeEnabled=not self.hotkey_capture_active and not self.closed and getattr(self, '_map_package_live_request', None) is None,
             controlFloorText=self._control_floor_text(),
             controlStatusText=title,
-            displayKind='shared-structure' if structure_display else 'author-route',
-            displayLabel=(getattr(self, 'drag_display_label', None) or '结构底图（作者路线不可用）') if structure_display else ROUTE_PROFILE_LABELS.get(self.route_profile_id, self.route_profile_id),
+            displayKind=display.get('displayKind'), displayLabel=display.get('displayLabel'),
             mapId=map_id, floor=floor, locked=locked, pending=pending, verified=verified,
             initialFitPending=bool(pending and not prior_fit), tracking=bool(prior_fit),
             mapOpen=opened, foreground=foreground, userVisible=user_visible,
@@ -36030,12 +36092,17 @@ class DailyAssistant(NativeResourceValidationMixin):
                 cycle_id=getattr(self, 'active_map_cycle_id', None), map_id=map_id, floor=floor,
                 frame_generation=getattr(self, 'current_frame_generation', 0)))
             if current_commit and getattr(self, 'map_is_open', False) and getattr(self, 'game_foreground', False):
+                presented = getattr(self, '_presented_display', None) or {}
+                self._record_display_commit(presented, map_id, floor)
                 self._ensure_route_notification_context()
                 key = (map_id, floor)
-                if key not in self._route_notified_floors:
+                notice = (self._committed_display_notice(map_id, floor)
+                          if self._spatial_route_surface_is_visible() else '')
+                if notice or key not in self._route_notified_floors:
                     self._route_notified_floors.add(key)
                     self._route_notified_identities.add(map_id)
-                    self._publish_route_notification('已识别并贴合路线')
+                    feedback = self._committed_display_feedback(map_id, floor)
+                    self._publish_route_notification(notice or feedback.success or '已识别并贴合路线')
 
     def _set_status(self, text: str, color: str) -> None:
         resource_error = getattr(self, 'startup_resource_error', None) or getattr(self, 'mode_resource_error', None)
