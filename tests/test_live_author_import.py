@@ -72,6 +72,40 @@ class LiveAuthorImportTests(unittest.TestCase):
         for record in self.dependencies:
             self.assertEqual(importer._sha(self.root / record['path']), record['sha256'])
 
+    def test_103_main_and_helper_share_strict_import_contract(self):
+        import star_map_import_helper as helper
+        self.write('_internal/version.json', json.dumps(dict(
+            displayVersion='1.0.3', numericVersion='1.0.0.7')).encode())
+        package = self.package('nightmare-suju', {SUJU: b'image'})
+        self.assertEqual(importer.inspect_package(package, self.root)['packageId'], 'nightmare-suju')
+        self.assertEqual(self.live(package)['status'], 'author-installed-live')
+        # Only parent-process waiting is substituted; archive validation, locks,
+        # closed-file checks, installation and helper receipt use production code.
+        with patch.object(helper, 'wait_for_application_exit', return_value={'exited': True}):
+            code, receipt = helper.run_helper(archive=package, install_root=self.root,
+                parent_pid=1, parent_created='fixture', archive_sha256=importer._sha(package),
+                request_id='version-103')
+        self.assertEqual(code, 0, receipt)
+        self.assertTrue(receipt['success'])
+        self.assert_base_preserved()
+        dependency = self.dependencies[0]['path']
+        self.write(dependency, b'changed-core')
+        with self.assertRaisesRegex(importer.ImportRejected, 'missing-or-incompatible-dependency'):
+            importer.inspect_package(package, self.root)
+        with patch.object(helper, 'wait_for_application_exit', return_value={'exited': True}):
+            code, receipt = helper.run_helper(archive=package, install_root=self.root,
+                parent_pid=1, parent_created='fixture', archive_sha256=importer._sha(package),
+                request_id='version-103-tampered')
+        self.assertEqual(code, 2)
+        self.assertIn('missing-or-incompatible-dependency', receipt['reason'])
+
+    def test_unknown_client_version_remains_rejected(self):
+        package = self.package('nightmare-suju', {SUJU: b'image'})
+        self.write('_internal/version.json', json.dumps(dict(
+            displayVersion='99.0', numericVersion='1.0.0.7')).encode())
+        with self.assertRaisesRegex(importer.ImportRejected, 'unsupported-client-version'):
+            importer.inspect_package(package, self.root)
+
     def test_readonly_support_hint_classifies_four_roles_without_filesystem_access(self):
         paths = {'nightmare-suju': SUJU, 'difficult-zhan10': NATIVE,
                  'nightmare-wang-qingxin': WANG, 'nightmare-nightingale': NIGHTINGALE}
