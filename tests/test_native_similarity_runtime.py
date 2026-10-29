@@ -221,7 +221,7 @@ class NativeSimilarityRuntimeTests(unittest.TestCase):
              patch.object(runtime.tk, 'Tk', side_effect=AssertionError('No Tk')), \
              patch.object(runtime.tk, 'Toplevel', side_effect=AssertionError('No Toplevel')):
             with self.assertRaises(PrefixCompleted):
-                a._poll_events()
+                a._poll_events_once()
 
     def test_real_poll_fresh_rerank_keeps_source_binding_and_creates_group(self):
         a = self.host()

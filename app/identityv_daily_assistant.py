@@ -100,6 +100,8 @@ from session_state_machine import (
     trusted_foreground_is_allowed,
     verified_map_hotkey_frame,
 )
+from async_event_log import AsyncEventLog
+from runtime_timeline import context as runtime_log_context
 from runtime_timeline import (RuntimeTimeline, observe as observe_runtime,
                               observe_function, floor_vote_evidence, context as runtime_trace_context)
 
@@ -6330,6 +6332,7 @@ class DailyAssistant:
         self.log_lock = threading.RLock()
         self.stop_event = threading.Event()
         self.capture_lock = threading.Lock()
+        self.map_probe_worker_lock = threading.Lock()
         # One request/engine workflow; the existing capture_lock continues to
         # serialize actual capture and rank, but is free between ROI samples.
         self._capture_request_lock = threading.Lock()
@@ -6759,6 +6762,7 @@ class DailyAssistant:
         self.optimistic_sheet_cycle_id: int | None = None
         self.optimistic_sheet_floor: str | None = None
         self.event_path = LIVE_ROOT / f"events-{datetime.now():%Y%m%d-%H%M%S}.jsonl"
+        self._event_log = AsyncEventLog(self.event_path)
         self.diagnostic_export_in_progress = False
         self.display_environment: dict | None = None
         self.process_integrity = process_integrity_level()
@@ -10941,6 +10945,10 @@ class DailyAssistant:
 
         def run() -> None:
             try:
+                writer = getattr(self, '_event_log', None)
+                if writer is not None:
+                    runtime_context['diagnosticLogFlushComplete'] = writer.flush(timeout=2.0)
+                    runtime_context['diagnosticLogWriter'] = writer.status()
                 environment = collect_identityv_window_environment()
                 result = export_safe_diagnostic_bundle(
                     ROOT, LIVE_ROOT,
@@ -18873,21 +18881,14 @@ class DailyAssistant:
                     floor=getattr(self, 'current_floor', None))
 
     def _log(self, kind: str, **values) -> None:
-        emitted_at = time.perf_counter()
-        try:
-            LIVE_ROOT.mkdir(parents=True, exist_ok=True)
-            with self.log_lock:
-                if getattr(self, 'runtime_timeline_enabled', True):
-                    timeline = getattr(self, 'runtime_timeline', None)
-                    if timeline is None:
-                        timeline = self.runtime_timeline = RuntimeTimeline()
-                    values = timeline.enrich(kind, values)
-                    values['emittedMonotonicAt'] = emitted_at
-                row = {"time": datetime.now().astimezone().isoformat(timespec="milliseconds"), "event": kind, **values}
-                with self.event_path.open("a", encoding="utf-8", newline="\n") as handle:
-                    handle.write(json.dumps(row, ensure_ascii=False, default=str, separators=(",", ":")) + "\n")
-        except OSError:
-            pass
+        writer = getattr(self, '_event_log', None)
+        if writer is None:
+            return
+        values['emittedMonotonicAt'] = time.perf_counter()
+        scope = runtime_log_context()
+        if scope:
+            values.setdefault('traceContext', scope)
+        writer.emit(kind, values, getattr(self, 'runtime_timeline_enabled', True))
 
     def _queue_urgent_event(self, event: dict) -> None:
         target = getattr(self, "urgent_events", None)
@@ -19508,37 +19509,52 @@ class DailyAssistant:
     ) -> bool:
         if getattr(self,'resource_preload_pending',False) or getattr(self,'startup_resource_error',None):
             return False
+        # Bound the physical worker through logging and result publication too.
+        # This lock is never reset when a frame/capture generation changes.
+        worker_lock = self.map_probe_worker_lock
+        if not worker_lock.acquire(blocking=False):
+            return False
         trace_requested_at = time.perf_counter()
         capture_lock = self.capture_lock
         if not capture_lock.acquire(blocking=False):
+            worker_lock.release()
             return False
-        self.capture_lock_started_at = time.monotonic()
-        probe_token = self.capture_generation
-        probe_event_lock = getattr(self, "map_probe_event_lock", None)
-        if probe_event_lock is None:
-            probe_generation = int(getattr(self, "map_probe_generation", 0))
-            generation_matches = bool(
-                expected_probe_generation is None
-                or int(expected_probe_generation) == probe_generation
-            )
-        else:
-            with probe_event_lock:
-                probe_generation = int(getattr(
-                    self, "map_probe_generation", 0,
-                ))
+        try:
+            self.capture_lock_started_at = time.monotonic()
+            probe_token = self.capture_generation
+            probe_event_lock = getattr(self, "map_probe_event_lock", None)
+            if probe_event_lock is None:
+                probe_generation = int(getattr(self, "map_probe_generation", 0))
                 generation_matches = bool(
                     expected_probe_generation is None
                     or int(expected_probe_generation) == probe_generation
                 )
-        if not generation_matches:
-            capture_lock.release()
+            else:
+                with probe_event_lock:
+                    probe_generation = int(getattr(
+                        self, "map_probe_generation", 0,
+                    ))
+                    generation_matches = bool(
+                        expected_probe_generation is None
+                        or int(expected_probe_generation) == probe_generation
+                    )
+            if not generation_matches:
+                worker_lock.release()
+                capture_lock.release()
+                if self.capture_lock is capture_lock:
+                    self.capture_lock_started_at = None
+                return False
+            probe_display_epoch = int(getattr(self, "overlay_display_epoch", 0))
+            probe_captured_at = time.monotonic()
+            probe_trace = self._runtime_trace_context()
+            probe_trace.update(sourceFrameGeneration=None, probeGeneration=probe_generation)
+        except Exception:
+            if capture_lock.locked():
+                capture_lock.release()
+            worker_lock.release()
             if self.capture_lock is capture_lock:
                 self.capture_lock_started_at = None
-            return False
-        probe_display_epoch = int(getattr(self, "overlay_display_epoch", 0))
-        probe_captured_at = time.monotonic()
-        probe_trace = self._runtime_trace_context()
-        probe_trace.update(sourceFrameGeneration=None, probeGeneration=probe_generation)
+            raise
 
         def probe() -> None:
             probe_open: bool | None = None
@@ -19597,7 +19613,21 @@ class DailyAssistant:
                 "capturedAt": probe_captured_at,
             })
 
-        threading.Thread(target=probe, daemon=True).start()
+        def run_probe() -> None:
+            try:
+                probe()
+            finally:
+                worker_lock.release()
+
+        try:
+            threading.Thread(target=run_probe, daemon=True).start()
+        except Exception as error:
+            capture_lock.release()
+            worker_lock.release()
+            if self.capture_lock is capture_lock:
+                self.capture_lock_started_at = None
+            self._log('map-probe-start-failed', error=f'{type(error).__name__}: {error}')
+            return False
         return True
 
     def _cancel_post_drag_probe(self) -> None:
@@ -19817,26 +19847,53 @@ class DailyAssistant:
         capture_trace = self._runtime_trace_context()
         capture_trace['sourceFrameGeneration'] = None
         capture_trace['captureRequestedMonotonicAt'] = capture_requested_at
+        def start_failed(error):
+            capture_lock.release()
+            if self._capture_request_lock is capture_lock:
+                self.capture_lock_started_at = None
+            # Normal token-filtered consumers own UI cleanup, including a late
+            # delayed callback whose generation has already been superseded.
+            self.events.put({'kind': 'capture-error', 'message': str(error),
+                             'token': token, 'cycleId': token, 'silentHint': silent_hint})
+            self.events.put({'kind': 'capture-finished', 'token': token,
+                             'silentHint': silent_hint})
+            if token == self.capture_generation:
+                self._ui_action_fail('map-route', fallback_state='hidden',
+                                     reason='capture-start-failed', token=action_token)
+            self._log('capture-start-failed', cycleId=token, message=str(error))
+            return False
+
         def start_capture():
-            threading.Thread(
-                target=self._capture_and_rank,
-                args=(self.game_hwnd, manual, token, capture_lock, silent_hint, open_intent),
-                kwargs={'_timeline': capture_trace},
-                daemon=True,
-            ).start()
+            if token != self.capture_generation:
+                capture_lock.release()
+                if self._capture_request_lock is capture_lock:
+                    self.capture_lock_started_at = None
+                return False
+            try:
+                threading.Thread(
+                    target=self._capture_and_rank,
+                    args=(self.game_hwnd, manual, token, capture_lock, silent_hint, open_intent),
+                    kwargs={'_timeline': capture_trace}, daemon=True,
+                ).start()
+            except Exception as error:
+                return start_failed(error)
+            round_started = not bool(getattr(self, 'round_work_active', False))
+            self.round_work_active = True
+            if getattr(self, 'round_start_intent', None) is not None:
+                self.round_start_intent = None
+                self._runtime_cycle_origin['preparedStart'] = True
+                self._log('round-start-intent-consumed', cycleId=token)
+            self._sync_game_control_view()
+            if round_started:
+                self._report_control_action_result(True, 'round-started', '本局已开始')
+            return True
+
         if silent_hint:
-            start_capture()
-        else:
+            return start_capture()
+        try:
             self.root.after(self.CAPTURE_START_DELAY_MS, start_capture)
-        round_started = not bool(getattr(self, 'round_work_active', False))
-        self.round_work_active = True
-        if getattr(self, 'round_start_intent', None) is not None:
-            self.round_start_intent = None
-            self._runtime_cycle_origin['preparedStart'] = True
-            self._log('round-start-intent-consumed', cycleId=token)
-        self._sync_game_control_view()
-        if round_started:
-            self._report_control_action_result(True, 'round-started', '本局已开始')
+        except Exception as error:
+            return start_failed(error)
         return True
 
     def capture_now(self) -> None:
@@ -37268,6 +37325,19 @@ class DailyAssistant:
     def _poll_events(self) -> None:
         if self.closed:
             return
+        delay = self.EVENT_POLL_MS
+        try:
+            delay = self._poll_events_once() or delay
+        except Exception as error:
+            self._log('ui-event-poll-error', errorType=type(error).__name__, message=str(error))
+        finally:
+            if not self.closed:
+                self._event_poll_due_at = time.perf_counter() + delay / 1000.0
+                self.root.after(delay, self._poll_events)
+
+    def _poll_events_once(self) -> int | None:
+        if self.closed:
+            return
         self._drain_pending_rerank()
         callback_started = time.perf_counter()
         scheduled_at = getattr(self, '_event_poll_due_at', callback_started)
@@ -40099,8 +40169,7 @@ class DailyAssistant:
                     presentationMs=(finished_at-refresh_started)*1000.0,
                     processedEvents=processed_events, ordinaryQueueDepth=ordinary_depth,
                     urgentQueueDepth=urgent_depth, nextDelayMs=delay)
-            self._event_poll_due_at = time.perf_counter()+delay/1000.0
-            self.root.after(delay, self._poll_events)
+            return delay
 
     def _dispose_display_surface(self, name: str, reason: str) -> None:
         with self._display_capture_lock:
@@ -40212,10 +40281,25 @@ class DailyAssistant:
                 self._root_brand_icons = ()
                 brand_images.close()
                 self._root_brand_images = None
-            self.root.destroy()
+            writer = getattr(self, '_event_log', None)
+            if writer is not None:
+                writer.emit('assistant-closed', {})
+                writer.close()
+                self._event_log_close_deadline = time.monotonic() + 2.0
+                self._finish_event_log_close()
+            else:
+                self.root.destroy()
         except Exception:
             self._cancel_map_package_helper('native-close-failed')
             raise
+
+    def _finish_event_log_close(self) -> None:
+        # Never wait for the sink on Tk. Give queued diagnostics a bounded drain.
+        writer = self._event_log
+        if not writer.flush(timeout=0) and time.monotonic() < self._event_log_close_deadline:
+            self.root.after(20, self._finish_event_log_close)
+            return
+        self.root.destroy()
 
 
 def parse_args() -> argparse.Namespace:
