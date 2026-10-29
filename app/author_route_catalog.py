@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import sys
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -47,6 +48,8 @@ class AuthorRouteProfile:
 
 class AuthorRouteCatalog:
     """Read-only alternate route catalog; inactive profiles fail closed."""
+
+    _PROFILE_ASSET_CACHE_LIMIT = 64
 
     def __init__(self, catalog_path: Path = DEFAULT_CATALOG, asset_base: Path | None = None) -> None:
         self.catalog_path = Path(catalog_path)
@@ -98,6 +101,39 @@ class AuthorRouteCatalog:
             )
             self.profiles[profile.id] = profile
         self._raw = raw
+
+    def invalidate_asset_availability(self) -> None:
+        """Recheck hints after an explicit resource refresh; no display authority."""
+        self._profile_asset_cache_owner = id(self)
+        self._profile_asset_cache = OrderedDict()
+
+    def profile_has_assets(self, profile_id: str) -> bool:
+        """Snapshot availability hint, never permission to display a route.
+
+        A new catalog or replacement profile object rechecks the filesystem.
+        Profiles and their maps/layers are read-only within a published snapshot;
+        import/removal publishes a fresh snapshot. route_path still checks the
+        selected file in real time. Do not use this memo to authorize rendering.
+        """
+        # Optional display composition shallow-copies catalogs before replacing
+        # profiles. A copy must not inherit the source snapshot's availability.
+        if getattr(self, '_profile_asset_cache_owner', None) != id(self):
+            self.invalidate_asset_availability()
+        profile = self.profiles.get(profile_id)
+        if profile is None:
+            self._profile_asset_cache.pop(profile_id, None)
+            return False
+        cached = self._profile_asset_cache.get(profile_id)
+        if cached is not None and cached[0] is profile:
+            self._profile_asset_cache.move_to_end(profile_id)
+            return cached[1]
+        available = any(path.is_file() for variants in profile.maps.values()
+                        for variant in variants for path in variant.layers.values())
+        self._profile_asset_cache[profile_id] = (profile, available)
+        self._profile_asset_cache.move_to_end(profile_id)
+        while len(self._profile_asset_cache) > self._PROFILE_ASSET_CACHE_LIMIT:
+            self._profile_asset_cache.popitem(last=False)
+        return available
 
     def profile_choices(self, *, include_inactive: bool = False) -> list[AuthorRouteProfile]:
         rows = list(self.profiles.values())

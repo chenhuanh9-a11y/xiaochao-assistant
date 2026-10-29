@@ -312,6 +312,10 @@ class MapResourcesPage(MapResourceBrowser):
         if self._tab == 'discover':
             self._check_online_packages()
         else:
+            catalog = getattr(self.assistant, 'author_route_catalog', None)
+            invalidate = getattr(catalog, 'invalidate_asset_availability', None)
+            if callable(invalidate):
+                invalidate()
             self.invalidate_resource_context()
             getter = getattr(self.assistant, 'managed_author_packages_snapshot', None)
             if callable(getter): getter(refresh=True)

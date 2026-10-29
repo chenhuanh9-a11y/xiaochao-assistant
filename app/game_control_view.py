@@ -570,8 +570,13 @@ class GameControlView(tk.Frame):
             if isinstance(widget, RoundedButton) and 'font' in attributes:
                 base = attributes['font']
                 pixels = (base[0], -max(1, round(base[1]*self._scale)), *base[2:])
-                widget._skins.style.configure(str(widget.cget('style')),
-                                               font=pixels)
+                style = str(widget.cget('style'))
+                current = widget._skins.style.configure(style, 'font')
+                # ttk broadcasts style changes across the interpreter, even
+                # when the font is identical. A control status refresh must
+                # not invalidate every page's layout on each rendered button.
+                if tuple(map(str, self.tk.splitlist(current))) != tuple(map(str, pixels)):
+                    widget._skins.style.configure(style, font=pixels)
 
     def set_display_scale(self, scale):
         self._scale = max(.5, float(scale))

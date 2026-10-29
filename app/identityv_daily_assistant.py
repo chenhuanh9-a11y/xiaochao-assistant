@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys as _audit_sys
 
 _UI_AUDIT = None
-if '--ui-audit' in _audit_sys.argv:
+if any(flag in _audit_sys.argv for flag in ('--ui-audit', '--ui-interaction-audit', '--ui-import-audit')):
     import ui_packaged_audit as _packaged_audit
     try:
         _UI_AUDIT = _packaged_audit.prepare(_audit_sys.argv)
@@ -5641,8 +5641,8 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 return display_profile if binding is not None and binding['usable'] else SHARED_STRUCTURE_PROFILE_ID
             if optional is not None and profile is not None:
                 path = catalog.route_path(display_profile,map_id,str(floor),include_inactive=True) if map_id else None
-                available = Path(path).is_file() if path is not None else (not map_id and any(
-                    Path(layer).is_file() for variants in profile.maps.values() for variant in variants for layer in variant.layers.values()))
+                available = Path(path).is_file() if path is not None else (
+                    not map_id and catalog.profile_has_assets(display_profile))
                 return display_profile if profile.runtime_enabled and available else SHARED_STRUCTURE_PROFILE_ID
             return display_profile if profile is not None and profile.runtime_enabled else SHARED_STRUCTURE_PROFILE_ID
         source_store=getattr(pack,'source_candidates',None)
@@ -6172,8 +6172,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                     if profile in optional.profiles or (profile == SUJU_ROUTE_PROFILE_ID
                         and getattr(self,'author_route_catalog',None) is not None
                         and profile in self.author_route_catalog.profiles
-                        and any(Path(path).is_file() for variants in self.author_route_catalog.profiles[profile].maps.values()
-                                for variant in variants for path in variant.layers.values()))]
+                        and self.author_route_catalog.profile_has_assets(profile))]
                 return tuple((profile,ROUTE_PROFILE_LABELS[profile]) for profile in installed) or ((SHARED_STRUCTURE_PROFILE_ID,ROUTE_PROFILE_LABELS[SHARED_STRUCTURE_PROFILE_ID]),)
             profile = self._shared_display_profile_id() if getattr(self, 'author_route_catalog', None) is not None else SHARED_STRUCTURE_PROFILE_ID
             return ((profile, ROUTE_PROFILE_LABELS[profile]),)
@@ -8662,9 +8661,10 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         )
 
     @staticmethod
-    def _set_noactivate(window: tk.Misc, enabled: bool) -> None:
+    def _set_noactivate(window: tk.Misc, enabled: bool, *, sync_layout: bool = True) -> None:
         try:
-            window.update_idletasks()
+            if sync_layout:
+                window.update_idletasks()
             hwnd = ctypes.windll.user32.GetAncestor(window.winfo_id(), 2)
             exstyle = ctypes.windll.user32.GetWindowLongW(hwnd, -20)
             exstyle |= 0x00000080  # WS_EX_TOOLWINDOW
@@ -8694,9 +8694,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         except Exception:
             return 0
 
-    def _apply_window_rounding(self, window: tk.Misc, radius: int = 20) -> None:
+    def _apply_window_rounding(self, window: tk.Misc, radius: int = 20, *, sync_layout: bool = True) -> None:
         """Prefer Win11 DWM corners and fall back to a rounded window region."""
-        hwnd = self._native_window_handle(window)
+        hwnd = self._native_window_handle(window, sync_layout=sync_layout)
         if not hwnd:
             return
         try:
@@ -8738,14 +8738,15 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         return self._quick_panel_dimensions(scale=scale)
 
     def _shell_target_geometry(self, mode: str) -> tuple[int, int, int, int]:
-        self.root.update_idletasks()
-        context = self._ui_context_for_window(self.assistant_shell if mode == 'quick'
+        if mode != 'quick':
+            self.root.update_idletasks()
+        context = self._ui_context_for_window_snapshot(self.assistant_shell if mode == 'quick'
             and getattr(self, '_control_position', None) is not None else self.root)
         layout = adjacent_surface_layout(
             mode,
             self._shell_dimensions(mode, scale=context.scale),
             context,
-            self._rect_for_window(self.root),
+            self._rect_for_window(self.root, sync_layout=False),
             preferred_edge=(self.compact_dock or {}).get("edge"),
             gap_dip=4,
         )
@@ -9334,12 +9335,15 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         # shown. One geometry/alpha commit avoids the black intermediate frame
         # produced by the former multi-step shell animation.
         shell.geometry(f"{target_w}x{target_h}+{target_x}+{target_y}")
-        set_rounded_scale(shell, self._ui_context_for_window(shell).scale)
+        set_rounded_scale(shell, self._ui_context_for_window_snapshot(shell).scale)
         shell.attributes("-alpha", max(0.88, self.interface_opacity))
-        self._apply_window_rounding(shell)
+        # Settle the final geometry/style once. Subsequent native-handle reads
+        # must not drain every other page's pending idle work again.
+        shell.update_idletasks()
+        self._apply_window_rounding(shell, sync_layout=False)
         if mode == 'quick' and getattr(self, 'control_collapsed', False):
             self._apply_control_circle()
-        self._set_noactivate(shell, mode != "settings")
+        self._set_noactivate(shell, mode != "settings", sync_layout=False)
         if not was_viewable:
             shell.deiconify()
         shell.lift()
@@ -9914,13 +9918,12 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
     def _quick_panel_dimensions(self, *, scale: float | None = None) -> tuple[int, int]:
         view = getattr(self, "game_control_view", None)
         if tk_widget_exists(view):
-            scale = self._ui_context_for_window(self.assistant_shell).scale if scale is None else scale
+            context = self._ui_context_for_window_snapshot(self.assistant_shell)
+            scale = context.scale if scale is None else scale
             if getattr(self, "_game_control_display_scale", None) != (view, scale):
                 view.set_display_scale(scale)
                 self._game_control_display_scale = (view, scale)
-            context = self._ui_context_for_window(self.assistant_shell)
             view.set_available_height(max(1, context.monitor.work_area_px.height - round(32 * scale)))
-            view.update_idletasks()
             if getattr(self, 'control_collapsed', False) and not getattr(self, 'sheet_move_mode', False):
                 return (64, 64)
             width, height = view.expanded_size()
