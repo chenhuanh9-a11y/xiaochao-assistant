@@ -73,9 +73,15 @@ class LiveAuthorImportTests(unittest.TestCase):
             self.assertEqual(importer._sha(self.root / record['path']), record['sha256'])
 
     def test_103_main_and_helper_share_strict_import_contract(self):
+        self._check_version_import_contract('1.0.3', '1.0.0.7')
+
+    def test_104_main_and_helper_share_strict_import_contract(self):
+        self._check_version_import_contract('1.0.4', '1.0.0.8')
+
+    def _check_version_import_contract(self, display, numeric):
         import star_map_import_helper as helper
         self.write('_internal/version.json', json.dumps(dict(
-            displayVersion='1.0.3', numericVersion='1.0.0.7')).encode())
+            displayVersion=display, numericVersion=numeric)).encode())
         package = self.package('nightmare-suju', {SUJU: b'image'})
         self.assertEqual(importer.inspect_package(package, self.root)['packageId'], 'nightmare-suju')
         self.assertEqual(self.live(package)['status'], 'author-installed-live')
@@ -84,7 +90,7 @@ class LiveAuthorImportTests(unittest.TestCase):
         with patch.object(helper, 'wait_for_application_exit', return_value={'exited': True}):
             code, receipt = helper.run_helper(archive=package, install_root=self.root,
                 parent_pid=1, parent_created='fixture', archive_sha256=importer._sha(package),
-                request_id='version-103')
+                request_id='version-' + display.replace('.', ''))
         self.assertEqual(code, 0, receipt)
         self.assertTrue(receipt['success'])
         self.assert_base_preserved()
@@ -95,7 +101,7 @@ class LiveAuthorImportTests(unittest.TestCase):
         with patch.object(helper, 'wait_for_application_exit', return_value={'exited': True}):
             code, receipt = helper.run_helper(archive=package, install_root=self.root,
                 parent_pid=1, parent_created='fixture', archive_sha256=importer._sha(package),
-                request_id='version-103-tampered')
+                request_id='version-' + display.replace('.', '') + '-tampered')
         self.assertEqual(code, 2)
         self.assertIn('missing-or-incompatible-dependency', receipt['reason'])
 
