@@ -56,7 +56,10 @@ class MaskBindingTests(unittest.TestCase):
                         maskSha256=builder.mask_sha256(native), points=[[10, 10]], pointRooms=["r"], links=[])
         topology_path = game / "maps/layout/topology-1.json"
         topology_path.write_text(json.dumps(topology), "utf-8")
-        args = ["--legacy", str(legacy), "--game-data", str(game), "--structures", str(structures),
+        patches = root / "empty-patches.json"
+        patches.write_text(json.dumps(dict(schema=builder.PATCH_SCHEMA, kind="room-grid",
+                                          gameDataVersion="fixture", links=[])), "utf-8")
+        args = ["--road-patches", str(patches), "--legacy", str(legacy), "--game-data", str(game), "--structures", str(structures),
                 "--out", str(root / "out"), "--version", "fixture"]
         return args, topology_path, topology, native
 
@@ -141,8 +144,7 @@ class ArtAndIncrementTests(unittest.TestCase):
             legacy_matrix = np.diag([2., 2., 1.])
             art_matrix = np.diag([2., 2., 1.])
             with patch.object(builder, "register", side_effect=[(legacy_matrix, .9), (art_matrix, .95), (art_matrix, .95)]):
-                self.assertEqual(builder.main(args + ["--art", str(art), "--increment", str(increment),
-                                                      "--road-patches", str(builder.ROAD_PATCHES)]), 0)
+                self.assertEqual(builder.main(args + ["--art", str(art), "--increment", str(increment)]), 0)
             manifest = json.loads((root / "out/manifest.json").read_text("utf-8"))
             self.assertEqual(manifest["art"]["includesExits"], True)
             self.assertEqual(manifest["sources"]["increment"]["gameVersion"], "2.104.3085069")
@@ -202,6 +204,18 @@ class RoadPatchTests(unittest.TestCase):
         data["pointRooms"][2] = "101:3"
         with self.assertRaisesRegex(ValueError, "not adjacent"):
             builder.apply_road_patches(data, [self.link(b=dict(index=2, x=750, y=270))], "m/2")
+
+    def test_unknown_patch_map_fails_before_render_or_output(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            args, _path, _topology, _native = MaskBindingTests._inputs(None, root)
+            patches = root / "unknown-patches.json"
+            patches.write_text(json.dumps(dict(schema=builder.PATCH_SCHEMA, kind="room-grid",
+                gameDataVersion="fixture", links=[self.link(mapId="unknown-map")])), "utf-8")
+            with patch.object(builder, "register", return_value=(np.eye(3), 1.0)) as register, self.assertRaisesRegex(ValueError, "unknown-map/2"):
+                builder.main(args + ["--road-patches", str(patches)])
+            register.assert_not_called()
+            self.assertFalse((root / "out").exists())
 
     def test_builder_applies_patches_and_records_them(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -29,6 +29,7 @@ class _Skins:
         self.root = root
         self.style = ttk.Style(root)
         self.cache = {}
+        self.picture_cache = {}  # Per interpreter; native text/spacing share border pixels.
         self.images = []  # ttk elements keep Tcl names, so retain their owners.
 
     def font(self, value):
@@ -47,7 +48,14 @@ class _Skins:
         margin = max(0, round(shadow))
         extent = radius*2+128+margin*2
         factor = 4
-        image = Image.new("RGB", (extent*factor, extent*factor), self.color(parent))
+        fill, outline, parent = self.color(fill), self.color(outline), self.color(parent)
+        shadow_color = self.color(SHADOW_COLOR) if margin else None
+        stroke = max(0, round(width*factor))
+        focus_ring = bool(focus and button)
+        key = fill, outline, parent, radius, stroke, margin, shadow_color, focus_ring
+        if key in self.picture_cache:
+            return self.picture_cache[key]
+        image = Image.new("RGB", (extent*factor, extent*factor), parent)
         draw = ImageDraw.Draw(image)
         if margin:
             mask = Image.new("L", (extent, extent), 0)
@@ -55,18 +63,19 @@ class _Skins:
             ImageDraw.Draw(mask).rounded_rectangle(
                 (margin, margin+drop, extent-margin-1, extent-margin-1+drop), radius=radius, fill=26)
             mask = mask.filter(ImageFilter.GaussianBlur(margin*.45)).resize(image.size, Image.Resampling.BILINEAR)
-            image.paste(self.color(SHADOW_COLOR), mask=mask)
+            image.paste(shadow_color, mask=mask)
         edge = margin*factor
         bounds = (edge+1, edge+1, extent*factor-edge-2, extent*factor-edge-2)
-        draw.rounded_rectangle(bounds, radius=radius*factor, fill=self.color(fill),
-                               outline=self.color(outline), width=max(0, round(width*factor)))
-        if focus and button:
+        draw.rounded_rectangle(bounds, radius=radius*factor, fill=fill,
+                               outline=outline, width=stroke)
+        if focus_ring:
             inset = max(3, round(radius*.4))*factor
             draw.rounded_rectangle((inset, inset, extent*factor-inset-1, extent*factor-inset-1),
-                radius=max(1, radius*factor-inset), fill=self.color(fill),
-                outline=self.color(parent), width=factor)
+                radius=max(1, radius*factor-inset), fill=fill,
+                outline=parent, width=factor)
         photo = ImageTk.PhotoImage(image.resize((extent, extent), Image.Resampling.LANCZOS), master=self.root)
         self.images.append(photo)
+        self.picture_cache[key] = photo
         return photo
 
     def get(self, kind, props, parent, scale):
@@ -176,11 +185,15 @@ class _Appearance:
     def _restyle(self):
         scale = float(getattr(self.winfo_toplevel(), "_xiaochao_round_scale", 1.0))
         style = self._skins.get(self._kind, self._props, _parent_background(self.master), scale)
-        super().configure(style=style)
+        if super().cget("style") != style:
+            super().configure(style=style)
         if self._kind == "frame":
             # The shadow margin is outside the visible card, so content keeps its inset.
             margin = round(self._props["shadow"]*scale)
-            super().configure(padding=(self._props["padx"]+margin, self._props["pady"]+margin))
+            padding = self._props["padx"]+margin, self._props["pady"]+margin
+            current = tuple(map(str, self.tk.splitlist(super().cget("padding"))))
+            if current != tuple(map(str, padding)):
+                super().configure(padding=padding)
 
     def configure(self, cnf=None, **kwargs):
         if not getattr(self, "_round_ready", False):

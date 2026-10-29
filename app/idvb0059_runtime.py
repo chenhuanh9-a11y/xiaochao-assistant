@@ -159,6 +159,29 @@ def packet_for(assistant, output):
     return row[1] if row is not None and row[0]() is output else None
 
 
+def transfer_display_packet(assistant, source, output):
+    """Transfer ownership only to an identical full-canvas ndarray view.
+
+    This is explicit at the provenance-wrapper boundary, not inherited through
+    ndarray copies or arbitrary views. Consumer authorization remains separate.
+    """
+    if not enabled() or not isinstance(source, np.ndarray) or not isinstance(output, np.ndarray):
+        return False
+    packets = getattr(assistant, '_idvb0059_packets', {})
+    row = packets.get(id(source))
+    if row is None or row[0]() is not source:
+        return False
+    if (source.shape != output.shape or source.dtype != output.dtype
+            or source.strides != output.strides
+            or source.ctypes.data != output.ctypes.data
+            or not np.shares_memory(source, output)):
+        return False
+    if source is not output:
+        packets.pop(id(source))
+        packets[id(output)] = (weakref.ref(output), row[1])
+    return True
+
+
 def _release_surface(assistant, surface):
     surface.hide()
     with assistant._display_capture_lock:

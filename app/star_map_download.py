@@ -40,7 +40,7 @@ class DownloadCancelled(DownloadError):
 
 
 @contextmanager
-def _locked_file(path, *, writable=False, expected_identity=None):
+def _locked_file(path, *, writable=False, movable=False, expected_identity=None):
     """Windows handle denies replacement AND writes through verification/publish.
 
     A Path returned later is still a mutable filesystem name: main must run the
@@ -57,7 +57,8 @@ def _locked_file(path, *, writable=False, expected_identity=None):
     api.CreateFileW.restype = wintypes.HANDLE
     api.CloseHandle.argtypes = [wintypes.HANDLE]
     _no_links(path)
-    handle = api.CreateFileW(str(path), 0xC0000000 if writable else 0x80000000,
+    access = (0xC0000000 if writable else 0x80000000) | (0x10000 if movable else 0)
+    handle = api.CreateFileW(str(path), access,
                             1, None, 3, 0x200000, None)  # share READ only
     if handle == ctypes.c_void_p(-1).value:
         raise ctypes.WinError(ctypes.get_last_error())
@@ -71,6 +72,30 @@ def _locked_file(path, *, writable=False, expected_identity=None):
         if not stat.S_ISREG(info.st_mode) or expected_identity is not None and (info.st_dev, info.st_ino) != expected_identity:
             raise DownloadError("temporary-file-object-changed")
         yield current
+
+
+def _rename_locked_file(stream, destination):
+    """Rename the verified Windows object without releasing its write/delete lock."""
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+    class RenameInfo(ctypes.Structure):
+        _fields_ = [('ReplaceIfExists', ctypes.c_ubyte), ('RootDirectory', wintypes.HANDLE),
+                    ('FileNameLength', wintypes.DWORD), ('FileName', wintypes.WCHAR * 1)]
+    name = str(destination).encode('utf-16-le')
+    buffer = ctypes.create_string_buffer(max(ctypes.sizeof(RenameInfo), RenameInfo.FileName.offset + len(name) + 2))
+    info = RenameInfo.from_buffer(buffer)
+    info.ReplaceIfExists = 0
+    info.RootDirectory = None
+    info.FileNameLength = len(name)
+    ctypes.memmove(ctypes.addressof(buffer) + RenameInfo.FileName.offset, name, len(name))
+    api = ctypes.WinDLL('kernel32', use_last_error=True)
+    api.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                              ctypes.c_void_p, wintypes.DWORD]
+    api.SetFileInformationByHandle.restype = wintypes.BOOL
+    handle = wintypes.HANDLE(msvcrt.get_osfhandle(stream.fileno()))
+    if not api.SetFileInformationByHandle(handle, 3, buffer, len(buffer)):  # FileRenameInfo
+        raise ctypes.WinError(ctypes.get_last_error())
 
 
 @dataclass
@@ -285,6 +310,27 @@ class MapPackageDownloadService:
         with self._state:
             return max(0, MAX_MANUAL_ATTEMPTS - self._attempts.get(package_id, 0))
 
+    def _quarantine_invalid_cache(self, path, stream, operation):
+        """Preserve a failed managed cache entry before a manual re-download.
+
+        Only the index-derived cache object is eligible. It remains locked from
+        validation through handle-based rename. Existing targets are not replaced;
+        neither unrelated ZIPs nor backups are swept.
+        """
+        self._check(operation)
+        _no_links(path)
+        backup = Path(tempfile.mkdtemp(prefix='invalid-cache-', dir=self.download_root))
+        try:
+            _no_links(backup)
+            self._check(operation)
+            _rename_locked_file(stream, backup / path.name)
+        except Exception:
+            try:
+                backup.rmdir()  # Only this request's still-empty directory.
+            except OSError:
+                pass  # Preserve any unexpected contents and the original error.
+            raise
+
     def download_package(self, package_id, *, cancel_event=None, progress=None):
         with self._operation(cancel_event) as operation:
             with self._state:
@@ -296,16 +342,20 @@ class MapPackageDownloadService:
             final = self.download_root / f"{package_id}-{item['sha256']}.zip"
             _no_links(final)
             if final.exists():
-                if final.stat().st_size != item["bytes"]:
-                    raise DownloadError("existing-cache-conflict")
-                with _locked_file(final) as existing:
-                    if os.fstat(existing.fileno()).st_size != item["bytes"]:
-                        raise DownloadError("existing-cache-conflict")
-                    digest = hashlib.file_digest(existing, "sha256").hexdigest()
-                    self._check(operation)
-                    if digest != item["sha256"]:
-                        raise DownloadError("existing-cache-conflict")
-                    return final
+                # Valid cache reuse only needs read access. If invalid, reopen
+                # with DELETE access and validate that locked object again:
+                # another request may have repaired the name in between.
+                for movable in (False, True):
+                    with _locked_file(final, movable=movable) as existing:
+                        info = os.fstat(existing.fileno())
+                        valid = (info.st_size == item['bytes'] and
+                                 hashlib.file_digest(existing, 'sha256').hexdigest() == item['sha256'])
+                        self._check(operation)
+                        if valid:
+                            return final
+                        if movable:
+                            self._quarantine_invalid_cache(final, existing, operation)
+                self._check(operation)
             with self._state:
                 attempts = self._attempts.get(package_id, 0)
                 if attempts >= MAX_MANUAL_ATTEMPTS:

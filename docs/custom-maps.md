@@ -94,3 +94,26 @@ builder 验证道路拓扑声明的 shape 和 mask 哈希，并保存实际 mask
 旧设置目录中的 `custom-routes.json` 会按楼层迁移为独立可编辑图库，以保留全部原生坐标和颜色，不捏造跨楼层连接。原文件不移动、不改写，可恢复；迁移摘要写入新 `custom-galleries.json` 保证幂等，不自动切换玩家的游戏内选项。迁移失败保留原文件，原因可由 `GalleryStore.migration_error` 读取。自定义图库偏好不再因作者 catalog 缺失被启动重置，同名图库通过 ID 区分。
 
 存在楼梯链接时采用零启发式保证跨层路径的最短路条件。此次离线检查覆盖模型、迁移、无窗口编辑器和主程序集成、builder；公开包145文件校验，并对 nightmare-03 的 B1/1F 做实际结构哈希及同尺寸篡改拒绝检查。未执行 Windows GUI、游戏或实际输入，不据此宣称游戏内观感验收。
+
+
+## 增量维护的补丁检查
+
+道路补丁的每个地图和楼层都必须属于本次构建清单；未知地图、遗漏楼层在写入输出前报错。构建子集时应显式提供只针对该子集的补丁文件，不得静默过滤默认补丁。已安装资源的可达性检查仅在默认可选资源目录完全不存在时跳过；显式指定目录缺失、坏 manifest 或空包均失败，不能写成已验证。
+
+补丁仍记录最初确认版本 2.104.3059230。应用到新游戏版本前须核对新来源、完整地图/楼层身份及结构哈希，并逐条验证节点编号、坐标、房间和相邻格；同版本号或相同画布尺寸不足以证明适用。新数据已包含该边时只报告 covered，不重复添加。出现绑定变化应停止相关构建并重新核实，不能靠改版本字段放行。这里的 26 条边仅为编辑器层内道路，不修改识别底图、跨层楼梯或运行时贴合。
+
+
+## 只扩展新增原生地图
+
+`tools/maps/extend_custom_map_package.py` 接受已验证的现有 editor 包、显式新楼层 plan、`export-catalog.cjs` 的 geometry 输出和同源 runtime 结构根。先验证现有逐文件哈希、source layout/worldFloor/version/structureVersionKey、renderer 坐标恒等映射与 alpha 精确等于 shared_mask，才复制旧文件、对新增正常渲染图编码 WebP 并生成同层道路。旧图不重做 ECC，不重编码。plan 含 runtimeMapId/sourceLayout/floor/sourceWorldFloor/nativeSourceMetadata/nativeSourcePNG；它是本地来源清单，不提交原始数据。
+
+`tools/maps/complete_incremental_editor_connections.py` 对旧/新规范化 literal 和显式 source-connectors 清单再验证：旧 10609 定义相同、原例外逆房间变换得到一致 local 边，才应用到新同房型实例；不根据孤立组件猜连边。楼梯必须为源 room_type=4，所有 port 槽位/旋转/坐标逐项匹配原定义；连接表示同一源楼梯房间的跨层关联，内部导航折线和游戏通过性仍未实测。正门锚点是源 room_type=2 的房间 port，不冒充出生图标中心。仅楼层占用或不明类型不会生成跨层边。
+
+两个命令都要求新输出目录，原始资料、旧包、用户路线保留。先执行增量，再补关联，最后用真实 `CustomMapLibrary` 检查全部图像/拓扑加载、旧文件字节复用及全图可达性；无法证明的项必须显式报告，不跳过坏 manifest 或任意补边。
+
+```powershell
+python tools/maps/extend_custom_map_package.py --baseline BASE --plan NEW_FLOORS.json --geometry GEOMETRY --resources RUNTIME --out NEW_STAGE --version PACKAGE_VERSION
+python tools/maps/complete_incremental_editor_connections.py --source NEW_STAGE --out FINAL_STAGE --resources RUNTIME --plan NEW_FLOORS.json --geometry GEOMETRY --old OLD_NORMALIZED.json --new NEW_NORMALIZED.json --patches tools/maps/custom-road-patches.json --connectors SOURCE_CONNECTORS.json
+python tools/maps/test_extend_custom_map_package.py
+python tools/maps/test_incremental_editor_connections.py
+```

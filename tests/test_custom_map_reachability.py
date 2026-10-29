@@ -4,9 +4,12 @@ Runs against ``assets/custom-maps`` (or ``XINGTU_CUSTOM_MAPS_ROOT``) and is
 skipped when no package is installed.
 """
 import json
+import os
+import tempfile
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -36,12 +39,43 @@ def reachable(library, map_id) -> set:
     return seen
 
 
+def checked_library(root=None):
+    """Only a genuinely absent optional installation may skip this check."""
+    library = CustomMapLibrary() if root is None else CustomMapLibrary(root)
+    if not library.available:
+        if root is None and not os.environ.get("XINGTU_CUSTOM_MAPS_ROOT") and not library.root.exists():
+            raise unittest.SkipTest("custom map package not installed")
+        raise AssertionError(library.error or "custom map package is empty")
+    return library
+
+
+class InstallationValidationTests(unittest.TestCase):
+    def test_bad_or_empty_manifest_is_a_failure_not_a_skip(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for text in ("{bad", json.dumps(dict(schema="wrong", maps=[])),
+                         json.dumps(dict(schema="xingtu-custom-maps-v1", maps=[]))):
+                (root / "manifest.json").write_text(text, "utf-8")
+                with self.subTest(manifest=text), self.assertRaises(AssertionError):
+                    checked_library(root)
+
+    def test_explicit_missing_package_is_a_failure(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaises(AssertionError):
+                checked_library(Path(folder) / "missing")
+
+    def test_default_absent_optional_package_can_skip(self):
+        with tempfile.TemporaryDirectory() as folder:
+            library = CustomMapLibrary(Path(folder) / "missing")
+            with patch(__name__ + ".CustomMapLibrary", return_value=library), \
+                    patch.dict(os.environ, {}, clear=True), self.assertRaises(unittest.SkipTest):
+                checked_library()
+
+
 class ReachabilityTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.library = CustomMapLibrary()
-        if not cls.library.available:
-            raise unittest.SkipTest(cls.library.error or "custom map package not installed")
+        cls.library = checked_library()
 
     def test_every_room_is_reachable_from_the_main_door(self):
         for map_id, _name in self.library.maps():

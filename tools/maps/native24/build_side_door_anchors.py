@@ -52,7 +52,7 @@ def build(resources, exports_path):
         assert binding['structureVersionKey'] == version, mid
         with np.load(resources / binding['resourcePath'], allow_pickle=False) as resource:
             meta = json.loads(str(resource['metadata'].item()))
-        assert meta['structureVersionKey'] == version and meta['sourceVersion'] == pack['sourceVersion']
+        assert meta['structureVersionKey'] == version and meta['sourceVersion'] == binding['sourceVersion']
         assert meta['canvas']['worldFloor'] == 3 and meta['sourceGeometry']['targetPixelsPerVoxel'] == 60
         bounds = meta['sourceGeometry']['bounds']
         doors = []
@@ -77,7 +77,7 @@ def build(resources, exports_path):
                 worldVoxelInside=inside, worldVoxelOutside=outside))
         assert len(doors) == 1, (mid, 'requires exactly one source F2 side door', len(doors))
         rows.extend(doors)
-    assert len(rows) == len(pack['maps']) == 24
+    assert len(rows) == len(pack['maps'])
     return dict(schemaVersion=1, mode='nightmare', profileId='zhan10-speed',
                 coordinateSpace='per-map F2 native pixels; geometric boundary, not icon center', entries=rows)
 

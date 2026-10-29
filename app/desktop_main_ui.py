@@ -618,8 +618,14 @@ class DesktopMainUI:
         content = tk.Frame(canvas, bg=SURFACE)
         item = canvas.create_window((0, 0), window=content, anchor="nw")
         def fit_content(event=None):
-            if event is not None and event.widget is canvas:
-                canvas.itemconfigure(item, width=max(1, event.width))
+            # Hidden pages can receive content Configure events after a DPI
+            # change without a canvas Configure. Keep the embedded window
+            # constrained then too: auto width plus self-wrapping labels can
+            # otherwise oscillate forever while Tk drains idle geometry.
+            width = max(1, event.width if event is not None and event.widget is canvas
+                        else canvas.winfo_width())
+            if round(float(canvas.itemcget(item, "width"))) != width:
+                canvas.itemconfigure(item, width=width)
             if name == "home":
                 # Fill the client viewport while retaining scrolling at small
                 # sizes; requested content height does not include surplus.
@@ -1300,7 +1306,12 @@ class DesktopMainUI:
         self.save_shortcuts_button = self.hotkey_editor.confirm_button
 
         display = self.preferences_display
-        visibility = self._setting_row(display, "总显影", "同时控制定点地图和贴合显示。")
+        controls = self._setting_row(display, "游戏控件", "选择常用内容与顺序；快捷键提示同步当前绑定。")
+        self.control_layout_button = _button(controls, "自定义…",
+            lambda: self.assistant.open_control_layout_settings(owner=self.window))
+        self.control_layout_button.pack(side="right")
+        tk.Frame(display, bg=LINE, height=1).pack(fill="x", pady=(0, 14))
+        visibility = self._setting_row(display, "贴合显隐", "只控制贴合小抄，定点地图独立设置。")
         self.preferences_visibility_button = _button(visibility, "未知", self._toggle_visibility)
         self.preferences_visibility_button.configure(padx=18)
         self.preferences_visibility_button.pack(side="right")

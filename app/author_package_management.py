@@ -5,6 +5,7 @@ lease as live import, then refreshes the existing resource factory on Tk.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -23,6 +24,7 @@ PACKAGE_NAMES = {
     'difficult-zhan10': '展十 · 困难',
     'nightmare-nightingale': '爱吃醋 · 噩梦',
     'nightmare-wang-qingxin': '王清心 · 噩梦',
+    'nightmare-lianghapi': '凉哈皮 · 噩梦',
 }
 
 
@@ -31,8 +33,8 @@ def package_inspection_message(error) -> str:
     text = str(error)
     if 'existing-data-conflict:' in text:
         path = text.split('existing-data-conflict:', 1)[1].strip()
-        return ('本地已有不同版本或未登记的资源，不能安全覆盖。'
-                '若是已管理资源，请先在“管理已安装资源”移除后重新导入；'
+        return ('本地已有不同版本、改动过或未登记的资源，不能直接覆盖。'
+                '若是已管理资源，请先在“管理已安装资源”备份并移除，再重新导入；'
                 f'未登记文件会保留。冲突文件：{path}')
     if 'missing-or-incompatible-dependency:' in text:
         return '资源包与当前基础地图数据不匹配，请选择适用于本版本的资源包。原资源未改动。'
@@ -137,19 +139,34 @@ def inspect_author_package_removal(install_root, package_id) -> dict:
         other_rows, _ = _owned_inventory(root, other)
         if any(r['path'].casefold() in other_rows for r in removable):
             raise ImportRejected('shared-author-file-ownership')
-    present, missing = [], []
+    present, missing, modified = [], [], []
     for row in removable:
         path = _target(root, row['path'])
         if not path.exists():
             missing.append(row['path'])
-        elif not path.is_file() or path.stat().st_size != row['bytes'] or _sha(path) != row['sha256']:
-            raise ImportRejected('modified-author-file: ' + row['path'])
+        elif not path.is_file():
+            raise ImportRejected('non-file-author-path: ' + row['path'])
         else:
-            present.append(dict(row))
-    return dict(packageId=package_id, title=PACKAGE_NAMES[package_id],
+            # A receipt owns the allowlisted display path, not every future byte
+            # at that path. Changed bytes may only be moved into a recoverable
+            # backup after confirmation; they are never silently overwritten.
+            before = path.stat()
+            digest = _sha(path)
+            after = path.stat()
+            if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                    after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                raise ImportRejected('author-file-changed-during-inspection')
+            if before.st_size != row['bytes'] or digest != row['sha256']:
+                modified.append(row['path'])
+            present.append(dict(path=row['path'], bytes=before.st_size, sha256=digest))
+    plan = dict(packageId=package_id, title=PACKAGE_NAMES[package_id],
                 receiptSha256=receipt_sha, files=present, missingFiles=missing,
                 preservedCoreFiles=len(rows)-len(removable), fileCount=len(present),
-                bytes=sum(r['bytes'] for r in present), restartRequired=False)
+                bytes=sum(r['bytes'] for r in present), modifiedFiles=modified, restartRequired=False)
+    confirmation = {key: plan[key] for key in ('packageId', 'receiptSha256', 'files', 'missingFiles')}
+    plan['planSha256'] = hashlib.sha256(json.dumps(confirmation, sort_keys=True,
+        separators=(',', ':')).encode('utf-8')).hexdigest()
+    return plan
 
 
 def managed_author_packages_snapshot(install_root, *, cancelled=None) -> list[dict]:
@@ -194,27 +211,32 @@ def managed_author_packages_snapshot(install_root, *, cancelled=None) -> list[di
                                 'author-files-without-receipt')
         else:
             item.update(canRemove=True, fileCount=plan['fileCount'], bytes=plan['bytes'],
-                        receiptSha256=plan['receiptSha256'])
+                        modifiedFiles=len(plan['modifiedFiles']), receiptSha256=plan['receiptSha256'])
         result.append(item)
     return result
 
 
 def remove_author_package_live(install_root, package_id, *, application_idle=False,
-                               expected_receipt_sha256=None, cancelled=None) -> dict:
+                               expected_receipt_sha256=None, expected_plan_sha256=None, cancelled=None) -> dict:
     """Move owned display files into a recoverable backup, committing receipt last.
 
     The full receipt is archived even when it also names core data. Those core
     files stay in place. A subsequent import verifies and reuses their bytes.
-    No recursive delete is used; modified/unowned/shared files fail closed.
+    No recursive delete is used. Modified owned display bytes are backed up;
+    unowned/shared files and non-file targets remain ineligible.
     """
     if application_idle is not True:
         raise ImportRejected('live-removal-requires-idle')
     if not expected_receipt_sha256:
         raise ImportRejected('removal-confirmation-required')
+    if not expected_plan_sha256:
+        raise ImportRejected('removal-plan-confirmation-required')
     with _writer_locked_installation(install_root, require_closed=False) as (root, state):
         plan = inspect_author_package_removal(root, package_id)
         if plan['receiptSha256'] != expected_receipt_sha256:
             raise ImportRejected('installed-receipt-changed')
+        if plan['planSha256'] != expected_plan_sha256:
+            raise ImportRejected('author-files-changed-reinspect-required')
         _check_cancelled(cancelled)
         parent = _target(root, 'work/map-package-removals')
         parent.mkdir(parents=True, exist_ok=True)

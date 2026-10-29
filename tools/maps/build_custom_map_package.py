@@ -266,6 +266,12 @@ def main(argv=None) -> int:
     for path in sorted(args.game_data.glob("maps/*/topology-*.json")):
         data = json.loads(path.read_text("utf-8"))
         topologies[(data["mapId"], str(data["floor"]))] = path
+    intended = {(TEMPLATE_MAPS[template["number"]], FLOORS[floor["id"]])
+                for template in catalog["templates"] if template["number"] in TEMPLATE_MAPS
+                for floor in template["floors"]}
+    stray = sorted(f"{map_id}/{floor}" for map_id, floor in patches if (map_id, floor) not in intended)
+    if stray:
+        raise ValueError(f"road patches name maps or floors that were not built: {', '.join(stray)}")
     out = args.out
     (out / "images").mkdir(parents=True)
     (out / "topology").mkdir()
@@ -412,8 +418,7 @@ def main(argv=None) -> int:
         increment_source = dict(version=increment.get("version"), gameVersion=increment.get("sourceGameVersion"),
                                 manifestSha256=sha256(manifest_path))
 
-    built = {row["mapId"] for row in maps}
-    stray = sorted(f"{map_id}/{floor}" for map_id, floor in patches if map_id in built)
+    stray = sorted(f"{map_id}/{floor}" for map_id, floor in patches)
     if stray:
         raise ValueError(f"road patches name floors that were not built: {', '.join(stray)}")
     if patch_report["added"] and patch_document.get("gameDataVersion") != game_version:

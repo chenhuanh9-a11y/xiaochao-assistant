@@ -1,5 +1,16 @@
 from __future__ import annotations
 
+import sys as _audit_sys
+
+_UI_AUDIT = None
+if '--ui-audit' in _audit_sys.argv:
+    import ui_packaged_audit as _packaged_audit
+    try:
+        _UI_AUDIT = _packaged_audit.prepare(_audit_sys.argv)
+    except Exception:
+        raise SystemExit(2)
+    _audit_sys.excepthook = lambda kind, error, tb: _packaged_audit.abort(_UI_AUDIT, error)
+
 import argparse
 import copy
 import ctypes
@@ -100,6 +111,10 @@ from session_state_machine import (
     trusted_foreground_is_allowed,
     verified_map_hotkey_frame,
 )
+from async_event_log import AsyncEventLog
+from native_resource_validation import NativeResourceValidationMixin
+from base_display_integration import BaseDisplayIntegrationMixin, display_source_guard
+from runtime_timeline import context as runtime_log_context
 from runtime_timeline import (RuntimeTimeline, observe as observe_runtime,
                               observe_function, floor_vote_evidence, context as runtime_trace_context)
 
@@ -128,6 +143,7 @@ from nightmare_candidate import (
 from release_identity import load_runtime_app_version, load_runtime_display_version
 from native_similarity_groups import NativeSimilarityState
 from reference_position_editor import ReferencePositionEdit, ReferencePointerMailbox
+from control_layout import load_layout, validate_layout
 from native_ui_layout import (
     MonitorContext,
     RectPx,
@@ -5592,7 +5608,7 @@ def display_presentation(surface_name):
     return decorate
 
 
-class DailyAssistant:
+class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin):
     @staticmethod
     def display_version_label():
         return APP_DISPLAY_VERSION
@@ -5661,7 +5677,8 @@ class DailyAssistant:
             optional = getattr(self,'optional_author_displays',None)
             preferred = getattr(self,'preferred_route_profile_id',None)
             if optional is not None and preferred in optional.profiles and self.route_profile_id == SHARED_STRUCTURE_PROFILE_ID:
-                return '所选作者该层未通过配准 · 当前使用结构底图，原图仍可浏览'
+                display = self._current_display_descriptor(getattr(gate, 'confirmed_id', None), str(getattr(self, 'current_floor', '1')))
+                return self._committed_display_feedback(getattr(gate, 'confirmed_id', None), str(getattr(self, 'current_floor', '1'))).status if display else ''
             return ''
         actual=self.route_profile_id
         if actual==getattr(self,'preferred_route_profile_id',actual):return ''
@@ -6071,6 +6088,9 @@ class DailyAssistant:
             base._structure_profile_provider = lambda: SHARED_STRUCTURE_PROFILE_ID
         if before_publish is not None:
             before_publish()
+        self._invalidate_native_resource_context('resource-context-published')
+        self._invalidate_base_display()
+        self._native_resource_rejected = False
         self.game_mode=mode;self.pack=pack;self.gate=RouteDisplayGate(pack)
         self.round_start_intent = None
         self.author_route_catalog=catalog;self.author_coordinate_adapters=adapters
@@ -6148,7 +6168,7 @@ class DailyAssistant:
         if self._shared_structure_mode_enabled():
             optional = getattr(self,'optional_author_displays',None)
             if optional is not None:
-                installed = [profile for profile in (SUJU_ROUTE_PROFILE_ID,DEFAULT_ROUTE_PROFILE_ID,'nightingale')
+                installed = [profile for profile in (SUJU_ROUTE_PROFILE_ID,DEFAULT_ROUTE_PROFILE_ID,'nightingale','lianghapi-single')
                     if profile in optional.profiles or (profile == SUJU_ROUTE_PROFILE_ID
                         and getattr(self,'author_route_catalog',None) is not None
                         and profile in self.author_route_catalog.profiles
@@ -6330,6 +6350,7 @@ class DailyAssistant:
         self.log_lock = threading.RLock()
         self.stop_event = threading.Event()
         self.capture_lock = threading.Lock()
+        self.map_probe_worker_lock = threading.Lock()
         # One request/engine workflow; the existing capture_lock continues to
         # serialize actual capture and rank, but is free between ROI samples.
         self._capture_request_lock = threading.Lock()
@@ -6576,6 +6597,7 @@ class DailyAssistant:
         # settings are migration/recovery cases, never a fresh installation.
         self._fresh_settings = not self.settings_path.exists()
         self.settings = self._load_settings()
+        self.control_layout = load_layout(self.settings.get('gameControlLayout'))
         self.mode_route_profiles=dict(self.settings.get('modeRouteProfiles') or {})
         self.mode_resource_error=None
         if self.settings.get('gameMode')=='difficult':
@@ -6759,6 +6781,7 @@ class DailyAssistant:
         self.optimistic_sheet_cycle_id: int | None = None
         self.optimistic_sheet_floor: str | None = None
         self.event_path = LIVE_ROOT / f"events-{datetime.now():%Y%m%d-%H%M%S}.jsonl"
+        self._event_log = AsyncEventLog(self.event_path)
         self.diagnostic_export_in_progress = False
         self.display_environment: dict | None = None
         self.process_integrity = process_integrity_level()
@@ -7366,8 +7389,16 @@ class DailyAssistant:
                 "change_reference_opacity": self.change_reference_opacity,
                 "_save_settings": self._commit_game_control_opacity,
                 "get_control_snapshot": self._route_presentation_snapshot,
-                "move_sheet": self.move_sheet,
-                "finish_reference_sheet_move": self.finish_reference_sheet_move,
+                "move_sheet": lambda: self._control_reference_edit_action(self.move_sheet),
+                "finish_reference_sheet_move": lambda: self._control_reference_edit_action(self.finish_reference_sheet_move),
+                "cancel_reference_sheet_move": lambda: self._control_reference_edit_action(self.cancel_reference_sheet_move),
+                "open_control_layout_settings": self.open_control_layout_settings,
+                "_start_map_reselection": self._start_map_reselection,
+                "_open_recognition_details": self._open_recognition_details,
+                "previous_candidate": lambda: self._cycle_candidate_by_key(-1),
+                "next_candidate": lambda: self._cycle_candidate_by_key(1),
+                "confirm_route": self.confirm_route,
+                "capture_now": self.capture_now,
                 "_open_desktop_main_ui": self._open_desktop_main_ui,
                 "set_game_mode": self.set_game_mode,
                 "toggle_round": self.toggle_round,
@@ -9476,8 +9507,9 @@ class DailyAssistant:
         map_id = getattr(getattr(self, 'gate', None), 'confirmed_id', None)
         floor = str(getattr(self, 'current_floor', '1'))
         fallback = bool(map_id and selected != effective and not gallery_of(selected))
-        message = ('所选作者没有当前地图／楼层的可用路线，当前显示结构底图。'
-                   if fallback else '选择实际用于定点地图和游戏贴合的路线；浏览来源只影响预览。')
+        display = self._current_display_descriptor(map_id, floor)
+        message = (self._committed_display_feedback(map_id, floor).status if display
+                   else '选择实际用于定点地图和游戏贴合的路线；浏览来源只影响预览。')
         return dict(mode=getattr(self, 'game_mode', None), options=options,
                     selected=selected, effective=effective, fallback=fallback,
                     mapId=map_id, floor=floor, message=message)
@@ -9581,7 +9613,7 @@ class DailyAssistant:
             spec = self._aligned_render_spec(map_id, floor, native, profile_id=effective)
             if spec is None:
                 return False
-            overlay, _ = self._build_display_overlay(spec['routeSource'], spec['matrixSourceToClient'], frame.shape,
+            overlay, display_meta = self._build_display_overlay(spec['routeSource'], spec['matrixSourceToClient'], frame.shape,
                 map_id=map_id, floor=floor, profile_id=effective, minimum_coverage=0.0, minimum_visible_pixels=1)
             if overlay is None:
                 return False
@@ -9602,7 +9634,10 @@ class DailyAssistant:
         self.drag_overlay_base = overlay.copy()
         self.drag_overlay_offset = np.zeros(2, dtype=np.float64)
         self.current_alignment_candidate = dict(displayed,
-            matrixSourceToClient=self.drag_transform.tolist(), routeProfileId=spec['routeProfileId'])
+            matrixSourceToClient=self.drag_transform.tolist(), routeProfileId=spec['routeProfileId'],
+            **{key: display_meta.get(key) for key in ('displayKind', 'displayLabel', 'displayResourceKey', 'authorStatus', 'displayContext')})
+        self._record_display_commit(display_meta, map_id, floor)
+        self._note_route_pose_verified()
         return True
 
     def _apply_route_profile_setting(self, _event=None, *, profile_id=None) -> None:
@@ -9639,6 +9674,7 @@ class DailyAssistant:
             self.mode_route_profiles = previous_modes
             self.route_profile_var.set(self._route_profile_label(self._shown_route_profile()))
             raise
+        self._committed_display = None
         self.route_profile_var.set(self._route_profile_label(selected))
         self._sync_route_settings_ui()
         if self._shared_structure_mode_enabled():
@@ -9882,11 +9918,13 @@ class DailyAssistant:
             if getattr(self, "_game_control_display_scale", None) != (view, scale):
                 view.set_display_scale(scale)
                 self._game_control_display_scale = (view, scale)
+            context = self._ui_context_for_window(self.assistant_shell)
+            view.set_available_height(max(1, context.monitor.work_area_px.height - round(32 * scale)))
             view.update_idletasks()
-            if getattr(self, 'control_collapsed', False):
+            if getattr(self, 'control_collapsed', False) and not getattr(self, 'sheet_move_mode', False):
                 return (64, 64)
-            return (max(240, math.ceil(view.winfo_reqwidth() / scale)),
-                    max(100, math.ceil(view.winfo_reqheight() / scale)))
+            width, height = view.expanded_size()
+            return (max(240, math.ceil(width / scale)), max(100, math.ceil(height / scale)))
         return (
             self.QUICK_PANEL_ROUND_SIZE
             if self._round_identity_lock_context() is not None
@@ -9938,6 +9976,7 @@ class DailyAssistant:
         if not tk_widget_exists(view):
             return
         snapshot = self._route_presentation_snapshot()
+        view.apply_layout(self.control_layout_snapshot())
         active = self._round_identity_lock_context() or {}
         item = getattr(getattr(self, "pack", None), "by_id", {}).get(active.get("mapId"))
         view.render(snapshot,
@@ -9949,6 +9988,54 @@ class DailyAssistant:
             canvas.bind('<B1-Motion>', self._move_control_drag, add='+')
             canvas.bind('<ButtonRelease-1>', self._finish_control_drag, add='+')
             self._control_drag_canvas = canvas
+        editor = getattr(self, '_control_layout_editor', None)
+        if editor is not None and editor.winfo_exists():
+            editor.refresh_snapshot(snapshot)
+
+    def control_layout_snapshot(self) -> dict:
+        return load_layout(getattr(self, 'control_layout', None))
+
+    def apply_control_layout(self, proposal: dict) -> dict:
+        """Persist only layout preferences; command/state ownership stays here."""
+        try:
+            candidate = validate_layout(proposal)
+        except (TypeError, ValueError):
+            return dict(success=False, message='布局配置无效，请恢复默认后重试')
+        if getattr(self, 'closed', False):
+            return dict(success=False, message='助手已关闭')
+        previous = self.control_layout_snapshot()
+        if candidate == previous:
+            return dict(success=True, persisted=True, message='布局未变化')
+        self.control_layout = candidate
+        if not self._save_settings():
+            self.control_layout = previous
+            return dict(success=False, persisted=False, message='布局保存失败，原布局已保留')
+        self.settings['gameControlLayout'] = self.control_layout_snapshot()
+        self._sync_game_control_view()
+        if (getattr(self, 'assistant_shell_mode', None) == 'quick'
+                and tk_widget_is_viewable(getattr(self, 'assistant_shell', None))):
+            self._place_quick_panel()
+        return dict(success=True, persisted=True, message='控件布局已应用')
+
+    def open_control_layout_settings(self, owner=None):
+        editor = getattr(self, '_control_layout_editor', None)
+        if editor is not None and editor.winfo_exists():
+            editor.lift()
+            return editor
+        from control_layout_editor import ControlLayoutEditor
+        editor = ControlLayoutEditor(owner or self.root, self)
+        self._control_layout_editor = editor
+        return editor
+
+    def _control_reference_edit_action(self, callback):
+        result = callback()
+        if getattr(self, 'sheet_move_mode', False):
+            self.control_collapsed = False
+        self._sync_game_control_view()
+        if (getattr(self, 'assistant_shell_mode', None) == 'quick'
+                and tk_widget_is_viewable(getattr(self, 'assistant_shell', None))):
+            self._place_quick_panel()
+        return result
 
     def _commit_game_control_opacity(self) -> bool:
         """Commit the Scale's current variable before its release saves it."""
@@ -10023,6 +10110,8 @@ class DailyAssistant:
     def collapse_control(self) -> dict:
         if self.closed:
             return dict(success=False, reason='assistant-closed', message='助手已关闭')
+        if getattr(self, 'sheet_move_mode', False):
+            return dict(success=False, reason='reference-edit-active', message='请先完成或取消定点地图位置编辑')
         if self.hotkey_capture_active or getattr(self, '_hotkey_edit_session', None) is not None:
             self.cancel_hotkey_edit('control-collapsed')
         if tk_widget_is_viewable(self.assistant_shell):
@@ -10237,6 +10326,8 @@ class DailyAssistant:
         request = dict(generation=self._map_package_import_generation,
             installRoot=checked['installRoot'], resourceRoot=checked['resourceRoot'],
             pack=self.pack, mode=self.game_mode, packageId=checked['result']['packageId'], cancelled=threading.Event())
+        self._invalidate_native_resource_context('resource-import-started')
+        self._invalidate_base_display()
         self._invalidate_capture_work()
         self._invalidate_author_browser()
         self._map_package_live_request = request
@@ -10354,19 +10445,23 @@ class DailyAssistant:
     def inspect_author_package_removal(self, package_id: str) -> dict:
         return self._begin_author_package_management('inspect', package_id)
 
-    def confirm_author_package_removal(self, package_id: str, *, expected_receipt_sha256: str) -> dict:
+    def confirm_author_package_removal(self, package_id: str, *, expected_receipt_sha256: str,
+                                      expected_plan_sha256: str) -> dict:
         ready = (getattr(self, '_managed_author_packages_state', None) or {}).get('ready') or {}
         if (ready.get('packageId') != package_id or not expected_receipt_sha256
                 or ready.get('receiptSha256') != expected_receipt_sha256
+                or not expected_plan_sha256 or ready.get('planSha256') != expected_plan_sha256
                 or getattr(self, '_managed_author_ready_context', None) != self._author_management_context()):
             return dict(success=False, reason='removal-reinspection-required', message='资源状态已变化，请重新检查后确认。')
-        return self._begin_author_package_management('remove', package_id, expected_receipt_sha256)
+        return self._begin_author_package_management('remove', package_id, expected_receipt_sha256,
+                                                    expected_plan_sha256)
 
     def _author_management_context(self) -> tuple:
         return (str(Path(ROOT).resolve()), str(Path(RESOURCE_ROOT).resolve()),
             id(self.pack), self.game_mode, getattr(self, '_map_package_import_generation', 0))
 
-    def _begin_author_package_management(self, operation: str, package_id: str = '', receipt: str | None = None) -> dict:
+    def _begin_author_package_management(self, operation: str, package_id: str = '', receipt: str | None = None,
+                                        plan_sha256: str | None = None) -> dict:
         self._ensure_map_package_import_state()
         if (getattr(self, '_map_package_live_request', None) is not None
                 or self._map_package_helper_request is not None
@@ -10391,6 +10486,8 @@ class DailyAssistant:
         self._managed_author_packages_state.update(stage='removing' if operation == 'remove' else 'checking',
             ready=None, message='正在移出已登记作者资源并保留备份。' if operation == 'remove' else '正在核对本地已登记资源。')
         if operation == 'remove':
+            self._invalidate_native_resource_context('resource-removal-started')
+            self._invalidate_base_display()
             self._invalidate_capture_work()
             self._invalidate_author_browser()
 
@@ -10407,7 +10504,8 @@ class DailyAssistant:
                     event['ready'] = inspect_author_package_removal(request['context'][0], package_id)
                 else:
                     event['result'] = remove_author_package_live(request['context'][0], package_id,
-                        application_idle=True, expected_receipt_sha256=receipt, cancelled=request['cancelled'].is_set)
+                        application_idle=True, expected_receipt_sha256=receipt,
+                        expected_plan_sha256=plan_sha256, cancelled=request['cancelled'].is_set)
             except Exception as error:
                 event['error'] = f'{type(error).__name__}: {error}'
             event['cancelled'] = request['cancelled'].is_set()
@@ -10941,6 +11039,10 @@ class DailyAssistant:
 
         def run() -> None:
             try:
+                writer = getattr(self, '_event_log', None)
+                if writer is not None:
+                    runtime_context['diagnosticLogFlushComplete'] = writer.flush(timeout=2.0)
+                    runtime_context['diagnosticLogWriter'] = writer.status()
                 environment = collect_identityv_window_environment()
                 result = export_safe_diagnostic_bundle(
                     ROOT, LIVE_ROOT,
@@ -10989,6 +11091,8 @@ class DailyAssistant:
                 "start-round": "开始本局", "toggle-round": "开始/结束本局"}.get(target, target)
 
     def _refresh_hotkey_editor_views(self) -> None:
+        if tk_widget_exists(getattr(self, 'game_control_view', None)):
+            self._sync_quick_round_action_ui()
         for view in (getattr(getattr(self, "desktop_main_ui", None), "hotkey_editor", None),
                      getattr(self, "onboarding_hotkey_editor", None),
                      getattr(self, "onboarding_panel_editor", None),
@@ -11518,6 +11622,7 @@ class DailyAssistant:
                 ),
                 "sheetPosition": list(self.sheet_position) if self.sheet_position else None,
                 "referenceSheetVisible": bool(getattr(self, 'reference_sheet_visibility_enabled', True)),
+                "gameControlLayout": self.control_layout_snapshot(),
                 "sheetOpacity": self.sheet_opacity,
                 "referenceOpacity": self.reference_opacity,
                 "sheetScale": self.sheet_scale,
@@ -12758,10 +12863,20 @@ class DailyAssistant:
             base_pose_context,
         )
         base_pose_context['_workerEnqueuedAt'] = time.perf_counter()
-        threading.Thread(
-            target=self._alignment_v2_first_pose_worker_loop,
-            args=(args,), daemon=True,
-        ).start()
+        try:
+            threading.Thread(
+                target=self._alignment_v2_first_pose_worker_loop,
+                args=(args,), daemon=True,
+            ).start()
+        except RuntimeError as error:
+            with lock:
+                self._alignment_v2_worker_running = False
+                self._alignment_v2_worker_pending = False
+                self._alignment_v2_worker_token = None
+                self._alignment_v2_worker_latest_args = None
+            self.alignment_in_progress = False
+            self._log('alignment-worker-start-failed', message=str(error))
+            return {'handled': True, 'success': False, 'reason': 'v2-sensor-start-failed'}
         self._log_core_chain_event(
             "alignment-v2-first-pose-sensor-started",
             cycleId=token[0], mapId=str(map_id), floor=str(floor),
@@ -13895,6 +14010,9 @@ class DailyAssistant:
             profile = normalize_route_profile_id(getattr(
                 self, "route_profile_id", DEFAULT_ROUTE_PROFILE_ID,
             ))
+            if self._shared_structure_mode_enabled():
+                reference = self._shared_structure_reference(SHARED_STRUCTURE_PROFILE_ID, map_id, floor)
+                self._prepare_base_map_display(map_id, floor, reference)
             route = self._alignment_reference_image(profile, map_id, floor)
             engine = getattr(self, "engine", None)
             if profile == SOURCE_STRUCTURE_PROFILE_ID and self._is_source_structure_identity(map_id):
@@ -15008,6 +15126,8 @@ class DailyAssistant:
 
     def _start_native_group_review(self):
         """One bounded identity job, after the foreground has committed pixels."""
+        if not self._native_similarity_resources_ready():
+            return False
         sibling = getattr(self, 'front_group_sibling_pending', None)
         if (isinstance(sibling, dict) and sibling.get('nativeSimilarity')
                 and not getattr(self, '_alignment_v2_worker_pending', False)
@@ -15078,7 +15198,8 @@ class DailyAssistant:
         self._native_group_review_request = None
         if getattr(self, '_identity_rank_request', None) is request:
             self._identity_rank_request = None
-        if (request['cancelled'].is_set() or request['scope'] != self._native_group_review_scope()
+        if (not self._native_similarity_resources_ready()
+                or request['cancelled'].is_set() or request['scope'] != self._native_group_review_scope()
                 or getattr(self, 'closed', False) or not self.map_is_open or getattr(self, 'floor_required', True)
                 or not getattr(self, 'game_foreground', False)
                 or getattr(self, 'map_visual_suppressed', False)
@@ -15100,7 +15221,9 @@ class DailyAssistant:
         if target == source:
             # Identity is still pending: the next ordinary current-frame pose
             # commit owns final promotion, with the unchanged residual gate.
+            binding = self._native_resource_binding()
             self.native_similarity_state = staged
+            self._carry_native_resource_grant(binding[0] if binding else None, replace_state=True)
             displayed = getattr(self, 'current_alignment_candidate', None) or {}
             self._native_similarity_member_committed(target, str(self.current_floor),
                 global_verified=bool(displayed.get('globalResidualVerified')))
@@ -15141,32 +15264,6 @@ class DailyAssistant:
             state.reset()
             self._native_similarity_priority = None
             self._native_similarity_condition_context = None
-
-    def _check_native_similarity_resources(self):
-        state = getattr(self, 'native_similarity_state', None)
-        index = getattr(getattr(self, 'engine', None), 'native_similarity_index', None)
-        if state is None or (not state.group_id and not state.condition_domains):
-            return
-        self._native_similarity_floor_changed(self.current_floor)
-        if not state.group_id:
-            return
-        try:
-            if index is None:
-                raise ValueError('similarity-context-changed')
-            index.validate_state(state,self.engine.entry_shared_reference_provider)
-        except (OSError,ValueError,KeyError,TypeError):
-            if (state.condition_mode is not None and state.provisional_member_id
-                    and getattr(self.gate,'confirmed_id',None)==state.provisional_member_id
-                    and not getattr(self,'active_confirmation',None)):
-                self.gate.hide_for_new_frame()
-                self.auto_lock_pending=None
-                self._hide_spatial_route('front-group-resource-changed')
-            state.reset()
-            self._native_similarity_priority = None
-            self._native_similarity_condition_context = None
-            self._native_similarity_family = None
-            self._native_group_review_floor = None
-            self._log('similar-group-reset',reason='resource-binding-changed')
 
     def _native_similarity_display_seed(self, event, map_id):
         """Carry a current member pose across group selection, not an identity verdict."""
@@ -15220,13 +15317,26 @@ class DailyAssistant:
         previous = state.snapshot()
         current = state.accept(proposal,self._native_similarity_context(),
             _map_frame_signature_token(map_frame_signature(self.current_frame)))
-        self._check_native_similarity_resources()
+        if not self._check_native_similarity_resources():
+            binding = self._native_resource_binding()
+            if binding is not None:
+                self._pending_native_similarity_ranked = (binding[0], event, previous)
+            return
+        self._finish_native_similarity_ranked(event, previous)
+
+    def _finish_native_similarity_ranked(self, event, previous):
+        state = self.native_similarity_state
+        proposal = dict((event.get('ranked') or [{}])[0].get('nativeSimilarity') or {},
+                        originalIdentityHardGatePassed=bool(state.pending_identity))
+        binding = self._native_resource_binding()
+        previous_binding = binding[0] if binding else None
         display_seeds={}
         if state.state=='GROUP_LOCKED' and state.context_snapshot() and str(self.current_floor)=='1':
             for member in state.member_ids:
                 seed=self._native_similarity_display_seed(event,member)
                 if seed is not None:display_seeds[member]=seed
             state.prefer_display_member(display_seeds)
+        self._carry_native_resource_grant(previous_binding)
         current=state.snapshot()
         self._native_similarity_priority = state.priority(self.game_mode)
         self._native_similarity_condition_context = state.context_snapshot()
@@ -15323,7 +15433,8 @@ class DailyAssistant:
         state = getattr(self, 'native_similarity_state', None)
         if state is None or not global_verified or self.gate.confirmed_id!=map_id:
             return False
-        self._check_native_similarity_resources()
+        if not self._check_native_similarity_resources():
+            return False
         core = self.alignment_core_v2
         if not core.can_display(authorization=core.display_authorization,
                 cycle_id=self.active_map_cycle_id,map_id=map_id,floor=str(floor),
@@ -15333,7 +15444,9 @@ class DailyAssistant:
             self._native_group_conflicts = None
             return False
         provisional=self._front_group_provisional_lock_context(map_id)
+        binding = self._native_resource_binding()
         confirmed = state.confirm(map_id,str(floor),self._native_similarity_context())
+        self._carry_native_resource_grant(binding[0] if binding else None)
         if confirmed:
             self._native_group_conflicts = None
             self._native_similarity_priority = None
@@ -15700,7 +15813,7 @@ class DailyAssistant:
                         current_frame_verified=True, residual_verified=True,
                         global_residual_verified=True, translation_only=False,
                         metadata={'routeProfileId': render_spec['routeProfileId'],
-                            'displayKind': render_spec['displayKind'], 'displayLabel': render_spec['displayLabel'],
+                            **{key: render_spec.get(key) for key in ('displayKind', 'displayLabel', 'displayResourceKey', 'authorStatus', 'displayContext')},
                             'coordinateSpace': 'shared-structure-to-client',
                             'sourceCoordinateSpace': render_spec['sourceCoordinateSpace'],
                             'firstPoseSensor': 'initial-structure', 'independentFloorAnchor': True,
@@ -16677,11 +16790,14 @@ class DailyAssistant:
 
     @observe_runtime('compositor')
     @display_presentation('aligned_overlay')
+    @display_source_guard
     def _alignment_v2_show_overlay(
         self, overlay: np.ndarray, client_origin: tuple[int, int],
         *, authorization_id: int,
     ) -> bool:
         """The only compositor used by the V2 runtime path."""
+        if not self._native_similarity_resources_ready():
+            return False
         if (
             not getattr(self, "game_foreground", True)
             or getattr(self, "map_visual_suppressed", False)
@@ -16735,6 +16851,8 @@ class DailyAssistant:
         return shown
 
     def _display_authorization_is_current(self, authorization_id: int) -> bool:
+        if not self._native_similarity_resources_ready():
+            return False
         transaction = getattr(self, '_native_sibling_transaction', None)
         if transaction is not None and transaction.source_authorized(authorization_id):
             return True
@@ -18507,6 +18625,7 @@ class DailyAssistant:
                 "candidate": candidate.source,
             }
             self.current_alignment_candidate.update(
+                **{key: render_meta.get(key) for key in ('displayKind', 'displayLabel', 'displayResourceKey', 'authorStatus', 'displayContext')},
                 verifiedFrame=frame, verifiedFrameContext={},
                 routeProfileId=self.drag_route_profile_id,
                 surfaceGeneration=int(getattr(self, 'surface_visibility_generation', 0)))
@@ -18520,6 +18639,7 @@ class DailyAssistant:
             )
         finally:
             self._v2_compositor_active = False
+        self._record_display_commit(render_meta, map_id, floor)
         # V2 now owns the complete current-frame transaction.  Persist the
         # already-confirmed map/floor at the same successful commit boundary
         # used by the legacy direct-pose path, so a normal close hides pixels
@@ -18585,6 +18705,8 @@ class DailyAssistant:
         component_override: dict | None = None,
     ) -> bool:
         """Commit V2's authorized root without entering a legacy writer."""
+        if not self._native_similarity_resources_ready():
+            return False
         if (
             map_id not in getattr(getattr(self, "pack", None), "by_id", {})
             or floor not in ROUND_LAYER_FLOORS
@@ -18873,21 +18995,14 @@ class DailyAssistant:
                     floor=getattr(self, 'current_floor', None))
 
     def _log(self, kind: str, **values) -> None:
-        emitted_at = time.perf_counter()
-        try:
-            LIVE_ROOT.mkdir(parents=True, exist_ok=True)
-            with self.log_lock:
-                if getattr(self, 'runtime_timeline_enabled', True):
-                    timeline = getattr(self, 'runtime_timeline', None)
-                    if timeline is None:
-                        timeline = self.runtime_timeline = RuntimeTimeline()
-                    values = timeline.enrich(kind, values)
-                    values['emittedMonotonicAt'] = emitted_at
-                row = {"time": datetime.now().astimezone().isoformat(timespec="milliseconds"), "event": kind, **values}
-                with self.event_path.open("a", encoding="utf-8", newline="\n") as handle:
-                    handle.write(json.dumps(row, ensure_ascii=False, default=str, separators=(",", ":")) + "\n")
-        except OSError:
-            pass
+        writer = getattr(self, '_event_log', None)
+        if writer is None:
+            return
+        values['emittedMonotonicAt'] = time.perf_counter()
+        scope = runtime_log_context()
+        if scope:
+            values.setdefault('traceContext', scope)
+        writer.emit(kind, values, getattr(self, 'runtime_timeline_enabled', True))
 
     def _queue_urgent_event(self, event: dict) -> None:
         target = getattr(self, "urgent_events", None)
@@ -18978,6 +19093,7 @@ class DailyAssistant:
             cancelled.set()
         self._pending_capture_request = None
         self._cancel_rerank_work()
+        self._cancel_native_resource_validation()
         if not preserve_locked_alignment:
             self._invalidate_alignment_work()
         self._invalidate_round_group_edge_correction()
@@ -19508,37 +19624,52 @@ class DailyAssistant:
     ) -> bool:
         if getattr(self,'resource_preload_pending',False) or getattr(self,'startup_resource_error',None):
             return False
+        # Bound the physical worker through logging and result publication too.
+        # This lock is never reset when a frame/capture generation changes.
+        worker_lock = self.map_probe_worker_lock
+        if not worker_lock.acquire(blocking=False):
+            return False
         trace_requested_at = time.perf_counter()
         capture_lock = self.capture_lock
         if not capture_lock.acquire(blocking=False):
+            worker_lock.release()
             return False
-        self.capture_lock_started_at = time.monotonic()
-        probe_token = self.capture_generation
-        probe_event_lock = getattr(self, "map_probe_event_lock", None)
-        if probe_event_lock is None:
-            probe_generation = int(getattr(self, "map_probe_generation", 0))
-            generation_matches = bool(
-                expected_probe_generation is None
-                or int(expected_probe_generation) == probe_generation
-            )
-        else:
-            with probe_event_lock:
-                probe_generation = int(getattr(
-                    self, "map_probe_generation", 0,
-                ))
+        try:
+            self.capture_lock_started_at = time.monotonic()
+            probe_token = self.capture_generation
+            probe_event_lock = getattr(self, "map_probe_event_lock", None)
+            if probe_event_lock is None:
+                probe_generation = int(getattr(self, "map_probe_generation", 0))
                 generation_matches = bool(
                     expected_probe_generation is None
                     or int(expected_probe_generation) == probe_generation
                 )
-        if not generation_matches:
-            capture_lock.release()
+            else:
+                with probe_event_lock:
+                    probe_generation = int(getattr(
+                        self, "map_probe_generation", 0,
+                    ))
+                    generation_matches = bool(
+                        expected_probe_generation is None
+                        or int(expected_probe_generation) == probe_generation
+                    )
+            if not generation_matches:
+                worker_lock.release()
+                capture_lock.release()
+                if self.capture_lock is capture_lock:
+                    self.capture_lock_started_at = None
+                return False
+            probe_display_epoch = int(getattr(self, "overlay_display_epoch", 0))
+            probe_captured_at = time.monotonic()
+            probe_trace = self._runtime_trace_context()
+            probe_trace.update(sourceFrameGeneration=None, probeGeneration=probe_generation)
+        except Exception:
+            if capture_lock.locked():
+                capture_lock.release()
+            worker_lock.release()
             if self.capture_lock is capture_lock:
                 self.capture_lock_started_at = None
-            return False
-        probe_display_epoch = int(getattr(self, "overlay_display_epoch", 0))
-        probe_captured_at = time.monotonic()
-        probe_trace = self._runtime_trace_context()
-        probe_trace.update(sourceFrameGeneration=None, probeGeneration=probe_generation)
+            raise
 
         def probe() -> None:
             probe_open: bool | None = None
@@ -19597,7 +19728,21 @@ class DailyAssistant:
                 "capturedAt": probe_captured_at,
             })
 
-        threading.Thread(target=probe, daemon=True).start()
+        def run_probe() -> None:
+            try:
+                probe()
+            finally:
+                worker_lock.release()
+
+        try:
+            threading.Thread(target=run_probe, daemon=True).start()
+        except Exception as error:
+            capture_lock.release()
+            worker_lock.release()
+            if self.capture_lock is capture_lock:
+                self.capture_lock_started_at = None
+            self._log('map-probe-start-failed', error=f'{type(error).__name__}: {error}')
+            return False
         return True
 
     def _cancel_post_drag_probe(self) -> None:
@@ -19817,26 +19962,55 @@ class DailyAssistant:
         capture_trace = self._runtime_trace_context()
         capture_trace['sourceFrameGeneration'] = None
         capture_trace['captureRequestedMonotonicAt'] = capture_requested_at
+        def start_failed(error):
+            capture_lock.release()
+            if self._capture_request_lock is capture_lock:
+                self.capture_lock_started_at = None
+            # Normal token-filtered consumers own UI cleanup, including a late
+            # delayed callback whose generation has already been superseded.
+            self.events.put({'kind': 'capture-error', 'message': str(error),
+                             'token': token, 'cycleId': token, 'silentHint': silent_hint})
+            self.events.put({'kind': 'capture-finished', 'token': token,
+                             'silentHint': silent_hint})
+            if token == self.capture_generation:
+                self._ui_action_fail('map-route', fallback_state='hidden',
+                                     reason='capture-start-failed', token=action_token)
+            self._log('capture-start-failed', cycleId=token, message=str(error))
+            return False
+
         def start_capture():
-            threading.Thread(
-                target=self._capture_and_rank,
-                args=(self.game_hwnd, manual, token, capture_lock, silent_hint, open_intent),
-                kwargs={'_timeline': capture_trace},
-                daemon=True,
-            ).start()
+            if token != self.capture_generation:
+                capture_lock.release()
+                if self._capture_request_lock is capture_lock:
+                    self.capture_lock_started_at = None
+                return False
+            try:
+                threading.Thread(
+                    target=self._capture_and_rank,
+                    args=(self.game_hwnd, manual, token, capture_lock, silent_hint, open_intent),
+                    kwargs={'_timeline': capture_trace}, daemon=True,
+                ).start()
+            except Exception as error:
+                return start_failed(error)
+            round_started = not bool(getattr(self, 'round_work_active', False))
+            self.round_work_active = True
+            if round_started:
+                self._begin_display_round()
+            if getattr(self, 'round_start_intent', None) is not None:
+                self.round_start_intent = None
+                self._runtime_cycle_origin['preparedStart'] = True
+                self._log('round-start-intent-consumed', cycleId=token)
+            self._sync_game_control_view()
+            if round_started:
+                self._report_control_action_result(True, 'round-started', '本局已开始')
+            return True
+
         if silent_hint:
-            start_capture()
-        else:
+            return start_capture()
+        try:
             self.root.after(self.CAPTURE_START_DELAY_MS, start_capture)
-        round_started = not bool(getattr(self, 'round_work_active', False))
-        self.round_work_active = True
-        if getattr(self, 'round_start_intent', None) is not None:
-            self.round_start_intent = None
-            self._runtime_cycle_origin['preparedStart'] = True
-            self._log('round-start-intent-consumed', cycleId=token)
-        self._sync_game_control_view()
-        if round_started:
-            self._report_control_action_result(True, 'round-started', '本局已开始')
+        except Exception as error:
+            return start_failed(error)
         return True
 
     def capture_now(self) -> None:
@@ -22090,6 +22264,8 @@ class DailyAssistant:
             flags=cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0, 0),
         )
+        shifted = self._remember_display_output(
+            shifted, self._display_output_metadata(self.drag_overlay_base) or {})
         try:
             shown = bool(
                 self._show_aligned_overlay(
@@ -22136,7 +22312,10 @@ class DailyAssistant:
         """
         engine = getattr(self, "engine", None)
         native = getattr(self, 'native_similarity_state', None)
-        if (getattr(native, 'state', None) == 'GROUP_LOCKED'
+        # Identity is a capture/search hint even while a new display grant is pending.
+        # Compositor and current-frame commit gates separately require that grant.
+        if (not getattr(self, '_native_resource_rejected', False)
+                and getattr(native, 'state', None) == 'GROUP_LOCKED'
                 and (getattr(native, 'floor', None) == str(getattr(self, 'current_floor', ''))
                      or getattr(self, '_native_group_review_floor', None)
                         == (native.resource_key, str(getattr(self, 'current_floor', ''))))
@@ -22182,6 +22361,8 @@ class DailyAssistant:
 
     def _round_identity_lock_context(self, map_id: str | None = None) -> dict | None:
         """Resolve durable identity or a still-provisional reviewed group lock."""
+        if getattr(self, '_native_resource_rejected', False):
+            return None
         active = (
             getattr(self, "active_confirmation", None)
             if isinstance(getattr(self, "active_confirmation", None), dict)
@@ -30698,6 +30879,11 @@ class DailyAssistant:
             return store
 
     def _shared_display_layer(self, profile_id, map_id, floor):
+        context = self._display_notice_context(map_id, floor)
+        layer = self._resolve_shared_display_layer(profile_id, map_id, floor)
+        return dict(layer, displayContext=context) if layer is not None else None
+
+    def _resolve_shared_display_layer(self, profile_id, map_id, floor):
         """Display-only pixels and their explicit bridge into the typed N canvas."""
         reference = self._shared_structure_reference(SHARED_STRUCTURE_PROFILE_ID, map_id, floor)
         if reference is None:
@@ -30722,7 +30908,8 @@ class DailyAssistant:
                         and self._route_profile_validation_spec(profile_id, map_id, floor, np.eye(3), image) is not None):
                     return dict(routeSource=image, sourcePath=Path(path), routeProfileId=profile_id,
                         matrixDisplayToReference=np.linalg.inv(source_basis) @ display_basis,
-                        displayKind='author-route', displayLabel=ROUTE_PROFILE_LABELS.get(profile_id, profile_id))
+                        displayKind='author-route', displayLabel=ROUTE_PROFILE_LABELS.get(profile_id, profile_id),
+                        authorStatus='none', displayResourceKey=(getattr(self, '_base_display_epoch', 0), profile_id, str(path), id(image)))
             except (OSError, ValueError, KeyError, TypeError, cv2.error):
                 pass # Keep recognition independent of optional display files.
         key = (id(getattr(self, 'shared_structure_resources', None)), str(map_id), str(floor))
@@ -30730,9 +30917,17 @@ class DailyAssistant:
         custom = self._custom_route_image(map_id, floor, reference)
         if custom is not None:
             return dict(routeSource=custom, sourcePath=reference.path, routeProfileId=SHARED_STRUCTURE_PROFILE_ID,
-                matrixDisplayToReference=np.eye(3), displayKind='custom-route', displayLabel='自定义路线')
+                matrixDisplayToReference=np.eye(3), displayKind='custom-route', displayLabel='自定义路线',
+                authorStatus='none', displayResourceKey=('custom', id(custom), getattr(self, '_base_display_epoch', 0)))
         if self._custom_route_active(map_id, floor):
             return None  # A failed snapped route must never become a straight/old route.
+        author_status = self._base_author_status(map_id, floor)
+        if author_status == 'missing':
+            base = self._peek_base_map_display(map_id, floor, reference)
+            if base is not None:
+                return dict(base, routeProfileId=SHARED_STRUCTURE_PROFILE_ID, authorStatus=author_status)
+        elif author_status == 'available':
+            author_status = 'load-error' if author_available else 'registration-failed'
         with self.aligned_author_route_lock:
             cache = self._shared_structure_display_cache
             image = cache.get(key)
@@ -30745,6 +30940,7 @@ class DailyAssistant:
                 cache.pop(next(iter(cache)))
         return dict(routeSource=image, sourcePath=reference.path, routeProfileId=SHARED_STRUCTURE_PROFILE_ID,
             matrixDisplayToReference=np.eye(3), displayKind='shared-structure',
+            authorStatus=author_status, displayResourceKey=('structure', key, id(reference), getattr(self, '_base_display_epoch', 0)),
             displayLabel=('结构底图（作者路线版本不匹配）' if version.get('authorError') == 'author-structure-version-or-base-snapshot-mismatch'
                           else '结构底图（作者路线不可用）'))
 
@@ -31097,7 +31293,15 @@ class DailyAssistant:
         self._prepared_display_pixels = cache
         return source, cache, False
 
-    def _build_display_overlay(self, route_source, matrix, frame_shape, *,
+    def _build_display_overlay(self, route_source, matrix, frame_shape, **options):
+        output, metadata = self._build_display_overlay_unchecked(route_source, matrix, frame_shape, **options)
+        if metadata.get('displayContext'):
+            if not self._display_descriptor_is_current(metadata):
+                return None, dict(success=False, reason='display-source-context-expired')
+            output = self._remember_display_output(output, metadata)
+        return output, metadata
+
+    def _build_display_overlay_unchecked(self, route_source, matrix, frame_shape, *,
                                map_id=None, floor=None, profile_id=None, **options):
         """Build display pixels using the active reference's coverage basis."""
         map_id = map_id or getattr(self.gate, 'confirmed_id', None)
@@ -31137,7 +31341,8 @@ class DailyAssistant:
                     raise ValueError('shared display has no declared native coordinate bridge')
                 from idvb0059_runtime import build_display
                 retained = build_display(self, display, matrix, frame_shape,
-                    (str(self.game_mode), str(map_id), str(floor), str(profile_id), str(path)), **options)
+                    (str(self.game_mode), str(map_id), str(floor), str(profile_id), str(path),
+                     layer.get('displayKind'), layer.get('displayResourceKey')), **options)
                 if retained is not None:
                     output, metadata = retained
                     self._log('idvb0059-display-built', mapId=map_id, floor=str(floor),
@@ -31147,12 +31352,13 @@ class DailyAssistant:
                             originalPath=str(path.resolve()).casefold()))
                     return output, {**metadata, 'displayPixelsDerived': True,
                         'validationPixelsUnmodified': True, 'displayOriginalPath': str(path),
-                        'displayKind': layer['displayKind'], 'displayLabel': layer['displayLabel']}
+                        **self._display_descriptor(layer, map_id, floor)}
             reuse = bool(shared_display and os.environ.get('IDENTITYV_REOPEN_DISPLAY_CACHE', '1') != '0')
             source, pixel_cache, source_reused = self._prepare_display_pixel_source(display, reuse=reuse)
             render_key = None
             if (pixel_cache is not None and set(options) <= {'minimum_coverage', 'minimum_visible_pixels'}):
                 render_key = (self.game_mode, map_id, floor, profile_id, tuple(frame_shape[:2]),
+                    layer.get('displayKind'), layer.get('displayResourceKey'),
                     tuple(np.asarray(matrix, np.float64).ravel()), tuple(spec['sharedReference'].shape),
                     tuple(np.asarray(spec['matrixSourceToClient'], np.float64).ravel()),
                     options.get('minimum_coverage', .08), options.get('minimum_visible_pixels', 500))
@@ -31188,7 +31394,7 @@ class DailyAssistant:
                 originalPath=str(path.resolve()).casefold()))
             return output, {**metadata, 'displayPixelsDerived': True, 'validationPixelsUnmodified': True,
                             'displayOriginalPath': str(path),
-                            **({'displayKind': layer['displayKind'], 'displayLabel': layer['displayLabel']} if shared_display else {})}
+                            **(self._display_descriptor(layer, map_id, floor) if shared_display else {})}
         except (OSError, ValueError, KeyError, TypeError) as error:
             self.events.put(dict(kind='display-resource-error', **context,
                 originalPath=str(path.resolve()).casefold() if path is not None else None,
@@ -31919,7 +32125,7 @@ class DailyAssistant:
                 recognitionMatrixSourceToClient=recognition, canonicalMatrixSourceToClient=canonical,
                 routeProfileId=layer['routeProfileId'], adapterUsed=layer['displayKind']=='author-route',
                 coordinatePackId=getattr(adapters, 'canonical_pack_id', self.pack.pack_id),
-                displayKind=layer['displayKind'], displayLabel=layer['displayLabel'],
+                **self._display_descriptor(layer, map_id, floor),
                 sourceCoordinateSpace=(reference.metadata.get('canvas') or {}).get('coordinateSpace'))
         if selected == SOURCE_STRUCTURE_PROFILE_ID:
             if not self._is_source_structure_identity(map_id):return None
@@ -32281,6 +32487,7 @@ class DailyAssistant:
             "front-anchor-direct-pose",
             current_floor_authorized=True,
         )
+        self._record_display_commit(render_meta, map_id, floor)
         self.map_identity_pose_pending = False
         self.auto_lock_pending = None
         getattr(self, "progressive_pose_seed_cache", {}).pop(
@@ -32930,6 +33137,11 @@ class DailyAssistant:
         except (OSError, ValueError, KeyError, TypeError, cv2.error) as error:
             self._set_sheet_move_mode(False)
             return dict(success=False, adjusting=False, reason='reference-preview-unavailable', message=f'定点地图预览不可用：{error}')
+        if applied:
+            # The settings page can start editing while the game panel is an
+            # orb. Keep its native host large enough for fixed Finish/Cancel.
+            self.control_collapsed = False
+            self._sync_quick_round_action_ui()
         return dict(success=applied, adjusting=applied, reason='reference-move-started' if applied else 'reference-move-unavailable',
             message='正在编辑定点地图位置 · 拖动后点击“完成”，松手不会退出' if applied else '当前无法编辑定点地图位置')
 
@@ -32947,6 +33159,12 @@ class DailyAssistant:
         self.show_sheet()
         return dict(success=saved, persisted=saved, adjusting=False, reason='reference-move-finished',
             message='定点地图位置已保存，已恢复鼠标穿透' if saved else '本次定点地图位置已应用，保存失败')
+
+    def cancel_reference_sheet_move(self) -> dict:
+        self._set_sheet_move_mode(False)
+        self.show_sheet()
+        return dict(success=True, persisted=False, adjusting=False,
+                    reason='reference-move-cancelled', message='已取消位置编辑，原位置不变')
 
     def _set_sheet_move_mode(self, enabled: bool) -> bool:
         self._cancel_reference_move_jobs()
@@ -33094,10 +33312,18 @@ class DailyAssistant:
                 role = 'runtime-bound-source-display'
             provisional = bool(reference_context is not None
                 and (self._round_identity_lock_context() or {}).get('provisional'))
-            cache_key = (str(path), tuple(max_size), role, provisional)
+            sheet_layer = None
+            sheet_map = getattr(self.gate, 'confirmed_id', None) or getattr(self.gate, 'selected_id', None)
+            if self._shared_structure_mode_enabled() and Path(path).suffix.lower() == '.npz':
+                sheet_layer = self._shared_display_layer(SHARED_STRUCTURE_PROFILE_ID, sheet_map, self.current_floor)
+                if sheet_layer is None or Path(path) != Path(sheet_layer['sourcePath']):
+                    raise ValueError('reference display binding changed')
+            sheet_descriptor = self._display_descriptor(sheet_layer, sheet_map, self.current_floor) if sheet_layer else {}
+            source_key = (sheet_descriptor.get('displayKind'), sheet_descriptor.get('displayResourceKey'))
+            cache_key = (str(path), tuple(max_size), role, provisional, source_key)
             pixels = self.sheet_photo_cache.get(cache_key)
             if pixels is None:
-                pixels = fit_display_bgra(self._display_pixels_for_source(path, role), max_size)
+                pixels = fit_display_bgra(sheet_layer['routeSource'] if sheet_layer else self._display_pixels_for_source(path, role), max_size)
                 if provisional:
                     pixels = self._mark_provisional_reference(pixels)
                 pixels.setflags(write=False)
@@ -33147,7 +33373,7 @@ class DailyAssistant:
             fitted = clamp_rect_to_work_area(candidate, work, margin_px=5)
             x, y = fitted.left, fitted.top
             self.sheet_position = (x, y)
-            render_key = (str(path), tuple(max_size), title, provisional, image_width, image_height,
+            render_key = (str(path), tuple(max_size), title, provisional, source_key, image_width, image_height,
                 float(self.reference_opacity), x, y, bool(self.sheet_move_mode),
                 getattr(getattr(self, 'gate', None), 'confirmed_id', None),
                 str(getattr(self, 'current_floor', '')), getattr(self, 'route_profile_id', None),
@@ -33159,6 +33385,8 @@ class DailyAssistant:
             if (render_key == getattr(self, '_sheet_render_key', None) and self._reference_sheet_is_visible()
                 and getattr(self, '_reference_origin', None) == (x, y)
                 and actual_geometry == expected_geometry):
+                self._committed_reference_display = sheet_descriptor
+                self._note_reference_fallback_committed(sheet_descriptor, provisional=provisional)
                 return True
             self.sheet_window.title(title)
             self.sheet_window.geometry(format_tk_geometry(fitted))
@@ -33174,6 +33402,8 @@ class DailyAssistant:
             if not visibility_is_current():
                 surface.hide()
                 return False
+            self._committed_reference_display = sheet_descriptor
+            self._note_reference_fallback_committed(sheet_descriptor, provisional=provisional)
             self._reference_origin = (x, y)
             self._reference_pixels = pixels
             self._sheet_render_key = render_key
@@ -33203,6 +33433,7 @@ class DailyAssistant:
             self._log("sheet-hidden", cycleId=self.active_map_cycle_id)
 
     @display_presentation('aligned_overlay')
+    @display_source_guard
     def _show_aligned_overlay(
         self,
         image: np.ndarray,
@@ -33210,6 +33441,8 @@ class DailyAssistant:
         opacity: float | None = None,
     ) -> bool:
         """Show a native route layer only while the verified game owns focus."""
+        if not self._native_similarity_resources_ready():
+            return False
         if self._alignment_v2_runtime_is_enabled():
             v2_core = self.alignment_core_v2
             v2_authorization = getattr(v2_core, "display_authorization", None)
@@ -35465,6 +35698,10 @@ class DailyAssistant:
             "round", target_state="ended", visual_state="已结束本局",
         )
         previous = self.active_confirmation
+        tracker = getattr(self, '_fallback_notice_tracker', None)
+        if tracker is not None:
+            tracker.end_round()
+        self._invalidate_base_display()
         self._resolve_route_issue('round-ended')
         self.candidate_edit_mode = False
         self._invalidate_capture_work()
@@ -35506,6 +35743,7 @@ class DailyAssistant:
         native_group_state = getattr(self, 'native_similarity_state', None)
         if native_group_state is not None:
             native_group_state.reset()
+        self._native_resource_rejected = False
         self._native_similarity_priority = None
         self._native_similarity_condition_context = None
         self._native_similarity_family = None
@@ -35880,14 +36118,19 @@ class DailyAssistant:
             message = f"组内候选：{getattr(candidate, 'name', '待确认')} · 继续探索可见差异；当前尚未锁图"
         else:
             phase, severity, title, message = 'needs-user', 'normal', '地图待确认', '地图尚未确认，可查看候选地图'
-        structure_display = bool(self._shared_structure_mode_enabled()
-            and getattr(self, 'drag_route_profile_id', None) == SHARED_STRUCTURE_PROFILE_ID)
-        if verified and structure_display:
-            title, message = '结构底图已核对', (getattr(self, 'drag_display_label', None) or '作者路线不可用，当前显示结构底图')
+        display = self._current_display_descriptor(map_id, floor)
+        if verified and display:
+            feedback = self._committed_display_feedback(map_id, floor)
+            title, message = feedback.title, feedback.status
         color = '#ff8a65' if failed else '#93c5fd' if phase == 'working' else '#5ee0a3' if phase in {'ready', 'recovered'} else '#f6c453' if phase == 'needs-user' else '#94a3b8'
         retry_enabled = bool(failed and issue.get('phase') in {'alignment', 'recognition'} and opened and foreground and not pending)
         round_active = bool(getattr(self, "round_work_active", False))
         round_preparing = not round_active and getattr(self, 'round_start_intent', None) is not None
+        candidate = getattr(getattr(self, 'pack', None), 'by_id', {}).get(
+            getattr(getattr(self, 'gate', None), 'selected_id', None))
+        candidate_actions = bool(opened and not pending and not lock
+                                 and not getattr(self, 'closed', False)
+                                 and not getattr(self, 'hotkey_capture_active', False))
         return dict(phase=phase, severity=severity, title=title, message=message, color=color,
             roundActive=round_active, roundPreparing=round_preparing,
             roundStateText="本局工作：进行中" if round_active and opened else "本局工作：等待开图" if round_active else "本局工作：已准备，等待游戏开图" if round_preparing else "本局工作：未开始",
@@ -35895,6 +36138,11 @@ class DailyAssistant:
             roundStartEnabled=not round_active and not pending and not getattr(self, "closed", False),
             roundEndEnabled=round_active and not getattr(self, "closed", False),
             bindings=self.hotkey_editor_snapshot()["bindings"],
+            candidateName=str(getattr(candidate, 'name', '') or ''),
+            candidateActionsEnabled=candidate_actions,
+            confirmRouteEnabled=candidate_actions and candidate is not None,
+            captureEnabled=not pending and not getattr(self, 'closed', False)
+                and not getattr(self, 'hotkey_capture_active', False),
             controlVisible=tk_widget_is_viewable(getattr(self, "assistant_shell", None)),
             controlCollapsed=bool(getattr(self, 'control_collapsed', False)),
             mode=getattr(self, 'game_mode', 'nightmare'), sheetOpacityPercent=round(self.sheet_opacity * 100),
@@ -35905,8 +36153,7 @@ class DailyAssistant:
             modeChangeEnabled=not self.hotkey_capture_active and not self.closed and getattr(self, '_map_package_live_request', None) is None,
             controlFloorText=self._control_floor_text(),
             controlStatusText=title,
-            displayKind='shared-structure' if structure_display else 'author-route',
-            displayLabel=(getattr(self, 'drag_display_label', None) or '结构底图（作者路线不可用）') if structure_display else ROUTE_PROFILE_LABELS.get(self.route_profile_id, self.route_profile_id),
+            displayKind=display.get('displayKind'), displayLabel=display.get('displayLabel'),
             mapId=map_id, floor=floor, locked=locked, pending=pending, verified=verified,
             initialFitPending=bool(pending and not prior_fit), tracking=bool(prior_fit),
             mapOpen=opened, foreground=foreground, userVisible=user_visible,
@@ -35948,12 +36195,17 @@ class DailyAssistant:
                 cycle_id=getattr(self, 'active_map_cycle_id', None), map_id=map_id, floor=floor,
                 frame_generation=getattr(self, 'current_frame_generation', 0)))
             if current_commit and getattr(self, 'map_is_open', False) and getattr(self, 'game_foreground', False):
+                presented = getattr(self, '_presented_display', None) or {}
+                self._record_display_commit(presented, map_id, floor)
                 self._ensure_route_notification_context()
                 key = (map_id, floor)
-                if key not in self._route_notified_floors:
+                notice = (self._committed_display_notice(map_id, floor)
+                          if self._spatial_route_surface_is_visible() else '')
+                if notice or key not in self._route_notified_floors:
                     self._route_notified_floors.add(key)
                     self._route_notified_identities.add(map_id)
-                    self._publish_route_notification('已识别并贴合路线')
+                    feedback = self._committed_display_feedback(map_id, floor)
+                    self._publish_route_notification(notice or feedback.success or '已识别并贴合路线')
 
     def _set_status(self, text: str, color: str) -> None:
         resource_error = getattr(self, 'startup_resource_error', None) or getattr(self, 'mode_resource_error', None)
@@ -36391,6 +36643,8 @@ class DailyAssistant:
         pending = getattr(self, "front_group_sibling_pending", None)
         if not isinstance(pending, dict) or not isinstance(event, dict):
             return False
+        if pending.get('nativeSimilarity') and not self._native_similarity_resources_ready():
+            return False
         state = (getattr(self, 'native_similarity_state', None) if pending.get('nativeSimilarity')
                  else getattr(getattr(self, "engine", None), "front_group_state", None))
         if (str(getattr(getattr(self, "gate", None), "confirmed_id", ""))
@@ -36590,8 +36844,10 @@ class DailyAssistant:
                     or self.gate.confirmed_id != sibling['toMemberId']):
                 return False
             staged = sibling['stagedNativeState']
+            binding = self._native_resource_binding()
             staged.generation += 1
             self.native_similarity_state = staged
+            self._carry_native_resource_grant(binding[0] if binding else None, replace_state=True)
             self._native_similarity_priority = staged.priority(self.game_mode)
             self._native_similarity_condition_context = staged.context_snapshot()
             self.front_group_sibling_pending = None
@@ -37266,6 +37522,19 @@ class DailyAssistant:
             return
 
     def _poll_events(self) -> None:
+        if self.closed:
+            return
+        delay = self.EVENT_POLL_MS
+        try:
+            delay = self._poll_events_once() or delay
+        except Exception as error:
+            self._log('ui-event-poll-error', errorType=type(error).__name__, message=str(error))
+        finally:
+            if not self.closed:
+                self._event_poll_due_at = time.perf_counter() + delay / 1000.0
+                self.root.after(delay, self._poll_events)
+
+    def _poll_events_once(self) -> int | None:
         if self.closed:
             return
         self._drain_pending_rerank()
@@ -40099,8 +40368,7 @@ class DailyAssistant:
                     presentationMs=(finished_at-refresh_started)*1000.0,
                     processedEvents=processed_events, ordinaryQueueDepth=ordinary_depth,
                     urgentQueueDepth=urgent_depth, nextDelayMs=delay)
-            self._event_poll_due_at = time.perf_counter()+delay/1000.0
-            self.root.after(delay, self._poll_events)
+            return delay
 
     def _dispose_display_surface(self, name: str, reason: str) -> None:
         with self._display_capture_lock:
@@ -40143,6 +40411,7 @@ class DailyAssistant:
             self.cancel_map_package_import('assistant-closed')
         self._set_sheet_move_mode(False)
         self.closed = True
+        self._cancel_native_resource_validation()
         presenter = getattr(self, 'route_toast_presenter', None)
         if presenter is not None:
             try:
@@ -40212,10 +40481,25 @@ class DailyAssistant:
                 self._root_brand_icons = ()
                 brand_images.close()
                 self._root_brand_images = None
-            self.root.destroy()
+            writer = getattr(self, '_event_log', None)
+            if writer is not None:
+                writer.emit('assistant-closed', {})
+                writer.close()
+                self._event_log_close_deadline = time.monotonic() + 2.0
+                self._finish_event_log_close()
+            else:
+                self.root.destroy()
         except Exception:
             self._cancel_map_package_helper('native-close-failed')
             raise
+
+    def _finish_event_log_close(self) -> None:
+        # Never wait for the sink on Tk. Give queued diagnostics a bounded drain.
+        writer = self._event_log
+        if not writer.flush(timeout=0) and time.monotonic() < self._event_log_close_deadline:
+            self.root.after(20, self._finish_event_log_close)
+            return
+        self.root.destroy()
 
 
 def parse_args() -> argparse.Namespace:
@@ -40444,6 +40728,8 @@ def expected_coordinate_adapter_keys(pack, catalog) -> set[tuple[str, str, str]]
 
 
 def main() -> None:
+    if _UI_AUDIT is not None:
+        raise SystemExit(_packaged_audit.run(sys.modules[__name__], _UI_AUDIT))
     args = parse_args()
     if args.version:
         print(APP_VERSION)
@@ -41413,5 +41699,8 @@ if __name__ == "__main__":
         else:
             main()
     except Exception:
+        if _UI_AUDIT is not None:
+            _packaged_audit.fail(_UI_AUDIT, sys.exc_info()[1])
+            raise SystemExit(2)
         report_unhandled_error(*sys.exc_info())
         raise SystemExit(1)

@@ -76,13 +76,13 @@ class ControlVisibilityUITests(unittest.TestCase):
         self.assertTrue(ctl.state["userVisible"])
         self.assertEqual(ctl.calls, [("reference", bool(i % 2)) for i in range(20)])
 
-    def test_unavailable_pixels_keep_enabled_preference_and_waiting_state(self):
+    def test_unavailable_pixels_keep_enabled_preference_without_claiming_visible_pixels(self):
         view, ctl = self.make_view()
         ctl.state.update(overlayVisible=False, referenceVisible=False)
         before = ctl.snapshot()
         view._sync_visibility_controls(ctl.snapshot())
         for button in (view.quick_sheet_visibility_button, view.quick_reference_visibility_button):
-            self.assertIn("等待", button.values["text"])
+            self.assertIn("开", button.values["text"])
             self.assertEqual(button.values["bg"], "selected")
             self.assertEqual(button.values["state"], "normal")
         self.assertEqual(ctl.snapshot(), before)
