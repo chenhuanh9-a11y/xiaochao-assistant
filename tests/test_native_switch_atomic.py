@@ -8,8 +8,23 @@ import test_group_review_lifecycle as fixture
 from alignment_core_v2 import AlignmentCoreV2, AlignmentCandidate
 
 
-def prepare(test):
+def prepare(test, mode='nightmare'):
     t=fixture.GroupReviewTests(); t.setUp(); test.addCleanup(t.doCleanups)
+    t.host.game_mode=mode
+    if mode != 'nightmare':
+        # Rebuild the synthetic registry with the requested mode before the
+        # real proposal/validation path; never relabel an already-issued grant.
+        t.f.pack.mode=mode
+        for row in t.f.payload['references']:
+            row['mode']=mode
+            row['referenceId']=row['referenceId'].replace('nightmare/',mode+'/',1)
+        for row in t.f.payload['conditions']:row['mode']=mode
+        for row in t.f.payload['domains']:
+            row['source']=row['source'].replace('nightmare/',mode+'/',1)
+        for row in t.f.payload['poses']:
+            row['target']=row['target'].replace('nightmare/',mode+'/',1)
+        t.f.write()
+        t.host.engine.native_similarity_index=t.f.index
     h=t.prepare(); source=fixture.IDS[0]; target=fixture.IDS[1]
     h.pack=t.f.pack; h.current_bounds=(0,0,40,40)
     h.route_profile_id='zhan10-speed'
@@ -80,8 +95,8 @@ def prepare(test):
 
 
 class NativeSwitchAtomicTests(unittest.TestCase):
-    def run_case(self, effect):
-        h,core,grant,snapshot,event=prepare(self)
+    def run_case(self, effect, mode='nightmare'):
+        h,core,grant,snapshot,event=prepare(self, mode)
         before=snapshot()
         def paint(*args,**kwargs):
             self.assertTrue(grant.active)
@@ -199,8 +214,7 @@ class NativeSwitchAtomicTests(unittest.TestCase):
     def test_modes_share_same_failed_transaction(self):
         for mode in ('nightmare','difficult'):
             with self.subTest(mode=mode):
-                h,c,g,s,e,b=self.run_case(lambda h:False)
-                h.game_mode=mode
+                h,c,g,s,e,b=self.run_case(lambda h:False, mode)
                 bridge=np.array(h.round_layer_group.tracking['routeDisplayBridge'])
                 pose=h.round_layer_group.root_pose.copy()
                 result=h._run_alignment_v2_for_current_frame_unlocked(fixture.IDS[1],'1','1',e)
@@ -226,8 +240,8 @@ class RecordingSurface:
 
 
 class NativeSwitchCompositorTests(unittest.TestCase):
-    def setup_chain(self, accept, retained=False, error=None):
-        h,c,g,s,e=prepare(self)
+    def setup_chain(self, accept, retained=False, error=None, mode='nightmare'):
+        h,c,g,s,e=prepare(self, mode)
         source=RecordingSurface();source.visible=True
         target=RecordingSurface(accept,error)
         h.aligned_overlay=source
@@ -335,5 +349,80 @@ class NativeSwitchCompositorTests(unittest.TestCase):
         self.assertIs(h.aligned_overlay,target);self.assertTrue(target.visible)
         self.assertFalse(source.visible)
         self.assertIs(h._idvb0059_surfaces['target'],target)
+
+    def test_resource_clone_transfer_keeps_lease_and_both_modes_commit(self):
+        for mode in ('nightmare','difficult'):
+            with self.subTest(mode=mode):
+                h,c,g,e,source,target=self.setup_chain(True,True,mode=mode)
+                before=h._native_resource_grant
+                result=h._run_alignment_v2_for_current_frame_unlocked(fixture.IDS[1],'1','1',e)
+                self.assertTrue(result['success'],result)
+                self.assertEqual(h._native_resource_grant[1],before[1])
+                self.assertEqual(h._native_resource_grant[0],h._native_resource_binding()[0])
+                self.assertTrue(h._native_similarity_resources_ready())
+                self.assertTrue(target.visible)
+                patch.stopall()
+
+    def test_rejected_target_restores_exact_source_resource_grant(self):
+        h,c,g,e,source,target=self.setup_chain(False,True)
+        before=h._native_resource_grant
+        state=h.native_similarity_state
+        result=h._run_alignment_v2_for_current_frame_unlocked(fixture.IDS[1],'1','1',e)
+        self.assertEqual(result['reason'],'compositor-rejected')
+        self.assertIs(h._native_resource_grant,before)
+        self.assertIs(h.native_similarity_state,state)
+        self.assertTrue(h._native_similarity_resources_ready())
+        self.assertTrue(source.visible)
+
+    def test_resource_capture_or_lease_change_during_actual_paint_cannot_restore(self):
+        for change in ('resource','capture','lease','mode'):
+            with self.subTest(change=change):
+                h,c,g,e,source,target=self.setup_chain(True,True)
+                show=target.show_retained
+                def paint(*args,**kw):
+                    result=show(*args,**kw)
+                    if change=='resource':
+                        h._native_resource_epoch=getattr(h,'_native_resource_epoch',0)+1
+                        h._native_resource_grant=None
+                    elif change=='capture':h.capture_generation+=1
+                    elif change=='mode':h.game_mode='difficult'
+                    else:
+                        key,stamp=h._native_resource_grant
+                        h._native_resource_grant=(key,stamp-1)
+                    return result
+                target.show_retained=paint
+                result=h._run_alignment_v2_for_current_frame_unlocked(fixture.IDS[1],'1','1',e)
+                self.assertFalse(result['success'])
+                self.assertFalse(h._native_similarity_resources_ready())
+                self.assertFalse(g.active)
+                self.assertFalse(source.visible)
+                self.assertFalse(target.visible)
+                patch.stopall()
+
+    def test_mode_change_before_transaction_does_not_inherit_old_grant(self):
+        h,c,g,e,source,target=self.setup_chain(True,True)
+        h.game_mode='difficult'
+        result=h._run_alignment_v2_for_current_frame_unlocked(fixture.IDS[1],'1','1',e)
+        self.assertFalse(result['success'])
+        self.assertFalse(h._native_similarity_resources_ready())
+        self.assertFalse(target.visible)
+
+    def test_newer_callback_grant_is_preserved_but_unmatched_source_is_hidden(self):
+        h,c,g,e,source,target=self.setup_chain(False,True)
+        published=[]
+        show=target.show_retained
+        def paint(*args,**kw):
+            key,stamp=h._native_resource_grant
+            grant=(key,stamp+.000001)
+            h._native_resource_grant=grant
+            published.append(grant)
+            return show(*args,**kw)
+        target.show_retained=paint
+        result=h._run_alignment_v2_for_current_frame_unlocked(fixture.IDS[1],'1','1',e)
+        self.assertFalse(result['success'])
+        self.assertIs(h._native_resource_grant,published[0])
+        self.assertFalse(h._native_similarity_resources_ready())
+        self.assertFalse(g.active)
+        self.assertFalse(source.visible)
 
 if __name__=='__main__': unittest.main()
