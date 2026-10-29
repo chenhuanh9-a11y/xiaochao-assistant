@@ -143,6 +143,7 @@ from nightmare_candidate import (
 from release_identity import load_runtime_app_version, load_runtime_display_version
 from native_similarity_groups import NativeSimilarityState
 from reference_position_editor import ReferencePositionEdit, ReferencePointerMailbox
+from control_layout import load_layout, validate_layout
 from native_ui_layout import (
     MonitorContext,
     RectPx,
@@ -6596,6 +6597,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         # settings are migration/recovery cases, never a fresh installation.
         self._fresh_settings = not self.settings_path.exists()
         self.settings = self._load_settings()
+        self.control_layout = load_layout(self.settings.get('gameControlLayout'))
         self.mode_route_profiles=dict(self.settings.get('modeRouteProfiles') or {})
         self.mode_resource_error=None
         if self.settings.get('gameMode')=='difficult':
@@ -7387,8 +7389,16 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 "change_reference_opacity": self.change_reference_opacity,
                 "_save_settings": self._commit_game_control_opacity,
                 "get_control_snapshot": self._route_presentation_snapshot,
-                "move_sheet": self.move_sheet,
-                "finish_reference_sheet_move": self.finish_reference_sheet_move,
+                "move_sheet": lambda: self._control_reference_edit_action(self.move_sheet),
+                "finish_reference_sheet_move": lambda: self._control_reference_edit_action(self.finish_reference_sheet_move),
+                "cancel_reference_sheet_move": lambda: self._control_reference_edit_action(self.cancel_reference_sheet_move),
+                "open_control_layout_settings": self.open_control_layout_settings,
+                "_start_map_reselection": self._start_map_reselection,
+                "_open_recognition_details": self._open_recognition_details,
+                "previous_candidate": lambda: self._cycle_candidate_by_key(-1),
+                "next_candidate": lambda: self._cycle_candidate_by_key(1),
+                "confirm_route": self.confirm_route,
+                "capture_now": self.capture_now,
                 "_open_desktop_main_ui": self._open_desktop_main_ui,
                 "set_game_mode": self.set_game_mode,
                 "toggle_round": self.toggle_round,
@@ -9908,11 +9918,13 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             if getattr(self, "_game_control_display_scale", None) != (view, scale):
                 view.set_display_scale(scale)
                 self._game_control_display_scale = (view, scale)
+            context = self._ui_context_for_window(self.assistant_shell)
+            view.set_available_height(max(1, context.monitor.work_area_px.height - round(32 * scale)))
             view.update_idletasks()
-            if getattr(self, 'control_collapsed', False):
+            if getattr(self, 'control_collapsed', False) and not getattr(self, 'sheet_move_mode', False):
                 return (64, 64)
-            return (max(240, math.ceil(view.winfo_reqwidth() / scale)),
-                    max(100, math.ceil(view.winfo_reqheight() / scale)))
+            width, height = view.expanded_size()
+            return (max(240, math.ceil(width / scale)), max(100, math.ceil(height / scale)))
         return (
             self.QUICK_PANEL_ROUND_SIZE
             if self._round_identity_lock_context() is not None
@@ -9964,6 +9976,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         if not tk_widget_exists(view):
             return
         snapshot = self._route_presentation_snapshot()
+        view.apply_layout(self.control_layout_snapshot())
         active = self._round_identity_lock_context() or {}
         item = getattr(getattr(self, "pack", None), "by_id", {}).get(active.get("mapId"))
         view.render(snapshot,
@@ -9975,6 +9988,54 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             canvas.bind('<B1-Motion>', self._move_control_drag, add='+')
             canvas.bind('<ButtonRelease-1>', self._finish_control_drag, add='+')
             self._control_drag_canvas = canvas
+        editor = getattr(self, '_control_layout_editor', None)
+        if editor is not None and editor.winfo_exists():
+            editor.refresh_snapshot(snapshot)
+
+    def control_layout_snapshot(self) -> dict:
+        return load_layout(getattr(self, 'control_layout', None))
+
+    def apply_control_layout(self, proposal: dict) -> dict:
+        """Persist only layout preferences; command/state ownership stays here."""
+        try:
+            candidate = validate_layout(proposal)
+        except (TypeError, ValueError):
+            return dict(success=False, message='布局配置无效，请恢复默认后重试')
+        if getattr(self, 'closed', False):
+            return dict(success=False, message='助手已关闭')
+        previous = self.control_layout_snapshot()
+        if candidate == previous:
+            return dict(success=True, persisted=True, message='布局未变化')
+        self.control_layout = candidate
+        if not self._save_settings():
+            self.control_layout = previous
+            return dict(success=False, persisted=False, message='布局保存失败，原布局已保留')
+        self.settings['gameControlLayout'] = self.control_layout_snapshot()
+        self._sync_game_control_view()
+        if (getattr(self, 'assistant_shell_mode', None) == 'quick'
+                and tk_widget_is_viewable(getattr(self, 'assistant_shell', None))):
+            self._place_quick_panel()
+        return dict(success=True, persisted=True, message='控件布局已应用')
+
+    def open_control_layout_settings(self, owner=None):
+        editor = getattr(self, '_control_layout_editor', None)
+        if editor is not None and editor.winfo_exists():
+            editor.lift()
+            return editor
+        from control_layout_editor import ControlLayoutEditor
+        editor = ControlLayoutEditor(owner or self.root, self)
+        self._control_layout_editor = editor
+        return editor
+
+    def _control_reference_edit_action(self, callback):
+        result = callback()
+        if getattr(self, 'sheet_move_mode', False):
+            self.control_collapsed = False
+        self._sync_game_control_view()
+        if (getattr(self, 'assistant_shell_mode', None) == 'quick'
+                and tk_widget_is_viewable(getattr(self, 'assistant_shell', None))):
+            self._place_quick_panel()
+        return result
 
     def _commit_game_control_opacity(self) -> bool:
         """Commit the Scale's current variable before its release saves it."""
@@ -10049,6 +10110,8 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
     def collapse_control(self) -> dict:
         if self.closed:
             return dict(success=False, reason='assistant-closed', message='助手已关闭')
+        if getattr(self, 'sheet_move_mode', False):
+            return dict(success=False, reason='reference-edit-active', message='请先完成或取消定点地图位置编辑')
         if self.hotkey_capture_active or getattr(self, '_hotkey_edit_session', None) is not None:
             self.cancel_hotkey_edit('control-collapsed')
         if tk_widget_is_viewable(self.assistant_shell):
@@ -11028,6 +11091,8 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 "start-round": "开始本局", "toggle-round": "开始/结束本局"}.get(target, target)
 
     def _refresh_hotkey_editor_views(self) -> None:
+        if tk_widget_exists(getattr(self, 'game_control_view', None)):
+            self._sync_quick_round_action_ui()
         for view in (getattr(getattr(self, "desktop_main_ui", None), "hotkey_editor", None),
                      getattr(self, "onboarding_hotkey_editor", None),
                      getattr(self, "onboarding_panel_editor", None),
@@ -11557,6 +11622,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 ),
                 "sheetPosition": list(self.sheet_position) if self.sheet_position else None,
                 "referenceSheetVisible": bool(getattr(self, 'reference_sheet_visibility_enabled', True)),
+                "gameControlLayout": self.control_layout_snapshot(),
                 "sheetOpacity": self.sheet_opacity,
                 "referenceOpacity": self.reference_opacity,
                 "sheetScale": self.sheet_scale,
@@ -33071,6 +33137,11 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         except (OSError, ValueError, KeyError, TypeError, cv2.error) as error:
             self._set_sheet_move_mode(False)
             return dict(success=False, adjusting=False, reason='reference-preview-unavailable', message=f'定点地图预览不可用：{error}')
+        if applied:
+            # The settings page can start editing while the game panel is an
+            # orb. Keep its native host large enough for fixed Finish/Cancel.
+            self.control_collapsed = False
+            self._sync_quick_round_action_ui()
         return dict(success=applied, adjusting=applied, reason='reference-move-started' if applied else 'reference-move-unavailable',
             message='正在编辑定点地图位置 · 拖动后点击“完成”，松手不会退出' if applied else '当前无法编辑定点地图位置')
 
@@ -33088,6 +33159,12 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         self.show_sheet()
         return dict(success=saved, persisted=saved, adjusting=False, reason='reference-move-finished',
             message='定点地图位置已保存，已恢复鼠标穿透' if saved else '本次定点地图位置已应用，保存失败')
+
+    def cancel_reference_sheet_move(self) -> dict:
+        self._set_sheet_move_mode(False)
+        self.show_sheet()
+        return dict(success=True, persisted=False, adjusting=False,
+                    reason='reference-move-cancelled', message='已取消位置编辑，原位置不变')
 
     def _set_sheet_move_mode(self, enabled: bool) -> bool:
         self._cancel_reference_move_jobs()
@@ -36049,6 +36126,11 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         retry_enabled = bool(failed and issue.get('phase') in {'alignment', 'recognition'} and opened and foreground and not pending)
         round_active = bool(getattr(self, "round_work_active", False))
         round_preparing = not round_active and getattr(self, 'round_start_intent', None) is not None
+        candidate = getattr(getattr(self, 'pack', None), 'by_id', {}).get(
+            getattr(getattr(self, 'gate', None), 'selected_id', None))
+        candidate_actions = bool(opened and not pending and not lock
+                                 and not getattr(self, 'closed', False)
+                                 and not getattr(self, 'hotkey_capture_active', False))
         return dict(phase=phase, severity=severity, title=title, message=message, color=color,
             roundActive=round_active, roundPreparing=round_preparing,
             roundStateText="本局工作：进行中" if round_active and opened else "本局工作：等待开图" if round_active else "本局工作：已准备，等待游戏开图" if round_preparing else "本局工作：未开始",
@@ -36056,6 +36138,11 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             roundStartEnabled=not round_active and not pending and not getattr(self, "closed", False),
             roundEndEnabled=round_active and not getattr(self, "closed", False),
             bindings=self.hotkey_editor_snapshot()["bindings"],
+            candidateName=str(getattr(candidate, 'name', '') or ''),
+            candidateActionsEnabled=candidate_actions,
+            confirmRouteEnabled=candidate_actions and candidate is not None,
+            captureEnabled=not pending and not getattr(self, 'closed', False)
+                and not getattr(self, 'hotkey_capture_active', False),
             controlVisible=tk_widget_is_viewable(getattr(self, "assistant_shell", None)),
             controlCollapsed=bool(getattr(self, 'control_collapsed', False)),
             mode=getattr(self, 'game_mode', 'nightmare'), sheetOpacityPercent=round(self.sheet_opacity * 100),
