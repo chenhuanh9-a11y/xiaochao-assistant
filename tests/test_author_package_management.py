@@ -34,6 +34,8 @@ class ManagedAuthorTests(unittest.TestCase):
             'nightmare-nightingale': {NIGHTINGALE:b'ai'},
             'nightmare-lianghapi': {'_internal/assets/authors/lianghapi-single/map-03-2.png':b'liang'}}
         for package, author in importer.AUTHOR_PACKAGES.items():
+            if package not in payloads:
+                continue  # New difficult-author lifecycle is covered with its native dependency fixture.
             for name in importer.AUTHOR_SIDECARS:
                 payloads[package][f'_internal/references/author-packs/{author}/{name}'] = b'{}'
         for package, payload in payloads.items():

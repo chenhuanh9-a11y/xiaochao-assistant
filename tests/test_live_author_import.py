@@ -164,6 +164,8 @@ class LiveAuthorImportTests(unittest.TestCase):
             'nightmare-lianghapi': {'_internal/assets/authors/lianghapi-single/map-03-2.png': b'lianghapi-image'},
         }
         for package_id, author in importer.AUTHOR_PACKAGES.items():
+            if package_id not in payloads:
+                continue  # Mode-specific author imports have their own dependency fixtures.
             for name in importer.AUTHOR_SIDECARS:
                 payloads[package_id][f'_internal/references/author-packs/{author}/{name}'] = b'{}'
         with patch.object(importer, '_check_closed', side_effect=AssertionError('live must not open EXE exclusively')):
