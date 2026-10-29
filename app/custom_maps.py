@@ -89,6 +89,15 @@ class FloorAsset:
     native_shape: tuple[int, int]
     topology_path: Path
     entrances: tuple[tuple[str, float, float], ...]  # label, image x, image y
+    # The legacy template art the Android route cells and legacy stairs are defined on.
+    # Same as the display image unless the package ships redrawn art.
+    template_size: tuple[int, int] | None = None
+    template_to_native: np.ndarray | None = None
+
+    def __post_init__(self):
+        if self.template_size is None:
+            object.__setattr__(self, "template_size", self.image_size)
+            object.__setattr__(self, "template_to_native", self.to_native)
 
     @property
     def to_image(self) -> np.ndarray:
@@ -108,11 +117,14 @@ class CustomMapLibrary:
         self._verified: set[Path] = set()
         self._images: dict[tuple, Image.Image] = {}
         self._lock = threading.RLock()
+        self.art_includes_exits = False
         try:
             manifest = json.loads((self.root / "manifest.json").read_text("utf-8"))
             if manifest.get("schema") != SCHEMA:
                 raise ValueError("自定义地图资源版本不受支持")
             self.version = str(manifest.get("version") or "")
+            art = manifest.get("art")
+            self.art_includes_exits = isinstance(art, dict) and art.get("includesExits") is True
             for row in manifest["maps"]:
                 self._maps[row["mapId"]] = row
             self._order = [row["mapId"] for row in sorted(manifest["maps"], key=lambda r: r.get("templateNumber", 0))]
@@ -146,13 +158,16 @@ class CustomMapLibrary:
 
     def floor(self, map_id, floor) -> FloorAsset:
         row = self._maps[str(map_id)]["floors"][str(floor)]
+        template = row.get("template") if isinstance(row.get("template"), dict) else None
         return FloorAsset(
             map_id=str(map_id), floor=str(floor),
             image_path=self._checked(row["image"], row["imageSha256"]),
             image_size=tuple(row["imageSize"]), to_native=np.asarray(row["matrixImageToNative"], np.float64),
             native_shape=tuple(row["nativeShape"]),
             topology_path=self._checked(row["topology"], row["topologySha256"]),
-            entrances=tuple((e["label"], float(e["x"]), float(e["y"])) for e in row.get("entrances", ())))
+            entrances=tuple((e["label"], float(e["x"]), float(e["y"])) for e in row.get("entrances", ())),
+            template_size=tuple(template["imageSize"]) if template else None,
+            template_to_native=np.asarray(template["matrixImageToNative"], np.float64) if template else None)
 
     def image(self, map_id, floor) -> Image.Image:
         key = (str(map_id), str(floor))
@@ -427,7 +442,7 @@ def render_game_layer(library: CustomMapLibrary, map_id, floor, points) -> np.nd
                             borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0, 0))
     canvas = Image.fromarray(warped, "RGBA")
     scale = float(np.sqrt(abs(np.linalg.det(asset.to_native[:2, :2]))))
-    icon = library.exit_icon()
+    icon = None if library.art_includes_exits else library.exit_icon()
     if icon is not None:
         size = max(20, round(max(asset.image_size) * .025 * scale))
         icon = icon.resize((size, size), Image.Resampling.LANCZOS)

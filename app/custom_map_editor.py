@@ -644,7 +644,7 @@ class CustomMapEditor(tk.Frame):
         ox, oy = (width - size[0]) / 2, (height - size[1]) / 2
         self._view = (scale, ox, oy)
         picture = art.resize(size, Image.Resampling.LANCZOS)
-        icon = library.exit_icon()
+        icon = None if library.art_includes_exits else library.exit_icon()
         if icon is not None:
             side = max(14, round(max(art.size) * .025 * scale))
             icon = icon.resize((side, side), Image.Resampling.LANCZOS)

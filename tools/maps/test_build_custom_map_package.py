@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import cv2
 import numpy as np
+from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_custom_map_package as builder
@@ -84,6 +85,79 @@ class MaskBindingTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "mask hash mismatch"):
                     builder.main(args)
                 register.assert_not_called()
+
+
+class ArtAndIncrementTests(unittest.TestCase):
+    """Redrawn art replaces the display image; the legacy geometry stays as the template."""
+
+    def test_white_background_becomes_transparent_but_thin_light_strokes_stay(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "art.png"
+            rgb = np.full((60, 80, 3), 255, np.uint8)
+            rgb[10:50, 10:70] = (120, 150, 200)
+            rgb[29:31, 10:70] = (250, 246, 236)  # Ivory inner wall stroke inside the map.
+            cv2.imwrite(str(path), rgb[:, :, ::-1])
+            rgba, solid = builder.read_art(path)
+            self.assertEqual(rgba[0, 0, 3], 0)
+            self.assertEqual(rgba[30, 40, 3], 255)
+            self.assertTrue(solid[30, 40])
+
+    def test_points_move_between_images_through_native(self):
+        a = np.array([[2, 0, 10], [0, 2, 20], [0, 0, 1]], float)
+        b = np.array([[4, 0, 0], [0, 4, 0], [0, 0, 1]], float)
+        self.assertEqual(builder.through(a, b, 5, 5), (5.0, 7.5))
+
+    def test_builder_uses_art_keeps_template_and_adds_increment_maps(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            args, path, topology, native = MaskBindingTests._inputs(None, root)
+            topology["sourceLayout"] = "104005"
+            path.write_text(json.dumps(topology), "utf-8")
+            game = root / "game"
+            (game / "renders/104005").mkdir(parents=True)
+            render = np.zeros((*native.shape, 4), np.uint8)
+            render[native > 0] = 255
+            Image.fromarray(render, "RGBA").save(game / "renders/104005/1F.png")
+            art = root / "art"
+            for layout in ("104005", "104026"):
+                (art / layout).mkdir(parents=True)
+                drawn = np.full((16, 20, 3), 255, np.uint8)
+                drawn[2:, 2:] = (120, 150, 200)
+                Image.fromarray(drawn).save(art / layout / "1F.png")
+            increment = root / "increment"
+            (increment / "topology").mkdir(parents=True)
+            (increment / "maps/104026/1").mkdir(parents=True)
+            np.savez_compressed(increment / "maps/104026/1/structure.npz", shared_mask=native)
+            extra = dict(topology, mapId="nightmare-layout-104026", sourceLayout="104026")
+            (increment / "topology/1.json").write_text(json.dumps(extra), "utf-8")
+            (increment / "editor-manifest.json").write_text(json.dumps(dict(
+                schema=builder.SCHEMA, version="inc", sourceGameVersion="2.104.3085069", maps=[dict(
+                    mapId="nightmare-layout-104026", templateId="nightmare-layout-104026", templateNumber=126,
+                    name="新增", sourceLayout="104026", stairs=[dict(id="s", cost=1, bidirectional=True, semantics="x", **{
+                        "from": dict(floor="1", x=10, y=10), "to": dict(floor="1", x=10, y=10)})],
+                    floors={"1": dict(topology="topology/1.json", topologySha256=builder.sha256(increment / "topology/1.json"),
+                                      maskSha256=builder.mask_sha256(native), entrances=[dict(label="正门", x=20, y=20)])})])),
+                "utf-8")
+            legacy_matrix = np.diag([2., 2., 1.])
+            art_matrix = np.diag([2., 2., 1.])
+            with patch.object(builder, "register", side_effect=[(legacy_matrix, .9), (art_matrix, .95), (art_matrix, .95)]):
+                self.assertEqual(builder.main(args + ["--art", str(art), "--increment", str(increment),
+                                                      "--road-patches", str(builder.ROAD_PATCHES)]), 0)
+            manifest = json.loads((root / "out/manifest.json").read_text("utf-8"))
+            self.assertEqual(manifest["art"]["includesExits"], True)
+            self.assertEqual(manifest["sources"]["increment"]["gameVersion"], "2.104.3085069")
+            first, added = manifest["maps"]
+            floor = first["floors"]["1"]
+            self.assertEqual(floor["imageSize"], [20, 16])
+            self.assertEqual(floor["template"]["imageSize"], [40, 32])
+            self.assertEqual(floor["template"]["matrixImageToNative"][0][0], 2.0)
+            self.assertEqual(added["mapId"], "nightmare-layout-104026")
+            self.assertEqual(added["stairs"][0], dict(id="s", cost=1, bidirectional=True, **{
+                "from": dict(floor="1", x=10, y=10), "to": dict(floor="1", x=10, y=10)}))
+            self.assertEqual(added["floors"]["1"]["entrances"], [dict(label="正门", x=10.0, y=10.0)])
+            self.assertNotIn("template", added["floors"]["1"])
+            with Image.open(root / "out" / floor["image"]) as image:
+                self.assertEqual((image.mode, image.getpixel((0, 0))[3]), ("RGBA", 0))
 
 
 class RoadPatchTests(unittest.TestCase):

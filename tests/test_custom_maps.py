@@ -73,6 +73,24 @@ class LibraryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "校验失败"):
             CustomMapLibrary(self.root).floor("m", "2")
 
+    def test_template_geometry_and_exit_flag(self):
+        asset = self.library.floor("m", "1")
+        self.assertEqual(asset.template_size, asset.image_size, "older packages: the art is the template")
+        self.assertTrue(np.array_equal(asset.template_to_native, asset.to_native))
+        self.assertFalse(self.library.art_includes_exits)
+        manifest = json.loads((self.root / "manifest.json").read_text("utf-8"))
+        manifest["art"] = dict(source="readable", includesExits=True)
+        manifest["maps"][0]["floors"]["1"]["template"] = dict(imageSize=[240, 180],
+                                                              matrixImageToNative=[[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+        (self.root / "manifest.json").write_text(json.dumps(manifest), "utf-8")
+        library = CustomMapLibrary(self.root)
+        asset = library.floor("m", "1")
+        self.assertEqual((asset.image_size, asset.template_size), ((120, 90), (240, 180)))
+        self.assertTrue(np.array_equal(asset.template_to_native, np.eye(3)))
+        self.assertTrue(library.art_includes_exits)
+        with mock.patch.object(library, "exit_icon", side_effect=AssertionError("the art already shows exits")):
+            render_game_layer(library, "m", "1", [])
+
     def test_pick_room_versus_corridor(self):
         graph = self.library.graph("m")
         room = graph.pick("1", 85, 85)

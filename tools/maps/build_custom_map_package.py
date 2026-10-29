@@ -8,10 +8,20 @@ Inputs (all local, paths are arguments):
 
   --road-patches  confirmed road links the game data lacks (default
                custom-road-patches.json next to this script)
+  --art        optional clear redrawn floors, <layoutId>/<B1|1F|2F>.png on a
+               white background, shown instead of the legacy art
+  --increment  optional maps the 24-map handoff lacks: editor-manifest.json in
+               this package's format, editor-topology/ and per-floor
+               structure.npz, e.g. the 2.104.3085069 handoff of 104026/104027
 
 Output: a new directory with manifest.json, images/, topology/ and exit-icon.png.
 Images are re-encoded as WebP (lossless alpha) and topology keeps only the
 road graph the app reads, so the installed package stays small.
+
+With --art the redrawn floor is registered to the game's normal render of the
+same floor (its alpha is the native footprint) and shown instead; the legacy
+registration is still made and kept as each floor's "template" geometry,
+because legacy stairs and Android route cells are defined on the legacy art.
 
 Each legacy floor image is registered onto its native structure canvas: an
 initial centroid/area similarity refined by ECC (affine) on the image alpha
@@ -51,6 +61,8 @@ MIN_OVERLAP = 0.8
 QUALITY = 90
 # Topology fields the app reads; the rest is provenance kept in the game data.
 TOPOLOGY_KEYS = ("mapId", "floor", "shape", "maskSha256", "points", "pointRooms", "links")
+ART_LABELS = {"B1": "B1", "1": "1F", "2": "2F"}
+STAIR_KEYS = ("id", "from", "to", "cost", "bidirectional")
 
 
 def sha256(path: Path) -> str:
@@ -114,6 +126,33 @@ def register(image_alpha: np.ndarray, native: np.ndarray) -> tuple[np.ndarray, f
     except cv2.error:
         pass
     return best, best_overlap
+
+
+def read_art(path: Path) -> tuple[np.ndarray, np.ndarray]:
+    """A white-background redraw as RGBA: white outside the map becomes transparent.
+
+    Closing first keeps thin light inner wall strokes opaque; enclosed white
+    courtyards larger than that stay transparent like the game's own render.
+    """
+    rgb = np.asarray(Image.open(path).convert("RGB"))
+    ink = (255 - rgb.astype(np.int16)).max(-1) > 24
+    pad = 8  # Closing must not grow the map into the image border.
+    solid = cv2.copyMakeBorder(ink.astype(np.uint8), pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=0)
+    solid = cv2.morphologyEx(solid, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+    solid = cv2.morphologyEx(solid, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))[pad:-pad, pad:-pad] > 0
+    alpha = cv2.GaussianBlur(solid.astype(np.float32), (3, 3), 0)
+    return np.dstack([rgb, np.round(alpha * 255).astype(np.uint8)]), solid
+
+
+def write_rgba(rgba: np.ndarray, target: Path, quality: int) -> None:
+    options = dict(lossless=True) if quality == 0 else dict(quality=quality, alpha_quality=100)
+    Image.fromarray(rgba, "RGBA").save(target, "WEBP", method=6, **options)
+
+
+def through(matrix_a: np.ndarray, matrix_b: np.ndarray, x: float, y: float) -> tuple[float, float]:
+    """Point in image A pixels -> image B pixels, both given as image->native matrices."""
+    u, v, w = np.linalg.inv(matrix_b) @ matrix_a @ [x, y, 1]
+    return round(float(u / w), 1), round(float(v / w), 1)
 
 
 def write_image(source: Path, target: Path, quality: int) -> None:
@@ -182,6 +221,18 @@ def cell_to_image(nav: dict, cell: int) -> tuple[float, float]:
             min(nav["height"] - 1, cell // nav["cols"] * step + step / 2))
 
 
+def review_overlay(path: Path, rgba: np.ndarray, matrix: np.ndarray, native: np.ndarray) -> None:
+    bgra = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA)
+    warped = cv2.warpAffine(bgra, matrix[:2], (native.shape[1], native.shape[0]), borderValue=(0, 0, 0, 0))
+    canvas = np.full((*native.shape, 3), 255, np.uint8)
+    canvas[native] = (200, 200, 200)
+    alpha = warped[:, :, 3:4] / 255 * .75
+    canvas = (canvas * (1 - alpha) + warped[:, :, :3] * alpha).astype(np.uint8)
+    edge = cv2.morphologyEx(native.astype(np.uint8), cv2.MORPH_GRADIENT, np.ones((5, 5), np.uint8)) > 0
+    canvas[edge] = (0, 0, 230)
+    cv2.imwrite(str(path), cv2.resize(canvas, None, fx=.4, fy=.4, interpolation=cv2.INTER_AREA))
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--legacy", required=True, type=Path)
@@ -193,6 +244,9 @@ def main(argv=None) -> int:
     parser.add_argument("--zip", type=Path, help="also write the release archive and its SHA256SUMS here")
     parser.add_argument("--quality", type=int, default=QUALITY, help="WebP colour quality 1-100, 0 for lossless")
     parser.add_argument("--road-patches", type=Path, default=ROAD_PATCHES)
+    parser.add_argument("--art", type=Path, help="clear redrawn floors to show instead of the legacy art")
+    parser.add_argument("--art-label", help="name of the art set recorded in the manifest (default: folder name)")
+    parser.add_argument("--increment", type=Path, help="extra maps in this package's format (e.g. 104026/104027)")
     args = parser.parse_args(argv)
     if args.out.exists():
         parser.error("--out must be a new directory")
@@ -213,6 +267,51 @@ def main(argv=None) -> int:
     shutil.copyfile(args.legacy / "exit-icon.png", out / "exit-icon.png")
     if args.review:
         args.review.mkdir(parents=True, exist_ok=True)
+
+    def write_floor(map_id, key, layout, topology_path, native, footprint, legacy=None, entrances=()):
+        """One floor: art, matrix and road graph. ``legacy`` is (rgba, source, matrix, overlap) or None.
+
+        ``footprint`` is the native mask the redrawn art is registered to; the
+        topology itself stays bound to ``native`` (the structure footprint).
+        """
+        topology = json.loads(topology_path.read_text("utf-8"))
+        mask_hash = checked_mask_sha256(topology, native, map_id, key)
+        image_rel = f"images/{map_id}/{key}.webp"
+        topology_rel = f"topology/{map_id}/{key}.json"
+        (out / image_rel).parent.mkdir(exist_ok=True)
+        (out / topology_rel).parent.mkdir(exist_ok=True)
+        if args.art:
+            rgba, solid = read_art(args.art / layout / f"{ART_LABELS[key]}.png")
+            matrix, overlap = register(solid, footprint)
+            if overlap < MIN_OVERLAP:
+                raise ValueError(f"art registration too weak for {map_id}/{key}: {overlap:.3f}")
+            write_rgba(rgba, out / image_rel, args.quality)
+        else:
+            rgba, source, matrix, overlap = legacy
+            write_image(source, out / image_rel, args.quality)
+        added, covered = write_topology(topology_path, out / topology_rel, patches.pop((map_id, key), ()),
+                                        f"{map_id}/{key}")
+        patch_report["added"] += added
+        patch_report["covered"] += covered
+        if added or covered:
+            print(f"road patch {map_id}/{key}: added {added}, already in game data {covered}", flush=True)
+        # Entrances arrive in legacy template pixels (or native for the increment).
+        origin = legacy[2] if legacy else np.eye(3)
+        row = dict(
+            image=image_rel, imageSha256=sha256(out / image_rel), imageSize=[rgba.shape[1], rgba.shape[0]],
+            matrixImageToNative=[[round(float(v), 6) for v in r] for r in matrix],
+            overlap=round(overlap, 4), nativeShape=list(native.shape),
+            topology=topology_rel, topologySha256=sha256(out / topology_rel), maskSha256=mask_hash,
+            entrances=[dict(label=label, **dict(zip("xy", through(origin, matrix, x, y)))) for label, x, y in entrances])
+        if legacy is not None and args.art:
+            # Legacy stairs and Android route cells are defined on the template art.
+            row["template"] = dict(imageSize=[legacy[0].shape[1], legacy[0].shape[0]],
+                                   matrixImageToNative=[[round(float(v), 6) for v in r] for r in legacy[2]],
+                                   overlap=round(legacy[3], 4))
+        if args.review:
+            review_overlay(args.review / f"{map_id}-{key}.jpg", rgba, matrix, footprint)
+        return row
+
     maps = []
     for template in catalog["templates"]:
         map_id = TEMPLATE_MAPS.get(template["number"])
@@ -232,39 +331,23 @@ def main(argv=None) -> int:
                 native = resource["clean_mask"] > 0
             topology_path = topologies[(map_id, key)]
             topology = json.loads(topology_path.read_text("utf-8"))
-            mask_hash = checked_mask_sha256(topology, native, map_id, key)
+            checked_mask_sha256(topology, native, map_id, key)
             matrix, overlap = register(image[:, :, 3] > 0, native)
             if overlap < MIN_OVERLAP:
                 raise ValueError(f"registration too weak for {template['id']}/{floor['id']}: {overlap:.3f}")
             matrices[floor["id"]] = matrix
-            image_rel = f"images/{map_id}/{key}.webp"
-            topology_rel = f"topology/{map_id}/{key}.json"
-            (out / image_rel).parent.mkdir(exist_ok=True)
-            (out / topology_rel).parent.mkdir(exist_ok=True)
-            write_image(source, out / image_rel, args.quality)
-            added, covered = write_topology(topology_path, out / topology_rel, patches.pop((map_id, key), ()),
-                                            f"{map_id}/{key}")
-            patch_report["added"] += added
-            patch_report["covered"] += covered
-            if added or covered:
-                print(f"road patch {map_id}/{key}: added {added}, already in game data {covered}", flush=True)
-            floors[key] = dict(
-                image=image_rel, imageSha256=sha256(out / image_rel), imageSize=[image.shape[1], image.shape[0]],
-                matrixImageToNative=[[round(float(v), 6) for v in r] for r in matrix],
-                overlap=round(overlap, 4), nativeShape=list(native.shape),
-                topology=topology_rel, topologySha256=sha256(out / topology_rel), maskSha256=mask_hash,
-                entrances=[dict(label=e["label"], x=float(e["x"]), y=float(e["y"])) for e in floor.get("entrances", [])])
-            if args.review:
-                warped = cv2.warpAffine(image, matrix[:2], (native.shape[1], native.shape[0]),
-                                        borderValue=(0, 0, 0, 0))
-                canvas = np.full((*native.shape, 3), 255, np.uint8)
-                canvas[native] = (200, 200, 200)
-                alpha = warped[:, :, 3:4] / 255 * .75
-                canvas = (canvas * (1 - alpha) + warped[:, :, :3] * alpha).astype(np.uint8)
-                edge = cv2.morphologyEx(native.astype(np.uint8), cv2.MORPH_GRADIENT, np.ones((5, 5), np.uint8)) > 0
-                canvas[edge] = (0, 0, 230)
-                cv2.imwrite(str(args.review / f"{map_id}-{key}.jpg"),
-                            cv2.resize(canvas, None, fx=.4, fy=.4, interpolation=cv2.INTER_AREA))
+            layout = str(topology.get("sourceLayout") or "")
+            footprint = native
+            if args.art:
+                # The game's normal render shares the native canvas; its alpha includes walls like the redraw.
+                with Image.open(args.game_data / "renders" / layout / f"{ART_LABELS[key]}.png") as render:
+                    footprint = np.asarray(render.convert("RGBA"))[:, :, 3] > 0
+                if footprint.shape != native.shape:
+                    raise ValueError(f"render canvas differs from the native canvas for {map_id}/{key}")
+            floors[key] = write_floor(map_id, key, layout, topology_path, native, footprint,
+                                      legacy=(cv2.cvtColor(image, cv2.COLOR_BGRA2RGBA), source, matrix, overlap),
+                                      entrances=[(e["label"], float(e["x"]), float(e["y"]))
+                                                 for e in floor.get("entrances", [])])
         stairs = []
         for stair in template.get("stairs", []):
             if stair.get("verified") is not True or stair.get("kind") != "stairs":
@@ -281,6 +364,39 @@ def main(argv=None) -> int:
         maps.append(dict(mapId=map_id, templateId=template["id"], templateNumber=template["number"],
                          name=template["name"], aliases=template.get("aliases", []), floors=floors, stairs=stairs))
         print(template["number"], map_id, {k: v["overlap"] for k, v in floors.items()}, "stairs", len(stairs), flush=True)
+
+    increment_source = None
+    if args.increment:
+        manifest_path = args.increment / "editor-manifest.json"
+        increment = json.loads(manifest_path.read_text("utf-8"))
+        if increment.get("schema") != SCHEMA:
+            raise ValueError("increment manifest is not a custom map package manifest")
+        for entry in increment["maps"]:
+            map_id, layout = entry["mapId"], str(entry["sourceLayout"])
+            if any(row["mapId"] == map_id for row in maps):
+                raise ValueError(f"increment map {map_id} is already in the package")
+            floors = {}
+            for key, source in entry["floors"].items():
+                topology_path = args.increment / source["topology"]
+                if sha256(topology_path) != source["topologySha256"]:
+                    raise ValueError(f"increment topology hash mismatch for {map_id}/{key}")
+                with np.load(args.increment / "maps" / layout / key / "structure.npz", allow_pickle=False) as resource:
+                    native = resource["shared_mask"] > 0
+                if source.get("maskSha256") != mask_sha256(native):
+                    raise ValueError(f"increment structure hash mismatch for {map_id}/{key}")
+                if args.art is None:
+                    raise ValueError("--increment needs --art for its display art")
+                floors[key] = write_floor(map_id, key, layout, topology_path, native, native,
+                                          entrances=[(e["label"], float(e["x"]), float(e["y"]))
+                                                     for e in source.get("entrances", [])])
+            maps.append(dict(mapId=map_id, templateId=entry["templateId"], templateNumber=entry["templateNumber"],
+                             name=entry["name"], aliases=entry.get("aliases", []), floors=floors,
+                             stairs=[{key: stair[key] for key in STAIR_KEYS} for stair in entry.get("stairs", [])]))
+            print(entry["templateNumber"], map_id, {k: v["overlap"] for k, v in floors.items()},
+                  "stairs", len(entry.get("stairs", [])), flush=True)
+        increment_source = dict(version=increment.get("version"), gameVersion=increment.get("sourceGameVersion"),
+                                manifestSha256=sha256(manifest_path))
+
     built = {row["mapId"] for row in maps}
     stray = sorted(f"{map_id}/{floor}" for map_id, floor in patches if map_id in built)
     if stray:
@@ -288,12 +404,15 @@ def main(argv=None) -> int:
     if patch_report["added"] and patch_document.get("gameDataVersion") != game_version:
         print(f"note: road patches were confirmed on game data {patch_document.get('gameDataVersion')}, "
               f"building {game_version}", flush=True)
-    manifest = dict(schema=SCHEMA, version=args.version, mapCount=len(maps),
-                    sources=dict(legacyCatalogSha256=sha256(args.legacy / "catalog.json"),
-                                 gameDataVersion=game_version,
-                                 roadPatches=dict(sha256=sha256(args.road_patches), **patch_report),
-                                 exitIconSha256=sha256(out / "exit-icon.png")),
-                    maps=maps)
+    sources = dict(legacyCatalogSha256=sha256(args.legacy / "catalog.json"), gameDataVersion=game_version,
+                   roadPatches=dict(sha256=sha256(args.road_patches), **patch_report),
+                   exitIconSha256=sha256(out / "exit-icon.png"))
+    if increment_source:
+        sources["increment"] = increment_source
+    manifest = dict(schema=SCHEMA, version=args.version, mapCount=len(maps), sources=sources, maps=maps)
+    if args.art:
+        # The redraw already shows the exits; the app does not stamp its own icon on top.
+        manifest["art"] = dict(source=args.art_label or args.art.name, includesExits=True)
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1), "utf-8")
     print(f"wrote {len(maps)} maps to {out}")
     if args.zip:
