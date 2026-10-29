@@ -22,6 +22,24 @@ These establish reproducible code-level failure mechanisms, not the cause of eve
 
 ## Remaining gates
 
-- Resource validation still performs `stat/resolve` and, on cache miss, reads/hashes on the Tk prelude. Actual production method + synthetic two-member resource group + hot digest cache + 20ms injected stat: 60 calls over 10 iterations, 123.39–124.56ms per iteration. Moving this to a worker requires generation-bound authorization revocation; this patch does not skip identity checks or substitute a TTL.
+- The follow-up resource-validation change below closes the identified Tk stat/hash path. Other unrelated UI IO paths and full-game behavior remain outside this evidence.
 - Real repeated open/close, floor transitions, image-truth correctness, visible-pixel latency, native handle/RSS long runs and player acceptance remain unverified. Shared mode/frame/floor gates were not relaxed.
 - Coordinate same-file changes with the author-display fallback work before merge. No merge, release, announcement, upload, installation or new Setup is included in this draft. Build a new patch version from the final reviewed remote commit; preserve released 1.0.3.
+
+
+## Follow-up: resource validation lane
+
+The production registry's `validate_state` now runs in one physical background lane, with one replaceable pending request and one result. Scope binds engine/index/provider identity, resource epoch, mode, capture/cycle/floor, state identity/generation, resource key, domains, member reference content, member set and evidence floor. A changed scope cannot consume an old result; cancellation keeps the physical worker occupied until it finishes. No resource check is replaced with a presumed success.
+
+A successful result grants at most 500ms while continuous background rechecks run. New scopes have no grant; expiry hides/revokes pose authority without waiting for IO. Known import/removal/publication immediately cancels old work. A failing file check also revokes a previously MEMBER_VERIFIED core grant, durable confirmation and caches. True end-round clears rejection for the next independent round. Only explicitly trusted UI member-choice/confirmation transitions may carry an identical file binding without extending its original completion time.
+
+Durable identity remains a capture/search hint while closed or on a new capture generation. It does not authorize pixels: provisional commit, sibling delivery and both display paths require current resource validity in addition to their unchanged frame/floor/pose checks. After temporary expiry, recovery records only the current frame/surface context and schedules the original first-pose worker after validation; stale context is discarded. Pixels and core authorization are not restored from cache. First-pose thread-start failure releases its lane and allows retry.
+
+Validation:
+
+- Hidden native Windows Tk plus real registry, synthetic three-member condition resources, hot digest cache and 20ms injected stat: baseline 72 UI stat calls / callback max 165.90ms / heartbeat max 171.97ms; follow-up 0 UI stat calls, 72 background calls / callback max 0.318ms / heartbeat max 10.875ms.
+- Real hashed-file mutation revokes a genuinely authorized/committed AlignmentCoreV2 pose; new generation, close/cancel, late results, repeated group changes and expired-grant recovery are covered. Recovery tests execute production scheduling and real Thread.start; the expensive sensor loop is a recording substitute, not a solver or pixel acceptance claim.
+- Small 5.27s run: 200 UI scheduler calls, 100 generation changes, real registry and 10ms injected stat; callback p95/max 0.124/0.658ms, pending <=1, result <=1, process threads sampled at 24 throughout, RSS 58.31→58.43MB. Process CPU delta was below the psutil timer's measurement resolution; do not interpret the reported zero as zero CPU use.
+- 99 targeted tests passed including the previous 56 plus resource lane, resource lifecycle, group display and group review. Fixtures are synthetic; real difficult-mode assets, full-game long runs and visible-pixel correctness remain unverified by this follow-up.
+
+This follow-up is a separate reviewable commit after `5f06fd27`. Author fallback (PR45) and version-only patch (PR46) are intentionally not mixed into this P0 commit; final integration/build belongs to the coordinating review.

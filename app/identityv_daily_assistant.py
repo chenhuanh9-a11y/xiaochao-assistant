@@ -101,6 +101,7 @@ from session_state_machine import (
     verified_map_hotkey_frame,
 )
 from async_event_log import AsyncEventLog
+from native_resource_validation import NativeResourceValidationMixin
 from runtime_timeline import context as runtime_log_context
 from runtime_timeline import (RuntimeTimeline, observe as observe_runtime,
                               observe_function, floor_vote_evidence, context as runtime_trace_context)
@@ -5594,7 +5595,7 @@ def display_presentation(surface_name):
     return decorate
 
 
-class DailyAssistant:
+class DailyAssistant(NativeResourceValidationMixin):
     @staticmethod
     def display_version_label():
         return APP_DISPLAY_VERSION
@@ -6073,6 +6074,8 @@ class DailyAssistant:
             base._structure_profile_provider = lambda: SHARED_STRUCTURE_PROFILE_ID
         if before_publish is not None:
             before_publish()
+        self._invalidate_native_resource_context('resource-context-published')
+        self._native_resource_rejected = False
         self.game_mode=mode;self.pack=pack;self.gate=RouteDisplayGate(pack)
         self.round_start_intent = None
         self.author_route_catalog=catalog;self.author_coordinate_adapters=adapters
@@ -10241,6 +10244,7 @@ class DailyAssistant:
         request = dict(generation=self._map_package_import_generation,
             installRoot=checked['installRoot'], resourceRoot=checked['resourceRoot'],
             pack=self.pack, mode=self.game_mode, packageId=checked['result']['packageId'], cancelled=threading.Event())
+        self._invalidate_native_resource_context('resource-import-started')
         self._invalidate_capture_work()
         self._invalidate_author_browser()
         self._map_package_live_request = request
@@ -10395,6 +10399,7 @@ class DailyAssistant:
         self._managed_author_packages_state.update(stage='removing' if operation == 'remove' else 'checking',
             ready=None, message='正在移出已登记作者资源并保留备份。' if operation == 'remove' else '正在核对本地已登记资源。')
         if operation == 'remove':
+            self._invalidate_native_resource_context('resource-removal-started')
             self._invalidate_capture_work()
             self._invalidate_author_browser()
 
@@ -12766,10 +12771,20 @@ class DailyAssistant:
             base_pose_context,
         )
         base_pose_context['_workerEnqueuedAt'] = time.perf_counter()
-        threading.Thread(
-            target=self._alignment_v2_first_pose_worker_loop,
-            args=(args,), daemon=True,
-        ).start()
+        try:
+            threading.Thread(
+                target=self._alignment_v2_first_pose_worker_loop,
+                args=(args,), daemon=True,
+            ).start()
+        except RuntimeError as error:
+            with lock:
+                self._alignment_v2_worker_running = False
+                self._alignment_v2_worker_pending = False
+                self._alignment_v2_worker_token = None
+                self._alignment_v2_worker_latest_args = None
+            self.alignment_in_progress = False
+            self._log('alignment-worker-start-failed', message=str(error))
+            return {'handled': True, 'success': False, 'reason': 'v2-sensor-start-failed'}
         self._log_core_chain_event(
             "alignment-v2-first-pose-sensor-started",
             cycleId=token[0], mapId=str(map_id), floor=str(floor),
@@ -15016,6 +15031,8 @@ class DailyAssistant:
 
     def _start_native_group_review(self):
         """One bounded identity job, after the foreground has committed pixels."""
+        if not self._native_similarity_resources_ready():
+            return False
         sibling = getattr(self, 'front_group_sibling_pending', None)
         if (isinstance(sibling, dict) and sibling.get('nativeSimilarity')
                 and not getattr(self, '_alignment_v2_worker_pending', False)
@@ -15086,7 +15103,8 @@ class DailyAssistant:
         self._native_group_review_request = None
         if getattr(self, '_identity_rank_request', None) is request:
             self._identity_rank_request = None
-        if (request['cancelled'].is_set() or request['scope'] != self._native_group_review_scope()
+        if (not self._native_similarity_resources_ready()
+                or request['cancelled'].is_set() or request['scope'] != self._native_group_review_scope()
                 or getattr(self, 'closed', False) or not self.map_is_open or getattr(self, 'floor_required', True)
                 or not getattr(self, 'game_foreground', False)
                 or getattr(self, 'map_visual_suppressed', False)
@@ -15108,7 +15126,9 @@ class DailyAssistant:
         if target == source:
             # Identity is still pending: the next ordinary current-frame pose
             # commit owns final promotion, with the unchanged residual gate.
+            binding = self._native_resource_binding()
             self.native_similarity_state = staged
+            self._carry_native_resource_grant(binding[0] if binding else None, replace_state=True)
             displayed = getattr(self, 'current_alignment_candidate', None) or {}
             self._native_similarity_member_committed(target, str(self.current_floor),
                 global_verified=bool(displayed.get('globalResidualVerified')))
@@ -15149,32 +15169,6 @@ class DailyAssistant:
             state.reset()
             self._native_similarity_priority = None
             self._native_similarity_condition_context = None
-
-    def _check_native_similarity_resources(self):
-        state = getattr(self, 'native_similarity_state', None)
-        index = getattr(getattr(self, 'engine', None), 'native_similarity_index', None)
-        if state is None or (not state.group_id and not state.condition_domains):
-            return
-        self._native_similarity_floor_changed(self.current_floor)
-        if not state.group_id:
-            return
-        try:
-            if index is None:
-                raise ValueError('similarity-context-changed')
-            index.validate_state(state,self.engine.entry_shared_reference_provider)
-        except (OSError,ValueError,KeyError,TypeError):
-            if (state.condition_mode is not None and state.provisional_member_id
-                    and getattr(self.gate,'confirmed_id',None)==state.provisional_member_id
-                    and not getattr(self,'active_confirmation',None)):
-                self.gate.hide_for_new_frame()
-                self.auto_lock_pending=None
-                self._hide_spatial_route('front-group-resource-changed')
-            state.reset()
-            self._native_similarity_priority = None
-            self._native_similarity_condition_context = None
-            self._native_similarity_family = None
-            self._native_group_review_floor = None
-            self._log('similar-group-reset',reason='resource-binding-changed')
 
     def _native_similarity_display_seed(self, event, map_id):
         """Carry a current member pose across group selection, not an identity verdict."""
@@ -15228,13 +15222,26 @@ class DailyAssistant:
         previous = state.snapshot()
         current = state.accept(proposal,self._native_similarity_context(),
             _map_frame_signature_token(map_frame_signature(self.current_frame)))
-        self._check_native_similarity_resources()
+        if not self._check_native_similarity_resources():
+            binding = self._native_resource_binding()
+            if binding is not None:
+                self._pending_native_similarity_ranked = (binding[0], event, previous)
+            return
+        self._finish_native_similarity_ranked(event, previous)
+
+    def _finish_native_similarity_ranked(self, event, previous):
+        state = self.native_similarity_state
+        proposal = dict((event.get('ranked') or [{}])[0].get('nativeSimilarity') or {},
+                        originalIdentityHardGatePassed=bool(state.pending_identity))
+        binding = self._native_resource_binding()
+        previous_binding = binding[0] if binding else None
         display_seeds={}
         if state.state=='GROUP_LOCKED' and state.context_snapshot() and str(self.current_floor)=='1':
             for member in state.member_ids:
                 seed=self._native_similarity_display_seed(event,member)
                 if seed is not None:display_seeds[member]=seed
             state.prefer_display_member(display_seeds)
+        self._carry_native_resource_grant(previous_binding)
         current=state.snapshot()
         self._native_similarity_priority = state.priority(self.game_mode)
         self._native_similarity_condition_context = state.context_snapshot()
@@ -15331,7 +15338,8 @@ class DailyAssistant:
         state = getattr(self, 'native_similarity_state', None)
         if state is None or not global_verified or self.gate.confirmed_id!=map_id:
             return False
-        self._check_native_similarity_resources()
+        if not self._check_native_similarity_resources():
+            return False
         core = self.alignment_core_v2
         if not core.can_display(authorization=core.display_authorization,
                 cycle_id=self.active_map_cycle_id,map_id=map_id,floor=str(floor),
@@ -15341,7 +15349,9 @@ class DailyAssistant:
             self._native_group_conflicts = None
             return False
         provisional=self._front_group_provisional_lock_context(map_id)
+        binding = self._native_resource_binding()
         confirmed = state.confirm(map_id,str(floor),self._native_similarity_context())
+        self._carry_native_resource_grant(binding[0] if binding else None)
         if confirmed:
             self._native_group_conflicts = None
             self._native_similarity_priority = None
@@ -16690,6 +16700,8 @@ class DailyAssistant:
         *, authorization_id: int,
     ) -> bool:
         """The only compositor used by the V2 runtime path."""
+        if not self._native_similarity_resources_ready():
+            return False
         if (
             not getattr(self, "game_foreground", True)
             or getattr(self, "map_visual_suppressed", False)
@@ -16743,6 +16755,8 @@ class DailyAssistant:
         return shown
 
     def _display_authorization_is_current(self, authorization_id: int) -> bool:
+        if not self._native_similarity_resources_ready():
+            return False
         transaction = getattr(self, '_native_sibling_transaction', None)
         if transaction is not None and transaction.source_authorized(authorization_id):
             return True
@@ -18593,6 +18607,8 @@ class DailyAssistant:
         component_override: dict | None = None,
     ) -> bool:
         """Commit V2's authorized root without entering a legacy writer."""
+        if not self._native_similarity_resources_ready():
+            return False
         if (
             map_id not in getattr(getattr(self, "pack", None), "by_id", {})
             or floor not in ROUND_LAYER_FLOORS
@@ -18979,6 +18995,7 @@ class DailyAssistant:
             cancelled.set()
         self._pending_capture_request = None
         self._cancel_rerank_work()
+        self._cancel_native_resource_validation()
         if not preserve_locked_alignment:
             self._invalidate_alignment_work()
         self._invalidate_round_group_edge_correction()
@@ -22193,7 +22210,10 @@ class DailyAssistant:
         """
         engine = getattr(self, "engine", None)
         native = getattr(self, 'native_similarity_state', None)
-        if (getattr(native, 'state', None) == 'GROUP_LOCKED'
+        # Identity is a capture/search hint even while a new display grant is pending.
+        # Compositor and current-frame commit gates separately require that grant.
+        if (not getattr(self, '_native_resource_rejected', False)
+                and getattr(native, 'state', None) == 'GROUP_LOCKED'
                 and (getattr(native, 'floor', None) == str(getattr(self, 'current_floor', ''))
                      or getattr(self, '_native_group_review_floor', None)
                         == (native.resource_key, str(getattr(self, 'current_floor', ''))))
@@ -22239,6 +22259,8 @@ class DailyAssistant:
 
     def _round_identity_lock_context(self, map_id: str | None = None) -> dict | None:
         """Resolve durable identity or a still-provisional reviewed group lock."""
+        if getattr(self, '_native_resource_rejected', False):
+            return None
         active = (
             getattr(self, "active_confirmation", None)
             if isinstance(getattr(self, "active_confirmation", None), dict)
@@ -33267,6 +33289,8 @@ class DailyAssistant:
         opacity: float | None = None,
     ) -> bool:
         """Show a native route layer only while the verified game owns focus."""
+        if not self._native_similarity_resources_ready():
+            return False
         if self._alignment_v2_runtime_is_enabled():
             v2_core = self.alignment_core_v2
             v2_authorization = getattr(v2_core, "display_authorization", None)
@@ -35563,6 +35587,7 @@ class DailyAssistant:
         native_group_state = getattr(self, 'native_similarity_state', None)
         if native_group_state is not None:
             native_group_state.reset()
+        self._native_resource_rejected = False
         self._native_similarity_priority = None
         self._native_similarity_condition_context = None
         self._native_similarity_family = None
@@ -36448,6 +36473,8 @@ class DailyAssistant:
         pending = getattr(self, "front_group_sibling_pending", None)
         if not isinstance(pending, dict) or not isinstance(event, dict):
             return False
+        if pending.get('nativeSimilarity') and not self._native_similarity_resources_ready():
+            return False
         state = (getattr(self, 'native_similarity_state', None) if pending.get('nativeSimilarity')
                  else getattr(getattr(self, "engine", None), "front_group_state", None))
         if (str(getattr(getattr(self, "gate", None), "confirmed_id", ""))
@@ -36647,8 +36674,10 @@ class DailyAssistant:
                     or self.gate.confirmed_id != sibling['toMemberId']):
                 return False
             staged = sibling['stagedNativeState']
+            binding = self._native_resource_binding()
             staged.generation += 1
             self.native_similarity_state = staged
+            self._carry_native_resource_grant(binding[0] if binding else None, replace_state=True)
             self._native_similarity_priority = staged.priority(self.game_mode)
             self._native_similarity_condition_context = staged.context_snapshot()
             self.front_group_sibling_pending = None
@@ -40212,6 +40241,7 @@ class DailyAssistant:
             self.cancel_map_package_import('assistant-closed')
         self._set_sheet_move_mode(False)
         self.closed = True
+        self._cancel_native_resource_validation()
         presenter = getattr(self, 'route_toast_presenter', None)
         if presenter is not None:
             try:

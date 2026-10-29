@@ -8,7 +8,7 @@ import unittest
 
 import numpy as np
 
-from test_native_similarity_runtime import ConditionFixture, IDS, runtime
+from test_native_similarity_runtime import ConditionFixture, IDS, runtime, settle_resource_validation
 from native_similarity_groups import NativeSimilarityState
 from map_identity_engine import MapIdentityEngine
 
@@ -27,10 +27,23 @@ class NativeGroupDisplayTests(unittest.TestCase):
         host.current_frame_generation=1;host.surface_visibility_generation=2
         host.current_frame=np.zeros((40,40,3),np.uint8)
         host._log=lambda *a,**kw:None
+        host._start_alignment_v2_first_pose_worker=lambda *a,**kw:dict(reason="v2-sensor-pending")
         # Resource-coordinate adapter only; rank, group state and seed consumer
         # are real. Pixel/fit validation is exercised by saved-frame replay.
         host._shared_structure_mode_enabled=lambda:True
         host._shared_structure_pose_context=lambda mid,floor:dict(mapId=mid,floor=floor)
+
+    def consume(self, event):
+        self.host._consume_native_similarity_ranked(event)
+        settle_resource_validation(self.host)
+
+    def tearDown(self):
+        lane = getattr(self.host, '_native_resource_lane', None)
+        if lane:
+            lane.cancel()
+            deadline = time.monotonic() + 3
+            while lane.snapshot()['running'] and time.monotonic() < deadline:
+                time.sleep(.002)
 
     def event(self, members=IDS):
         proposal=self.f.propose_condition(np.zeros((40,40),np.uint8))
@@ -42,7 +55,7 @@ class NativeGroupDisplayTests(unittest.TestCase):
 
     def test_group_displays_fitted_member_without_unique_identity_or_difference(self):
         event=self.event(IDS[1:])
-        self.host._consume_native_similarity_ranked(event)
+        self.consume(event)
         self.assertEqual(self.host.gate.confirmed_id,IDS[1])
         state=self.host.similarity_group_snapshot()
         self.assertEqual(state['state'],'GROUP_LOCKED')
@@ -72,12 +85,12 @@ class NativeGroupDisplayTests(unittest.TestCase):
         for key,value in [('token',9),('frame',self.host.current_frame.copy()),
                           ('rankSourceFrameGeneration',0),('rankSourceSurfaceGeneration',1)]:
             event=self.event();event[key]=value
-            self.host._consume_native_similarity_ranked(event)
+            self.consume(event)
             self.assertIsNone(self.host.gate.confirmed_id)
             self.assertEqual(self.host.native_similarity_state.state,'UNLOCKED')
 
     def test_existing_fitted_member_stays_selected_and_evidence_preference_is_preserved(self):
-        self.host._consume_native_similarity_ranked(self.event(IDS[1:]))
+        self.consume(self.event(IDS[1:]))
         state=self.host.native_similarity_state
         state.prefer_display_member(IDS)
         self.assertEqual(state.provisional_member_id,IDS[1])
@@ -86,7 +99,7 @@ class NativeGroupDisplayTests(unittest.TestCase):
         self.assertEqual(state.provisional_member_id,IDS[1])
 
     def test_recovery_keeps_verified_current_member_pose_without_promoting_identity(self):
-        self.host._consume_native_similarity_ranked(self.event())
+        self.consume(self.event())
         engine=MapIdentityEngine.__new__(MapIdentityEngine)
         engine.native_similarity_index=self.f.index
         engine.entry_shared_reference_provider=self.f.provider
