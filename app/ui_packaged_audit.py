@@ -415,6 +415,11 @@ def run(daily, state):
         map_invisible(ui.window)
         if state.get('scenario') == 'import':
             from ui_import_audit import run_import_scenario
+            # start_background=False suppresses the global input/capture
+            # producers, but real import worker results still require the
+            # production main-thread consumer. Enable that consumer only.
+            root.after(assistant.EVENT_POLL_MS, assistant._poll_events)
+            report['replacements'].append('production event poll enabled for isolated import worker results')
             report['importScenario'] = run_import_scenario(assistant, ui, output, pump, stage,
                                                           state['importInputs'])
             report['status'] = 'cleaning_up'
