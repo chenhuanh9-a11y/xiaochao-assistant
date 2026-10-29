@@ -75,6 +75,7 @@ class MapResourceBrowser(tk.Frame):
         self._controls_layout = None
         self._overview = True
         self._overview_rendered = None
+        self._gallery_rendered = None
         self._resource_mode_signature = None
         self._resource_mode_switching = False
         self._wheel_tag = f"MapResourceWheel-{id(self)}"
@@ -83,6 +84,7 @@ class MapResourceBrowser(tk.Frame):
         self.bind("<Configure>", lambda event: self._layout_controls() if event.widget is self else None, add="+")
         self.bind("<Destroy>", self._destroy, add="+")
         self.bind("<Unmap>", lambda event: self.suspend() if event.widget is self else None, add="+")
+        self.bind("<Map>", lambda event: self._resume() if event.widget is self else None, add="+")
         self._schedule(50, self._drain)
 
     def _schedule(self, delay, callback):
@@ -299,6 +301,7 @@ class MapResourceBrowser(tk.Frame):
         self._close_preview()
         self._context = None
         self._overview_rendered = None
+        self._gallery_rendered = None
         self._runtime_route_signature = None
 
     def refresh(self):
@@ -322,7 +325,13 @@ class MapResourceBrowser(tk.Frame):
             self._source_changed()
         else:
             if not self._overview:
-                self._render_gallery()
+                if self._detail is not None or self._gallery_rendered != self._gallery_signature():
+                    self._render_gallery()
+                else:
+                    self._refresh_gallery_resources()
+                    self._layout_controls()
+                    if self._cards:
+                        self._schedule(1, self._load_visible)
             elif self._overview_rendered != self._overview_signature():
                 self._render_overview()
             else:
@@ -770,7 +779,24 @@ class MapResourceBrowser(tk.Frame):
         self._active = False
         self._cancel(self._resize_job)
         self._resize_job = None
+        self._cancel(self._search_job)
+        self._search_job = None
         self._close_preview()
+
+    def _resume(self):
+        # Keep the at-most-two running decodes and their results. The drain
+        # validates them when mapped again; hidden pages neither upload nor
+        # submit more work. Rebuild/resource changes still invalidate generation.
+        if not self._closed:
+            self._active = True
+            if (self.model is not None and self._overview
+                    and self._overview_rendered != self._overview_signature()):
+                self._cancel(self._resize_job)
+                self._resize_job = self._schedule(80, self._render_overview)
+            elif (self.model is not None and not self._overview and self._detail is None
+                    and self._gallery_rendered != self._gallery_signature()):
+                self._cancel(self._search_job)
+                self._search_job = self._schedule(150, self._render_gallery)
 
     @property
     def profile_id(self):
@@ -837,12 +863,15 @@ class MapResourceBrowser(tk.Frame):
             image = tk.Button(tile, text="结构图不可用", bg=IMAGE_BG, fg=MUTED, relief="flat", bd=0,
                               command=lambda selected=asset: self._open_structure(selected), cursor="hand2")
             image.pack(fill="both", expand=True)
-            try:
-                image_width = max(80, round((max(400, width)-2*inset-2*gap)/3))
-                image._map_photo = ImageTk.PhotoImage(load_structure_preview(asset, (round(image_width*self._scale), round(image_height*self._scale))), master=self)
-                image.configure(image=image._map_photo, text="", width=1, height=round(image_height*self._scale))
-            except (OSError, ValueError, KeyError):
-                image.configure(state="disabled")
+            image_width = max(80, round((max(400, width)-2*inset-2*gap)/3))
+            size = (round(image_width*self._scale), round(image_height*self._scale))
+            # Reserve the same pixel geometry before the worker finishes. A Tk
+            # Button without an image interprets height as lines, not pixels.
+            image._map_photo = ImageTk.PhotoImage(Image.new("RGB", (1, size[1]), IMAGE_BG), master=self)
+            image.configure(image=image._map_photo, text="", width=1, height=size[1])
+            image._preview_failure_text = "结构图不可用"
+            image._preview_disable_on_failure = True
+            self._request(asset.path, size, image, structure=asset)
             _label(tile, asset.name, size=9, bold=True, anchor="w", wraplength=120).pack(fill="x", pady=(8, 0))
             _label(tile, floor_label(asset.floor), size=9, color=MUTED, anchor="w").pack(fill="x", pady=(3, 0))
         if not assets:
@@ -863,11 +892,11 @@ class MapResourceBrowser(tk.Frame):
         cover_path = next((Path(path) for item in self.model.maps(self.profile_id) for variant in item.variants
                            for path in variant.layers.values() if Path(path).is_file()), None)
         if cover_path is not None:
-            try:
-                cover._map_photo = ImageTk.PhotoImage(load_preview(cover_path, (round(112*self._scale), round(88*self._scale))), master=self)
-                cover.configure(image=cover._map_photo, text="", width=round(112*self._scale), height=round(88*self._scale))
-            except (OSError, ValueError):
-                cover.configure(text="预览不可用")
+            size = (round(112*self._scale), round(88*self._scale))
+            cover._map_photo = ImageTk.PhotoImage(Image.new("RGB", size, IMAGE_BG), master=self)
+            cover.configure(image=cover._map_photo, text="", width=size[0], height=size[1])
+            cover._preview_failure_text = "预览不可用"
+            self._request(cover_path, size, cover)
         info = tk.Frame(author, bg=CARD)
         info.pack(side="left", fill="x", expand=True)
         if len(self._profile_keys) > 1:
@@ -923,14 +952,36 @@ class MapResourceBrowser(tk.Frame):
         self._cancel(self._search_job)
         self._search_job = None
         self._overview_rendered = None
+        self._gallery_rendered = None
         self._generation += 1
         self._cards = []
         self._cancel_preview_work()
         for child in self.content.winfo_children():
             child.destroy()
 
+    def _gallery_signature(self):
+        return (self._context, self.profile_id, self.search_var.get().strip().casefold(),
+                self._floor_choices.get(self.floor_var.get()))
+
+    def _refresh_gallery_resources(self):
+        # Explicit refresh still rechecks disk availability. Retain the cards,
+        # and let visible thumbnails compare current stamps before reusing pixels.
+        floor = self._floor_choices.get(self.floor_var.get())
+        for row in self._cards:
+            status = resource_status(row['item'], floor)
+            if status != row['resource_status']:
+                row['resource_status'] = status
+                row['status'].configure(text=status, fg=MUTED if status == '图片已收录' else WARNING)
+                row['thumb']._success_status = '可预览 · 已收录' if status == '图片已收录' else status
+            row['loaded'] = not bool(row['binding'])
+        inventory = resource_inventory([row['item'] for row in self._cards], floor)
+        qualifier = "源图标签不是游戏楼层" if self.profile_id == STRUCTURE_SOURCE else "选择缩略图查看完整路线与楼层"
+        summary = f"{self._inventory_text(inventory)}\n{qualifier}"
+        if summary != self._summary_full:
+            self._summary_full = summary
+            self._controls_layout = None
+
     def _render_gallery(self):
-        self._search_job = None
         self._detail = None
         self._close_preview()
         self._clear_content()
@@ -951,6 +1002,7 @@ class MapResourceBrowser(tk.Frame):
             _label(empty, "试试清空名称搜索，或切换来源与楼层。", color=MUTED, size=9).pack(anchor="w", pady=8)
             _button(empty, "清空搜索", self._clear_search).pack(anchor="w")
             self._apply_display()
+            self._gallery_rendered = self._gallery_signature()
             return
         self.canvas = tk.Canvas(self.content, bg=BG, highlightthickness=0)
         scroll = tk.Scrollbar(self.content, orient="vertical", command=self._scroll_to)
@@ -970,6 +1022,7 @@ class MapResourceBrowser(tk.Frame):
         self._apply_display()
         self._columns = 0
         self._schedule(1, self._layout_cards)
+        self._gallery_rendered = self._gallery_signature()
 
     def _make_card(self, item, floor):
         card = RoundedFrame(self.grid_frame, bg=CARD, highlightthickness=1, highlightbackground=LINE, radius=14)
@@ -998,7 +1051,7 @@ class MapResourceBrowser(tk.Frame):
         for widget in (title, status_label):
             widget.bind("<Configure>", lambda event: event.widget.configure(wraplength=max(80, event.width)))
         row = dict(frame=card, thumb=thumb, title=title, floor=floor_text, status=status_label, item=item, binding=binding, loaded=False,
-                   requested_size=None)
+                   requested_size=None, resource_status=status)
         self._cards.append(row)
         if not binding:
             thumb.configure(text="未收录此来源图片\n点击查看资源详情")
@@ -1111,23 +1164,40 @@ class MapResourceBrowser(tk.Frame):
                 self._request(path, size, row["thumb"],
                               f"{floor_label(floor, source=row['item'].structure)} · 点击看大图")
 
-    def _request(self, path, size, widget, caption=""):
+    def _request(self, path, size, widget, caption="", *, structure=None):
         generation = self._generation
         try:
-            stamp = path.stat().st_mtime_ns
+            stat = path.stat()
+            stamp = stat.st_mtime_ns, stat.st_size
         except OSError:
             widget._image_request = None
-            widget.configure(image="", text="图片文件缺失\n请检查内置资源是否完整")
+            widget._displayed_image_request = None
+            if hasattr(widget, '_preview_failure_text'):
+                widget.configure(text=widget._preview_failure_text, compound="center")
+                if getattr(widget, '_preview_disable_on_failure', False):
+                    widget.configure(state="disabled")
+            else:
+                widget.configure(image="", text="图片文件缺失\n请检查内置资源是否完整")
+                widget._map_photo = None
             return
-        key = (str(path), stamp, size)
+        key = (str(path), stamp, size,
+               (structure.array, structure.source_version) if structure is not None else None)
+        if getattr(widget, '_displayed_image_request', None) == (generation, key):
+            return
+        if (getattr(widget, '_image_request', None) == (generation, key)
+                and (widget in self._preview_waiting or any(
+                    request[:3] == (generation, key, widget) for request in self._pending.values()))):
+            return
+        widget._displayed_image_request = None
         widget._image_request = (generation, key)
-        if key in self._cache:
+        if key in self._cache and getattr(self, '_active', True):
             self._cache.move_to_end(key)
             self._apply_image(widget, self._cache[key], caption)
             return
-        widget.configure(image="", text="正在加载图片…")
+        if not hasattr(widget, '_preview_failure_text'):
+            widget.configure(image="", text="正在加载图片…")
         # One latest request per widget; at most two submitted decodes.
-        self._preview_waiting[widget] = (generation, key, path, size, caption)
+        self._preview_waiting[widget] = (generation, key, path, size, caption, structure)
         self._preview_waiting.move_to_end(widget)
         while len(self._preview_waiting) > 64:
             old_widget, _ = self._preview_waiting.popitem(last=False)
@@ -1144,15 +1214,18 @@ class MapResourceBrowser(tk.Frame):
             future.cancel()
 
     def _pump_preview_work(self):
+        if not getattr(self, '_active', True) or getattr(self, '_closed', False):
+            return
         while self._preview_waiting and len(self._preview_futures) < 2:
             widget, request = self._preview_waiting.popitem(last=False)
-            generation, key, path, size, caption = request
+            generation, key, path, size, caption, structure = request
             if (generation != self._generation or not widget.winfo_exists()
                     or widget._image_request != (generation, key)):
                 continue
             token = object()
             self._pending[token] = (generation, key, widget, caption)
-            future = self._executor.submit(load_preview, path, size)
+            future = (self._executor.submit(load_structure_preview, structure, size)
+                      if structure is not None else self._executor.submit(load_preview, path, size))
             self._preview_futures[token] = future
             def done(result, token=token):
                 try:
@@ -1167,6 +1240,7 @@ class MapResourceBrowser(tk.Frame):
         photo = ImageTk.PhotoImage(pixels, master=self)
         widget.configure(image=photo, text=caption, compound="bottom")
         widget._map_photo = photo
+        widget._displayed_image_request = widget._image_request
         status = getattr(widget, "_status_widget", None)
         if status is not None:
             status.configure(text=widget._success_status,
@@ -1174,6 +1248,9 @@ class MapResourceBrowser(tk.Frame):
                                  WARNING if any(word in widget._success_status for word in ("缺失", "未核对")) else MUTED))
 
     def _drain(self):
+        if not getattr(self, '_active', True):
+            self._schedule(50, self._drain)
+            return
         if getattr(self, '_active', False):
             self.sync_managed_packages()
         deadline = time.perf_counter() + .006
@@ -1201,7 +1278,12 @@ class MapResourceBrowser(tk.Frame):
                     self._cache.popitem(last=False)
                 self._apply_image(widget, pixels, caption)
             elif error:
-                widget.configure(image="", text="图片无法读取\n请检查资源文件或重新下载")
+                if hasattr(widget, '_preview_failure_text'):
+                    widget.configure(text=widget._preview_failure_text, compound="center")
+                    if getattr(widget, '_preview_disable_on_failure', False):
+                        widget.configure(state="disabled")
+                else:
+                    widget.configure(image="", text="图片无法读取\n请检查资源文件或重新下载")
                 status = getattr(widget, "_status_widget", None)
                 if status is not None:
                     status.configure(text=widget._error_status, fg=WARNING)

@@ -618,8 +618,14 @@ class DesktopMainUI:
         content = tk.Frame(canvas, bg=SURFACE)
         item = canvas.create_window((0, 0), window=content, anchor="nw")
         def fit_content(event=None):
-            if event is not None and event.widget is canvas:
-                canvas.itemconfigure(item, width=max(1, event.width))
+            # Hidden pages can receive content Configure events after a DPI
+            # change without a canvas Configure. Keep the embedded window
+            # constrained then too: auto width plus self-wrapping labels can
+            # otherwise oscillate forever while Tk drains idle geometry.
+            width = max(1, event.width if event is not None and event.widget is canvas
+                        else canvas.winfo_width())
+            if round(float(canvas.itemcget(item, "width"))) != width:
+                canvas.itemconfigure(item, width=width)
             if name == "home":
                 # Fill the client viewport while retaining scrolling at small
                 # sizes; requested content height does not include surplus.
