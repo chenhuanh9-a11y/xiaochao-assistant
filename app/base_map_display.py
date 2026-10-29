@@ -46,8 +46,9 @@ class BaseMapDisplay:
     Recognition always retains its separate clean-mask/pose inputs.
     """
 
-    def __init__(self, capacity=6):
+    def __init__(self, capacity=6, max_bytes=96 * 1024 * 1024):
         self.capacity = max(1, min(int(capacity), 6))
+        self.max_bytes = max(1, min(int(max_bytes), 96 * 1024 * 1024))
         self._cache = OrderedDict()
         self._lock = threading.RLock()
         self._generation = 0
@@ -109,6 +110,8 @@ class BaseMapDisplay:
                 or abs(np.linalg.det(matrix[:2, :2])) < 1e-12):
             raise ValueError("invalid image-to-native affine")
         mask = np.asarray(reference.clean_mask)
+        if mask.nbytes + mask.size * 4 > self.max_bytes:
+            return BaseMapDisplayResult(None, 'base-map-cache-byte-limit')
         if mask.ndim != 2 or tuple(mask.shape) != tuple(asset.native_shape):
             raise ValueError("native canvas mismatch")
         if tuple(reference.shape) != tuple(asset.native_shape):
@@ -158,6 +161,8 @@ class BaseMapDisplay:
             if generation != self._generation:
                 return BaseMapDisplayResult(None, "base-map-stale-preparation")
             self._cache[key] = (library, reference, fingerprint, layer)
-            while len(self._cache) > self.capacity:
+            while (len(self._cache) > self.capacity or sum(
+                    entry[1].clean_mask.nbytes + entry[3]['routeSource'].nbytes
+                    for entry in self._cache.values()) > self.max_bytes):
                 self._cache.popitem(last=False)
             return BaseMapDisplayResult(dict(layer))
