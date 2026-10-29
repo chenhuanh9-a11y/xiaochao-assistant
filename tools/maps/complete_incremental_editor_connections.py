@@ -138,6 +138,9 @@ def complete(source,out,resources,plan_path,geometry_root,old_path,new_path,patc
         maps[mid]['crossFloorRoutingEvidence']='source stair-room association, offline graph checked; gameplay and internal polyline unverified'
     manifest['sources']['incrementalConnections']=dict(sourceConnectorsSha256=sha256(connector_path),derivedRoomException=proof,
         addedRoomLinks=sum(x['added'] for x in added),sourceStairLinks=len(stairs),sourceEntryRoomAnchors=len(front))
+    manifest['sources']['incrementalNativeMaps']['crossFloorTransfers']=(
+        'source stair-room associations added; internal navigation polyline and gameplay unverified; '
+        'existing verified stairs retained')
     (out/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=1),'utf8');verify_package(out,manifest)
     return dict(derivedExceptions=added,exceptionProof=proof,stairLinks=stairs,entryRoomAnchors=front)
 
