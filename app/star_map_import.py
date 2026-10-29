@@ -23,6 +23,7 @@ MANIFEST = "map-package.json"
 AUTHOR_PACKAGES = {
     "nightmare-wang-qingxin": "wang-qingxin",
     "nightmare-nightingale": "nightingale",
+    "nightmare-lianghapi": "lianghapi-single",
 }
 AUTHOR_SIDECARS = {"catalog.json", "display-bindings.json"}
 LIVE_AUTHOR_IMAGE_ROOTS = {
@@ -30,6 +31,7 @@ LIVE_AUTHOR_IMAGE_ROOTS = {
     "difficult-zhan10": ("_internal/assets/zhan10-native/", "_internal/assets/zhan10-legacy-clean/"),
     "nightmare-wang-qingxin": ("_internal/assets/authors/wang-qingxin/",),
     "nightmare-nightingale": ("_internal/assets/authors/nightingale/",),
+    "nightmare-lianghapi": ("_internal/assets/authors/lianghapi-single/",),
 }
 PACKAGE_IDS = {"nightmare-suju", "difficult-zhan10"} | set(AUTHOR_PACKAGES)
 SUPPORTED_DISPLAY_VERSIONS = {"1.0", "1.0.1", "1.0.2", "1.0.3", "1.0.4"}

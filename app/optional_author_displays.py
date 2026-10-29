@@ -39,7 +39,7 @@ class OptionalAuthorDisplays:
         if self.catalog is not None:
             self.catalog.profiles = dict(catalog.profiles)
             self.catalog._raw = copy.deepcopy(catalog._raw)
-        for profile in ('wang-qingxin','nightingale'):
+        for profile in ('wang-qingxin','nightingale','lianghapi-single'):
             folder = self.root/'references/author-packs'/profile
             sidecar = folder/'catalog.json'
             if not sidecar.is_file():
@@ -70,6 +70,11 @@ class OptionalAuthorDisplays:
                 or profile not in catalog.profiles):
             raise ValueError('optional author display context mismatch')
         expected = {(item.id,str(floor)) for item in pack.maps for floor in item.layers}
+        declared = {(map_id,str(floor))
+                    for map_id,variants in catalog.profiles[profile].maps.items()
+                    for variant in variants for floor in variant.layers}
+        if not declared or not declared <= expected:
+            raise ValueError('optional author catalog contains no current display layers')
         rows = {}
         for declaration in payload['entries']:
             map_id,floor = str(declaration['mapId']),str(declaration['floor'])
@@ -87,7 +92,7 @@ class OptionalAuthorDisplays:
                     or declaration.get('profileId') != profile or resource.get('floor') != floor
                     or version_key != version['expected']['structureVersionKey']
                     or declaration.get('structureVersionKey') != version_key
-                    or payload.get('sourceVersion') != version['expected']['sourceVersion']
+                    or declaration.get('sourceVersion',payload.get('sourceVersion')) != version['expected']['sourceVersion']
                     or not path.is_relative_to(self.root) or not path.is_file()
                     or declared_path is None or path != declared_path.resolve()
                     or declaration.get('identityAuthority') is not False
@@ -106,7 +111,7 @@ class OptionalAuthorDisplays:
             status = declaration['registration']['status']
             rows[key] = dict(path=path,matrix=matrix,usable=status=='confirmed',status=status,
                 declaration=declaration)
-        if {(key[1],key[2]) for key in rows} != expected:
+        if {(key[1],key[2]) for key in rows} != declared:
             raise ValueError('optional author current display inventory is incomplete')
         return rows
 
