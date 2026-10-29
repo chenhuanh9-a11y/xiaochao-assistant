@@ -55,3 +55,7 @@ python scripts/test_map_update.py
 - 楼梯仅由明确房型语义和同一房间各层出口构建连接；多层 footprint 本身不证明楼梯。入口边界/port 不冒充屏幕图标中心。来源缺项明确 unknown，不能伪造可达性。
 - 安卓等私下交接只收本次必要地图数据、坐标与校验和，不含整包原始模块、作者图或用户日志。公开仓库仅提交工具和文档。
 - 资源 stage 不一定等于完整运行根。组合根 manifest、产品源码与资源 overlay 的来源都需记录，并经实际 factory/provider/loader 回读后才能冻结包体。
+
+### Static doors on editor display images
+
+Use `tools/maps/render_editor_doors.py` only on an independent editor package. Recompute reciprocal room ports from the current layout/room definitions and check them against retained source door-frame evidence. External doors require explicit layout door slots; spawn icons and entry-room centers are not door boundaries. Apply the existing native-to-image inverse matrix and the verified source empty-frame sprite. Preserve images with already-baked doors to prevent double drawing. This changes display images and their hashes only: recognition masks, prepared arrays, topology, and coordinate matrices must remain byte/value identical. Dynamic open/closed state and current texture re-extraction remain separate evidence. Missing normal editor assets or authoritative door data are reported as unknown, never inferred from footprint alpha. Run `tests/test_editor_door_display.py` and inspect entry, side-door, and internal-door pixel crops before integrating the display revision.
