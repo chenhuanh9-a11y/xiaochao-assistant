@@ -16,7 +16,7 @@ class GroupReviewTests(display_fixture.NativeGroupDisplayTests):
     # Reuse only the fixture; inherited baseline tests remain useful here.
     def prepare(self):
         h=self.host
-        h._consume_native_similarity_ranked(self.event())
+        self.consume(self.event())
         h.events=queue.Queue();h.game_foreground=True;h.closed=False
         h.map_visual_suppressed=False;h.alignment_in_progress=False
         h.route_profile_id='fixture';h._native_similarity_member_committed=lambda *a,**kw:False

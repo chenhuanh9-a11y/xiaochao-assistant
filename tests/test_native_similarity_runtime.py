@@ -170,6 +170,18 @@ class ConditionFixture(Fixture):
             side_rows=side,side_diagnostics=dict(complete=True),prior=prior,deadline=deadline)
 
 
+def settle_resource_validation(host, *, invalid=False):
+    """Wait for real background file validation; never substitute a verdict."""
+    import time
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        ready = host._check_native_similarity_resources()
+        if (ready and not invalid) or not host.native_similarity_state.group_id:
+            return ready
+        time.sleep(.002)
+    raise AssertionError('resource validation did not settle')
+
+
 class NativeSimilarityRuntimeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -188,6 +200,7 @@ class NativeSimilarityRuntimeTests(unittest.TestCase):
         a.map_is_open = True; a.floor_required = False
         a.gate = SimpleNamespace(confirmed_id=None); a.alignment_core_v2 = AlignmentCoreV2()
         a.logs = []; a._log = lambda event, **values:a.logs.append((event, values))
+        a._start_alignment_v2_first_pose_worker = lambda *args, **kw: dict(reason='v2-sensor-pending')
         return a
 
     def consume(self, a, proposal, *, shade=0):
@@ -198,6 +211,7 @@ class NativeSimilarityRuntimeTests(unittest.TestCase):
                 mapId=proposal.get('candidateMemberId'),
                 identityHardGatePassed=bool(proposal.get('originalIdentityHardGatePassed')))])
         a._consume_native_similarity_ranked(event)
+        settle_resource_validation(a)
         return event
 
     def poll_to_group_consumer(self, a, event):
@@ -221,7 +235,7 @@ class NativeSimilarityRuntimeTests(unittest.TestCase):
              patch.object(runtime.tk, 'Tk', side_effect=AssertionError('No Tk')), \
              patch.object(runtime.tk, 'Toplevel', side_effect=AssertionError('No Toplevel')):
             with self.assertRaises(PrefixCompleted):
-                a._poll_events()
+                a._poll_events_once()
 
     def test_real_poll_fresh_rerank_keeps_source_binding_and_creates_group(self):
         a = self.host()
@@ -263,7 +277,7 @@ class NativeSimilarityRuntimeTests(unittest.TestCase):
         a = self.host(); self.consume(a, self.f.propose())
         a._hide_spatial_route = lambda *args:None
         a._invalidate_floor_switch_work(None, '1', '2', reason='fixture-switch')
-        a.current_floor = '2'; a._check_native_similarity_resources()
+        a.current_floor = '2'; settle_resource_validation(a)
         self.assertEqual(a.similarity_group_snapshot()['state'], 'UNLOCKED')
         self.assertIsNone(a._native_similarity_priority)
         a._invalidate_floor_switch_work(None, '2', '1', reason='fixture-return')
@@ -460,7 +474,7 @@ class NativeSimilarityRuntimeTests(unittest.TestCase):
             a._consume_native_similarity_ranked(stale)
             self.assertEqual(a.similarity_group_snapshot(), before)
         self.f.refs[(IDS[2], '1')].metadata['structureVersionKey'] = 'replaced'
-        a._check_native_similarity_resources()
+        settle_resource_validation(a, invalid=True)
         self.assertEqual(a.similarity_group_snapshot()['state'], 'UNLOCKED')
         self.assertIsNone(a._native_similarity_priority)
         self.assertEqual(self.f.propose()['status'], 'unavailable')
@@ -476,7 +490,9 @@ class NativeSimilarityRuntimeTests(unittest.TestCase):
                      '_clear_round_layer_group', '_reset_locked_fit_retry', '_update_floor_buttons', 'hide_route',
                      '_hide_round_recovery', '_save_settings', '_refresh_candidates', 'set_expanded', '_set_status'):
             setattr(a, name, lambda *args, **kw:None)
+        a._native_resource_rejected = True
         self.assertTrue(a.end_round(notify=False)['success'])
+        self.assertFalse(a._native_resource_rejected)
         self.assertEqual(a.capture_generation, 11)
         self.assertEqual(a.similarity_group_snapshot()['state'], 'UNLOCKED')
         self.assertIsNone(a._native_similarity_priority)
@@ -493,7 +509,7 @@ class NativeSimilarityRuntimeTests(unittest.TestCase):
         self.assertIs(e._native_similarity_prioritize(rows, '2'), rows)
         (self.f.root / self.f.floor['differenceResourcePath']).write_bytes(b'changed')
         self.assertIs(e._native_similarity_prioritize(rows, '1'), rows)
-        a._check_native_similarity_resources()
+        settle_resource_validation(a, invalid=True)
         self.assertEqual(a.similarity_group_snapshot()['state'], 'UNLOCKED')
 
     def test_cached_samples_are_point_for_point_equivalent_and_reused(self):
@@ -720,10 +736,12 @@ class NativeFrontConditionTests(unittest.TestCase):
         host.current_frame_generation=1;host.surface_visibility_generation=2
         host.current_frame=np.zeros((40,40,3),np.uint8)
         host._log=lambda *args,**kw:None
+        host._start_alignment_v2_first_pose_worker=lambda *args,**kw:dict(reason='v2-sensor-pending')
         proposal=self.f.propose_condition(np.zeros((40,40),np.uint8))
         rows=[dict(mapId=IDS[1],nativeSimilarity=proposal,identityHardGatePassed=False)]
         host._consume_native_similarity_ranked(dict(token=10,frame=host.current_frame,
             rankSourceFrameGeneration=1,rankSourceSurfaceGeneration=2,ranked=rows))
+        settle_resource_validation(host)
         self.assertEqual(host.gate.confirmed_id,IDS[0])
         self.assertTrue(host._round_identity_lock_context()['provisional'])
         # Deliver a failed current-frame sensor result through the production
