@@ -449,6 +449,10 @@ class MapResourceBrowser(tk.Frame):
             message = (f"确认移除 {ready.get('title', ready.get('packageId', ''))} 的 "
                        f"{ready.get('fileCount', 0)} 个作者文件？文件将移到本机备份，可恢复；"
                        "结构底图、预制数据、编辑器与自定义路线保留。无需重启。")
+            if ready.get('modifiedFiles'):
+                message += (f"其中 {len(ready['modifiedFiles'])} 个文件有本地改动，将原样备份；"
+                            "移除后可重新导入资源包。")
+            message += "备份位于安装目录的 work/map-package-removals。"
         signature = rows, message, busy, self._managed_open, repr(ready)
         if signature == self._managed_signature:
             return
@@ -464,7 +468,7 @@ class MapResourceBrowser(tk.Frame):
             row = self._managed_rows.get(package_id)
             if row is None:
                 frame = tk.Frame(self.managed_list, bg=BG)
-                button = _button(frame, '删除…', lambda value=package_id: self._inspect_managed_removal(value))
+                button = _button(frame, '备份移除…', lambda value=package_id: self._inspect_managed_removal(value))
                 button.pack(side='right', padx=(10, 0))
                 label = _label(frame, anchor='w', justify='left', wraplength=450)
                 label.pack(side='left', fill='x', expand=True)
@@ -503,7 +507,8 @@ class MapResourceBrowser(tk.Frame):
         callback = getattr(self.assistant, 'confirm_author_package_removal', None)
         result = None
         if ready is not None and callable(callback):
-            result = callback(ready['packageId'], expected_receipt_sha256=ready['receiptSha256'])
+            result = callback(ready['packageId'], expected_receipt_sha256=ready['receiptSha256'],
+                              expected_plan_sha256=ready['planSha256'])
         self.sync_managed_packages()
         if isinstance(result, dict) and result.get('success') is False:
             self.managed_message.configure(text=str(result.get('message') or '当前不能移除资源。'))

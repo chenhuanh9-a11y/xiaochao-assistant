@@ -26,7 +26,8 @@ def browser_methods():
     cls.body = [node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name in names]
     module = ast.Module(body=[cls], type_ignores=[])
     env = dict(tk=SimpleNamespace(Frame=Widget), BG='bg',
-               _button=lambda *a, **kw: Widget(*a, **kw), _label=lambda *a, **kw: Widget(*a, **kw))
+               _button=lambda parent, text, command: Widget(parent, text=text, command=command),
+               _label=lambda *a, **kw: Widget(*a, **kw))
     exec(compile(ast.fix_missing_locations(module), str(path), 'exec'), env)
     return env['MapResourceBrowser']
 
@@ -64,15 +65,17 @@ class ManagementUITests(unittest.TestCase):
         self.assertFalse(any(c[0]=='confirm' for c in self.calls))
         self.browser._confirm_managed_removal()
         self.assertFalse(any(c[0]=='confirm' for c in self.calls))
-        self.state['ready']=dict(packageId='nightmare-suju',title='滋酥居',fileCount=72,receiptSha256='a'*64)
+        self.state['ready']=dict(packageId='nightmare-suju',title='滋酥居',fileCount=72,
+                                 receiptSha256='a'*64,planSha256='b'*64)
         self.browser.sync_managed_packages()
         self.assertIn('备份',self.browser.managed_message.values['text'])
         self.browser._confirm_managed_removal()
-        self.assertIn(('confirm','nightmare-suju',{'expected_receipt_sha256':'a'*64}),self.calls)
+        self.assertIn(('confirm','nightmare-suju',{'expected_receipt_sha256':'a'*64,
+                                                  'expected_plan_sha256':'b'*64}),self.calls)
 
     def test_busy_rows_disabled_and_completed_state_clears_confirmation(self):
         self.state.update(busy=True,packages=[dict(packageId='nightmare-suju',status='installed',canRemove=True)],
-                          ready=dict(packageId='nightmare-suju',receiptSha256='a'*64))
+                          ready=dict(packageId='nightmare-suju',receiptSha256='a'*64,planSha256='b'*64))
         self.browser.sync_managed_packages()
         self.assertEqual(self.browser.managed_confirm.values['state'],'disabled')
         self.assertEqual(self.browser._managed_rows['nightmare-suju']['button'].values['state'],'disabled')
@@ -80,6 +83,19 @@ class ManagementUITests(unittest.TestCase):
         self.browser.sync_managed_packages()
         self.assertFalse(self.browser.managed_confirm.packed)
         self.assertIn('未安装',self.browser._managed_rows['nightmare-suju']['label'].values['text'])
+
+    def test_modified_managed_resource_has_explicit_backup_recovery(self):
+        self.state.update(packages=[dict(packageId='nightmare-suju', status='incomplete', canRemove=True)],
+            ready=dict(packageId='nightmare-suju', title='滋酥居', fileCount=2,
+                       modifiedFiles=['changed.png'], receiptSha256='a'*64,planSha256='b'*64))
+        self.browser.sync_managed_packages()
+        row = self.browser._managed_rows['nightmare-suju']
+        self.assertIn('需修复', row['label'].values['text'])
+        self.assertIn('备份', row['button'].values['text'])
+        self.assertEqual(row['button'].values['state'], 'normal')
+        self.assertIn('1 个文件有本地改动', self.browser.managed_message.values['text'])
+        self.assertIn('原样备份', self.browser.managed_message.values['text'])
+        self.assertIn('重新导入', self.browser.managed_message.values['text'])
 
     def test_open_refreshes_local_state_and_closed_ui_ignores_results(self):
         self.browser._managed_open=False
