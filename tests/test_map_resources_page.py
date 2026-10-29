@@ -150,6 +150,41 @@ class MapResourcesPageTests(unittest.TestCase):
         self.assertIsInstance(self.page, MapResourcesPage)
         self.assertTrue(entry.drag_handles)
 
+    def test_packaged_diagnostic_uses_visible_resource_tab_actions(self):
+        import ui_packaged_audit as audit
+        self.page._open_gallery = self.page._show_overview = lambda: self.fail('obsolete gallery action')
+        audit.activate_resource_tab(self.page, 'discover')
+        self.assertEqual(self.page._tab,'discover')
+        audit.activate_resource_tab(self.page, 'installed')
+        self.assertEqual(self.page._tab,'installed')
+        with self.assertRaises(ValueError): audit.activate_resource_tab(self.page,'unknown')
+        self.assertEqual(self.actions.calls,[])
+
+    def test_diagnostic_windows_are_inert_before_constructor_mapping(self):
+        import ctypes
+        from ctypes import wintypes
+        import ui_packaged_audit as audit
+        user=ctypes.WinDLL('user32',use_last_error=True)
+        user.GetAncestor.argtypes=[wintypes.HWND,wintypes.UINT]
+        user.GetAncestor.restype=wintypes.HWND
+        user.GetWindowLongW.argtypes=[wintypes.HWND,ctypes.c_int]
+        user.SetWindowLongW.argtypes=[wintypes.HWND,ctypes.c_int,ctypes.c_long]
+        window=tk.Toplevel(self.root);window.withdraw()
+        try:
+            hwnd=audit.isolate_window(window,tk.Wm.attributes,user)
+            self.assertTrue(window.attributes('-disabled'))
+            self.assertEqual(window.attributes('-alpha'),0.0)
+            self.assertEqual(window.state(),'withdrawn')
+            self.assertTrue(user.GetWindowLongW(hwnd,-20)&0x08000000)
+            window.title('星图 1.0.5')
+            audit.set_isolated_override(window, True, tk.Wm.overrideredirect, tk.Wm.attributes, user)
+            window.update_idletasks()
+            hwnd=user.GetAncestor(window.winfo_id(),2)
+            self.assertTrue(window.attributes('-disabled'))
+            self.assertTrue(user.GetWindowLongW(hwnd,-20)&0x08000000)
+        finally:
+            window.destroy()
+
     def test_slow_old_context_never_blocks_ui_or_replaces_latest_mode(self):
         started, release = threading.Event(), threading.Event()
         original = page_module.load_browse_context
