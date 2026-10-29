@@ -29,10 +29,10 @@
 
 ## 资源包
 
-当前版本：[custom-maps-20261028-2](https://github.com/chenhuanh9-a11y/xiaochao-assistant/releases/tag/custom-maps-20261028-2)，`xingtu-custom-maps-20261028-2.zip`，8,392,636 字节，SHA-256 `ee4b9ba686f41d7dd677ebcf34fb0d9d6cf1b07d7f96cb7d2eeae207a5070c00`。打包软件前下载并安装：
+当前版本：[custom-maps-20261028-3](https://github.com/chenhuanh9-a11y/xiaochao-assistant/releases/tag/custom-maps-20261028-3)，`xingtu-custom-maps-20261028-3.zip`，8,392,815 字节，SHA-256 `9b10fd9d6b37bf987548fe4fa5d015b22110943d91408d2fa64e5bfad47ce416`。打包软件前下载并安装：
 
 ```
-python tools/maps/install_custom_maps.py --archive xingtu-custom-maps-20261028-2.zip --sha256 ee4b9ba686f41d7dd677ebcf34fb0d9d6cf1b07d7f96cb7d2eeae207a5070c00
+python tools/maps/install_custom_maps.py --archive xingtu-custom-maps-20261028-3.zip --sha256 9b10fd9d6b37bf987548fe4fa5d015b22110943d91408d2fa64e5bfad47ce416
 ```
 
 重新构建：
@@ -72,10 +72,10 @@ python tools/draw_custom_routes.py
 - 尚未在 Windows 实机和游戏内验证对齐效果。
 # 构建交接与兼容修复
 
-固定资源 Release：`custom-maps-20261028-2`，资源 ZIP `xingtu-custom-maps-20261028-2.zip`，8,392,636 字节，SHA256 `ee4b9ba686f41d7dd677ebcf34fb0d9d6cf1b07d7f96cb7d2eeae207a5070c00`。Release 是编辑器资源包，不是软件安装包。
+固定资源 Release：`custom-maps-20261028-3`，资源 ZIP `xingtu-custom-maps-20261028-3.zip`，8,392,815 字节，SHA256 `9b10fd9d6b37bf987548fe4fa5d015b22110943d91408d2fa64e5bfad47ce416`。Release 是编辑器资源包，不是软件安装包。
 
 ```powershell
-python tools/maps/install_custom_maps.py --archive <下载的ZIP> --sha256 ee4b9ba686f41d7dd677ebcf34fb0d9d6cf1b07d7f96cb7d2eeae207a5070c00 --root <干净构建输出根目录>
+python tools/maps/install_custom_maps.py --archive <下载的ZIP> --sha256 9b10fd9d6b37bf987548fe4fa5d015b22110943d91408d2fa64e5bfad47ce416 --root <干净构建输出根目录>
 ```
 
 资源安装在应用根目录 `assets/custom-maps`，包含 manifest、图片和道路拓扑；`app/custom_default_gallery.json` 由构建脚本随程序收集。不要把验证目录、玩家图库或设置打进安装包。安装工具会替换目标资源目录，仅用于已确认的构建 stage；不应拿它覆盖未知用户自制资源。
