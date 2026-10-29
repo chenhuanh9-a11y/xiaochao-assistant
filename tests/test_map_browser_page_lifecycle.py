@@ -120,6 +120,44 @@ class MapBrowserLifecycle(unittest.TestCase):
         self.assertGreater(b._generation, old_generation)
         self.assertEqual(b.model.mode, 'difficult')
 
+    def test_real_managed_buttons_backup_changed_image_then_allow_reimport(self):
+        from test_live_author_import import LiveAuthorImportTests, SUJU
+        import author_package_management as manager
+        fixture = LiveAuthorImportTests('runTest')
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        original_image = self.path.read_bytes()
+        archive = fixture.package('nightmare-suju', {SUJU: original_image})
+        fixture.live(archive)
+        fixture.write(SUJU, b'user-modified-image')
+        state = dict(busy=False, packages=manager.managed_author_packages_snapshot(fixture.root))
+        results = []
+        def inspect(package_id):
+            state['ready'] = manager.inspect_author_package_removal(fixture.root, package_id)
+        def confirm(package_id, **kwargs):
+            result = manager.remove_author_package_live(fixture.root, package_id,
+                application_idle=True, **kwargs)
+            results.append(result)
+            state.update(ready=None, packages=manager.managed_author_packages_snapshot(fixture.root))
+        self.assistant.managed_author_packages_snapshot = lambda **kwargs: state
+        self.assistant.inspect_author_package_removal = inspect
+        self.assistant.confirm_author_package_removal = confirm
+        b = self.browser
+        b._toggle_managed_packages()
+        button = b._managed_rows['nightmare-suju']['button']
+        self.assertEqual(str(button.cget('state')), 'normal')
+        button.invoke()  # Actual bound Tk command, not an extracted method.
+        self.assertIn('原样备份', b.managed_message.cget('text'))
+        b.managed_confirm.invoke()
+        self.assertEqual((Path(results[0]['backupPath']) / SUJU).read_bytes(), b'user-modified-image')
+        self.assertIn('未安装', b._managed_rows['nightmare-suju']['label'].cget('text'))
+        fixture.live(archive)
+        state['packages'] = manager.managed_author_packages_snapshot(fixture.root)
+        b.sync_managed_packages()
+        self.assertIn('已安装', b._managed_rows['nightmare-suju']['label'].cget('text'))
+        self.assertEqual((fixture.root / SUJU).read_bytes(), original_image)
+        fixture.assert_base_preserved()
+
     def test_overview_decodes_off_ui_thread_and_reuses_pixels(self):
         b = self.browser
         owner = threading.get_ident()

@@ -10382,19 +10382,23 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
     def inspect_author_package_removal(self, package_id: str) -> dict:
         return self._begin_author_package_management('inspect', package_id)
 
-    def confirm_author_package_removal(self, package_id: str, *, expected_receipt_sha256: str) -> dict:
+    def confirm_author_package_removal(self, package_id: str, *, expected_receipt_sha256: str,
+                                      expected_plan_sha256: str) -> dict:
         ready = (getattr(self, '_managed_author_packages_state', None) or {}).get('ready') or {}
         if (ready.get('packageId') != package_id or not expected_receipt_sha256
                 or ready.get('receiptSha256') != expected_receipt_sha256
+                or not expected_plan_sha256 or ready.get('planSha256') != expected_plan_sha256
                 or getattr(self, '_managed_author_ready_context', None) != self._author_management_context()):
             return dict(success=False, reason='removal-reinspection-required', message='资源状态已变化，请重新检查后确认。')
-        return self._begin_author_package_management('remove', package_id, expected_receipt_sha256)
+        return self._begin_author_package_management('remove', package_id, expected_receipt_sha256,
+                                                    expected_plan_sha256)
 
     def _author_management_context(self) -> tuple:
         return (str(Path(ROOT).resolve()), str(Path(RESOURCE_ROOT).resolve()),
             id(self.pack), self.game_mode, getattr(self, '_map_package_import_generation', 0))
 
-    def _begin_author_package_management(self, operation: str, package_id: str = '', receipt: str | None = None) -> dict:
+    def _begin_author_package_management(self, operation: str, package_id: str = '', receipt: str | None = None,
+                                        plan_sha256: str | None = None) -> dict:
         self._ensure_map_package_import_state()
         if (getattr(self, '_map_package_live_request', None) is not None
                 or self._map_package_helper_request is not None
@@ -10437,7 +10441,8 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                     event['ready'] = inspect_author_package_removal(request['context'][0], package_id)
                 else:
                     event['result'] = remove_author_package_live(request['context'][0], package_id,
-                        application_idle=True, expected_receipt_sha256=receipt, cancelled=request['cancelled'].is_set)
+                        application_idle=True, expected_receipt_sha256=receipt,
+                        expected_plan_sha256=plan_sha256, cancelled=request['cancelled'].is_set)
             except Exception as error:
                 event['error'] = f'{type(error).__name__}: {error}'
             event['cancelled'] = request['cancelled'].is_set()

@@ -34,6 +34,7 @@ class ManagementController(unittest.TestCase):
         h._ensure_map_package_import_state = Mock(); h._ensure_online_map_package_state = Mock()
         h._author_import_idle = Mock(return_value=True)
         h._invalidate_capture_work = Mock(); h._invalidate_author_browser = Mock()
+        h._invalidate_native_resource_context = Mock(); h._invalidate_base_display = Mock()
         h._refresh_imported_author_resources = Mock()
         self.ui_thread = threading.get_ident()
         self.io_threads = []
@@ -44,7 +45,7 @@ class ManagementController(unittest.TestCase):
             return run
         self.module = SimpleNamespace(
             managed_author_packages_snapshot=Mock(side_effect=io([{'packageId':'p'}])),
-            inspect_author_package_removal=Mock(side_effect=io({'packageId':'p','receiptSha256':'abc'})),
+            inspect_author_package_removal=Mock(side_effect=io({'packageId':'p','receiptSha256':'abc','planSha256':'plan'})),
             remove_author_package_live=Mock(side_effect=io({'status':'author-removed-live'})))
         self.patch = patch.dict(sys.modules, author_package_management=self.module)
         self.patch.start(); self.addCleanup(self.patch.stop)
@@ -68,20 +69,22 @@ class ManagementController(unittest.TestCase):
 
     def test_remove_requires_reviewed_receipt_and_idle_lease(self):
         h = self.host
-        self.assertFalse(h.confirm_author_package_removal('p', expected_receipt_sha256='abc')['success'])
+        self.assertFalse(h.confirm_author_package_removal('p', expected_receipt_sha256='abc', expected_plan_sha256='plan')['success'])
         h.inspect_author_package_removal('p'); self.consume()
-        self.assertFalse(h.confirm_author_package_removal('p', expected_receipt_sha256='changed')['success'])
+        self.assertFalse(h.confirm_author_package_removal('p', expected_receipt_sha256='changed', expected_plan_sha256='plan')['success'])
+        self.assertFalse(h.confirm_author_package_removal('p', expected_receipt_sha256='abc', expected_plan_sha256='changed')['success'])
         h._author_import_idle.return_value = False
-        self.assertFalse(h.confirm_author_package_removal('p', expected_receipt_sha256='abc')['success'])
+        self.assertFalse(h.confirm_author_package_removal('p', expected_receipt_sha256='abc', expected_plan_sha256='plan')['success'])
         self.module.remove_author_package_live.assert_not_called()
 
     def test_remove_completion_refreshes_on_ui_then_rechecks_packages(self):
         h = self.host
         h.inspect_author_package_removal('p'); self.consume()
-        self.assertTrue(h.confirm_author_package_removal('p', expected_receipt_sha256='abc')['success'])
+        self.assertTrue(h.confirm_author_package_removal('p', expected_receipt_sha256='abc', expected_plan_sha256='plan')['success'])
         h._refresh_imported_author_resources.assert_not_called()
         event = self.consume()
         self.assertEqual(event['kind'], 'author-package-removed')
+        self.assertEqual(self.module.remove_author_package_live.call_args.kwargs['expected_plan_sha256'], 'plan')
         h._refresh_imported_author_resources.assert_called_once()
         self.assertEqual(h._online_installed_packages['p']['status'], 'not-installed')
         self.consume()  # asynchronous list refresh
@@ -144,7 +147,7 @@ class ManagementController(unittest.TestCase):
                 self.consume()
                 ready = self.host.managed_author_packages_snapshot()['ready']
                 self.assertTrue(self.host.confirm_author_package_removal('nightmare-suju',
-                    expected_receipt_sha256=ready['receiptSha256'])['success'])
+                    expected_receipt_sha256=ready['receiptSha256'], expected_plan_sha256=ready['planSha256'])['success'])
                 event = self.consume(); self.consume()
                 backup = Path(event['result']['backupPath'])
                 self.assertEqual((backup/SUJU).read_bytes(), b'owned-author-pixels')

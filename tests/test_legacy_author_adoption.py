@@ -54,7 +54,7 @@ class LegacyAdoptionTests(unittest.TestCase):
             self.assertEqual(receipt.read_bytes(),before)
             plan = manager.inspect_author_package_removal(self.f.root,package)
             manager.remove_author_package_live(self.f.root,package,application_idle=True,
-                expected_receipt_sha256=plan['receiptSha256'])
+                expected_receipt_sha256=plan['receiptSha256'], expected_plan_sha256=plan['planSha256'])
             self.assertEqual(manager.adopt_legacy_author_package(self.f.root,package)['status'],'not-installed')
             archive=self.f.package(package,{path:b'new-approved'},package+'.zip')
             self.assertEqual(self.f.live(archive)['status'],'author-installed-live')
