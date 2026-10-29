@@ -155,7 +155,10 @@ class ArtAndIncrementTests(unittest.TestCase):
             self.assertEqual(added["stairs"][0], dict(id="s", cost=1, bidirectional=True, **{
                 "from": dict(floor="1", x=10, y=10), "to": dict(floor="1", x=10, y=10)}))
             self.assertEqual(added["floors"]["1"]["entrances"], [dict(label="正门", x=10.0, y=10.0)])
-            self.assertNotIn("template", added["floors"]["1"])
+            # The Android route editor template for 104026 is the native canvas at 0.7.
+            self.assertEqual((added["templateId"], added["templateNumber"]), ("nightmare-layout-28", 28))
+            self.assertEqual(added["floors"]["1"]["template"]["imageSize"], [28, 22])
+            self.assertAlmostEqual(added["floors"]["1"]["template"]["matrixImageToNative"][0][0], 1 / .7, places=5)
             with Image.open(root / "out" / floor["image"]) as image:
                 self.assertEqual((image.mode, image.getpixel((0, 0))[3]), ("RGBA", 0))
 

@@ -54,6 +54,11 @@ TEMPLATE_MAPS = {
     26: "4f5d6ac0-b1ae-4338-8d6e-b67cd1e3af51", 27: "37d291a1-529d-4a0e-8938-e4754e5f7a0d",
 }
 FLOORS = {"minus-1": "B1", "1": "1", "2": "2"}
+# Maps added after the legacy editor -> the Android route editor template drawn for them.
+# Those templates are the native canvas scaled by 0.7 (alpha IoU 0.96-0.97 against the
+# structure footprint at exactly that scale, checked 2026-10-29), so their cells convert directly.
+INCREMENT_TEMPLATES = {"nightmare-layout-104026": ("nightmare-layout-28", 28, .7),
+                       "nightmare-layout-104027": ("nightmare-layout-29", 29, .7)}
 ROAD_PATCHES = Path(__file__).resolve().parent / "custom-road-patches.json"
 PATCH_SCHEMA = "xingtu-custom-road-patches-v1"
 TILE = 60
@@ -268,7 +273,7 @@ def main(argv=None) -> int:
     if args.review:
         args.review.mkdir(parents=True, exist_ok=True)
 
-    def write_floor(map_id, key, layout, topology_path, native, footprint, legacy=None, entrances=()):
+    def write_floor(map_id, key, layout, topology_path, native, footprint, legacy=None, entrances=(), template=None):
         """One floor: art, matrix and road graph. ``legacy`` is (rgba, source, matrix, overlap) or None.
 
         ``footprint`` is the native mask the redrawn art is registered to; the
@@ -304,10 +309,14 @@ def main(argv=None) -> int:
             topology=topology_rel, topologySha256=sha256(out / topology_rel), maskSha256=mask_hash,
             entrances=[dict(label=label, **dict(zip("xy", through(origin, matrix, x, y)))) for label, x, y in entrances])
         if legacy is not None and args.art:
+            template = ([legacy[0].shape[1], legacy[0].shape[0]], legacy[2], legacy[3])
+        if template is not None:
             # Legacy stairs and Android route cells are defined on the template art.
-            row["template"] = dict(imageSize=[legacy[0].shape[1], legacy[0].shape[0]],
-                                   matrixImageToNative=[[round(float(v), 6) for v in r] for r in legacy[2]],
-                                   overlap=round(legacy[3], 4))
+            size, template_matrix, template_overlap = template
+            row["template"] = dict(imageSize=size,
+                                   matrixImageToNative=[[round(float(v), 6) for v in r] for r in template_matrix])
+            if template_overlap is not None:
+                row["template"]["overlap"] = round(template_overlap, 4)
         if args.review:
             review_overlay(args.review / f"{map_id}-{key}.jpg", rgba, matrix, footprint)
         return row
@@ -375,6 +384,8 @@ def main(argv=None) -> int:
             map_id, layout = entry["mapId"], str(entry["sourceLayout"])
             if any(row["mapId"] == map_id for row in maps):
                 raise ValueError(f"increment map {map_id} is already in the package")
+            template_id, template_number, scale = INCREMENT_TEMPLATES.get(
+                map_id, (entry["templateId"], entry["templateNumber"], None))
             floors = {}
             for key, source in entry["floors"].items():
                 topology_path = args.increment / source["topology"]
@@ -386,13 +397,17 @@ def main(argv=None) -> int:
                     raise ValueError(f"increment structure hash mismatch for {map_id}/{key}")
                 if args.art is None:
                     raise ValueError("--increment needs --art for its display art")
+                template = None
+                if scale is not None:
+                    height, width = native.shape
+                    template = ([round(width * scale), round(height * scale)], np.diag([1 / scale, 1 / scale, 1.]), None)
                 floors[key] = write_floor(map_id, key, layout, topology_path, native, native,
                                           entrances=[(e["label"], float(e["x"]), float(e["y"]))
-                                                     for e in source.get("entrances", [])])
-            maps.append(dict(mapId=map_id, templateId=entry["templateId"], templateNumber=entry["templateNumber"],
+                                                     for e in source.get("entrances", [])], template=template)
+            maps.append(dict(mapId=map_id, templateId=template_id, templateNumber=template_number,
                              name=entry["name"], aliases=entry.get("aliases", []), floors=floors,
                              stairs=[{key: stair[key] for key in STAIR_KEYS} for stair in entry.get("stairs", [])]))
-            print(entry["templateNumber"], map_id, {k: v["overlap"] for k, v in floors.items()},
+            print(template_number, map_id, {k: v["overlap"] for k, v in floors.items()},
                   "stairs", len(entry.get("stairs", [])), flush=True)
         increment_source = dict(version=increment.get("version"), gameVersion=increment.get("sourceGameVersion"),
                                 manifestSha256=sha256(manifest_path))
