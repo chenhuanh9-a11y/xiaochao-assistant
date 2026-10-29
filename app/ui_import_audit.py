@@ -33,10 +33,21 @@ def sha256(path):
     return digest.hexdigest()
 
 
-def no_links(path):
-    """Reject reparse points before resolving, including all parent components."""
+def no_links(path, *, stop_at=None):
+    """Reject reparse components, optionally stopping at an owned root inclusive.
+
+    Default pre-guard identity validation still checks every parent. Bounded
+    post-guard calls validate lexical ancestry before any filesystem request.
+    """
     path = Path(path)
-    for part in (path, *path.parents):
+    parts = (path, *path.parents)
+    if stop_at is not None:
+        boundary = Path(stop_at)
+        if (not path.is_absolute() or not boundary.is_absolute()
+                or '..' in path.parts or '..' in boundary.parts or boundary not in parts):
+            raise ValueError('import-audit-invalid-link-boundary')
+        parts = parts[:parts.index(boundary) + 1]
+    for part in parts:
         info = part.lstat()
         if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
             raise ValueError('import-audit-reparse-point')
@@ -131,13 +142,20 @@ def prepare_import_audit(argv):
         raise SystemExit(f'Import audit refused: {error}') from error
 
 
-def _inventory(root):
+def _inventory(root, boundary):
     root = Path(root)
+    boundary = Path(boundary)
+    if (not root.is_absolute() or not boundary.is_absolute()
+            or '..' in root.parts or '..' in boundary.parts
+            or (root != boundary and boundary not in root.parents)):
+        raise ValueError('import-audit-invalid-inventory-boundary')
+    no_links(boundary, stop_at=boundary)
     if not root.exists():
         return {}
+    no_links(root, stop_at=boundary)
     result = {}
     for path in sorted(root.rglob('*')):
-        no_links(path)
+        no_links(path, stop_at=boundary)
         if path.is_file():
             result[str(path.relative_to(root))] = sha256(path)
     return result
@@ -205,7 +223,7 @@ def run_import_scenario(assistant, ui, output, pump, stage, inputs):
     custom_roots[0].mkdir(exist_ok=True)
     with (custom_roots[0] / 'audit-preservation-marker.bin').open('xb') as marker:
         marker.write(b'owned diagnostic fixture: preserve during author import\n')
-    custom_before = {str(path): _inventory(path) for path in custom_roots}
+    custom_before = {str(path): _inventory(path, output) for path in custom_roots}
     report.update(protectedCoreCount=len(protected), protectedCustomRoots=list(custom_before))
     browser = ui.map_browser
     original_dialog = map_resource_browser.filedialog.askopenfilename
@@ -390,7 +408,7 @@ def run_import_scenario(assistant, ui, output, pump, stage, inputs):
         report['finalPreference'] = final_preference
         require({name: sha256(installation / name) for name in protected} == protected,
                 'Import changed protected base/structure dependency bytes')
-        require({str(path): _inventory(path) for path in custom_roots} == custom_before,
+        require({str(path): _inventory(path, output) for path in custom_roots} == custom_before,
                 'Import changed protected custom library')
         report['status'] = 'completed'
         report['protectedCoreUnchanged'] = report['protectedCustomUnchanged'] = True

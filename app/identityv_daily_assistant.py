@@ -7409,6 +7409,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 "_collapse_assistant_shell": lambda: self.set_control_visible(False, source="mouse"),
             },
         )
+        self.display_opacity_updates = self.game_control_view._opacity_updates
         self.quick_surface = self.game_control_view
         for name in (
             "quick_start_round_button", "quick_end_round_button", "quick_main_button",
@@ -8789,6 +8790,12 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             else:
                 surface.pack_forget()
         for name, button in getattr(self, "shell_nav_buttons", {}).items():
+            if mode == "quick":
+                # The normal panel hides this legacy navigation chrome. Its
+                # unused selected style must not invalidate the whole Tk tree;
+                # visible diagnostic/settings navigation is styled below when
+                # that surface is actually opened.
+                continue
             selected = name == mode
             button.configure(
                 bg=floating_theme.NAV_SELECTED if selected else floating_theme.TINT,
@@ -30423,6 +30430,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         if self.opacity_var.get() != percent:
             self.opacity_var.set(percent)
         self.opacity_label.configure(text=f"小抄不透明度 {percent}%")
+        updates = getattr(self, 'display_opacity_updates', None)
+        if updates is not None:
+            updates.external('overlay', percent)
         self._sync_game_control_view()
         if (self.sheet_opacity != previous
             and getattr(self, '_sheet_opacity_after_id', None) is None
@@ -30459,6 +30469,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         self.reference_opacity = percent / 100.0
         if self.reference_opacity_var.get() != percent:
             self.reference_opacity_var.set(percent)
+        updates = getattr(self, 'display_opacity_updates', None)
+        if updates is not None:
+            updates.external('reference', percent)
         self._sync_game_control_view()
         if (self.reference_opacity != previous
                 and getattr(self, '_reference_opacity_after_id', None) is None
@@ -40412,6 +40425,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             return
         if self.closed:
             return
+        updates = getattr(self, 'display_opacity_updates', None)
+        if updates is not None:
+            updates.commit()
         if hasattr(self, '_online_map_package_state'):
             self.cancel_online_map_package('assistant-closed')
         if hasattr(self, '_map_package_import_state'):

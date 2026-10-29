@@ -30,6 +30,7 @@ class OpacityUpdates:
         self.dirty = set()
         self.save_timer = None
         self.closed = False
+        self._flushing_surface = None
 
     def sync(self, surface, value):
         value = opacity_percent(value)
@@ -49,13 +50,39 @@ class OpacityUpdates:
             self.cancel(self.save_timer)
         self.save_timer = self.schedule(300, self.commit)
 
+    def external(self, surface, value):
+        """Reconcile a controller write without replaying an older queued value.
+
+        A callback from our own flush retains its dirty/save lease. A direct
+        controller write supersedes just that surface; the other lane survives.
+        """
+        value = opacity_percent(value)
+        if self.closed or surface not in self.previews:
+            return
+        self.values[surface] = value
+        if self._flushing_surface == surface:
+            return
+        timer = self.timers.pop(surface, None)
+        if timer is not None:
+            self.cancel(timer)
+        self.pending.pop(surface, None)
+        self.dirty.discard(surface)
+        if not self.dirty and self.save_timer is not None:
+            self.cancel(self.save_timer)
+            self.save_timer = None
+
     def flush(self, surface):
         timer = self.timers.pop(surface, None)
         if timer is not None:
             self.cancel(timer)
         value = self.pending.pop(surface, None)
         if not self.closed and value is not None:
-            self.previews[surface](value)
+            previous = self._flushing_surface
+            self._flushing_surface = surface
+            try:
+                self.previews[surface](value)
+            finally:
+                self._flushing_surface = previous
 
     def commit(self):
         if self.save_timer is not None:

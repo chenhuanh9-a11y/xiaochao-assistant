@@ -3,6 +3,7 @@ import ast
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -112,6 +113,53 @@ class ImportAuditTests(unittest.TestCase):
         with patch.object(Path, 'lstat', return_value=SimpleNamespace(st_mode=0, st_file_attributes=0x400)):
             with self.assertRaisesRegex(ValueError, 'reparse-point'):
                 audit.no_links(Path('C:/owned/link'))
+
+    def test_bounded_link_check_includes_root_and_rejects_nonancestor_before_io(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as temporary:
+            boundary = Path(temporary).resolve()
+            path = boundary / 'custom' / 'marker.bin'
+            seen = []
+            def info(part):
+                seen.append(part)
+                return SimpleNamespace(st_mode=0, st_file_attributes=0)
+            with patch.object(Path, 'lstat', info):
+                audit.no_links(path, stop_at=boundary)
+                self.assertEqual(seen, [path, path.parent, boundary])
+                seen.clear()
+                for invalid in (boundary / 'sibling', boundary.parent / (boundary.name + '-other'),
+                                boundary / '..'):
+                    with self.assertRaisesRegex(ValueError, 'invalid-link-boundary'):
+                        audit.no_links(path, stop_at=invalid)
+                    self.assertEqual(seen, [])
+
+    def test_custom_inventory_under_real_guard_never_reads_above_owned_root(self):
+        # Guard audit hooks cannot be removed; keep the real filesystem check in
+        # a child, with both readable/writable roots restricted to the owned run.
+        source = Path(audit.__file__).parent
+        script = '''
+import importlib.util,json,os,pathlib,sys,tempfile,uuid
+sys.dont_write_bytecode=True
+def load(name):
+    spec=importlib.util.spec_from_file_location(name,pathlib.Path({source!r})/(name+'.py'))
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
+m=load('ui_import_audit');g=load('ui_packaged_audit')
+parent=pathlib.Path(tempfile.mkdtemp());root=parent/('xingtu-import-audit-'+uuid.uuid4().hex)
+root.mkdir();custom=root/'custom';custom.mkdir();nested=custom/'nested';nested.mkdir()
+marker=nested/'marker.bin';marker.write_bytes(b'preserve owned custom fixture')
+expected={{str(marker.relative_to(custom)):m.sha256(marker)}}
+guard=g.PathGuard(root,[root]);guard.install()
+before=m._inventory(custom,root)
+assert before==expected
+assert m._inventory(custom,root)==before
+assert m._inventory(root/'missing-library',root)=={{}}
+assert not guard.attempts,guard.attempts
+print(json.dumps(dict(inventory=before,attempts=guard.attempts)),flush=True)
+os._exit(0)
+'''.format(source=str(source))
+        result = subprocess.run([sys.executable, '-B', '-c', script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['attempts'], [])
 
     def test_wrong_meipass_and_tampered_release_identity_refuse_claim(self):
         with tempfile.TemporaryDirectory() as temporary:

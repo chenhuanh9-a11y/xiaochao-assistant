@@ -65,6 +65,30 @@ class SettlementTests(unittest.TestCase):
         self.assertEqual(events[keys.index('round')],('round',False))
         self.assertEqual(events[keys.index('noactivate')],('noactivate',False))
 
+    def test_hidden_legacy_navigation_is_not_restyled_and_visible_task_is_fresh(self):
+        events=[]
+        def chrome(name):
+            return SimpleNamespace(pack=lambda **kw:events.append((name,'pack')),
+                pack_forget=lambda:events.append((name,'forget')))
+        button=SimpleNamespace(configure=lambda **kw:events.append(('navstyle',kw)))
+        owner=SimpleNamespace(assistant_shell_mode='quick',
+            _ui_action_begin=lambda *a,**kw:None,
+            shell_header=chrome('header'),shell_navigation=chrome('navigation'),
+            assistant_shell_body=object(),quick_surface=chrome('quick'),
+            details_surface=chrome('recognition'),settings_surface=chrome('settings'),
+            shell_nav_buttons={'quick':button},_sync_recognition_ui=lambda:events.append(('sync',)))
+        theme=SimpleNamespace(NAV_SELECTED='selected',TINT='tint',TEXT='text',MUTED='muted')
+        fn=method('_set_assistant_surface',floating_theme=theme)
+        fn(owner,'quick')
+        self.assertIn(('navigation','forget'),events)
+        self.assertFalse(any(row[0]=='navstyle' for row in events))
+        events.clear();fn(owner,'settings')
+        style=next(row[1] for row in events if row[0]=='navstyle')
+        self.assertEqual(style['bg'],'tint')
+        self.assertEqual(style['fg'],'muted')
+        self.assertEqual(style['font'][-1],'normal')
+        self.assertIn(('navigation','pack'),events)
+
     def test_default_noactivate_keeps_settlement_and_requeries_current_wrapper(self):
         events=[]
         user=SimpleNamespace(GetAncestor=lambda child,kind:(events.append(('ancestor',child)) or 789),

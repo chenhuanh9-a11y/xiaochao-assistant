@@ -603,7 +603,10 @@ class GameControlView(tk.Frame):
             if self._geometry_pending is not None:
                 self.after_cancel(self._geometry_pending)
                 self._geometry_pending = None
-            self._opacity_updates.close()
+            try:
+                self._opacity_updates.commit()
+            finally:
+                self._opacity_updates.close()
             self._brand_images.close()
             self._ball_photo = None
             # Destroy is delivered on the owning Tk thread. Child widgets can

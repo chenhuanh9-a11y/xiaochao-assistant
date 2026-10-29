@@ -1334,36 +1334,7 @@ class DesktopMainUI:
         self.reference_feedback = self._label(reference, size=9, color=GOLD, anchor="w", justify="left", wraplength=400)
         self._reference_controls_signature = None
         tk.Frame(display, bg=LINE, height=1).pack(fill="x", pady=(0, 14))
-        self.display_scales = {}
-        for title, var, low, high, callback in (
-            ("不透明度", self.assistant.opacity_var, 0, 100, self.assistant.change_sheet_opacity),
-            ("大小", self.assistant.sheet_scale_var, 50, 150, self.assistant.change_sheet_scale),
-        ):
-            block = tk.Frame(display, bg=SURFACE)
-            block.pack(fill="x", pady=(0, 12))
-            row = tk.Frame(block, bg=SURFACE)
-            row.pack(fill="x", pady=(0, 6))
-            self._label(row, "小抄大小" if title == "大小" else title, size=10).pack(side="left")
-            value = RoundedButton(row, text="", bg=BUTTON_BG, fg=BUTTON_TEXT, activebackground=BUTTON_BG,
-                                  activeforeground=BUTTON_TEXT, highlightthickness=0, radius=9,
-                                  font=(FONT, 9, "bold"), padx=8, pady=2, takefocus=0, cursor="arrow")
-            value.pack(side="right")
-            def update_value(*_args, target=value, variable=var):
-                target.configure(text=f"{round(float(variable.get()))}%")
-            self._preference_traces.append((var, var.trace_add("write", update_value)))
-            update_value()
-            # Flat slider: thin track, solid blue thumb; native keyboard handling kept.
-            scale = tk.Scale(block, from_=low, to=high, variable=var, command=callback,
-                             orient="horizontal", showvalue=False, resolution=1, width=8, sliderlength=18,
-                             sliderrelief="flat", bg=PRIMARY, fg=TEXT, troughcolor=LINE,
-                             activebackground=PRIMARY_HOVER, highlightthickness=0, bd=0, cursor="hand2")
-            scale.pack(fill="x")
-            self.display_scales[title] = scale
-            scale.bind("<ButtonRelease-1>", lambda _event: self.assistant._save_settings())
-            scale.bind("<KeyRelease>", lambda event: self.assistant._save_settings()
-                       if event.keysym in {"Left", "Right", "Up", "Down", "Home", "End", "Prior", "Next"} else None)
-        self._label(display, "不透明度 0% 完全透明，100% 完全不透明。", size=8, color=SUBTLE,
-                    anchor="w").pack(fill="x")
+        self._build_display_sliders(display)
 
         self._build_chest_auto_tap(content)
 
@@ -1415,6 +1386,53 @@ class DesktopMainUI:
         _button(row, "打开悬浮设置", self._open_advanced).pack(side="right")
         self.preferences_surface.bind("<Configure>", lambda _e: self._layout_preferences(), add="+")
         self._finish_scroll_page("preferences")
+
+    def _build_display_sliders(self, display):
+        """Bind controller variables; coalesce preview work and settings writes."""
+        self._display_opacity_updates = self.assistant.display_opacity_updates
+        self.window.bind('<Unmap>', lambda event: self._commit_display_opacity()
+                         if event.widget is self.window else None, add='+')
+        self.display_scales = {}
+        self.display_scale_values = {}
+        for title, var, low, high, callback in (
+            ("贴合小抄不透明度", self.assistant.opacity_var, 0, 100,
+             lambda value: self._display_opacity_updates.change('overlay', value)),
+            ("定点地图不透明度", self.assistant.reference_opacity_var, 0, 100,
+             lambda value: self._display_opacity_updates.change('reference', value)),
+            ("大小", self.assistant.sheet_scale_var, 50, 150, self.assistant.change_sheet_scale),
+        ):
+            block = tk.Frame(display, bg=SURFACE)
+            block.pack(fill="x", pady=(0, 12))
+            row = tk.Frame(block, bg=SURFACE)
+            row.pack(fill="x", pady=(0, 6))
+            self._label(row, "小抄大小" if title == "大小" else title, size=10).pack(side="left")
+            value = RoundedButton(row, text="", bg=BUTTON_BG, fg=BUTTON_TEXT, activebackground=BUTTON_BG,
+                                  activeforeground=BUTTON_TEXT, highlightthickness=0, radius=9,
+                                  font=(FONT, 9, "bold"), padx=8, pady=2, takefocus=0, cursor="arrow")
+            value.pack(side="right")
+            def update_value(*_args, target=value, variable=var):
+                target.configure(text=f"{round(float(variable.get()))}%")
+            self._preference_traces.append((var, var.trace_add("write", update_value)))
+            update_value()
+            # Flat slider: thin track, solid blue thumb; native keyboard handling kept.
+            scale = tk.Scale(block, from_=low, to=high, variable=var, command=callback,
+                             orient="horizontal", showvalue=False, resolution=1, width=8, sliderlength=18,
+                             sliderrelief="flat", bg=PRIMARY, fg=TEXT, troughcolor=LINE,
+                             activebackground=PRIMARY_HOVER, highlightthickness=0, bd=0, cursor="hand2")
+            scale.pack(fill="x")
+            self.display_scales[title] = scale
+            self.display_scale_values[title] = value
+            commit = self.assistant._save_settings if title == '大小' else self._display_opacity_updates.commit
+            scale.bind("<ButtonRelease-1>", lambda _event, save=commit: save())
+            scale.bind("<KeyRelease>", lambda event, save=commit: save()
+                       if event.keysym in {"Left", "Right", "Up", "Down", "Home", "End", "Prior", "Next"} else None)
+        self._label(display, "不透明度 0% 完全透明，100% 完全不透明。", size=8, color=SUBTLE,
+                    anchor="w").pack(fill="x")
+
+    def _commit_display_opacity(self):
+        updates = getattr(self, '_display_opacity_updates', None)
+        if updates is not None:
+            updates.commit()
 
     def _build_chest_auto_tap(self, content):
         card = self._card(content, padx=24, pady=22)
@@ -2070,6 +2088,7 @@ class DesktopMainUI:
             return
         self._closed = True
         self._close_home_previews()
+        self._commit_display_opacity()
         if self._support_window is not None:
             self._support_window.close()
             self._support_window = None
@@ -2115,6 +2134,7 @@ class DesktopMainUI:
         if self._page == "help" and page != "help":
             self._close_help_images()
         if self._page == "preferences" and page != "preferences":
+            self._commit_display_opacity()
             self._cancel_map_key()
         for name, frame in self._page_frames.items():
             frame.pack_forget()
@@ -2486,6 +2506,7 @@ class DesktopMainUI:
     def hide(self) -> None:
         if self._closed or getattr(self.assistant, "closed", False) or not self.window.winfo_exists():
             return
+        self._commit_display_opacity()
         self._cancel_map_key()
         self._close_help_images()
         # The controller directly withdraws/iconifies the existing window;
