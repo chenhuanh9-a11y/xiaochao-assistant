@@ -1,10 +1,15 @@
 """Incremental editor source bindings and static-road boundaries, synthetic only."""
 import copy
 import unittest
+import json
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
-from extend_custom_map_package import check_native_binding, topology_from_geometry
+from extend_custom_map_package import check_native_binding, topology_from_geometry, checked_plan, contained, extend
+from complete_incremental_editor_connections import complete
 
 
 class IncrementalBindingTests(unittest.TestCase):
@@ -51,6 +56,43 @@ class IncrementalBindingTests(unittest.TestCase):
             position=[0,2,0], rotation=0, worldVoxels=[[0,2,0],[1,2,0]])], pairedDoors=[])
         with self.assertRaisesRegex(ValueError,'empty'):
             topology_from_geometry(geometry,self.metadata,np.ones((60,120),bool),'new','1')
+
+
+class InputPathTests(unittest.TestCase):
+    def test_both_entrypoints_reject_nested_output_before_read_or_copy(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); source=root/'source'; source.mkdir()
+            for output in (source/'new', source, root):
+                with self.subTest(output=output), patch('extend_custom_map_package.shutil.copytree') as copytree:
+                    with self.assertRaisesRegex(ValueError, 'overlaps'):
+                        extend(source,root/'plan',root/'geometry',root/'resources',output,'v')
+                    with self.assertRaisesRegex(ValueError, 'overlaps'):
+                        complete(source,output,root/'resources',root/'plan',root/'geometry',root/'old',root/'new',root/'patch',root/'connectors')
+                    copytree.assert_not_called()
+            self.assertFalse((source/'new').exists())
+
+    def test_plan_rejects_path_identity_and_wrong_floor_before_writes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); plan=root/'plan.json'
+            row=dict(runtimeMapId='nightmare-layout-104026',floor='1',sourceLayout='104026',sourceWorldFloor=2,
+                     nativeSourceMetadata='meta.json',nativeSourcePNG='image.png')
+            plan.write_text(json.dumps(dict(entries=[row])), 'utf8')
+            self.assertEqual(checked_plan(plan), [row])
+            cases=[('runtimeMapId',v) for v in ('../escape','x/y','C:evil','a\\b','CON','x.')] + [
+                ('floor','../1'),('sourceLayout','../104026'),('sourceWorldFloor',3)]
+            for key,value in cases:
+                bad=dict(row);bad[key]=value;plan.write_text(json.dumps(dict(entries=[bad])), 'utf8')
+                with self.subTest(key=key,value=value), self.assertRaises(ValueError):checked_plan(plan)
+            for bad in ({},dict(entries=[]),dict(entries=[row,row])):
+                plan.write_text(json.dumps(bad),'utf8')
+                with self.assertRaises(ValueError):checked_plan(plan)
+
+    def test_resource_paths_are_relative_and_contained(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            self.assertEqual(contained(root,'images/map/1.webp'),root/'images/map/1.webp')
+            for value in ('../outside','/outside','C:/outside','a\\b','a/../b','a//b','a/CON','a/trailing.','a/x:stream'):
+                with self.subTest(value=value),self.assertRaises(ValueError):contained(root,value)
 
 
 if __name__ == '__main__':

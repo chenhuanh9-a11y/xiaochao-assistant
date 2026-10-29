@@ -7,7 +7,7 @@ import argparse, collections, hashlib, json, math, shutil
 from pathlib import Path
 import numpy as np
 from build_custom_map_package import apply_road_patches, sha256
-from extend_custom_map_package import read, verify_package, check_native_binding
+from extend_custom_map_package import read, verify_package, check_native_binding, contained, disjoint_output, checked_plan
 
 
 def canonical(value):
@@ -41,7 +41,7 @@ def derive_exception(old,new,catalog,index,resources,patches):
         room_index,world_floor=map(int,link["room"].split(":"));room=catalog["maps"][layout]["rooms"][room_index]
         if room["roomConfigId"]!=10609:raise ValueError("reviewed exception has another room type")
         if old['levelLayouts']['data'][layout]!=new['levelLayouts']['data'][layout]:raise ValueError("reviewed source layout changed")
-        with np.load(resources/row['resourcePath'],allow_pickle=False) as z:meta=json.loads(str(z['metadata'].item()))
+        with np.load(contained(resources,row['resourcePath']),allow_pickle=False) as z:meta=json.loads(str(z['metadata'].item()))
         bounds=meta['sourceGeometry']['bounds'];ends=[]
         for end in (link['a'],link['b']):
             v=[end['x']/60+bounds['minX']/128-.5,world_floor,-end['y']/60-bounds['minY']/128-.5]
@@ -83,8 +83,9 @@ def check_connector(connector, new, catalog):
 
 
 def complete(source,out,resources,plan_path,geometry_root,old_path,new_path,patch_path,connector_path):
-    if out.exists():raise ValueError('output must not exist')
-    manifest=read(source/'manifest.json');verify_package(source,manifest);plan=read(plan_path)['entries']
+    disjoint_output(out,source,resources,plan_path,geometry_root,old_path,new_path,patch_path,connector_path)
+    manifest=read(source/'manifest.json');verify_package(source,manifest);plan=checked_plan(plan_path)
+    disjoint_output(out,*[Path(r[k]) for r in plan for k in ('nativeSourceMetadata','nativeSourcePNG')])
     old,new=read(old_path),read(new_path);catalog=read(geometry_root/'catalog.json')
     index={(r['mapId'],str(r['floor'])):r for r in read(resources/'references/nightmare-shared-structure-index.json')['entries'] if r['profile']=='zhan10-speed'}
     local_edges,proof=derive_exception(old,new,catalog,index,resources,read(patch_path))
@@ -93,9 +94,9 @@ def complete(source,out,resources,plan_path,geometry_root,old_path,new_path,patc
     for row in plan:
         mid,floor=row['runtimeMapId'],row['floor'];entry=maps[mid]['floors'][floor]
         meta=read(row['nativeSourceMetadata']);metadata[mid,floor]=meta
-        with np.load(resources/index[mid,floor]['resourcePath'],allow_pickle=False) as z:native_meta=json.loads(str(z['metadata'].item()))
+        with np.load(contained(resources,index[mid,floor]['resourcePath']),allow_pickle=False) as z:native_meta=json.loads(str(z['metadata'].item()))
         check_native_binding(meta,row,index[mid,floor],native_meta)
-        topo=read(source/entry['topology']);topos[mid,floor]=topo;geometry=read(geometry_root/(row['sourceLayout']+'.geometry.json'))
+        topo=read(contained(source,entry['topology']));topos[mid,floor]=topo;geometry=read(geometry_root/(row['sourceLayout']+'.geometry.json'))
         for room in geometry['rooms']:
             if room['roomConfigId']!=10609:continue
             for edge in local_edges:
@@ -133,7 +134,7 @@ def complete(source,out,resources,plan_path,geometry_root,old_path,new_path,patc
         else:raise ValueError('connector kind not admitted')
     shutil.copytree(source,out)
     for (mid,floor),topo in topos.items():
-        entry=maps[mid]['floors'][floor];p=out/entry['topology'];p.write_text(json.dumps(topo,separators=(',',':')),'utf8');entry['topologySha256']=sha256(p)
+        entry=maps[mid]['floors'][floor];p=contained(out,entry['topology']);p.write_text(json.dumps(topo,separators=(',',':')),'utf8');entry['topologySha256']=sha256(p)
         maps[mid]['crossFloorRoutingVerified']=False
         maps[mid]['crossFloorRoutingEvidence']='source stair-room association, offline graph checked; gameplay and internal polyline unverified'
     manifest['sources']['incrementalConnections']=dict(sourceConnectorsSha256=sha256(connector_path),derivedRoomException=proof,

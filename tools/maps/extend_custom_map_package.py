@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import shutil
+import re
 
 import cv2
 import numpy as np
@@ -22,7 +23,59 @@ def read(path):
     return json.loads(Path(path).read_text("utf-8"))
 
 
+def safe_token(value):
+    if (not isinstance(value, str) or
+            not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", value) or
+            value.endswith(".") or
+            value.split(".")[0].upper() in {"CON", "PRN", "AUX", "NUL", *[f"COM{i}" for i in range(1, 10)], *[f"LPT{i}" for i in range(1, 10)]}):
+        raise ValueError("unsafe identity token")
+    return value
+
+
+def disjoint_output(out, *inputs):
+    target = Path(out).resolve()
+    for item in inputs:
+        source = Path(item).resolve()
+        if target.is_relative_to(source) or source.is_relative_to(target):
+            raise ValueError("output overlaps input")
+    if target.exists():
+        raise ValueError("output must not exist")
+
+
+def checked_plan(path):
+    document = read(path)
+    if not isinstance(document, dict) or not isinstance(document.get("entries"), list) or not document["entries"]:
+        raise ValueError("invalid or empty new-floor plan")
+    entries = document["entries"]
+    seen = set()
+    for row in entries:
+        if not isinstance(row, dict):
+            raise ValueError("invalid plan row")
+        safe_token(row.get("runtimeMapId"))
+        layout = safe_token(row.get("sourceLayout"))
+        if not layout.isdecimal() or row.get("floor") not in ("B1", "1", "2"):
+            raise ValueError("invalid layout or floor")
+        if row.get("sourceWorldFloor") != {"B1": 1, "1": 2, "2": 3}[row["floor"]]:
+            raise ValueError("plan floor mapping mismatch")
+        for key in ("nativeSourceMetadata", "nativeSourcePNG"):
+            if not isinstance(row.get(key), str) or not row[key]:
+                raise ValueError("missing source file")
+        identity = row["runtimeMapId"], row["floor"]
+        if identity in seen:
+            raise ValueError("duplicate plan identity")
+        seen.add(identity)
+    return entries
+
+
 def contained(root, relative):
+    if not isinstance(relative, str) or not relative or "\\" in relative:
+        raise ValueError("invalid resource path")
+    posix = Path(relative)
+    win = PureWindowsPath(relative)
+    if posix.is_absolute() or win.drive or win.root or any(p in ("", ".", "..") for p in relative.split("/")):
+        raise ValueError("resource path must be relative")
+    for part in relative.split("/"):
+        safe_token(part)
     path = (root / relative).resolve()
     if not path.is_relative_to(root.resolve()):
         raise ValueError("resource path escapes package")
@@ -30,10 +83,13 @@ def contained(root, relative):
 
 
 def verify_package(root, manifest):
-    if manifest.get("schema") != SCHEMA or not manifest.get("maps"):
+    if not isinstance(manifest, dict) or manifest.get("schema") != SCHEMA or not isinstance(manifest.get("maps"), list) or not manifest["maps"]:
         raise ValueError("invalid or empty baseline package")
     seen = set()
     for item in manifest["maps"]:
+        safe_token(item.get("mapId"))
+        if not isinstance(item.get("floors"), dict) or not item["floors"] or any(f not in ("B1", "1", "2") for f in item["floors"]):
+            raise ValueError("invalid package floors")
         if item["mapId"] in seen:
             raise ValueError("duplicate baseline map")
         seen.add(item["mapId"])
@@ -142,11 +198,11 @@ def check_native_binding(metadata, row, binding, native_meta):
 
 
 def extend(baseline, plan_path, geometry_root, resource_root, out, version):
-    if out.exists():
-        raise ValueError("output must not exist")
+    disjoint_output(out, baseline, plan_path, geometry_root, resource_root)
     manifest = read(baseline / "manifest.json")
     verify_package(baseline, manifest)
-    plan = read(plan_path)["entries"]
+    plan = checked_plan(plan_path)
+    disjoint_output(out, *[Path(r[k]) for r in plan for k in ("nativeSourceMetadata", "nativeSourcePNG")])
     identities = {(r["runtimeMapId"], r["floor"]) for r in plan}
     old_ids = {m["mapId"] for m in manifest["maps"]}
     if len(identities) != len(plan) or any(m in old_ids for m, _ in identities):
@@ -180,16 +236,16 @@ def extend(baseline, plan_path, geometry_root, resource_root, out, version):
     for row, source, binding, topology in prepared:
         mid, floor = row["runtimeMapId"], row["floor"]
         image_rel, topology_rel = f"images/{mid}/{floor}.webp", f"topology/{mid}/{floor}.json"
-        (out / image_rel).parent.mkdir(exist_ok=True)
-        (out / topology_rel).parent.mkdir(exist_ok=True)
-        write_image(source, out / image_rel, 90)
-        (out / topology_rel).write_text(json.dumps(topology, separators=(",", ":")), "utf-8")
+        contained(out, image_rel).parent.mkdir(exist_ok=True)
+        contained(out, topology_rel).parent.mkdir(exist_ok=True)
+        write_image(source, contained(out, image_rel), 90)
+        contained(out, topology_rel).write_text(json.dumps(topology, separators=(",", ":")), "utf-8")
         item = additions.setdefault(mid, dict(mapId=mid, templateId=mid, templateNumber=100+int(row["sourceLayout"][-3:]),
             name=f"新增地图 {row['sourceLayout']}", aliases=[], sourceLayout=row["sourceLayout"],
             sourceVersion=binding["sourceVersion"], floors={}, stairs=[], crossFloorRoutingVerified=False))
-        item["floors"][floor] = dict(image=image_rel, imageSha256=sha256(out/image_rel),
+        item["floors"][floor] = dict(image=image_rel, imageSha256=sha256(contained(out, image_rel)),
             imageSize=list(reversed(topology["shape"])), matrixImageToNative=np.eye(3).tolist(), overlap=1.0,
-            nativeShape=topology["shape"], topology=topology_rel, topologySha256=sha256(out/topology_rel),
+            nativeShape=topology["shape"], topology=topology_rel, topologySha256=sha256(contained(out, topology_rel)),
             maskSha256=topology["maskSha256"], entrances=[], sourceVersion=binding["sourceVersion"],
             structureVersionKey=binding["structureVersionKey"])
     manifest["maps"].extend(additions.values())
