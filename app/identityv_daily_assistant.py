@@ -1,5 +1,16 @@
 from __future__ import annotations
 
+import sys as _audit_sys
+
+_UI_AUDIT = None
+if '--ui-audit' in _audit_sys.argv:
+    import ui_packaged_audit as _packaged_audit
+    try:
+        _UI_AUDIT = _packaged_audit.prepare(_audit_sys.argv)
+    except Exception:
+        raise SystemExit(2)
+    _audit_sys.excepthook = lambda kind, error, tb: _packaged_audit.abort(_UI_AUDIT, error)
+
 import argparse
 import copy
 import ctypes
@@ -40625,6 +40636,8 @@ def expected_coordinate_adapter_keys(pack, catalog) -> set[tuple[str, str, str]]
 
 
 def main() -> None:
+    if _UI_AUDIT is not None:
+        raise SystemExit(_packaged_audit.run(sys.modules[__name__], _UI_AUDIT))
     args = parse_args()
     if args.version:
         print(APP_VERSION)
@@ -41594,5 +41607,8 @@ if __name__ == "__main__":
         else:
             main()
     except Exception:
+        if _UI_AUDIT is not None:
+            _packaged_audit.fail(_UI_AUDIT, sys.exc_info()[1])
+            raise SystemExit(2)
         report_unhandled_error(*sys.exc_info())
         raise SystemExit(1)
