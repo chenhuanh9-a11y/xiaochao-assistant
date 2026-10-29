@@ -44,17 +44,21 @@ assets and controlled display sinks; no game or real HWND acceptance:
   missing/invalid/custom/difficult cases, round notice and byte bounds covered.
 - Native resource validation: 9 passed; queued suites: 16 passed;
   capture start failure: 4 passed. Native similarity runtime: 28 passed.
-- Opacity suites: 13 passed, 1 failed. The failing
+- Initial opacity suites: 13 passed, 1 failed. The failing
   `test_actual_authorized_compositor_reuses_retained_surface_at_zero_and_full`
   also fails on untouched PR44 head `a8d668a` (runtime opacity suite 5 passed,
   1 failed). Its actual transaction returns `commit-context-stale` before
-  painting. This remains a baseline integration issue requiring review; this
-  follow-up does not change resource grant rules to conceal it.
+  painting. Separate P0 commit `2306db7` repairs exact-clone grant transfer;
+  both opacity suites now pass all 14 tests and the actual native atomic suite
+  passes all 22 tests. See `native-sibling-resource-grant.md`. The unchanged
+  a8d probe remains red; the repaired production-chain probe is green.
+- Combined PR44, author import, native atomic/opacity and fallback suites:
+  191 tests passed after merging rounded-refresh main `4fb2b87`.
 - `git diff --check` passed.
 
 Existing PR45 evidence for two real maps/six floors validates provider pixel
 preparation only. The above does not establish live game correctness, long-run
 RSS stability or end-to-end latency. Worker cold preparation adds real work;
 the prior real-asset probe measured roughly 90–225 ms and is not a consumer
-latency acceptance result. Keep this PR draft until the baseline compositor
-failure and independent consumer review are resolved.
+latency acceptance result. Keep this PR draft for independent consumer review;
+the P0 clone-grant repair can be adopted without this consumer integration.
