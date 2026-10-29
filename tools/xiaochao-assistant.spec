@@ -5,6 +5,7 @@ import sys
 root = Path(SPECPATH).resolve().parent
 sys.path.insert(0, str(root / "tools"))
 from runtime_exclusions import PYTHON_MODULE_EXCLUSIONS, filter_binaries
+from verify_admin_manifest import verify_administrator_manifest
 
 datas = [(str(root / "version.json"), "."),
          (str(root / "app" / "custom_default_gallery.json"), ".")]
@@ -27,6 +28,9 @@ a.binaries, removed_optional_codecs = filter_binaries(a.binaries)
 print("Excluded optional codecs:", [row[0] for row in removed_optional_codecs])
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="xiaochao-assistant",
-          debug=False, bootloader_ignore_signals=False, strip=False, upx=True,
+          debug=False, bootloader_ignore_signals=False, strip=False, upx=True, uac_admin=True,
           console=False, manifest=str(root / "tools" / "identityv-assistant.manifest"))
+# PyInstaller overrides the XML execution level from uac_admin; verify the PE,
+# including builds that reuse its cached EXE, before collecting a deliverable.
+verify_administrator_manifest(exe.name)
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=True, name="xiaochao-assistant")
