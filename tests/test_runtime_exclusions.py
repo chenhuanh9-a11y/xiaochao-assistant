@@ -54,6 +54,23 @@ class RuntimeExclusionTests(unittest.TestCase):
         self.assertTrue((root / "assets/support/wechat.png").is_file())
         self.assertTrue((root / "assets/support/alipay.png").is_file())
 
+    def test_maintained_spec_stops_collection_when_manifest_verification_fails(self):
+        root = Path(__file__).resolve().parents[1]
+        executable = SimpleNamespace(name="fixture-build/invalid-manifest.exe")
+        exe = Mock(return_value=executable)
+        collect = Mock()
+        with patch("verify_admin_manifest.verify_administrator_manifest",
+                   side_effect=ValueError("invalid embedded manifest")) as verify:
+            with self.assertRaisesRegex(ValueError, "invalid embedded manifest"):
+                runpy.run_path(str(root / "tools/xiaochao-assistant.spec"), init_globals={
+                    "SPECPATH": str(root / "tools"),
+                    "Analysis": Mock(return_value=SimpleNamespace(binaries=[], pure=[], scripts=[])),
+                    "PYZ": Mock(), "EXE": exe, "COLLECT": collect,
+                })
+        self.assertIs(exe.call_args.kwargs["uac_admin"], True)
+        verify.assert_called_once_with(executable.name)
+        collect.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
