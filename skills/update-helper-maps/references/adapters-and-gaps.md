@@ -18,3 +18,23 @@
 完整命令与前置条件见仓库 `docs/map-processing.md`。无完整合法资源时，只运行help、语法检查和合成fixture。不要将历史脚本指向活动源目录，不为查参数执行未经审查的顶层脚本。
 
 中间清单收集、作者显示验收和生产runtime接入是不同状态。源包体→规范化schema、完整语义提取、代表难图核心验收、生产增量安装及回退仍需逐批适配；不存在promote命令。源码中保留的历史批次数字不是以后目标数量。
+
+
+## 2026-10-29 本轮增量证据
+
+当前配置版本 2.104.3085069 相对 2.104.3059230 新增 layout 104026、104027；已有 layout 无修改或删除。噩梦 26 图/78 层，困难 30 图/60 层（其中 map29 保持 legacy 2 层）。目标数来自本轮清单，不作为后续硬编码。
+
+新增6层正常渲染、typed 二值 footprint、fast 预制已由同 provider 生成，旧132份 fast 字节保持；实际复合运行根 138/138 loader 通过。新增104026 F1合成画面经原生产 rank 可进入候选并通过原门，只有受控算法回放，不是游戏端到端或新增地图全体验验收。旧真实 F1 小结构帧仍保留安全拒绝，不声称全部掉显解决。
+
+新地图图像使用已记录的旧 renderer 纹理资产；当前 texture bytes 未独立重新解码，GPU/动态门/雾等仍未验证。困难map29的权威原生绑定缺口保留。PR29离线候选契约与 runtime 索引不同，未接入的消费者不能因为文件已生成就宣称启用。
+
+
+本轮新增的参数化入口位于 `tools/maps/`，均只处理显式本机输入，原始 extraction 不提交仓库：
+
+1. `normalize_increment_catalog.cjs --run CURRENT_EXTRACTION --old-catalog VERIFIED_BASELINE_CATALOG --output NEW_CATALOG`：转换当前 literal，保留来源指纹。
+2. `render_native_increment.cjs --run CURRENT_EXTRACTION --vendor VERIFIED_RENDERER_AND_ASSETS --output NEW_RENDER --levels CHANGED_LAYOUT_IDS`：仅渲染目标层；未知 layout 报错，不接受空成功。
+3. `render_native_entry_rooms.cjs --plan PLAN_JSON --vendor VERIFIED_RENDERER_AND_ASSETS --output NEW_ENTRY_DIR`：提取计划中的入口房间。
+4. `build_native_increment.py --base BASE_RESOURCE_ROOT --source CLEAN_REPO_ROOT --plan PLAN_JSON --output NEW_STAGE --entry-inventory NEW_ENTRY_DIR/render-inventory.json --literals NORMALIZED_LITERALS`：写前验证 map/floor/world、PNG/metadata 哈希、画布及输入输出不重叠，再追加原完整索引。
+5. `build_native_source_connectors.py --literals NORMALIZED_LITERALS --raw-literal CURRENT_EXTRACTION/literal-exports.json --plan PLAN_JSON --output NEW_CONNECTOR_SIDECAR`：提取明确房型的源端口，不伪造图标或导航折线。
+
+计划须给每层 sourceLayout、runtimeMapId、floor、sourceWorldFloor、nativeCanvasWH、源PNG/metadata路径和SHA256。使用新的输出目录，禁止置于输入目录内。`tests/test_native_increment_contract.py` 覆盖错层、错layout、重复、哈希/路径与输出重叠拒绝。既有 `prepare_shared_fast_structures.py` 只生成新引用；旧文件校验后复用。相似条件仍走原 front-only scanner/builder，完整输入清单包括新增地图。
