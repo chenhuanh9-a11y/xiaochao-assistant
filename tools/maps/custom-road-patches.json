@@ -1,0 +1,426 @@
+{
+ "schema": "xingtu-custom-road-patches-v1",
+ "gameDataVersion": "2.104.3059230",
+ "date": "2026-10-28",
+ "source": "用户在游戏中确认这些房间都能正常进出",
+ "reason": "凹字形房间与紧贴的窄道同属一个房间号（20 个点），但两部分之间的相邻格缺少 room-grid 连线，凹字形部分（15 个点）与外部不连通。安卓端同一清单：mobile/scripts/assets/nightmare-game-road-exceptions.json",
+ "kind": "room-grid",
+ "links": [
+  {
+   "template": 3,
+   "mapId": "nightmare-11",
+   "floor": "2",
+   "room": "101:3",
+   "a": {
+    "index": 252,
+    "x": 630,
+    "y": 270
+   },
+   "b": {
+    "index": 253,
+    "x": 690,
+    "y": 270
+   }
+  },
+  {
+   "template": 3,
+   "mapId": "nightmare-11",
+   "floor": "2",
+   "room": "101:3",
+   "a": {
+    "index": 256,
+    "x": 630,
+    "y": 330
+   },
+   "b": {
+    "index": 257,
+    "x": 690,
+    "y": 330
+   }
+  },
+  {
+   "template": 4,
+   "mapId": "nightmare-10",
+   "floor": "2",
+   "room": "76:3",
+   "a": {
+    "index": 187,
+    "x": 1350,
+    "y": 1230
+   },
+   "b": {
+    "index": 188,
+    "x": 1410,
+    "y": 1230
+   }
+  },
+  {
+   "template": 4,
+   "mapId": "nightmare-10",
+   "floor": "2",
+   "room": "76:3",
+   "a": {
+    "index": 191,
+    "x": 1350,
+    "y": 1290
+   },
+   "b": {
+    "index": 192,
+    "x": 1410,
+    "y": 1290
+   }
+  },
+  {
+   "template": 5,
+   "mapId": "nightmare-14",
+   "floor": "2",
+   "room": "97:3",
+   "a": {
+    "index": 252,
+    "x": 1050,
+    "y": 870
+   },
+   "b": {
+    "index": 253,
+    "x": 1110,
+    "y": 870
+   }
+  },
+  {
+   "template": 5,
+   "mapId": "nightmare-14",
+   "floor": "2",
+   "room": "97:3",
+   "a": {
+    "index": 256,
+    "x": 1050,
+    "y": 930
+   },
+   "b": {
+    "index": 257,
+    "x": 1110,
+    "y": 930
+   }
+  },
+  {
+   "template": 6,
+   "mapId": "nightmare-15",
+   "floor": "2",
+   "room": "95:3",
+   "a": {
+    "index": 277,
+    "x": 1110,
+    "y": 1050
+   },
+   "b": {
+    "index": 278,
+    "x": 1110,
+    "y": 1110
+   }
+  },
+  {
+   "template": 6,
+   "mapId": "nightmare-15",
+   "floor": "2",
+   "room": "95:3",
+   "a": {
+    "index": 281,
+    "x": 1050,
+    "y": 1050
+   },
+   "b": {
+    "index": 282,
+    "x": 1050,
+    "y": 1110
+   }
+  },
+  {
+   "template": 10,
+   "mapId": "nightmare-18",
+   "floor": "2",
+   "room": "107:3",
+   "a": {
+    "index": 314,
+    "x": 810,
+    "y": 90
+   },
+   "b": {
+    "index": 313,
+    "x": 810,
+    "y": 150
+   }
+  },
+  {
+   "template": 10,
+   "mapId": "nightmare-18",
+   "floor": "2",
+   "room": "107:3",
+   "a": {
+    "index": 318,
+    "x": 870,
+    "y": 90
+   },
+   "b": {
+    "index": 317,
+    "x": 870,
+    "y": 150
+   }
+  },
+  {
+   "template": 13,
+   "mapId": "nightmare-13",
+   "floor": "2",
+   "room": "104:3",
+   "a": {
+    "index": 234,
+    "x": 1470,
+    "y": 990
+   },
+   "b": {
+    "index": 235,
+    "x": 1530,
+    "y": 990
+   }
+  },
+  {
+   "template": 13,
+   "mapId": "nightmare-13",
+   "floor": "2",
+   "room": "104:3",
+   "a": {
+    "index": 238,
+    "x": 1470,
+    "y": 1050
+   },
+   "b": {
+    "index": 239,
+    "x": 1530,
+    "y": 1050
+   }
+  },
+  {
+   "template": 15,
+   "mapId": "nightmare-16",
+   "floor": "2",
+   "room": "107:3",
+   "a": {
+    "index": 287,
+    "x": 1530,
+    "y": 1170
+   },
+   "b": {
+    "index": 286,
+    "x": 1590,
+    "y": 1170
+   }
+  },
+  {
+   "template": 15,
+   "mapId": "nightmare-16",
+   "floor": "2",
+   "room": "107:3",
+   "a": {
+    "index": 291,
+    "x": 1530,
+    "y": 1110
+   },
+   "b": {
+    "index": 290,
+    "x": 1590,
+    "y": 1110
+   }
+  },
+  {
+   "template": 16,
+   "mapId": "nightmare-17",
+   "floor": "2",
+   "room": "103:3",
+   "a": {
+    "index": 211,
+    "x": 1410,
+    "y": 990
+   },
+   "b": {
+    "index": 212,
+    "x": 1470,
+    "y": 990
+   }
+  },
+  {
+   "template": 16,
+   "mapId": "nightmare-17",
+   "floor": "2",
+   "room": "103:3",
+   "a": {
+    "index": 215,
+    "x": 1410,
+    "y": 1050
+   },
+   "b": {
+    "index": 216,
+    "x": 1470,
+    "y": 1050
+   }
+  },
+  {
+   "template": 23,
+   "mapId": "nightmare-21",
+   "floor": "1",
+   "room": "84:2",
+   "a": {
+    "index": 263,
+    "x": 1110,
+    "y": 870
+   },
+   "b": {
+    "index": 264,
+    "x": 1110,
+    "y": 930
+   }
+  },
+  {
+   "template": 23,
+   "mapId": "nightmare-21",
+   "floor": "1",
+   "room": "84:2",
+   "a": {
+    "index": 267,
+    "x": 1050,
+    "y": 870
+   },
+   "b": {
+    "index": 268,
+    "x": 1050,
+    "y": 930
+   }
+  },
+  {
+   "template": 24,
+   "mapId": "nightmare-05",
+   "floor": "2",
+   "room": "99:3",
+   "a": {
+    "index": 221,
+    "x": 2070,
+    "y": 810
+   },
+   "b": {
+    "index": 220,
+    "x": 2130,
+    "y": 810
+   }
+  },
+  {
+   "template": 24,
+   "mapId": "nightmare-05",
+   "floor": "2",
+   "room": "99:3",
+   "a": {
+    "index": 225,
+    "x": 2070,
+    "y": 750
+   },
+   "b": {
+    "index": 224,
+    "x": 2130,
+    "y": 750
+   }
+  },
+  {
+   "template": 25,
+   "mapId": "33956dfb-8e0d-4627-a26c-e1904d687084",
+   "floor": "2",
+   "room": "85:3",
+   "a": {
+    "index": 223,
+    "x": 1230,
+    "y": 270
+   },
+   "b": {
+    "index": 224,
+    "x": 1230,
+    "y": 330
+   }
+  },
+  {
+   "template": 25,
+   "mapId": "33956dfb-8e0d-4627-a26c-e1904d687084",
+   "floor": "2",
+   "room": "85:3",
+   "a": {
+    "index": 227,
+    "x": 1170,
+    "y": 270
+   },
+   "b": {
+    "index": 228,
+    "x": 1170,
+    "y": 330
+   }
+  },
+  {
+   "template": 26,
+   "mapId": "4f5d6ac0-b1ae-4338-8d6e-b67cd1e3af51",
+   "floor": "1",
+   "room": "40:2",
+   "a": {
+    "index": 160,
+    "x": 1290,
+    "y": 1230
+   },
+   "b": {
+    "index": 159,
+    "x": 1350,
+    "y": 1230
+   }
+  },
+  {
+   "template": 26,
+   "mapId": "4f5d6ac0-b1ae-4338-8d6e-b67cd1e3af51",
+   "floor": "1",
+   "room": "40:2",
+   "a": {
+    "index": 164,
+    "x": 1290,
+    "y": 1170
+   },
+   "b": {
+    "index": 163,
+    "x": 1350,
+    "y": 1170
+   }
+  },
+  {
+   "template": 27,
+   "mapId": "37d291a1-529d-4a0e-8938-e4754e5f7a0d",
+   "floor": "2",
+   "room": "64:3",
+   "a": {
+    "index": 186,
+    "x": 270,
+    "y": 450
+   },
+   "b": {
+    "index": 185,
+    "x": 270,
+    "y": 510
+   }
+  },
+  {
+   "template": 27,
+   "mapId": "37d291a1-529d-4a0e-8938-e4754e5f7a0d",
+   "floor": "2",
+   "room": "64:3",
+   "a": {
+    "index": 190,
+    "x": 330,
+    "y": 450
+   },
+   "b": {
+    "index": 189,
+    "x": 330,
+    "y": 510
+   }
+  }
+ ]
+}

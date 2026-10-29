@@ -6,7 +6,12 @@ Inputs (all local, paths are arguments):
   --game-data  the nightmare 24-map handoff (index.json, maps/<layout>/topology-*.json)
   --structures the assembled public structure release (structure-index.json)
 
+  --road-patches  confirmed road links the game data lacks (default
+               custom-road-patches.json next to this script)
+
 Output: a new directory with manifest.json, images/, topology/ and exit-icon.png.
+Images are re-encoded as WebP (lossless alpha) and topology keeps only the
+road graph the app reads, so the installed package stays small.
 
 Each legacy floor image is registered onto its native structure canvas: an
 initial centroid/area similarity refined by ECC (affine) on the image alpha
@@ -26,6 +31,7 @@ import zipfile
 
 import cv2
 import numpy as np
+from PIL import Image
 
 SCHEMA = "xingtu-custom-maps-v1"
 # Legacy template number -> runtime nightmare map id (templates 17-19 have no map).
@@ -38,7 +44,13 @@ TEMPLATE_MAPS = {
     26: "4f5d6ac0-b1ae-4338-8d6e-b67cd1e3af51", 27: "37d291a1-529d-4a0e-8938-e4754e5f7a0d",
 }
 FLOORS = {"minus-1": "B1", "1": "1", "2": "2"}
+ROAD_PATCHES = Path(__file__).resolve().parent / "custom-road-patches.json"
+PATCH_SCHEMA = "xingtu-custom-road-patches-v1"
+TILE = 60
 MIN_OVERLAP = 0.8
+QUALITY = 90
+# Topology fields the app reads; the rest is provenance kept in the game data.
+TOPOLOGY_KEYS = ("mapId", "floor", "shape", "maskSha256", "points", "pointRooms", "links")
 
 
 def sha256(path: Path) -> str:
@@ -104,6 +116,66 @@ def register(image_alpha: np.ndarray, native: np.ndarray) -> tuple[np.ndarray, f
     return best, best_overlap
 
 
+def write_image(source: Path, target: Path, quality: int) -> None:
+    """WebP with exact alpha; quality 0 keeps the colours lossless too."""
+    with Image.open(source) as image:
+        options = dict(lossless=True) if quality == 0 else dict(quality=quality, alpha_quality=100)
+        image.convert("RGBA").save(target, "WEBP", method=6, **options)
+
+
+def load_road_patches(path: Path) -> tuple[dict, dict]:
+    """Patch document and its links grouped by (map id, floor)."""
+    document = json.loads(path.read_text("utf-8"))
+    if document.get("schema") != PATCH_SCHEMA or document.get("kind") != "room-grid":
+        raise ValueError(f"unsupported road patch file: {path}")
+    grouped = {}
+    for link in document["links"]:
+        grouped.setdefault((link["mapId"], str(link["floor"])), []).append(link)
+    return document, grouped
+
+
+def apply_road_patches(data: dict, links: list[dict], label: str) -> tuple[int, int]:
+    """Append confirmed room-grid links after checking both ends by index, position and room.
+
+    Returns (added, already present in the game data). Any mismatch fails the build.
+    """
+    existing = {frozenset(link[:2]) for link in data["links"]}
+    added = covered = 0
+    for link in links:
+        ends = (link["a"], link["b"])
+        for end in ends:
+            index = end["index"]
+            if not 0 <= index < len(data["points"]):
+                raise ValueError(f"road patch {label}: point {index} does not exist")
+            x, y = data["points"][index]
+            if abs(float(x) - end["x"]) > .05 or abs(float(y) - end["y"]) > .05:
+                raise ValueError(f"road patch {label}: point {index} is at ({x}, {y}), expected ({end['x']}, {end['y']})")
+            if data["pointRooms"][index] != link["room"]:
+                raise ValueError(f"road patch {label}: point {index} is in room {data['pointRooms'][index]}, "
+                                 f"expected {link['room']}")
+        dx, dy = abs(ends[0]["x"] - ends[1]["x"]), abs(ends[0]["y"] - ends[1]["y"])
+        if sorted((dx, dy)) != [0, TILE]:
+            raise ValueError(f"road patch {label}: points {ends[0]['index']}-{ends[1]['index']} are not adjacent tiles")
+        pair = frozenset((ends[0]["index"], ends[1]["index"]))
+        if pair in existing:
+            covered += 1  # The game data now has this link itself.
+            continue
+        data["links"].append([ends[0]["index"], ends[1]["index"], "room-grid"])
+        existing.add(pair)
+        added += 1
+    return added, covered
+
+
+def write_topology(source: Path, target: Path, patches=(), label="") -> tuple[int, int]:
+    data = json.loads(source.read_text("utf-8"))
+    slim = {key: data[key] for key in TOPOLOGY_KEYS}
+    slim["links"] = list(slim["links"])
+    result = apply_road_patches(slim, patches, label)
+    slim["points"] = [[round(float(x), 1), round(float(y), 1)] for x, y in slim["points"]]
+    target.write_text(json.dumps(slim, ensure_ascii=False, separators=(",", ":")), "utf-8")
+    return result
+
+
 def cell_to_image(nav: dict, cell: int) -> tuple[float, float]:
     step = nav["step"]
     return (min(nav["width"] - 1, cell % nav["cols"] * step + step / 2),
@@ -119,10 +191,15 @@ def main(argv=None) -> int:
     parser.add_argument("--version", required=True, help="package version label, e.g. 20261028-1")
     parser.add_argument("--review", type=Path, help="optional folder for registration overlays")
     parser.add_argument("--zip", type=Path, help="also write the release archive and its SHA256SUMS here")
+    parser.add_argument("--quality", type=int, default=QUALITY, help="WebP colour quality 1-100, 0 for lossless")
+    parser.add_argument("--road-patches", type=Path, default=ROAD_PATCHES)
     args = parser.parse_args(argv)
     if args.out.exists():
         parser.error("--out must be a new directory")
     catalog = json.loads((args.legacy / "catalog.json").read_text("utf-8"))
+    patch_document, patches = load_road_patches(args.road_patches)
+    game_version = json.loads((args.game_data / "index.json").read_text("utf-8")).get("sourceVersion")
+    patch_report = dict(added=0, covered=0)
     structures = {(row["mapId"], row["floor"]): row for row in
                   json.loads((args.structures / "structure-index.json").read_text("utf-8"))["entries"]
                   if row["mode"] == "nightmare"}
@@ -130,6 +207,12 @@ def main(argv=None) -> int:
     for path in sorted(args.game_data.glob("maps/*/topology-*.json")):
         data = json.loads(path.read_text("utf-8"))
         topologies[(data["mapId"], str(data["floor"]))] = path
+    intended = {(TEMPLATE_MAPS[template["number"]], FLOORS[floor["id"]])
+                for template in catalog["templates"] if template["number"] in TEMPLATE_MAPS
+                for floor in template["floors"]}
+    stray = sorted(f"{map_id}/{floor}" for map_id, floor in patches if (map_id, floor) not in intended)
+    if stray:
+        raise ValueError(f"road patches name maps or floors that were not built: {', '.join(stray)}")
     out = args.out
     (out / "images").mkdir(parents=True)
     (out / "topology").mkdir()
@@ -160,12 +243,17 @@ def main(argv=None) -> int:
             if overlap < MIN_OVERLAP:
                 raise ValueError(f"registration too weak for {template['id']}/{floor['id']}: {overlap:.3f}")
             matrices[floor["id"]] = matrix
-            image_rel = f"images/{map_id}/{key}.png"
+            image_rel = f"images/{map_id}/{key}.webp"
             topology_rel = f"topology/{map_id}/{key}.json"
             (out / image_rel).parent.mkdir(exist_ok=True)
             (out / topology_rel).parent.mkdir(exist_ok=True)
-            shutil.copyfile(source, out / image_rel)
-            shutil.copyfile(topology_path, out / topology_rel)
+            write_image(source, out / image_rel, args.quality)
+            added, covered = write_topology(topology_path, out / topology_rel, patches.pop((map_id, key), ()),
+                                            f"{map_id}/{key}")
+            patch_report["added"] += added
+            patch_report["covered"] += covered
+            if added or covered:
+                print(f"road patch {map_id}/{key}: added {added}, already in game data {covered}", flush=True)
             floors[key] = dict(
                 image=image_rel, imageSha256=sha256(out / image_rel), imageSize=[image.shape[1], image.shape[0]],
                 matrixImageToNative=[[round(float(v), 6) for v in r] for r in matrix],
@@ -199,9 +287,16 @@ def main(argv=None) -> int:
         maps.append(dict(mapId=map_id, templateId=template["id"], templateNumber=template["number"],
                          name=template["name"], aliases=template.get("aliases", []), floors=floors, stairs=stairs))
         print(template["number"], map_id, {k: v["overlap"] for k, v in floors.items()}, "stairs", len(stairs), flush=True)
+    stray = sorted(f"{map_id}/{floor}" for map_id, floor in patches)
+    if stray:
+        raise ValueError(f"road patches name floors that were not built: {', '.join(stray)}")
+    if patch_report["added"] and patch_document.get("gameDataVersion") != game_version:
+        print(f"note: road patches were confirmed on game data {patch_document.get('gameDataVersion')}, "
+              f"building {game_version}", flush=True)
     manifest = dict(schema=SCHEMA, version=args.version, mapCount=len(maps),
                     sources=dict(legacyCatalogSha256=sha256(args.legacy / "catalog.json"),
-                                 gameDataVersion=json.loads((args.game_data / "index.json").read_text("utf-8")).get("sourceVersion"),
+                                 gameDataVersion=game_version,
+                                 roadPatches=dict(sha256=sha256(args.road_patches), **patch_report),
                                  exitIconSha256=sha256(out / "exit-icon.png")),
                     maps=maps)
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1), "utf-8")
@@ -209,10 +304,12 @@ def main(argv=None) -> int:
     if args.zip:
         archive = args.zip / f"xingtu-custom-maps-{args.version}.zip"
         args.zip.mkdir(parents=True, exist_ok=True)
-        with zipfile.ZipFile(archive, "w", zipfile.ZIP_STORED) as handle:
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as handle:
             for path in sorted(out.rglob("*")):
                 if path.is_file():
-                    handle.write(path, path.relative_to(out).as_posix())
+                    # Images are already compressed; only the JSON benefits from deflate.
+                    kind = zipfile.ZIP_STORED if path.suffix in (".webp", ".png") else zipfile.ZIP_DEFLATED
+                    handle.write(path, path.relative_to(out).as_posix(), compress_type=kind)
         (args.zip / f"SHA256SUMS-custom-maps-{args.version}.txt").write_text(
             f"{sha256(archive)}  {archive.name}\n", "utf-8")
         print(f"archive {archive} ({archive.stat().st_size} bytes)")

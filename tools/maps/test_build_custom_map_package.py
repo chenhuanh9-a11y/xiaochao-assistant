@@ -55,21 +55,27 @@ class MaskBindingTests(unittest.TestCase):
                         maskSha256=builder.mask_sha256(native), points=[[10, 10]], pointRooms=["r"], links=[])
         topology_path = game / "maps/layout/topology-1.json"
         topology_path.write_text(json.dumps(topology), "utf-8")
-        args = ["--legacy", str(legacy), "--game-data", str(game), "--structures", str(structures),
+        patches = root / "empty-patches.json"
+        patches.write_text(json.dumps(dict(schema=builder.PATCH_SCHEMA, kind="room-grid",
+                                          gameDataVersion="fixture", links=[])), "utf-8")
+        args = ["--road-patches", str(patches), "--legacy", str(legacy), "--game-data", str(game), "--structures", str(structures),
                 "--out", str(root / "out"), "--version", "fixture"]
         return args, topology_path, topology, native
 
     def test_builder_persists_verified_mask_hash_without_changing_topology(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            args, path, _topology, native = self._inputs(root)
+            args, path, topology, native = self._inputs(root)
             original = path.read_bytes()
             with patch.object(builder, "register", return_value=(np.eye(3), 1.0)):
                 self.assertEqual(builder.main(args), 0)
             manifest = json.loads((root / "out/manifest.json").read_text("utf-8"))
             floor = manifest["maps"][0]["floors"]["1"]
             self.assertEqual(floor["maskSha256"], builder.mask_sha256(native))
-            self.assertEqual((root / "out" / floor["topology"]).read_bytes(), original)
+            # The package keeps only the road graph and its binding; the source stays untouched.
+            packaged = json.loads((root / "out" / floor["topology"]).read_text("utf-8"))
+            self.assertEqual(packaged, {key: topology[key] for key in builder.TOPOLOGY_KEYS})
+            self.assertTrue(floor["image"].endswith(".webp"))
             self.assertEqual(path.read_bytes(), original)
 
     def test_builder_rejects_same_shape_wrong_mask_before_registration(self):
@@ -81,6 +87,83 @@ class MaskBindingTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "mask hash mismatch"):
                     builder.main(args)
                 register.assert_not_called()
+
+
+class RoadPatchTests(unittest.TestCase):
+    """Confirmed links the game data lacks: checked by index, position and room."""
+
+    def topology(self):
+        return dict(points=[[630.0, 270.0], [690.0, 270.0], [750.0, 270.0]], pointRooms=["101:3", "101:3", "7:3"],
+                    links=[[1, 2, "source-door"]])
+
+    def link(self, **change):
+        link = dict(mapId="m", floor="2", room="101:3", a=dict(index=0, x=630, y=270), b=dict(index=1, x=690, y=270))
+        link.update(change)
+        return link
+
+    def test_shipped_patch_file_is_well_formed(self):
+        document, grouped = builder.load_road_patches(builder.ROAD_PATCHES)
+        self.assertEqual((document["gameDataVersion"], document["date"]), ("2.104.3059230", "2026-10-28"))
+        self.assertEqual(len(document["links"]), 26)
+        self.assertEqual(len(grouped), 13)
+        for link in document["links"]:
+            self.assertEqual(sorted((abs(link["a"]["x"] - link["b"]["x"]), abs(link["a"]["y"] - link["b"]["y"]))),
+                             [0, builder.TILE])
+
+    def test_missing_link_is_added_once_and_reported_when_the_game_has_it(self):
+        data = self.topology()
+        self.assertEqual(builder.apply_road_patches(data, [self.link()], "m/2"), (1, 0))
+        self.assertEqual(data["links"][-1], [0, 1, "room-grid"])
+        self.assertEqual(builder.apply_road_patches(data, [self.link()], "m/2"), (0, 1))
+        self.assertEqual(len(data["links"]), 2)
+
+    def test_tampered_patches_fail_the_build(self):
+        for change, message in ((dict(a=dict(index=0, x=631, y=270)), "expected"),
+                                (dict(room="7:3"), "in room"),
+                                (dict(b=dict(index=9, x=690, y=270)), "does not exist"),
+                                (dict(b=dict(index=2, x=750, y=270), room="101:3"), "in room")):
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, message):
+                builder.apply_road_patches(self.topology(), [self.link(**change)], "m/2")
+        data = self.topology()
+        data["pointRooms"][2] = "101:3"
+        with self.assertRaisesRegex(ValueError, "not adjacent"):
+            builder.apply_road_patches(data, [self.link(b=dict(index=2, x=750, y=270))], "m/2")
+
+    def test_unknown_patch_map_fails_before_render_or_output(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            args, _path, _topology, _native = MaskBindingTests._inputs(None, root)
+            patches = root / "unknown-patches.json"
+            patches.write_text(json.dumps(dict(schema=builder.PATCH_SCHEMA, kind="room-grid",
+                gameDataVersion="fixture", links=[self.link(mapId="unknown-map")])), "utf-8")
+            with patch.object(builder, "register", return_value=(np.eye(3), 1.0)) as register, self.assertRaisesRegex(ValueError, "unknown-map/2"):
+                builder.main(args + ["--road-patches", str(patches)])
+            register.assert_not_called()
+            self.assertFalse((root / "out").exists())
+
+    def test_builder_applies_patches_and_records_them(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            args, path, topology, native = MaskBindingTests._inputs(None, root)
+            topology.update(points=[[10, 10], [10, 70]], pointRooms=["r", "r"])
+            path.write_text(json.dumps(topology), "utf-8")
+            patches = root / "patches.json"
+            document = dict(schema=builder.PATCH_SCHEMA, kind="room-grid", gameDataVersion="fixture", links=[dict(
+                mapId="nightmare-03", floor="1", room="r", a=dict(index=0, x=10, y=10), b=dict(index=1, x=10, y=70))])
+            patches.write_text(json.dumps(document), "utf-8")
+            with patch.object(builder, "register", return_value=(np.eye(3), 1.0)):
+                self.assertEqual(builder.main(args + ["--road-patches", str(patches)]), 0)
+            manifest = json.loads((root / "out/manifest.json").read_text("utf-8"))
+            self.assertEqual(manifest["sources"]["roadPatches"]["added"], 1)
+            packaged = json.loads((root / "out/topology/nightmare-03/1.json").read_text("utf-8"))
+            self.assertEqual(packaged["links"], [[0, 1, "room-grid"]])
+            self.assertEqual(json.loads(path.read_text("utf-8"))["links"], [], "source game data untouched")
+            # A patch for a floor the build does not have is an error, not a silent skip.
+            document["links"][0]["floor"] = "2"
+            patches.write_text(json.dumps(document), "utf-8")
+            with patch.object(builder, "register", return_value=(np.eye(3), 1.0)), \
+                    self.assertRaisesRegex(ValueError, "not built"):
+                builder.main(args[:-4] + ["--out", str(root / "out2"), "--version", "x", "--road-patches", str(patches)])
 
 
 if __name__ == "__main__":

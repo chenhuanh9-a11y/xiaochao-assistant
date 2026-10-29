@@ -32,10 +32,12 @@ def write_package(root: Path, *, stairs=True):
         (root / "topology" / "m").mkdir(parents=True, exist_ok=True)
         art = np.zeros((90, 120, 4), np.uint8)
         art[:, :] = (120, 110, 100, 255)  # Art at half scale: 120x90 image -> 240x180 native.
-        Image.fromarray(art, "RGBA").save(root / f"images/m/{floor}.png")
+        # Older packages ship PNG, current ones WebP; the library reads either.
+        image = f"images/m/{floor}.{'png' if floor == '1' else 'webp'}"
+        Image.fromarray(art, "RGBA").save(root / image, lossless=True)
         (root / f"topology/m/{floor}.json").write_text(json.dumps(dict(points=points, pointRooms=rooms, links=links)))
         floors[floor] = dict(
-            image=f"images/m/{floor}.png", imageSha256=hashlib.sha256((root / f"images/m/{floor}.png").read_bytes()).hexdigest(),
+            image=image, imageSha256=hashlib.sha256((root / image).read_bytes()).hexdigest(),
             imageSize=[120, 90], matrixImageToNative=[[2, 0, 0], [0, 2, 0], [0, 0, 1]], nativeShape=[180, 240],
             topology=f"topology/m/{floor}.json",
             topologySha256=hashlib.sha256((root / f"topology/m/{floor}.json").read_bytes()).hexdigest(),
@@ -67,7 +69,7 @@ class LibraryTests(unittest.TestCase):
         self.assertFalse(CustomMapLibrary(self.root / "nope").available)
         self.assertTrue(self.library.available)
         self.assertEqual(self.library.maps(), [("m", "测试图")])
-        (self.root / "images/m/2.png").write_bytes(b"changed")
+        (self.root / "images/m/2.webp").write_bytes(b"changed")
         with self.assertRaisesRegex(ValueError, "校验失败"):
             CustomMapLibrary(self.root).floor("m", "2")
 
