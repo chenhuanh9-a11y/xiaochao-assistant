@@ -7149,17 +7149,19 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         self.ui_dpi = dpi
         self.ui_scale = new_scale
 
-    def _clamp_ui_window(self, window: tk.Misc, surface_id: str) -> None:
+    def _clamp_ui_window(self, window: tk.Misc, surface_id: str, *, sync_layout: bool = True) -> None:
         if not tk_widget_exists(window):
             return
-        context = self._ui_context_for_window(window)
+        context = (self._ui_context_for_window(window) if sync_layout
+                   else self._ui_context_for_window_snapshot(window))
         if surface_id in {"onboarding", "drag-boundary-prompt"}:
             set_rounded_scale(window, context.scale)
+        current = self._rect_for_window(window, sync_layout=False)
         rect = clamp_rect_to_work_area(
-            self._rect_for_window(window), context.monitor.work_area_px,
+            current, context.monitor.work_area_px,
             margin_px=dip_to_px(8, context.dpi),
         )
-        geometry_changed = self._rect_for_window(window) != rect
+        geometry_changed = current != rect
         if geometry_changed:
             window.geometry(format_tk_geometry(rect))
         if geometry_changed and surface_id != "drag-calibration-overlay":
@@ -7187,7 +7189,10 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         topology_changed = topology != getattr(self, "ui_topology_signature", ())
         self.ui_monitors = monitors
         self.ui_topology_signature = topology
-        context = self._ui_context_for_window(self.root)
+        # A periodic environment observation is not a layout transaction.
+        # Let Tk service pending layout between input/timer events instead of
+        # draining all pages' idle work from the 500ms monitor poll.
+        context = self._ui_context_for_window_snapshot(self.root)
         dpi_changed = int(context.dpi) != int(getattr(self, "ui_dpi", 96))
         self._apply_ui_dpi(context.dpi)
         if topology_changed or dpi_changed:
@@ -7196,9 +7201,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             if tk_widget_is_viewable(calibration):
                 set_rounded_scale(calibration, self._ui_context_for_window(calibration).scale)
         else:
-            self._clamp_ui_window(self.root, "orb")
+            self._clamp_ui_window(self.root, "orb", sync_layout=False)
         if self.assistant_shell_mode != "collapsed":
-            self._place_assistant_shell()
+            self._place_assistant_shell(sync_layout=topology_changed or dpi_changed)
         for attr, surface_id in (
             ("onboarding_window", "onboarding"),
             ("drag_boundary_prompt_window", "drag-boundary-prompt"),
@@ -7207,7 +7212,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         ):
             window = getattr(self, attr, None)
             if tk_widget_is_viewable(window):
-                self._clamp_ui_window(window, surface_id)
+                self._clamp_ui_window(window, surface_id, sync_layout=False)
         if self.ui_environment_poll_after_id is not None:
             try:
                 self.root.after_cancel(self.ui_environment_poll_after_id)
@@ -8731,21 +8736,23 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         except Exception:
             pass
 
-    def _shell_dimensions(self, mode: str, *, scale: float | None = None) -> tuple[int, int]:
+    def _shell_dimensions(self, mode: str, *, scale: float | None = None, sync_layout: bool = True) -> tuple[int, int]:
         if mode == "settings":
             return self.SETTINGS_SHELL_SIZE
         if mode == "recognition":
             return self.RECOGNITION_SHELL_SIZE
-        return self._quick_panel_dimensions(scale=scale)
+        return (self._quick_panel_dimensions(scale=scale) if sync_layout else
+                self._quick_panel_dimensions(scale=scale, sync_layout=False))
 
-    def _shell_target_geometry(self, mode: str) -> tuple[int, int, int, int]:
-        if mode != 'quick':
+    def _shell_target_geometry(self, mode: str, *, sync_layout: bool = True) -> tuple[int, int, int, int]:
+        if mode != 'quick' and sync_layout:
             self.root.update_idletasks()
         context = self._ui_context_for_window_snapshot(self.assistant_shell if mode == 'quick'
             and getattr(self, '_control_position', None) is not None else self.root)
         layout = adjacent_surface_layout(
             mode,
-            self._shell_dimensions(mode, scale=context.scale),
+            (self._shell_dimensions(mode, scale=context.scale) if sync_layout else
+             self._shell_dimensions(mode, scale=context.scale, sync_layout=False)),
             context,
             self._rect_for_window(self.root, sync_layout=False),
             preferred_edge=(self.compact_dock or {}).get("edge"),
@@ -9418,11 +9425,12 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         finish()
         self._play_ui_sound("collapse")
 
-    def _place_assistant_shell(self, mode: str | None = None) -> None:
+    def _place_assistant_shell(self, mode: str | None = None, *, sync_layout: bool = True) -> None:
         selected = mode or str(getattr(self, "assistant_shell_mode", "quick"))
         if selected == "collapsed":
             return
-        width, height, x, y = self._shell_target_geometry(selected)
+        width, height, x, y = (self._shell_target_geometry(selected) if sync_layout else
+                              self._shell_target_geometry(selected, sync_layout=False))
         target_geometry = (width, height, x, y)
         try:
             current_geometry = (
@@ -9437,7 +9445,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         if geometry_changed:
             self.assistant_shell_frame.place_configure(width=width, height=height)
             self.assistant_shell.geometry(f"{width}x{height}+{x}+{y}")
-        set_rounded_scale(self.assistant_shell, self._ui_context_for_window(self.assistant_shell).scale)
+        context = (self._ui_context_for_window(self.assistant_shell) if sync_layout or geometry_changed
+                   else self._ui_context_for_window_snapshot(self.assistant_shell))
+        set_rounded_scale(self.assistant_shell, context.scale)
         if tk_widget_is_viewable(self.assistant_shell):
             if geometry_changed:
                 self._apply_window_rounding(self.assistant_shell)
@@ -9922,18 +9932,20 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             return
         self._place_assistant_shell("quick")
 
-    def _quick_panel_dimensions(self, *, scale: float | None = None) -> tuple[int, int]:
+    def _quick_panel_dimensions(self, *, scale: float | None = None, sync_layout: bool = True) -> tuple[int, int]:
         view = getattr(self, "game_control_view", None)
         if tk_widget_exists(view):
             context = self._ui_context_for_window_snapshot(self.assistant_shell)
             scale = context.scale if scale is None else scale
-            if getattr(self, "_game_control_display_scale", None) != (view, scale):
+            scale_changed = getattr(self, "_game_control_display_scale", None) != (view, scale)
+            if scale_changed:
                 view.set_display_scale(scale)
                 self._game_control_display_scale = (view, scale)
             view.set_available_height(max(1, context.monitor.work_area_px.height - round(32 * scale)))
             if getattr(self, 'control_collapsed', False) and not getattr(self, 'sheet_move_mode', False):
                 return (64, 64)
-            width, height = view.expanded_size()
+            width, height = (view.expanded_size() if sync_layout or scale_changed else
+                             view.expanded_size(sync_layout=False))
             return (max(240, math.ceil(width / scale)), max(100, math.ceil(height / scale)))
         return (
             self.QUICK_PANEL_ROUND_SIZE

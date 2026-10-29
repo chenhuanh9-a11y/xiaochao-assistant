@@ -271,9 +271,10 @@ class GameControlView(tk.Frame):
         self._available_height = physical_px
         self._queue_geometry()
 
-    def expanded_size(self):
-        self.update_idletasks()
-        self._measure_geometry()
+    def expanded_size(self, *, sync_layout=True):
+        if sync_layout:
+            self.update_idletasks()
+            self._measure_geometry()
         return round(self.EXPANDED_WIDTH_DIP*self._scale), self.preferred_height_px
 
     def _queue_geometry(self):

@@ -163,8 +163,16 @@ def prepare(argv):
     if import_data:
         state['importInputs'] = import_data['inputs']
         state['importOwnership'] = import_data['ownership']
+        snapshot = import_data['ancestorSnapshot']
+        state['ancestorSnapshot'] = snapshot
+        state['report']['ancestorMetadataSnapshot'] = dict(
+            source='admission-time validated immutable lstat replies',
+            exactAncestors=list(snapshot.metadata), hits=snapshot.hits,
+            limitation='No fresh outer-ancestor filesystem access; concurrent outer-ancestor mutation is not tested')
     save(state)
     guard.install()
+    if import_data:
+        snapshot.install_after_guard()
     return state
 
 
@@ -491,6 +499,8 @@ def run(daily, state):
             trace.close()
             if profile:
                 report['profileRestore'] = profile.finish()
+            if state.get('ancestorSnapshot') is not None:
+                report['ancestorMetadataSnapshot']['restore'] = state['ancestorSnapshot'].close()
     report['status'] = 'failed' if report['errors'] or state['guard'].attempts else 'completed'
     report['foregroundUnchanged'] = foreground == user.GetForegroundWindow()
     if not report['foregroundUnchanged']:

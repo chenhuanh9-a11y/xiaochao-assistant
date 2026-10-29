@@ -14,6 +14,7 @@ import stat
 import sys
 import time
 import zipfile
+from types import MappingProxyType
 
 SCHEMA = 'xingtu-owned-import-audit-v1'
 PACKAGES = {
@@ -23,6 +24,70 @@ PACKAGES = {
     'nightmare-wang-qingxin': (37033947, '764e875a34566ad0b96121e52dd7a059cee5780b3aada11c1c821962e8523ebf'),
     'nightmare-lianghapi': (12536380, '510573c566b0e942d4658af536f6661399d207e6e69c6c071c04bb7c4517cf2e'),
 }
+
+
+def exact_absolute(path):
+    if not isinstance(path, (str, bytes, os.PathLike)):
+        return None
+    value = os.fsdecode(path)
+    if not os.path.isabs(value) or value.startswith(('\\\\', '//')):
+        return None
+    if '..' in value.replace('\\', '/').split('/'):
+        return None
+    return os.path.normcase(os.path.normpath(value))
+
+
+class AncestorSnapshot:
+    def __init__(self, owned_root, validator):
+        root = Path(owned_root)
+        if exact_absolute(root) is None or root != root.resolve():
+            raise ValueError('snapshot-root-must-be-canonical-absolute')
+        validator(root)  # Real full-chain production validation, pre-guard.
+        snapshot = {}
+        for path in root.parents:
+            info = path.lstat()
+            if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+                raise ValueError('snapshot-linked-ancestor')
+            snapshot[exact_absolute(path)] = info
+        self.root = root
+        self.metadata = MappingProxyType(snapshot)
+        self.hits = {}
+        self.installed = False
+
+    def install_after_guard(self):
+        if self.installed:
+            raise RuntimeError('snapshot-wrapper-already-installed')
+        guarded_stat, guarded_lstat = os.stat, os.lstat
+        def hit(path, api, args, kwargs):
+            key = exact_absolute(path)
+            eligible = not args and (not kwargs if api == 'lstat' else kwargs == {'follow_symlinks': False})
+            if eligible and key in self.metadata:
+                name = api + ':' + key
+                self.hits[name] = self.hits.get(name, 0) + 1
+                return self.metadata[key]
+            return None
+        def cached_stat(path, *args, **kwargs):
+            value = hit(path, 'stat', args, kwargs)
+            return value if value is not None else guarded_stat(path, *args, **kwargs)
+        def cached_lstat(path, *args, **kwargs):
+            value = hit(path, 'lstat', args, kwargs)
+            return value if value is not None else guarded_lstat(path, *args, **kwargs)
+        os.stat, os.lstat = cached_stat, cached_lstat
+        self._previous = guarded_stat, guarded_lstat
+        self._owned = cached_stat, cached_lstat
+        self.installed = True
+
+    def close(self):
+        """Restore the guard, never the unrestricted pre-guard functions."""
+        conflicts = []
+        if self.installed:
+            for name, owned, previous in zip(('stat', 'lstat'), self._owned, self._previous):
+                if getattr(os, name) is owned:
+                    setattr(os, name, previous)
+                else:
+                    conflicts.append(name)
+            self.installed = False
+        return dict(restored=not conflicts, conflicts=conflicts)
 
 
 def sha256(path):
@@ -135,6 +200,10 @@ def prepare_import_audit(argv):
         no_links(meipass)
         if meipass != data['installation'] / '_internal':
             raise ValueError('import-audit-meipass-not-owned-copy')
+        # Admission has already verified this owned copy's complete ancestry.
+        # Keep immutable preflight replies rather than requesting new outside-
+        # root metadata after the strict API guard is installed.
+        data['ancestorSnapshot'] = AncestorSnapshot(data['output'], no_links)
         with (data['output'] / 'import-started.json').open('x', encoding='utf-8') as stream:
             json.dump(dict(schema=SCHEMA, nonce=argv[3], pid=os.getpid(), executable=sys.executable), stream)
         return data
@@ -164,8 +233,9 @@ def _inventory(root, boundary):
 def run_import_scenario(assistant, ui, output, pump, stage, inputs):
     """Invoke real widgets/workers in the frozen constructor's isolated copy.
 
-    The single I/O seam is askopenfilename, returning exact validated ZIP paths.
-    Native file-dialog interaction is deliberately not claimed.
+    File-dialog selection returns exact validated ZIP paths. Preflight ancestor
+    metadata replies are the second declared seam; external ancestry is not
+    re-read or tested under concurrent mutation. Native picker clicks are not claimed.
     """
     import map_resource_browser
     from PIL import Image
@@ -176,7 +246,8 @@ def run_import_scenario(assistant, ui, output, pump, stage, inputs):
     if installation != output / 'installation':
         raise RuntimeError('Import scenario must run in the owned native PE copy')
     report = dict(status='running', cases=[], failures=[],
-        seams=['filedialog.askopenfilename returns exact fixed approved ZIP path; native dialog not clicked'],
+        seams=['filedialog.askopenfilename returns exact fixed approved ZIP path; native dialog not clicked',
+               'prevalidated exact ancestor lstat replies; no fresh outside-root metadata or concurrent-ancestor validation'],
         executable=sys.executable, installation=str(installation), rootOverride=False)
     report['explicitBrowseTransitions'] = []
     report['widgetActions'] = []

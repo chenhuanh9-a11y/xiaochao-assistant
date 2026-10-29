@@ -89,6 +89,47 @@ class SettlementTests(unittest.TestCase):
         self.assertEqual(style['font'][-1],'normal')
         self.assertIn(('navigation','pack'),events)
 
+    def test_periodic_environment_uses_snapshots_but_dpi_change_requests_fresh_layout(self):
+        events=[]
+        context=SimpleNamespace(dpi=96)
+        root=SimpleNamespace(after=lambda ms,fn:events.append(('after',ms)),
+            after_cancel=lambda token:events.append(('cancel',token)))
+        owner=SimpleNamespace(closed=False,root=root,ui_topology_signature='same',ui_dpi=96,
+            assistant_shell_mode='quick',ui_environment_poll_after_id=None,_refresh_ui_environment=lambda:None,
+            _ui_context_for_window_snapshot=lambda w:context,
+            _apply_ui_dpi=lambda dpi:events.append(('dpi',dpi)),
+            _place_window=lambda animate:events.append(('orb-place',animate)),
+            _clamp_ui_window=lambda *a,**kw:events.append(('clamp',kw['sync_layout'])),
+            _place_assistant_shell=lambda **kw:events.append(('shell',kw['sync_layout'])))
+        fn=method('_refresh_ui_environment',enumerate_monitor_contexts=lambda:[],
+            monitor_topology_signature=lambda rows:'same',set_rounded_scale=lambda *a:None)
+        fn(owner)
+        self.assertIn(('clamp',False),events)
+        self.assertIn(('shell',False),events)
+        self.assertNotIn(('orb-place',False),events)
+        events.clear();context.dpi=144;fn(owner)
+        self.assertIn(('orb-place',False),events)
+        self.assertIn(('shell',True),events)
+
+    def test_periodic_dimension_read_uses_settled_size_and_real_scale_change_measures(self):
+        events=[]
+        context=SimpleNamespace(scale=1.25,monitor=SimpleNamespace(work_area_px=SimpleNamespace(height=1200)))
+        view=SimpleNamespace(scale=1.25)
+        def scale(value):view.scale=value;events.append(('scale',value))
+        view.set_display_scale=scale
+        view.set_available_height=lambda h:None
+        view.expanded_size=lambda **kw:(events.append(('measure',kw.get('sync_layout',True))) or
+                                       (round(352*view.scale),round(250*view.scale)))
+        owner=SimpleNamespace(game_control_view=view,assistant_shell=object(),
+            _ui_context_for_window_snapshot=lambda w:context,control_collapsed=False,sheet_move_mode=False,
+            _game_control_display_scale=(view,1.25))
+        fn=method('_quick_panel_dimensions')
+        self.assertEqual(fn(owner,sync_layout=False),(352,250))
+        self.assertEqual(events,[('measure',False)])
+        events.clear();context.scale=1.5
+        self.assertEqual(fn(owner,sync_layout=False),(352,250))
+        self.assertEqual(events,[('scale',1.5),('measure',True)])
+
     def test_default_noactivate_keeps_settlement_and_requeries_current_wrapper(self):
         events=[]
         user=SimpleNamespace(GetAncestor=lambda child,kind:(events.append(('ancestor',child)) or 789),
