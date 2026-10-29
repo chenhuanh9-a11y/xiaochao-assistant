@@ -124,6 +124,23 @@ class ControllerTests(unittest.TestCase):
         self.s._consume_live_author_import(event)
         self.s._refresh_imported_author_resources.assert_called_once()
 
+    def test_completed_live_result_keeps_no_restart_after_checked_is_cleared(self):
+        event=self.start(lambda *a,**k:dict(authorFilesAdded=1,restartRequired=False))
+        self.s._consume_live_author_import(event)
+        self.assertIsNone(self.s._map_package_import_result)
+        state=self.s.map_package_import_snapshot()
+        self.assertEqual(state['stage'],'complete')
+        self.assertFalse(state['restartRequired'])
+        self.assertFalse(state['liveAvailable'])
+        self.assertFalse(state['canImport'])
+        self.s._map_package_import_state.update(stage='error')
+        self.assertTrue(self.s.map_package_import_snapshot()['restartRequired'])
+
+    def test_completed_result_without_restart_fact_stays_conservative(self):
+        event=self.start(lambda *a,**k:dict(authorFilesAdded=1))
+        self.s._consume_live_author_import(event)
+        self.assertTrue(self.s.map_package_import_snapshot()['restartRequired'])
+
     def test_cancel_keeps_lease_until_worker_rolls_back(self):
         entered=threading.Event(); release=threading.Event()
         def install(*a,**kwargs):

@@ -26,6 +26,25 @@ PACKAGES = {
 }
 
 
+PACKAGE_PROFILES = {
+    'difficult-zhan10': 'zhan10-speed', 'nightmare-suju': 'suju',
+    'nightmare-nightingale': 'nightingale', 'nightmare-wang-qingxin': 'wang-qingxin',
+    'nightmare-lianghapi': 'lianghapi-single',
+}
+
+
+def selection_preserved(before, after, *, restored_profiles=(), removed_profile=None):
+    """Separate saved selection from its availability-dependent display source."""
+    if any(before.get(k) != after.get(k) for k in ('mode', 'preferred', 'modeRoutes')):
+        return False
+    old, new, selected = before.get('route'), after.get('route'), before.get('preferred')
+    if old == new:
+        return True
+    if old == 'shared-structure' and new == selected and selected in restored_profiles:
+        return True  # Only the already selected author's validated assets arrived.
+    return bool(removed_profile == selected and old == selected and new == 'shared-structure')
+
+
 def exact_absolute(path):
     if not isinstance(path, (str, bytes, os.PathLike)):
         return None
@@ -375,7 +394,14 @@ def run_import_scenario(assistant, ui, output, pump, stage, inputs):
         receipt = verified_installed_package(installation, item['packageId'], item['sha256'])
         row['receipt'] = receipt
         require(receipt.get('status') == 'installed', 'Installed receipt/hash validation failed')
-        require(preference() == before, 'Import silently changed runtime mode or author preference')
+        after = preference()
+        require(selection_preserved(before, after,
+            restored_profiles=(PACKAGE_PROFILES[item['packageId']],)),
+            'Import changed selection or resolved to an unrelated author')
+        row['displayResolution'] = dict(before=before['route'], after=after['route'],
+            selectedAuthor=after['preferred'], restoredSelectedAuthor=before['route'] != after['route'])
+        require(row['completion'].get('restartRequired') is False,
+            'Live author import completion incorrectly requires restart')
         # The new page has independent browse context and per-package selectors.
         # Its inherited source_box/_cards are hidden compatibility internals.
         browser.refresh()
@@ -425,7 +451,7 @@ def run_import_scenario(assistant, ui, output, pump, stage, inputs):
             pathKind='owned-installed-author-image', widget=str(browser.detail_image),
             mapWidget=str(browser.map_box), floorWidget=str(browser.floor_box),
             tkImage=str(browser.detail_image.cget('image')), mapIndex=map_index, floorIndex=floor_index)
-        require(preference() == before, 'Browse preview changed runtime mode or author selection')
+        require(preference() == after, 'Browse preview changed runtime mode or author selection')
         save()
 
     try:
@@ -447,6 +473,7 @@ def run_import_scenario(assistant, ui, output, pump, stage, inputs):
             require(browser._selected_package == item['packageId'], 'Management selection is not imported package')
             # New page manage_button directly calls _manage_selected, which
             # inspects the selected package and captures browse management context.
+            before_removal = preference()
             invoke(browser.manage_button, prefix + '_manage_selected_package')
             ready = wait(prefix + '_removal_ready', assistant.managed_author_packages_snapshot,
                 lambda value: isinstance(value.get('ready'), dict) and not value.get('busy'))
@@ -462,6 +489,9 @@ def run_import_scenario(assistant, ui, output, pump, stage, inputs):
             backups = list((installation / 'work' / 'map-package-removals').glob(item['packageId'] + '-*'))
             require(backups and any((path / 'installed-receipt.json').is_file() for path in backups),
                     'Removal completed without receipt-owned recoverable backup')
+            require(selection_preserved(before_removal, preference(),
+                removed_profile=PACKAGE_PROFILES[item['packageId']]),
+                'Removal changed saved selection or selected an unrelated author')
             report['cases'].append(dict(packageId=item['packageId'], phase='backup-remove', snapshot=final,
                                         backupCount=len(backups)))
             import_one(item, prefix + '_reimport')
@@ -474,8 +504,10 @@ def run_import_scenario(assistant, ui, output, pump, stage, inputs):
             report['explicitBrowseTransitions'].append(dict(before=old_browse_mode, after=browser.browse_mode,
                 runtimeBefore=before_switch, runtimeAfter=preference(), reason='restore initial browse-mode button'))
         final_preference = preference()
-        require(final_preference == initial_preference and assistant.game_mode == initial_mode,
-                'Scenario changed runtime mode or author preferences')
+        require(selection_preserved(initial_preference, final_preference,
+                    restored_profiles=tuple(PACKAGE_PROFILES[item['packageId']] for item in inputs))
+                and assistant.game_mode == initial_mode,
+                'Scenario changed runtime mode, author preference, or unrelated display source')
         report['finalPreference'] = final_preference
         require({name: sha256(installation / name) for name in protected} == protected,
                 'Import changed protected base/structure dependency bytes')

@@ -5639,6 +5639,10 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                     return display_profile
                 binding = optional.binding(display_profile,map_id,floor)
                 return display_profile if binding is not None and binding['usable'] else SHARED_STRUCTURE_PROFILE_ID
+            if optional is not None and display_profile != SUJU_ROUTE_PROFILE_ID:
+                # Other optional authors need their validated sidecar/bindings.
+                # A leftover base-catalog file is not registration evidence.
+                return SHARED_STRUCTURE_PROFILE_ID
             if optional is not None and profile is not None:
                 path = catalog.route_path(display_profile,map_id,str(floor),include_inactive=True) if map_id else None
                 available = Path(path).is_file() if path is not None else (
@@ -10327,7 +10331,8 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         idle = self._author_import_idle()
         busy = state['stage'] in {'checking', 'installing', 'cancelling'}
         state.update(busy=busy, helperAvailable=available, liveAvailable=live,
-            restartRequired=not live,
+            restartRequired=(bool(state.get('restartRequired', True))
+                if state['stage'] == 'complete' else not live),
             canImport=bool(state['stage'] == 'ready' and checked is not None
                 and (idle if live else available) and not self.closed
                 and self._map_package_helper_request is None))
@@ -10449,6 +10454,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         if browser is not None:
             browser.sync_online_packages()
         self._map_package_import_state.update(stage='complete', ready=None,
+            restartRequired=bool(result.get('restartRequired', True)),
             message=f"作者资源已导入并刷新（新增 {result['authorFilesAdded']} 个文件），无需重启。请在“地图资源”中查看图包并点击“使用”。")
 
         if getattr(getattr(getattr(self, 'desktop_main_ui', None), 'map_browser', None), '_managed_open', False):
@@ -31588,7 +31594,12 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             return 'zhan10-speed'
         preferred = getattr(self,'preferred_route_profile_id',None)
         optional = getattr(self,'optional_author_displays',None)
-        return preferred if optional is not None and preferred in optional.profiles else SUJU_ROUTE_PROFILE_ID
+        # The saved author is the selection intent, even while its assets are
+        # missing. Availability belongs to _effective_route_profile; importing
+        # an unrelated author must not silently make that author the fallback.
+        if optional is not None:
+            return preferred or DEFAULT_ROUTE_PROFILE_ID
+        return SUJU_ROUTE_PROFILE_ID
 
     def _alignment_entry_locator(self):
         # Legacy entry verdicts stay inside the identity engine. The native
