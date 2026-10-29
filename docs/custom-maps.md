@@ -12,6 +12,15 @@
 
 游戏数据目前没有已核实的跨层连接，所以先用旧版楼梯；以后游戏楼梯核实后可替换。
 
+### 道路补丁
+
+游戏数据里有 13 层的同一种房间（凹字形房间紧贴一条窄道，同一个房间号、共 20 个点）缺了两部分之间的 `room-grid` 连线，凹字形那 15 个点走不到。用户 2026-10-28 在游戏里确认这些房间都能正常进出，按游戏数据 2.104.3059230 记在 [custom-road-patches.json](../tools/maps/custom-road-patches.json)，共 26 条。
+
+- 构建时逐条按点号、坐标、房间号核对后追加，任何一项对不上或两点不相邻就构建失败；游戏数据本身已有的连线报告为“已由游戏数据覆盖”，不重复添加。
+- 交接包里的原始拓扑不改动，只改资源包里输出的那份；manifest 的 `sources.roadPatches` 记录补丁文件 SHA-256、追加数和覆盖数。
+- 以后游戏数据更新、补丁全部被覆盖时可删除这份文件。安卓端同一清单：`mobile/scripts/assets/nightmare-game-road-exceptions.json`。
+- `tests/test_custom_map_reachability.py` 检查已安装资源包里每层的每个房间都能从一楼大门经楼梯走到。
+
 旧版模板与地图的对应关系固定写在 [build_custom_map_package.py](../tools/maps/build_custom_map_package.py)，是按轮廓重合度在全部候选里选出的；模板 17、18、19 没有对应地图，不收录。
 
 ## 对齐

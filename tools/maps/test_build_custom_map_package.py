@@ -86,5 +86,70 @@ class MaskBindingTests(unittest.TestCase):
                 register.assert_not_called()
 
 
+class RoadPatchTests(unittest.TestCase):
+    """Confirmed links the game data lacks: checked by index, position and room."""
+
+    def topology(self):
+        return dict(points=[[630.0, 270.0], [690.0, 270.0], [750.0, 270.0]], pointRooms=["101:3", "101:3", "7:3"],
+                    links=[[1, 2, "source-door"]])
+
+    def link(self, **change):
+        link = dict(mapId="m", floor="2", room="101:3", a=dict(index=0, x=630, y=270), b=dict(index=1, x=690, y=270))
+        link.update(change)
+        return link
+
+    def test_shipped_patch_file_is_well_formed(self):
+        document, grouped = builder.load_road_patches(builder.ROAD_PATCHES)
+        self.assertEqual((document["gameDataVersion"], document["date"]), ("2.104.3059230", "2026-10-28"))
+        self.assertEqual(len(document["links"]), 26)
+        self.assertEqual(len(grouped), 13)
+        for link in document["links"]:
+            self.assertEqual(sorted((abs(link["a"]["x"] - link["b"]["x"]), abs(link["a"]["y"] - link["b"]["y"]))),
+                             [0, builder.TILE])
+
+    def test_missing_link_is_added_once_and_reported_when_the_game_has_it(self):
+        data = self.topology()
+        self.assertEqual(builder.apply_road_patches(data, [self.link()], "m/2"), (1, 0))
+        self.assertEqual(data["links"][-1], [0, 1, "room-grid"])
+        self.assertEqual(builder.apply_road_patches(data, [self.link()], "m/2"), (0, 1))
+        self.assertEqual(len(data["links"]), 2)
+
+    def test_tampered_patches_fail_the_build(self):
+        for change, message in ((dict(a=dict(index=0, x=631, y=270)), "expected"),
+                                (dict(room="7:3"), "in room"),
+                                (dict(b=dict(index=9, x=690, y=270)), "does not exist"),
+                                (dict(b=dict(index=2, x=750, y=270), room="101:3"), "in room")):
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, message):
+                builder.apply_road_patches(self.topology(), [self.link(**change)], "m/2")
+        data = self.topology()
+        data["pointRooms"][2] = "101:3"
+        with self.assertRaisesRegex(ValueError, "not adjacent"):
+            builder.apply_road_patches(data, [self.link(b=dict(index=2, x=750, y=270))], "m/2")
+
+    def test_builder_applies_patches_and_records_them(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            args, path, topology, native = MaskBindingTests._inputs(None, root)
+            topology.update(points=[[10, 10], [10, 70]], pointRooms=["r", "r"])
+            path.write_text(json.dumps(topology), "utf-8")
+            patches = root / "patches.json"
+            document = dict(schema=builder.PATCH_SCHEMA, kind="room-grid", gameDataVersion="fixture", links=[dict(
+                mapId="nightmare-03", floor="1", room="r", a=dict(index=0, x=10, y=10), b=dict(index=1, x=10, y=70))])
+            patches.write_text(json.dumps(document), "utf-8")
+            with patch.object(builder, "register", return_value=(np.eye(3), 1.0)):
+                self.assertEqual(builder.main(args + ["--road-patches", str(patches)]), 0)
+            manifest = json.loads((root / "out/manifest.json").read_text("utf-8"))
+            self.assertEqual(manifest["sources"]["roadPatches"]["added"], 1)
+            packaged = json.loads((root / "out/topology/nightmare-03/1.json").read_text("utf-8"))
+            self.assertEqual(packaged["links"], [[0, 1, "room-grid"]])
+            self.assertEqual(json.loads(path.read_text("utf-8"))["links"], [], "source game data untouched")
+            # A patch for a floor the build does not have is an error, not a silent skip.
+            document["links"][0]["floor"] = "2"
+            patches.write_text(json.dumps(document), "utf-8")
+            with patch.object(builder, "register", return_value=(np.eye(3), 1.0)), \
+                    self.assertRaisesRegex(ValueError, "not built"):
+                builder.main(args[:-4] + ["--out", str(root / "out2"), "--version", "x", "--road-patches", str(patches)])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
