@@ -3,6 +3,7 @@ import sys
 import unittest
 import runpy
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 from runtime_exclusions import PYTHON_MODULE_EXCLUSIONS, filter_binaries
@@ -35,11 +36,20 @@ class RuntimeExclusionTests(unittest.TestCase):
         def analysis(*args, **kwargs):
             calls.update(kwargs)
             return SimpleNamespace(binaries=[], pure=[], scripts=[], datas=kwargs["datas"])
-        runpy.run_path(str(root / "tools/xiaochao-assistant.spec"), init_globals={
-            "SPECPATH": str(root / "tools"), "Analysis": analysis,
-            "PYZ": lambda *a, **kw: None, "EXE": lambda *a, **kw: None,
-            "COLLECT": lambda *a, **kw: None,
-        })
+        executable = SimpleNamespace(name="fixture-build/xiaochao-assistant.exe")
+        exe = Mock(return_value=executable)
+        collect = Mock()
+        # This is a spec-wiring fixture, not a built PE. Patch the module import
+        # used by the spec; real manifest validation has separate contract tests.
+        with patch("verify_admin_manifest.verify_administrator_manifest") as verify:
+            runpy.run_path(str(root / "tools/xiaochao-assistant.spec"), init_globals={
+                "SPECPATH": str(root / "tools"), "Analysis": analysis,
+                "PYZ": lambda *a, **kw: None, "EXE": exe, "COLLECT": collect,
+            })
+        exe.assert_called_once()
+        self.assertIs(exe.call_args.kwargs["uac_admin"], True)
+        verify.assert_called_once_with(executable.name)
+        self.assertIs(collect.call_args.args[0], executable)
         self.assertIn((str(root / "assets/support"), "assets/support"), calls["datas"])
         self.assertTrue((root / "assets/support/wechat.png").is_file())
         self.assertTrue((root / "assets/support/alipay.png").is_file())
