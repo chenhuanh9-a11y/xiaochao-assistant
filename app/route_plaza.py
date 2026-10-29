@@ -35,7 +35,7 @@ PACKAGE_SCHEMA = 3
 MANIFEST_NAME = "map-gallery.json"
 GRID_STEP = 2  # Every Android navigation grid (all 72 floors) uses 2 image pixels per cell.
 FLOORS = {"minus-1": "B1", "-1": "B1", "1": "1", "2": "2"}
-TEMPLATE = re.compile(r"^nightmare-layout-(0[1-9]|1\d|2[0-7])$")
+TEMPLATE = re.compile(r"^nightmare-layout-(0[1-9]|[12]\d)$")  # 28/29 are the 2.104.3085069 maps.
 COLOR = re.compile(r"^#[0-9A-Fa-f]{6}$")
 MAX_ARCHIVE_BYTES = 16 * 1024 * 1024
 MAX_MANIFEST_BYTES = 6 * 1024 * 1024
@@ -142,7 +142,7 @@ def read_manifest(archive: bytes, package: dict, version: dict) -> dict:
                     packageId=package.get("package_id"), revision=package.get("revision"), workId=version.get("work_id"))
     if not isinstance(manifest, dict) or any(manifest.get(key) != value for key, value in expected.items()):
         raise AccountError("路线包与广场记录不一致")
-    if not isinstance(manifest.get("maps"), list) or len(manifest["maps"]) > 27:
+    if not isinstance(manifest.get("maps"), list) or len(manifest["maps"]) > 32:
         raise AccountError("路线包地图数量异常")
     return manifest
 
