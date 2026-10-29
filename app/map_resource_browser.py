@@ -169,52 +169,10 @@ class MapResourceBrowser(tk.Frame):
         self.online_bar_status = _label(self.online_bar, size=9, color=MUTED, anchor="w",
                                         justify="left", wraplength=300)
         self.online_bar_status.pack(side="left", fill="x", expand=True, padx=(10, 0))
-        self.online_surface = tk.Frame(self, bg=BG)
-        self.online_message = _label(self.online_surface, color=MUTED, anchor="w", justify="left", wraplength=460)
-        self.online_message.pack(fill="x")
-        online_actions = tk.Frame(self.online_surface, bg=BG)
-        online_actions.pack(fill="x", pady=(6, 8))
-        self.online_check = _button(online_actions, "检查下载列表", self._check_online_packages)
-        self.online_check.pack(side="left")
-        self.online_cancel = _button(online_actions, "取消", self._cancel_online_package)
-        self.online_cancel.pack(side="left", padx=(8, 0))
-        self.online_progress = ttk.Progressbar(self.online_surface, mode="determinate", maximum=100, value=0)
-        self.online_progress_text = _label(self.online_surface, size=9, color=MUTED, anchor="w")
-        self.online_list = tk.Frame(self.online_surface, bg=BG)
-        self.online_list.pack(fill="x")
-        self.online_feedback = _label(self.online_surface, color=WARNING, anchor="w", justify="left", wraplength=460)
-        self._online_open = False
-        self._online_signature = None
-        self._online_message_text = ""
-        self._online_rows = {}
-        self.online_surface.bind("<Configure>", self._fit_online_text, add="+")
         self.subtitle = _label(self, "看图辨认地图，点开查看完整楼层与路线。", color=MUTED, size=9)
         self.subtitle._display_manual_geometry = True
         self.subtitle.pack(anchor="w", padx=SHADOW_DIP, pady=(0, 12))
-        self.import_surface = tk.Frame(self, bg=BG)
-        self.import_message = _label(self.import_surface, color=MUTED, anchor="w", justify="left", wraplength=460)
-        self.import_message.pack(fill="x")
-        self.import_title = _label(self.import_surface, bold=True, anchor="w", justify="left", wraplength=460)
-        self.import_summary = _label(self.import_surface, color=MUTED, anchor="w", justify="left", wraplength=460)
-        self.import_actions = tk.Frame(self.import_surface, bg=BG)
-        self.import_confirm_button = _button(self.import_actions, "退出并导入", self._confirm_map_package)
-        self.import_confirm_button.pack(side="left")
-        self.import_cancel_button = _button(self.import_actions, "取消", self._cancel_map_package)
-        self.import_cancel_button.pack(side="left", padx=(8, 0))
-        self.import_feedback = _label(self.import_surface, color=WARNING, anchor="w", justify="left", wraplength=460)
-        self._import_signature = None
-        self._import_message_text = ""
-        self.import_surface.bind("<Configure>", self._fit_import_text, add="+")
-        self.managed_surface = tk.Frame(self, bg=BG)
-        self.managed_message = _label(self.managed_surface, color=MUTED, anchor="w", justify="left", wraplength=500)
-        self.managed_message.pack(fill="x")
-        self.managed_list = tk.Frame(self.managed_surface, bg=BG)
-        self.managed_list.pack(fill="x")
-        self.managed_confirm = _button(self.managed_surface, "确认移除作者资源", self._confirm_managed_removal)
-        self._managed_open = False
-        self._managed_signature = None
-        self._managed_rows = {}
-        self._managed_ready = None
+        self._build_operation_surfaces()
         self.filter_host = tk.Frame(self, bg=BG)
         self.filter_host.pack(fill="x", padx=SHADOW_DIP)
         controls = tk.Frame(self.filter_host, bg=BG)
@@ -254,6 +212,52 @@ class MapResourceBrowser(tk.Frame):
         footer.pack(fill="x", padx=SHADOW_DIP, pady=(8, 12))
         _label(footer, "“实际使用路线”影响定点地图和游戏贴合；“浏览来源”只切换预览。", size=8, color=MUTED,
                anchor="w", wraplength=500).pack(fill="x")
+
+    def _build_operation_surfaces(self):
+        """Shared safe action surfaces; page composition owns their placement."""
+        self.online_surface = tk.Frame(self, bg=BG)
+        self.online_message = _label(self.online_surface, color=MUTED, anchor="w", justify="left", wraplength=460)
+        self.online_message.pack(fill="x")
+        online_actions = tk.Frame(self.online_surface, bg=BG)
+        online_actions.pack(fill="x", pady=(6, 8))
+        self.online_check = _button(online_actions, "检查下载列表", self._check_online_packages)
+        self.online_check.pack(side="left")
+        self.online_cancel = _button(online_actions, "取消", self._cancel_online_package)
+        self.online_cancel.pack(side="left", padx=(8, 0))
+        self.online_progress = ttk.Progressbar(self.online_surface, mode="determinate", maximum=100, value=0)
+        self.online_progress_text = _label(self.online_surface, size=9, color=MUTED, anchor="w")
+        self.online_list = tk.Frame(self.online_surface, bg=BG)
+        self.online_list.pack(fill="x")
+        self.online_feedback = _label(self.online_surface, color=WARNING, anchor="w", justify="left", wraplength=460)
+        self._online_open = False
+        self._online_signature = None
+        self._online_message_text = ""
+        self._online_rows = {}
+        self.online_surface.bind("<Configure>", self._fit_online_text, add="+")
+        self.import_surface = tk.Frame(self, bg=BG)
+        self.import_message = _label(self.import_surface, color=MUTED, anchor="w", justify="left", wraplength=460)
+        self.import_message.pack(fill="x")
+        self.import_title = _label(self.import_surface, bold=True, anchor="w", justify="left", wraplength=460)
+        self.import_summary = _label(self.import_surface, color=MUTED, anchor="w", justify="left", wraplength=460)
+        self.import_actions = tk.Frame(self.import_surface, bg=BG)
+        self.import_confirm_button = _button(self.import_actions, "退出并导入", self._confirm_map_package)
+        self.import_confirm_button.pack(side="left")
+        self.import_cancel_button = _button(self.import_actions, "取消", self._cancel_map_package)
+        self.import_cancel_button.pack(side="left", padx=(8, 0))
+        self.import_feedback = _label(self.import_surface, color=WARNING, anchor="w", justify="left", wraplength=460)
+        self._import_signature = None
+        self._import_message_text = ""
+        self.import_surface.bind("<Configure>", self._fit_import_text, add="+")
+        self.managed_surface = tk.Frame(self, bg=BG)
+        self.managed_message = _label(self.managed_surface, color=MUTED, anchor="w", justify="left", wraplength=500)
+        self.managed_message.pack(fill="x")
+        self.managed_list = tk.Frame(self.managed_surface, bg=BG)
+        self.managed_list.pack(fill="x")
+        self.managed_confirm = _button(self.managed_surface, "确认移除作者资源", self._confirm_managed_removal)
+        self._managed_open = False
+        self._managed_signature = None
+        self._managed_rows = {}
+        self._managed_ready = None
 
     def _layout_controls(self):
         short = self.winfo_height() / self._scale < 600
@@ -536,7 +540,7 @@ class MapResourceBrowser(tk.Frame):
         cancel = callable(getattr(self.assistant, "cancel_map_package_import", None))
         can_import = ready is not None and not busy and (helper or live) and state.get("canImport") is True and confirm
         message = str(state.get("message") or "")
-        if not snapshot or not inspect or not (helper or live):
+        if not snapshot or not inspect:
             unavailable = "当前版本尚不支持导入资源包。"
             message = f"{message}\n{unavailable}" if message and unavailable not in message else message or unavailable
         elif not message and busy:
@@ -1172,8 +1176,7 @@ class MapResourceBrowser(tk.Frame):
     def _request(self, path, size, widget, caption="", *, structure=None):
         generation = self._generation
         try:
-            stat = path.stat()
-            stamp = stat.st_mtime_ns, stat.st_size
+            stamp = self._preview_stamp(path)
         except OSError:
             widget._image_request = None
             widget._displayed_image_request = None
@@ -1212,6 +1215,10 @@ class MapResourceBrowser(tk.Frame):
                     row["loaded"] = False
         self._pump_preview_work()
 
+    def _preview_stamp(self, path):
+        stat = path.stat()
+        return stat.st_mtime_ns, stat.st_size
+
     def _cancel_preview_work(self):
         self._pending.clear()
         self._preview_waiting.clear()
@@ -1233,6 +1240,8 @@ class MapResourceBrowser(tk.Frame):
                       if structure is not None else self._executor.submit(load_preview, path, size))
             self._preview_futures[token] = future
             def done(result, token=token):
+                if getattr(self, '_closed', False):
+                    return
                 try:
                     self._results.put((token, result.result(), None))
                 except CancelledError:

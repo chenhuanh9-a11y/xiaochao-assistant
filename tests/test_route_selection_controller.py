@@ -34,6 +34,8 @@ class ControllerTests(unittest.TestCase):
         s._sync_route_settings_ui=Mock();s._save_settings=Mock(return_value=True)
         s._refresh_shared_route_pixels=Mock(return_value=True);s._refresh_visible_sheet_after_route_setting=Mock()
         s._set_status=Mock();s._log=Mock();s._hide_spatial_route=Mock()
+        s._current_display_descriptor=Mock(return_value=object())
+        s._committed_display_feedback=lambda *_:SimpleNamespace(status='结构底图' if s.missing else '作者路线')
         s.gate=SimpleNamespace(confirmed_id='nightmare-03');s.current_floor='2'
         s._invalidate_alignment_work=s._alignment_v2_reset_round=s._clear_round_layer_group=Mock(side_effect=AssertionError('No identity reset'))
 
