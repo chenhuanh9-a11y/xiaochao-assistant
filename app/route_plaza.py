@@ -185,11 +185,14 @@ def convert_plan(library: CustomMapLibrary, map_id: str, plan: dict) -> tuple[li
             continue
         try:
             asset = library.floor(map_id, floor)
-            x, y = cell_to_image(cell, *asset.image_size)
+            # Cells live on the legacy template art, which may differ from the display art.
+            size = getattr(asset, "template_size", None) or asset.image_size
+            matrix = getattr(asset, "template_to_native", None)
+            x, y = cell_to_image(cell, *size)
         except (KeyError, RouteError):
             dropped += 1
             continue
-        nx, ny, nw = asset.to_native @ np.array([x, y, 1.0])
+        nx, ny, nw = (asset.to_native if matrix is None else matrix) @ np.array([x, y, 1.0])
         picked = graph.pick(floor, nx / nw, ny / nw)
         if picked is None:
             dropped += 1
