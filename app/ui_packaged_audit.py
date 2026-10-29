@@ -14,6 +14,42 @@ import threading
 import time
 
 
+def activate_resource_tab(browser, tab):
+    """Exercise the same visible actions as the current map resources page."""
+    if tab not in {'installed', 'discover'}:
+        raise ValueError('unsupported resource tab')
+    browser.tab_buttons[tab].invoke()
+    if browser._tab != tab:
+        raise RuntimeError('Resource page tab did not change')
+
+
+def isolate_window(window, native_attributes, user):
+    """Keep this diagnostic's Tk windows inert before production construction."""
+    window.withdraw()
+    # Set disabled before alpha: changing alpha may realize a native wrapper.
+    native_attributes(window, '-disabled', True)
+    native_attributes(window, '-alpha', 0.0)
+    native_attributes(window, '-topmost', False)
+    # Resolve Tk's deferred wrapper replacement while still hidden/disabled,
+    # then apply flags to the HWND that will actually survive the style change.
+    window.update_idletasks()
+    hwnd = user.GetAncestor(window.winfo_id(), 2)
+    if not hwnd:
+        raise RuntimeError('Diagnostic Tk window has no native wrapper')
+    flags = user.GetWindowLongW(hwnd, -20)
+    user.SetWindowLongW(hwnd, -20, flags | 0x08000000 | 0x80 | 0x20)
+    return int(hwnd)
+
+
+def set_isolated_override(window, boolean, native_override, native_attributes, user):
+    result = native_override(window, boolean)
+    if boolean is not None:
+        # Tk can replace its HWND on this production style change, dropping
+        # native-only flags even though the Python window remains withdrawn.
+        isolate_window(window, native_attributes, user)
+    return result
+
+
 class PathGuard:
     def __init__(self, output, reads):
         self.output = self.canonical(output)
@@ -173,6 +209,7 @@ def run(daily, state):
     foreground = user.GetForegroundWindow()
     original_deiconify, original_lift = tk.Wm.deiconify, tk.Misc.lift
     original_attributes = tk.Wm.attributes
+    original_override = tk.Wm.overrideredirect
     original_toplevel = tk.Toplevel.__init__
     calls = report['boundaryCalls'] = {}
     def blocked(name):
@@ -187,10 +224,13 @@ def run(daily, state):
         else original_lift(widget, *a, **kw))
     def hidden_toplevel(widget, *args, **kwargs):
         original_toplevel(widget, *args, **kwargs)
-        widget.withdraw()
-        original_attributes(widget, '-alpha', 0.0)
-        original_attributes(widget, '-disabled', True)
+        hwnd = isolate_window(widget, original_attributes, user)
+        report.setdefault('isolatedWindows', []).append(dict(kind='toplevel', hwnd=hwnd))
+        save(state)
     tk.Toplevel.__init__ = hidden_toplevel
+    def overrideredirect(widget, boolean=None):
+        return set_isolated_override(widget, boolean, original_override, original_attributes, user)
+    tk.Wm.overrideredirect = tk.Wm.wm_overrideredirect = overrideredirect
     def attributes(widget, *args, **kwargs):
         if len(args) >= 2 and args[0] in ('-alpha', '-topmost', '-disabled'):
             args = (args[0], {'-alpha': 0.0, '-topmost': False, '-disabled': True}[args[0]], *args[2:])
@@ -252,6 +292,8 @@ def run(daily, state):
                    timerCount=len(root.tk.call('after', 'info')),
                    pending=len(browser._pending), futures=len(browser._preview_futures),
                    waiting=len(browser._preview_waiting), resultQueue=browser._results.qsize(),
+                   resourceTab=browser._tab,
+                   metadataPending=browser._browse_work is not None or browser._browse_pending is not None,
                    state=ui.window.state(), viewable=bool(ui.window.winfo_viewable()),
                    width=ui.window.winfo_width(), height=ui.window.winfo_height(),
                    shell=dict(state=shell.state(), viewable=bool(shell.winfo_viewable()),
@@ -264,13 +306,16 @@ def run(daily, state):
         save(state)
     try:
         report['phase'] = 'constructor'
+        save(state)  # Preserve PID/FP and the active phase before native setup.
         arm()
         settings = output / 'settings.json'
         settings.write_text(json.dumps(dict(onboardingCompleted=True, gameMode='nightmare',
             orbVisible=False, reduceMotion=False, uiSoundEnabled=False)), encoding='utf-8')
         daily.DPI_AWARENESS_MODE = daily.enable_per_monitor_dpi_awareness()
         root = tk.Tk()
-        root.withdraw()
+        hwnd = isolate_window(root, original_attributes, user)
+        report.setdefault('isolatedWindows', []).append(dict(kind='root', hwnd=hwnd))
+        save(state)
         root.report_callback_exception = lambda kind, error, tb: report['errors'].append(kind.__name__ + ': ' + str(error))
         last = [time.perf_counter()]
         def heartbeat():
@@ -308,11 +353,11 @@ def run(daily, state):
         stage('startup', ui.display.refresh, 800)
         for page in ('preferences', 'maps', 'help', 'home', 'maps'):
             stage('page_' + page, ui._nav_buttons[page].invoke)
-        stage('gallery', ui.map_browser._open_gallery, 800)
+        stage('gallery', lambda: activate_resource_tab(ui.map_browser, 'installed'), 800)
         stage('gallery_repeat', ui._nav_buttons['maps'].invoke)
         stage('gallery_hide', ui._nav_buttons['preferences'].invoke)
         stage('gallery_return', ui._nav_buttons['maps'].invoke, 800)
-        stage('overview', ui.map_browser._show_overview, 800)
+        stage('overview', lambda: activate_resource_tab(ui.map_browser, 'discover'), 800)
         for width, height in ((700, 500), (1280, 900), (1000, 720)):
             stage('resize_' + str(width), lambda w=width, h=height: ui.window.geometry(f'{w}x{h}-32000-32000'))
         context = assistant._ui_context_for_window_snapshot
@@ -347,6 +392,7 @@ def run(daily, state):
             if assistant is not None:
                 desktop = assistant.desktop_main_ui
                 executors = [desktop.map_browser._executor,
+                             desktop.map_browser._metadata_executor,
                              getattr(desktop, '_home_preview_executor', None)]
                 assistant.stop_event.set()
                 assistant.closed = True
