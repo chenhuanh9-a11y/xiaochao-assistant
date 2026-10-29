@@ -24,6 +24,7 @@ PACKAGE_NAMES = {
     'difficult-zhan10': '展十 · 困难',
     'nightmare-nightingale': '爱吃醋 · 噩梦',
     'nightmare-wang-qingxin': '王清心 · 噩梦',
+    'nightmare-lianghapi': '凉哈皮 · 噩梦',
 }
 
 

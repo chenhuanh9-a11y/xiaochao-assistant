@@ -158,6 +158,7 @@ class LiveAuthorImportTests(unittest.TestCase):
             'difficult-zhan10': {CORE: self.core_bytes, NATIVE: b'native-image', LEGACY: b'legacy-image'},
             'nightmare-wang-qingxin': {WANG: b'wang-image'},
             'nightmare-nightingale': {NIGHTINGALE: b'nightingale-image'},
+            'nightmare-lianghapi': {'_internal/assets/authors/lianghapi-single/map-03-2.png': b'lianghapi-image'},
         }
         for package_id, author in importer.AUTHOR_PACKAGES.items():
             for name in importer.AUTHOR_SIDECARS:

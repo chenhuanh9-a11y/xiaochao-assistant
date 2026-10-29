@@ -6167,7 +6167,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         if self._shared_structure_mode_enabled():
             optional = getattr(self,'optional_author_displays',None)
             if optional is not None:
-                installed = [profile for profile in (SUJU_ROUTE_PROFILE_ID,DEFAULT_ROUTE_PROFILE_ID,'nightingale')
+                installed = [profile for profile in (SUJU_ROUTE_PROFILE_ID,DEFAULT_ROUTE_PROFILE_ID,'nightingale','lianghapi-single')
                     if profile in optional.profiles or (profile == SUJU_ROUTE_PROFILE_ID
                         and getattr(self,'author_route_catalog',None) is not None
                         and profile in self.author_route_catalog.profiles

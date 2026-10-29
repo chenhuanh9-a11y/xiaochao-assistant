@@ -31,7 +31,8 @@ class ManagedAuthorTests(unittest.TestCase):
         payloads = {'nightmare-suju': {SUJU:b'suju'},
             'difficult-zhan10': {NATIVE:b'zhan',LEGACY:b'legacy',CORE:self.f.core_bytes},
             'nightmare-wang-qingxin': {WANG:b'wang'},
-            'nightmare-nightingale': {NIGHTINGALE:b'ai'}}
+            'nightmare-nightingale': {NIGHTINGALE:b'ai'},
+            'nightmare-lianghapi': {'_internal/assets/authors/lianghapi-single/map-03-2.png':b'liang'}}
         for package, author in importer.AUTHOR_PACKAGES.items():
             for name in importer.AUTHOR_SIDECARS:
                 payloads[package][f'_internal/references/author-packs/{author}/{name}'] = b'{}'
