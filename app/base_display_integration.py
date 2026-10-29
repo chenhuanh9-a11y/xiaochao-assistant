@@ -120,6 +120,11 @@ class BaseDisplayIntegrationMixin:
         output = image.view(DisplayPixels)
         output.display_descriptor = {key: descriptor.get(key) for key in (
             'displayKind', 'displayLabel', 'displayResourceKey', 'authorStatus', 'displayContext')}
+        # This exact full-canvas view replaces the ndarray returned by the
+        # retained renderer. Keep its packet attached to the actual consumer
+        # object; copies/slices must never acquire that placement capability.
+        from idvb0059_runtime import transfer_display_packet
+        transfer_display_packet(self, image, output)
         return output
 
     def _display_output_metadata(self, image):
