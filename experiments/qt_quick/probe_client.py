@@ -39,7 +39,7 @@ def run_client_probe(client, output):
                 check("no_tk_import", "tkinter" not in __import__("sys").modules)
                 check("resource_list_ready", backend.count > 0)
                 check("resource_management_ready", len(client.resources.packageRows) > 0)
-                check("no_game_start_without_binding", not window.findChild(QObject,"clientStartRound").property("enabled"))
+                check("unbound_preparation_start_available", bool(window.findChild(QObject,"clientStartRound").property("enabled")))
                 capture("home-1180.png")
                 window.setProperty("page", "gallery")
                 row = next(r for r in backend.model.rows if r["available"])
