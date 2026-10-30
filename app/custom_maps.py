@@ -400,14 +400,21 @@ def _font(size):
     return ImageFont.load_default(size=size)
 
 
+ROUTE_OUTLINE = (15, 27, 40, 255)
+
+
 def draw_route(draw: ImageDraw.ImageDraw, transform, lines, markers, *, width: float, pill: float):
     """Draw lines and pills; ``transform`` maps native points to target pixels."""
-    for line, color in lines:
-        pts = [transform(p) for p in line]
-        draw.line(pts, fill=(*_rgb(color), 255), width=max(1, round(width)), joint="curve")
-        r = width / 2
-        for x, y in (pts[0], pts[-1]):
-            draw.ellipse((x - r, y - r, x + r, y + r), fill=(*_rgb(color), 255))
+    drawn = [([transform(p) for p in line], color) for line, color in lines]
+    # Same as the Android route: a dark outline about a third of the line width on each side, drawn under
+    # every line first so crossing routes keep their colours.
+    outline = width + max(2.0, width * .7)
+    for stroke, fills in ((outline, [ROUTE_OUTLINE] * len(drawn)), (width, [(*_rgb(color), 255) for _, color in drawn])):
+        for (pts, _), fill in zip(drawn, fills):
+            draw.line(pts, fill=fill, width=max(1, round(stroke)), joint="curve")
+            r = stroke / 2
+            for x, y in (pts[0], pts[-1]):
+                draw.ellipse((x - r, y - r, x + r, y + r), fill=fill)
     font = _font(max(8, round(pill * 1.2)))
     for x, y, label in markers:
         cx, cy = transform((x, y))

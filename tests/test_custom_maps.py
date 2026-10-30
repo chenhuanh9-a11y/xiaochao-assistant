@@ -12,7 +12,8 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 from custom_maps import (CustomMapLibrary, GalleryStore, RouteError, gallery_of, insertion_index,  # noqa: E402
-                         marker_groups, profile_id, render_game_layer, FloorGraph, MapGraph, mask_sha256)
+                         marker_groups, profile_id, render_game_layer, FloorGraph, MapGraph, mask_sha256,
+                         ROUTE_OUTLINE, draw_route)
 
 # Two floors of a 4x3 tile road grid (60 px tiles). Room "big" is 2x2 tiles,
 # "hall" is a one-tile-wide corridor; a door joins them. Floor 2 is one room.
@@ -158,6 +159,23 @@ class LibraryTests(unittest.TestCase):
         self.assertGreater(int(pink.sum()), 50)
         empty = render_game_layer(self.library, "m", "2", [])
         self.assertEqual(empty.shape, (180, 240, 4))
+
+
+class RouteDrawingTests(unittest.TestCase):
+    def test_lines_have_a_dark_outline_under_every_colour(self):
+        from PIL import ImageDraw
+        image = Image.new("RGBA", (60, 60), (200, 180, 140, 255))
+        lines = [([(10, 20), (50, 20)], "#63CAFF"), ([(30, 5), (30, 55)], "#FF6B81")]
+        draw_route(ImageDraw.Draw(image), lambda p: p, lines, [], width=6, pill=8)
+        pixel = lambda x, y: image.getpixel((x, y))
+        self.assertEqual(pixel(15, 20), (0x63, 0xCA, 0xFF, 255))
+        # About a third of the 6 px width on each side: rows 16 and 24 are outline, row 27 is the map.
+        self.assertEqual(pixel(15, 16), ROUTE_OUTLINE)
+        self.assertEqual(pixel(15, 24), ROUTE_OUTLINE)
+        self.assertEqual(pixel(15, 27), (200, 180, 140, 255))
+        # Outlines go under all lines, so the first line keeps its colour where the second crosses it.
+        self.assertEqual(pixel(26, 20), (0x63, 0xCA, 0xFF, 255))
+        self.assertEqual(pixel(30, 20), (0xFF, 0x6B, 0x81, 255))
 
 
 class GalleryTests(unittest.TestCase):
