@@ -173,6 +173,66 @@ class SimilarityProtocolTests(unittest.TestCase):
         self.assertEqual(self.runtime.reference_payload()["floor"],"2")
         self.assertTrue(state["manualGroupMemberHeld"])
 
+    def test_new_manual_intent_immediately_rejects_old_auto_ack_during_target_fit(self):
+        old=self.pending_sibling();old_token=old["pendingSiblingToken"]
+        source=old["renderToken"];entered,release=threading.Event(),threading.Event()
+        fit=copy.deepcopy(self.fit);output=[]
+        def blocked(*a,**kw):entered.set();release.wait(2);return fit
+        with patch.object(_AlignmentHost,"fit",side_effect=blocked):
+            worker=threading.Thread(target=lambda:output.append(self.group_choice(IDS[1])))
+            worker.start();self.assertTrue(entered.wait(2))
+            self.assertTrue(self.runtime.snapshot()["groupMemberSelectionPending"])
+            self.assertFalse(self.runtime.acknowledge_sibling(old_token,True)["success"])
+            self.assertEqual(self.runtime.render_payload(source)["mapId"],IDS[0])
+            release.set();worker.join(2)
+        self.assertFalse(worker.is_alive());self.assertTrue(output[0]["success"],output)
+        target=output[0]["pendingSiblingToken"]
+        self.assertIsNotNone(self.runtime.pending_sibling_payload(target))
+        generation=self.runtime.snapshot()["generation"]
+        self.assertTrue(self.dispatch("refresh_map").get("coalesced"))
+        self.assertEqual(self.runtime.snapshot()["generation"],generation)
+        self.assertIsNotNone(self.runtime.pending_sibling_payload(target))
+        self.assertTrue(self.runtime.acknowledge_sibling(target,True)["success"])
+        self.assertEqual(self.runtime.snapshot()["identityPhase"],"MANUAL_MEMBER_CONFIRMED")
+
+    def test_manual_intent_blocks_already_running_automatic_review_from_publishing(self):
+        self.capture_group();self.now=3.;self.capture.frame[0,0,0]=3
+        entered,release=threading.Event(),threading.Event()
+        def review(*a,**kw):entered.set();release.wait(2);return rows(IDS[1])
+        self.engine.rank_established_group.side_effect=review
+        refresh=[];manual=[]
+        with patch.object(_AlignmentHost,"_canonical_geometry_current_frame_residual",
+                return_value=(self.fit["selectedRouteCurrentFrameResidual"],None)):
+            old=threading.Thread(target=lambda:refresh.append(self.dispatch("refresh_map")))
+            old.start();self.assertTrue(entered.wait(2))
+            chosen=threading.Thread(target=lambda:manual.append(self.group_choice(IDS[1])))
+            chosen.start()
+            for _ in range(10000):
+                if self.runtime.snapshot()["groupMemberSelectionPending"]:break
+                threading.Event().wait(.0001)
+            self.assertTrue(self.runtime.snapshot()["groupMemberSelectionPending"])
+            release.set();old.join(2);chosen.join(2)
+        self.assertFalse(old.is_alive());self.assertFalse(chosen.is_alive())
+        self.assertTrue(manual[0]["success"],manual)
+        target=manual[0]["pendingSiblingToken"]
+        self.assertIsNotNone(self.runtime.pending_sibling_payload(target))
+        self.assertFalse(self.runtime.snapshot()["identityLocked"])
+        self.assertTrue(self.runtime.acknowledge_sibling(target,True)["success"])
+        self.assertEqual(self.runtime.snapshot()["identityPhase"],"MANUAL_MEMBER_CONFIRMED")
+
+    def test_reselect_acceptance_clears_manual_hold_and_old_map_authority(self):
+        self.capture_group()
+        token=self.group_choice(IDS[1])["pendingSiblingToken"]
+        self.assertTrue(self.runtime.acknowledge_sibling(token,True)["success"])
+        self.assertTrue(self.dispatch("reselect_map")["success"])
+        state=self.runtime.snapshot()
+        self.assertFalse(state["manualGroupMemberHeld"])
+        self.assertFalse(state["identityLocked"])
+        self.assertFalse(state["displayAuthorized"])
+        self.assertTrue(state["candidateEditMode"])
+        self.assertEqual(state["selectedCandidate"]["mapId"],IDS[1])
+        self.assertIsNone(self.runtime.reference_payload())
+
     def test_manual_same_provisional_uses_current_pose_but_still_waits_material(self):
         self.capture_group()
         with patch.object(_AlignmentHost,"fit",side_effect=AssertionError("same current member must reuse fit")):
