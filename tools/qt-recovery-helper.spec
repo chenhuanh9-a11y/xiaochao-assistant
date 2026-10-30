@@ -10,11 +10,11 @@ from build_qt_client import verify_invoker_manifest
 
 inputs = json.loads(Path(os.environ["XINGTU_QT_BUILD_INPUTS"]).read_text(encoding="utf-8"))
 if (Path(inputs["sourceRoot"]).resolve() != root
-        or inputs["product"] != "第五人格小抄助手"):
+        or inputs["product"] != "星图"):
     raise ValueError("Recovery helper requires this exact production build input")
 
 a = Analysis([str(root / "app/star_map_recovery_helper.py")],
-    pathex=[str(root / "app")], binaries=[], datas=[], hiddenimports=[],
+    pathex=[str(root / "app")], binaries=[], datas=[(inputs["profilePath"], ".")], hiddenimports=[],
     hookspath=[], hooksconfig={}, runtime_hooks=[],
     excludes=["tkinter", "_tkinter", "PySide6", "PyQt5", "PyQt6", "PySide2",
               "identityv_daily_assistant", "numpy", "cv2", "PIL"], noarchive=False)

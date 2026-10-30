@@ -13,7 +13,7 @@ from verify_admin_manifest import verify_administrator_manifest
 inputs = json.loads(Path(os.environ["XINGTU_QT_BUILD_INPUTS"]).read_text(encoding="utf-8"))
 product = inputs["product"]
 if (Path(inputs["sourceRoot"]).resolve() != root
-        or product not in {"XingtuQtClientTest", "第五人格小抄助手"}):
+        or product not in {"XingtuQtClientTest", "星图"}):
     raise ValueError("Build input identity does not match this source checkout")
 qt_root = root / "experiments" / "qt_quick"
 resource_stage = Path(inputs["resourceStage"])
@@ -30,6 +30,7 @@ for name in ("version.json", "THIRD_PARTY_NOTICES.md", "THIRD_PARTY_LUCIDE_LICEN
              "THIRD_PARTY_FLUENT_LICENSE.txt"):
     datas.append((str(root / name), "."))
 datas.append((str(qt_root / "THIRD_PARTY.md"), "qt-notices"))
+datas.append((str(qt_root / "help-topics.json"), "."))
 datas.append((str(root / "app" / "custom_default_gallery.json"), "."))
 datas.append((str(Path(inputs["profilePath"])), "."))
 for distribution in ("PySide6-Essentials", "shiboken6", "numpy", "opencv-python-headless", "Pillow", "psutil"):
@@ -65,7 +66,8 @@ pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name=product,
           debug=False, bootloader_ignore_signals=False, strip=False, upx=False,
           uac_admin=True, console=False,
-          manifest=inputs["manifestPath"])
+          manifest=inputs["manifestPath"], version=inputs["versionInfoPath"],
+          icon=inputs["iconPath"])
 # This reads RT_MANIFEST #1 from the actual PE; it never launches the EXE.
 verify_administrator_manifest(exe.name)
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name=product)

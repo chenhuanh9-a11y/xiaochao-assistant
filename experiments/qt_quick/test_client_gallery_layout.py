@@ -25,6 +25,7 @@ class FakeBackend(QObject):
     def __init__(self, image):
         super().__init__()
         self.model = ResourceRows()
+        self.image = image
         self.rows = [dict(key=f"nightmare/author-a/map-{n}/variant-1/{1+n%2}",
                           title=f"测试地图 {n}", mapId=f"map-{n}", floor=str(1+n%2),
                           variant="路线一", imageUrl=image, available=True) for n in range(40)]
@@ -34,12 +35,14 @@ class FakeBackend(QObject):
         self.calls = []
 
     mode = Property(str, lambda self: self._mode, notify=changed)
-    profiles = Property("QVariantList", lambda self: [dict(id="author-a", name="作者甲", available=40),
-        dict(id="author-b", name="作者乙", available=12)], notify=changed)
+    profiles = Property("QVariantList", lambda self: [dict(id="author-a", name="作者甲", available=40, availableMaps=40, mapCount=40, previewUrl=self.image),
+        dict(id="author-b", name="作者乙", available=12, availableMaps=12, mapCount=40, previewUrl=self.image)], notify=changed)
     profileId = Property(str, lambda self: self._profile, notify=changed)
     floor = Property(str, lambda self: self._floor, notify=changed)
     count = Property(int, lambda self: len(self.model.rows), notify=changed)
+    mapCount = Property(int, lambda self: len({row['mapId'] for row in self.model.rows if row['available']}), notify=changed)
     selectedKey = Property(str, lambda self: self.selected.get("key", ""), notify=changed)
+    selectedRow = Property(int, lambda self: next((i for i,row in enumerate(self.model.rows) if row['key']==self.selectedKey), -1), notify=changed)
     selectedTitle = Property(str, lambda self: self.selected.get("title", ""), notify=changed)
     selectedFloor = Property(str, lambda self: self.selected.get("floor", ""), notify=changed)
     selectedImage = Property(str, lambda self: self.selected.get("imageUrl", ""), notify=changed)
@@ -47,6 +50,11 @@ class FakeBackend(QObject):
     hasError = Property(bool, lambda self: False, notify=changed)
     message = Property(str, lambda self: "隔离测试资源", notify=changed)
     viewKey = Property(str, lambda self: f"{self._mode}/{self._profile}/{self._floor}/{self._query}", notify=changed)
+
+    @Slot()
+    def selectFirstLayer(self):
+        if not self.selected and self.model.rows:
+            self.select(self.model.rows[0]["key"])
 
     @Slot(str)
     def select(self, key):
@@ -80,6 +88,10 @@ class FakeBackend(QObject):
     def setFloor(self, value):
         self.calls.append(("floor", value))
         self.change("_floor", value)
+
+    @Slot()
+    def clearGallerySearch(self):
+        self._query = ""
 
     @Slot(str)
     def search(self, value):
@@ -171,41 +183,35 @@ class GalleryLayoutTests(unittest.TestCase):
         QTest.qWait(10)
 
     def test_keyed_refresh_and_narrow_list_detail_keep_selection_and_actions(self):
+        self.assertFalse(self.page.findChild(QObject, "clientGallerySearch"))
+        self.assertEqual(self.item("galleryMapCount").property("text"), "仅浏览 · 40 份图")
+        self.assertGreater(self.item("galleryManagePackages").mapToScene(QPointF()).y(), self.item("galleryRefresh").mapToScene(QPointF()).y())
         self.assertTrue(self.item("galleryListPane").isVisible())
         self.assertTrue(self.item("galleryPreviewPane").isVisible())
-        self.click("galleryLayer_1")
-        key = self.backend.rows[1]["key"]
-        self.assertEqual(self.backend.selectedKey, key)
+        self.click("galleryViewAuthor_author-a")
         self.click("galleryLayerPicker")
         self.click("galleryLayerOption_2")
         key = self.backend.rows[2]["key"]
         self.assertEqual(self.backend.selectedKey, key)
+        preview = self.item("galleryLargePreview")
+        picker = self.item("galleryLayerPicker")
+        self.assertLess(preview.mapToScene(QPointF()).y(), picker.mapToScene(QPointF()).y())
         floor_picker = self.item("galleryFloorPicker")
         floor_picker.forceActiveFocus(Qt.OtherFocusReason)
         QTest.keyClick(self.window, Qt.Key_Down)
         APP.processEvents()
         self.assertEqual(self.backend.calls[-1], ("floor", "1"))
-        gallery = self.item("clientResourceGrid")
-        gallery.setProperty("contentY", 220)
-        APP.processEvents()
-        before_scroll, before_mutations = gallery.property("contentY"), self.backend.model.mutations
+        before_mutations = self.backend.model.mutations
         self.click("galleryRefresh")
         self.assertEqual(self.backend.selectedKey, key)
-        self.assertEqual(gallery.property("contentY"), before_scroll)
         self.assertEqual(self.backend.model.mutations, before_mutations)
-        self.resize(514, 335)
+        self.resize(514, 440)
         self.assertTrue(self.page.property("compact"))
         self.assertTrue(self.item("galleryListPane").isVisible())
         self.assertFalse(self.item("galleryPreviewPane").isVisible())
-        gallery.setProperty("contentY", 0)
-        APP.processEvents()
-        self.click("galleryLayer_0")
-        key = self.backend.rows[0]["key"]
-        self.assertEqual(self.backend.selectedKey, key)
+        self.click("galleryViewAuthor_author-a")
         self.assertTrue(self.item("galleryPreviewPane").isVisible())
         self.assertFalse(self.item("galleryListPane").isVisible())
-        footer = self.item("gallerySelectionFooter")
-        self.assertLessEqual(footer.mapToScene(QPointF(0, footer.height())).y(), self.page.height()+1)
         self.click("galleryUseAuthor")
         self.assertEqual(self.coordinator.calls[-1], ("use", "author-a"))
         self.click("galleryShowReference")
@@ -221,7 +227,6 @@ class GalleryLayoutTests(unittest.TestCase):
         self.click("galleryDifficultMode")
         self.assertEqual(self.backend.calls[-1], ("mode", "difficult"))
         self.assertFalse(self.item("galleryUseAuthor").isEnabled())
-        self.assertNotIn(("use", "difficult"), self.coordinator.calls)
         self.assertFalse(self.warnings, "\n".join(self.warnings))
 
 

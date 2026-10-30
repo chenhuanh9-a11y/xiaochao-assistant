@@ -133,10 +133,15 @@ class Backend(QObject):
     replayAvailable = Property(bool, lambda s: bool(s._replay), notify=changed)
     replayMessage = Property(str, lambda s: s._replay_message, notify=changed)
     selectedKey = Property(str, lambda s: s._selected, notify=changed)
+    selectedRow = Property(int, lambda s: next((i for i, row in enumerate(s.model.rows)
+                                               if row["key"] == s._selected), -1), notify=changed)
     selectedTitle = Property(str, lambda s: s._selection.get("title", "先选一张地图"), notify=changed)
     selectedImage = Property(str, lambda s: s._selection.get("imageUrl", ""), notify=changed)
     selectedFloor = Property(str, lambda s: s._selection.get("floor", ""), notify=changed)
     count = Property(int, lambda s: len(s.model.rows), notify=changed)
+    # A map is one installed map identity with at least one available layer.
+    # Floors and route variants stay browseable rows, but do not add maps.
+    mapCount = Property(int, lambda s: len({row["mapId"] for row in s.model.rows if row["available"]}), notify=changed)
     previewModel = Property(QObject, lambda s: s.preview_model, constant=True)
     viewKey = Property(str, lambda s: f"{s._mode}/{s._profile}/{s._floor}/{s._query}", notify=changed)
 
@@ -173,17 +178,29 @@ class Backend(QObject):
             else:
                 self.context = context
                 self._profiles = [{"id": p.profile_id, "name": p.name,
-                                   "available": p.available_layers} for p in context.profiles]
+                                   "available": p.available_layers,
+                                   "availableMaps": p.available_maps, "mapCount": p.map_count,
+                                   "previewUrl": self._preview_url(p.first_preview[2], context.path_stamps)
+                                       if p.first_preview else ""} for p in context.profiles]
                 if self._profile not in {p["id"] for p in self._profiles}:
                     self._profile = next((p["id"] for p in self._profiles if p["available"]),
                                          self._profiles[0]["id"] if self._profiles else "")
                 self._apply_rows()
-                self._message = self._import_notice or f"已读取 {len(self.model.rows)} 张图层 · 实验副本"
+                self._message = self._import_notice or f"已读取 {self.mapCount} 份图"
             self.changed.emit()
             if self.viewKey != initial_view:
                 self.viewChanged.emit(self.viewKey)
         self._submit(lambda: load_browse_context(self.paths.resource_root, mode,
                                                 cancelled=cancel.is_set), loaded)
+
+    @staticmethod
+    def _preview_url(path, stamps):
+        stamp = stamps.get(Path(path))
+        if not stamp:
+            return ""
+        url = QUrl.fromLocalFile(str(path))
+        url.setQuery(f"v={stamp[0]}-{stamp[1]}")
+        return url.toString()
 
     def _apply_rows(self):
         rows = []
@@ -242,6 +259,8 @@ class Backend(QObject):
         else:
             self._selected = self._selections.get(self.viewKey, "")
             self._apply_rows()
+            if self._message.startswith("已读取"):
+                self._message = f"已读取 {self.mapCount} 份图"
         self.changed.emit()
         self.viewChanged.emit(self.viewKey)
 
@@ -260,9 +279,25 @@ class Backend(QObject):
         if value in {"", "1", "2", "B1"}:
             self._change("_floor", value)
 
+    @Slot()
+    def clearGallerySearch(self):
+        """The production gallery has no search; discard any old hidden filter.
+
+        Keep the separate laboratory browser's search API and view history.
+        """
+        self._change("_query", "")
+
     @Slot(str)
     def search(self, value):
         self._change("_query", value.strip())
+
+    @Slot()
+    def selectFirstLayer(self):
+        """Match the old author-card preview's initial map selection."""
+        if self._selected or not self.model.rows:
+            return
+        row = next((row for row in self.model.rows if row["available"]), self.model.rows[0])
+        self.select(row["key"])
 
     @Slot(str)
     def select(self, key):

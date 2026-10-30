@@ -115,6 +115,7 @@ Item {
 
     FileDialog {
         id: archiveDialog
+        objectName: "resourceArchiveDialog"
         title: "选择本地地图资源包"
         nameFilters: ["地图资源包 (*.zip)"]
         onAccepted: resourceService.importArchive(selectedFile.toString())

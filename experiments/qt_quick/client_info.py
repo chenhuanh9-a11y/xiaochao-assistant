@@ -1,4 +1,7 @@
 """Qt notice/help adapter; published manifest validation remains UpdateService's job."""
+import base64
+from copy import deepcopy
+from io import BytesIO
 from dataclasses import asdict
 from datetime import datetime, timezone
 import json
@@ -51,6 +54,10 @@ class ClientInfoService(QObject):
         self._operation = ""
         self._history_message = "检查更新后可查看往期公告"
         self._diagnostics = {}
+        self._help_topic_template = json.loads(Path(__file__).with_name("help-topics.json").read_text("utf-8"))
+        self._home_previews = []
+        self._home_preview_signature = None
+        self._home_preview_generation = 0
         self._open_url = open_url or QDesktopServices.openUrl
         self._providers = {}
         self._pool = QThreadPool(self)
@@ -81,16 +88,101 @@ class ClientInfoService(QObject):
         return dict(asdict(release), published_date=release.published_date)
     facts = Property("QVariantMap", lambda s: dict(version=s._version, entrypoint=str(Path(__file__).with_name("client.py")),
                     interpreter=sys.executable, platform=platform.platform(),
-                    liveInput=bool(s._providers.get("input") and s._providers["input"].enabled)), notify=changed)
+                    liveInput=bool(s._providers.get("input") and s._providers["input"].enabled),
+                    displayEnvironment=s._display_environment_label(),
+                    runtimeStatus=getattr(s._providers.get("coordinator"), "runtimeStatus", "等待游戏窗口信息")), notify=changed)
+
+    def _display_environment_label(self):
+        coordinator = self._providers.get("coordinator")
+        bound = str(getattr(coordinator, "boundWindow", ""))
+        row = next((row for row in getattr(coordinator, "gameWindows", [])
+                    if str(row.get("hwnd")) == bound), None)
+        if row is None:
+            return "等待游戏窗口信息"
+        return f"{row.get('width', '?')} × {row.get('height', '?')} · DPI {row.get('dpi', '?')}"
     supportCodes = Property("QVariantMap", lambda s: {
         key: QUrl.fromLocalFile(str(ROOT / "assets/support" / file)).toString()
         for key, file in (("wechat", "wechat.png"), ("alipay", "alipay.png"))}, constant=True)
+
+    @property
+    def _home_backend(self):
+        coordinator = self._providers.get("coordinator")
+        return getattr(coordinator, "backend", None)
+
+    homePreviews = Property("QVariantList", lambda s: s._home_previews, notify=changed)
+    helpImages = Property("QVariantMap", lambda s: {
+        topic: QUrl.fromLocalFile(str(s.paths.resource_root / "assets/help" / name)).toString()
+        for topic, name in (("quick-start", "home.png"), ("shortcuts-visibility", "settings.png"),
+                            ("resources-opacity", "resources.png"), ("check-feedback", "help.png"))}, constant=True)
+
+    def _help_rows(self):
+        rows = deepcopy(self._help_topic_template)
+        coordinator = self._providers.get("coordinator")
+        settings = getattr(coordinator, "settings", None)
+        values = settings.persistedValues if settings is not None else {}
+        order = ("toggle-panel", "candidate-prev", "candidate-next", "confirm-round", "cycle-floor",
+                 "end-round", "toggle-sheet-visibility", "start-round", "toggle-round")
+        actions = dict(zip(order, values.get("actionHotkeys", [])))
+        actions["map"] = values.get("hotkey", "")
+        for row in rows:
+            for step in row["steps"]:
+                step["bindings"] = "  /  ".join(str(actions.get(key) or "未设置") for key in step["targets"])
+        return rows
+    helpTopics = Property("QVariantList", _help_rows, notify=changed)
+
+    @Slot(str)
+    def helpNavigate(self, page):
+        coordinator = self._providers.get("coordinator")
+        if coordinator is not None and page in {"preferences", "maps"}:
+            coordinator.navigate("settings" if page == "preferences" else "gallery")
+
+    def _refresh_home_previews(self):
+        backend = self._home_backend
+        context = getattr(backend, "context", None)
+        if self._closed or context is None or getattr(backend, "busy", False):
+            return
+        rows = getattr(getattr(backend, "preview_model", None), "rows", [])
+        signature = (id(context), getattr(backend, "profile", ""),
+                     tuple((row.get("key"), row.get("imageUrl")) for row in rows))
+        if signature == self._home_preview_signature:
+            return
+        self._home_preview_signature = signature
+        self._home_preview_generation += 1
+        generation = self._home_preview_generation
+        if rows:
+            self._home_previews = [dict(row, structure=False) for row in rows[:3]]
+            self.changed.emit()
+            return
+        pack = context.pack
+        def render():
+            from map_resource_overview import structure_previews, load_structure_preview
+            result = []
+            for asset in structure_previews(pack):
+                image = load_structure_preview(asset, (400, 250))
+                stream = BytesIO()
+                image.save(stream, format="PNG")
+                result.append(dict(key="", title=asset.name, floor=asset.floor, structure=True,
+                    imageUrl="data:image/png;base64," + base64.b64encode(stream.getvalue()).decode("ascii")))
+            return result
+        job = Work(render)
+        self._jobs.add(job)
+        def done(value, error):
+            self._jobs.discard(job)
+            if not self._closed and generation == self._home_preview_generation:
+                self._home_previews = value if not error else []
+                self.changed.emit()
+        job.signals.done.connect(done, Qt.QueuedConnection)
+        self._pool.start(job)
 
     def setProviders(self, **providers):
         self._providers = providers
         for provider in providers.values():
             if hasattr(provider, "changed"):
                 provider.changed.connect(self.changed)
+        backend = self._home_backend
+        if backend is not None:
+            backend.changed.connect(self._refresh_home_previews)
+            self._refresh_home_previews()
 
     @Slot()
     def checkUpdates(self):
@@ -257,5 +349,6 @@ class ClientInfoService(QObject):
 
     def shutdown(self):
         self._closed = True
+        self._home_preview_generation += 1
         self._timer.stop()
         self._pool.waitForDone()

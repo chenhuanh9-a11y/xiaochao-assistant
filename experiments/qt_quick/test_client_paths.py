@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "app"))
 
 
 class RuntimePathTests(unittest.TestCase):
@@ -15,15 +16,17 @@ class RuntimePathTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.internal = self.root / "_internal"
         self.internal.mkdir()
-        self.profile = dict(product="第五人格小抄助手", installerInstance=dict(
-            id="production", product="第五人格小抄助手", appId="D04394A0-DACE-4FF9-874D-3DCB43EE53D1"))
+        self.profile = dict(product="星图", installerInstance=dict(
+            id="production", product="星图", appId="D04394A0-DACE-4FF9-874D-3DCB43EE53D1"))
+        self.isolated = dict(product="XingtuQtClientTest", installerInstance=dict(
+            id="client", product="XingtuQtClientTest", appId="AF19AFD9-3016-44C9-9D20-6F216C5D8C51"))
 
     def load(self, frozen=True, profile=None):
         (self.internal / "installation-profile.json").write_text(json.dumps(
             self.profile if profile is None else profile), encoding="utf-8")
         spec = importlib.util.spec_from_file_location("synthetic_client_paths", Path(__file__).with_name("client_paths.py"))
         module = importlib.util.module_from_spec(spec)
-        with patch.object(sys, "frozen", frozen, create=True), patch.object(sys, "_MEIPASS", str(self.internal), create=True), patch.object(sys, "executable", str(self.root / "第五人格小抄助手.exe")), patch.dict(sys.modules, {spec.name: module}):
+        with patch.object(sys, "frozen", frozen, create=True), patch.object(sys, "_MEIPASS", str(self.internal), create=True), patch.object(sys, "executable", str(self.root / "星图.exe")), patch.dict(sys.modules, {spec.name: module}):
             spec.loader.exec_module(module)
         return module
 
@@ -54,15 +57,14 @@ class RuntimePathTests(unittest.TestCase):
 
     def test_wrong_or_adjacent_profile_cannot_select_production(self):
         for profile in ({}, dict(self.profile, installerInstance=dict(self.profile["installerInstance"], appId="other"))):
-            module = self.load(profile=profile)
-            self.assertFalse(module.PRODUCTION)
-            with self.assertRaises(ValueError):
-                module.runtime_paths(self.root)
+            with self.assertRaisesRegex(ValueError, "Invalid baked"):
+                self.load(profile=profile)
         (self.root / "installation-profile.json").write_text(json.dumps(self.profile), encoding="utf-8")
-        self.assertFalse(self.load(profile={}).PRODUCTION)
+        with self.assertRaisesRegex(ValueError, "Invalid baked"):
+            self.load(profile={})
 
     def test_marked_test_layout_keeps_old_paths(self):
-        module = self.load(profile={})
+        module = self.load(profile=self.isolated)
         sandbox = module.DEFAULT_SANDBOX
         sandbox.mkdir(parents=True)
         (sandbox / ".qt-lab-owner").write_text("qt-quick-isolated-v1", encoding="utf-8")

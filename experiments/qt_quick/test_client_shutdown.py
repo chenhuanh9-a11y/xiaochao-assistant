@@ -13,9 +13,11 @@ def scenario(mode, destination):
     import threading
     import time
     from unittest.mock import Mock
-    from PySide6.QtCore import QTimer, QUrl, QRunnable, QThreadPool
+    from PySide6.QtCore import QObject, QPointF, QTimer, QUrl, QRunnable, QThreadPool, Qt
     from PySide6.QtGui import QGuiApplication
     from PySide6.QtQml import QQmlApplicationEngine
+    from PySide6.QtQuick import QQuickItem
+    from PySide6.QtTest import QTest
     import test_client_coordinator as seams
     app = QGuiApplication([])
     seams.CoordinatorTests.setUpClass()
@@ -45,13 +47,24 @@ def scenario(mode, destination):
     coordinator.quitRequested.connect(app.quit)
     qml = Path(__file__).with_name("Client.qml").read_text(encoding="utf-8")
     closing = "onClosing:" + qml.split("onClosing:", 1)[1].split("    RowLayout", 1)[0]
+    choice = qml[qml.index("    Dialog {\n        id: closeChoice"):qml.index("    FileDialog { id: replayPicker")]
     popup = qml[qml.rfind("    Popup {"):].rsplit("\n}", 1)[0]
     engine = QQmlApplicationEngine()
     engine.rootContext().setContextProperty("clientCoordinator", coordinator)
-    engine.loadData(("import QtQuick\nimport QtQuick.Controls.Basic\nWindow { visible:true; width:200; height:140; " + closing + popup + "\n}").encode(), QUrl("file:///owned-close.qml"))
+    engine.loadData(("import QtQuick\nimport QtQuick.Controls.Basic\nimport QtQuick.Layouts\nApplicationWindow { id:root; visible:true; width:600; height:500; " + closing + choice + popup + "\n}").encode(), QUrl.fromLocalFile(str(Path(__file__).with_name("owned-close.qml"))))
     window = engine.rootObjects()[0]
     heartbeat = QTimer(); heartbeat.timeout.connect(lambda: beats.append(1)); heartbeat.start(10)
     QTimer.singleShot(30, window.close)
+    chosen = []
+    def choose_exit():
+        dialog = window.findChild(QObject, "clientCloseChoice")
+        if chosen or not dialog.property("visible"):
+            return
+        button = window.findChild(QQuickItem, "closeApplication")
+        position = button.mapToScene(QPointF(button.width()/2, button.height()/2)).toPoint()
+        chosen.append(True)
+        QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, position)
+    chooser = QTimer(); chooser.timeout.connect(choose_exit); chooser.start(20)
     QTimer.singleShot(1800, lambda: (events.append("timeout"), app.exit(7)))
     started = time.monotonic()
     code = app.exec()
@@ -60,7 +73,7 @@ def scenario(mode, destination):
     result = dict(code=code, events=events, elapsed=elapsed, closeReady=coordinator.closeReady,
         beats=len(beats), inputStopped=fixture.input.disable.called,
         captureStopped=coordinator.capture.disable.called,
-        writerFinished=Path(destination).exists(), activeWorkers=pool.activeThreadCount())
+        writerFinished=Path(destination).exists(), activeWorkers=pool.activeThreadCount(), exitChoiceClicked=bool(chosen))
     fixture.tearDown()
     print(json.dumps(result))
 
@@ -77,6 +90,7 @@ class ShutdownTests(unittest.TestCase):
         self.assertEqual(result["code"], 0, result)
         self.assertEqual(result["events"], ["quit-requested"], result)
         self.assertTrue(result["closeReady"], result)
+        self.assertTrue(result["exitChoiceClicked"], result)
         self.assertTrue(result["inputStopped"] and result["captureStopped"], result)
         self.assertEqual(result["activeWorkers"], 0)
         self.assertLess(result["elapsed"], 1.5)

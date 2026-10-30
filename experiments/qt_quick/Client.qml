@@ -42,8 +42,13 @@ ApplicationWindow {
     }
     ClientOnboarding {}
     onClosing: function(event) {
-        event.accepted = clientCoordinator.closeReady
-        if (!event.accepted) clientCoordinator.requestClose()
+        if (clientCoordinator.closeReady) {
+            closeChoice.close()
+            event.accepted = true
+        } else {
+            event.accepted = false
+            if (!clientCoordinator.closing) closeChoice.open()
+        }
     }
     RowLayout {
         anchors.fill: parent; spacing: 0
@@ -61,11 +66,13 @@ ApplicationWindow {
                 Repeater {
                     model: [{key:"home",label:"主页面",icon:"home"},{key:"gallery",label:"地图资源",icon:"map"},
                             {key:"custom",label:"自定义",icon:"route"},{key:"settings",label:"设置",icon:"settings"},{key:"help",label:"帮助",icon:"help"}]
-                    ToolButton {
+                    AppButton {
                         id: navigation
                         required property var modelData
                         objectName: "nav_"+modelData.key
                         Layout.fillWidth: true; Layout.preferredHeight: root.compactRail ? 48 : 68
+                        implicitWidth: 0; Layout.minimumWidth: 0; padding: 8
+                        selected: root.section(root.page) === modelData.key
                         Accessible.name: modelData.label
                         ToolTip.visible: hovered && root.compactRail; ToolTip.text: modelData.label
                         onClicked: root.page = modelData.key
@@ -74,7 +81,6 @@ ApplicationWindow {
                             Image { anchors.horizontalCenter: parent.horizontalCenter; width: 23; height: 23; source: "icons/"+navigation.modelData.icon+".png"; sourceSize.width: 46; sourceSize.height: 46; opacity: root.section(root.page) === navigation.modelData.key ? 1 : .65 }
                             Label { anchors.horizontalCenter: parent.horizontalCenter; visible: !root.compactRail; text: navigation.modelData.label; color: root.section(root.page) === navigation.modelData.key ? "#245de7" : "#4c6282"; font.pixelSize: 12 }
                         }
-                        background: Rectangle { radius: 11; color: root.section(root.page) === navigation.modelData.key ? "#dceaff" : navigation.hovered ? "#f0f5fd" : "transparent"; border.width: navigation.activeFocus ? 1 : 0; border.color: "#2f66eb" }
                     }
                 }
                 Item { Layout.fillHeight: true }
@@ -89,7 +95,9 @@ ApplicationWindow {
                     }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#d5e2f5"; Layout.leftMargin: 4; Layout.rightMargin: 4 }
-                ToolButton { Layout.fillWidth: true; Layout.preferredHeight: root.compactRail ? 42 : 64; Accessible.name: "退出"; onClicked: clientCoordinator.requestClose()
+                AppButton { id: exitNavigation; objectName: "nav_exit"; implicitWidth: 0; Layout.minimumWidth: 0
+                    Layout.fillWidth: true; Layout.preferredHeight: root.compactRail ? 42 : 64
+                    Accessible.name: "退出星图"; enabled: !clientCoordinator.closing; onClicked: closeChoice.open()
                     contentItem: Column { spacing: 5
                         Image { anchors.horizontalCenter: parent.horizontalCenter; width: 22; height: 22; source: "icons/exit.png"; opacity: .65 }
                         Label { anchors.horizontalCenter: parent.horizontalCenter; visible: !root.compactRail; text: "退出"; color: "#4c6282"; font.pixelSize: 12 }
@@ -143,6 +151,28 @@ ApplicationWindow {
             ClientCustomGallery {}
             ClientOnlinePackages {}
         }
+        }
+    }
+    Dialog {
+        id: closeChoice; objectName: "clientCloseChoice"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(420, root.width - 40)
+        modal: true; focus: true
+        closePolicy: Popup.CloseOnEscape
+        title: "关闭星图"
+        background: Rectangle { color: "white"; radius: 12; border.width: 1; border.color: "#d6e0ef" }
+        header: Label { text: closeChoice.title; padding: 20; color: "#142035"; font.pixelSize: 17; font.bold: true }
+        contentItem: ColumnLayout {
+            spacing: 12
+            Label { Layout.fillWidth: true; text: "请选择后台运行或结束程序。取消会留在当前窗口。"; color: "#354f75"; wrapMode: Text.WordWrap }
+            AppButton { objectName: "closeToBackground"; Layout.fillWidth: true; text: "后台运行（程序继续运行）"
+                onClicked: { closeChoice.close(); windows.hide("main") }
+            }
+            AppButton { objectName: "closeApplication"; Layout.fillWidth: true; text: "退出星图（结束程序）"; primary: true
+                onClicked: { closeChoice.close(); clientCoordinator.requestClose() }
+            }
+            AppButton { objectName: "cancelClose"; Layout.fillWidth: true; text: "取消"; onClicked: closeChoice.close() }
         }
     }
     FileDialog { id: replayPicker; title: "选择识别回放"; nameFilters: ["星图回放 (replay.json)"]; onAccepted: clientCoordinator.loadReplay(selectedFile.toString()) }

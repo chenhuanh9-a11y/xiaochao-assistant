@@ -13,6 +13,7 @@ import stat
 import tempfile
 import unicodedata
 import zipfile
+from packaged_product_identity import CLOSED_EXE_NAMES
 
 
 MAX_FILES = 2000
@@ -511,7 +512,11 @@ def inspect_package(zip_path, install_root) -> dict:
 
 
 def _check_closed(root):
-    exe = _target(root, "第五人格小抄助手.exe")
+    for name in CLOSED_EXE_NAMES:
+        _check_executable_closed(_target(root, name))
+
+
+def _check_executable_closed(exe):
     if os.name != "nt" or not exe.exists():
         return
     from ctypes import wintypes

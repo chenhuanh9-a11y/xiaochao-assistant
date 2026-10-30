@@ -35,7 +35,7 @@ INSTANCES = {
                            setupPrefix="XingtuQtLayout-Setup", versionSuffix="-qt-layout-test", product=PRODUCT),
     "production": dict(appId="D04394A0-DACE-4FF9-874D-3DCB43EE53D1", appName="星图",
                        installFolder="XiaochaoAssistant", startMenuGroup="星图",
-                       setupPrefix="星图-安装程序", versionSuffix="-qt", product="第五人格小抄助手"),
+                       setupPrefix="星图-安装程序", versionSuffix="-qt", product="星图"),
 }
 QML_MODULES = ("QtQml", "QtQuick", "QtQuick/Controls", "QtQuick/Controls/Basic",
                "QtQuick/Dialogs", "QtQuick/Dialogs/quickimpl", "QtQuick/Layouts")
@@ -49,6 +49,8 @@ REQUIRED_RESOURCES = (
 )
 QT_LICENSE_ROOT = ROOT / "experiments/qt_quick/qt-licenses"
 RUNTIME_DISTRIBUTIONS = ("PySide6-Essentials", "shiboken6", "numpy", "opencv-python-headless", "Pillow", "psutil")
+BRAND_ICON = "assets/brand/xingtu.ico"
+BRAND_ICON_SHA256 = "7aad9827252a62999ff214c4cb0cf08dd8f64473f584dd82ca2b4a2fee353b6b"
 # Runtime libraries from LGPL-capable QtBase/QtDeclarative/QtSvg. Unexpected
 # modules stop the build for review rather than inheriting the app's license.
 QT_LGPL_MODULES = set("""Concurrent Core DBus Gui Network OpenGL OpenGLWidgets PrintSupport
@@ -87,6 +89,24 @@ def qt_manifest(product=PRODUCT):
     from PyInstaller.utils.win32.winmanifest import create_application_manifest
     verify_manifest_xml(create_application_manifest(data, uac_admin=True, uac_uiaccess=False))
     return data
+
+
+def version_info_text(product, numeric):
+    """PyInstaller PE metadata; the display version remains separate in Setup."""
+    if product not in {PRODUCT, INSTANCES["production"]["product"]}:
+        raise ValueError("Unknown Qt product")
+    version = tuple(int(part) for part in numeric.split("."))
+    if len(version) != 4 or any(not 0 <= part <= 65535 for part in version):
+        raise ValueError("Invalid PE numeric version")
+    name = "星图" if product != PRODUCT else "Xingtu Qt Test Client"
+    fields = {"FileDescription": name, "ProductName": name,
+              "InternalName": product, "OriginalFilename": product + ".exe",
+              "FileVersion": numeric, "ProductVersion": numeric}
+    strings = ",\n".join(f"StringStruct({key!r}, {value!r})" for key, value in fields.items())
+    return ("VSVersionInfo(ffi=FixedFileInfo(filevers=" + repr(version) + ", prodvers=" + repr(version)
+            + ", mask=0x3f, flags=0, OS=0x40004, fileType=1, subtype=0, date=(0, 0)), "
+            + "kids=[StringFileInfo([StringTable('080404B0', [" + strings
+            + "])]), VarFileInfo([VarStruct('Translation', [2052, 1200])])])\n")
 
 
 def verify_invoker_manifest(executable):
@@ -129,6 +149,9 @@ def assemble_recovery_helper(output, stage, environment_vars, *, kind="recovery"
     runtime = helper_stage / ("_star_map_" + kind + "_runtime")
     if not runtime.is_dir() or {p.name for p in helper_stage.iterdir()} != {executable.name, runtime.name}:
         raise ValueError("Recovery helper must have a separate exact runtime directory")
+    inputs = _read(Path(environment_vars["XINGTU_QT_BUILD_INPUTS"]))
+    if sha256(runtime / "installation-profile.json") != sha256(Path(inputs["profilePath"])):
+        raise ValueError("Helper baked profile differs from its parent build")
     files = {}
     for path in helper_stage.rglob("*"):
         if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
@@ -599,6 +622,8 @@ def main(argv=None):
     if not (qt / "client.py").is_file() or not (qt / "Client.qml").is_file():
         raise ValueError("Integrated Qt entrypoint is not present")
     declaration, resources, omitted, replaced, contract = validate_resources(args.resource_root, args.resource_inventory)
+    if BRAND_ICON not in resources or resources[BRAND_ICON]["sha256"].lower() != BRAND_ICON_SHA256:
+        raise ValueError("The existing supplied Xingtu ICO must be present in the locked resource inventory")
     notices = notice_inputs()
     support = source_support_assets(resources)
     resources = dict(resources, **support)
@@ -632,6 +657,9 @@ def main(argv=None):
                 omittedAuthorFiles=len(omitted), replacedResourceMetadata=list(replaced),
                 resourcePathContract=contract, output=str(output), tools=tools,
                 noticeInputs=notices, sourceSupportAssets=support,
+                productBrand=dict(icon=BRAND_ICON, iconSha256=BRAND_ICON_SHA256,
+                                  artworkSource="existing supplied 3438365b/38490F4F brand resource; unchanged bytes",
+                                  fileDescription=instance["appName"], productName=instance["appName"]),
                 action="plan-only" if args.plan_only else "build-setup-only",
                 buildCompleted=False, installPerformed=False, executableLaunched=False, published=False)
     if args.instance == "production":
@@ -670,8 +698,11 @@ def main(argv=None):
     profile_path.write_text(json.dumps(profile, indent=2), encoding="utf-8")
     manifest_path = output / "qt-client.manifest"
     manifest_path.write_bytes(qt_manifest(product))
+    version_path = output / "qt-client-version-info.txt"
+    version_path.write_text(version_info_text(product, numeric), encoding="utf-8")
     inputs = dict(sourceRoot=str(ROOT), product=product, resourceStage=str(resource_stage),
-                  resources=resources, profilePath=str(profile_path), manifestPath=str(manifest_path))
+                  resources=resources, profilePath=str(profile_path), manifestPath=str(manifest_path),
+                  versionInfoPath=str(version_path), iconPath=str(resource_stage / BRAND_ICON))
     input_path = output / "freeze-inputs.json"
     input_path.write_text(json.dumps(inputs, indent=2), encoding="utf-8")
     plan["resources"], plan["omittedAuthorResources"] = resources, omitted

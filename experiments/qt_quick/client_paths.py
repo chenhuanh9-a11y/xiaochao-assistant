@@ -11,30 +11,15 @@ RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2
 WORK_ROOT = ((Path(sys.executable).resolve().parent / "work") if FROZEN else RESOURCE_ROOT / "work").resolve()
 APP_ROOT = RESOURCE_ROOT / "app"
 INSTALL_ROOT = Path(sys.executable).resolve().parent
-PRODUCTION_APP_ID = "D04394A0-DACE-4FF9-874D-3DCB43EE53D1"
-PRODUCTION_PRODUCT = "第五人格小抄助手"
+if str(APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(APP_ROOT))
+from packaged_product_identity import PRODUCTION_APP_ID, PRODUCTION_PRODUCT, baked_identity
 
 
 def _production_profile():
     # Only the build-baked profile counts; an adjacent file or CLI root cannot
     # turn a source/test executable into the original product.
-    if not FROZEN:
-        return False
-    try:
-        profile_path = RESOURCE_ROOT / "installation-profile.json"
-        for item in (profile_path, *profile_path.parents):
-            info = item.lstat()
-            if (stat.S_ISLNK(info.st_mode)
-                    or getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
-                return False
-        profile = json.loads(profile_path.read_text(encoding="utf-8"))
-        instance = profile.get("installerInstance", {})
-        return (profile.get("product") == PRODUCTION_PRODUCT
-                and instance.get("id") == "production"
-                and instance.get("product") == PRODUCTION_PRODUCT
-                and instance.get("appId") == PRODUCTION_APP_ID)
-    except (OSError, ValueError, AttributeError, TypeError):
-        return False
+    return FROZEN and baked_identity() == "qt-production"
 
 
 PRODUCTION = _production_profile()

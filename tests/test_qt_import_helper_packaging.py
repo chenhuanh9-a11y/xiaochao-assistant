@@ -1,5 +1,6 @@
 """Exercise exact helper staging with inert bytes; no compiler or EXE run."""
 from pathlib import Path
+import json
 import subprocess
 import sys
 import tempfile
@@ -72,9 +73,16 @@ assert not {'PIL','numpy','cv2'} & set(sys.modules)
             runtime = frozen / "_star_map_import_runtime"; runtime.mkdir(parents=True)
             (frozen / "star-map-import-helper.exe").write_bytes(b"synthetic PE placeholder")
             (runtime / "library.zip").write_bytes(b"synthetic runtime")
+            profile = output / "installation-profile.json"
+            profile.write_text(json.dumps(dict(product="星图", installerInstance=dict(
+                id="production", product="星图", appId="D04394A0-DACE-4FF9-874D-3DCB43EE53D1"))), encoding="utf-8")
+            (runtime / profile.name).write_bytes(profile.read_bytes())
+            inputs = output / "freeze-inputs.json"
+            inputs.write_text(json.dumps(dict(profilePath=str(profile))), encoding="utf-8")
+            environment = {"XINGTU_QT_BUILD_INPUTS": str(inputs)}
             with patch.object(build.subprocess, "run") as compiler, patch.object(
                     build, "verify_invoker_manifest", return_value=1) as manifest:
-                result = build.assemble_recovery_helper(output, stage, {}, kind="import")
+                result = build.assemble_recovery_helper(output, stage, environment, kind="import")
             self.assertIn("qt-import-helper.spec", str(compiler.call_args.args))
             self.assertEqual(result["runtimeDirectory"], "_star_map_import_runtime")
             self.assertFalse(result["launched"])
@@ -83,6 +91,10 @@ assert not {'PIL','numpy','cv2'} & set(sys.modules)
                 self.assertEqual(build.sha256(stage / name), row["sha256"])
             self.assertEqual({path.name for path in stage.iterdir()},
                 {"star-map-import-helper.exe", "_star_map_import_runtime"})
+            (runtime / profile.name).write_text('{}', encoding="utf-8")
+            with patch.object(build.subprocess, "run"), patch.object(build, "verify_invoker_manifest", return_value=1):
+                with self.assertRaisesRegex(ValueError, "baked profile differs"):
+                    build.assemble_recovery_helper(output, output / "rejected-stage", environment, kind="import")
 
 
 if __name__ == "__main__":

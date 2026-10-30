@@ -76,6 +76,8 @@ class CustomGalleryService(QObject):
         self._past, self._future = [], []
         self._use_handler = None
         self._in_use = ""
+        self._editing = False
+        self._map_metadata = []
         self._state = dict(galleries=[], maps=[], floors=[], points=[], lines=[], markers=[],
                            selectedGallery="default", selectedMap="", selectedFloor="1", readonly=True,
                            imageUrl="", imageWidth=0, imageHeight=0, planError="", canUndo=False,
@@ -87,7 +89,8 @@ class CustomGalleryService(QObject):
         return dict(deepcopy(self._state), busy=self._busy, message=self._message,
                     pendingKind=self._pending["kind"] if self._pending else "",
                     color=self._color, colors=[dict(value=c, name=n) for c, n in COLORS],
-                    newStart=self._start, canUse=self._use_handler is not None and not self._data_error, inUse=self._in_use)
+                    newStart=self._start, editing=self._editing,
+                    canUse=self._use_handler is not None and not self._data_error, inUse=self._in_use)
 
     snapshot = Property("QVariantMap", _snapshot, notify=changed)
     busy = Property(bool, lambda s: s._busy, notify=changed)
@@ -108,8 +111,24 @@ class CustomGalleryService(QObject):
         self._store = GalleryStore(store_path, self.default_path,
                                   legacy_path=self.sandbox / "qt-no-implicit-legacy-import.json")
         self.library = CustomMapLibrary(self._library_root)
+        self._cache_map_metadata()
         self._digest = None if self._data_error else _file_digest(self.path)
         self._publish_committed()
+
+    def _cache_map_metadata(self):
+        """Verify thumbnails once per library refresh, never per route write."""
+        rows = []
+        for mid, name in self.library.maps():
+            row = dict(id=mid, name=name, thumbnailUrl="", thumbnailError="")
+            try:
+                graph = self.library.graph(mid)
+                floor = next(f for f in FLOORS if f in graph.floors)
+                asset = self.library.floor(mid, floor)
+                row["thumbnailUrl"] = QUrl.fromLocalFile(str(asset.image_path)).toString()
+            except (OSError, ValueError, KeyError, TypeError, StopIteration) as error:
+                row["thumbnailError"] = str(error)
+            rows.append(row)
+        self._map_metadata = rows
 
     def _publish_committed(self):
         galleries = {gid: self._store.export(gid) for gid, _name, _ro in self._store.galleries()}
@@ -170,11 +189,13 @@ class CustomGalleryService(QObject):
                      for gid, name, ro in store.galleries()]
         if self._gallery not in [g["id"] for g in galleries]:
             self._gallery = galleries[0]["id"]
-        maps = [dict(id=mid, name=name, drawn=mid in store.drawn_maps(self._gallery))
-                for mid, name in self.library.maps()]
+        drawn = set(store.drawn_maps(self._gallery))
+        maps = [dict(row, drawn=row["id"] in drawn) for row in self._map_metadata]
         if self._map not in [row["id"] for row in maps]:
             self._map = maps[0]["id"] if maps else ""
         state = dict(galleries=galleries, maps=maps, selectedGallery=self._gallery, selectedMap=self._map,
+            galleryName=store.name(self._gallery), mapName=self.library.name(self._map),
+            drawnCount=len(drawn), mapCount=len(maps),
             selectedFloor=self._floor, floors=[], points=[], lines=[], markers=[], readonly=bool(self._data_error) or store.readonly(self._gallery),
             imageUrl="", imageWidth=0, imageHeight=0, planError="", available=self.library.available,
             libraryMessage=self.library.error, dataError=self._data_error, canUndo=bool(self._past), canRedo=bool(self._future))
@@ -251,6 +272,7 @@ class CustomGalleryService(QObject):
             if self._store.name(gid) is None:
                 raise ValueError("图集已不存在")
             self._gallery = gid
+            self._editing = False
             self._past, self._future = [], []
         self._run(select)
 
@@ -260,8 +282,15 @@ class CustomGalleryService(QObject):
             if not self.library.has(mid):
                 raise ValueError("地图资源不可用")
             self._map = mid
+            self._editing = True
             self._past, self._future = [], []
         self._run(select)
+
+    @Slot()
+    def browseGalleries(self):
+        if not self._busy and not self._pending:
+            self._editing = False
+            self.changed.emit()
 
     @Slot(str)
     def selectFloor(self, floor):

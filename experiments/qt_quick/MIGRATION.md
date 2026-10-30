@@ -1,5 +1,17 @@
 # Qt Quick migration map
 
+## Follow-up source after 24857072
+
+The delivered 248 Setup remains unchanged. This follow-up restores the actual Tk resource-page geometry (author preview cards / 5:4 split / selectors below the preview), removes gallery search and clears its stale filter, and counts distinct available map IDs: a real 72-floor/variant-row input displays 24 maps. Package transactions still have the existing separate management/download pages; this is not a claim of complete 3438365b page or pixel identity.
+
+Home restores three actual author previews with the original structure-preview fallback. Help restores the four original topics, numbered steps, current bindings and existing operation images. Custom maps restore gallery browsing and editing as separate views, retaining the original canvas coordinate conversion and planning; thumbnail metadata is cached across point writes. Shared buttons now show default/hover/pressed/keyboard-focus/selected/disabled states. An independent reviewer viewed normal/large screenshots of all three surfaces plus home and seven control-state screenshots with no P0/P1 finding. The two new user Library PNGs could not be materialized because the current transfer helper requires unsupported Windows `os.setxattr`; their pixels were not reviewed.
+
+Ordinary X now asks for background / exit / cancel. A complete source QtClient subprocess took the real QWindow close → original dialog → QTest exit-button path, drained eight service pools and exited 0 in 1.45 seconds, confirmed by its parent's Popen wait. A failed first test mistook its system console child for a helper; that exact owned test process was later identity-checked and forcibly cleaned up, recorded as a failed test rather than an exit pass. Neither result certifies active-game or future frozen-process shutdown.
+
+The next production build names the executable, PE product metadata, original supplied icon, window icon and Windows app identity as 星图. The original AppId and user paths stay fixed. Parent-bound helpers use their own frozen profile to choose the fixed expected executable; PID/creation-time/retained-handle/path checks remain. Installer startup checks both old/new executables, and migration retires only owned old program files and verified shortcuts. PE/ISCC/native adoption remains a build/acceptance item until the new candidate is produced; 248 is not relabelled as containing these changes.
+
+The integrated source own-window probe passes 25 checks, including stable gallery selection/scroll, custom browsing → editing and a real two-point route, with zero QML warnings. The Qt-internal helper fixture loaded its driver but stopped at a FileDialog locator assertion before import; no helper or data write happened. The source now gives the original archive dialog a stable object name for a bounded future check. Do not count the locator failure as helper integration acceptance or rerun the old 248 fixture.
+
 ## Delivered node and remaining scope (24857072)
 
 The delivered original-product candidate is `24857072c7ed9328c122c2a68014bbb0dc865613`, fingerprint `24857072`: **星图-安装程序-1.0.5-qt-24857072c7ed.exe**, 154,993,030 bytes, SHA256 `165447b33cd2836920e71b9965d2fd00dd88ff531145d8fdcd45298748d5c959`. Its runtime source is identical to `45d28c69`; only the Chinese installer/identity receipt was rebuilt. Original AppId, settings, resource and gallery paths are retained. The 248, 45, AD7, 2051 and f3 artifacts remain unchanged. Later documentation/evidence is not a new product build.

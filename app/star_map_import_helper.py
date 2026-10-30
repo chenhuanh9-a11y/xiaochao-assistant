@@ -19,6 +19,7 @@ import subprocess
 import time
 
 from star_map_import import ImportRejected, _check_closed, _no_links, _target, install_package
+from packaged_product_identity import expected_application_executable
 
 
 def _kernel():
@@ -167,7 +168,7 @@ def _launch_parent_bound_helper(helper_path, install_root, request_id, request_a
         raise ctypes.WinError(ctypes.get_last_error())
     try:
         identity = _identity(api, handle, os.getpid())
-        expected_exe = _target(root, "第五人格小抄助手.exe")
+        expected_exe = _target(root, expected_application_executable())
         if os.path.normcase(os.path.realpath(identity["executable"])) != os.path.normcase(str(expected_exe)):
             raise ImportRejected("launcher-is-not-installed-application")
         if not api.SetHandleInformation(handle, 1, 1):
@@ -211,7 +212,7 @@ def run_helper(*, archive, install_root, parent_pid, parent_created, archive_sha
         raise ImportRejected("invalid-request-id")
     root = Path(os.path.abspath(install_root))
     _no_links(root)
-    expected_exe = _target(root, "第五人格小抄助手.exe")
+    expected_exe = _target(root, expected_application_executable())
     result = {"requestId": request_id, "archiveSha256": archive_sha256,
               "success": False, "restartRequired": False,
               "completedAtUTC": None, "scope": "offline-resource-import; not game/player acceptance"}

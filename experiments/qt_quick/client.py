@@ -8,7 +8,7 @@ import shutil
 import sys
 from uuid import uuid4
 from PySide6.QtCore import QTimer, QUrl, QThreadPool, Qt
-from PySide6.QtGui import QFont, QFontDatabase, QGuiApplication
+from PySide6.QtGui import QFont, QFontDatabase, QGuiApplication, QIcon
 from PySide6.QtQml import QQmlApplicationEngine
 from client_paths import APP_ROOT, DEFAULT_SANDBOX, FROZEN, PRODUCTION, RESOURCE_ROOT, WORK_ROOT, owned_sandbox, runtime_paths
 
@@ -345,7 +345,16 @@ def main():
             (WORK_ROOT / "client-self-check.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
         print(json.dumps(result))
         return 0 if result["ready"] and result["qml"] and not result["tkLoaded"] else 1
+    if os.name == "nt":
+        import ctypes
+        model_id = "Xingtu.Assistant" if PRODUCTION else ("Xingtu.QtClientTest" if FROZEN else "Xingtu.QtClientSource")
+        set_model_id = ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID
+        set_model_id.argtypes = [ctypes.c_wchar_p]
+        set_model_id.restype = ctypes.c_long
+        if set_model_id(model_id) != 0:
+            raise OSError("Could not set the Windows application identity")
     app = QGuiApplication([])
+    app.setWindowIcon(QIcon(str(HERE / "icons" / "xingtu-round.png")))
     from client_theme import apply_light_theme
     apply_light_theme(app)
     app.setOrganizationName("XiaochaoAssistant" if PRODUCTION else "XingtuQtClientTest")

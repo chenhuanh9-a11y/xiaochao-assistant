@@ -30,6 +30,11 @@
 #ifndef InstallerExeName
   #define InstallerExeName "XingtuQtClientTest.exe"
 #endif
+#ifdef ProductionInstaller
+  #define InstallerModelId "Xingtu.Assistant"
+#else
+  #define InstallerModelId "Xingtu.QtClientTest"
+#endif
 
 [Setup]
 AppId={#InstallerAppId}
@@ -40,7 +45,7 @@ VersionInfoVersion={#NumericVersion}
 #ifdef ProductionInstaller
 DefaultDirName={localappdata}\Programs\{#InstallerFolder}
 UsePreviousAppDir=yes
-UsePreviousGroup=yes
+UsePreviousGroup=no
 DisableDirPage=auto
 DisableProgramGroupPage=auto
 PrivilegesRequired=lowest
@@ -93,11 +98,11 @@ Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs c
 #endif
 
 [Icons]
-Name: "{group}\{#InstallerAppName}"; Filename: "{app}\{#InstallerExeName}"; WorkingDir: "{app}"
+Name: "{group}\{#InstallerAppName}"; Filename: "{app}\{#InstallerExeName}"; WorkingDir: "{app}"; AppUserModelID: "{#InstallerModelId}"
 
 #ifdef ProductionInstaller
 Name: "{group}\卸载星图（保留个人资料）"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#InstallerAppName}"; Filename: "{app}\{#InstallerExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autodesktop}\{#InstallerAppName}"; Filename: "{app}\{#InstallerExeName}"; WorkingDir: "{app}"; AppUserModelID: "{#InstallerModelId}"; Check: CreateDesktopShortcut
 #endif
 
 ; No [Run], [UninstallDelete], portable archive, or public URL.
@@ -121,6 +126,43 @@ var
   ResourcePlanRoot: String;
 function InstallerFileAttributes(lpFileName: String): LongWord;
   external 'GetFileAttributesW@kernel32.dll stdcall';
+function OwnedAssistantShortcut(const Path: String): Boolean;
+var
+  Shell, Link: Variant;
+  Target: String;
+begin
+  Result := False;
+  if not FileExists(Path) then Exit;
+  try
+    Shell := CreateOleObject('WScript.Shell');
+    Link := Shell.CreateShortcut(Path);
+    Target := Link.TargetPath;
+    Result := (CompareText(Target, ExpandConstant('{app}\第五人格小抄助手.exe')) = 0) or
+      (CompareText(Target, ExpandConstant('{app}\{#InstallerExeName}')) = 0);
+  except
+    Log('LEGACY_SHORTCUT_NOT_VERIFIABLE ' + Path);
+  end;
+end;
+function CreateDesktopShortcut: Boolean;
+begin
+  Result := WizardIsTaskSelected('desktopicon') or
+    OwnedAssistantShortcut(ExpandConstant('{userdesktop}\第五人格小抄助手.lnk'));
+end;
+procedure RetireLegacyShortcuts;
+var
+  OldDesktop, OldMenu: String;
+begin
+  { New [Icons] entries belong to native Setup rollback/uninstall. Retire exact
+    old links only after commit, and only if their targets name this install. }
+  OldDesktop := ExpandConstant('{userdesktop}\第五人格小抄助手.lnk');
+  if OwnedAssistantShortcut(ExpandConstant('{userdesktop}\{#InstallerAppName}.lnk')) and
+    OwnedAssistantShortcut(OldDesktop) then
+    if not DeleteFile(OldDesktop) then Log('LEGACY_SHORTCUT_RETAINED ' + OldDesktop);
+  OldMenu := ExpandConstant('{userprograms}\第五人格小抄助手\第五人格小抄助手.lnk');
+  if OwnedAssistantShortcut(ExpandConstant('{group}\{#InstallerAppName}.lnk')) and
+    OwnedAssistantShortcut(OldMenu) then
+    if not DeleteFile(OldMenu) then Log('LEGACY_SHORTCUT_RETAINED ' + OldMenu);
+end;
 function UpgradePathAllowed: Boolean;
 var
   Previous: String;
@@ -314,6 +356,7 @@ begin
   end;
   if CurStep = ssPostInstall then begin
     UpgradeCommitted := True;
+    RetireLegacyShortcuts;
     Log('UPGRADE_COMMITTED');
   end;
 end;
@@ -459,18 +502,21 @@ function CreateFileW(lpFileName: String; dwDesiredAccess, dwShareMode,
   external 'CreateFileW@kernel32.dll stdcall';
 function CloseHandle(hObject: THandle): Boolean;
   external 'CloseHandle@kernel32.dll stdcall';
-function InstalledExecutableAvailable: Boolean;
+function ExecutableAvailable(const FileName: String): Boolean;
 var
-  FileName: String;
   Handle: THandle;
 begin
   Result := True;
-  FileName := ExpandConstant('{app}\第五人格小抄助手.exe');
   if not FileExists(FileName) then Exit;
   { A mapped running executable cannot be opened for exclusive write. Never kill it. }
   Handle := CreateFileW(FileName, $40000000, 0, 0, 3, $80, 0);
   if Handle = THandle(-1) then Result := False
   else CloseHandle(Handle);
+end;
+function InstalledExecutableAvailable: Boolean;
+begin
+  Result := ExecutableAvailable(ExpandConstant('{app}\第五人格小抄助手.exe'));
+  if Result then Result := ExecutableAvailable(ExpandConstant('{app}\{#InstallerExeName}'));
 end;
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin

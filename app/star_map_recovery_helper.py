@@ -16,6 +16,7 @@ import sys
 
 import star_map_import as importer
 import star_map_import_helper as process
+from packaged_product_identity import expected_application_executable
 from map_package_recovery_plan import execute_locked
 
 SCHEMA = "xingtu-resource-recovery-request-v1"
@@ -88,7 +89,7 @@ def run_helper(*, request_file, request_sha256, install_root, request_id, parent
     result = dict(requestId=request_id, success=False, restartRequired=False,
                   scope="offline-resource-recovery; not native-game acceptance")
     try:
-        expected_exe = importer._target(root, "第五人格小抄助手.exe")
+        expected_exe = importer._target(root, expected_application_executable())
         if os.path.normcase(os.path.realpath(sys.executable)) == os.path.normcase(str(expected_exe)):
             raise importer.ImportRejected("helper-must-use-separate-executable")
         if Path(os.path.abspath(request_file)) != expected_path:

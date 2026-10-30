@@ -101,23 +101,20 @@ Item {
                         RowLayout {
                             Layout.fillWidth: true; spacing: 12
                             Repeater {
-                                model: backend.previewModel
+                                model: infoService.homePreviews
                                 delegate: Item {
-                                    required property string key
-                                    required property string title
-                                    required property string floor
-                                    required property string imageUrl
+                                    required property var modelData
                                     Layout.fillWidth: true; Layout.preferredWidth: 100; implicitHeight: 146
                                     Rectangle {
                                         anchors.left: parent.left; anchors.right: parent.right; height: 116; radius: 9; color: "#f0f5fc"
-                                        Image { anchors.fill: parent; anchors.margins: 9; source: imageUrl; asynchronous: true; fillMode: Image.PreserveAspectFit; sourceSize.width: 320; sourceSize.height: 220 }
+                                        Image { anchors.fill: parent; anchors.margins: 9; objectName: "homeMapPreview"; source: modelData.imageUrl; asynchronous: true; fillMode: Image.PreserveAspectFit; sourceSize.width: 320; sourceSize.height: 220 }
                                     }
-                                    Label { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; text: title + " · " + floor + "层"; color: "#567096"; font.pixelSize: 11; elide: Text.ElideRight }
-                                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { backend.select(parent.key); clientCoordinator.navigate("gallery") } }
+                                    Label { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; text: modelData.title + " · " + (modelData.floor === "B1" ? "B1" : "F" + modelData.floor) + (modelData.structure ? " · 结构图" : ""); color: "#567096"; font.pixelSize: 11; elide: Text.ElideRight }
+                                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { if (parent.modelData.key) backend.select(parent.modelData.key); clientCoordinator.navigate("gallery") } }
                                 }
                             }
                         }
-                        Label { visible: backend.count === 0; text: "导入本地图包后，可在这里快速查看已安装地图。"; color: "#567096"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                        Label { visible: infoService.homePreviews.length === 0; text: "导入本地图包后，可在这里快速查看已安装地图。"; color: "#567096"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                     }
                 }
             }

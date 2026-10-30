@@ -98,7 +98,7 @@ def another_assistant_running():
     for process in psutil.process_iter(["pid", "name"]):
         try:
             if process.info["pid"] != os.getpid() and (process.info.get("name") or "").casefold() in {
-                    "第五人格小抄助手.exe", "xingtuqtclienttest.exe"}:
+                    "星图.exe", "第五人格小抄助手.exe", "xingtuqtclienttest.exe"}:
                 return True
         except (psutil.Error, OSError):
             continue

@@ -46,15 +46,15 @@ def run_client_probe(client, output):
                 state["selected"] = backend.selectedKey
             elif step == 1:
                 capture("gallery-1180.png")
-                grid = window.findChild(QObject,"clientResourceGrid")
-                grid.setProperty("contentY", 220.)
+                grid = window.findChild(QObject,"galleryAuthorGrid")
+                grid.setProperty("contentY", min(220., max(0., grid.property("contentHeight")-grid.property("height"))))
                 state["scroll"] = grid.property("contentY")
                 state["mutations"] = backend.model.mutations
                 backend.refresh()
             elif step == 2:
                 if backend.busy:
                     return
-                grid = window.findChild(QObject,"clientResourceGrid")
+                grid = window.findChild(QObject,"galleryAuthorGrid")
                 check("refresh_keeps_selection", backend.selectedKey == state["selected"])
                 check("refresh_keeps_scroll", abs(grid.property("contentY")-state["scroll"]) < 1)
                 check("refresh_zero_model_mutations", backend.model.mutations == state["mutations"])
@@ -108,16 +108,11 @@ def run_client_probe(client, output):
                 capture("settings-960.png")
                 window.setProperty("page", "custom")
             elif step == 8:
-                image = window.findChild(QObject, "customMapImage")
-                if (client.custom_galleries.busy or image is None
-                        or image.property("paintedWidth") <= 0) and time.monotonic()-started < 35:
+                if client.custom_galleries.busy:
                     return
                 check("editor_maps_loaded", bool(client.custom_galleries.snapshot.get("maps")))
-                check("editor_viewport_has_width", image is not None and image.property("width") > 100
-                      and image.property("height") > 100)
-                check("editor_map_pixels_visible", image is not None and image.property("paintedWidth") > 0
-                      and image.property("paintedHeight") > 0)
-                capture("editor-960.png")
+                check("custom_gallery_browser_visible", not client.custom_galleries.snapshot.get("editing"))
+                capture("custom-gallery-960.png")
                 marker = client.paths.work_root / ".qt-client-probe-owner"
                 isolated = client.sandbox / ".qt-lab-owner"
                 owned = (isolated.is_file() and isolated.read_text(encoding="utf-8").strip() == "qt-quick-isolated-v1"
@@ -126,8 +121,15 @@ def run_client_probe(client, output):
                     raise RuntimeError("Route-writing probe requires an owned build/test directory")
                 client.custom_galleries.selectMap("nightmare-09")
             elif step == 9:
-                if client.custom_galleries.busy:
+                image = window.findChild(QObject, "customMapImage")
+                if (client.custom_galleries.busy or image is None
+                        or image.property("paintedWidth") <= 0) and time.monotonic()-started < 35:
                     return
+                check("editor_viewport_has_width", image is not None and image.property("width") > 100
+                      and image.property("height") > 100)
+                check("editor_map_pixels_visible", image is not None and image.property("paintedWidth") > 0
+                      and image.property("paintedHeight") > 0)
+                capture("editor-960.png")
                 client.custom_galleries.selectFloor("1")
             elif step == 10:
                 if client.custom_galleries.busy:
@@ -180,7 +182,9 @@ def run_client_probe(client, output):
                 (output/"client-probe.json").write_text(json.dumps(state,indent=2),encoding="utf-8")
                 print(json.dumps(state))
                 timer.stop()
-                app.exit(0 if state["all_assertions_pass"] else 2)
+                code = 0 if state["all_assertions_pass"] else 2
+                client.coordinator.quitRequested.connect(lambda: app.exit(code))
+                client.coordinator.requestClose()
                 return
         except Exception as error:
             state["errors"].append(f"step {step}: {type(error).__name__}: {error}")
