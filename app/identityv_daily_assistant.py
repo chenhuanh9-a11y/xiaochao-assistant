@@ -47,6 +47,8 @@ sys.path.insert(0, str(ROOT / "app"))
 from PIL import Image, ImageTk
 import cv2
 import numpy as np
+from map_open_preparation import (CAPTURE_VISUAL_DEADLINE_SECONDS as MAP_OPEN_VISUAL_DEADLINE_SECONDS, CAPTURE_READY_PROBE_SECONDS as MAP_OPEN_READY_PROBE_SECONDS)
+from alignment_observation import (canonical_residual_evidence, containment_relocalize_translation_masks, phase_relocalize_translation_masks, rendered_profile_residual_is_verified, translation_mask_overlap_metrics)
 import identityv_live_mvp as live_capture
 import desktop_theme as floating_theme
 from client_region_capture import client_capture_context
@@ -63,6 +65,8 @@ from author_structure_resources import (
     AuthorStructureResourceStore,
 )
 from shared_structure_reference import SharedStructureReference, SharedStructureResourceStore
+from map_observation import map_reuse_evidence, structure_current_map_evidence, map_translation_mask
+from shared_structure_context import load_shared_version_context
 from client_space_geometry import client_geometry_signature
 from front_door_live_test import (
     CleanFrontDoorPreviews,
@@ -1704,85 +1708,13 @@ def candidate_card_text(
     )
 
 
-NAMED_HOTKEYS = {
-    "MOUSE2": 0x02,
-    "MOUSE3": 0x04,
-    "MOUSE4": 0x05,
-    "MOUSE5": 0x06,
-    "BACKSPACE": 0x08,
-    "TAB": 0x09,
-    "ENTER": 0x0D,
-    "SHIFT": 0x10,
-    "CTRL": 0x11,
-    "ALT": 0x12,
-    "PAUSE": 0x13,
-    "CAPSLOCK": 0x14,
-    "SPACE": 0x20,
-    "PAGEUP": 0x21,
-    "PAGEDOWN": 0x22,
-    "END": 0x23,
-    "HOME": 0x24,
-    "LEFT": 0x25,
-    "UP": 0x26,
-    "RIGHT": 0x27,
-    "DOWN": 0x28,
-    "PRINTSCREEN": 0x2C,
-    "INSERT": 0x2D,
-    "DELETE": 0x2E,
-    "NUM*": 0x6A,
-    "NUM+": 0x6B,
-    "NUM-": 0x6D,
-    "NUM.": 0x6E,
-    "NUM/": 0x6F,
-    "NUMLOCK": 0x90,
-    "SCROLLLOCK": 0x91,
-    "VOLUME_MUTE": 0xAD,
-    "VOLUME_DOWN": 0xAE,
-    "VOLUME_UP": 0xAF,
-    "MEDIA_NEXT": 0xB0,
-    "MEDIA_PREV": 0xB1,
-    "MEDIA_STOP": 0xB2,
-    "MEDIA_PLAY_PAUSE": 0xB3,
-}
-NAMED_HOTKEYS.update({f"NUMPAD{index}": 0x60 + index for index in range(10)})
+from hotkey_keys import NAMED_HOTKEYS, HOTKEY_ALIASES, OEM_HOTKEYS, _primary_hotkey_to_vk
+
 HOTKEY_CAPTURE_ACTIVATION_VKS = frozenset({
     NAMED_HOTKEYS["ENTER"],
     NAMED_HOTKEYS["SPACE"],
 })
 
-HOTKEY_ALIASES = {
-    "空格": "SPACE",
-    "CAPS": "CAPSLOCK",
-    "RETURN": "ENTER",
-    "CONTROL": "CTRL",
-    "PGUP": "PAGEUP",
-    "PGDN": "PAGEDOWN",
-    "DEL": "DELETE",
-    "INS": "INSERT",
-    "PRTSC": "PRINTSCREEN",
-    "右键": "MOUSE2",
-    "鼠标右键": "MOUSE2",
-    "RBUTTON": "MOUSE2",
-    "RIGHTBUTTON": "MOUSE2",
-    "鼠标中键": "MOUSE3",
-    "鼠标侧键1": "MOUSE4",
-    "鼠标侧键2": "MOUSE5",
-    "XBUTTON1": "MOUSE4",
-    "XBUTTON2": "MOUSE5",
-}
-OEM_HOTKEYS = {
-    ";": 0xBA,
-    "=": 0xBB,
-    ",": 0xBC,
-    "-": 0xBD,
-    ".": 0xBE,
-    "/": 0xBF,
-    "`": 0xC0,
-    "[": 0xDB,
-    "\\": 0xDC,
-    "]": 0xDD,
-    "'": 0xDE,
-}
 HOTKEY_DISPLAY_NAMES = {
     "MOUSE2": "鼠标右键",
     "MOUSE3": "鼠标中键",
@@ -1800,22 +1732,6 @@ HOTKEY_DISPLAY_NAMES = {
     "VOLUME_UP": "音量加",
 }
 
-
-def _primary_hotkey_to_vk(value: str) -> tuple[str, int]:
-    raw = value.strip()
-    name = HOTKEY_ALIASES.get(raw, HOTKEY_ALIASES.get(raw.upper(), raw.upper()))
-    if name in NAMED_HOTKEYS:
-        return name, NAMED_HOTKEYS[name]
-    if name in OEM_HOTKEYS:
-        return name, OEM_HOTKEYS[name]
-    if len(name) == 1 and name in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789":
-        return name, ord(name)
-    if name.startswith("F") and name[1:].isdigit() and 1 <= int(name[1:]) <= 24:
-        return name, 0x70 + int(name[1:]) - 1
-    raise ValueError(
-        "没识别到这个键。Fn 和滚轮滚动无法单独录入；"
-        "其他键请点“重新录入”后再按一下。"
-    )
 
 
 def hotkey_to_vk(value: str) -> tuple[str, int]:
@@ -3722,54 +3638,6 @@ def locked_relocalization_residual_is_display_precise(
     )
 
 
-def rendered_profile_residual_is_verified(residual: dict | None) -> bool:
-    """Authorize a display pose from one of the two supported evidence eras.
-
-    New runtime paths validate the one canonical geometry pose and derive every
-    author layer through a fixed reviewed coordinate adapter.  The legacy
-    rendered-profile form remains accepted for saved sessions and older tests,
-    but new alignment code must not make route paint or labels part of pose
-    authorization.
-    """
-    legacy_rendered = bool(
-        isinstance(residual, dict)
-        and residual.get("verified") is True
-        and residual.get("poseVerifiedAgainstRenderedProfile") is True
-        and residual.get("validationBasis")
-        == "actual-rendered-profile-structural-mask"
-    )
-    canonical_geometry = bool(
-        isinstance(residual, dict)
-        and residual.get("verified") is True
-        and residual.get("poseVerifiedAgainstCanonicalGeometry") is True
-        and residual.get("profileRenderDerivedFromCanonical") is True
-        and residual.get("validationBasis")
-        == "shared-canonical-geometry-current-frame"
-        and bool(residual.get("coordinatePackId"))
-    )
-    source_structure=False
-    if (isinstance(residual,dict)
-        and residual.get("verified") is True
-        and residual.get("poseVerifiedAgainstSourceStructure") is True
-        and residual.get("validationBasis") == "source-structure-heldout-current-frame"):
-        try:
-            heldout_inliers=int(residual.get("heldOutInliers",0) or 0)
-            heldout_cells=int(residual.get("heldOutCellCount",0) or 0)
-            proposed_median=float(residual.get("proposedTransformMedianError",float('inf')))
-            proposed_p90=float(residual.get("proposedTransformP90Error",float('inf')))
-            source_structure=bool(
-                residual.get("sourceCoordinatesVerified") is True
-                and residual.get("sourceFloorIsProducerLabelOnly") is True
-                and residual.get("sourceCoordinateSpace") == "producer-source-png-pixels"
-                and residual.get("sourcePngIsDisplayImage") is True
-                and bool(residual.get("sourceGroup"))
-                and str(residual.get("gameFloor")) in {"1","2","B1"}
-                and heldout_inliers>=5 and heldout_cells>=4
-                and np.isfinite([proposed_median,proposed_p90]).all()
-                and proposed_median<=4.0 and proposed_p90<=8.0)
-        except (TypeError,ValueError):
-            source_structure=False
-    return legacy_rendered or canonical_geometry or source_structure
 
 
 def source_structure_axis_view(route: np.ndarray, matrix_source_to_client):
@@ -4026,61 +3894,6 @@ def alignment_source_frame_is_current(
     ) < float(threshold)
 
 
-def map_reuse_evidence(
-    frame: np.ndarray | None,
-    *,
-    maximum_width: int = 640,
-    visible_override: tuple | None = None,
-) -> dict:
-    """Extract every reopen-reuse feature with one visible-map scan."""
-    if frame is None:
-        return {"component": None, "componentShape": None, "translationMask": None}
-    visible = visible_override if visible_override is not None else visible_map_component(frame)
-    if visible is None:
-        return {"component": None, "componentShape": None, "translationMask": None}
-    patch, bounds, component = visible
-    geometry = {
-        "bounds": tuple(bounds),
-        "center": tuple(float(value) for value in component["center"]),
-        "width": int(component["width"]),
-        "height": int(component["height"]),
-        "area": int(component["area"]),
-    }
-    live_mask = map_color_mask(patch, live=True).astype(np.uint8)
-    mask = live_mask
-    if int(mask.sum()) < 300:
-        gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
-        mask = ((gray >= 75) & (gray <= 220)).astype(np.uint8)
-    shape = None
-    if int(mask.sum()) >= 300:
-        shape = cv2.resize(
-            mask, (96, 96), interpolation=cv2.INTER_NEAREST,
-        ).astype(np.uint8)
-    translation_mask = None
-    if int(live_mask.sum()) >= 300:
-        height, width = frame.shape[:2]
-        canvas = np.zeros((height, width), np.uint8)
-        x0, y0, x1, y1 = (int(value) for value in bounds)
-        insert_height = min(live_mask.shape[0], y1 - y0, height - y0)
-        insert_width = min(live_mask.shape[1], x1 - x0, width - x0)
-        if insert_height > 0 and insert_width > 0:
-            canvas[y0:y0 + insert_height, x0:x0 + insert_width] = live_mask[
-                :insert_height, :insert_width
-            ]
-            canvas = cv2.dilate(canvas, np.ones((3, 3), np.uint8))
-            scale = min(1.0, float(maximum_width) / max(width, 1))
-            if scale < 1.0:
-                canvas = cv2.resize(
-                    canvas,
-                    (max(1, round(width * scale)), max(1, round(height * scale))),
-                    interpolation=cv2.INTER_AREA,
-                )
-            translation_mask = ((canvas > 0.22).astype(np.float32), scale)
-    return {
-        "component": geometry,
-        "componentShape": shape,
-        "translationMask": translation_mask,
-    }
 
 
 def target_floor_geometry_probe(frame: np.ndarray | None) -> dict:
@@ -4139,35 +3952,8 @@ def map_component_shape_signature(frame: np.ndarray | None) -> np.ndarray | None
     return shape
 
 
-def structure_current_map_evidence(frame: np.ndarray | None) -> dict | None:
-    """Return existing pixels plus their actual, exclusive observation bounds.
-
-    The consumer must treat the 3px crop-edge band as unknown, not a wall.
-    Bounds are measured before any source/pose/residual is consulted. Keeping
-    the original extraction avoids linking transient HUD glow into the map.
-    """
-    if frame is None:
-        return None
-    visible = visible_map_component(frame)
-    if visible is None:
-        return None
-    current = map_reuse_evidence(frame, maximum_width=frame.shape[1],
-        visible_override=visible)['translationMask']
-    if current is None:
-        return None
-    return dict(query=(current[0] > .22).astype(np.uint8),
-                observationBounds=tuple(visible[1]), visible=visible)
 
 
-def map_translation_mask(
-    frame: np.ndarray | None,
-    *,
-    maximum_width: int = 640,
-) -> tuple[np.ndarray, float] | None:
-    """Render only the visible map island on a small full-client canvas."""
-    return map_reuse_evidence(
-        frame, maximum_width=maximum_width,
-    )["translationMask"]
 
 
 def phase_relocalize_map_translation(
@@ -4185,53 +3971,6 @@ def phase_relocalize_map_translation(
     return phase_relocalize_translation_masks(previous, current)
 
 
-def translation_mask_overlap_metrics(
-    previous_mask: np.ndarray,
-    current_mask: np.ndarray,
-    dx_small: float,
-    dy_small: float,
-) -> dict:
-    """Describe old overlap, missing old pixels, and newly explored pixels.
-
-    Metrics are deliberately asymmetric.  New current pixels are reported as
-    exploration growth, but they do not reduce containment of durable old map
-    walls.  Missing old pixels remain a safety signal.
-    """
-    old = (np.asarray(previous_mask) > 0.35).astype(np.uint8)
-    live = (np.asarray(current_mask) > 0.22).astype(np.uint8)
-    if old.shape != live.shape or old.ndim != 2:
-        return {
-            "stableOverlapRatio": 0.0,
-            "missingOldRatio": 1.0,
-            "newPixelRatio": 0.0,
-            "explorationGrowthRatio": 0.0,
-        }
-    shifted = cv2.warpAffine(
-        old,
-        np.asarray(
-            [[1.0, 0.0, float(dx_small)], [0.0, 1.0, float(dy_small)]],
-            dtype=np.float32,
-        ),
-        (old.shape[1], old.shape[0]),
-        flags=cv2.INTER_NEAREST,
-        borderMode=cv2.BORDER_CONSTANT,
-        borderValue=0,
-    )
-    live_wide = cv2.dilate(live, np.ones((5, 5), np.uint8))
-    old_wide = cv2.dilate(shifted, np.ones((5, 5), np.uint8))
-    shifted_count = int((shifted > 0).sum())
-    live_count = int((live > 0).sum())
-    stable_count = int(np.logical_and(shifted > 0, live_wide > 0).sum())
-    new_count = int(np.logical_and(live > 0, old_wide <= 0).sum())
-    stable_ratio = float(stable_count / max(shifted_count, 1))
-    return {
-        "stableOverlapRatio": stable_ratio,
-        "missingOldRatio": float(max(0.0, 1.0 - stable_ratio)),
-        "newPixelRatio": float(new_count / max(live_count, 1)),
-        "explorationGrowthRatio": float(
-            max(0, live_count - shifted_count) / max(shifted_count, 1)
-        ),
-    }
 
 
 def relocalization_motion_is_safe(motion: dict | None) -> bool:
@@ -4256,252 +3995,8 @@ def relocalization_motion_is_safe(motion: dict | None) -> bool:
     return confidence >= 0.88
 
 
-def phase_relocalize_translation_masks(
-    previous: tuple[np.ndarray, float] | None,
-    current: tuple[np.ndarray, float] | None,
-    *, allow_containment: bool = True,
-) -> dict:
-    """Recover screen translation while allowing newly explored map pixels.
-
-    The first mask is treated as durable evidence from an already aligned
-    frame.  Only containment of those old pixels is required; extra pixels in
-    the current mask are expected as the player explores the same layout.
-    """
-    rejected = {
-        "tracked": False, "moved": False, "dx": 0.0, "dy": 0.0,
-        "confidence": 0.0, "phaseResponse": 0.0,
-        "previousContainment": 0.0, "reason": "phase-mask-unavailable",
-    }
-    if previous is None or current is None:
-        return rejected
-    previous_mask, previous_scale = previous
-    current_mask, current_scale = current
-    if (
-        previous_mask.shape != current_mask.shape
-        or abs(previous_scale - current_scale) > 1e-6
-    ):
-        return {**rejected, "reason": "phase-client-size-changed"}
-    window = cv2.createHanningWindow(
-        (previous_mask.shape[1], previous_mask.shape[0]), cv2.CV_32F,
-    )
-    # OpenCV may apply the Hanning window in-place. Keep the binary masks
-    # untouched for the independent containment check below.
-    shift, response = cv2.phaseCorrelate(
-        previous_mask.copy(), current_mask.copy(), window,
-    )
-    dx_small, dy_small = (float(value) for value in shift)
-    if not np.isfinite([dx_small, dy_small, response]).all():
-        return {**rejected, "reason": "phase-nonfinite"}
-    # Phase correlation is unambiguous below half a canvas on each axis.  The
-    # old fixed 720-client-pixel radius rejected a legitimate long-idle drag on
-    # 1440p even when durable wall containment was excellent. Keep a 10% margin
-    # from the wrap boundary and retain the strict response/containment gates.
-    maximum_x_small = previous_mask.shape[1] * 0.45
-    maximum_y_small = previous_mask.shape[0] * 0.45
-    if (
-        abs(dx_small) > maximum_x_small
-        or abs(dy_small) > maximum_y_small
-    ):
-        return {**rejected, "phaseResponse": float(response), "reason": "phase-jump-too-large"}
-    matrix = np.asarray([[1.0, 0.0, dx_small], [0.0, 1.0, dy_small]], np.float32)
-    shifted = cv2.warpAffine(
-        previous_mask, matrix,
-        (previous_mask.shape[1], previous_mask.shape[0]),
-        flags=cv2.INTER_NEAREST,
-        borderMode=cv2.BORDER_CONSTANT,
-        borderValue=0,
-    )
-    current_wide = cv2.dilate(
-        current_mask.astype(np.uint8), np.ones((5, 5), np.uint8),
-    )
-    intersection = int(np.logical_and(shifted > 0, current_wide > 0).sum())
-    previous_containment = float(intersection / max(int((shifted > 0).sum()), 1))
-    overlap_metrics = translation_mask_overlap_metrics(
-        previous_mask, current_mask, dx_small, dy_small,
-    )
-    confidence = float(np.clip(
-        0.72 * previous_containment + 0.28 * min(1.0, max(0.0, response) / 0.35),
-        0.0, 1.0,
-    ))
-    if response < 0.08 or previous_containment < 0.78 or confidence < 0.82:
-        # Phase correlation is intentionally the first choice because it is
-        # fast and sub-pixel precise.  It becomes unstable, however, when a
-        # long-unseen map contains far more explored rooms than the anchor
-        # frame.  In that case search for the translation that contains the
-        # durable old wall pixels.  New pixels are allowed; a second distinct
-        # peak is not.  This keeps the safety boundary while avoiding the old
-        # "normal exploration == different map" false negative.
-        fallback = (containment_relocalize_translation_masks(previous, current)
-            if allow_containment else {'tracked': False, 'reason': 'local-proposal-only'})
-        if fallback.get("tracked"):
-            return {
-                **fallback,
-                "phaseResponse": float(response),
-                "phaseCandidateContainment": previous_containment,
-            }
-        return {
-            **rejected,
-            "phaseResponse": float(response),
-            "previousContainment": previous_containment,
-            "confidence": confidence,
-            "containmentSearch": fallback,
-            "reason": "phase-geometry-disagrees",
-        }
-    dx, dy = dx_small / previous_scale, dy_small / previous_scale
-    return {
-        "tracked": True,
-        "moved": float(np.hypot(dx, dy)) >= 0.75,
-        "dx": float(dx), "dy": float(dy),
-        "confidence": confidence,
-        "phaseResponse": float(response),
-        "previousContainment": previous_containment,
-        **overlap_metrics,
-        "anchorCount": 0, "inlierCount": 0,
-        "reason": "phase-relocalized",
-    }
 
 
-def containment_relocalize_translation_masks(
-    previous: tuple[np.ndarray, float] | None,
-    current: tuple[np.ndarray, float] | None,
-    *,
-    minimum_containment: float = 0.84,
-    minimum_distinct_margin: float = 0.018,
-) -> dict:
-    """Relocate durable old map pixels inside a larger explored map.
-
-    The normalized component silhouette is deliberately not used here: its
-    bounding box and shape change whenever new rooms are explored.  The old
-    positive pixels form the template, the current mask is widened slightly,
-    and a translation is accepted only when most old pixels are explained and
-    the winning location is distinct from repeated-corridor alternatives.
-    """
-    rejected = {
-        "tracked": False, "moved": False, "dx": 0.0, "dy": 0.0,
-        "confidence": 0.0, "previousContainment": 0.0,
-        "distinctMargin": 0.0, "reason": "containment-mask-unavailable",
-    }
-    if previous is None or current is None:
-        return rejected
-    previous_mask, previous_scale = previous
-    current_mask, current_scale = current
-    if (
-        previous_mask.shape != current_mask.shape
-        or abs(float(previous_scale) - float(current_scale)) > 1e-6
-    ):
-        return {**rejected, "reason": "containment-client-size-changed"}
-    old = (np.asarray(previous_mask) > 0.35).astype(np.float32)
-    live = (np.asarray(current_mask) > 0.22).astype(np.uint8)
-    ys, xs = np.where(old > 0)
-    old_count = int(len(xs))
-    if old_count < 300:
-        return {**rejected, "reason": "containment-template-too-small"}
-    x0, x1 = int(xs.min()), int(xs.max()) + 1
-    y0, y1 = int(ys.min()), int(ys.max()) + 1
-    template = old[y0:y1, x0:x1]
-    if min(template.shape) < 8:
-        return {**rejected, "reason": "containment-template-degenerate"}
-
-    # Give the old island room to move while keeping the search below the
-    # phase-correlation wrap boundary.  Padding with zero represents portions
-    # moved outside the current viewport and naturally lowers containment.
-    height, width = live.shape
-    pad_x = max(8, int(round(width * 0.45)))
-    pad_y = max(8, int(round(height * 0.45)))
-    widened = cv2.dilate(live, np.ones((5, 5), np.uint8)).astype(np.float32)
-    search = cv2.copyMakeBorder(
-        widened, pad_y, pad_y, pad_x, pad_x,
-        cv2.BORDER_CONSTANT, value=0,
-    )
-    scores = cv2.matchTemplate(search, template, cv2.TM_CCORR)
-    if scores.size == 0 or not np.isfinite(scores).all():
-        return {**rejected, "reason": "containment-search-failed"}
-    _minimum, best_score, _minimum_at, best_at = cv2.minMaxLoc(scores)
-    best_x, best_y = int(best_at[0]), int(best_at[1])
-    best_containment = float(best_score / max(old_count, 1))
-
-    # Dilation makes the safety score tolerant to anti-aliasing and one-pixel
-    # wall-width changes, but it also creates a small translation plateau.
-    # Recover the exact pixel displacement from the undilated mask inside that
-    # already-authorized neighbourhood.
-    raw_search = cv2.copyMakeBorder(
-        live.astype(np.float32), pad_y, pad_y, pad_x, pad_x,
-        cv2.BORDER_CONSTANT, value=0,
-    )
-    raw_scores = cv2.matchTemplate(raw_search, template, cv2.TM_CCORR)
-    refine_radius = 4
-    rx0, rx1 = max(0, best_x - refine_radius), min(
-        raw_scores.shape[1], best_x + refine_radius + 1,
-    )
-    ry0, ry1 = max(0, best_y - refine_radius), min(
-        raw_scores.shape[0], best_y + refine_radius + 1,
-    )
-    local_raw = raw_scores[ry0:ry1, rx0:rx1]
-    if local_raw.size:
-        _raw_min, raw_best, _raw_min_at, raw_best_at = cv2.minMaxLoc(
-            local_raw,
-        )
-        if float(raw_best) / max(old_count, 1) >= 0.55:
-            best_x = rx0 + int(raw_best_at[0])
-            best_y = ry0 + int(raw_best_at[1])
-
-    second_scores = scores.copy()
-    exclusion = max(6, int(round(10 * float(previous_scale))))
-    sx0, sx1 = max(0, best_x - exclusion), min(
-        second_scores.shape[1], best_x + exclusion + 1,
-    )
-    sy0, sy1 = max(0, best_y - exclusion), min(
-        second_scores.shape[0], best_y + exclusion + 1,
-    )
-    second_scores[sy0:sy1, sx0:sx1] = 0
-    second_score = float(cv2.minMaxLoc(second_scores)[1])
-    distinct_margin = float(
-        (float(best_score) - second_score) / max(old_count, 1)
-    )
-    dx_small = float(best_x - (pad_x + x0))
-    dy_small = float(best_y - (pad_y + y0))
-    if (
-        abs(dx_small) > width * 0.45
-        or abs(dy_small) > height * 0.45
-    ):
-        return {
-            **rejected, "previousContainment": best_containment,
-            "distinctMargin": distinct_margin,
-            "reason": "containment-jump-too-large",
-        }
-    if (
-        best_containment < float(minimum_containment)
-        or distinct_margin < float(minimum_distinct_margin)
-    ):
-        return {
-            **rejected, "previousContainment": best_containment,
-            "distinctMargin": distinct_margin,
-            "reason": (
-                "containment-ambiguous"
-                if distinct_margin < float(minimum_distinct_margin)
-                else "containment-insufficient"
-            ),
-        }
-    dx, dy = dx_small / float(previous_scale), dy_small / float(previous_scale)
-    overlap_metrics = translation_mask_overlap_metrics(
-        previous_mask, current_mask, dx_small, dy_small,
-    )
-    confidence = float(np.clip(
-        0.72 * best_containment
-        + 0.28 * min(1.0, distinct_margin / 0.08),
-        0.0, 1.0,
-    ))
-    return {
-        "tracked": True,
-        "moved": float(np.hypot(dx, dy)) >= 0.75,
-        "dx": float(dx), "dy": float(dy),
-        "confidence": max(0.82, confidence),
-        "previousContainment": best_containment,
-        "distinctMargin": distinct_margin,
-        **overlap_metrics,
-        "anchorCount": 0, "inlierCount": 0,
-        "reason": "containment-relocalized",
-    }
 
 
 def layout_anchor_live_translation(
@@ -5700,111 +5195,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         store=getattr(getattr(self,'pack',None),'source_candidates',None)
         return bool(store is not None and store.source_group_for_runtime_map_id(map_id))
 
-    @staticmethod
-    def _load_shared_version_context(root, pack, resources, adapters, catalog, side_entries, *,
-                                     neutral_relative='references/nightmare-structure-display.json',
-                                     author_profile_id=SUJU_ROUTE_PROFILE_ID,
-                                     entry_root_relative='references/nightmare-entries'):
-        """Read ordinary per-floor dependency identities once per installation."""
-        root = Path(root).resolve()
-        def local(relative):
-            path = (root / str(relative)).resolve()
-            if not path.is_relative_to(root):
-                raise ValueError('shared dependency escapes its resource root')
-            return path
-        index = json.loads(resources.index_path.read_text(encoding='utf-8'))
-        registry_path = index.get('structureVersionBindings')
-        if not registry_path:
-            raise ValueError('shared structure version bindings are missing')
-        registry = json.loads(local(registry_path).read_text(encoding='utf-8'))
-        if registry.get('schemaVersion') != 1 or registry.get('resourceKind') != 'native-structure-version-bindings':
-            raise ValueError('shared structure version bindings are incompatible')
-        neutral = json.loads(local(neutral_relative).read_text(encoding='utf-8'))
-        if (neutral.get('schemaVersion') != 1 or neutral.get('resourceKind') != 'typed-shared-structure-display'
-                or local(neutral.get('indexPath')) != resources.index_path.resolve()):
-            raise ValueError('shared neutral display index is incompatible')
-        def rows_by_floor(rows):
-            result = {}
-            for row in rows:
-                key = (str(row['mapId']), str(row.get('floor') or row.get('resourceKey', {}).get('floor')))
-                if key in result:
-                    raise ValueError('duplicate shared dependency map/floor')
-                result[key] = row
-            return result
-        versions = rows_by_floor(registry.get('entries') or [])
-        neutral_rows = rows_by_floor(neutral.get('entries') or [])
-        source_rows = {str(row['id']): row for row in json.loads(pack.manifest_path.read_text(encoding='utf-8'))['maps']}
-        side_rows = rows_by_floor([item[0] for item in side_entries])
-        reference_profile = getattr(adapters, 'coordinate_reference_profile_id', SHARED_STRUCTURE_PROFILE_ID)
-        raw_catalog = getattr(catalog, '_raw', {})
-        author_profile = next((row for row in raw_catalog.get('profiles', []) if row.get('id') == author_profile_id), {})
-        context = {}
-        for key, entry in resources.entries.items():
-            profile, map_id, variant, floor = key
-            errors, author_errors = [], []
-            version = versions.get((map_id, floor), {})
-            resource_key = version.get('resourceKey') or {}
-            source = source_rows.get(map_id) or {}
-            expected_key = f"{resource_key.get('layoutId')}@{resource_key.get('structureRawRecordSha256')}/{floor}"
-            expected = {name: entry.get(name) for name in ('structureVersionKey', 'sourceVersion', 'baseSnapshot')}
-            binding = dict(profile=profile, mapId=map_id, floor=floor, variant=variant)
-            declared_lookup = version.get('sharedLookup') or {}
-            if (map_id not in pack.by_id or floor not in pack.floors
-                    or profile != pack.identity_profiles.get(map_id)
-                    or resource_key.get('floor') != floor or entry.get('structureVersionKey') != expected_key
-                    or not all(isinstance(value, str) and value for value in expected.values())
-                    or source.get('sourceLayout') != resource_key.get('layoutId')
-                    or source.get('structureContentSha256') != resource_key.get('structureRawRecordSha256')
-                    or source.get('sourceVersion') != entry.get('sourceVersion')
-                    or version.get('sourceVersion') != entry.get('sourceVersion')
-                    or any(declared_lookup.get(name) != value for name, value in binding.items())
-                    or declared_lookup.get('resourcePath') != entry.get('resourcePath')
-                    or version.get('typedReference') != entry.get('resourcePath')):
-                errors.append('shared-index-source-version-or-binding-mismatch')
-            display = neutral_rows.get((map_id, floor), {})
-            adapter = (((getattr(adapters, 'maps', {}).get(map_id) or {}).get('floors') or {}).get(floor) or {})
-            reference_row = (((getattr(adapters, 'profiles', {}).get(reference_profile) or {}).get('maps') or {}).get(map_id) or {}).get('floors', {}).get(floor) or {}
-            if (any(display.get(name) != value for name, value in expected.items())
-                    or display.get('binding') != binding or display.get('referenceResource') != entry.get('resourcePath')
-                    or (version.get('neutralDisplay') or {}).get('baseResourceKey') != resource_key):
-                errors.append('shared-neutral-version-or-binding-mismatch')
-            if (adapter.get('structureVersionKey') != expected_key or reference_row.get('structureVersionKey') != expected_key
-                    or adapter.get('sourceVersion') != entry.get('sourceVersion')
-                    or adapter.get('referenceResource') != entry.get('resourcePath')):
-                errors.append('shared-reference-adapter-version-mismatch')
-            side = side_rows.get((map_id, floor))
-            if side is not None and (side.get('sourceKind') != 'game-rendered-shared-structure'
-                    or side.get('profileId') != profile or side.get('variantId') != variant
-                    or local(str(Path(entry_root_relative)/str(side.get('structureResource')))) != local(entry.get('resourcePath'))
-                    or side.get('canvas') != display.get('canvas')):
-                errors.append('shared-local-feature-binding-mismatch')
-            product_path = local(entry.get('resourcePath'))
-            try:
-                # Read only the scalar declaration here, not every mask/SIFT
-                # array. Full typed pixel checks still belong to the loader.
-                with np.load(product_path, allow_pickle=False) as archive:
-                    metadata = json.loads(str(archive['metadata'].item()))
-                if (metadata.get('binding') != binding or metadata.get('canvas') != display.get('canvas')
-                        or any(metadata.get(name) != value for name, value in expected.items())):
-                    errors.append('shared-NPZ-version-or-canvas-mismatch')
-            except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile):
-                errors.append('shared-NPZ-declaration-unavailable')
-            author = version.get('authorDisplay') or {}
-            variants = author_profile.get('maps', {}).get(map_id) or []
-            author_variant = next((row for row in variants if row.get('layers', {}).get(floor) == author.get('resource')), {})
-            author_layer = (author_variant.get('layerMeta') or {}).get(floor) or {}
-            author_adapter = (((getattr(adapters, 'profiles', {}).get(author_profile_id) or {}).get('maps') or {}).get(map_id) or {}).get('floors', {}).get(floor) or {}
-            if catalog is None:
-                author_errors.append('author-not-installed')
-            elif (author.get('baseResourceKey') != resource_key
-                    or author_layer.get('structureVersionKey') != expected_key
-                    or author_adapter.get('structureVersionKey') != expected_key
-                    or author_variant.get('baseSnapshot') != author.get('originalBaseSnapshot')):
-                author_errors.append('author-structure-version-or-base-snapshot-mismatch')
-            context[key] = dict(expected=expected, binding=binding, path=product_path,
-                canvas=display.get('canvas') or {}, sharedError='; '.join(errors) or None,
-                authorError='; '.join(author_errors) or None)
-        return context
+    _load_shared_version_context = staticmethod(load_shared_version_context)
 
     def install_nightmare_resource_root(self, resource_root: Path, *, memory_root=None) -> dict:
         """Own the live resource boundary; construction itself remains transactional."""
@@ -6313,9 +5704,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
     # A G-triggered visual check is a short current-frame gate, not a long
     # recognition job. Bound retries so a closed/transitioning map cannot own
     # the capture lane for the 2.4-2.6 seconds observed in live play.
-    CAPTURE_VISUAL_DEADLINE_SECONDS = 1.05
+    CAPTURE_VISUAL_DEADLINE_SECONDS = MAP_OPEN_VISUAL_DEADLINE_SECONDS
     CAPTURE_VISUAL_MAX_ATTEMPTS = 14
-    CAPTURE_READY_PROBE_SECONDS = 0.05
+    CAPTURE_READY_PROBE_SECONDS = MAP_OPEN_READY_PROBE_SECONDS
     # Development variants may require a resolved floor before reusing an
     # already locked round pose. The daily build keeps its established
     # behavior unless a subclass explicitly enables this gate.
@@ -29978,69 +29369,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
 
     def _prepare_map_open_frame(self, hwnd, token, deadline_at, cancelled,
             *, silent_hint=True, round_identity_locked=False):
-        """Check fresh full frames on a bounded start-to-start cadence.
-
-        The former ROI stability check could only request this same full-frame
-        check; it never authorized a floor or pose. Avoid its extra capture and
-        color extraction. On success the caller retains the capture lane.
-        """
-        context = self._map_ready_context()
-        capture_context = client_capture_context(hwnd)
-        now = time.perf_counter()
-        if now >= deadline_at:
-            self._log('map-ready-stopped', cycleId=token, reason='preparation-deadline')
-            return None
-        full_probe_period = float(self.CAPTURE_READY_PROBE_SECONDS)
-        # These cheap full checks replace BOTH the former full probes and ROI
-        # captures. Keep the preparation time bounded independently of the
-        # later ranking/retry count, without exhausting it during a long fade.
-        max_full_probes = max(1, math.ceil(float(self.CAPTURE_VISUAL_DEADLINE_SECONDS) / full_probe_period))
-        immediate = bool(round_identity_locked
-            and os.environ.get('IDENTITYV_REOPEN_FAST_CAPTURE', '1') != '0')
-        next_full_probe_at = now if immediate else now + full_probe_period
-        self._log('map-ready-begin', cycleId=token, deadlineAt=deadline_at,
-            fullProbePeriodSeconds=full_probe_period, maxFullProbes=max_full_probes,
-            firstProbeImmediate=immediate, policy='bounded-full-frame-start-cadence')
-        full_probes = 0
-        while full_probes < max_full_probes and self._map_ready_current(token, context, cancelled):
-            now = time.perf_counter()
-            if now >= deadline_at:
-                break
-            if now < next_full_probe_at:
-                cancelled.wait(min(.025, max(0., min(deadline_at, next_full_probe_at)-now)))
-                continue
-            probe_started = now
-            full_probes += 1
-            try:
-                prepared, stopped = self._capture_map_open_full_probe(
-                    hwnd, token, context, capture_context, deadline_at, cancelled,
-                    silent_hint=silent_hint, round_identity_locked=round_identity_locked,
-                    proposal_source=('locked-first-full-frame' if immediate and full_probes == 1
-                                     else 'bounded-full-probe'), full_probe=full_probes)
-            except OSError as error:
-                self._log('map-ready-full-unavailable', cycleId=token,
-                    fullProbe=full_probes, error=str(error))
-                prepared, stopped = None, False
-            if prepared is not None:
-                return prepared
-            if stopped:
-                reason = ('obsolete' if not self._map_ready_current(token, context, cancelled)
-                          else 'preparation-deadline' if time.perf_counter() >= deadline_at
-                          else 'capture-context-changed')
-                self._log('map-ready-stopped', cycleId=token, reason=reason)
-                return None
-            # Processing consumes part of the interval, rather than being
-            # added to it. A slow probe never creates a backlog of catch-ups.
-            next_full_probe_at = probe_started + full_probe_period
-            if full_probes == max_full_probes - 1:
-                # Keep the final allowed probe near the deadline: faster early
-                # polling must not use up the budget before a long fade ends.
-                work_seconds = max(0.001, time.perf_counter() - probe_started)
-                next_full_probe_at = max(next_full_probe_at,
-                    deadline_at - min(full_probe_period, work_seconds))
-        self._log('map-ready-stopped', cycleId=token,
-            reason='obsolete' if not self._map_ready_current(token, context, cancelled) else 'preparation-deadline')
-        return None
+        from map_open_preparation import prepare_map_open_frame
+        return prepare_map_open_frame(self, hwnd, token, deadline_at, cancelled,
+            silent_hint=silent_hint, round_identity_locked=round_identity_locked)
 
     @observe_runtime('capture-pipeline', owner='capture')
     def _capture_and_rank(
@@ -32904,20 +32235,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 getattr(self, "author_coordinate_adapters", None),
                 "canonical_pack_id", None,
             )
-        residual.update({
-            "routeReferenceCacheHit": reference_cache_hit,
-            "routeReferenceMs": round(reference_ms, 2),
-            "validationBasis": "shared-canonical-geometry-current-frame",
-            "validationSensorBasis": spec.get("basis"),
-            "coordinatePackId": coordinate_pack_id,
-            "poseVerifiedAgainstCanonicalGeometry": bool(
-                residual.get("verified") is True and coordinate_pack_id
-            ),
-            "profileRenderDerivedFromCanonical": bool(coordinate_pack_id and spec.get('profileBridgeVerified', True)),
-            "poseVerifiedAgainstSharedStructure": bool(residual.get('verified') and spec.get('basis') == 'game-rendered-shared-structure'),
-            "poseVerifiedAgainstRenderedProfile": False,
-            "routeProfileIndependent": True,
-        })
+        residual.update(routeReferenceCacheHit=reference_cache_hit, routeReferenceMs=round(reference_ms, 2))
+        canonical_residual_evidence(residual, basis=spec.get("basis"), coordinate_pack_id=coordinate_pack_id,
+                                    profile_bridge_verified=spec.get('profileBridgeVerified', True))
         return residual, spec
 
     @observe_runtime('validation')

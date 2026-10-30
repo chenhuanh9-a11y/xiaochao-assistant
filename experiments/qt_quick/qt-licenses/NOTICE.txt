@@ -1,0 +1,71 @@
+Qt test client: library notices and selected license route
+=========================================================
+
+This program uses Qt 6.11.1, PySide6-Essentials 6.11.1 and shiboken6 6.11.1
+from the official Qt for Python wheels. Qt and PySide are copyright The Qt
+Company Ltd. and their respective contributors. File-specific copyrights and
+third-party authors are preserved in the upstream attribution declarations and
+license files in this directory. Qt is a trademark of The Qt Company Ltd.
+
+For the retained LGPL-capable runtime libraries, this distribution selects the
+GNU Lesser General Public License version 3 option. No Qt commercial license
+has been purchased or accepted by this recipe. The commercial-license reference
+that may remain in original wheel metadata is not our selected license route.
+
+The complete LGPL v3 text and the GPL v3 text it incorporates are supplied as
+LGPL-3.0-only.txt and GPL-3.0-only.txt, and are also preserved in their original
+upstream LICENSES directories. Additional upstream license texts apply only to
+their identified components; their presence does not license the application
+under all of those licenses. This notice does not determine or change the
+application's own source-code license.
+
+Qt is dynamically linked. Its DLLs, plugins, PySide extension modules and
+shiboken runtime are separate files in the installed _internal tree. This
+recipe does not encrypt those libraries, statically link them into the program,
+or impose an additional prohibition on reverse engineering for debugging
+modifications to the LGPL-covered libraries. A replacement must preserve the
+required Qt/PySide ABI, plugin layout and dependencies. No completed replacement
+or relinking test is claimed here.
+
+SOURCE-LINKS.txt identifies the exact upstream version tags and source archive
+locations, and UPSTREAM-SOURCES.json records the source URL, byte length and
+SHA256 of every unmodified upstream notice/attribution file collected here.
+Source archives are available from the Qt project's upstream repositories.
+These links identify upstream sources; they are not a claim that all applicable
+corresponding-source, source-delivery, installation-information or recipient
+access obligations have been discharged. Before wider distribution, verify
+that the source and build changes supplied or made available correspond to the
+actual distributed wheels/libraries and that the chosen delivery method meets
+the applicable license terms. No application-wide legal clearance is implied.
+
+The image plugins used by this client can contain independent third-party
+code. QtBase's qjpeg/PNG support, QtImageFormats' WebP/TIFF support and QtSvg's
+SVG support have their original attribution declarations and referenced license
+texts under upstream/qtbase, upstream/qtimageformats and upstream/qtsvg. QtQml's
+JavaScriptCore assembler and Qt Quick's Yoga notices are preserved under
+upstream/qtdeclarative. PySide/Shiboken's Python-derived portions have their
+original notices under upstream/pyside-setup.
+
+The upstream attribution set is a conservative source-module envelope. Some
+declarations concern optional/platform-specific code that the wheel may not
+have compiled for Windows. NOTICE-INVENTORY.json, one directory above this
+folder in the installed product, records the actual collected native files,
+retained Qt DLL modules and omitted unused modules. It is not an SBOM claim
+about every statically incorporated object inside the vendor DLLs.
+
+The recipe omits unused GPL-only Qt module families (including Timeline,
+Lottie, Virtual Keyboard, Quick3D, PDF and QML Compiler when collected) and
+rejects unexpected Qt DLL modules for review. The optional Mesa software
+OpenGL DLL is also omitted; the client uses Qt's normal Windows D3D rendering
+path. No source/license assertion about a bundled Mesa binary is made because
+that optional binary is not distributed by this recipe.
+
+Exact installed LICENSE/NOTICE/COPYRIGHT files for Python, NumPy, OpenCV,
+Pillow and psutil are copied into the adjacent dependency-notice collection;
+their original third-party terms continue to apply. Native runtime/system
+components in the final artifact still require review against their own
+redistribution terms. The absence of a commercial license acceptance here
+does not grant rights to optional author artwork or other third-party assets.
+
+This is a private Qt test product. Build, installation, runtime correctness,
+game acceptance and public distribution are separate states.

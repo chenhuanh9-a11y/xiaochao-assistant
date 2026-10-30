@@ -1,0 +1,4 @@
+# Preserve the fetched upstream license bytes across Windows checkouts.
+upstream/** -text -whitespace
+LGPL-3.0-only.txt -text
+GPL-3.0-only.txt -text

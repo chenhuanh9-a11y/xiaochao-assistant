@@ -466,7 +466,7 @@ def try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_seed
             residual = assistant._rendered_profile_current_frame_residual(
                 frame, reference.clean_mask, matrix, profile_id='shared-structure',
                 visible_override=context.get('visible'))
-            from identityv_daily_assistant import rendered_profile_residual_is_verified
+            from alignment_observation import rendered_profile_residual_is_verified
             if rendered_profile_residual_is_verified(residual) and not (cancelled and cancelled()):
                 diagnostics.update(totalMs=(time.perf_counter()-started)*1000, accepted=True)
                 assistant._log('experimental-fast-alignment', mapId=map_id, floor=floor, **diagnostics)

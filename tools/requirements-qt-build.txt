@@ -1,0 +1,4 @@
+# Install into the isolated Qt interpreter, never use a mismatched global build.
+-r ../requirements-build.txt
+-r ../experiments/qt_quick/requirements.txt
+pefile==2024.8.26

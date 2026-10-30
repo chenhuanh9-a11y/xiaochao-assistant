@@ -8,7 +8,7 @@ import threading
 from PySide6.QtCore import (QAbstractListModel, QObject, Property, QRunnable,
                             QThreadPool, Qt, Signal, Slot, QUrl)
 
-ROOT = Path(__file__).resolve().parents[2]
+from client_paths import RESOURCE_ROOT as ROOT, WORK_ROOT
 sys.path.insert(0, str(ROOT / "app"))
 from map_resource_context import load_browse_context
 from star_map_import import inspect_package, install_package
@@ -94,7 +94,7 @@ class Backend(QObject):
     def __init__(self, sandbox):
         super().__init__()
         self.sandbox = Path(sandbox).resolve()
-        if not self.sandbox.is_relative_to(ROOT / "work") or not (self.sandbox / ".qt-lab-owner").is_file():
+        if not self.sandbox.is_relative_to(WORK_ROOT) or not (self.sandbox / ".qt-lab-owner").is_file():
             raise ValueError("Only a marked sandbox beneath this clone's work/ is writable")
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(2)
@@ -281,7 +281,7 @@ class Backend(QObject):
         self.changed.emit()
         def read():
             from replay_adapter import load_render_replay
-            return load_render_replay(path, ROOT / "work")
+            return load_render_replay(path, WORK_ROOT)
         def loaded(result, error):
             if generation != self._replay_generation:
                 return
