@@ -14,20 +14,32 @@
 #ifndef NumericVersion
   #error NumericVersion is required
 #endif
+#ifndef InstallerAppId
+  #define InstallerAppId "{{AF19AFD9-3016-44C9-9D20-6F216C5D8C51}"
+#endif
+#ifndef InstallerAppName
+  #define InstallerAppName "Xingtu Qt Test Client"
+#endif
+#ifndef InstallerFolder
+  #define InstallerFolder "XingtuQtClientTest"
+#endif
+#ifndef InstallerGroup
+  #define InstallerGroup "Xingtu Qt Test Client"
+#endif
 
 [Setup]
-AppId={{AF19AFD9-3016-44C9-9D20-6F216C5D8C51}
-AppName=Xingtu Qt Test Client
+AppId={#InstallerAppId}
+AppName={#InstallerAppName}
 AppVersion={#DisplayVersion}
-AppVerName=Xingtu Qt Test Client {#DisplayVersion}
+AppVerName={#InstallerAppName} {#DisplayVersion}
 VersionInfoVersion={#NumericVersion}
 AppPublisher=Xingtu project (private Qt test)
-DefaultDirName={autopf}\XingtuQtClientTest
-DefaultGroupName=Xingtu Qt Test Client
+DefaultDirName={autopf}\{#InstallerFolder}
+DefaultGroupName={#InstallerGroup}
 UsePreviousAppDir=no
 DisableDirPage=yes
 DisableProgramGroupPage=yes
-UninstallDisplayName=Xingtu Qt Test Client
+UninstallDisplayName={#InstallerAppName}
 UninstallDisplayIcon={app}\XingtuQtClientTest.exe
 PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
@@ -46,7 +58,7 @@ SetupLogging=yes
 Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\Xingtu Qt Test Client"; Filename: "{app}\XingtuQtClientTest.exe"; WorkingDir: "{app}"
+Name: "{group}\{#InstallerAppName}"; Filename: "{app}\XingtuQtClientTest.exe"; WorkingDir: "{app}"
 
 ; No [Run], [UninstallDelete], update takeover, portable archive, or public URL.
 ; The EXE requests UAC itself; shortcuts point straight to it. Runtime work/data

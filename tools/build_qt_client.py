@@ -26,6 +26,14 @@ from packaged_resource_contract import check_package
 from verify_admin_manifest import verify_administrator_manifest, verify_manifest_xml
 
 PRODUCT = "XingtuQtClientTest"
+INSTANCES = {
+    "client": dict(appId="AF19AFD9-3016-44C9-9D20-6F216C5D8C51", appName="Xingtu Qt Test Client",
+                   installFolder="XingtuQtClientTest", startMenuGroup="Xingtu Qt Test Client",
+                   setupPrefix="XingtuQtTest-Setup", versionSuffix="-qt-test"),
+    "layout-preview": dict(appId="D4B8E562-EA62-4A43-AF1D-043A5646971E", appName="Xingtu Qt Layout Preview",
+                           installFolder="XingtuQtLayoutPreview", startMenuGroup="Xingtu Qt Layout Preview",
+                           setupPrefix="XingtuQtLayout-Setup", versionSuffix="-qt-layout-test"),
+}
 QML_MODULES = ("QtQml", "QtQuick", "QtQuick/Controls", "QtQuick/Controls/Basic",
                "QtQuick/Dialogs", "QtQuick/Dialogs/quickimpl", "QtQuick/Layouts")
 REQUIRED_RESOURCES = (
@@ -402,6 +410,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check-environment", action="store_true")
     parser.add_argument("--plan-only", action="store_true", help="Validate and print inputs without writing/building")
+    parser.add_argument("--instance", choices=tuple(INSTANCES), default="client",
+                        help="Installer identity only; layout-preview installs separately from the first Qt test client")
     parser.add_argument("--source-commit")
     parser.add_argument("--resource-root", type=Path, help="Exact isolated assets/references root, not its parent")
     parser.add_argument("--resource-inventory", type=Path)
@@ -424,18 +434,21 @@ def main(argv=None):
     notices = notice_inputs()
     support = source_support_assets(resources)
     resources = dict(resources, **support)
-    output = (args.output_dir or ROOT / "work/qt-setup" / source["commit"][:12]).resolve()
+    instance = dict(id=args.instance, **INSTANCES[args.instance])
+    output_name = source["commit"][:12] + ("-layout-preview" if args.instance == "layout-preview" else "")
+    output = (args.output_dir or ROOT / "work/qt-setup" / output_name).resolve()
     if (not any(output.is_relative_to(ROOT / folder) for folder in ("work", "dist"))
             or output in (ROOT / "work", ROOT / "dist") or output.exists()):
         raise ValueError("Output must be a NEW subdirectory beneath this checkout's work/ or dist/")
     if args.resource_root.resolve().is_relative_to(output) or output.is_relative_to(args.resource_root.resolve()):
         raise ValueError("Resource input and build output must not contain one another")
     version = _read(ROOT / "version.json")
-    display = str(version["displayVersion"]) + "-qt-test"
+    display = str(version["displayVersion"]) + instance["versionSuffix"]
     numeric = str(version["numericVersion"])
     if not re.fullmatch(r"[0-9A-Za-z.+_-]+", display) or not re.fullmatch(r"\d+\.\d+\.\d+\.\d+", numeric):
         raise ValueError("Version metadata is not safe/valid for Setup")
     plan = dict(schema="xingtu-qt-setup-build-v1", product=PRODUCT, source=source,
+                installerInstance=instance,
                 sourceRoot=str(ROOT), version=version, profileId=LIGHT_PROFILE,
                 resourceRoot=str(args.resource_root.resolve()), resourceVersion=declaration["resourceVersion"],
                 resourceInventorySha256=sha256(args.resource_inventory), resourceFiles=len(resources),
@@ -457,6 +470,7 @@ def main(argv=None):
         if sha256(destination) != row["sha256"].lower():
             raise ValueError(f"Resource changed while staging: {name}")
     profile = dict(profileId=LIGHT_PROFILE, product=PRODUCT, sourceCommit=source["commit"],
+                   installerInstance=instance,
                    resourceVersion=declaration["resourceVersion"], authorDisplayPackagesIncluded=[],
                    authorDisplayFilesIncluded=0, omittedAuthorDisplayFiles=len(omitted),
                    omittedAuthorDisplayBytes=sum(row["bytes"] for row in omitted.values()),
@@ -486,9 +500,13 @@ def main(argv=None):
     shutil.copy2(profile_path, stage / "installation-profile.json")
     if source_identity(args.source_commit) != source:
         raise ValueError("Source changed during freeze; do not create a Setup")
-    setup_name = f"XingtuQtTest-Setup-{display}-{source['commit'][:12]}"
+    setup_name = f"{instance['setupPrefix']}-{display}-{source['commit'][:12]}"
     subprocess.run([str(args.iscc.resolve()), f"/DStageDir={stage}", f"/DSetupOutputDir={output / 'setup'}",
                     f"/DSetupName={setup_name}", f"/DDisplayVersion={display}", f"/DNumericVersion={numeric}",
+                    "/DInstallerAppId={{" + instance["appId"] + "}",
+                    f"/DInstallerAppName={instance['appName']}",
+                    f"/DInstallerFolder={instance['installFolder']}",
+                    f"/DInstallerGroup={instance['startMenuGroup']}",
                     str(TOOLS / "qt-client.iss")], cwd=ROOT, check=True)
     setup = output / "setup" / (setup_name + ".exe")
     if not setup.is_file():

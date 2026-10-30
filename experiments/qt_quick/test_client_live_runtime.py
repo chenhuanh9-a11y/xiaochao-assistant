@@ -52,6 +52,8 @@ def fixture_engine(mode="nightmare"):
         qt_adapters=SimpleNamespace(canonical_pack_id="fixture-pack", matrix_profile_to_canonical=lambda *a: np.eye(3)),
         qt_shared_provider=lambda *a: reference, qt_optional_displays=SimpleNamespace(binding=lambda *a: None),
         rank_count=0)
+    engine.pack.by_id = {item.id: item for item in engine.pack.maps}
+    engine.pack.floors = engine.identity_floors
     def rank(*args, **kwargs):
         engine.rank_count += 1
         return [dict(mapId="fixture-map", identityHardGatePassed=True)]
@@ -89,6 +91,235 @@ class LiveRuntimeContracts(unittest.TestCase):
         result = self.dispatch("capture_now")
         self.assertTrue(result["success"], result)
         return result
+
+    def unconfirmed_candidates(self):
+        second = SimpleNamespace(id="second-map", name="Second map")
+        self.engine.pack.maps.append(second)
+        self.engine.pack.by_id[second.id] = second
+        self.engine.rank = lambda *a, **k: [dict(mapId="second-map", score=5)]
+        self.assertTrue(self.dispatch("start_round")["success"])
+        self.assertEqual(self.dispatch("capture_now")["reason"], "identity-not-uniquely-verified")
+
+    def test_manual_candidate_navigation_keeps_all_maps_and_wraps_without_identity(self):
+        self.unconfirmed_candidates()
+        state = self.runtime.snapshot()
+        self.assertEqual([r["key"] for r in state["candidateRows"]], ["second-map", "fixture-map"])
+        self.assertEqual(state["selectedCandidateIndex"], -1)
+        self.assertTrue(self.dispatch("previous_candidate")["success"])
+        self.assertEqual(self.runtime.snapshot()["selectedCandidateIndex"], 1)
+        self.dispatch("next_candidate")
+        self.assertEqual(self.runtime.snapshot()["selectedCandidateIndex"], 0)
+        self.assertFalse(self.runtime.snapshot()["identityLocked"])
+        self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
+        self.assertFalse(self.dispatch("select_candidate", index=True)["success"])
+        json.dumps(self.runtime.snapshot(), allow_nan=False)
+
+    def test_manual_confirm_uses_existing_current_frame_solver_and_core(self):
+        self.unconfirmed_candidates()
+        self.dispatch("select_candidate", index=1)
+        count = self.capture.count
+        result = self.dispatch("confirm_route", matrix=np.eye(3).tolist())
+        self.assertTrue(result["success"], result)
+        self.assertEqual(self.capture.count, count + 1)
+        self.assertTrue(self.runtime.snapshot()["identityLocked"])
+        self.assertTrue(self.runtime.snapshot()["core"]["displayAuthorized"])
+        self.assertFalse(self.runtime.snapshot()["liveAuthorization"])
+        self.assertNotIn("previous_candidate", self.runtime.snapshot()["availableCommands"])
+
+    def test_manual_identity_does_not_bypass_current_frame_residual(self):
+        self.unconfirmed_candidates()
+        self.dispatch("select_candidate", index=1)
+        self.fit["success"] = False
+        self.fit["reason"] = "current-frame-rejected"
+        result = self.dispatch("confirm_route")
+        self.assertFalse(result["success"])
+        self.assertTrue(self.runtime.snapshot()["identityLocked"])
+        self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
+
+    def test_refresh_cannot_overwrite_initial_manual_selection_before_confirm(self):
+        self.unconfirmed_candidates()
+        self.dispatch("select_candidate", index=1)
+        self.engine.rank = Mock(return_value=[dict(mapId="second-map", identityHardGatePassed=True)])
+        self.assertEqual(self.dispatch("refresh_map")["reason"], "candidate-awaiting-confirmation")
+        self.engine.rank.assert_not_called()
+        self.assertEqual(self.runtime.snapshot()["selectedCandidate"]["key"], "fixture-map")
+        self.assertFalse(self.runtime.snapshot()["identityLocked"])
+
+    def test_selecting_original_map_after_different_candidate_still_requires_reconfirm(self):
+        self.begin_and_capture()
+        item = SimpleNamespace(id="second-map", name="Second")
+        self.engine.pack.maps.append(item); self.engine.pack.by_id[item.id] = item
+        self.runtime._update_candidates([], "1")
+        self.dispatch("reselect_map")
+        self.dispatch("select_candidate", index=1)
+        self.dispatch("select_candidate", index=0)
+        self.assertEqual(self.dispatch("refresh_map")["reason"], "candidate-awaiting-confirmation")
+        self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
+        self.assertTrue(self.dispatch("confirm_route")["success"])
+
+    def test_reselection_preserves_route_until_different_selection_then_waits_confirm(self):
+        first = self.begin_and_capture()
+        second = SimpleNamespace(id="second-map", name="Second map")
+        self.engine.pack.maps.append(second)
+        self.engine.pack.by_id[second.id] = second
+        self.runtime._update_candidates([], "1")
+        self.assertTrue(self.dispatch("map_reselection")["success"])
+        self.assertIsNotNone(self.runtime.render_payload(first["renderToken"]))
+        self.assertFalse(self.dispatch("next_candidate")["success"])
+        self.dispatch("select_candidate", index=1)
+        self.assertEqual(self.runtime.snapshot()["mapId"], "fixture-map")
+        self.assertIsNone(self.runtime.render_payload(first["renderToken"]))
+        self.assertEqual(self.dispatch("refresh_map")["reason"], "candidate-awaiting-confirmation")
+        self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
+        self.assertTrue(self.dispatch("confirm_route")["success"])
+        self.assertEqual(self.runtime.snapshot()["mapId"], "second-map")
+        self.assertEqual(set(self.runtime.snapshot()["core"]["poses"]), {"second-map"})
+
+    def test_floor_target_immediately_fits_current_capture_without_relabeling_sensor(self):
+        first = self.begin_and_capture()
+        self.assertEqual(self.runtime.snapshot()["availableFloors"], ["1", "2", "B1"])
+        count = self.capture.count
+        self.fit["success"] = False
+        self.fit["reason"] = "target-current-frame-residual-rejected"
+        result = self.dispatch("cycle_floor")
+        self.assertFalse(result["success"])
+        state = self.runtime.snapshot()
+        self.assertEqual((state["manualFloor"], state["floor"], state["observedFloor"]), ("2", "2", "1"))
+        self.assertEqual(self.capture.count, count + 1)
+        self.assertIsNone(self.runtime.render_payload(first["renderToken"]))
+        self.assertFalse(state["displayAuthorized"])
+        self.fit["success"] = True
+        self.assertTrue(self.dispatch("set_floor", floor="2")["success"])
+        state = self.runtime.snapshot()
+        self.assertEqual((state["render"]["floor"], state["render"]["observedFloor"]), ("2", "1"))
+        self.assertEqual(state["render"]["floorSource"], "manual")
+        self.assertTrue(self.dispatch("refresh_map")["success"])
+        self.assertEqual(self.runtime.snapshot()["floor"], "2")
+        self.dispatch("cycle_floor")
+        self.assertEqual(self.runtime.snapshot()["manualFloor"], "B1")
+        self.dispatch("set_floor", floor=None)
+        self.assertIsNone(self.runtime.snapshot()["manualFloor"])
+        self.assertEqual(self.runtime.snapshot()["floor"], "1")
+        self.dispatch("close_map")
+        self.assertFalse(self.dispatch("cycle_floor")["success"])
+
+    def test_cancelled_manual_action_and_lifecycle_clear_candidate_state(self):
+        self.unconfirmed_candidates()
+        cancelled = threading.Event(); cancelled.set()
+        self.assertFalse(self.runtime.dispatch("select_candidate", dict(index=0), cancelled)["success"])
+        self.assertEqual(self.runtime.snapshot()["selectedCandidateIndex"], -1)
+        self.dispatch("end_round")
+        state = self.runtime.snapshot()
+        self.assertEqual(state["candidateRows"], [])
+        self.assertEqual(state["availableFloors"], [])
+        self.assertFalse(state["identityLocked"])
+
+    def test_unreadable_floor_keeps_map_frame_for_explicit_manual_correction_in_both_modes(self):
+        for mode in ("nightmare", "difficult"):
+            with self.subTest(mode=mode):
+                self.dispatch("end_round")
+                self.dispatch("set_game_mode", mode=mode)
+                self.dispatch("start_round")
+                engine = self.runtime._engine
+                engine.qt_map_ui.observe = lambda *a: dict(mapOpen=True, floor=None)
+                with patch("map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=None)):
+                    result = self.dispatch("capture_now")
+                    self.assertEqual(result["reason"], "current-floor-unavailable")
+                    self.assertTrue(self.runtime.snapshot()["mapOpen"])
+                    self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
+                    count = self.capture.count
+                    result = self.dispatch("set_floor", floor="1")
+                    self.assertTrue(result["success"], result)
+                    self.assertEqual(self.capture.count, count + 1)
+                    state = self.runtime.snapshot()
+                    self.assertEqual((state["floor"], state["observedFloor"], state["floorSource"]), ("1", "", "manual"))
+                    self.assertTrue(state["displayAuthorized"])
+                    self.assertFalse(state["liveAuthorization"])
+
+    def test_end_during_manual_target_fit_cannot_commit_late_output(self):
+        self.begin_and_capture()
+        entered, release = threading.Event(), threading.Event()
+        result = []
+        def slow_fit(*args):
+            entered.set()
+            self.assertTrue(release.wait(5))
+            return copy.deepcopy(self.fit)
+        with patch.object(_AlignmentHost, "fit", side_effect=slow_fit):
+            worker = threading.Thread(target=lambda: result.append(self.dispatch("set_floor", floor="2")))
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.dispatch("end_round")
+            finally:
+                release.set(); worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertFalse(result[0]["success"])
+        self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
+        self.assertEqual(self.runtime.snapshot()["candidateRows"], [])
+
+    def test_unconfirmed_manual_floor_reranks_target_without_authorizing_manual_choice(self):
+        self.unconfirmed_candidates()
+        calls = []
+        self.engine.rank = lambda *a, **k: calls.append(k["floor"]) or [dict(mapId="second-map", score=8)]
+        self.assertFalse(self.dispatch("set_floor", floor="2")["success"])
+        self.assertEqual(calls, ["2"])
+        self.assertEqual(len(self.runtime.snapshot()["candidateRows"]), 2)
+        self.assertFalse(self.runtime.snapshot()["identityLocked"])
+        self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
+
+    def test_custom_callback_is_display_only_after_typed_reference(self):
+        self.begin_and_capture()
+        before = self.runtime.snapshot()
+        layer = dict(pixels=np.full((20, 24, 4), 255, np.uint8), matrixDisplayToReference=np.eye(3),
+            resourceIdentity="custom-fixture", displayKind="custom-route", displayLabel="Custom fixture",
+            routeProfileId="custom:fixture")
+        self.engine.qt_custom_display = Mock(return_value=layer)
+        self.dispatch("set_route_profile", profileId="custom:fixture")
+        result = self.dispatch("capture_now")
+        self.assertTrue(result["success"], result)
+        args = self.engine.qt_custom_display.call_args.args
+        self.assertEqual(args[:3], ("custom:fixture", "fixture-map", "1"))
+        self.assertIsInstance(args[3], SharedStructureReference)
+        after = self.runtime.snapshot()
+        self.assertEqual(after["mapId"], before["mapId"])
+        self.assertEqual(after["render"]["canonicalMatrix"], before["render"]["canonicalMatrix"])
+        self.assertEqual(after["render"]["resourceIdentity"], "custom-fixture")
+        self.assertFalse(after["liveAuthorization"])
+
+    def test_shared_manual_hold_restores_latest_sensor_at_two_seconds_in_both_modes(self):
+        for mode in ("nightmare", "difficult"):
+            with self.subTest(mode=mode):
+                self.dispatch("end_round")
+                self.dispatch("set_game_mode", mode=mode)
+                self.now = 10.
+                self.runtime._monotonic = lambda: self.now
+                self.begin_and_capture()
+                self.assertTrue(self.dispatch("set_floor", floor="2")["success"])
+                self.now = 11.999
+                self.assertTrue(self.dispatch("refresh_map")["success"])
+                before = self.runtime.snapshot()
+                self.assertEqual((before["floor"], before["manualFloor"], before["observedFloor"]), ("2", "2", "1"))
+                self.assertEqual(before["floorPolicyReason"], "manual-hold-deferred")
+                self.now = 12.
+                self.assertTrue(self.dispatch("refresh_map")["success"])
+                after = self.runtime.snapshot()
+                self.assertEqual((after["floor"], after["manualFloor"], after["observedFloor"]), ("1", None, "1"))
+                self.assertEqual(after["render"]["floorSource"], "automatic")
+                self.assertEqual(after["manualFloorHoldRemaining"], 0.)
+                self.dispatch("set_game_mode", mode="difficult" if mode == "nightmare" else "nightmare")
+                reset = self.runtime.snapshot()
+                self.assertIsNone(reset["manualFloor"])
+                self.assertEqual(reset["manualFloorHoldRemaining"], 0.)
+                self.assertEqual(reset["observedFloor"], "")
+
+    def test_cancelled_floor_intent_does_not_start_hold_or_capture(self):
+        self.begin_and_capture()
+        count = self.capture.count
+        cancelled = threading.Event(); cancelled.set()
+        self.assertFalse(self.runtime.dispatch("set_floor", dict(floor="2"), cancelled)["success"])
+        self.assertEqual(self.capture.count, count)
+        self.assertIsNone(self.runtime.snapshot()["manualFloor"])
+        self.assertEqual(self.runtime.snapshot()["manualFloorHoldRemaining"], 0.)
 
     def test_import_constructor_and_start_do_not_capture_or_load_ui(self):
         self.assertEqual(self.capture.enable_count, 0)
@@ -427,6 +658,70 @@ class LiveRuntimeContracts(unittest.TestCase):
                 if successful_count != 1:
                     self.assertEqual(result["reason"], "difficult-entry-current-frame-rejected")
                     self.assertEqual(result["entryReverification"]["acceptedPoseCount"], successful_count)
+
+
+class SharedFloorPolicyContracts(unittest.TestCase):
+    def evidence(self, observed, history=(), **kwargs):
+        from floor_observation_policy import read_floor_evidence
+        return read_floor_evidence(dict(selectedFloor=observed), history, **kwargs)
+
+    def decide(self, observed, **kwargs):
+        from floor_observation_policy import decide_floor_transition
+        values = dict(current_floor="2", manual_override=True, hold_until=2., now=0.)
+        values.update(kwargs)
+        return decide_floor_transition(self.evidence(observed), **values)
+
+    def test_two_second_boundary_ends_manual_hold_only_with_valid_latest_evidence(self):
+        before = self.decide(1, now=1.999)
+        self.assertEqual(before.reason, "manual-hold-deferred")
+        self.assertTrue(before.hold_active)
+        self.assertFalse(before.apply_target)
+        boundary = self.decide(1, now=2.)
+        self.assertTrue(boundary.manual_hold_ended)
+        self.assertFalse(boundary.manual_override)
+        self.assertTrue(boundary.apply_target)
+        unknown = self.decide(None, now=5.)
+        self.assertEqual(unknown.reason, "insufficient-stable-evidence")
+        self.assertFalse(unknown.manual_hold_ended)
+        self.assertTrue(unknown.manual_override)
+
+    def test_latest_sensor_does_not_gain_historical_vote_authority(self):
+        self.assertIsNone(self.evidence(None, [2, 2, 2]).stable)
+        self.assertEqual(self.evidence(1, [2, 2, 2]).stable, 1)
+        evidence = self.evidence(2, [1, 1, 1, 1, 1])
+        self.assertEqual(evidence.observations, (1, 1, 1, 1, 2))
+
+    def test_pending_click_conflict_and_expiry_precede_hold_mutations(self):
+        pending = dict(cycleId=7, floor=2, expiresAt=4., awaitingObservation=True)
+        conflict = self.decide(1, cycle_id=7, game_intent=pending, now=3.)
+        self.assertEqual(conflict.reason, "pending-click-mismatch")
+        self.assertFalse(conflict.manual_hold_ended)
+        expired = self.decide(1, cycle_id=7, game_intent=pending, now=5.)
+        self.assertTrue(expired.clear_game_intent)
+        self.assertTrue(expired.manual_hold_ended)
+        self.assertTrue(expired.apply_target)
+
+    def test_hard_lock_and_explicit_intent_keep_floor_required_separate(self):
+        from floor_observation_policy import decide_floor_transition
+        passive = self.decide(1, hard_locked=True, now=8.)
+        self.assertEqual(passive.reason, "hard-lock-deferred")
+        self.assertFalse(passive.manual_hold_ended)
+        explicit = decide_floor_transition(self.evidence(1, explicit_floor=2), current_floor="1",
+            floor_required=True, hard_locked=True, now=0.)
+        self.assertTrue(explicit.apply_target)
+        self.assertTrue(explicit.game_intent_active)
+        self.assertFalse(explicit.clear_floor_required)
+        same = self.decide(2, floor_required=True, now=.5)
+        self.assertTrue(same.clear_floor_required)
+        self.assertFalse(same.apply_target)
+
+    def test_strong_highlight_thresholds_remain_diagnostic_without_added_frames(self):
+        from floor_observation_policy import read_floor_evidence
+        for margin, score, strong in [(12., 32., True), (11.99, 32., False), (12., 31.99, False)]:
+            evidence = read_floor_evidence(dict(selectedFloor=1, layout="localized-triplet",
+                margin=margin, scores={"1": score}), [])
+            self.assertEqual(evidence.strong_latest, strong)
+            self.assertEqual(evidence.stable, 1)
 
 
 if __name__ == "__main__":

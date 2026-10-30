@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import math
 from pathlib import Path
 import sys
 import threading
@@ -18,6 +19,8 @@ if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 from alignment_core_v2 import AlignmentCoreV2
 from client_engine import EngineAdapter
+from floor_observation_policy import (MANUAL_FLOOR_HOLD_SECONDS,
+                                      read_floor_evidence, decide_floor_transition)
 
 
 class _Cancellation:
@@ -40,6 +43,7 @@ class _PreparationHost:
         self.CAPTURE_VISUAL_DEADLINE_SECONDS = CAPTURE_VISUAL_DEADLINE_SECONDS
         self.runtime, self.engine, self.obsolete = runtime, engine, obsolete
         self.initial_context = None
+        self.last_unresolved = None
         self.events = []
     def _log(self, event, **values):
         self.events.append(dict(event=event, **values))
@@ -60,13 +64,17 @@ class _PreparationHost:
         if captured.context != self.initial_context or not self._map_ready_current(token, context, cancelled):
             return None, True
         observation, floor, floor_read = self.runtime._observe(self.engine, frame)
+        map_detected = (observation.get("mapOpen") is True if self.engine.pack.mode == "difficult"
+                        else observation.get("detected") is True)
+        self.last_unresolved = ((captured, observation, floor, capture_generation, floor_read)
+                                if map_detected and floor is None else None)
         # The shared loop supplies the original cadence/deadline. Qt requires a
         # current explicit floor before ending preparation; it never converts a
         # remembered floor into fresh display evidence during the fade.
         ready = (observation.get("mapOpen") is True if self.engine.pack.mode == "difficult"
                  else verified_map_hotkey_frame(observation, floor_read))
         if ready and floor is not None and time.perf_counter() < deadline_at:
-            return (captured, observation, floor, capture_generation), False
+            return (captured, observation, floor, capture_generation, floor_read), False
         return None, False
 
 
@@ -248,6 +256,7 @@ class LiveRuntime:
             raise ValueError("unsupported capture evidence kind")
         self._offline = EngineAdapter(engine_factories=engine_factories,
                                       allowed_read_root=allowed_read_root or WORK_ROOT, clock=clock)
+        self._monotonic = clock or time.monotonic
         self._factories, self._capture = engine_factories, capture_provider
         self._evidence_kind = evidence_kind
         self._core = AlignmentCoreV2(clock=clock)
@@ -264,6 +273,14 @@ class LiveRuntime:
         self._group = self._render = self._engine = None
         self._render_capture_context = None
         self._settings = {}
+        self._gate = None
+        self._candidate_rows = []
+        self._candidate_edit = False
+        self._selection_pending = False
+        self._manual_floor = None
+        self._observed_floor = ""
+        self._last_observation = None
+        self._reset_floor_policy()
         self._message = "Bind a full client capture, then begin a round explicitly."
 
     @staticmethod
@@ -273,6 +290,191 @@ class LiveRuntime:
     def _context(self):
         return dict(mode=self._mode, profileId=self._profile, roundId=self._round, frameId=self._frame_id)
 
+    def _clear_candidates(self):
+        self._gate = None
+        self._candidate_rows = []
+        self._candidate_edit = False
+        self._selection_pending = False
+        self._manual_floor = None
+        self._observed_floor = ""
+        self._last_observation = None
+        self._reset_floor_policy()
+
+    def _reset_floor_policy(self):
+        self._floor_observations = []
+        self._manual_override = False
+        self._floor_hard_locked = False
+        self._manual_hold_until = 0.0
+        self._floor_required = True
+        self._game_floor_intent = None
+        self._last_floor_policy = ""
+
+    def _observe_floor_policy(self, floor_read, *, obsolete=None):
+        """Apply the shared legacy temporal/intent decision, never pose authority."""
+        with self._lock:
+            if obsolete is not None and obsolete():
+                return None
+            evidence = read_floor_evidence(floor_read, self._floor_observations)
+            self._floor_observations = list(evidence.observations)
+            self._observed_floor = ("B1" if evidence.observed == -1 else str(evidence.observed)
+                                    if evidence.observed in (1, 2) else "")
+            policy = decide_floor_transition(evidence, current_floor=self._floor,
+                floor_required=self._floor_required, manual_override=self._manual_override,
+                hard_locked=self._floor_hard_locked, hold_until=self._manual_hold_until,
+                cycle_id=self._cycle if self._map_open else self._cycle + 1,
+                game_intent=self._game_floor_intent, now=self._monotonic())
+            self._last_floor_policy = policy.reason
+            if policy.clear_game_intent:
+                self._game_floor_intent = None
+            if policy.manual_hold_ended:
+                self._manual_override = False
+                self._manual_floor = None
+            if policy.clear_floor_required:
+                self._floor_required = False
+            if policy.apply_target:
+                self._floor = policy.target
+                self._manual_floor = None
+            if policy.reason == "pending-click-mismatch":
+                return None
+            return self._floor if evidence.stable is not None or self._manual_override else None
+
+    def _available_floors(self):
+        if self._engine is None:
+            return []
+        return list(map(str, getattr(self._engine.pack, "floors", self._engine.identity_floors)))
+
+    def _update_candidates(self, ranked, floor):
+        # The legacy unfiltered view keeps every map; scores reorder, never hide.
+        scores = {row["mapId"]: row for row in ranked}
+        maps = sorted(self._engine.pack.maps,
+            key=lambda item: float(scores.get(item.id, {}).get("score", -999)), reverse=True)
+        rows = []
+        for item in maps:
+            evidence = scores.get(item.id, {})
+            score = evidence.get("score")
+            score = float(score) if isinstance(score, (int, float)) and math.isfinite(score) else None
+            rows.append(dict(key=item.id, mapId=item.id, name=str(getattr(item, "name", item.id)),
+                floor=str(floor), score=score,
+                reason="入口结构已确认" if evidence.get("identityHardGatePassed") is True else
+                       "请对照地图人工选择"))
+        self._candidate_rows = rows
+
+    def _manual_action(self, action, payload, cancelled):
+        if action in ("set_floor", "cycle_floor"):
+            return self._set_floor(action, payload, cancelled)
+        with self._lock:
+            if not self._active or not self._map_open or self._gate is None:
+                return self._receipt(action, payload, success=False, reason="candidate-control-unavailable")
+            if action in ("reselect_map", "map_reselection"):
+                self._candidate_edit = True
+                # Legacy _start_map_reselection preserves confirmation/display.
+                self._gate.selected_id = self._gate.confirmed_id or self._gate.selected_id
+                return self._receipt(action, payload, success=True, reason="candidate-reselection-opened")
+            if action in ("previous_candidate", "next_candidate", "select_candidate"):
+                if self._map_id and (action != "select_candidate" or not self._candidate_edit):
+                    return self._receipt(action, payload, success=False, reason="identity-locked")
+                count = len(self._candidate_rows)
+                if not count:
+                    return self._receipt(action, payload, success=False, reason="no-candidates")
+                if action == "select_candidate":
+                    index = payload.get("index")
+                    if type(index) is not int or not 0 <= index < count:
+                        return self._receipt(action, payload, success=False, reason="invalid-candidate-index")
+                else:
+                    selected = next((i for i, row in enumerate(self._candidate_rows)
+                                     if row["key"] == self._gate.selected_id), None)
+                    step = -1 if action == "previous_candidate" else 1
+                    index = ((selected if selected is not None else (0 if step < 0 else -1)) + step) % count
+                key = self._candidate_rows[index]["key"]
+                if key != self._gate.confirmed_id:
+                    self.invalidate("candidate-selected")
+                    self._selection_pending = True
+                self._gate.select(key)
+                return self._receipt(action, payload, success=True, reason="candidate-selected")
+            if action != "confirm_route":
+                return self._receipt(action, payload, success=False, reason="unsupported-action")
+            if self._map_id and not self._candidate_edit:
+                return self._receipt(action, payload, success=False, reason="identity-locked")
+            if not self._floor or not self._gate.confirm():
+                return self._receipt(action, payload, success=False, reason="candidate-or-floor-missing")
+            selected = self._gate.confirmed_id
+            self.invalidate("manual-identity-confirmed")
+            if selected != self._map_id:
+                self._core.reset_round(reason="manual-map-changed")
+                self._group = None
+            self._map_id = selected
+            self._candidate_edit = False
+            self._selection_pending = False
+        return self._solve_retained(action, payload, cancelled)
+
+    def _set_floor(self, action, payload, cancelled):
+        with self._lock:
+            floors = self._available_floors()
+            if not floors or (action == "cycle_floor" and not self._map_open):
+                return self._receipt(action, payload, success=False, reason="floor-control-unavailable")
+            if action == "cycle_floor":
+                current = self._manual_floor or self._floor
+                target = floors[(floors.index(current) + 1) % len(floors)] if current in floors else floors[0]
+            else:
+                value = payload.get("floor")
+                target = None if value in (None, "", "auto") else str(value)
+                if target is not None and target not in floors:
+                    return self._receipt(action, payload, success=False, reason="unsupported-floor")
+            self.invalidate("floor-changed")
+            self._manual_floor = target
+            self._manual_override = target is not None
+            self._floor_hard_locked = False
+            self._manual_hold_until = self._monotonic() + MANUAL_FLOOR_HOLD_SECONDS if target else 0.0
+            self._floor_observations = []
+            self._floor_required = target is None and not self._observed_floor
+            self._floor = target or self._observed_floor
+            for row in self._candidate_rows:
+                row["floor"] = self._floor
+        # As in legacy select_floor, immediately attempt the target geometry.
+        # The worker acquires a current frame; the sensor is kept separately;
+        # neither the manual target nor an old pose can grant authorization.
+        return self._solve_retained(action, payload, cancelled)
+
+    def _solve_retained(self, action, payload, cancelled, *, acquire_current=True):
+        with self._lock:
+            observation = self._last_observation
+            if self._selection_pending:
+                return self._receipt(action, payload, success=False, reason="candidate-awaiting-confirmation")
+            if (not self._map_open or observation is None
+                    or observation["frame_id"] != self._frame_id or not self._floor):
+                return self._receipt(action, payload, success=True,
+                    reason="identity-confirmed-pose-pending" if action == "confirm_route" else "floor-target-updated",
+                    posePending=True)
+            scope = (self._engine, self._group, self._epoch, self._frame_generation,
+                     self._frame_id, self._cycle, self._map_id, self._floor)
+        with self._work:
+            engine, group, epoch, generation, frame_id, cycle, selected, floor = scope
+            if self._cancelled(cancelled) or epoch != self._epoch:
+                return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+            if acquire_current:
+                # Geometry/foreground rechecks cannot establish pixel freshness.
+                # Manual UI actions explicitly capture once in the same worker.
+                return self._capture_and_solve(action, payload, cancelled)
+            entry_candidate = None
+            if not selected:
+                ranked = engine.rank(observation["frame"], floor=floor,
+                    limit=len(engine.pack.maps), budget_seconds=1.0)
+                with self._lock:
+                    if self._cancelled(cancelled) or epoch != self._epoch or frame_id != self._frame_id:
+                        return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+                    self._update_candidates(ranked, floor)
+                    accepted = {row["mapId"] for row in ranked if row.get("identityHardGatePassed") is True}
+                    if len(accepted) != 1:
+                        return self._receipt(action, payload, success=False, reason="identity-not-uniquely-verified")
+                    selected = self._map_id = next(iter(accepted))
+                    self._gate.select(selected)
+                    self._gate.confirm()
+                    entry_candidate = next((row.get("difficultEntry") for row in ranked
+                        if row.get("mapId") == selected and row.get("identityHardGatePassed") is True), None)
+            return self._solve_observation(action, payload, cancelled, engine, group, epoch,
+                observation["captured"], observation["frame"], floor, observation["digest"],
+                observation["capture_generation"], generation, frame_id, cycle, selected, entry_candidate)
+
     def snapshot(self):
         with self._lock:
             offline = self._offline.snapshot()
@@ -281,7 +483,21 @@ class LiveRuntime:
             guarded = (self._evidence_kind != "live-client-capture"
                        or callable(getattr(self._capture, "is_current", None)))
             commands = list(offline["availableCommands"])
-            commands += ["end_round", "close_map", "set_floor", "toggle_sheet_visibility"]
+            commands += ["end_round", "close_map", "toggle_sheet_visibility"]
+            if self._engine is not None:
+                commands.append("set_floor")
+            if self._active and self._map_open:
+                commands.append("cycle_floor")
+                if self._map_id:
+                    commands.append("reselect_map")
+                if self._candidate_rows and (not self._map_id or self._candidate_edit):
+                    commands.append("select_candidate")
+                    if not self._map_id:
+                        commands += ["previous_candidate", "next_candidate"]
+                    if self._gate is not None and self._gate.selected_id and self._floor:
+                        commands.append("confirm_route")
+            selected = next((i for i, row in enumerate(self._candidate_rows)
+                             if self._gate is not None and row["key"] == self._gate.selected_id), -1)
             if self._capture is not None:
                 commands.append("bind_capture")
                 if ready and guarded:
@@ -304,6 +520,14 @@ class LiveRuntime:
                 roundActive=self._active, roundPreparing=False, mapOpen=self._map_open,
                 captureInProgress=self._capture_pending,
                 alignedVisible=self._aligned_visible,
+                candidateRows=copy.deepcopy(self._candidate_rows), selectedCandidateIndex=selected,
+                selectedCandidate=copy.deepcopy(self._candidate_rows[selected]) if selected >= 0 else {},
+                identityLocked=bool(self._map_id), candidateEditMode=self._candidate_edit,
+                availableFloors=self._available_floors(), manualFloor=self._manual_floor,
+                observedFloor=self._observed_floor, floorSource="manual" if self._manual_floor else "automatic",
+                floorRequired=self._floor_required, floorPolicyReason=self._last_floor_policy,
+                manualFloorHoldRemaining=max(0.0, self._manual_hold_until - self._monotonic())
+                    if self._manual_override and not self._floor_hard_locked else 0.0,
                 pendingRenderToken=metadata.get("token", ""), eventDeliveryError=self._event_delivery_error,
                 availableCommands=sorted(set(commands)), savedFrameCapabilities=capabilities,
                 capture=copy.deepcopy(capture_state), render=metadata,
@@ -324,6 +548,7 @@ class LiveRuntime:
                 self._active = self._map_open = False
                 self._core.reset_round(reason=str(reason))
                 self._group = self._engine = None
+                self._clear_candidates()
                 self._map_id, self._floor = "", ""
                 self._offline.invalidate_resources()
                 if self._capture is not None:
@@ -429,6 +654,16 @@ class LiveRuntime:
     def dispatch(self, action, payload=None, cancelled=None):
         payload = dict(payload or {})
         action = str(action)
+        if action in ("previous_candidate", "next_candidate", "select_candidate", "confirm_route",
+                      "reselect_map", "map_reselection", "set_floor", "cycle_floor"):
+            if self._cancelled(cancelled):
+                return self._receipt(action, payload, success=False, reason="cancelled", cancelled=True)
+            try:
+                return self._manual_action(action, payload, cancelled)
+            except Exception as error:
+                self.invalidate("manual-action-error")
+                return self._receipt(action, payload, success=False,
+                    reason=f"{type(error).__name__}:{error}", error=True)
         if action == "toggle_sheet_visibility":
             with self._lock:
                 self._aligned_visible = not self._aligned_visible
@@ -450,28 +685,26 @@ class LiveRuntime:
                     self._active = self._map_open = False
                     self._core.reset_round(reason=action)
                     self._group = self._engine = None
+                    self._clear_candidates()
                     self._map_id, self._floor = "", ""
                     if self._capture is not None:
                         self._capture.disable()
             return self._receipt(action, payload, success=True, reason=action)
-        if action in ("set_game_mode", "set_route_profile", "set_context", "set_floor"):
+        if action in ("set_game_mode", "set_route_profile", "set_context"):
             mode = payload.get("mode", self._mode)
             profile = str(payload.get("profileId", self._profile))
             if mode not in ("nightmare", "difficult"):
                 return self._receipt(action, payload, success=False, reason="unsupported-mode")
-            if action == "set_floor":
-                allowed = self._engine.identity_floors if self._engine is not None else (("1", "2", "B1") if mode == "nightmare" else ("1", "2"))
-                if str(payload.get("floor", "")) not in tuple(map(str, allowed)):
-                    return self._receipt(action, payload, success=False, reason="unsupported-floor")
             with self._lock:
                 changed_mode = mode != self._mode
                 changed_profile = profile != self._profile
-                if changed_mode or changed_profile or action == "set_floor":
-                    self.invalidate("mode-changed" if changed_mode else "profile-changed" if changed_profile else "floor-changed")
+                if changed_mode or changed_profile:
+                    self.invalidate("mode-changed" if changed_mode else "profile-changed")
                 if changed_mode:
                     self._active = self._map_open = False
                     self._core.reset_round(reason="mode-changed")
                     self._group = self._engine = None
+                    self._clear_candidates()
                     self._map_id, self._floor = "", ""
                     if self._capture is not None:
                         self._capture.disable()
@@ -536,6 +769,10 @@ class LiveRuntime:
             self._map_id = self._floor = self._frame_id = ""
             self._group = self._render = None
             self._engine = engine
+            from nightmare_candidate import RouteDisplayGate
+            self._clear_candidates()
+            self._gate = RouteDisplayGate(engine.pack)
+            self._update_candidates([], "")
         return self._receipt("start_round", payload, success=True, reason="round-started")
 
     def _refresh_map(self, payload, cancelled):
@@ -623,9 +860,12 @@ class LiveRuntime:
                 self._revoke_render("refresh-core-commit-rejected")
                 return self._receipt("refresh_map", payload, success=False, reason=decision.reason)
             self._frame_generation, self._frame_id = generation, frame_id
+            self._last_observation = dict(captured=captured, frame=frame, floor=floor, digest=digest,
+                capture_generation=capture_generation, frame_id=frame_id, observed_floor=self._observed_floor)
             self._probe_misses = 0
             self._render = dict(row, authorizationId=token.authorization_id, frameId=frame_id,
-                                generation=generation)
+                generation=generation, observedFloor=self._observed_floor,
+                floorSource="manual" if self._manual_floor else "automatic")
             self._render_capture_context = captured.context
             render_token = self._render["token"]
         self._notify("render-ready", reason="current-pose-refreshed", token=render_token, unchanged=True)
@@ -634,11 +874,6 @@ class LiveRuntime:
                              diagnosticOnly=self._evidence_kind != "live-client-capture")
 
     def _capture_and_solve(self, action, payload, cancelled):
-        import numpy as np
-        from alignment_core_v2 import AlignmentCandidate
-        from alignment_observation import rendered_profile_residual_is_verified
-        from round_layer_group import RoundLayerGroup
-
         with self._lock:
             if not self._active:
                 return self._receipt(action, payload, success=False, reason="round-not-active")
@@ -656,9 +891,13 @@ class LiveRuntime:
             if prepared is None:
                 if obsolete():
                     return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
-                self.invalidate("map-closed")
-                return self._receipt(action, payload, success=False, reason="map-open-preparation-deadline")
-            captured, observation, floor, capture_generation = prepared
+                if preparation.last_unresolved is None:
+                    self.invalidate("map-closed")
+                    return self._receipt(action, payload, success=False, reason="map-open-preparation-deadline")
+                # A recognized map with unreadable floor stays available for
+                # explicit manual correction; it grants no floor/pose authority.
+                prepared = preparation.last_unresolved
+            captured, observation, floor, capture_generation, floor_read = prepared
             opened = True
         else:
             capture_generation = self._capture_generation()
@@ -675,6 +914,30 @@ class LiveRuntime:
             if action == "refresh_map":
                 self._revoke_render("refresh-cancelled-or-stale")
             return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+        map_detected = (observation.get("mapOpen") is True if engine.pack.mode == "difficult"
+                        else observation.get("detected") is True)
+        effective_floor = self._observe_floor_policy(floor_read, obsolete=obsolete) if map_detected else None
+        if floor is None and map_detected:
+            self._revoke_render("current-floor-unavailable")
+            digest = hashlib.sha256(frame.tobytes()).hexdigest()
+            with self._lock:
+                if obsolete():
+                    return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+                if not self._map_open:
+                    self._cycle += 1
+                self._map_open = True
+                self._floor = effective_floor or ""
+                if effective_floor is None:
+                    self._floor_required = True
+                self._frame_generation += 1
+                self._frame_id = f"{self._round}:{self._frame_generation}:{digest[:16]}"
+                self._last_observation = dict(captured=captured, frame=frame, floor=None, digest=digest,
+                    capture_generation=capture_generation, frame_id=self._frame_id, observed_floor="")
+                for row in self._candidate_rows:
+                    row["floor"] = self._floor
+            if effective_floor is not None:
+                return self._solve_retained(action, payload, cancelled, acquire_current=False)
+            return self._receipt(action, payload, success=False, reason="current-floor-unavailable", observation=observation)
         if opened is not True:
             if action == "refresh_map":
                 from session_state_machine import map_probe_transition
@@ -691,14 +954,24 @@ class LiveRuntime:
             self.invalidate("map-closed")
             return self._receipt(action, payload, success=False, reason="map-not-observed", observation=observation)
         if floor is None or str(floor) not in tuple(map(str, engine.identity_floors)):
+            with self._lock:
+                self._observed_floor = ""
+                self._last_observation = None
             if action == "refresh_map":
                 self._revoke_render("current-floor-unavailable")
                 return self._receipt(action, payload, success=False, reason="current-floor-unavailable", observation=observation)
             self.invalidate("floor-unknown")
             return self._receipt(action, payload, success=False, reason="current-floor-unavailable", observation=observation)
-        floor = str(floor)
+        if effective_floor is None:
+            self._revoke_render("floor-policy-deferred")
+            return self._receipt(action, payload, success=False, reason="floor-policy-deferred")
+        floor = effective_floor
         digest = hashlib.sha256(frame.tobytes()).hexdigest()
-        if action == "refresh_map":
+        with self._lock:
+            pending_selection = self._selection_pending
+        if pending_selection:
+            self._revoke_render("candidate-awaiting-confirmation")
+        if action == "refresh_map" and not pending_selection:
             renewed = self._try_refresh_current(payload, captured, frame, floor, digest, capture_generation,
                                                  engine, epoch, obsolete)
             if renewed is not None:
@@ -715,10 +988,20 @@ class LiveRuntime:
             self._frame_id = f"{self._round}:{self._frame_generation}:{digest[:16]}"
             frame_generation, frame_id, cycle = self._frame_generation, self._frame_id, self._cycle
             map_id = self._map_id
+            self._last_observation = dict(captured=captured, frame=frame, floor=floor, digest=digest,
+                capture_generation=capture_generation, frame_id=frame_id, observed_floor=self._observed_floor)
+            for row in self._candidate_rows:
+                row["floor"] = floor
+        if pending_selection:
+            return self._receipt(action, payload, success=False, reason="candidate-awaiting-confirmation")
         ranked = []
         entry_candidate = None
         if not map_id:
             ranked = engine.rank(frame, floor=floor, limit=len(engine.pack.maps), budget_seconds=1.0)
+            with self._lock:
+                if obsolete() or frame_id != self._frame_id:
+                    return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
+                self._update_candidates(ranked, floor)
             accepted = {row["mapId"] for row in ranked if row.get("identityHardGatePassed") is True}
             if len(accepted) != 1:
                 return self._receipt(action, payload, success=False, reason="identity-not-uniquely-verified",
@@ -730,6 +1013,20 @@ class LiveRuntime:
                 if obsolete() or frame_id != self._frame_id:
                     return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
                 self._map_id = map_id
+                self._gate.select(map_id)
+                self._gate.confirm()
+        return self._solve_observation(action, payload, cancelled, engine, group, epoch, captured, frame,
+            floor, digest, capture_generation, frame_generation, frame_id, cycle, map_id, entry_candidate)
+
+    def _solve_observation(self, action, payload, cancelled, engine, group, epoch, captured, frame,
+                           floor, digest, capture_generation, frame_generation, frame_id, cycle,
+                           map_id, entry_candidate=None):
+        import numpy as np
+        from alignment_core_v2 import AlignmentCandidate
+        from alignment_observation import rendered_profile_residual_is_verified
+        from round_layer_group import RoundLayerGroup
+        obsolete = lambda: self._cancelled(cancelled) or epoch != self._epoch
+        width, height = captured.context.full_client_size
         host = _AlignmentHost(engine, group, self._settings)
         fit = host.fit(frame, map_id, floor, obsolete, entry_candidate) if entry_candidate is not None else host.fit(frame, map_id, floor, obsolete)
         if obsolete():
@@ -784,6 +1081,7 @@ class LiveRuntime:
                 originX=captured.context.client_screen_bounds[0], originY=captured.context.client_screen_bounds[1],
                 captureGeneration=capture_generation,
                 poseReason=fit.get("reason"), poseStrategy=fit.get("strategy", "not-recorded"),
+                floorSource="manual" if self._manual_floor else "automatic", observedFloor=self._observed_floor,
                 resourceIdentity=display["resourceIdentity"], displayKind=display["displayKind"],
                 displayLabel=display["displayLabel"], routeProfileId=display["routeProfileId"],
                 liveAuthorization=live, evidenceKind=self._evidence_kind)
@@ -809,7 +1107,8 @@ class LiveRuntime:
         if engine.pack.mode == "difficult":
             result = engine.qt_map_ui.observe(frame)
             floor = str(result["floor"]) if result.get("floor") is not None else None
-            return result, floor, result
+            return result, floor, dict(result, selectedFloor=int(floor) if floor in ("1", "2") else None,
+                                       scores={}, layout="difficult-two-buttons")
         from map_interface_observation import detect_map_interface, detect_selected_floor
         floor_read = detect_selected_floor(frame)
         result = detect_map_interface(frame, floor_read=floor_read)
@@ -823,6 +1122,11 @@ class LiveRuntime:
         reference = engine.qt_shared_provider("shared-structure", map_id, floor)
         if reference is None:
             raise ValueError("display-reference-unavailable")
+        custom = getattr(engine, "qt_custom_display", None)
+        if callable(custom):
+            layer = custom(profile, map_id, str(floor), reference)
+            if layer is not None:
+                return layer
         optional = engine.qt_optional_displays
         binding = optional.binding(profile, map_id, floor)
         if binding is not None and binding["usable"]:

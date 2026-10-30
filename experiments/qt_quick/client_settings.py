@@ -19,7 +19,7 @@ from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, Qt, Signal
 from client_paths import RESOURCE_ROOT as ROOT, WORK_ROOT
 if str(ROOT / "app") not in sys.path:
     sys.path.insert(0, str(ROOT / "app"))
-from control_layout import preset_layout, validate_layout
+from control_layout import load_layout, preset_layout, validate_layout
 from hotkey_bindings import parse_chord, validate_unique
 from hotkey_keys import _primary_hotkey_to_vk
 from opacity_controls import load_opacities
@@ -122,6 +122,7 @@ class _Write(QRunnable):
 class SettingsService(QObject):
     changed = Signal()
     saved = Signal()
+    shortcutRecordingChanged = Signal(bool)
 
     def __init__(self, sandbox: Path):
         super().__init__()
@@ -141,13 +142,189 @@ class SettingsService(QObject):
         self._disk_bytes = None
         self._baseline = deepcopy(DEFAULTS)
         self._draft = deepcopy(DEFAULTS)
+        self._shortcut_target = ""
+        self._shortcut_candidate = ""
+        self._shortcut_ready = False
+        self._shortcut_message = ""
+        self._shortcut_primary_seen = False
         self.reload()
 
     values = Property("QVariantMap", lambda s: deepcopy(s._draft), notify=changed)
     persistedValues = Property("QVariantMap", lambda s: deepcopy(s._baseline), notify=changed)
     dirty = Property(bool, lambda s: s._draft != s._baseline or bool(s._repairs), notify=changed)
+    controlLayoutDirty = Property(bool, lambda s: s._draft["gameControlLayout"] != s._baseline["gameControlLayout"]
+                                  or "gameControlLayout" in s._repairs, notify=changed)
     busy = Property(bool, lambda s: s._busy, notify=changed)
     message = Property(str, lambda s: s._message, notify=changed)
+    shortcutRecording = Property(bool, lambda s: bool(s._shortcut_target), notify=changed)
+    shortcutTarget = Property(str, lambda s: s._shortcut_target, notify=changed)
+    shortcutCandidate = Property(str, lambda s: s._shortcut_candidate, notify=changed)
+    shortcutCandidateReady = Property(bool, lambda s: s._shortcut_ready, notify=changed)
+    shortcutMessage = Property(str, lambda s: s._shortcut_message, notify=changed)
+
+    @Slot(str, int, result=bool)
+    def moveControlModule(self, module, offset):
+        layout = load_layout(self._draft["gameControlLayout"])
+        if module not in layout["order"] or offset not in (-1, 1):
+            return False
+        index = layout["order"].index(module)
+        target = index + offset
+        if not 0 <= target < len(layout["order"]):
+            return False
+        layout["order"][index], layout["order"][target] = layout["order"][target], layout["order"][index]
+        return self.setValue("gameControlLayout", layout)
+
+    @Slot(str, result=bool)
+    def setControlLayoutPreset(self, name):
+        try:
+            return self.setValue("gameControlLayout", preset_layout(name))
+        except ValueError as error:
+            self._message = str(error)
+            self.changed.emit()
+            return False
+
+    @Slot(result=bool)
+    def resetControlLayout(self):
+        if self._busy:
+            return False
+        self._draft["gameControlLayout"] = deepcopy(self._baseline["gameControlLayout"])
+        self._repairs.discard("gameControlLayout")
+        self._message = self._read_error or self._write_error or "已撤销控件布局的未保存更改"
+        self.changed.emit()
+        return True
+
+    @Slot(str, result=bool)
+    def beginShortcutCapture(self, target):
+        if target != "hotkey" and target not in ACTION_ORDER:
+            return False
+        if self._busy:
+            return False
+        was_recording = self.shortcutRecording
+        self._shortcut_target = target
+        self._shortcut_candidate = ""
+        self._shortcut_ready = False
+        self._shortcut_primary_seen = False
+        self._shortcut_message = "请按一个主键，可同时按 Ctrl、Alt、Shift；Esc 取消"
+        if not was_recording:
+            self.shortcutRecordingChanged.emit(True)
+        self.changed.emit()
+        return True
+
+    def _candidate_from_primary(self, primary, modifiers):
+        if not primary:
+            raise ValueError("未识别到这个键，请使用主键或点击解绑")
+        if modifiers & Qt.MetaModifier.value:
+            raise ValueError("暂不支持 Windows 修饰键")
+        labels = [label for label, flag in (("Ctrl", Qt.ControlModifier), ("Alt", Qt.AltModifier),
+                                           ("Shift", Qt.ShiftModifier)) if modifiers & flag.value]
+        return parse_chord("+".join([*labels, primary]), _primary_hotkey_to_vk).name
+
+    def _offer_shortcut(self, primary, modifiers):
+        try:
+            self._shortcut_candidate = self._candidate_from_primary(primary, modifiers)
+            self._shortcut_ready = True
+            self._shortcut_message = "请确认录入；确认后仍需保存快捷键"
+            self.changed.emit()
+            return True
+        except ValueError as error:
+            self._shortcut_candidate = ""
+            self._shortcut_ready = False
+            self._shortcut_message = str(error)
+            self.changed.emit()
+            return False
+
+    @Slot(int, int, str, bool, result=bool)
+    def captureShortcutKey(self, key, modifiers, text, released):
+        """Consume an owned Qt key event only; no global polling or registration."""
+        if not self.shortcutRecording:
+            return False
+        if key == Qt.Key_Escape:
+            self.cancelShortcutCapture()
+            return False
+        modifier_names = {Qt.Key_Control: "CTRL", Qt.Key_Alt: "ALT", Qt.Key_Shift: "SHIFT"}
+        if key in modifier_names:
+            if released and not self._shortcut_primary_seen:
+                remaining = modifiers & (Qt.ControlModifier.value | Qt.AltModifier.value | Qt.ShiftModifier.value)
+                if remaining:
+                    self._shortcut_primary_seen = True
+                    self._shortcut_ready = False
+                    self._shortcut_message = "修饰键组合需要一个主键，请重新录入"
+                    self.changed.emit()
+                    return False
+                return self._offer_shortcut(modifier_names[key], 0)
+            return False
+        if released:
+            return False
+        self._shortcut_primary_seen = True
+        named = {Qt.Key_Backspace: "BACKSPACE", Qt.Key_Tab: "TAB", Qt.Key_Backtab: "TAB",
+                 Qt.Key_Return: "ENTER", Qt.Key_Enter: "ENTER", Qt.Key_Pause: "PAUSE",
+                 Qt.Key_CapsLock: "CAPSLOCK", Qt.Key_Space: "SPACE", Qt.Key_PageUp: "PAGEUP",
+                 Qt.Key_PageDown: "PAGEDOWN", Qt.Key_End: "END", Qt.Key_Home: "HOME",
+                 Qt.Key_Left: "LEFT", Qt.Key_Up: "UP", Qt.Key_Right: "RIGHT", Qt.Key_Down: "DOWN",
+                 Qt.Key_Print: "PRINTSCREEN", Qt.Key_Insert: "INSERT", Qt.Key_Delete: "DELETE",
+                 Qt.Key_NumLock: "NUMLOCK", Qt.Key_ScrollLock: "SCROLLLOCK",
+                 Qt.Key_VolumeMute: "VOLUME_MUTE", Qt.Key_VolumeDown: "VOLUME_DOWN",
+                 Qt.Key_VolumeUp: "VOLUME_UP", Qt.Key_MediaNext: "MEDIA_NEXT",
+                 Qt.Key_MediaPrevious: "MEDIA_PREV", Qt.Key_MediaStop: "MEDIA_STOP",
+                 Qt.Key_MediaPlay: "MEDIA_PLAY_PAUSE", Qt.Key_MediaTogglePlayPause: "MEDIA_PLAY_PAUSE"}
+        if Qt.Key_F1 <= key <= Qt.Key_F24:
+            primary = f"F{key - Qt.Key_F1 + 1}"
+        elif Qt.Key_A <= key <= Qt.Key_Z or Qt.Key_0 <= key <= Qt.Key_9:
+            primary = chr(key)
+        else:
+            primary = named.get(key, text)
+        if modifiers & Qt.KeypadModifier.value:
+            primary = ("NUMPAD" + primary if primary.isdigit() and len(primary) == 1
+                       else {"*": "NUM*", "+": "NUM+", "-": "NUM-", ".": "NUM.", "/": "NUM/"}.get(primary, primary))
+        return self._offer_shortcut(primary, modifiers)
+
+    @Slot(int, int, result=bool)
+    def captureShortcutMouse(self, button, modifiers):
+        if not self.shortcutRecording:
+            return False
+        primary = {Qt.RightButton.value: "MOUSE2", Qt.MiddleButton.value: "MOUSE3",
+                   Qt.BackButton.value: "MOUSE4", Qt.ForwardButton.value: "MOUSE5"}.get(button)
+        if primary is None:
+            return False
+        self._shortcut_primary_seen = True
+        return self._offer_shortcut(primary, modifiers)
+
+    @Slot(result=bool)
+    def clearShortcutCandidate(self):
+        if not self.shortcutRecording:
+            return False
+        self._shortcut_candidate, self._shortcut_ready = "", True
+        self._shortcut_message = "确认后将解绑此快捷键；仍需保存快捷键"
+        self.changed.emit()
+        return True
+
+    @Slot(result=bool)
+    def confirmShortcutCapture(self):
+        if not self.shortcutRecording or not self._shortcut_ready:
+            return False
+        if self._shortcut_target == "hotkey":
+            accepted = self.setValue("hotkey", self._shortcut_candidate)
+        else:
+            keys = deepcopy(self._draft["actionHotkeys"])
+            keys[ACTION_ORDER.index(self._shortcut_target)] = self._shortcut_candidate
+            accepted = self.setValue("actionHotkeys", keys)
+        if accepted:
+            self.cancelShortcutCapture()
+        else:
+            self._shortcut_message = self._message
+            self.changed.emit()
+        return accepted
+
+    @Slot()
+    def cancelShortcutCapture(self):
+        if not self.shortcutRecording:
+            return
+        self._shortcut_target = ""
+        self._shortcut_candidate = ""
+        self._shortcut_ready = False
+        self._shortcut_message = ""
+        self.shortcutRecordingChanged.emit(False)
+        self.changed.emit()
 
     def _check_sandbox(self):
         marker = self.sandbox / ".qt-lab-owner"
@@ -187,6 +364,7 @@ class SettingsService(QObject):
             self._message = "正在保存；完成后可重新读取"
             self.changed.emit()
             return False
+        self.cancelShortcutCapture()
         try:
             self._check_sandbox()
             data = self.path.read_bytes() if self.path.exists() else None
@@ -237,6 +415,7 @@ class SettingsService(QObject):
             self._message = "正在保存；完成后可撤销草稿"
             self.changed.emit()
             return False
+        self.cancelShortcutCapture()
         self._draft = deepcopy(self._baseline)
         self._repairs.clear()
         self._message = self._read_error or self._write_error or "已撤销未保存的更改"

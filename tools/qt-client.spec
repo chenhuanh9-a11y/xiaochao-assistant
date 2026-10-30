@@ -18,6 +18,8 @@ resource_stage = Path(inputs["resourceStage"])
 datas = [(str(resource_stage / name), str(Path(name).parent)) for name in inputs["resources"]]
 for path in qt_root.glob("*.qml"):
     datas.append((str(path), "."))
+for path in (qt_root / "icons").glob("*.png"):
+    datas.append((str(path), "icons"))
 # Helpers use __file__.parent and APP_ROOT in both source and frozen clients.
 for path in qt_root.glob("*.py"):
     if path.name != "client.py":

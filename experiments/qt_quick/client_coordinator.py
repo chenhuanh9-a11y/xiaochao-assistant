@@ -138,15 +138,20 @@ class ClientCoordinator(QObject):
         self._native_windows = NativeWindowAPI()
         self._closed = False
         self._text_entry = False
+        self._shortcut_recording = bool(getattr(settings, "shortcutRecording", False))
         self._requested_action = ""
         self._waiting_foreground = False
         self._map_was_open = False
         self._closing = False
+        self.close_writers = ()
         self._close_timer = QTimer(self)
         self._close_timer.setInterval(40)
         self._close_timer.timeout.connect(self._finish_close)
         settings.changed.connect(self._draft_changed)
         settings.saved.connect(self._settings_saved)
+        recording_signal = getattr(settings, "shortcutRecordingChanged", None)
+        if recording_signal is not None:
+            recording_signal.connect(self._set_shortcut_recording)
         session.changed.connect(self._session_changed)
         session.actionRequested.connect(self._action_requested)
         resources.resourcesChanged.connect(self._resources_changed)
@@ -178,7 +183,7 @@ class ClientCoordinator(QObject):
     alignedData = Property("QVariantMap", lambda s: dict(s._aligned), notify=changed)
     inputEnabled = Property(bool, lambda s: s.input.enabled, notify=changed)
     closing = Property(bool, lambda s: s._closing, notify=changed)
-    textEntryActive = Property(bool, lambda s: s._text_entry, notify=changed)
+    textEntryActive = Property(bool, lambda s: s._text_entry or s._shortcut_recording, notify=changed)
 
     def _status_text(self):
         state = self.session.snapshot
@@ -200,12 +205,24 @@ class ClientCoordinator(QObject):
 
     def _action_requested(self, action, payload):
         self._requested_action = action
+        state = self.session.snapshot
+        if action == "select_candidate" and payload.get("index") != state.get("selectedCandidateIndex", -1):
+            self._invalidate_display()
+        elif action == "set_floor" and str(payload.get("floor", "")) != str(state.get("floor", "")):
+            self._invalidate_display()
+        elif action == "cycle_floor" and len(state.get("availableFloors", ())) > 1:
+            self._invalidate_display()
+        elif action == "confirm_route":
+            candidate = state.get("selectedCandidate") or {}
+            if not state.get("identityLocked") or candidate.get("mapId") != state.get("mapId"):
+                self._invalidate_display()
         self.changed.emit()
 
     @Slot(str)
     def navigate(self, name):
-        if name in {"home", "gallery", "resources", "settings", "replay", "help"}:
+        if name in {"home", "recognition", "gallery", "resources", "custom", "settings", "replay", "help"}:
             self.pageRequested.emit(name)
+            self.windows.show("main")
 
     @Slot()
     def refreshGameWindows(self):
@@ -272,7 +289,14 @@ class ClientCoordinator(QObject):
     @Slot(bool)
     def setTextEntryActive(self, active):
         self._text_entry = bool(active)
-        self.input.setTextEntryActive(active)
+        self.input.setTextEntryActive(self._text_entry or self._shortcut_recording)
+        self.changed.emit()
+
+    @Slot(bool)
+    def _set_shortcut_recording(self, active):
+        self._shortcut_recording = bool(active)
+        self.input.setEditingBindings(self._shortcut_recording)
+        self.input.setTextEntryActive(self._text_entry or self._shortcut_recording)
         self.changed.emit()
 
     @Slot()
@@ -474,7 +498,9 @@ class ClientCoordinator(QObject):
 
     def _session_changed(self):
         if self.session.busy:
-            if self.session.snapshot.get("pendingAction") != "refresh_map":
+            if self.session.snapshot.get("pendingAction") not in {
+                    "refresh_map", "reselect_map", "previous_candidate", "next_candidate",
+                    "select_candidate", "confirm_route", "set_floor", "cycle_floor"}:
                 self._invalidate_display()
             self.changed.emit(); return
         state = self.session.snapshot
@@ -542,7 +568,7 @@ class ClientCoordinator(QObject):
             # not by reading a frozen frame on the UI thread.
             if command == "map":
                 self._invalidate_display()
-            elif command in {"capture_now", "close_map", "end_round", "toggle_round", "cycle_floor"}:
+            elif command in {"capture_now", "close_map", "end_round", "toggle_round"}:
                 self._revoke_runtime("input-" + command)
             if command == "start_round":
                 self.startRound()
@@ -657,6 +683,10 @@ class ClientCoordinator(QObject):
             self.resources.confirmOperation(False)
         if self.resources.canCancel:
             self.resources.cancel()
+        for writer in self.close_writers:
+            state = getattr(writer, "snapshot", {})
+            if isinstance(state, dict) and state.get("pendingKind") and hasattr(writer, "confirmOperation"):
+                writer.confirmOperation(False)
         self.changed.emit()
         self._close_timer.start()
         self._finish_close()
@@ -665,6 +695,10 @@ class ClientCoordinator(QObject):
         if (self.resources.pool.activeThreadCount() or self.settings.pool.activeThreadCount()
                 or self.session._pool.activeThreadCount()):
             return
+        for writer in self.close_writers:
+            pool = getattr(writer, "pool", getattr(writer, "_pool", None))
+            if pool is not None and pool.activeThreadCount():
+                return
         self._close_timer.stop()
         self.quitRequested.emit()
 

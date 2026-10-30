@@ -24,7 +24,7 @@ from session_state_machine import ranked_event_is_current
 # Existing product control command names, plus the injected diagnostic protocol.
 COMMANDS = (
     "start_round", "end_round", "toggle_round", "capture_now",
-    "previous_candidate", "next_candidate", "confirm_route",
+    "previous_candidate", "next_candidate", "select_candidate", "confirm_route", "reselect_map", "cycle_floor",
     "toggle_sheet_visibility", "set_reference_sheet_visible", "move_sheet",
     "finish_reference_sheet_move", "cancel_reference_sheet_move",
     "_start_map_reselection", "_open_recognition_details", "set_floor",

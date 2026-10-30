@@ -23,6 +23,7 @@ class Service(QObject):
     actionTriggered = Signal(str)
     replayOverlayRequested = Signal()
     overlayRequested = Signal()
+    shortcutRecordingChanged = Signal(bool)
 
 
 class CoordinatorTests(unittest.TestCase):
@@ -50,6 +51,8 @@ class CoordinatorTests(unittest.TestCase):
         self.input.configureSettings = Mock(side_effect=self._configure_input)
         self.input.enable = Mock(side_effect=self._enable_input)
         self.input.disable = Mock()
+        self.input.setTextEntryActive = Mock()
+        self.input.setEditingBindings = Mock()
         self.backend.refresh = Mock()
         self.windows = SimpleNamespace(hide=Mock(), show=Mock(), setClickThrough=Mock(),
                                        snapshot={}, _windows={})
@@ -106,6 +109,37 @@ class CoordinatorTests(unittest.TestCase):
         self.settings.saved.emit()
         self.assertEqual(self.input.configureSettings.call_count, 1)
         self.assertEqual(self.input.enable.call_count, 1)
+
+    def test_recording_and_text_focus_guards_do_not_clear_each_other(self):
+        self.coordinator.setTextEntryActive(True)
+        self.settings.shortcutRecordingChanged.emit(True)
+        self.coordinator.setTextEntryActive(False)
+        self.assertTrue(self.coordinator.textEntryActive)
+        self.input.setTextEntryActive.assert_called_with(True)
+        self.input.setEditingBindings.assert_called_with(True)
+        self.coordinator.setTextEntryActive(True)
+        self.settings.shortcutRecordingChanged.emit(False)
+        self.assertTrue(self.coordinator.textEntryActive)
+        self.input.setTextEntryActive.assert_called_with(True)
+        self.input.setEditingBindings.assert_called_with(False)
+        self.coordinator.setTextEntryActive(False)
+        self.assertFalse(self.coordinator.textEntryActive)
+        self.input.setTextEntryActive.assert_called_with(False)
+        self.assertTrue(self.input.enabled)
+
+    def test_reselection_and_same_candidate_keep_current_pixels_until_real_change(self):
+        self.coordinator._aligned = {"token": "current"}
+        self.coordinator._last_render_token = "current"
+        self.session.snapshot.update(selectedCandidateIndex=1, pendingAction="reselect_map")
+        self.session.busy = True
+        self.coordinator._session_changed()
+        self.coordinator._action_requested("reselect_map", {})
+        self.coordinator._action_requested("select_candidate", {"index": 1})
+        self.assertEqual(self.coordinator._last_render_token, "current")
+        self.windows.hide.assert_not_called()
+        self.coordinator._action_requested("select_candidate", {"index": 0})
+        self.assertIsNone(self.coordinator._last_render_token)
+        self.windows.hide.assert_called_with("aligned")
 
     def test_atomic_context_is_only_acknowledged_after_actual_runtime_matches(self):
         self.settings.persistedValues.update(gameMode="difficult", routeProfileId="fallback",

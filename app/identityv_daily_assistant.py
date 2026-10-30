@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from floor_observation_policy import MANUAL_FLOOR_HOLD_SECONDS as SHARED_MANUAL_FLOOR_HOLD_SECONDS
+
 import sys as _audit_sys
 
 _UI_AUDIT = None
@@ -5695,7 +5697,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
     RECOGNITION_SHELL_SIZE = (440, 540)
     ORB_TRANSPARENT = "#010203"
     SHEET_OPACITY = 0.55
-    MANUAL_FLOOR_HOLD_SECONDS = 2.0
+    MANUAL_FLOOR_HOLD_SECONDS = SHARED_MANUAL_FLOOR_HOLD_SECONDS
     PROGRESSIVE_ALIGNMENT_RETRY_SECONDS = 1.5
     INTERFACE_OPACITY = 0.82
     EVENT_POLL_MS = 16
@@ -28921,6 +28923,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         *,
         explicit_floor: int | None = None,
     ) -> None:
+        from floor_observation_policy import read_floor_evidence, decide_floor_transition
         if (
             frame is None
             or not self.map_is_open
@@ -28944,25 +28947,13 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 getattr(self, "current_frame_generation", 0), observed,
             )
         floor_decision_ms = round((time.perf_counter() - floor_started) * 1000.0, 2)
-        self.floor_observations.append(observed if observed in (-1, 1, 2) else None)
-        self.floor_observations = self.floor_observations[-5:]
-        scores = floor_read.get("scores") or {}
-        observed_score = float(scores.get(str(observed), 0.0))
-        strong_latest = bool(
-            observed in (1, 2)
-            and floor_read.get("layout") == "localized-triplet"
-            and float(floor_read.get("margin", 0.0)) >= 12.0
-            and observed_score >= 32.0
-        )
-        explicit_intent_active = explicit_floor in (-1, 1, 2)
-        stable = (
-            explicit_floor
-            if explicit_intent_active else
-            stable_floor_from_observations(
-                self.floor_observations,
-                strong_latest=strong_latest,
-            )
-        )
+        floor_evidence = read_floor_evidence(
+            floor_read, self.floor_observations, explicit_floor=explicit_floor)
+        self.floor_observations = list(floor_evidence.observations)
+        observed_score = floor_evidence.observed_score
+        strong_latest = floor_evidence.strong_latest
+        explicit_intent_active = floor_evidence.explicit_intent_active
+        stable = floor_evidence.stable
         if getattr(self, 'runtime_timeline_enabled', True):
             self._log('floor-observation-evaluated', cycleId=cycle_id,
                       occurredMonotonicAt=time.perf_counter(), startedMonotonicAt=floor_started,
@@ -28979,29 +28970,24 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                           floor=self.current_floor, floorRequired=bool(getattr(self,'floor_required',False)),
                           traceContext=runtime_trace_context())
         authorization_applied = False
-        pending_click = getattr(self, "game_floor_control_intent", None)
-        if (not explicit_intent_active and isinstance(pending_click, dict)
-                and pending_click.get("awaitingObservation")):
-            if (pending_click.get("cycleId") == self.active_map_cycle_id
-                    and time.monotonic() <= float(pending_click.get("expiresAt", 0.0))):
-                # A click changes intent, not the pixels already captured.
-                # The current-frame conflict check still blocks target work
-                # on old pixels; a mismatching reading must not reverse the click.
-                if stable != pending_click.get("floor"):
-                    observation_disposition('pending-click-mismatch')
-                    return
+        now = time.monotonic()
+        floor_policy = decide_floor_transition(
+            floor_evidence, current_floor=self.current_floor,
+            floor_required=bool(getattr(self, 'floor_required', False)),
+            manual_override=self.floor_manual_override, hard_locked=self.floor_hard_locked,
+            hold_until=self.manual_floor_hold_until, cycle_id=self.active_map_cycle_id,
+            game_intent=getattr(self, "game_floor_control_intent", None), now=now)
+        if floor_policy.clear_game_intent:
             self.game_floor_control_intent = None
+        if floor_policy.reason == 'pending-click-mismatch':
+            observation_disposition('pending-click-mismatch')
+            return
         if stable is None:
             observation_disposition('insufficient-stable-evidence')
             return
-        target = "B1" if stable == -1 else str(stable)
-        now = time.monotonic()
-        hold_active = bool(
-            self.floor_manual_override
-            and not self.floor_hard_locked
-            and now < self.manual_floor_hold_until
-        )
-        if self.floor_manual_override and not self.floor_hard_locked and not hold_active:
+        target = floor_policy.target
+        hold_active = floor_policy.hold_active
+        if floor_policy.manual_hold_ended:
             self.floor_manual_override = False
             self.manual_floor = None
             self.floor_var.set("自动")
@@ -29010,22 +28996,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 "floor-manual-hold-ended", cycleId=self.active_map_cycle_id,
                 automaticFloor=target,
             )
-        game_intent = getattr(self, "game_floor_control_intent", None)
-        game_intent_active = bool(
-            not explicit_intent_active
-            and isinstance(game_intent, dict)
-            and game_intent.get("cycleId") == self.active_map_cycle_id
-            and game_intent.get("floor") == stable
-            and now <= float(game_intent.get("expiresAt", 0.0))
-        )
-        game_intent_active = bool(game_intent_active or explicit_intent_active)
-        if isinstance(game_intent, dict) and not game_intent_active:
-            self.game_floor_control_intent = None
+        game_intent_active = floor_policy.game_intent_active
         decision = (stable, self.floor_manual_override)
-        if (bool(getattr(self, 'floor_required', False))
-                and observed == stable
-                and (target == self.current_floor or game_intent_active
-                     or not (self.floor_hard_locked or hold_active))):
+        if floor_policy.clear_floor_required:
             # An opening capture may precede the floor controls. Later fresh
             # passive evidence resolves that pending state even when the
             # confirmed floor equals the remembered seed.

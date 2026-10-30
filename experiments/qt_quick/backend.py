@@ -99,6 +99,7 @@ class Backend(QObject):
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(2)
         self.model = ResourceRows()
+        self.preview_model = ResourceRows()
         self.context = None
         self._mode, self._profile, self._floor, self._query = "nightmare", "", "", ""
         self._busy, self._importing, self._message = False, False, "正在读取实验资源…"
@@ -137,6 +138,7 @@ class Backend(QObject):
     selectedImage = Property(str, lambda s: s._selection.get("imageUrl", ""), notify=changed)
     selectedFloor = Property(str, lambda s: s._selection.get("floor", ""), notify=changed)
     count = Property(int, lambda s: len(s.model.rows), notify=changed)
+    previewModel = Property(QObject, lambda s: s.preview_model, constant=True)
     viewKey = Property(str, lambda s: f"{s._mode}/{s._profile}/{s._floor}/{s._query}", notify=changed)
 
     def _submit(self, function, callback):
@@ -166,6 +168,7 @@ class Backend(QObject):
                 self.context = None
                 self._profiles = []
                 self.model.reconcile([])
+                self.preview_model.reconcile([])
                 self._selected, self._selection = "", {}
                 self._message = f"资源读取失败：{error or context.error}"
             else:
@@ -205,6 +208,14 @@ class Backend(QObject):
                                          variant=variant.name, imageUrl=url.toString() if stamp else "",
                                          available=bool(stamp)))
         self.model.reconcile(rows)
+        previews, seen = [], set()
+        for row in rows:
+            if row["available"] and row["mapId"] not in seen:
+                previews.append(row)
+                seen.add(row["mapId"])
+            if len(previews) == 3:
+                break
+        self.preview_model.reconcile(previews)
         match = next((r for r in rows if r["key"] == self._selected), None)
         if match:
             self._selection = match
@@ -224,6 +235,7 @@ class Backend(QObject):
             self.context = None
             self._profiles = []
             self.model.reconcile([])
+            self.preview_model.reconcile([])
             self._profile = self._mode_profiles.get(value, "")
             self._selection = {}
             self._selected = self._selections.get(self.viewKey, "")

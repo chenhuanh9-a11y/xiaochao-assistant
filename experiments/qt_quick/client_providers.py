@@ -103,6 +103,7 @@ class EngineFactories(dict):
         self._lock = threading.RLock()
         self._build_locks = {mode: threading.Lock() for mode in self.MODES}
         self._engines = {}
+        self._custom_display = None
         self._revision = 0
         self._reports = {mode: dict(available=False, prepared=False,
                                    reason="resource-validation-pending") for mode in self.MODES}
@@ -111,6 +112,20 @@ class EngineFactories(dict):
     def capabilities(self):
         with self._lock:
             return copy.deepcopy(self._reports)
+
+    def set_custom_display(self, provider):
+        """Attach a display-only source; identity and geometry remain untouched."""
+        if provider is not None and not callable(provider):
+            raise TypeError("custom display provider must be callable")
+        with self._lock:
+            self._custom_display = provider
+            for mode, engine in self._engines.items():
+                self._attach_custom_display(engine, mode)
+
+    def _attach_custom_display(self, engine, mode):
+        provider = self._custom_display
+        engine.qt_custom_display = (lambda profile, map_id, floor, reference:
+            provider(profile, map_id, floor, reference, mode)) if provider is not None else None
 
     def prepare(self, cancelled=None):
         for mode in self.MODES:
@@ -150,6 +165,7 @@ class EngineFactories(dict):
                 if revision != self._revision:
                     raise ProviderUnavailable("resource-context-superseded")
                 self._engines[mode] = engine
+                self._attach_custom_display(engine, mode)
                 self._reports[mode] = dict(available=True, prepared=True, reason="saved-frame-rank-ready",
                                        mapCount=len(engine.pack.maps), floors=list(engine.identity_floors),
                                        liveAuthorization=False, resourceRoot=str(self.root),

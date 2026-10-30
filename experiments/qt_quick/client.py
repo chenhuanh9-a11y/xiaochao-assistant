@@ -55,18 +55,29 @@ class QtClient:
         from client_providers import build_engine_factories
         from client_live_runtime import LiveRuntime
         from client_info import ClientInfoService
+        from client_custom_gallery import CustomGalleryService
+        from client_custom_display import CustomGalleryDisplay
         from client_coordinator import ClientCoordinator, LiveImages
         self.app, self.sandbox = app, owned_sandbox(sandbox)
+        self._closed = False
         self.settings = SettingsService(self.sandbox)
+        self.custom_galleries = CustomGalleryService(self.sandbox)
+        self.custom_display = CustomGalleryDisplay(self.custom_galleries)
         self.capture = ClientCaptureProvider()
         self.input = NativeShortcutBackend()
         self.providers = build_engine_factories(self.sandbox / "_internal")
+        self.providers.set_custom_display(self.custom_display.layer)
         self.runtime = LiveRuntime(engine_factories=self.providers, capture_provider=self.capture,
                                    allowed_read_root=WORK_ROOT, evidence_kind="live-client-capture")
         values = self.settings.persistedValues
         self.runtime.configure_settings(values)
         mode = values.get("gameMode", "nightmare")
         profile = values.get("modeRouteProfiles", {}).get(mode) or values.get("routeProfileId", "shared-structure")
+        self._previous_author_profiles = {
+            key: value for key, value in values.get("modeRouteProfiles", {}).items()
+            if value and not str(value).startswith("custom:")}
+        if not str(profile).startswith("custom:"):
+            self._previous_author_profiles[mode] = profile
         # Context initialization is a bounded state-only operation. Resource
         # preparation/recognition starts later on SessionService's worker.
         self.runtime.dispatch("set_context", {"mode": mode, "profileId": profile})
@@ -77,6 +88,7 @@ class QtClient:
         self.route_choices = Backend(self.sandbox)
         self.resources.resourcesChanged.connect(self.route_choices.refresh)
         self.resources.resourcesChanged.connect(self._schedule_resource_preparation)
+        self.resources.resourcesChanged.connect(self.custom_galleries.refresh)
         self.settings.changed.connect(lambda: self.route_choices.setMode(self.settings.values.get("gameMode", "nightmare")))
         self.route_choices.setMode(mode)
         self.windows = WindowController()
@@ -87,6 +99,12 @@ class QtClient:
             **({"window_catalog": lambda: []} if probe_output else {}))
         self.info = ClientInfoService(self.sandbox, fetch=info_fetch)
         self.info.setProviders(session=self.session, resources=self.resources, input=self.input)
+        self.coordinator.close_writers = (self.custom_galleries, self.info)
+        self.custom_galleries.setUseHandler(self._use_custom_gallery)
+        self.custom_galleries.galleriesChanged.connect(self._custom_gallery_changed)
+        self.custom_galleries.changed.connect(self._sync_custom_gallery_active)
+        self.session.changed.connect(self._sync_custom_gallery_active)
+        self.settings.saved.connect(self._sync_custom_gallery_active)
         self.engine = QQmlApplicationEngine()
         self.engine.addImageProvider("live", self.images)
         self.warnings = []
@@ -94,7 +112,8 @@ class QtClient:
         context = self.engine.rootContext()
         for key, value in dict(backend=self.backend, resourceModel=self.backend.model, routeChoices=self.route_choices,
             settingsService=self.settings, resourceService=self.resources, session=self.session,
-            windows=self.windows, clientCoordinator=self.coordinator, infoService=self.info).items():
+            windows=self.windows, clientCoordinator=self.coordinator, infoService=self.info,
+            customGalleryService=self.custom_galleries).items():
             context.setContextProperty(key, value)
         for name, file in (("main", "Client.qml"), ("controls", "ClientControls.qml"),
                            ("reference", "ClientReference.qml"), ("aligned", "ClientAligned.qml"),
@@ -127,6 +146,52 @@ class QtClient:
         self._initialized = False
         self._initialize_timer.start()
 
+    def _use_custom_gallery(self, gallery_id):
+        if (self._closed or self.settings.busy or self.resources.busy or self.session.busy
+                or getattr(self.resources, "pendingKind", "")):
+            return dict(success=False, applied=False, message="请等待当前操作完成后再使用图集")
+        values = self.settings.persistedValues
+        mode = values.get("gameMode", "nightmare")
+        previous = values.get("modeRouteProfiles", {}).get(mode) or values.get("routeProfileId", "")
+        remembered = getattr(self, "_previous_author_profiles", {})
+        if previous and not str(previous).startswith("custom:"):
+            remembered[mode] = previous
+        self._previous_author_profiles = remembered
+        current_options = (self.route_choices.profiles
+                           if getattr(self.route_choices, "mode", mode) == mode else ())
+        fallback = remembered.get(mode) or next((row["id"] for row in current_options
+                         if not row["id"].startswith("custom:")), "shared-structure")
+        proposal = self.custom_display.use_request(gallery_id, mode, fallback_profile=fallback)
+        if not proposal.get("success"):
+            return proposal
+        profile = proposal["profileId"]
+        profiles = dict(values.get("modeRouteProfiles", {}))
+        profiles[mode] = profile
+        if not (self.settings.setValue("routeProfileId", profile)
+                and self.settings.setValue("modeRouteProfiles", profiles)
+                and self.settings.saveFields(["routeProfileId", "modeRouteProfiles"])):
+            return dict(success=False, applied=False, message=self.settings.message)
+        return dict(success=True, applied=False, message="正在保存并应用图集，完成后更新使用状态")
+
+    def _sync_custom_gallery_active(self):
+        if self._closed:
+            return
+        state = self.runtime.snapshot()
+        values = self.settings.persistedValues
+        mode = values.get("gameMode", "nightmare")
+        profile = values.get("modeRouteProfiles", {}).get(mode) or values.get("routeProfileId", "")
+        applied = (state.get("mode"), state.get("profileId")) == (mode, profile)
+        active = self.custom_display.active_gallery(profile, mode) if applied else ""
+        if self.custom_galleries.snapshot.get("inUse") != active:
+            self.custom_galleries.setActiveGallery(active)
+
+    def _custom_gallery_changed(self):
+        self.custom_display.invalidate()
+        if str(self.runtime.snapshot().get("profileId", "")).startswith("custom:"):
+            self.coordinator._revoke_runtime("custom-gallery-changed")
+            self.session.refreshRuntime()
+        self._sync_custom_gallery_active()
+
     def shutdown(self):
         if self._closed:
             return
@@ -139,6 +204,7 @@ class QtClient:
         self.backend.shutdown()
         self.route_choices.shutdown()
         self.info.shutdown()
+        self.custom_galleries.shutdown()
         self.windows.shutdown()
 
 

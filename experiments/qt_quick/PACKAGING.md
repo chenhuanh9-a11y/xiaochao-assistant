@@ -2,7 +2,7 @@
 
 This recipe builds the opt-in Qt test client from a clean, explicitly named commit. It does not build the Tk product, install or launch an executable, create a portable ZIP, publish artifacts, or change the separate `qt-lab` checkout. The coordinator must finish source/live-chain checks and authorize the build before running the final command. Preparing this recipe did **not** perform a build.
 
-Current preparation status (2026-10-30): the integrated source includes real `LiveRuntime` with both shared mode providers, explicit opt-in capture/global keys, continuous 200ms guarded refresh, real resource/settings services, pinned reference editing and authorized aligned rendering. Candidate confirmation/reselection/cycling, cycle-floor and remaining manual recognition/floor UI gaps are disabled or unavailable. Own-window UI evidence records 18 assertions and zero QML warnings; shared-runtime floor/refresh evidence uses synthetic frames. None of this is native game acceptance or a performance claim. The source is not yet the final committed build input, and no freeze or Setup build has started.
+Delivered baseline (2026-10-30): commit `f3d349347b1416f846ac2d3b4b553c63517a4562` produced the first private Qt Setup. Its package and installed state must remain separate from subsequent source changes. Current migration coverage is tracked in [MIGRATION.md](MIGRATION.md); source/offline/own-window evidence is not native-game acceptance or a performance claim. The optional installer-instance parameter below prepares a separate layout preview through the same build chain. This parameter change itself has not built, installed or launched anything.
 
 All pinned runtime/build packages are now installed in `.venv-qt-isolated`; the read-only environment check passes with the explicit Inno compiler. The coordinator's exact inventory has 401 files: 328 retained, 72 optional author images omitted, and the old version metadata replaced. Provider checks report nightmare 26 maps/78 typed layers and difficult 30 declared maps/58 typed layers, with the explicit map29 binding gap preserved. The 209-file notice gate passes. The clean committed source/inventory and final artifact checks below remain required.
 
@@ -22,6 +22,27 @@ All pinned runtime/build packages are now installed in `.venv-qt-isolated`; the 
 | Delivery | Only `setup/XingtuQtTest-Setup-<display>-qt-test-<commit12>.exe`, plus private build evidence; no signing/install/game/public-release claim |
 
 The installer preserves runtime work/imported resources on uninstall; it contains no `[UninstallDelete]`. The test product's first-run copy is independent of the installer staging directory. Source `client_paths.py` remains the single source/frozen path definition.
+
+## Side-by-side layout preview instance
+
+`--instance` accepts only the two fixed profiles below; it does not accept arbitrary installer paths, labels or AppIds. Omitting it preserves the first test client's installer identity, folder, group, filename prefix and `-qt-test` version suffix.
+
+| Instance | AppId | Install folder | Start-menu group / shortcut / uninstall name | Setup prefix and suffix |
+| --- | --- | --- | --- | --- |
+| `client` (default) | `AF19AFD9-3016-44C9-9D20-6F216C5D8C51` | `{autopf}\XingtuQtClientTest` | `Xingtu Qt Test Client` | `XingtuQtTest-Setup`, `-qt-test` |
+| `layout-preview` | `D4B8E562-EA62-4A43-AF1D-043A5646971E` | `{autopf}\XingtuQtLayoutPreview` | `Xingtu Qt Layout Preview` | `XingtuQtLayout-Setup`, `-qt-layout-test` |
+
+Both use the same `XingtuQtClientTest.exe` basename and staging-product layout, retaining the existing known-process shortcut guard. The preview has its own EXE-adjacent `work/qt-client-runtime`; it does not adopt the first test client's settings or resources. The separate AppId, folder and menu identity allow the user to install the preview alongside `f3`, while the build never installs it. Actual side-by-side installation, menu entries and uninstall behavior still require acceptance; parameter inspection is not proof of those native operations.
+
+`installerInstance` is recorded in both `build-record.json` and `installation-profile.json`. The preview's default output directory adds `-layout-preview` after the commit prefix; any explicit `--output-dir` must still be new. Source cleanliness, resource inventory, license, UAC manifest, native/QML closure and final size/hash gates remain identical. No product instance enables `[Run]`, force-closing applications, or deleting user data on uninstall.
+
+For the next authorized build, append `--instance layout-preview` to the existing command; for example, after committing and pushing the final source:
+
+```powershell
+.\.venv-qt-isolated\Scripts\python.exe tools/build_qt_client.py --instance layout-preview --source-commit FULL_40_CHARACTER_FINAL_COMMIT --resource-root work/qt-lab-installation/_internal --resource-inventory work/qt-resource-inventory.json --iscc 'E:/codex/tools/inno-setup-6.7.3/compiler/ISCC.exe' --output-dir work/qt-setup/NEW_COMMIT_LAYOUT_PREVIEW
+```
+
+Use the same command with `--plan-only` first if a read-only adopted-input report is needed. The placeholder commit/output above are not build inputs. Only the coordinator runs the single actual freeze/Setup chain after integration checks; this document does not authorize changing the delivered `f3` artifact or starting an installer.
 
 ## Pinned build interpreter and tools
 
@@ -88,7 +109,7 @@ $qtOutput = 'work/qt-setup/NEW_BUILD_ID'
 
 `--plan-only` performs read-only validation and prints the adopted inputs. The build stages inventoried retained resources, freezes once, reads the PE manifest without launching, validates collected files/plugins, then compiles Setup once. Source identity is rechecked before Setup and after compilation. A failed stage stops; it does not retry, install, publish or reuse a previous output. The build record starts with `buildCompleted=false` and becomes true only after the expected Setup exists.
 
-Private `build-record.json` records source commit/tree, display/numeric version, resource version/inventory hash, retained/omitted file hashes, compiler/package versions, manifest/closure gates, recipe hashes and final Setup bytes/SHA256. Deliver the Setup path and exact size/hash with this record; label build, installation, native GUI, game checks and publishing separately. At preparation handoff, the remaining blockers are the final clean committed source, approved complete resource inventory/provider reports, and final frozen artifact/plugin/source-obligation review. No Setup exists from this work.
+Private `build-record.json` records source commit/tree, display/numeric version, resource version/inventory hash, retained/omitted file hashes, compiler/package versions, manifest/closure gates, installer instance, recipe hashes and final Setup bytes/SHA256. Deliver the Setup path and exact size/hash with this record; label build, installation, native GUI, game checks and publishing separately. The first `f3` Setup already has its own completed record. A later layout preview requires its own final clean committed source, complete inventory/provider reports and final frozen artifact/plugin/source-obligation review; these parameter edits do not create that new Setup.
 
 
 ## Frozen startup verification

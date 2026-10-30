@@ -10,11 +10,25 @@ import unittest
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import QObject, QUrl, Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlComponent, QQmlEngine
+from PySide6.QtQuick import QQuickView
+from PySide6.QtTest import QTest
 
 from client_settings import ACTION_ORDER, ROOT, SettingsService
+from control_layout import preset_layout
+
+
+def visual_item(parent, name):
+    """Repeater delegates have visual parents distinct from QObject ownership."""
+    if parent.objectName() == name:
+        return parent
+    for child in parent.childItems():
+        found = visual_item(child, name)
+        if found is not None:
+            return found
+    return None
 
 
 class SettingsTests(unittest.TestCase):
@@ -244,6 +258,144 @@ class SettingsTests(unittest.TestCase):
         self.assertFalse(service.saveFields(["sheetPosition"]))
         self.assertIn("读取失败", service.message)
         self.assertEqual(self.path.read_bytes(), b"{corrupt")
+
+    def test_layout_order_presets_partial_save_and_independent_undo(self):
+        original = preset_layout("common")
+        original["order"] = ["round", "display", "recognition", "map"]
+        self.write({"gameControlLayout": original, "future": {"retained": True}})
+        service = self.service()
+        service.setValue("gameMode", "difficult")
+        self.assertFalse(service.moveControlModule("round", -1))
+        self.assertFalse(service.moveControlModule("unknown", 1))
+        self.assertFalse(service.moveControlModule("map", 2))
+        self.assertTrue(service.moveControlModule("map", -1))
+        layout = service.values["gameControlLayout"]
+        self.assertEqual(layout["order"], ["round", "display", "map", "recognition"])
+        layout["enabled"] = ["map", "round"]
+        layout["display"]["referencePosition"] = True
+        service.setValue("gameControlLayout", layout)
+        service.saveFields(["gameControlLayout"])
+        self.wait(lambda: not service.busy)
+        saved = json.loads(self.path.read_text())
+        self.assertEqual(saved["gameControlLayout"]["enabled"], ["round", "map"])
+        self.assertTrue(saved["gameControlLayout"]["display"]["referencePosition"])
+        self.assertEqual(saved["future"], {"retained": True})
+        self.assertNotIn("gameMode", saved)
+        self.assertTrue(service.dirty)
+        service.setControlLayoutPreset("compact")
+        self.assertEqual(service.values["gameControlLayout"], preset_layout("compact"))
+        service.resetControlLayout()
+        self.assertEqual(service.values["gameControlLayout"], saved["gameControlLayout"])
+        self.assertEqual(service.values["gameMode"], "difficult")
+        self.assertFalse(service.setControlLayoutPreset("unknown"))
+
+    def test_shortcut_record_confirm_conflict_cancel_and_guard(self):
+        service = self.service()
+        guard = []
+        service.shortcutRecordingChanged.connect(guard.append)
+        original = service.values
+        self.assertFalse(service.beginShortcutCapture("unknown"))
+        self.assertTrue(service.beginShortcutCapture("hotkey"))
+        self.assertTrue(service.captureShortcutKey(Qt.Key_K, Qt.ControlModifier.value | Qt.ShiftModifier.value, "k", False))
+        self.assertEqual(service.shortcutCandidate, "Ctrl+Shift+K")
+        self.assertEqual(service.values, original, "recording must not edit the draft")
+        self.assertTrue(service.confirmShortcutCapture())
+        self.assertEqual(service.values["hotkey"], "Ctrl+Shift+K")
+        self.assertEqual(guard, [True, False])
+        service.beginShortcutCapture("toggle-panel")
+        service.captureShortcutKey(Qt.Key_K, Qt.ControlModifier.value | Qt.ShiftModifier.value, "k", False)
+        self.assertFalse(service.confirmShortcutCapture())
+        self.assertTrue(service.shortcutRecording)
+        self.assertIn("重复", service.shortcutMessage)
+        self.assertEqual(service.values["actionHotkeys"], original["actionHotkeys"])
+        service.cancelShortcutCapture()
+        self.assertEqual(guard, [True, False, True, False])
+        service.beginShortcutCapture("hotkey")
+        service.captureShortcutKey(Qt.Key_F4, 0, "", False)
+        service.cancelShortcutCapture()
+        self.assertEqual(service.values["hotkey"], "Ctrl+Shift+K")
+        service.beginShortcutCapture("hotkey")
+        service.clearShortcutCandidate()
+        self.assertTrue(service.confirmShortcutCapture())
+        self.assertEqual(service.values["hotkey"], "")
+        self.assertFalse(self.path.exists())
+
+    def test_future_layout_requires_explicit_preset_before_local_repair(self):
+        future = {"schemaVersion": 200, "unknown": "preserve"}
+        self.write({"gameControlLayout": future})
+        service = self.service()
+        self.assertFalse(service.controlLayoutDirty)
+        service.setValue("sheetOpacity", .7)
+        service.saveFields(["sheetOpacity"])
+        self.wait(lambda: not service.busy)
+        self.assertEqual(json.loads(self.path.read_text())["gameControlLayout"], future)
+        service.setControlLayoutPreset("compact")
+        self.assertTrue(service.controlLayoutDirty)
+        self.assertTrue(service.saveFields(["gameControlLayout"]))
+        self.wait(lambda: not service.busy)
+        self.assertEqual(json.loads(self.path.read_text())["gameControlLayout"], preset_layout("compact"))
+        self.assertFalse(service.controlLayoutDirty)
+
+    def test_shortcut_local_key_variants_and_release_do_not_replace_primary(self):
+        service = self.service()
+        service.beginShortcutCapture("hotkey")
+        self.assertFalse(service.captureShortcutKey(Qt.Key_Control, Qt.ControlModifier.value, "", False))
+        self.assertTrue(service.captureShortcutKey(Qt.Key_A, Qt.ControlModifier.value, "a", False))
+        self.assertFalse(service.captureShortcutKey(Qt.Key_Control, 0, "", True))
+        self.assertEqual(service.shortcutCandidate, "Ctrl+A")
+        service.beginShortcutCapture("hotkey")
+        self.assertTrue(service.captureShortcutKey(Qt.Key_Shift, 0, "", True))
+        self.assertEqual(service.shortcutCandidate, "SHIFT")
+        service.beginShortcutCapture("hotkey")
+        self.assertTrue(service.captureShortcutKey(Qt.Key_2, Qt.KeypadModifier.value, "2", False))
+        self.assertEqual(service.shortcutCandidate, "NUMPAD2")
+        service.beginShortcutCapture("hotkey")
+        self.assertTrue(service.captureShortcutMouse(Qt.BackButton.value, Qt.AltModifier.value))
+        self.assertEqual(service.shortcutCandidate, "Alt+MOUSE4")
+        service.beginShortcutCapture("hotkey")
+        self.assertFalse(service.captureShortcutKey(Qt.Key_Meta, Qt.MetaModifier.value, "", False))
+        self.assertFalse(service.shortcutCandidateReady)
+        service.captureShortcutKey(Qt.Key_Escape, 0, "", False)
+        self.assertFalse(service.shortcutRecording)
+
+    def test_qml_layout_and_local_capture_short_flow(self):
+        service = self.service()
+        view = QQuickView()
+        view.setResizeMode(QQuickView.SizeRootObjectToView)
+        view.rootContext().setContextProperty("settingsService", service)
+        warnings = []
+        view.engine().warnings.connect(lambda items: warnings.extend(str(item) for item in items))
+        view.setSource(QUrl.fromLocalFile(str(Path(__file__).with_name("ClientSettings.qml"))))
+        self.assertFalse(view.errors(), "\n".join(str(e) for e in view.errors()))
+        view.resize(720, 740)
+        view.show()
+        self.app.processEvents()
+        panel = view.rootObject()
+        try:
+            visual_item(panel, "layout_preset_common").clicked.emit()
+            self.app.processEvents()
+            visual_item(panel, "layout_up_round").clicked.emit()
+            self.assertEqual(service.values["gameControlLayout"]["order"], ["display", "map", "round", "recognition"])
+            visual_item(panel, "layout_save").clicked.emit()
+            self.wait(lambda: not service.busy)
+            self.assertEqual(json.loads(self.path.read_text())["gameControlLayout"], service.persistedValues["gameControlLayout"])
+            visual_item(panel, "record_hotkey").clicked.emit()
+            self.app.processEvents()
+            self.assertTrue(visual_item(panel, "shortcutCaptureArea").property("activeFocus"))
+            QTest.keyClick(view, Qt.Key_K, Qt.ControlModifier | Qt.ShiftModifier)
+            self.app.processEvents()
+            self.assertEqual(service.shortcutCandidate, "Ctrl+Shift+K")
+            self.assertEqual(service.values["hotkey"], "G")
+            visual_item(panel, "shortcutCaptureConfirm").clicked.emit()
+            self.assertFalse(service.shortcutRecording)
+            self.assertEqual(service.values["hotkey"], "Ctrl+Shift+K")
+            self.assertNotIn("hotkey", json.loads(self.path.read_text()))
+            self.assertEqual(warnings, [])
+        finally:
+            service.cancelShortcutCapture()
+            view.close()
+            view.deleteLater()
+            self.app.processEvents()
 
     def test_sandbox_marker_and_path_guard(self):
         (self.sandbox / ".qt-lab-owner").write_text("wrong", encoding="utf-8")
