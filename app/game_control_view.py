@@ -159,6 +159,15 @@ class GameControlView(tk.Frame):
             button.configure(command=lambda value=mode: self._call("set_game_mode", value))
             button.grid(row=0, column=column, sticky="ew", padx=2)
             self.mode_buttons[mode] = button
+        selection_host = tk.Frame(self.modules['map'], bg=SURFACE)
+        selection_host.pack(fill="x", pady=(4, 0))
+        selection_host.columnconfigure((0, 1), weight=1, uniform="selection")
+        self.selection_buttons = {}
+        for column, (mode, label) in enumerate((("auto", "自动识别"), ("manual", "手动选图"))):
+            button = self._button(selection_host, label, "set_map_selection_mode", padx=5, pady=6)
+            button.configure(command=lambda value=mode: self._call("set_map_selection_mode", value))
+            button.grid(row=0, column=column, sticky="ew", padx=2)
+            self.selection_buttons[mode] = button
         self.map_button = self._button(self.modules['map'], "选择地图", "_start_map_reselection")
         self.map_button.pack(fill="x", pady=(4, 0))
         self.recognition_buttons, self.recognition_keys = {}, {}
@@ -642,6 +651,14 @@ class GameControlView(tk.Frame):
             button.configure(text=f"{title} · 已选" if selected else title,
                              bg=PRIMARY if selected else BUTTON_BG, fg="white" if selected else BUTTON_TEXT,
                              state="normal" if self._has("set_game_mode") and snapshot.get("modeChangeEnabled") is not False else "disabled")
+        selection = snapshot.get("mapSelectionMode") or "auto"
+        for value, button in self.selection_buttons.items():
+            selected = selection == value
+            title = "手动选图" if value == "manual" else "自动识别"
+            button.configure(text=f"{title} · 已选" if selected else title,
+                             bg=PRIMARY if selected else BUTTON_BG, fg="white" if selected else BUTTON_TEXT,
+                             state="normal" if self._has("set_map_selection_mode") else "disabled")
+        self.map_button.configure(text="选择本局地图" if selection == "manual" else "选择地图")
         self._sync_visibility_controls(snapshot)
         self._sync_opacity_controls(snapshot)
         self._bindings = dict(bindings if bindings is not None else snapshot.get("bindings") or {})

@@ -66,7 +66,7 @@ ACTION_NAMES = {"map": "游戏地图键", "toggle-panel": "呼出/收起游戏�
                 "candidate-next": "下一个候选", "confirm-round": "确认当前地图",
                 "cycle-floor": "切换楼层", "end-round": "结束本局",
                 "toggle-sheet-visibility": "显示/隐藏小抄", "start-round": "开始本局",
-                "toggle-round": "开始/结束本局"}
+                "toggle-round": "开始/结束本局", "manual-map-picker": "手动选图"}
 
 
 def _button(parent: tk.Misc, text: str, command, *, primary=False) -> RoundedButton:
@@ -475,6 +475,7 @@ class DesktopMainUI:
         self._window_brand_icons = self._brand_images.window_icons(self.window)
         self._action_feedback = tk.StringVar(self.root)
         self._mode_choice = tk.StringVar(self.root, assistant.game_mode_var.get())
+        self._selection_choice = tk.StringVar(self.root, self._selection_label())
         self._home_preview_context = None
         self._home_layout = None
         self.display = WindowDisplay(self.window, assistant, preferred=(1000, 720),
@@ -1363,6 +1364,10 @@ class DesktopMainUI:
         row = self._setting_row(inner, "游戏难度")
         self.mode_switch = self._segmented(row, self._mode_choice, ("噩梦", "困难"), self._change_mode)
         self.mode_switch.pack(side="right")
+        row = self._setting_row(inner, "选图方式", "手动选图时不识别地图，按快捷键或点“选择地图”自己选。")
+        self.selection_switch = self._segmented(row, self._selection_choice, ("自动识别", "手动选图"),
+                                                self._change_selection_mode)
+        self.selection_switch.pack(side="right")
         row = self._setting_row(inner, "作者路线")
         self.route_box = RoundedCombobox(
             row, textvariable=self.assistant.route_profile_var,
@@ -1855,6 +1860,17 @@ class DesktopMainUI:
                                   if isinstance(result, dict) and result.get("success") is False else "")
         self._sync_view()
 
+    def _selection_label(self) -> str:
+        return "手动选图" if getattr(self.assistant, "map_selection_mode", "auto") == "manual" else "自动识别"
+
+    def _change_selection_mode(self, event=None) -> None:
+        callback = getattr(self.assistant, "set_map_selection_mode", None)
+        result = callback("manual" if self._selection_choice.get() == "手动选图" else "auto") if callable(callback) else None
+        self._selection_choice.set(self._selection_label())
+        self._action_feedback.set(str(result.get("message") or "选图方式未切换。")
+                                  if isinstance(result, dict) and result.get("success") is False else "")
+        self._sync_view()
+
     def _change_route(self, event=None):
         self.assistant._apply_route_profile_setting(event)
         self._sync_view()
@@ -2102,6 +2118,7 @@ class DesktopMainUI:
     def _sync_preferences_page(self, snapshot, key_snapshot):
         mode = self.assistant.game_mode_var.get()
         if self._mode_choice.get() != mode: self._mode_choice.set(mode)
+        if self._selection_choice.get() != self._selection_label(): self._selection_choice.set(self._selection_label())
         visible = snapshot.get("userVisible")
         self._configure_changed(self.preferences_visibility_button,
             text="开启" if visible is True else "关闭" if visible is False else "未知",
