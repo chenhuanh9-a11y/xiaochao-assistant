@@ -220,6 +220,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sandbox", type=Path, default=ROOT / "work/qt-lab-installation")
     parser.add_argument("--probe-output", type=Path)
+    parser.add_argument("--replay", type=Path, help="isolated saved render record beneath this clone/work")
     args = parser.parse_args()
     app = QGuiApplication([])
     app.setApplicationName("XingtuQtLab")
@@ -236,14 +237,23 @@ def main():
         backend.shutdown()
         return 1
     window, overlay = engine.rootObjects()
-    def show_overlay():
+    def show_overlay(replay=False):
+        overlay.setProperty("replayMode", bool(replay and backend.replayAvailable))
         windows_overlay_style(overlay, backend.clickThrough)
         overlay.show()
-    backend.overlayRequested.connect(show_overlay)
+    backend.overlayRequested.connect(lambda: show_overlay(False))
+    backend.replayOverlayRequested.connect(lambda: show_overlay(True))
     backend.clickThroughRequested.connect(lambda enabled: windows_overlay_style(overlay, enabled))
     metrics = Metrics(window, overlay)
+    if args.replay:
+        window.setProperty("page", "replay")
+        backend.loadReplay(QUrl.fromLocalFile(str(args.replay.resolve())).toString())
     if args.probe_output:
-        run_probe(app, engine, backend, window, overlay, args.probe_output, metrics)
+        if args.replay:
+            from probe_replay import run_replay_probe
+            run_replay_probe(app, backend, window, overlay, args.probe_output, metrics)
+        else:
+            run_probe(app, engine, backend, window, overlay, args.probe_output, metrics)
     app.aboutToQuit.connect(backend.shutdown)
     code = app.exec()
     if args.probe_output:

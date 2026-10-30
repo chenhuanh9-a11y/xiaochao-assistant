@@ -14,6 +14,7 @@ Window {
     property bool expanded: true
     property real controlAlpha: 0.96
     property real mapAlpha: 0.86
+    property bool replayMode: false
     Behavior on height { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
     Rectangle {
         anchors.fill: parent; anchors.margins: 5
@@ -22,7 +23,7 @@ Window {
         Rectangle {
             x: 0; y: 0; width: parent.width; height: 56
             color: Qt.rgba(0.87, 0.92, 1, overlay.controlAlpha)
-            Label { x: 18; anchors.verticalCenter: parent.verticalCenter; text: "星图 · 浏览预览"; color: "#183a73"; font.bold: true; font.pixelSize: 14 }
+            Label { x: 18; anchors.verticalCenter: parent.verticalCenter; text: overlay.replayMode ? "星图 · 结果回放" : "星图 · 浏览预览"; color: "#183a73"; font.bold: true; font.pixelSize: 14 }
             MouseArea {
                 width: parent.width - 100; height: parent.height
                 property real startX: 0
@@ -44,9 +45,13 @@ Window {
             anchors.topMargin: 68
             visible: overlay.height > 100
             spacing: 8
-            Label { text: backend.selectedTitle; color: "#183a73"; Layout.fillWidth: true; elide: Text.ElideRight }
-            Image { objectName: "overlayPreview"; source: backend.selectedImage; sourceSize: Qt.size(640, 640); asynchronous: true; Layout.fillWidth: true; Layout.fillHeight: true; fillMode: Image.PreserveAspectFit; opacity: overlay.mapAlpha }
-            Label { text: "未连接识别 · 仅显示所选图层"; color: "#526785"; font.pixelSize: 11 }
+            Label { text: overlay.replayMode ? (backend.replayData.floor || "") + "楼 · 历史位置" : backend.selectedTitle; color: "#183a73"; Layout.fillWidth: true; elide: Text.ElideRight }
+            Item {
+                Layout.fillWidth: true; Layout.fillHeight: true
+                Image { objectName: "overlayPreview"; anchors.fill: parent; visible: !overlay.replayMode; source: backend.selectedImage; sourceSize: Qt.size(640, 640); asynchronous: true; fillMode: Image.PreserveAspectFit; opacity: overlay.mapAlpha }
+                ReplayCanvas { objectName: "overlayReplayCanvas"; anchors.fill: parent; visible: overlay.replayMode; record: overlay.replayMode ? backend.replayData : ({}); routeAlpha: overlay.mapAlpha }
+            }
+            Label { text: overlay.replayMode ? backend.replayData.label || "未载入回放" : "未连接识别 · 仅显示所选图层"; color: "#526785"; font.pixelSize: 11; Layout.fillWidth: true; elide: Text.ElideRight }
             RowLayout {
                 Label { text: "面板"; color: "#354f75"; font.pixelSize: 12 }
                 AppSlider { objectName: "controlAlphaSlider"; Layout.fillWidth: true; from: 0.35; to: 1; value: overlay.controlAlpha; onMoved: overlay.controlAlpha = value }

@@ -27,6 +27,8 @@ ApplicationWindow {
     property bool probeAnimating: false
     property real probePhase: 0
     property bool overlayVisible: false
+    property string page: "resources"
+    property real replayAlpha: 0.55
     NumberAnimation on probePhase {
         running: root.probeAnimating
         from: 0; to: 1; duration: 1200
@@ -47,6 +49,12 @@ ApplicationWindow {
         title: "导入图包到实验副本"
         nameFilters: ["星图图包 (*.zip)"]
         onAccepted: backend.importArchive(selectedFile.toString())
+    }
+    FileDialog {
+        id: replayPicker
+        title: "选择隔离回放"
+        nameFilters: ["星图回放 (replay.json)"]
+        onAccepted: backend.loadReplay(selectedFile.toString())
     }
     Dialog {
         id: confirm
@@ -72,7 +80,8 @@ ApplicationWindow {
                 spacing: 8
                 Label { text: "星图"; color: "#183a73"; font.pixelSize: 25; font.bold: true; Layout.topMargin: 12 }
                 Label { text: "Qt 实验版"; color: "#526785"; Layout.bottomMargin: 40 }
-                AppButton { text: "地图资源"; selected: true; Layout.fillWidth: true }
+                AppButton { text: "地图资源"; selected: root.page === "resources"; onClicked: root.page = "resources"; Layout.fillWidth: true }
+                AppButton { text: "识别回放"; selected: root.page === "replay"; onClicked: root.page = "replay"; Layout.fillWidth: true }
                 AppButton { objectName: "overlayButton"; text: "悬浮预览"; onClicked: backend.showOverlay(); Layout.fillWidth: true }
                 Item { Layout.fillHeight: true }
                 Label { text: "独立实验副本"; color: "#354f75" }
@@ -80,6 +89,7 @@ ApplicationWindow {
             }
         }
         ColumnLayout {
+            visible: root.page === "resources"
             Layout.fillWidth: true; Layout.fillHeight: true
             Layout.margins: 28
             spacing: 18
@@ -244,6 +254,37 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Rectangle { width: 6; height: 6; radius: 3; color: backend.hasError ? "#b8364a" : backend.busy || backend.importing ? "#2f66eb" : "#17775a" }
                 Label { text: backend.message; color: backend.hasError ? "#b8364a" : "#526785"; elide: Text.ElideRight; Layout.fillWidth: true; font.pixelSize: 12 }
+            }
+        }
+        ColumnLayout {
+            visible: root.page === "replay"
+            Layout.fillWidth: true; Layout.fillHeight: true; Layout.margins: 28
+            spacing: 18
+            RowLayout {
+                Layout.fillWidth: true
+                Label { text: "识别结果回放"; font.pixelSize: 26; font.bold: true; color: "#142b4b" }
+                Item { Layout.fillWidth: true }
+                AppButton { text: "选择回放"; onClicked: replayPicker.open() }
+                AppButton { text: "悬浮查看"; primary: true; enabled: backend.replayAvailable; onClicked: backend.showReplayOverlay() }
+            }
+            Label { text: backend.replayMessage; color: "#526785"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+            Rectangle {
+                Layout.fillWidth: true; Layout.fillHeight: true
+                color: "#142035"; radius: 12
+                ReplayCanvas {
+                    id: replayCanvas
+                    objectName: "replayCanvas"
+                    anchors.fill: parent; anchors.margins: 10
+                    record: backend.replayData
+                    routeAlpha: root.replayAlpha
+                }
+                Label { anchors.centerIn: parent; visible: !backend.replayAvailable || !replayCanvas.imagesReady; text: replayCanvas.imageError ? "回放图片无法读取" : backend.replayAvailable ? "载入图像…" : "尚未载入回放"; color: "#eaf1fd" }
+            }
+            RowLayout {
+                Label { text: "路线透明度"; color: "#354f75" }
+                AppSlider { objectName: "replayAlphaSlider"; Layout.preferredWidth: 240; from: 0; to: 1; value: root.replayAlpha; onMoved: root.replayAlpha = value }
+                Item { Layout.fillWidth: true }
+                Label { text: "历史位姿 · 不运行识别或键盘监听"; color: "#526785"; font.pixelSize: 12 }
             }
         }
     }
