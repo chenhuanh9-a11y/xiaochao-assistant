@@ -411,6 +411,9 @@ def main(argv=None):
                    publicDownloadConfigured=False, localMapImportPreserved=True)
     profile_path = output / "installation-profile.json"
     profile_path.write_text(json.dumps(profile, indent=2), encoding="utf-8")
+    # PyInstaller requires an unprefixed `assembly` DOM tag. ElementTree's
+    # default ns0 prefix is valid XML but rejected by its manifest parser.
+    ET.register_namespace("", "urn:schemas-microsoft-com:asm.v1")
     manifest = ET.parse(TOOLS / "identityv-assistant.manifest")
     manifest.getroot().find("{urn:schemas-microsoft-com:asm.v1}assemblyIdentity").set("name", "Xingtu.QtClientTest")
     manifest.getroot().find("{urn:schemas-microsoft-com:asm.v1}description").text = "Xingtu Qt Test Client"
