@@ -12,6 +12,7 @@ import os
 import threading
 import time
 from PySide6.QtCore import QObject, Signal
+from client_map_input import PointerEventMailbox
 
 MODIFIER_KEYS = frozenset((0x10,0x11,0x12,0x5b,0x5c,0xa0,0xa1,0xa2,0xa3,0xa4,0xa5))
 
@@ -34,6 +35,7 @@ def physical_key(vk, scan, flags):
 class PassThroughKeyboardSource(QObject):
     eventReceived = Signal(object)
     pointerReceived = Signal(object)
+    pointerAvailable = Signal()
     pointerFailed = Signal(str)
     started = Signal(object)
     failed = Signal(str)
@@ -52,6 +54,8 @@ class PassThroughKeyboardSource(QObject):
         self._pointer_context_provider = None
         self.pointer_generation = 0
         self._pointer_sequence = 0
+        self._pointer_gesture = None
+        self._pointer_mailbox = PointerEventMailbox()
         self.pointer_installed = False
         self._pointer_failure_reported = False
         self.generation = 0
@@ -77,21 +81,33 @@ class PassThroughKeyboardSource(QObject):
         with self._lock:
             self._pointer_context_provider = provider if callable(provider) else None
             self.pointer_generation += 1
+        self.cancel_pointer("pointer-context-provider-changed")
 
     def update_pointer_target(self, hwnd):
+        changed = False
         with self._lock:
             if self._pointer_target != int(hwnd):
                 self._pointer_target = int(hwnd)
                 self.pointer_generation += 1
+                changed = True
+        if changed:
+            self.cancel_pointer("pointer-target-changed")
 
-    def _pointer_event(self, x, y, foreground, *, created_at=None):
+    def _pointer_event(self, x, y, foreground, *, created_at=None, phase="down"):
         with self._lock:
             target, provider, generation = self._pointer_target, self._pointer_context_provider, self.pointer_generation
+            gesture = self._pointer_gesture
+        if phase not in {"down", "move", "up"}:
+            return None
         if not target or foreground != target or provider is None or self._stop.is_set():
+            self.cancel_pointer("pointer-context-unavailable")
+            return None
+        if phase != "down" and gesture is None:
             return None
         created_at = time.monotonic() if created_at is None else created_at
         context = provider()
         if not isinstance(context, dict):
+            self.cancel_pointer("pointer-context-unavailable")
             return None
         context = dict(context, createdAt=created_at)
         with self._lock:
@@ -99,8 +115,32 @@ class PassThroughKeyboardSource(QObject):
                 return None
             self._pointer_sequence += 1
             sequence = self._pointer_sequence
-        return dict(x=int(x), y=int(y), hwnd=target, foreground=foreground,
-                    createdAt=created_at, context=context, sequence=sequence, pointerGeneration=generation)
+            if phase == "down":
+                gesture = dict(id=sequence, start=(int(x), int(y)), last=(int(x), int(y)))
+            elif gesture is not self._pointer_gesture:
+                return None
+            last = gesture["last"]
+            event = dict(x=int(x), y=int(y), hwnd=target, foreground=foreground, phase=phase,
+                         createdAt=created_at, context=context, sequence=sequence, pointerGeneration=generation,
+                         gestureId=gesture["id"], delta=[int(x)-last[0], int(y)-last[1]],
+                         totalDelta=[int(x)-gesture["start"][0], int(y)-gesture["start"][1]])
+            gesture["last"] = (int(x), int(y))
+            gesture["event"] = event
+            self._pointer_gesture = None if phase == "up" else gesture
+        return event
+
+    def cancel_pointer(self, reason="pointer-cancelled"):
+        with self._lock:
+            gesture, self._pointer_gesture = self._pointer_gesture, None
+        if gesture is not None:
+            self._queue_pointer_event(dict(gesture["event"], phase="cancel", reason=str(reason)))
+
+    def _queue_pointer_event(self, event):
+        if self._pointer_mailbox.post(event):
+            self.pointerAvailable.emit()
+
+    def take_pointer_events(self):
+        return self._pointer_mailbox.take()
 
     def start(self):
         if self.running:
@@ -115,6 +155,7 @@ class PassThroughKeyboardSource(QObject):
 
     def stop(self):
         self._stop.set()
+        self.cancel_pointer("pointer-source-stopped")
         if self._thread_id and self._user is not None:
             self._user.PostThreadMessageW(self._thread_id, 0x0012, 0, 0)
         if self._thread and self._thread is not threading.current_thread():
@@ -132,7 +173,7 @@ class PassThroughKeyboardSource(QObject):
                 self._held.discard(key)
             # Preserve the existing vk protocol; only held-state storage uses
             # one physical representation for either callback form.
-            return dict(vk=vk, down=down, held=frozenset(self._held),
+            return dict(vk=vk, down=down, held=frozenset(self._held), createdAt=time.monotonic(),
                         foreground=foreground, generation=self.generation)
 
     def _handle_message(self, message):
@@ -195,13 +236,14 @@ class PassThroughKeyboardSource(QObject):
             @callback_type
             def mouse_callback(code, message_id, pointer):
                 try:
-                    if code >= 0 and message_id == 0x0201 and not self._stop.is_set():
+                    if code >= 0 and message_id in (0x0200, 0x0201, 0x0202) and not self._stop.is_set():
                         foreground = int(user.GetForegroundWindow() or 0)
-                        if foreground and foreground == self._pointer_target:
+                        if foreground == self._pointer_target or self._pointer_gesture is not None:
                             mouse = ctypes.cast(pointer,ctypes.POINTER(Mouse)).contents
-                            event = self._pointer_event(mouse.pt.x, mouse.pt.y, foreground)
+                            phase = {0x0200: "move", 0x0201: "down", 0x0202: "up"}[message_id]
+                            event = self._pointer_event(mouse.pt.x, mouse.pt.y, foreground, phase=phase)
                             if event is not None:
-                                self.pointerReceived.emit(event)
+                                self._queue_pointer_event(event)
                 except Exception as error:
                     if not self._pointer_failure_reported:
                         self._pointer_failure_reported = True

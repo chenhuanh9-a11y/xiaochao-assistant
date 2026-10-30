@@ -36,15 +36,23 @@ Window {
                && (!session.busy || snapshot.pendingAction === "refresh_map")
     }
     function provisionalGroup() {
-        return snapshot.identityPhase === "GROUP_LOCKED" || (snapshot.groupLocked && snapshot.identityPhase !== "MEMBER_VERIFIED")
+        return snapshot.identityPhase === "GROUP_LOCKED" || (snapshot.groupLocked
+            && snapshot.identityPhase !== "MEMBER_VERIFIED" && snapshot.identityPhase !== "MANUAL_MEMBER_CONFIRMED")
     }
     function mapText() {
+        if (snapshot.identityPhase === "MANUAL_MEMBER_CONFIRMED") {
+            var id = snapshot.currentGroupMemberId || snapshot.manualGroupMemberId || snapshot.mapId || ""
+            var rows = snapshot.groupMemberRows || []
+            var row = rows.find(function(value) { return value.mapId === id })
+            return row && row.name ? row.name : snapshot.mapName || id
+        }
         if (provisionalGroup()) return snapshot.provisionalMapId ? "暂用 " + snapshot.provisionalMapId : "相似组 " + (snapshot.groupId || "")
         return snapshot.mapName || snapshot.mapId || ""
     }
     function statusText() {
         if (snapshot.contextPending) return "正在切换模式或路线"
         if (snapshot.roundPreparing || (session.busy && snapshot.pendingAction === "start_round")) return "正在准备本局"
+        if (snapshot.identityPhase === "MANUAL_MEMBER_CONFIRMED") return "本局已手动选择 · " + (snapshot.displayAuthorized ? outputStatus() : "位置待核对")
         if (provisionalGroup()) return snapshot.displayAuthorized ? "相似组已锁定 · " + outputStatus() : "相似组已锁定 · 位置待核对"
         if (snapshot.identityPhase === "MEMBER_VERIFIED") return snapshot.displayAuthorized ? "地图已核对 · " + outputStatus() : "地图已核对 · 位置待核对"
         if (!clientCoordinator.boundWindow) {
@@ -147,7 +155,7 @@ Window {
             }
             Label {
                 anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.bottomMargin: 8
-                text: panel.visibilityText(panel.snapshot.overlayVisible, "贴合已显示", "贴合暂不可见", "贴合状态待核对") + " · " + panel.visibilityText(panel.snapshot.referenceVisible, "定点已显示", "定点暂不可见", "定点状态待核对")
+                text: (panel.preferences.sheetVisibilityEnabled === false ? "贴合已隐藏" + (panel.shortcut("toggle-sheet-visibility") ? "/" + panel.shortcut("toggle-sheet-visibility") : "") : panel.visibilityText(panel.snapshot.overlayVisible, "贴合已显示", "贴合暂不可见", "贴合状态待核对")) + " · " + panel.visibilityText(panel.snapshot.referenceVisible, "定点已显示", "定点暂不可见", "定点状态待核对")
                 color: "#5c677d"; font.family: "Microsoft YaHei UI"; font.pixelSize: 11; elide: Text.ElideRight
             }
             PanelDrag { anchors.fill: parent; anchors.rightMargin: 88 }

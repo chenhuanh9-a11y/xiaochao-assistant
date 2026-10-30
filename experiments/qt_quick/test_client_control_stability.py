@@ -114,6 +114,33 @@ class ControlStabilityTests(unittest.TestCase):
         self.assertNotIn('暂用',self.item('controlMapFloorText').property('text'))
         self.assertFalse(self.warnings,'\n'.join(self.warnings))
 
+    def test_manual_member_header_only_follows_committed_phase_not_pending_target(self):
+        self.session.data.update(groupMemberSelectionPending=True, pendingGroupMemberId='nightmare-09',
+            currentGroupMemberId='nightmare-08', manualGroupMemberHeld=False)
+        self.session.changed.emit();APP.processEvents()
+        self.assertNotIn('本局已手动选择',self.item('controlStatusText').property('text'))
+        self.assertIn('暂用 nightmare-08',self.item('controlMapFloorText').property('text'))
+        self.assertNotIn('nightmare-09',self.item('controlMapFloorText').property('text'))
+        self.session.data.update(identityPhase='MANUAL_MEMBER_CONFIRMED', manualGroupMemberHeld=True,
+            manualGroupMemberId='nightmare-09',currentGroupMemberId='nightmare-09',
+            groupMemberRows=[dict(mapId='nightmare-09',name='地图乙')],groupMemberSelectionPending=False)
+        self.session.changed.emit();APP.processEvents()
+        self.assertIn('本局已手动选择',self.item('controlStatusText').property('text'))
+        self.assertIn('位置待核对',self.item('controlStatusText').property('text'))
+        self.assertIn('地图乙',self.item('controlMapFloorText').property('text'))
+        self.assertNotIn('暂用',self.item('controlMapFloorText').property('text'))
+        self.assertNotIn('地图已核对',self.item('controlStatusText').property('text'))
+        self.session.data['displayAuthorized']=True
+        self.settings.data['sheetVisibilityEnabled']=False
+        self.settings.changed.emit();self.session.changed.emit();APP.processEvents()
+        self.assertIn('贴合已隐藏',self.item('controlStatusText').property('text'))
+        self.session.data.update(identityPhase='GROUP_LOCKED',manualGroupMemberHeld=False,
+            manualGroupMemberId='',provisionalMapId='nightmare-09')
+        self.session.changed.emit();APP.processEvents()
+        self.assertNotIn('本局已手动选择',self.item('controlStatusText').property('text'))
+        self.assertIn('暂用 nightmare-09',self.item('controlMapFloorText').property('text'))
+        self.assertFalse(self.warnings,'\n'.join(self.warnings))
+
     def test_idle_passive_refresh_is_stable_but_preparation_resource_and_pending_context_block_mode(self):
         self.session.data.update(roundActive=False,mapOpen=False,identityPhase='UNLOCKED',groupLocked=False,provisionalMapId='',observedFloor='')
         self.session.changed.emit();APP.processEvents()

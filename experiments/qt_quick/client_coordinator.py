@@ -5,6 +5,7 @@ import ctypes
 from ctypes import wintypes
 import os
 import json
+import math
 from pathlib import Path
 import threading
 from PySide6.QtCore import QObject, Property, QTimer, QUrl, Qt, Signal, Slot
@@ -195,6 +196,10 @@ class ClientCoordinator(QObject):
         self._text_entry = False
         self._shortcut_recording = bool(getattr(settings, "shortcutRecording", False))
         self._requested_action = ""
+        self._map_input_sequence = 0
+        self._focus_loss_map_sequence = None
+        self._pointer_drag = None
+        self._pointer_sequence = 0
         self._waiting_foreground = False
         self._map_was_open = False
         self._closing = False
@@ -229,12 +234,18 @@ class ClientCoordinator(QObject):
         session.actionRequested.connect(self._action_requested)
         resources.resourcesChanged.connect(self._resources_changed)
         native_input.actionTriggered.connect(self._native_action)
-        pointer_signal = getattr(native_input, "gamePointerPressed", None)
+        map_signal = getattr(native_input, "mapInputRequested", None)
+        ordered_setter = getattr(native_input, "setOrderedMapInputEnabled", None)
+        self._ordered_map_input = map_signal is not None and callable(ordered_setter)
+        if self._ordered_map_input:
+            map_signal.connect(self._map_input_requested)
+            ordered_setter(True)
+        pointer_signal = getattr(native_input, "gamePointerEvent" if self._ordered_map_input else "gamePointerPressed", None)
         pointer_provider = getattr(runtime, "game_floor_click_context", None)
         pointer_setter = getattr(native_input, "setGamePointerContextProvider", None)
         if pointer_signal is not None and callable(pointer_provider) and callable(pointer_setter):
             pointer_setter(pointer_provider)
-            pointer_signal.connect(self._game_pointer_pressed)
+            pointer_signal.connect(self._game_pointer_event if self._ordered_map_input else self._game_pointer_pressed)
         native_input.changed.connect(self.changed)
         native_input.changed.connect(self._input_changed)
         backend.replayOverlayRequested.connect(self.showAlignedReplay)
@@ -441,6 +452,165 @@ class ClientCoordinator(QObject):
     runtimeStatus = Property(str, _status_text, notify=changed)
 
     @Slot(object)
+    def _cancel_session_frame(self, reason):
+        cancel = getattr(self.session, "cancelPending", None)
+        if callable(cancel):
+            cancel(reason)
+
+    def _reset_map_input(self, reason, *, open_intent=False):
+        self._cancel_pointer_drag(reason)
+        reset = getattr(self.input, "resetMapInput", None)
+        if callable(reset):
+            reset(bool(open_intent))
+
+    def _close_map_from_input(self, payload):
+        # Close is an urgent lifetime boundary, not an idempotent queued job.
+        # Retain the independently correct static reference and this round's ID.
+        self._reset_map_input("map-closed")
+        self._revoke_runtime("map-closed")
+        self._cancel_session_frame("map-closed")
+        self._map_was_open = False
+        self.session.refreshRuntime()
+        enqueue = getattr(self.session, "dispatchWithPayload", None)
+        if callable(enqueue):
+            enqueue("close_map", dict(payload, openIntent=False))
+        else:
+            self.session.dispatch("close_map")  # Legacy injected fixture seam.
+
+    @Slot(object)
+    def _map_input_requested(self, event):
+        if self._closing or self._closed or not isinstance(event, dict):
+            return
+        sequence, opening = event.get("sequence"), event.get("openIntent")
+        created = event.get("createdAt")
+        if (type(sequence) is not int or sequence <= self._map_input_sequence
+                or type(opening) is not bool or isinstance(created, bool)
+                or not isinstance(created, (int, float)) or not math.isfinite(created)
+                or not self._bound or event.get("hwnd") != int(self._bound)):
+            return
+        try:
+            if self._native_windows.foreground_window() != int(self._bound):
+                return
+        except OSError:
+            return
+        self._map_input_sequence = sequence
+        # A new physical edge supersedes an older focus-return capture plan.
+        self._waiting_foreground = False
+        self._map_was_open = False
+        payload = dict(inputSequence=sequence, openIntent=opening,
+                       inputCreatedAt=created, inputSource=event.get("source", "hotkey"))
+        if not opening:
+            self._close_map_from_input(payload)
+        elif (self.resources.busy or self.resources.pendingKind or self._pending_context
+              or self.session.snapshot.get("resourceLocked")):
+            self._reset_map_input("map-input-resources-busy")
+            self._message = "正在准备地图资源，请稍后再打开地图"
+            self.changed.emit()
+        else:
+            self._cancel_pointer_drag("map-key-open")
+            self._revoke_runtime("map-key-open")
+            # Runtime owns atomic ensure-start + original map preparation.
+            # Distinct sequence payloads cannot be swallowed by Session dedup.
+            self.session.dispatchWithPayload("map", payload)
+
+    @staticmethod
+    def _pointer_context_fields(context):
+        return {key: value for key, value in context.items() if key != "createdAt"}
+
+    def _pointer_context_current(self, context):
+        getter = getattr(self.runtime, "game_floor_click_context", None)
+        current = getter() if callable(getter) else None
+        return bool(isinstance(context, dict) and isinstance(current, dict)
+                    and self._pointer_context_fields(context) == self._pointer_context_fields(current))
+
+    def _cancel_pointer_drag(self, reason):
+        drag, self._pointer_drag = self._pointer_drag, None
+        if drag is None:
+            return
+        observe = getattr(self.runtime, "observe_game_drag", None)
+        if callable(observe):
+            try:
+                observe(dict(phase="cancel", gestureId=drag["gestureId"], context=drag["context"], reason=reason))
+            except (OSError, ValueError, TypeError, KeyError) as error:
+                self._trace("drag-cancel-rejected", reason=reason, diag=dict(error=str(error)))
+
+    @Slot(object)
+    def _game_pointer_event(self, event):
+        if self._closing or self._closed or not isinstance(event, dict):
+            return
+        phase, gesture = event.get("phase"), event.get("gestureId")
+        if phase == "cancel":
+            if self._pointer_drag and gesture == self._pointer_drag["gestureId"]:
+                self._cancel_pointer_drag(event.get("reason", "pointer-cancelled"))
+            return
+        sequence = event.get("sequence")
+        if (phase not in {"down", "move", "up"} or type(sequence) is not int
+                or sequence <= self._pointer_sequence or not self._bound
+                or event.get("hwnd") != int(self._bound) or self.resources.busy
+                or self.resources.pendingKind or self._pending_context
+                or self.session.snapshot.get("resourceLocked")):
+            return
+        try:
+            if self._native_windows.foreground_window() != int(self._bound):
+                self._cancel_pointer_drag("foreground-lost")
+                return
+            self._pointer_sequence = sequence
+            if phase == "down":
+                self._cancel_pointer_drag("new-pointer-press")
+                floor = self._game_pointer_pressed(event)
+                if not isinstance(floor, dict) or floor.get("success"):
+                    return
+                if floor.get("reason") != "floor-click-not-a-control":
+                    return  # Expired/native-geometry-rejected input cannot become X/drag.
+                if not self._pointer_context_current(event.get("context")):
+                    return
+                from map_pointer_policy import cursor_is_map_close_control
+                context = event["context"]
+                if cursor_is_map_close_control((event["x"], event["y"]), context.get("clientBounds")):
+                    self._close_map_from_input(dict(inputSequence=self._map_input_sequence,
+                        pointerSequence=sequence, inputCreatedAt=event.get("createdAt"),
+                        inputSource="mouse-close-control"))
+                    return
+                observe = getattr(self.runtime, "observe_game_drag", None)
+                if not callable(observe):
+                    self._trace("drag-unavailable", reason="runtime-transient-api-unavailable")
+                    return
+                from client_map_input import DragMotionAccumulator
+                motion = DragMotionAccumulator((event["x"], event["y"]), context["clientBounds"],
+                    self.settings.persistedValues.get("dragBoundaryNormalized"))
+                result = observe(dict(phase="down", gestureId=gesture, context=context,
+                    pointerSequence=sequence, createdAt=event.get("createdAt"), delta=[0., 0.], totalDelta=[0., 0.]))
+                if isinstance(result, dict) and result.get("success"):
+                    self._pointer_drag = dict(gestureId=gesture, context=deepcopy(context), motion=motion, moved=False)
+                return
+            drag = self._pointer_drag
+            if drag is None or gesture != drag["gestureId"]:
+                return
+            if (not self._pointer_context_current(event.get("context"))
+                    or self._pointer_context_fields(event["context"]) != self._pointer_context_fields(drag["context"])):
+                self._cancel_pointer_drag("pointer-context-changed")
+                return
+            motion = drag["motion"].consume(event)
+            if any(motion["delta"]) and not drag["moved"]:
+                self._cancel_session_frame("mouse-drag-motion")
+                drag["moved"] = True
+            observe = getattr(self.runtime, "observe_game_drag", None)
+            if not callable(observe):
+                self._cancel_pointer_drag("runtime-transient-api-unavailable")
+                return
+            result = observe(dict(phase=phase, gestureId=gesture, context=drag["context"],
+                pointerSequence=sequence, createdAt=event.get("createdAt"),
+                delta=motion["delta"], totalDelta=motion["totalDelta"]))
+            if not isinstance(result, dict) or not result.get("success"):
+                self._cancel_pointer_drag("runtime-drag-rejected")
+                return
+            if phase == "up":
+                self._pointer_drag = None
+            self._present_runtime_state(self.runtime.snapshot(), trigger="pointer-drag-" + phase)
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            self._cancel_pointer_drag("invalid-pointer-input")
+            self._trace("pointer-rejected", reason="invalid-input-context", diag=dict(error=str(error)))
+
     def _game_pointer_pressed(self, event):
         if (self._closed or self._closing or not isinstance(event, dict) or not self._bound
                 or event.get("hwnd") != int(self._bound) or self.resources.busy
@@ -455,7 +625,7 @@ class ClientCoordinator(QObject):
             self._trace("floor-click-rejected", reason="invalid-input-context", diag=dict(error=str(error)))
             return
         if not result.get("success"):
-            return
+            return result
         self._invalidate_display("game-floor-control-intent")
         self._clear_reference()
         self._trace("floor-click-intent", state=self.runtime.snapshot(), reason=result.get("reason", ""),
@@ -463,8 +633,12 @@ class ClientCoordinator(QObject):
         if result.get("captureRequired"):
             self.session.dispatchWithPayload("refresh_map", dict(
                 floorClickSequence=event.get("sequence"), floorClickCreatedAt=event.get("createdAt")))
+        return result
 
     def _action_requested(self, action, payload):
+        if (action in {"end_round", "stop_round", "reset_round", "bind_capture"}
+                or (action == "set_context" and payload.get("mode") != self._applied_context[0])):
+            self._reset_map_input("action-" + action)
         if action in {"end_round", "stop_round", "reset_round", "set_floor", "cycle_floor"}:
             self._clear_reference()
         self._focus_notice = ""
@@ -564,6 +738,7 @@ class ClientCoordinator(QObject):
                 self.images.clear()
 
     def _drop_binding(self, reason):
+        self._reset_map_input(reason)
         self.input.disable()
         self.capture.disable()
         self._revoke_runtime(reason)
@@ -621,6 +796,7 @@ class ClientCoordinator(QObject):
         if not row:
             self._message = "请刷新并选择一个有效的游戏窗口"
             self.changed.emit(); return
+        self._reset_map_input("binding-changed")
         self.input.disable()
         self.capture.disable()
         self._revoke_runtime("binding-changed")
@@ -659,13 +835,14 @@ class ClientCoordinator(QObject):
 
     @Slot()
     def startRound(self):
-        if (not self._bound or self.session.busy or self.resources.busy
+        if (self.session.busy or self.resources.busy
                 or self.settings.busy or self._pending_context):
-            self._message = "请先连接游戏窗口，并等待当前操作和模式设置完成"
+            self._message = "请等待当前操作和模式设置完成"
             self.changed.emit(); return
-        self.setInputEnabled(True)
-        if not self.input.enabled:
-            return
+        # Preparation is permitted before a game exists and does not grant
+        # capture/input authority. A later G opens/starts atomically in runtime.
+        if self._bound:
+            self.setInputEnabled(True)
         self.windows.show("controls")
         self.session.dispatch("start_round")
 
@@ -1030,6 +1207,7 @@ class ClientCoordinator(QObject):
         # Mode and author reconfiguration is serialized by SessionService; don't
         # race two independent commands with different generation tokens.
         if (mode, profile) != self._applied_context:
+            self._cancel_pointer_drag("preferences-committed")
             if mode != self._applied_context[0]:
                 self._clear_reference()
                 self._revoke_runtime("preferences-committed")
@@ -1066,6 +1244,7 @@ class ClientCoordinator(QObject):
     def _resources_changed(self):
         if self._closing or self._closed:
             return
+        self._reset_map_input("resources-changed")
         self._invalidate_display()
         self._clear_reference()
         invalidate = getattr(self.runtime, "invalidate", None)
@@ -1116,15 +1295,13 @@ class ClientCoordinator(QObject):
         receipt = state.get("lastReceipt", {})
         if receipt.get("action") == "bind_capture":
             if receipt.get("success") and self._bound:
-                self._message = "窗口已连接；点击开始本局后切回游戏"
+                self._message = "窗口已连接；切回游戏打开地图即可识别"
                 if self._automatic_live and not self.input.enabled and self._input_enable_allowed():
                     self.input.enable()
             else:
                 self._bound = ""
                 self.input.disable()
                 self._message = "连接失败，请刷新游戏窗口后重试"
-        if receipt.get("action") == "start_round" and receipt.get("success") is False:
-            self.input.disable()
         self._present_runtime_state(state, trigger="session-completed")
 
     def _present_runtime_state(self, state, *, trigger):
@@ -1291,8 +1468,11 @@ class ClientCoordinator(QObject):
                    "toggle-round": "toggle_round", "toggle-sheet-visibility": "toggle_sheet_visibility"}
         command = aliases.get(action)
         if command:
+            if command == "close_map":
+                self._close_map_from_input(dict(inputSequence=self._map_input_sequence, inputSource="escape"))
+                return
             if command == "toggle_round":
-                if not self.session.snapshot.get("roundActive"):
+                if not (self.session.snapshot.get("roundActive") or self.session.snapshot.get("roundPreparing")):
                     self.startRound()
                     return
                 command = "end_round"
@@ -1358,6 +1538,8 @@ class ClientCoordinator(QObject):
                     # Revoke before the worker can finish; returning to the same
                     # HWND/size does not make a pre-focus-loss frame current.
                     self._revoke_runtime("foreground-lost")
+                    self._focus_loss_map_sequence = self._map_input_sequence
+                    self._reset_map_input("foreground-lost")
                     cancel = getattr(self.session, "cancelPending", None)
                     if callable(cancel):
                         cancel("foreground-lost")
@@ -1369,6 +1551,13 @@ class ClientCoordinator(QObject):
                 if self.session.busy:
                     return
                 self._waiting_foreground = False
+                if self._focus_loss_map_sequence == self._map_input_sequence:
+                    # Restore intent only at this synchronous return boundary,
+                    # never from a later snapshot/receipt after another press.
+                    reset = getattr(self.input, "resetMapInput", None)
+                    if callable(reset):
+                        reset(bool(self._map_was_open))
+                self._focus_loss_map_sequence = None
                 if self._map_was_open:
                     self._map_was_open = False
                     self._invalidate_display("foreground-return-recapture")
@@ -1437,7 +1626,7 @@ class ClientCoordinator(QObject):
 
     def _track_map(self):
         if (self._closed or self._closing or not self._bound or self.session.busy
-                or self.resources.busy or self.resources.pendingKind):
+                or self.resources.busy or self.resources.pendingKind or self._pointer_drag is not None):
             return
         state = self.session.snapshot
         if not state.get("roundActive") or not state.get("mapOpen") or state.get("resourceLocked"):
@@ -1455,6 +1644,7 @@ class ClientCoordinator(QObject):
         if self._closing:
             return
         self._closing = True
+        self._reset_map_input("client-close-requested")
         self.lifecycleEvent.emit(dict(stage="close-requested", closing=True, closeReady=False))
         self._discovery_timer.stop()
         self._startup_timer.stop()

@@ -24,6 +24,8 @@ class Service(QObject):
     replayOverlayRequested = Signal()
     overlayRequested = Signal()
     shortcutRecordingChanged = Signal(bool)
+    mapInputRequested = Signal(object)
+    gamePointerEvent = Signal(object)
 
 
 class CoordinatorTests(unittest.TestCase):
@@ -45,6 +47,8 @@ class CoordinatorTests(unittest.TestCase):
         self.session.reconfigure = Mock(return_value=True)
         self.session.refreshRuntime = Mock()
         self.session.dispatch = Mock()
+        self.session.dispatchWithPayload = Mock()
+        self.session.cancelPending = Mock()
         self.resources.busy = False
         self.resources.pendingKind = ""
         self.input.enabled = True
@@ -53,6 +57,9 @@ class CoordinatorTests(unittest.TestCase):
         self.input.disable = Mock()
         self.input.setTextEntryActive = Mock()
         self.input.setEditingBindings = Mock()
+        self.input.setOrderedMapInputEnabled = Mock()
+        self.input.resetMapInput = Mock()
+        self.input.setGamePointerContextProvider = Mock()
         self.backend.refresh = Mock()
         self.windows = SimpleNamespace(hide=Mock(), show=Mock(), setClickThrough=Mock(),
                                        snapshot={}, _windows={})
@@ -61,6 +68,7 @@ class CoordinatorTests(unittest.TestCase):
         self.runtime = SimpleNamespace(configure_settings=Mock(), invalidate=Mock(),
             snapshot=Mock(side_effect=lambda: dict(self.runtime_state)),
             render_payload=Mock(return_value=None), set_event_callback=Mock())
+        self.runtime.game_floor_click_context = Mock(return_value=None)
         self.native = SimpleNamespace(foreground_window=Mock(return_value=123))
         with patch("client_input.NativeWindowAPI", return_value=self.native):
             self.coordinator = ClientCoordinator(backend=self.backend, settings=self.settings,
@@ -102,6 +110,108 @@ class CoordinatorTests(unittest.TestCase):
         self.session.snapshot["pendingAction"] = "set_context"
         self.coordinator._session_changed()
         self.windows.hide.assert_not_called()
+
+    def map_edge(self, sequence, opening):
+        self.input.mapInputRequested.emit(dict(sequence=sequence, openIntent=opening,
+            createdAt=100. + sequence, hwnd=123, source="hotkey"))
+
+    def pointer_fixture(self):
+        context = dict(epoch=1, mode="nightmare", profileId="profile-one", roundId=1,
+            cycleId=2, frameId="1:2", generation=2, captureGeneration=1,
+            clientBounds=[0, 0, 1000, 1000], fullClientSize=[1000, 1000], dpi=96)
+        self.runtime.game_floor_click_context.return_value = context
+        self.runtime.observe_game_floor_click = Mock(return_value=dict(success=False, reason="floor-click-not-a-control"))
+        return context
+
+    def test_ordered_rapid_map_edges_close_urgently_keep_reference_and_reject_late_sequence(self):
+        self.input.setOrderedMapInputEnabled.assert_called_once_with(True)
+        self.coordinator._reference = dict(key="correct-static-map")
+        order = []
+        self.runtime.invalidate.side_effect = lambda reason: order.append(("revoke", reason))
+        self.session.cancelPending.side_effect = lambda reason: order.append(("cancel", reason))
+        self.session.dispatchWithPayload.side_effect = lambda action, data: order.append(("queue", action))
+        self.map_edge(1, True)
+        self.session.busy = True
+        self.map_edge(2, False)
+        self.map_edge(3, True)
+        self.map_edge(2, False)
+        calls = self.session.dispatchWithPayload.call_args_list
+        self.assertEqual([c.args[0] for c in calls], ["map", "close_map", "map"])
+        self.assertEqual([c.args[1]["inputSequence"] for c in calls], [1, 2, 3])
+        self.assertLess(order.index(("revoke", "map-closed")), order.index(("cancel", "map-closed")))
+        self.assertLess(order.index(("cancel", "map-closed")), order.index(("queue", "close_map")))
+        self.assertEqual(self.coordinator.referenceData["key"], "correct-static-map")
+
+    def test_preparation_is_allowed_without_game_and_toggle_cancels_preparation(self):
+        self.coordinator._bound = ""
+        self.session.snapshot.update(roundActive=False, roundPreparing=False)
+        self.coordinator.startRound()
+        self.session.dispatch.assert_called_with("start_round")
+        self.input.enable.assert_not_called()
+        self.session.snapshot["roundPreparing"] = True
+        self.coordinator._native_action("toggle-round")
+        self.session.dispatch.assert_called_with("end_round")
+
+    def test_new_physical_edge_prevents_late_focus_return_or_bind_receipt_from_resetting_intent(self):
+        self.native.foreground_window.return_value = 456
+        self.coordinator._watch_foreground()
+        self.input.resetMapInput.assert_called_with(False)
+        self.native.foreground_window.return_value = 123
+        self.map_edge(1, True)
+        count = self.input.resetMapInput.call_count
+        self.coordinator._watch_foreground()
+        self.session.snapshot["lastReceipt"] = dict(action="bind_capture", success=True)
+        self.coordinator._session_changed()
+        self.assertEqual(self.input.resetMapInput.call_count, count)
+
+    def test_mouse_x_uses_urgent_close_but_rejected_native_context_cannot_close(self):
+        context = self.pointer_fixture()
+        self.coordinator._reference = dict(key="correct-static-map")
+        event = dict(phase="down", gestureId=1, sequence=1, hwnd=123, x=950, y=50,
+            createdAt=10., context=context)
+        self.input.gamePointerEvent.emit(event)
+        self.runtime.invalidate.assert_called_with("map-closed")
+        self.assertEqual(self.session.dispatchWithPayload.call_args.args[0], "close_map")
+        self.assertEqual(self.coordinator.referenceData["key"], "correct-static-map")
+        self.session.dispatchWithPayload.reset_mock()
+        self.runtime.observe_game_floor_click.return_value = dict(success=False, reason="capture-context-changed")
+        self.input.gamePointerEvent.emit(dict(event, sequence=2, gestureId=2))
+        self.session.dispatchWithPayload.assert_not_called()
+
+    def test_drag_fails_closed_without_runtime_api_and_uses_approved_calibrated_path_when_available(self):
+        context = self.pointer_fixture()
+        down = dict(phase="down", gestureId=1, sequence=1, hwnd=123, x=300, y=300,
+            createdAt=10., context=context)
+        self.input.gamePointerEvent.emit(down)
+        self.assertIsNone(self.coordinator._pointer_drag)
+        self.runtime.invalidate.assert_not_called()
+        self.runtime.observe_game_drag = Mock(return_value=dict(success=True))
+        self.settings.persistedValues["dragBoundaryNormalized"] = [.2, .2, .8, .8]
+        self.coordinator._present_runtime_state = Mock()
+        self.input.gamePointerEvent.emit(dict(down, sequence=2, gestureId=2))
+        self.input.gamePointerEvent.emit(dict(down, phase="move", sequence=3, gestureId=2, x=700,
+            motionSamples=[dict(x=x, y=300) for x in (350, 900, 750, 700)]))
+        self.input.gamePointerEvent.emit(dict(down, phase="up", sequence=4, gestureId=2, x=720))
+        calls = [c.args[0] for c in self.runtime.observe_game_drag.call_args_list]
+        self.assertEqual([c["phase"] for c in calls], ["down", "move", "up"])
+        self.assertEqual(calls[1]["totalDelta"], [0., 0.])
+        self.assertEqual(calls[2]["totalDelta"], [20., 0.])
+        self.assertNotIn("matrix", calls[2])
+        self.session.cancelPending.assert_called_once_with("mouse-drag-motion")
+        self.assertIsNone(self.coordinator._pointer_drag)
+
+    def test_drag_context_change_cancels_and_tracking_is_paused_until_end(self):
+        context = self.pointer_fixture()
+        self.runtime.observe_game_drag = Mock(return_value=dict(success=True))
+        self.input.gamePointerEvent.emit(dict(phase="down", gestureId=1, sequence=1,
+            hwnd=123, x=300, y=300, context=context, createdAt=10.))
+        self.coordinator._track_map()
+        self.session.dispatch.assert_not_called()
+        self.runtime.game_floor_click_context.return_value = dict(context, epoch=2)
+        self.input.gamePointerEvent.emit(dict(phase="move", gestureId=1, sequence=2,
+            hwnd=123, x=330, y=300, context=context, createdAt=11.))
+        self.assertEqual(self.runtime.observe_game_drag.call_args.args[0]["phase"], "cancel")
+        self.assertIsNone(self.coordinator._pointer_drag)
 
     def test_material_ack_and_missing_route_notice_require_current_loaded_token(self):
         payload = dict(token="material-1", mode="nightmare", mapId="map-1", floor="F1",

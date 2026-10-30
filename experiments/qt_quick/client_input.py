@@ -19,6 +19,7 @@ if str(APP) not in sys.path:
 from hotkey_bindings import Chord, modifiers_match, parse_chord, primary_state, validate_unique
 from hotkey_keys import _primary_hotkey_to_vk
 from session_state_machine import global_key_is_allowed
+from client_map_input import OrderedMapInput
 
 
 ACTION_ORDER = ("toggle-panel", "candidate-prev", "candidate-next", "confirm-round",
@@ -85,6 +86,8 @@ class NativeShortcutBackend(QObject):
     changed = Signal()
     actionTriggered = Signal(str)
     gamePointerPressed = Signal(object)
+    gamePointerEvent = Signal(object)
+    mapInputRequested = Signal(object)
 
     def __init__(self, native=None, parent=None, *, source=None):
         super().__init__(parent)
@@ -96,6 +99,8 @@ class NativeShortcutBackend(QObject):
         self._management_enabled = False
         self._event_down = set()
         self._pointer_error = ""
+        self._ordered_map_input = False
+        self._map_input = OrderedMapInput()
         if source is not None:
             source.eventReceived.connect(self._key_event, Qt.QueuedConnection)
             source.started.connect(self._hook_started, Qt.QueuedConnection)
@@ -104,6 +109,9 @@ class NativeShortcutBackend(QObject):
             if pointer_signal is not None:
                 pointer_signal.connect(self._pointer_event, Qt.QueuedConnection)
                 source.pointerFailed.connect(self._pointer_failed, Qt.QueuedConnection)
+            available = getattr(source, "pointerAvailable", None)
+            if available is not None:
+                available.connect(self._drain_pointer_events, Qt.QueuedConnection)
         self._hwnd = 0
         self._bindings = {}
         self._down = {}
@@ -141,7 +149,32 @@ class NativeShortcutBackend(QObject):
             update(0)
         self._status, self._message = status, message
         self._prime, self._game_focus = True, None
+        self._map_input.reset()
         self.changed.emit()
+
+    @Slot(bool)
+    def setOrderedMapInputEnabled(self, enabled):
+        """Transfer map/Escape/pointer ownership after connecting new consumers."""
+        self._ordered_map_input = bool(enabled)
+        self._map_input.reset()
+
+    @Slot(bool)
+    def resetMapInput(self, openIntent=False):
+        """A real close/end/focus loss resets intent, never its event sequence."""
+        self._map_input.reset(openIntent)
+        cancel = getattr(self._source, "cancel_pointer", None)
+        if callable(cancel):
+            cancel("map-input-reset")
+
+    def _dispatch_action(self, action, event=None):
+        if self._ordered_map_input and action in {"map", "escape"}:
+            event = event or {}
+            data = (self._map_input.press(created_at=event.get("createdAt")) if action == "map"
+                    else self._map_input.close(source="escape", created_at=event.get("createdAt")))
+            data.update(hwnd=self._hwnd, keyGeneration=event.get("generation"))
+            self.mapInputRequested.emit(data)
+        else:
+            self.actionTriggered.emit(action)
 
     @Slot("qlonglong")
     def bindWindow(self, hwnd):
@@ -249,7 +282,17 @@ class NativeShortcutBackend(QObject):
         self._pointer_error = str(error)
         self.changed.emit()  # A mouse-observer failure must not disable keys.
 
+    def _drain_pointer_events(self):
+        take = getattr(self._source, "take_pointer_events", None)
+        if callable(take):
+            for event in take():
+                self._pointer_event(event)
+
     def _pointer_event(self, event):
+        if self._ordered_map_input and event.get("phase") == "cancel":
+            if not self._closed:
+                self.gamePointerEvent.emit(event)
+            return
         if (self._closed or not self._enabled or self._text or self._editing or self._source is None
                 or event.get("pointerGeneration") != getattr(self._source, "pointer_generation", None)
                 or event.get("hwnd") != self._hwnd or event.get("foreground") != self._hwnd):
@@ -259,7 +302,10 @@ class NativeShortcutBackend(QObject):
                 return
         except OSError:
             return
-        self.gamePointerPressed.emit(event)
+        if self._ordered_map_input:
+            self.gamePointerEvent.emit(event)
+        elif event.get("phase", "down") == "down":
+            self.gamePointerPressed.emit(event)
 
     def _hook_failed(self, error):
         self._management_enabled = False
@@ -299,7 +345,7 @@ class NativeShortcutBackend(QObject):
                 # The existing app-local QML shortcut owns F9 when this app is
                 # foreground. The hook owns it globally when hidden/background.
                 if action == "toggle-panel" and assistant:allowed=False
-                if allowed:self.actionTriggered.emit(action)
+                if allowed:self._dispatch_action(action, event)
         except Exception as error:
             self._hook_failed(str(error))
 
@@ -360,7 +406,7 @@ class NativeShortcutBackend(QObject):
             for action in emitted:
                 if not self._enabled or self._closed:
                     break
-                self.actionTriggered.emit(action)
+                self._dispatch_action(action)
             return emitted
         except Exception as error:
             self._stop("failed", f"Native shortcut polling failed: {error}")
