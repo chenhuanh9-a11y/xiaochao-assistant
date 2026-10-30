@@ -13,6 +13,22 @@ from PySide6.QtCore import QObject, Signal
 
 MODIFIER_KEYS = frozenset((0x10,0x11,0x12,0x5b,0x5c,0xa0,0xa1,0xa2,0xa3,0xa4,0xa5))
 
+
+def initial_pressed_keys(keys, read):
+    # Generic modifier state is the OR of its two physical sides. Seeding both
+    # representations would leave one stuck after a single physical key-up.
+    return {vk for vk in keys if vk not in (0x10, 0x11, 0x12) and read(vk) & 0x8000}
+
+
+def physical_key(vk, scan, flags):
+    if vk == 0x10:
+        return 0xa1 if scan == 0x36 else 0xa0
+    if vk == 0x11:
+        return 0xa3 if flags & 1 else 0xa2
+    if vk == 0x12:
+        return 0xa5 if flags & 1 else 0xa4
+    return vk
+
 class PassThroughKeyboardSource(QObject):
     eventReceived = Signal(object)
     started = Signal(object)
@@ -62,6 +78,20 @@ class PassThroughKeyboardSource(QObject):
             self._thread.join(.5)
         return not self.running
 
+    def _transition_event(self, vk, scan, flags, down, foreground):
+        with self._lock:
+            if vk not in self._keys:
+                return None
+            key = physical_key(vk, scan, flags)
+            if down:
+                self._held.add(key)
+            else:
+                self._held.discard(key)
+            # Preserve the existing vk protocol; only held-state storage uses
+            # one physical representation for either callback form.
+            return dict(vk=vk, down=down, held=frozenset(self._held),
+                        foreground=foreground, generation=self.generation)
+
     def _handle_message(self, message):
         """Win32 thread-message extension seam; production has no commands."""
 
@@ -95,22 +125,18 @@ class PassThroughKeyboardSource(QObject):
             # One initial level snapshot suppresses keys held before subscribing;
             # key delivery thereafter is event-driven, never async-key polling.
             with self._lock:
-                self._held={vk for vk in self._keys if user.GetAsyncKeyState(vk)&0x8000}
+                self._held=initial_pressed_keys(self._keys, user.GetAsyncKeyState)
             @callback_type
             def callback(code, message_id, pointer):
                 try:
                     if code >= 0 and not self._stop.is_set() and message_id in (0x100,0x101,0x104,0x105):
                         key=ctypes.cast(pointer,ctypes.POINTER(Key)).contents
                         down=message_id in (0x100,0x104)
-                        with self._lock:
-                            watched=key.vk in self._keys
-                            if watched:
-                                if down:self._held.add(key.vk)
-                                else:self._held.discard(key.vk)
-                                event=dict(vk=int(key.vk),down=down,held=frozenset(self._held),
-                                    foreground=int(user.GetForegroundWindow() or 0),generation=self.generation)
-                        if watched:
-                            self.eventReceived.emit(event)
+                        if key.vk in self._keys:
+                            event=self._transition_event(int(key.vk), int(key.scan), int(key.flags), down,
+                                int(user.GetForegroundWindow() or 0))
+                            if event is not None:
+                                self.eventReceived.emit(event)
                 except Exception:
                     # Input remains pass-through even if a consumer is gone.
                     pass
