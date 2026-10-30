@@ -690,20 +690,34 @@ class ClientCoordinator(QObject):
         self.navigate("recognition")
 
     def _notification_geometry(self):
+        from client_screen_geometry import project_client_geometry, ScreenGeometryError
         screen = None
-        query = getattr(self._native_windows, "monitor_device", None)
-        if self._bound and callable(query):
+        diagnostics = dict(placement="primary-fallback", gameMonitorMatched=False,
+                           reason="no-bound-game")
+        query = getattr(self._native_windows, "monitor_info", None)
+        if self._bound:
             try:
-                name = query(int(self._bound))
-                screen = next((item for item in QGuiApplication.screens()
-                               if item.name().casefold() == name.casefold()), None)
-            except (OSError, ValueError):
-                pass
-        screen = screen or QGuiApplication.primaryScreen()
+                if not callable(query):
+                    raise ValueError("native-monitor-info-unavailable")
+                info = query(int(self._bound))
+                left, top, right, bottom = info["monitorRect"]
+                projection = project_client_geometry((left, top), (right-left, bottom-top),
+                    info["device"], info["monitorRect"], QGuiApplication.screens())
+                screen = projection.screen
+                diagnostics = dict(placement="game-monitor", gameMonitorMatched=True,
+                                   projection=projection.diagnostics)
+            except ScreenGeometryError as error:
+                diagnostics.update(reason="screen-projection-unverified", detail=str(error),
+                                   projection=error.diagnostics)
+            except (OSError, ValueError, TypeError, KeyError, AttributeError, RuntimeError) as error:
+                diagnostics.update(reason="native-monitor-unavailable", detail=str(error)[:512])
         if screen is None:
-            return dict(x=0, y=0, width=800, height=600)
+            screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            diagnostics.update(placement="default-fallback", fallbackReason="no-primary-screen")
+            return dict(x=0, y=0, width=800, height=600, diagnostics=diagnostics)
         area = screen.availableGeometry()
-        return dict(x=area.x(), y=area.y(), width=area.width(), height=area.height())
+        return dict(x=area.x(), y=area.y(), width=area.width(), height=area.height(), diagnostics=diagnostics)
 
     notificationGeometry = Property("QVariantMap", _notification_geometry, notify=changed)
 

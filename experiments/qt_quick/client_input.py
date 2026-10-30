@@ -64,7 +64,8 @@ class NativeWindowAPI:
             raise ctypes.WinError(ctypes.get_last_error())
         return int(process.value)
 
-    def monitor_device(self, hwnd):
+    def monitor_info(self, hwnd):
+        """Physical monitor bounds/device; no pixels or DPI-awareness mutation."""
         class Rect(ctypes.Structure):
             _fields_=[(name,ctypes.c_long) for name in ("left","top","right","bottom")]
         class Monitor(ctypes.Structure):
@@ -79,7 +80,11 @@ class NativeWindowAPI:
         handle=user.MonitorFromWindow(hwnd,2)
         if not handle or not user.GetMonitorInfoW(handle,ctypes.byref(info)):
             raise ctypes.WinError(ctypes.get_last_error())
-        return info.device
+        rectangle = lambda value: (int(value.left), int(value.top), int(value.right), int(value.bottom))
+        return dict(device=str(info.device), monitorRect=rectangle(info.monitor), workRect=rectangle(info.work))
+
+    def monitor_device(self, hwnd):
+        return self.monitor_info(hwnd)["device"]
 
 
 class NativeShortcutBackend(QObject):
