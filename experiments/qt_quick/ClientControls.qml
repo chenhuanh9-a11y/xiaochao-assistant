@@ -51,7 +51,8 @@ Window {
     }
     function statusText() {
         if (snapshot.contextPending) return "正在切换模式或路线"
-        if (snapshot.roundPreparing || (session.busy && snapshot.pendingAction === "start_round")) return "正在准备本局"
+        if (session.busy && snapshot.pendingAction === "start_round") return "正在准备本局"
+        if (snapshot.roundPreparing) return "已准备 · 打开游戏地图后开始"
         if (snapshot.identityPhase === "MANUAL_MEMBER_CONFIRMED") return "本局已手动选择 · " + (snapshot.displayAuthorized ? outputStatus() : "位置待核对")
         if (provisionalGroup()) return snapshot.displayAuthorized ? "相似组已锁定 · " + outputStatus() : "相似组已锁定 · 位置待核对"
         if (snapshot.identityPhase === "MEMBER_VERIFIED") return snapshot.displayAuthorized ? "地图已核对 · " + outputStatus() : "地图已核对 · 位置待核对"
@@ -331,7 +332,7 @@ Window {
                 }
             }
             KeyHint { text: panel.shortcut("toggle-round") || panel.shortcut(roundControls.active ? "end-round" : "start-round") }
-            KeyHint { visible: !panel.available(roundControls.action); text: session.busy ? "正在处理当前操作" : !clientCoordinator.boundWindow ? "先在主页连接游戏窗口" : panel.snapshot.resourceLocked ? "等待资源操作完成" : "等待游戏与资源准备就绪" }
+            KeyHint { visible: !panel.available(roundControls.action); text: session.busy ? "正在处理当前操作" : panel.snapshot.resourceLocked ? "等待资源操作完成" : "等待地图资源准备就绪" }
         }
     }
 }

@@ -141,6 +141,23 @@ class ControlStabilityTests(unittest.TestCase):
         self.assertIn('暂用 nightmare-09',self.item('controlMapFloorText').property('text'))
         self.assertFalse(self.warnings,'\n'.join(self.warnings))
 
+    def test_prepared_round_is_waiting_and_cancelable_in_existing_controls_context(self):
+        self.settings.data['gameControlLayout']['enabled']=['mode','round']
+        self.settings.changed.emit()
+        self.session.data.update(roundActive=False,roundPreparing=True,identityPhase='UNLOCKED',
+            groupLocked=False,mapId='',provisionalMapId='',observedFloor='',pendingAction='')
+        self.session.data['commands']['toggle_round']={'available':True}
+        self.session.changed.emit();APP.processEvents()
+        self.assertIn('已准备',self.item('controlStatusText').property('text'))
+        self.assertNotIn('正在准备',self.item('controlStatusText').property('text'))
+        self.assertEqual(self.item('controlRoundAction').property('text'),'取消准备')
+        self.assertTrue(self.item('controlRoundAction').isEnabled())
+        self.session._busy=True;self.session.data['pendingAction']='start_round'
+        self.session.changed.emit();APP.processEvents()
+        self.assertIn('正在准备',self.item('controlStatusText').property('text'))
+        self.assertFalse(self.item('controlRoundAction').isEnabled())
+        self.assertFalse(self.warnings,'\n'.join(self.warnings))
+
     def test_idle_passive_refresh_is_stable_but_preparation_resource_and_pending_context_block_mode(self):
         self.session.data.update(roundActive=False,mapOpen=False,identityPhase='UNLOCKED',groupLocked=False,provisionalMapId='',observedFloor='')
         self.session.changed.emit();APP.processEvents()

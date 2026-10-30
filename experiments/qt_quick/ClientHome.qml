@@ -32,8 +32,9 @@ Item {
     function canRun(action) {
         return session.snapshot.commands && session.snapshot.commands[action]
             && session.snapshot.commands[action].available && !session.busy && !resourceService.busy
-            && (action !== "start_round" || clientCoordinator.boundWindow !== "")
     }
+    readonly property string roundAction: session.snapshot.roundActive ? "end_round"
+        : session.snapshot.roundPreparing ? "toggle_round" : "start_round"
     ScrollView {
         id: scroll
         anchors.fill: parent; clip: true; contentWidth: availableWidth
@@ -83,7 +84,7 @@ Item {
                             objectName: "homeRoundStats"
                             Layout.fillWidth: true; spacing: 10
                             Repeater {
-                                model: [{label: "状态", value: session.snapshot.controlStatusText || (session.snapshot.roundActive ? "本局进行中" : "等待开始")},
+                                model: [{label: "状态", value: session.snapshot.controlStatusText || (session.snapshot.roundActive ? "本局进行中" : session.snapshot.roundPreparing ? "已准备" : "等待开始")},
                                         {label: "地图", value: session.snapshot.mapName || session.snapshot.mapId || "尚未确认"},
                                         {label: "楼层", value: session.snapshot.observedFloor ? (session.snapshot.observedFloor === "B1" ? "B1" : "F" + session.snapshot.observedFloor) : "尚未确认"}]
                                 delegate: Rectangle {
@@ -101,7 +102,7 @@ Item {
                         Label { text: clientCoordinator.runtimeStatus; color: "#567096"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                         RowLayout {
                             Layout.fillWidth: true
-                            AppButton { objectName: "clientStartRound"; text: session.snapshot.roundActive ? "结束本局" : "开始本局"; primary: true; enabled: page.canRun(session.snapshot.roundActive ? "end_round" : "start_round"); onClicked: session.snapshot.roundActive ? session.dispatch("end_round") : clientCoordinator.startRound() }
+                            AppButton { objectName: "clientStartRound"; text: session.snapshot.roundActionText || (session.snapshot.roundActive ? "结束本局" : session.snapshot.roundPreparing ? "取消准备" : "开始本局"); primary: true; enabled: page.canRun(page.roundAction); onClicked: page.roundAction === "start_round" ? clientCoordinator.startRound() : session.dispatch(page.roundAction) }
                             AppButton { text: "游戏连接设置"; onClicked: connectionDialog.open() }
                             Item { Layout.fillWidth: true }
                         }

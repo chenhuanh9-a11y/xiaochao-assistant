@@ -447,7 +447,7 @@ class ClientCoordinator(QObject):
             return "本次核对未完成，可查看诊断信息后重试"
         if state.get("roundActive"):
             return "当前地图位置已核对" if state.get("displayAuthorized") else "本局已开始，切回游戏并打开地图"
-        return "游戏窗口已连接，可以开始本局" if self._bound else "先连接游戏窗口，再开始本局"
+        return "已准备本局，等待游戏窗口并打开地图" if state.get("roundPreparing") else "游戏窗口已连接，可以开始本局" if self._bound else "可先准备本局，启动游戏并打开地图后开始"
 
     runtimeStatus = Property(str, _status_text, notify=changed)
 
