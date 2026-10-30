@@ -3,6 +3,8 @@ import time
 import numpy as np
 import cv2
 from round_layer_group import RoundLayerGroup, FLOORS as ROUND_LAYER_FLOORS
+from alignment_core_v2 import RoundPose
+DEFAULT_ROUTE_PROFILE_ID = "wang-qingxin"
 from map_observation import map_reuse_evidence
 from nightmare_candidate import visible_map_component, live_stair_screen_candidates
 from alignment_observation import rendered_profile_residual_is_verified
@@ -415,3 +417,170 @@ def rebase_group_display_tracking(self, group, map_id, effective):
                 group.render_profile_verified_floors.clear()
                 group.route_profile_id = effective
                 group.displayed_overlay = None
+
+
+def seed_group_pose(self, map_id: str) -> bool:
+        """Import only the existing shared root/relation facts into V2."""
+        core = getattr(self, "alignment_core_v2", None)
+        group = self._active_round_layer_group(map_id)
+        if core is None or group is None:
+            return False
+        existing = core.pose_by_map.get(str(map_id))
+        if existing is not None:
+            for floor, relation in getattr(group, "relations", {}).items():
+                if str(floor) not in existing.floor_relations:
+                    existing.floor_relations[str(floor)] = np.asarray(
+                        relation, dtype=np.float64,
+                    ).copy()
+            return True
+        root = np.asarray(getattr(group, "root_pose", None), dtype=np.float64)
+        if root.shape != (3, 3) or not np.isfinite(root).all():
+            return False
+        return core.set_initial_pose(RoundPose(
+            str(map_id),
+            str(getattr(group, "route_profile_id", DEFAULT_ROUTE_PROFILE_ID)),
+            str(getattr(group, "anchor_floor", "1")),
+            root,
+            getattr(group, "relations", {}),
+            generation=int(getattr(group, "generation", 0)),
+            reliable=True,
+            source="round-layer-group-v2-seed",
+        ))
+
+
+def show_shared_projection(self, map_id, floor, previous_floor, event, *, display_environment_signature):
+        """Present a normal-floor root projection; never promote target geometry."""
+        group = self._active_round_layer_group(map_id)
+        frame = getattr(self, 'current_frame', None)
+        current = getattr(self, 'current_alignment_candidate', None) or {}
+        # A same-floor probe advances the observation, not the projection's
+        # trusted source. Only an actual floor transition supplies a new source.
+        transition_source = previous_floor if str(previous_floor) != str(floor) else None
+        source_floor = str(transition_source or current.get('projectionSourceFloor')
+                           or getattr(group, 'tracking_floor', None)
+                           or getattr(group, 'anchor_floor', ''))
+        adapters = getattr(self, 'author_coordinate_adapters', None)
+        seed = (adapters.canonical_cross_floor_search_seed(
+            map_id, source_floor, floor, np.eye(3),
+            authorization_profile_id=group.route_profile_id)
+            if group is not None and adapters is not None else None)
+        # Relation evidence, rather than game mode, defines whether a source
+        # may only seed a same-open provisional display. Both modes otherwise
+        # use the same root projection, observation and worker transaction.
+        search_only_projection = bool((seed or {}).get('requiresCurrentFrameDisplayValidation'))
+        if (group is None or {source_floor, str(floor)} != {'1', '2'}
+            or group.tracking_floor == 'B1'
+            or (source_floor not in group.canonical_geometry_verified_floors
+                if search_only_projection else not (group.canonical_geometry_verified_floors & {'1', '2'}))
+            or (search_only_projection and transition_source is None
+                and not (current.get('floor') == str(floor)
+                         and current.get('cycleId') == self.active_map_cycle_id
+                         and current.get('mapId') == str(map_id)
+                         and current.get('provisional') is True))
+            or (search_only_projection and (
+                group.cycle_id != self.active_map_cycle_id
+                or (current.get('floor') != source_floor
+                    or current.get('cycleId') != self.active_map_cycle_id
+                    or current.get('mapId') != str(map_id)
+                    or current.get('accepted') is not True)
+                   and not (current.get('floor') == str(floor)
+                            and current.get('cycleId') == self.active_map_cycle_id
+                            and current.get('mapId') == str(map_id)
+                            and current.get('provisional') is True)))
+            or group.route_profile_id != getattr(self, 'route_profile_id', None)
+            or str(getattr(getattr(self, 'gate', None), 'confirmed_id', '')) != str(map_id)
+            or not isinstance(frame, np.ndarray)
+            or group.pose_client_size != (frame.shape[1], frame.shape[0])
+            or tuple(group.pose_display_signature) != display_environment_signature(getattr(self, 'display_environment', None))
+            or bool(getattr(self, 'round_group_display_reprojection_active', False))
+            or bool(getattr(self, 'mouse_drag_prediction_pending', False))
+            or any(event.get(key) for key in ('explicitDiscontinuity', 'contradiction', 'teleport', 'positionJump'))):
+            return False
+        if ('alignmentV2WorkerFit' in event
+            and not (search_only_projection and (event.get('alignmentV2WorkerFit') or {}).get(
+                'sharedProjectionGeometryInsufficient') is True)
+            and not self._alignment_v2_current_frame_equivalent(event)):
+            return False
+        failure = getattr(self, '_alignment_v2_worker_failure_state', None) or {}
+        if (failure.get('blocksSharedProjection')
+            and self._alignment_v2_failed_input_unchanged(map_id, floor, frame)):
+            # The same pixels already rejected this root projection. A new
+            # capture must not repaint it while the retry policy suppresses
+            # its solver. Changed pixels still permit ordinary recovery.
+            return False
+        # The reviewed canonical adapter owns normal-floor relations. B1's
+        # search-only portal relation cannot authorize this display.
+        if not isinstance(seed, dict) or seed.get('targetToSourceMatrix') is None:
+            return False
+        if str(getattr(self, 'current_floor', '')) != str(floor):
+            return False
+        if search_only_projection and seed.get('boundedCrossFloorOnly') is not True:
+            return False
+        core = self.alignment_core_v2
+        if (search_only_projection and current.get('provisional') is True
+            and current.get('floor') == str(floor)
+            and current.get('cycleId') == self.active_map_cycle_id
+            and self._spatial_route_surface_is_visible()):
+            authorization = core.authorize_shared_projection()
+            if authorization is not None:
+                current['displayAuthorizationId'] = authorization.authorization_id
+                self._log_core_chain_event('alignment-v2-shared-projection-preserved',
+                    mapId=map_id, floor=floor, sourceFloor=source_floor,
+                    currentFrameVerified=False, persistentPoseUpdated=False)
+                return True
+        view = self._round_group_floor_view(map_id, floor)
+        if not isinstance(view, dict) or view.get('overlay') is None:
+            return False
+        authorization = core.authorize_shared_projection()
+        if authorization is None:
+            return False
+        overlay = view['overlay']
+        if not self._alignment_v2_show_overlay(overlay, tuple(self.current_bounds[:2]),
+                authorization_id=authorization.authorization_id):
+            core.revoke_display(reason='shared-projection-compositor-rejected')
+            return False
+        self.drag_transform = np.asarray(view['matrixSourceToClient'], dtype=np.float64)
+        self.drag_route_source = self._aligned_author_route_image(group.route_profile_id, map_id, floor)
+        self.drag_route_profile_id = group.route_profile_id
+        self.drag_current_overlay = overlay.copy()
+        self.drag_overlay_base = overlay.copy()
+        self.drag_overlay_offset = np.zeros(2, dtype=np.float64)
+        self.current_alignment_candidate = {
+            'cycleId': self.active_map_cycle_id, 'mapId': map_id, 'floor': floor,
+            'accepted': False, 'provisional': True, 'projectionSourceFloor': source_floor,
+            'fit': {'projectionOnly': True},
+            'source': 'shared-root-provisional', 'displayAuthorizationId': authorization.authorization_id,
+            'matrixSourceToClient': self.drag_transform.tolist()}
+        # This compatibility flag enables pointer following. Geometry truth
+        # remains in the explicit candidate/floor authorization and core pose.
+        self.alignment_succeeded = True
+        self._v2_compositor_active = True
+        try:
+            self._mark_overlay_display_verified('shared-root-provisional',
+                pose_verified=False, current_floor_authorized=True)
+        finally:
+            self._v2_compositor_active = False
+        self.show_sheet()
+        self._log_core_chain_event('alignment-v2-shared-projection-displayed',
+            mapId=map_id, floor=floor, sourceFloor=source_floor,
+            currentFrameVerified=False, persistentPoseUpdated=False,
+            relationEvidenceLevel=seed.get('evidenceLevel'),
+            displayAuthorizationId=authorization.authorization_id)
+        return True
+
+
+def translated_source_matrix(
+    matrix_source_to_client: list[list[float]] | np.ndarray | None,
+    dx: float,
+    dy: float,
+) -> np.ndarray | None:
+    """Apply a client-space pan to an original-sheet transform."""
+    if matrix_source_to_client is None:
+        return None
+    matrix = np.asarray(matrix_source_to_client, dtype=np.float64)
+    if matrix.shape != (3, 3) or not np.isfinite(matrix).all():
+        return None
+    translated = matrix.copy()
+    translated[0, 2] += float(dx)
+    translated[1, 2] += float(dy)
+    return translated

@@ -687,6 +687,8 @@ class LiveRuntime:
                 floor=self._floor, frame_generation=self._frame_generation))
         if not common:
             return False
+        if pending.get("projection"):
+            return bool(self._transient_cycle_current() and pending["group"] is self._group)
         plan = pending.get("manualChoice")
         if plan is not None:
             from client_group_member_choice import group_member_choice_is_current
@@ -722,6 +724,30 @@ class LiveRuntime:
                 return None
             return {key: value if key == "pixels" else copy.deepcopy(value) for key, value in row.items()}
 
+    def _acknowledge_projection(self, token, accepted, reason):
+        with self._lock:
+            pending=self._pending_sibling
+            if pending is None or not pending.get("projection") or pending["render"]["token"]!=token:
+                return dict(success=False,reason="projection-token-expired",token=token)
+            committed=bool(accepted is True and self._pending_sibling_current(pending))
+            if committed:
+                self._core.revoke_display(reason="shared-root-projection-material-accepted")
+                self._core=pending["core"]
+                self._render,self._reference_sheet=pending["render"],pending["reference"]
+                self._render["requiresMaterialAck"]=False
+                self._render_capture_context=self._reference_capture_context=pending["captureContext"]
+                self._transient_cycle["current"]=pending["candidate"]
+                self._pending_sibling=None
+                self._remember_provisional_reference()
+            else:
+                self._discard_sibling()
+            retained=bool(not committed and self._render is not None and self._display_current(self._render))
+        outcome="shared-root-provisional-material-accepted" if committed else "shared-root-projection-material-rejected"
+        self._notify("sibling-committed" if committed else "sibling-rolled-back",token=token,reason=outcome,
+                     materialReason=str(reason)[:256],sourceRetained=retained)
+        if committed:self._notify("render-ready",token=token,reason=outcome,unchanged=False)
+        return dict(success=committed,reason=outcome,token=token,sourceRetained=retained,projectionOnly=True)
+
     def acknowledge_sibling(self, token, accepted, reason=""):
         """Commit original sibling identity only after Image.Ready acceptance.
 
@@ -731,6 +757,8 @@ class LiveRuntime:
         """
         with self._lock:
             pending = self._pending_sibling
+            if pending is not None and pending.get("projection") and pending["render"]["token"]==token:
+                return self._acknowledge_projection(token,accepted,reason)
             if pending is None or pending["render"]["token"] != token:
                 return dict(success=False, reason="sibling-token-expired", token=token)
             valid = self._pending_sibling_current(pending)
@@ -914,14 +942,19 @@ class LiveRuntime:
                 if not np.isfinite(matrix).all():
                     return dict(success=False, reason="drag-matrix-invalid")
                 offset = np.asarray(drag["baseOffset"]) + total
-                self._transient_cycle = dict(scope=(self._mode,self._round,self._cycle,self._map_id),
-                    offset=offset.tolist(), gestureId=gesture, pointerSequence=sequence)
-                self._render = dict(self._render, token=uuid4().hex, matrix=matrix.tolist(),
-                    transient=True, transientOffset=offset.tolist(), persistentPoseUpdated=False)
+                if not self._transient_cycle_current():
+                    self._transient_cycle = dict(scope=(self._mode,self._round,self._cycle,self._map_id),
+                        current=dict(mapId=self._map_id, floor=self._floor, cycleId=self._cycle,
+                            accepted=not self._render.get("projectionOnly",False),
+                            provisional=bool(self._render.get("projectionOnly",False)),
+                            projectionSourceFloor=self._render.get("projectionSourceFloor")))
+                self._transient_cycle.update(offset=offset.tolist(),gestureId=gesture,pointerSequence=sequence)
+                self._render = dict(self._render, matrix=matrix.tolist(),
+                    transformRevision=int(self._render.get("transformRevision",0))+1, transient=True, transientOffset=offset.tolist(), persistentPoseUpdated=False)
             moved = drag["moved"]
             if phase == "up":
                 if self._transient_cycle_current():
-                    self._transient_cycle.update(gestureId=gesture,pointerSequence=sequence)
+                    self._transient_cycle.update(gestureId=gesture,pointerSequence=sequence,probePending=bool(moved))
                 self._transient_drag = None
             return dict(success=True, reason="drag-transient-updated" if moved else "drag-click-ignored",
                 renderToken=self._render["token"], transient=moved, persistentPoseUpdated=False,
@@ -962,11 +995,20 @@ class LiveRuntime:
                 return self._receipt("probe_map_after_drag", payload, success=False, reason="map-not-observed")
             self._probe_misses = 0
             self._observe_floor_policy(floor_read, obsolete=obsolete)
-            if self._floor_read_conflicts(floor_read, target):
+            if self._transient_cycle is not None:
+                self._transient_cycle["probePending"]=False
+            projected_floor=str(self._floor)
+            transition=bool(projected_floor!=str(target) and not self._floor_read_conflicts(floor_read,projected_floor))
+        if transition:
+            projected=self._try_transient_floor_projection(payload,cancelled,engine,captured,frame,projected_floor,
+                capture_generation,advance_frame=True,floor_read=floor_read)
+            if projected is not None:return projected
+        with self._lock:
+            if self._floor_read_conflicts(floor_read,target):
                 self._revoke_render("post-drag-floor-conflict")
                 self._reference_sheet = self._reference_capture_context = None
-                return self._receipt("probe_map_after_drag", payload, success=False, reason="current-frame-floor-conflict",
-                    observedFloor=self._observed_floor, targetFloor=target, fitAttempted=False)
+                return self._receipt("probe_map_after_drag",payload,success=False,reason="current-frame-floor-conflict",
+                    observedFloor=self._observed_floor,targetFloor=target,fitAttempted=False)
         return self._receipt("probe_map_after_drag", payload, success=True, reason="post-drag-observation-current",
                              poseCommits=0, persistentPoseUpdated=False, fitAttempted=False)
 
@@ -1541,7 +1583,7 @@ class LiveRuntime:
                             engine, mid, fl, pref, variant_id=variant)["layer"],
                         _shared_display_bridge=lambda pref, mid, fl: prepare_route_reprojection(
                             engine, mid, fl, pref, variant_id=variant)["layer"]["matrixDisplayToReference"])
-                    rebase_group_display_tracking(owner, staged_group, map_id, profile)
+                    rebase_group_display_tracking(owner, staged_group, map_id, layer.get("effectiveProfileId", "shared-structure"))
                 pixels = np.ascontiguousarray(layer["pixels"][:, :, [2, 1, 0, 3]])
                 pixels.setflags(write=False)
             except Exception as error:
@@ -1955,7 +1997,8 @@ class LiveRuntime:
         owns_capture = False
         try:
             with self._lock:
-                if self._capture_pending or self._group_choice_inflight is not None or self._transient_drag is not None:
+                if (self._capture_pending or self._group_choice_inflight is not None or self._transient_drag is not None
+                        or self._pending_sibling is not None and self._pending_sibling.get("projection")):
                     return self._receipt("refresh_map", payload, success=True, reason="refresh-coalesced", coalesced=True)
                 if not self._active or not self._map_open:
                     return self._receipt("refresh_map", payload, success=False, reason="map-refresh-not-active")
@@ -2228,6 +2271,112 @@ class LiveRuntime:
         return self._solve_observation(action, payload, cancelled, engine, group, epoch, captured, frame,
             floor, digest, capture_generation, frame_generation, frame_id, cycle, map_id, entry_candidate)
 
+    @staticmethod
+    def _seed_group_core(core, group):
+        from types import SimpleNamespace
+        from round_layer_group_commit import seed_group_pose
+        owner=SimpleNamespace(alignment_core_v2=core,_active_round_layer_group=lambda mid:group
+                              if group is not None and group.map_id==mid else None)
+        return seed_group_pose(owner,group.map_id) if group is not None else False
+
+    def _try_transient_floor_projection(self, payload, cancelled, engine, captured, frame, floor,
+                                        capture_generation, *, advance_frame=False, floor_read=None):
+        """Original reviewed F1/F2 provisional projection, staged for Image.Ready."""
+        import numpy as np
+        from types import SimpleNamespace
+        from round_layer_group_commit import show_shared_projection, translated_source_matrix
+        from client_route_reprojection import prepare_route_reprojection
+        with self._lock:
+            if (not self._transient_cycle_current() or self._transient_drag is not None
+                    or self._pending_sibling is not None or str(floor)!=str(self._floor)
+                    or self._current_frame_floor_conflicts(floor) and not advance_frame):
+                return None
+            cycle=self._transient_cycle
+            source=dict(cycle.get("current") or {})
+            previous=source.get("floor")
+            if str(previous)==str(floor) and not source.get("provisional"):
+                return None
+            group=self._group
+            if group is None or group.map_id!=self._map_id:
+                return None
+            epoch=self._epoch
+            if advance_frame:
+                if self._floor_read_conflicts(floor_read or {},floor):return None
+                immutable=np.ascontiguousarray(frame).copy();immutable.setflags(write=False);frame=immutable
+                digest=hashlib.sha256(frame.tobytes()).hexdigest()
+                self._frame_generation+=1
+                self._frame_id=f"{self._round}:{self._frame_generation}:{digest[:16]}"
+                self._last_observation=dict(captured=captured,frame=frame,floor=floor,digest=digest,
+                    capture_generation=capture_generation,frame_id=self._frame_id,observed_floor=self._observed_floor,
+                    cycle_id=self._cycle,generation=self._frame_generation,floor_read=copy.deepcopy(floor_read or {}))
+            scope=self._sibling_scope()
+            map_id,profile,variant=self._map_id,self._profile,self._settings.get("zhan10CoffinVariantId","variant-01")
+            generation,frame_id=self._frame_generation,self._frame_id
+            context=captured.context
+            signature=self._steady_signature(captured)
+            stage=self._copy_pose_core(self._core)
+            self._seed_group_core(stage,group)
+            stage.begin_observation(cycle_id=self._cycle,map_id=map_id,floor=floor,
+                                    frame_generation=generation,frame_signature=(frame_id,),reason="transient-floor-projection")
+            offset=tuple(cycle["offset"])
+        base=group.canonical_pose_for_floor(str(floor))
+        if base is None:return None
+        prepared=prepare_route_reprojection(engine,map_id,floor,profile,base,variant_id=variant)
+        layer=prepared["layer"]
+        rgba=np.ascontiguousarray(layer["pixels"][:,:,[2,1,0,3]]);rgba.setflags(write=False)
+        display_matrix=translated_source_matrix(prepared["matrixSourceToClient"],*offset)
+        projected=translated_source_matrix(base,*offset)
+        view=dict(overlay=rgba,matrixSourceToClient=display_matrix.tolist(),
+                  canonicalMatrixSourceToClient=projected.tolist())
+        owner=SimpleNamespace(pack=engine.pack,engine=engine,alignment_core_v2=stage,
+            current_frame=frame,current_floor=str(floor),active_map_cycle_id=self._cycle,
+            current_frame_generation=generation,current_bounds=context.client_screen_bounds,
+            current_alignment_candidate=source,author_coordinate_adapters=engine.qt_adapters,
+            route_profile_id=layer.get("effectiveProfileId","shared-structure"),display_environment=None,
+            gate=SimpleNamespace(confirmed_id=map_id),mouse_drag_prediction_pending=bool(cycle.get("probePending")),
+            _active_round_layer_group=lambda mid:group if mid==group.map_id else None,
+            _alignment_v2_current_frame_equivalent=lambda event:False,
+            _alignment_v2_failed_input_unchanged=lambda *args:False,
+            _spatial_route_surface_is_visible=lambda:False,
+            _round_group_floor_view=lambda *args:view,
+            _alignment_v2_show_overlay=lambda *args,**kwargs:True,
+            _aligned_author_route_image=lambda *args:layer["pixels"],
+            _mark_overlay_display_verified=lambda *args,**kwargs:None,
+            _log_core_chain_event=lambda *args,**kwargs:None,show_sheet=lambda:None)
+        if not show_shared_projection(owner,map_id,str(floor),previous,{},display_environment_signature=lambda _:signature):
+            return None
+        with self._lock:
+            if (self._cancelled(cancelled) or epoch!=self._epoch or scope!=self._sibling_scope()
+                    or group is not self._group or cycle is not self._transient_cycle
+                    or not self._capture_is_current(context,capture_generation)):
+                return None
+            metadata=dict(mode=self._mode,profileId=profile,preferredProfileId=profile,
+                effectiveProfileId=layer.get("effectiveProfileId","shared-structure"),mapId=map_id,floor=str(floor),
+                roundId=self._round,variantId=layer.get("variantId"),displayGeneration=getattr(self,"_display_generation",0),
+                resourceIdentity=layer["resourceIdentity"],engineIdentity=id(engine),captureGeneration=capture_generation,
+                displayKind=layer["displayKind"],displayLabel=layer["displayLabel"],routeProfileId=layer["routeProfileId"],
+                authorStatus=layer.get("authorStatus","none"),fallback=layer.get("fallback",False),
+                fallbackReason=layer.get("fallbackReason",""),evidenceKind=self._evidence_kind,**self._identity_fields())
+            reference=dict(metadata,token=uuid4().hex,pixels=rgba,referenceAuthorized=self._evidence_kind=="live-client-capture")
+            token=uuid4().hex
+            row=dict(metadata,token=token,epoch=self._epoch,authorizationId=stage.display_authorization.authorization_id,
+                cycleId=self._cycle,frameId=frame_id,generation=generation,pixels=rgba,
+                matrix=display_matrix.tolist(),canonicalMatrix=np.asarray(base).tolist(),projectedCanonicalMatrix=projected.tolist(),
+                routeWidth=rgba.shape[1],routeHeight=rgba.shape[0],clientWidth=context.full_client_size[0],clientHeight=context.full_client_size[1],
+                originX=context.client_screen_bounds[0],originY=context.client_screen_bounds[1],
+                liveAuthorization=self._evidence_kind=="live-client-capture",projectionOnly=True,poseProvisional=True,
+                currentFrameVerified=False,transient=True,transientOffset=list(offset),
+                projectionSourceFloor=owner.current_alignment_candidate.get("projectionSourceFloor"),
+                poseReason="shared-root-provisional",poseStrategy="shared-root-projection",requiresMaterialAck=True,
+                sourceToken=self._render["token"] if self._render else "",sourceMapId=map_id)
+            self._pending_sibling=dict(scope=scope,sourceCore=self._core,sourceToken=row["sourceToken"],sourceMapId=map_id,
+                core=stage,group=group,identity=None,render=row,reference=reference,captureContext=context,
+                projection=True,candidate=owner.current_alignment_candidate)
+        self._set_pose_phase("pending","shared-root-provisional-geometry-pending",map_id,str(floor),frame_id,generation)
+        self._notify("sibling-material-pending",token=token,reason="shared-root-projection-awaiting-material")
+        return self._receipt("probe_map_after_drag",payload,success=True,reason="sibling-material-pending",
+            pendingSiblingToken=token,renderToken=row["sourceToken"],projectionOnly=True,posePending=True)
+
     def _stage_round_group_commit(self, engine, group, map_id, floor, canonical, render_matrix,
                                   display, frame, captured, cycle, frame_generation, residual):
         """Reuse the original single-root relation and validation-pool writer."""
@@ -2250,7 +2399,7 @@ class LiveRuntime:
         signature = (tuple(context.full_client_size), tuple(context.client_screen_bounds), context.dpi)
         accepted = commit_alignment_v2_round_pose(owner, map_id, floor, display["pixels"], frame,
             context.client_screen_bounds, render_matrix=render_matrix, canonical_matrix=canonical,
-            route_profile_id="shared-structure", source="initial-structure-v2", residual=residual,
+            route_profile_id=display.get("effectiveProfileId", "shared-structure"), source="initial-structure-v2", residual=residual,
             normalize_route_profile_id=lambda profile: profile,
             display_environment_signature=lambda _: signature, map_anchor_focus_point=map_anchor_focus_point)
         return owner.round_layer_group if accepted else None
@@ -2303,7 +2452,7 @@ class LiveRuntime:
                 displayKind=display["displayKind"], displayLabel=display["displayLabel"],
                 routeProfileId=display["routeProfileId"], authorStatus=display.get("authorStatus", "none"), fallback=display.get("fallback", False),
                 fallbackReason=display.get("fallbackReason", ""), **self._identity_fields())
-            if (identity_stage is None and self._gate is not None
+            if (identity_stage is None and not self._transient_cycle_current() and self._gate is not None
                     and self._gate.confirmed_id == map_id and self._map_id == map_id):
                 # A selected static sheet is not aligned pixels or a durable
                 # identity promotion. Keep its provisional metadata explicit.
@@ -2313,8 +2462,14 @@ class LiveRuntime:
                 self.invalidate("capture-context-changed")
                 return self._receipt(action, payload, success=False, reason="capture-context-changed", stale=True)
         with self._lock:
-            if self._transient_cycle_current():
-                return self._receipt(action, payload, success=False, reason="transient-display-owns-open-cycle", fitAttempted=False)
+            transient=self._transient_cycle_current()
+        if transient:
+            projected=self._try_transient_floor_projection(payload,cancelled,engine,captured,frame,floor,capture_generation)
+            if projected is not None:return projected
+            with self._lock:
+                if not obsolete() and frame_id==self._frame_id:
+                    self._reference_sheet,self._reference_capture_context=reference_sheet,captured.context
+            return self._receipt(action,payload,success=False,reason="transient-projection-unavailable",fitAttempted=False)
         self._set_pose_phase("pending", "current-frame-fit", map_id, floor, frame_id, frame_generation)
         with self._lock:
             steady_context = self._steady_context()
@@ -2360,6 +2515,7 @@ class LiveRuntime:
                 self.invalidate("capture-context-changed")
                 return self._receipt(action, payload, success=False, reason="capture-context-changed", stale=True)
             core = self._copy_pose_core(self._core) if identity_stage is not None else self._core
+            self._seed_group_core(core,group)
             core.begin_observation(cycle_id=cycle, map_id=map_id, floor=floor,
                                          frame_generation=frame_generation, frame_signature=(digest,))
             # This is the full shared-structure sensor result, as in the Tk
@@ -2378,6 +2534,7 @@ class LiveRuntime:
             token = core.authorize(decision)
             if token is None or not core.commit(token):
                 return self._receipt(action, payload, success=False, reason="core-commit-rejected")
+            self._seed_group_core(core,target_group)
             rgba = np.ascontiguousarray(display["pixels"][:, :, [2, 1, 0, 3]])
             rgba.setflags(write=False)
             live = self._evidence_kind == "live-client-capture"
