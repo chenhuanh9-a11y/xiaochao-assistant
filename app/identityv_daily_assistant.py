@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys as _audit_sys
 
 _UI_AUDIT = None
-if '--ui-audit' in _audit_sys.argv:
+if any(flag in _audit_sys.argv for flag in ('--ui-audit', '--ui-interaction-audit', '--ui-import-audit')):
     import ui_packaged_audit as _packaged_audit
     try:
         _UI_AUDIT = _packaged_audit.prepare(_audit_sys.argv)
@@ -5650,8 +5650,11 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 return SHARED_STRUCTURE_PROFILE_ID
             if optional is not None and profile is not None:
                 path = catalog.route_path(display_profile,map_id,str(floor),include_inactive=True) if map_id else None
-                available = Path(path).is_file() if path is not None else (not map_id and any(
-                    Path(layer).is_file() for variants in profile.maps.values() for variant in variants for layer in variant.layers.values()))
+                assets = getattr(catalog, 'profile_has_assets', None)
+                available = Path(path).is_file() if path is not None else (not map_id and (
+                    assets(display_profile) if callable(assets) else any(
+                        Path(layer).is_file() for variants in profile.maps.values()
+                        for variant in variants for layer in variant.layers.values())))
                 return display_profile if profile.runtime_enabled and available else SHARED_STRUCTURE_PROFILE_ID
             return display_profile if profile is not None and profile.runtime_enabled else SHARED_STRUCTURE_PROFILE_ID
         source_store=getattr(pack,'source_candidates',None)
@@ -5874,7 +5877,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 'legacyCleanLayerCount':legacy_clean_count} if native is not None else {}),
             extraBindings=[list(key) for key in extras])
 
-    def _install_map_mode(self, mode, *, asset_root=None, memory_root=None, resource_root=None, before_publish=None):
+    def _install_map_mode(self, mode, *, asset_root=None, memory_root=None, resource_root=None, before_publish=None, prepare_only=False):
         """Construct one isolated resource context; lifecycle invalidation is caller-owned."""
         if mode not in {'nightmare','difficult'}:raise ValueError('Unknown game mode')
         shared_resources = None
@@ -6097,8 +6100,27 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             catalog,adapters = optional_author_displays.catalog,optional_author_displays.adapters
             if mode == 'nightmare' or native_identity:
                 base._structure_profile_provider = lambda: SHARED_STRUCTURE_PROFILE_ID
+        context = dict(mode=mode, pack=pack, catalog=catalog, adapters=adapters,
+            resources=resources, memory=memory, engine=engine, native_context=native_context,
+            difficult_identity_resources=difficult_identity_resources,
+            optional_author_displays=optional_author_displays, shared_resources=shared_resources,
+            shared_version_context=shared_version_context, ui=ui)
+        if prepare_only:
+            # File/import workers may construct data, never publish UI/runtime state.
+            return context
         if before_publish is not None:
             before_publish()
+        self._publish_map_mode_context(context)
+
+    def _publish_map_mode_context(self, context):
+        mode, pack = context['mode'], context['pack']
+        catalog, adapters, resources = (context[key] for key in ('catalog', 'adapters', 'resources'))
+        memory, engine, ui = (context[key] for key in ('memory', 'engine', 'ui'))
+        native_context = context['native_context']
+        difficult_identity_resources = context['difficult_identity_resources']
+        optional_author_displays = context['optional_author_displays']
+        shared_resources = context['shared_resources']
+        shared_version_context = context['shared_version_context']
         self._invalidate_native_resource_context('resource-context-published')
         self._invalidate_base_display()
         self._native_resource_rejected = False
@@ -6187,8 +6209,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                     if profile in optional.profiles or (profile == builtin
                         and getattr(self,'author_route_catalog',None) is not None
                         and profile in self.author_route_catalog.profiles
-                        and any(Path(path).is_file() for variants in self.author_route_catalog.profiles[profile].maps.values()
-                                for variant in variants for path in variant.layers.values()))]
+                        and self.author_route_catalog.profile_has_assets(profile))]
                 return tuple((profile,ROUTE_PROFILE_LABELS[profile]) for profile in installed) or ((SHARED_STRUCTURE_PROFILE_ID,ROUTE_PROFILE_LABELS[SHARED_STRUCTURE_PROFILE_ID]),)
             profile = self._shared_display_profile_id() if getattr(self, 'author_route_catalog', None) is not None else SHARED_STRUCTURE_PROFILE_ID
             return ((profile, ROUTE_PROFILE_LABELS[profile]),)
@@ -7165,17 +7186,19 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         self.ui_dpi = dpi
         self.ui_scale = new_scale
 
-    def _clamp_ui_window(self, window: tk.Misc, surface_id: str) -> None:
+    def _clamp_ui_window(self, window: tk.Misc, surface_id: str, *, sync_layout: bool = True) -> None:
         if not tk_widget_exists(window):
             return
-        context = self._ui_context_for_window(window)
+        context = (self._ui_context_for_window(window) if sync_layout
+                   else self._ui_context_for_window_snapshot(window))
         if surface_id in {"onboarding", "drag-boundary-prompt"}:
             set_rounded_scale(window, context.scale)
+        current = self._rect_for_window(window, sync_layout=False)
         rect = clamp_rect_to_work_area(
-            self._rect_for_window(window), context.monitor.work_area_px,
+            current, context.monitor.work_area_px,
             margin_px=dip_to_px(8, context.dpi),
         )
-        geometry_changed = self._rect_for_window(window) != rect
+        geometry_changed = current != rect
         if geometry_changed:
             window.geometry(format_tk_geometry(rect))
         if geometry_changed and surface_id != "drag-calibration-overlay":
@@ -7203,7 +7226,10 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         topology_changed = topology != getattr(self, "ui_topology_signature", ())
         self.ui_monitors = monitors
         self.ui_topology_signature = topology
-        context = self._ui_context_for_window(self.root)
+        # A periodic environment observation is not a layout transaction.
+        # Let Tk service pending layout between input/timer events instead of
+        # draining all pages' idle work from the 500ms monitor poll.
+        context = self._ui_context_for_window_snapshot(self.root)
         dpi_changed = int(context.dpi) != int(getattr(self, "ui_dpi", 96))
         self._apply_ui_dpi(context.dpi)
         if topology_changed or dpi_changed:
@@ -7212,9 +7238,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             if tk_widget_is_viewable(calibration):
                 set_rounded_scale(calibration, self._ui_context_for_window(calibration).scale)
         else:
-            self._clamp_ui_window(self.root, "orb")
+            self._clamp_ui_window(self.root, "orb", sync_layout=False)
         if self.assistant_shell_mode != "collapsed":
-            self._place_assistant_shell()
+            self._place_assistant_shell(sync_layout=topology_changed or dpi_changed)
         for attr, surface_id in (
             ("onboarding_window", "onboarding"),
             ("drag_boundary_prompt_window", "drag-boundary-prompt"),
@@ -7223,7 +7249,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         ):
             window = getattr(self, attr, None)
             if tk_widget_is_viewable(window):
-                self._clamp_ui_window(window, surface_id)
+                self._clamp_ui_window(window, surface_id, sync_layout=False)
         if self.ui_environment_poll_after_id is not None:
             try:
                 self.root.after_cancel(self.ui_environment_poll_after_id)
@@ -7425,6 +7451,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 "_collapse_assistant_shell": lambda: self.set_control_visible(False, source="mouse"),
             },
         )
+        self.display_opacity_updates = self.game_control_view._opacity_updates
         self.quick_surface = self.game_control_view
         for name in (
             "quick_start_round_button", "quick_end_round_button", "quick_main_button",
@@ -8677,9 +8704,13 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         )
 
     @staticmethod
-    def _set_noactivate(window: tk.Misc, enabled: bool) -> None:
+    def _set_noactivate(window: tk.Misc, enabled: bool, *, sync_layout: bool = False) -> None:
         try:
-            window.update_idletasks()
+            # Extended styles need the HWND, not the final child geometry.
+            # Startup already realizes this window before scheduling this call;
+            # avoid recursively draining every page's pending layout here.
+            if sync_layout:
+                window.update_idletasks()
             hwnd = ctypes.windll.user32.GetAncestor(window.winfo_id(), 2)
             exstyle = ctypes.windll.user32.GetWindowLongW(hwnd, -20)
             exstyle |= 0x00000080  # WS_EX_TOOLWINDOW
@@ -8709,9 +8740,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         except Exception:
             return 0
 
-    def _apply_window_rounding(self, window: tk.Misc, radius: int = 20) -> None:
+    def _apply_window_rounding(self, window: tk.Misc, radius: int = 20, *, sync_layout: bool = True) -> None:
         """Prefer Win11 DWM corners and fall back to a rounded window region."""
-        hwnd = self._native_window_handle(window)
+        hwnd = self._native_window_handle(window, sync_layout=sync_layout)
         if not hwnd:
             return
         try:
@@ -8745,22 +8776,25 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         except Exception:
             pass
 
-    def _shell_dimensions(self, mode: str, *, scale: float | None = None) -> tuple[int, int]:
+    def _shell_dimensions(self, mode: str, *, scale: float | None = None, sync_layout: bool = True) -> tuple[int, int]:
         if mode == "settings":
             return self.SETTINGS_SHELL_SIZE
         if mode == "recognition":
             return self.RECOGNITION_SHELL_SIZE
-        return self._quick_panel_dimensions(scale=scale)
+        return (self._quick_panel_dimensions(scale=scale) if sync_layout else
+                self._quick_panel_dimensions(scale=scale, sync_layout=False))
 
-    def _shell_target_geometry(self, mode: str) -> tuple[int, int, int, int]:
-        self.root.update_idletasks()
-        context = self._ui_context_for_window(self.assistant_shell if mode == 'quick'
+    def _shell_target_geometry(self, mode: str, *, sync_layout: bool = True) -> tuple[int, int, int, int]:
+        if mode != 'quick' and sync_layout:
+            self.root.update_idletasks()
+        context = self._ui_context_for_window_snapshot(self.assistant_shell if mode == 'quick'
             and getattr(self, '_control_position', None) is not None else self.root)
         layout = adjacent_surface_layout(
             mode,
-            self._shell_dimensions(mode, scale=context.scale),
+            (self._shell_dimensions(mode, scale=context.scale) if sync_layout else
+             self._shell_dimensions(mode, scale=context.scale, sync_layout=False)),
             context,
-            self._rect_for_window(self.root),
+            self._rect_for_window(self.root, sync_layout=False),
             preferred_edge=(self.compact_dock or {}).get("edge"),
             gap_dip=4,
         )
@@ -8803,6 +8837,12 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             else:
                 surface.pack_forget()
         for name, button in getattr(self, "shell_nav_buttons", {}).items():
+            if mode == "quick":
+                # The normal panel hides this legacy navigation chrome. Its
+                # unused selected style must not invalidate the whole Tk tree;
+                # visible diagnostic/settings navigation is styled below when
+                # that surface is actually opened.
+                continue
             selected = name == mode
             button.configure(
                 bg=floating_theme.NAV_SELECTED if selected else floating_theme.TINT,
@@ -9349,12 +9389,15 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         # shown. One geometry/alpha commit avoids the black intermediate frame
         # produced by the former multi-step shell animation.
         shell.geometry(f"{target_w}x{target_h}+{target_x}+{target_y}")
-        set_rounded_scale(shell, self._ui_context_for_window(shell).scale)
+        set_rounded_scale(shell, self._ui_context_for_window_snapshot(shell).scale)
         shell.attributes("-alpha", max(0.88, self.interface_opacity))
-        self._apply_window_rounding(shell)
+        # Settle the final geometry/style once. Subsequent native-handle reads
+        # must not drain every other page's pending idle work again.
+        shell.update_idletasks()
+        self._apply_window_rounding(shell, sync_layout=False)
         if mode == 'quick' and getattr(self, 'control_collapsed', False):
             self._apply_control_circle()
-        self._set_noactivate(shell, mode != "settings")
+        self._set_noactivate(shell, mode != "settings", sync_layout=False)
         if not was_viewable:
             shell.deiconify()
         shell.lift()
@@ -9422,11 +9465,12 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         finish()
         self._play_ui_sound("collapse")
 
-    def _place_assistant_shell(self, mode: str | None = None) -> None:
+    def _place_assistant_shell(self, mode: str | None = None, *, sync_layout: bool = True) -> None:
         selected = mode or str(getattr(self, "assistant_shell_mode", "quick"))
         if selected == "collapsed":
             return
-        width, height, x, y = self._shell_target_geometry(selected)
+        width, height, x, y = (self._shell_target_geometry(selected) if sync_layout else
+                              self._shell_target_geometry(selected, sync_layout=False))
         target_geometry = (width, height, x, y)
         try:
             current_geometry = (
@@ -9441,7 +9485,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         if geometry_changed:
             self.assistant_shell_frame.place_configure(width=width, height=height)
             self.assistant_shell.geometry(f"{width}x{height}+{x}+{y}")
-        set_rounded_scale(self.assistant_shell, self._ui_context_for_window(self.assistant_shell).scale)
+        context = (self._ui_context_for_window(self.assistant_shell) if sync_layout or geometry_changed
+                   else self._ui_context_for_window_snapshot(self.assistant_shell))
+        set_rounded_scale(self.assistant_shell, context.scale)
         if tk_widget_is_viewable(self.assistant_shell):
             if geometry_changed:
                 self._apply_window_rounding(self.assistant_shell)
@@ -9926,19 +9972,20 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             return
         self._place_assistant_shell("quick")
 
-    def _quick_panel_dimensions(self, *, scale: float | None = None) -> tuple[int, int]:
+    def _quick_panel_dimensions(self, *, scale: float | None = None, sync_layout: bool = True) -> tuple[int, int]:
         view = getattr(self, "game_control_view", None)
         if tk_widget_exists(view):
-            scale = self._ui_context_for_window(self.assistant_shell).scale if scale is None else scale
-            if getattr(self, "_game_control_display_scale", None) != (view, scale):
+            context = self._ui_context_for_window_snapshot(self.assistant_shell)
+            scale = context.scale if scale is None else scale
+            scale_changed = getattr(self, "_game_control_display_scale", None) != (view, scale)
+            if scale_changed:
                 view.set_display_scale(scale)
                 self._game_control_display_scale = (view, scale)
-            context = self._ui_context_for_window(self.assistant_shell)
             view.set_available_height(max(1, context.monitor.work_area_px.height - round(32 * scale)))
-            view.update_idletasks()
             if getattr(self, 'control_collapsed', False) and not getattr(self, 'sheet_move_mode', False):
                 return (64, 64)
-            width, height = view.expanded_size()
+            width, height = (view.expanded_size() if sync_layout or scale_changed else
+                             view.expanded_size(sync_layout=False))
             return (max(240, math.ceil(width / scale)), max(100, math.ceil(height / scale)))
         return (
             self.QUICK_PANEL_ROUND_SIZE
@@ -10320,7 +10367,8 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         idle = self._author_import_idle()
         busy = state['stage'] in {'checking', 'installing', 'cancelling'}
         state.update(busy=busy, helperAvailable=available, liveAvailable=live,
-            restartRequired=not live,
+            restartRequired=(bool(state.get('restartRequired', True))
+                if state['stage'] == 'complete' else not live),
             canImport=bool(state['stage'] == 'ready' and checked is not None
                 and (idle if live else available) and not self.closed
                 and self._map_package_helper_request is None))
@@ -10366,6 +10414,10 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                     cancelled=request['cancelled'].is_set)
                 from star_map_import import verified_installed_package
                 event['installation'] = verified_installed_package(request['installRoot'], request['packageId'])
+                try:
+                    event['preparedContext'] = self._install_map_mode(request['mode'], prepare_only=True)
+                except Exception as error:
+                    event['refreshError'] = f'{type(error).__name__}: {error}'
             except Exception as error:
                 event['error'] = f'{type(error).__name__}: {error}'
             self.events.put(event)
@@ -10382,10 +10434,15 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         if browser is not None:
             browser.invalidate_resource_context()
 
-    def _refresh_imported_author_resources(self) -> None:
+    def _refresh_imported_author_resources(self, prepared_context=None) -> None:
         # Construct before publishing. No recognition, pose, custom route or
         # preference is rewritten: this operation is allowed only outside a round.
-        self._install_map_mode(self.game_mode)
+        if prepared_context is None:
+            self._install_map_mode(self.game_mode)
+        else:
+            if prepared_context['mode'] != self.game_mode:
+                raise ValueError('prepared resource mode changed')
+            self._publish_map_mode_context(prepared_context)
         self._managed_author_packages_state = None
         self._invalidate_author_browser()
         self.route_profile_var.set(self._route_profile_label(self._shown_route_profile()))
@@ -10424,7 +10481,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 message='已取消导入，新增文件已回滚。' if cancelled else f"导入失败：{event.get('error') or '没有结果'}")
             return
         try:
-            self._refresh_imported_author_resources()
+            if event.get('refreshError'):
+                raise RuntimeError(event['refreshError'])
+            self._refresh_imported_author_resources(event.get('preparedContext'))
         except Exception as error:
             self._map_package_import_state.update(stage='error', ready=None,
                 message=f'作者文件已安装，但列表刷新失败，请重新检查并导入以重试刷新：{type(error).__name__}')
@@ -10442,6 +10501,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         if browser is not None:
             browser.sync_online_packages()
         self._map_package_import_state.update(stage='complete', ready=None,
+            restartRequired=bool(result.get('restartRequired', True)),
             message=f"作者资源已导入并刷新（新增 {result['authorFilesAdded']} 个文件），无需重启。请在“地图资源”中查看图包并点击“使用”。")
 
         if getattr(getattr(getattr(self, 'desktop_main_ui', None), 'map_browser', None), '_managed_open', False):
@@ -10523,6 +10583,11 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                     event['result'] = remove_author_package_live(request['context'][0], package_id,
                         application_idle=True, expected_receipt_sha256=receipt,
                         expected_plan_sha256=plan_sha256, cancelled=request['cancelled'].is_set)
+                    if event['result'].get('status') == 'author-removed-live':
+                        try:
+                            event['preparedContext'] = self._install_map_mode(self.game_mode, prepare_only=True)
+                        except Exception as error:
+                            event['refreshError'] = f'{type(error).__name__}: {error}'
             except Exception as error:
                 event['error'] = f'{type(error).__name__}: {error}'
             event['cancelled'] = request['cancelled'].is_set()
@@ -10558,7 +10623,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             self._online_installed_packages = getattr(self, '_online_installed_packages', {})
             self._online_installed_packages[request['packageId']] = dict(status='not-installed')
             try:
-                self._refresh_imported_author_resources()
+                if event.get('refreshError'):
+                    raise RuntimeError(event['refreshError'])
+                self._refresh_imported_author_resources(event.get('preparedContext'))
             except Exception as error:
                 state.update(stage='error', ready=None, message=f'文件已移出并保留备份，但界面刷新失败：{type(error).__name__}')
                 self._managed_author_packages_state = state
@@ -10572,7 +10639,8 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         else:
             state.update(stage='ready', packages=event.get('packages', []), ready=None, message='本地资源状态已更新。')
 
-    def inspect_map_package(self, path: str | Path, *, _expected_archive: dict | None = None) -> dict:
+    def inspect_map_package(self, path: str | Path, *, _expected_archive: dict | None = None,
+                            auto_import: bool = False) -> dict:
         if getattr(self, '_map_package_live_request', None) is not None:
             return dict(success=False, reason='import-busy', message='作者资源正在导入，请稍后操作。')
         self._ensure_map_package_import_state()
@@ -10597,7 +10665,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         self._map_package_import_cancel = cancelled
         self._map_package_import_result = None
         self._map_package_import_state = dict(stage='checking', message='正在检查地图包，暂不修改已安装资源。',
-            packagePath=str(archive), ready=None)
+            packagePath=str(archive), ready=None, autoImport=bool(auto_import))
         request = dict(generation=self._map_package_import_generation, archive=archive,
             installRoot=Path(ROOT).resolve(), resourceRoot=Path(RESOURCE_ROOT).resolve(), cancelled=cancelled,
             expectedArchive=copy.deepcopy(_expected_archive))
@@ -10635,6 +10703,13 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                     helper = self._map_package_helper_path()
                     available = helper.is_file() and helper.resolve() != Path(sys.executable).resolve()
                     event.update(result=result, fileIdentity=after, helperAvailable=available)
+                    # Re-selecting an exact installed ZIP is a no-op only after
+                    # the worker verifies both actual files and its receipt.
+                    from star_map_import import supports_live_author_import, verified_installed_package
+                    if (supports_live_author_import(result) and result.get('fileCount', 0) > 0
+                            and result.get('alreadyPresent') == result.get('fileCount')):
+                        event['installation'] = verified_installed_package(
+                            request['installRoot'], result['packageId'], result['archiveSha256'])
             except Exception as error:
                 event['error'] = f'{type(error).__name__}: {error}'
             event['cancelled'] = request['cancelled'].is_set()
@@ -10667,9 +10742,36 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 self._map_package_import_state.update(stage='ready',
                     ready=dict(title=title, summary=summary),
                     message='地图包检查通过。退出并导入后，请手动重新启动星图。')
+                installed = event.get('installation') or {}
+                if (self._map_package_import_state.get('autoImport')
+                        and installed.get('status') == 'installed'
+                        and installed.get('archiveSha256') == result.get('archiveSha256')):
+                    self._map_package_import_result = None
+                    self._map_package_import_state.update(stage='complete', ready=None,
+                        restartRequired=False, alreadyInstalled=True,
+                        message='此图包已安装，无需重复导入。')
+                    self._online_installed_packages = getattr(self, '_online_installed_packages', {})
+                    self._online_installed_packages[result['packageId']] = installed
         self._finish_online_map_inspection(event)
         if self._map_package_import_pending is not None and not self.closed:
             self._start_map_package_inspection()
+        if self._map_package_import_state.get('autoImport'):
+            self.continue_auto_map_package_import()
+
+    def continue_auto_map_package_import(self) -> None:
+        state = self._map_package_import_state
+        if self.closed or not state.get('autoImport') or state.get('stage') != 'ready':
+            return
+        snapshot = self.map_package_import_snapshot()
+        # Core replacement/exit-helper packages still require explicit consent.
+        # An active round simply keeps this inspected author request waiting.
+        if not snapshot.get('liveAvailable') or not snapshot.get('canImport'):
+            return
+        result = self.confirm_map_package_import()
+        if isinstance(result, dict) and result.get('success') is False:
+            if result.get('reason') not in {'import-busy', 'live-import-requires-idle'}:
+                self._map_package_import_state.update(stage='error', ready=None,
+                    message=str(result.get('message') or '导入未启动，请重新选择图包。'))
 
     def cancel_map_package_import(self, reason: str = 'user-cancelled') -> dict:
         self._ensure_map_package_import_state()
@@ -30435,6 +30537,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         if self.opacity_var.get() != percent:
             self.opacity_var.set(percent)
         self.opacity_label.configure(text=f"小抄不透明度 {percent}%")
+        updates = getattr(self, 'display_opacity_updates', None)
+        if updates is not None:
+            updates.external('overlay', percent)
         self._sync_game_control_view()
         if (self.sheet_opacity != previous
             and getattr(self, '_sheet_opacity_after_id', None) is None
@@ -30471,6 +30576,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         self.reference_opacity = percent / 100.0
         if self.reference_opacity_var.get() != percent:
             self.reference_opacity_var.set(percent)
+        updates = getattr(self, 'display_opacity_updates', None)
+        if updates is not None:
+            updates.external('reference', percent)
         self._sync_game_control_view()
         if (self.reference_opacity != previous
                 and getattr(self, '_reference_opacity_after_id', None) is None
@@ -40445,6 +40553,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             return
         if self.closed:
             return
+        updates = getattr(self, 'display_opacity_updates', None)
+        if updates is not None:
+            updates.commit()
         if hasattr(self, '_online_map_package_state'):
             self.cancel_online_map_package('assistant-closed')
         if hasattr(self, '_map_package_import_state'):

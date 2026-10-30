@@ -271,9 +271,10 @@ class GameControlView(tk.Frame):
         self._available_height = physical_px
         self._queue_geometry()
 
-    def expanded_size(self):
-        self.update_idletasks()
-        self._measure_geometry()
+    def expanded_size(self, *, sync_layout=True):
+        if sync_layout:
+            self.update_idletasks()
+            self._measure_geometry()
         return round(self.EXPANDED_WIDTH_DIP*self._scale), self.preferred_height_px
 
     def _queue_geometry(self):
@@ -570,8 +571,13 @@ class GameControlView(tk.Frame):
             if isinstance(widget, RoundedButton) and 'font' in attributes:
                 base = attributes['font']
                 pixels = (base[0], -max(1, round(base[1]*self._scale)), *base[2:])
-                widget._skins.style.configure(str(widget.cget('style')),
-                                               font=pixels)
+                style = str(widget.cget('style'))
+                current = widget._skins.style.configure(style, 'font')
+                # ttk broadcasts style changes across the interpreter, even
+                # when the font is identical. A control status refresh must
+                # not invalidate every page's layout on each rendered button.
+                if tuple(map(str, self.tk.splitlist(current))) != tuple(map(str, pixels)):
+                    widget._skins.style.configure(style, font=pixels)
 
     def set_display_scale(self, scale):
         self._scale = max(.5, float(scale))
@@ -598,7 +604,10 @@ class GameControlView(tk.Frame):
             if self._geometry_pending is not None:
                 self.after_cancel(self._geometry_pending)
                 self._geometry_pending = None
-            self._opacity_updates.close()
+            try:
+                self._opacity_updates.commit()
+            finally:
+                self._opacity_updates.close()
             self._brand_images.close()
             self._ball_photo = None
             # Destroy is delivered on the owning Tk thread. Child widgets can
