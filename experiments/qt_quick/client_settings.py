@@ -537,7 +537,7 @@ class SettingsService(QObject):
         payload = {**deepcopy(self._raw), **edits}
         expected = self._disk_bytes
         self._busy = True
-        self._message = "正在保存隔离设置…"
+        self._message = "正在保存设置…"
         job = self._job = _Write(lambda: self._write(payload, expected))
         # A QObject receiver ensures completion and property signals are on the
         # UI thread; snapshot is held until the one active write completes.
@@ -561,7 +561,7 @@ class SettingsService(QObject):
             self._invalid = {k: v for k, v in self._invalid.items() if k not in saved_keys}
             self._repairs.difference_update(saved_keys)
             self._write_error = ""
-            self._message = "已保存；仍有新的未保存更改" if self.dirty else "已保存隔离设置"
+            self._message = "已保存；仍有新的未保存更改" if self.dirty else "已保存设置"
         self.changed.emit()
         if not error:
             self.saved.emit()

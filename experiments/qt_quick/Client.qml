@@ -134,7 +134,7 @@ ApplicationWindow {
         }
         }
     }
-    FileDialog { id: replayPicker; title: "选择隔离回放"; nameFilters: ["星图回放 (replay.json)"]; onAccepted: clientCoordinator.loadReplay(selectedFile.toString()) }
+    FileDialog { id: replayPicker; title: "选择识别回放"; nameFilters: ["星图回放 (replay.json)"]; onAccepted: clientCoordinator.loadReplay(selectedFile.toString()) }
     Popup {
         anchors.centerIn: parent; width: 310; height: 110; modal: true; closePolicy: Popup.NoAutoClose
         visible: clientCoordinator.closing && !clientCoordinator.closeReady
