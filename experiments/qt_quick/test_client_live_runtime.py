@@ -11,7 +11,7 @@ import sys
 import threading
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 from client_live_runtime import LiveRuntime, _AlignmentHost
@@ -62,6 +62,7 @@ def fixture_engine(mode="nightmare"):
 
 class LiveRuntimeContracts(unittest.TestCase):
     def setUp(self):
+        self.original_fit = _AlignmentHost.fit
         self.capture = FixtureCapture()
         self.engine = fixture_engine()
         self.runtime = LiveRuntime(engine_factories={"nightmare": lambda: self.engine,
@@ -382,6 +383,50 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertTrue(self.runtime.snapshot()["alignedVisible"])
         self.assertEqual(events[0]["event"], "aligned-visibility-changed")
         self.assertEqual(events[-1]["event"], "aligned-visibility-changed")
+
+    def test_main_entry_reuses_original_current_frame_verifier_before_fast_solver(self):
+        observation = {"current-frame": True}
+        verification = dict(success=True, reason="entry-current-frame-validation",
+                            matrixSourceToClient=self.fit["matrixSourceToClient"])
+        verify = Mock(return_value=verification)
+        self.engine.entry_identity = SimpleNamespace(geometry=Mock(return_value=observation), verify=verify)
+        host = _AlignmentHost(self.engine)
+        candidate = dict(mapId="fixture-map", entryKind="main", hypothesis=dict(scale=.5, translation=[40,60]))
+        with patch.object(_AlignmentHost, "_canonical_geometry_current_frame_residual",
+                          return_value=(self.fit["selectedRouteCurrentFrameResidual"], None)), \
+             patch("fast_structure_alignment.try_alignment", side_effect=AssertionError("entry seed must run first")):
+            # Invoke the real method; setUp's worker-fit substitute is only for
+            # lifecycle tests and must not hide this entry adapter contract.
+            result = self.original_fit(host, self.capture.frame, "fixture-map", "1", lambda: False, candidate)
+        self.assertTrue(result["success"])
+        self.assertEqual(result["reason"], "difficult-entry-current-frame-candidate")
+        self.assertEqual(result["strategy"], "verified-entry-current-frame")
+        self.assertIs(verify.call_args.kwargs["context"], observation)
+        self.assertEqual(verify.call_args.args[1], dict(mapId="fixture-map", hypothesis=candidate["hypothesis"]))
+        np.testing.assert_array_equal(result["matrixSourceToClient"], verification["matrixSourceToClient"])
+
+    def test_exit_anchored_set_reverifies_all_and_never_broad_falls_through(self):
+        candidates = [dict(mapId="fixture-map", floor="1", poseId=i) for i in (1,2)]
+        seed = dict(mapId="fixture-map", floor="1", locatorKind="side", identityOnly=True,
+                    poseVerified=False, entryPoseCandidates=candidates)
+        for successful_count in (0,1,2):
+            with self.subTest(successful_count=successful_count):
+                checks = [dict(success=i < successful_count, matrixSourceToClient=self.fit["matrixSourceToClient"])
+                          for i in range(2)]
+                verify = Mock(side_effect=checks)
+                self.engine.side_entry_identity = SimpleNamespace(verify=verify)
+                host = _AlignmentHost(self.engine)
+                with patch.object(_AlignmentHost, "_canonical_geometry_current_frame_residual",
+                                  return_value=(self.fit["selectedRouteCurrentFrameResidual"], None)), \
+                     patch("fast_structure_alignment.try_alignment", side_effect=AssertionError("anchored must not broaden")), \
+                     patch("single_map_structure.solve_initial_structure", side_effect=AssertionError("anchored must not broaden")):
+                    result = self.original_fit(host, self.capture.frame, "fixture-map", "1", lambda: False, seed)
+                self.assertEqual(verify.call_count, 2)
+                self.assertEqual([call.args[1] for call in verify.call_args_list], candidates)
+                self.assertEqual(result["success"], successful_count == 1)
+                if successful_count != 1:
+                    self.assertEqual(result["reason"], "difficult-entry-current-frame-rejected")
+                    self.assertEqual(result["entryReverification"]["acceptedPoseCount"], successful_count)
 
 
 if __name__ == "__main__":

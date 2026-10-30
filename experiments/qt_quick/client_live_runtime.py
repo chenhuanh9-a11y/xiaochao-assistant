@@ -139,7 +139,60 @@ class _AlignmentHost:
         return self._canonical_geometry_current_frame_residual(
             frame, self.map_id, self.floor, "shared-structure", matrix, route, **kwargs)[0]
 
-    def fit(self, frame, map_id, floor, cancelled):
+    def _reverify_entry(self, frame, map_id, floor, reference, candidate, cancelled):
+        """Adapt the legacy bounded entry set through its existing verifiers."""
+        import cv2
+        from alignment_observation import rendered_profile_residual_is_verified
+        if (not isinstance(candidate, dict) or candidate.get("mapId") != map_id
+                or str(candidate.get("floor", floor)) != str(floor)):
+            return None
+        side = candidate.get("locatorKind") == "side" or candidate.get("entryKind") == "side"
+        anchored = side and ("entryPoseCandidates" in candidate or candidate.get("exitAnchoredEntry") is True)
+        candidates = candidate.get("entryPoseCandidates") if anchored else [candidate]
+        candidates = candidates if isinstance(candidates, list) else [candidate]
+        accepted = []
+        for item in candidates:
+            if cancelled and cancelled():
+                return dict(success=False, reason="structure-work-obsolete")
+            if (not isinstance(item, dict) or item.get("mapId") != map_id
+                    or str(item.get("floor", floor)) != str(floor)):
+                continue
+            try:
+                if side:
+                    locator = self.engine.side_entry_identity
+                    checked = locator.verify(frame, item) if locator is not None else None
+                elif isinstance(item.get("hypothesis"), dict):
+                    entry = self.engine.entry_identity
+                    checked = entry.verify(frame, dict(mapId=map_id, hypothesis=item["hypothesis"]),
+                        context=entry.geometry(frame), route=reference.clean_mask)
+                else:
+                    checked = None
+                if isinstance(checked, dict) and checked.get("success"):
+                    residual = self._rendered_profile_current_frame_residual(
+                        frame, reference.clean_mask, checked["matrixSourceToClient"], profile_id="shared-structure")
+                    if rendered_profile_residual_is_verified(residual):
+                        accepted.append((checked, residual))
+            except (ValueError, TypeError, KeyError, OSError, cv2.error) as error:
+                self._log("entry-seed-reverification-unavailable", error=str(error))
+        if cancelled and cancelled():
+            return dict(success=False, reason="structure-work-obsolete")
+        if len(accepted) == 1:
+            checked, residual = accepted[0]
+            return dict(success=True, reason="difficult-entry-current-frame-candidate",
+                matrixSourceToClient=checked["matrixSourceToClient"],
+                coordinateSpace="shared-structure-to-client", routeProfileId="shared-structure",
+                selectedRouteCurrentFrameResidual=residual, strategy="verified-entry-current-frame",
+                difficultEntryValidation=checked)
+        if anchored:
+            # Legacy exit-anchored candidates never fall through to a broad
+            # search after failure/ambiguity. No pose-index fallback is enabled
+            # by this host, so retain the original explicit rejection.
+            return dict(success=False, reason="difficult-entry-current-frame-rejected",
+                entryReverification=dict(candidateCount=len(candidates), acceptedPoseCount=len(accepted),
+                    reason="side-entry-pose-ambiguous" if accepted else "side-entry-pose-unverified"))
+        return None
+
+    def fit(self, frame, map_id, floor, cancelled, entry_candidate=None):
         from alignment_observation import rendered_profile_residual_is_verified
         from fast_structure_alignment import try_alignment
         from single_map_structure import current_geometry, solve, solve_initial_structure
@@ -147,19 +200,28 @@ class _AlignmentHost:
         reference = self._shared_structure_reference("shared-structure", map_id, floor)
         if reference is None:
             return dict(success=False, reason="shared-reference-unavailable")
+        # Preserve the legacy first-pose entry seam: the accepted rank row is
+        # bound to this worker's current frame. Re-run its original verifier,
+        # then the canonical residual; never accept a caller-supplied matrix.
+        seed = self._reverify_entry(frame, map_id, floor, reference, entry_candidate, cancelled)
+        if seed is not None:
+            return seed
         context = current_geometry(frame)
         fit = try_alignment(self, frame, map_id, floor, cancelled=cancelled, context=context)
+        strategy = "shared-fast-alignment"
         if fit is None:
             if self.group is not None and floor in self.group.verified_floors:
                 # Existing same-floor recovery keeps the committed linear pose.
                 fit = solve(self, frame, map_id, floor, "shared-structure", reference.clean_mask,
                             cancelled=cancelled, _context=context)
+                strategy = "shared-same-floor-recovery"
             else:
                 static = (dict(source_known_boundary=reference.known_boundary, source_unknown=reference.unknown_mask)
                           if reference.known_boundary is not None else {})
                 fit = solve_initial_structure(frame, reference.clean_mask, reference.validation_mask,
                     reference.clean_mask, "shared-structure", cancelled=cancelled, _context=context,
                     wall_correspondence_identity=True, **static)
+                strategy = "shared-initial-structure"
         if not fit.get("success"):
             return fit
         # Independently wrap/verify the final matrix in its actual typed canvas,
@@ -169,7 +231,8 @@ class _AlignmentHost:
         if not rendered_profile_residual_is_verified(residual):
             return dict(success=False, reason="canonical-current-frame-residual-unverified", residual=residual)
         return dict(fit, selectedRouteCurrentFrameResidual=residual,
-                    coordinateSpace="shared-structure-to-client", routeProfileId="shared-structure")
+                    coordinateSpace="shared-structure-to-client", routeProfileId="shared-structure",
+                    strategy=strategy)
 
 
 class LiveRuntime:
@@ -653,6 +716,7 @@ class LiveRuntime:
             frame_generation, frame_id, cycle = self._frame_generation, self._frame_id, self._cycle
             map_id = self._map_id
         ranked = []
+        entry_candidate = None
         if not map_id:
             ranked = engine.rank(frame, floor=floor, limit=len(engine.pack.maps), budget_seconds=1.0)
             accepted = {row["mapId"] for row in ranked if row.get("identityHardGatePassed") is True}
@@ -660,12 +724,14 @@ class LiveRuntime:
                 return self._receipt(action, payload, success=False, reason="identity-not-uniquely-verified",
                                      candidateMapIds=[row["mapId"] for row in ranked[:8]])
             map_id = next(iter(accepted))
+            entry_candidate = next((row.get("difficultEntry") for row in ranked
+                if row.get("mapId") == map_id and row.get("identityHardGatePassed") is True), None)
             with self._lock:
                 if obsolete() or frame_id != self._frame_id:
                     return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
                 self._map_id = map_id
         host = _AlignmentHost(engine, group, self._settings)
-        fit = host.fit(frame, map_id, floor, obsolete)
+        fit = host.fit(frame, map_id, floor, obsolete, entry_candidate) if entry_candidate is not None else host.fit(frame, map_id, floor, obsolete)
         if obsolete():
             return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
         if not fit.get("success"):
@@ -717,6 +783,7 @@ class LiveRuntime:
                 routeWidth=rgba.shape[1], routeHeight=rgba.shape[0], clientWidth=width, clientHeight=height,
                 originX=captured.context.client_screen_bounds[0], originY=captured.context.client_screen_bounds[1],
                 captureGeneration=capture_generation,
+                poseReason=fit.get("reason"), poseStrategy=fit.get("strategy", "not-recorded"),
                 resourceIdentity=display["resourceIdentity"], displayKind=display["displayKind"],
                 displayLabel=display["displayLabel"], routeProfileId=display["routeProfileId"],
                 liveAuthorization=live, evidenceKind=self._evidence_kind)
@@ -724,7 +791,8 @@ class LiveRuntime:
             render_token = self._render["token"]
         self._notify("render-ready", reason="current-frame-pose-authorized", token=render_token, unchanged=False)
         return self._receipt(action, payload, success=True, reason="current-frame-pose-authorized",
-                             renderToken=render_token, diagnosticOnly=not live)
+                             renderToken=render_token, diagnosticOnly=not live,
+                             poseReason=fit.get("reason"), poseStrategy=fit.get("strategy", "not-recorded"))
 
     @staticmethod
     def _full_frame(captured):
