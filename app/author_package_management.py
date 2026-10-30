@@ -20,6 +20,9 @@ from star_map_import import (
 from legacy_author_inventory import LEGACY_AUTHOR_INVENTORY
 
 PACKAGE_NAMES = {
+    'nightmare-zhan10': '展十 · 噩梦',
+    'nightmare-suju-speed': '酥居速刷 · 噩梦',
+    'difficult-suju-speed': '酥居速刷 · 困难',
     'difficult-aichicu': '爱吃醋 · 困难',
     'nightmare-suju': '滋酥居 · 噩梦',
     'difficult-zhan10': '展十 · 困难',

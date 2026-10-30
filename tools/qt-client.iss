@@ -146,6 +146,7 @@ end;
 function CreateDesktopShortcut: Boolean;
 begin
   Result := WizardIsTaskSelected('desktopicon') or
+    OwnedAssistantShortcut(ExpandConstant('{userdesktop}\{#InstallerAppName}.lnk')) or
     OwnedAssistantShortcut(ExpandConstant('{userdesktop}\第五人格小抄助手.lnk'));
 end;
 procedure RetireLegacyShortcuts;

@@ -51,6 +51,14 @@ def _confirmation_fingerprint(result):
         "replaceFiles", "missingFiles")}, sort_keys=True, separators=(",", ":"))
 
 
+def _duplicate_import(result):
+    """Only a committed import with no additions/replacements is a duplicate."""
+    return (isinstance(result, dict) and type(result.get("added")) is int
+            and result["added"] == 0 and type(result.get("alreadyPresent")) is int
+            and result["alreadyPresent"] > 0 and not result.get("replaceFiles")
+            and not result.get("replaced"))
+
+
 class ResourceService(QObject):
     changed = Signal()
     confirmationRequested = Signal(str, str)
@@ -81,6 +89,8 @@ class ResourceService(QObject):
         self._import_handoff = False
         self._import_notice = ""
         self._import_receipt_notification = False
+        self._import_duplicate = False
+        self._duplicate_after_write = False
 
     packageRows = Property("QVariantList", lambda s: s._rows, notify=changed)
     busy = Property(bool, lambda s: s._busy, notify=changed)
@@ -103,7 +113,9 @@ class ResourceService(QObject):
         # Owner validates the persisted request binding before forwarding it.
         if type(receipt.get("success")) is not bool:
             raise ValueError("Invalid import receipt")
-        self._import_notice = ("上次资源导入已完成，正在核对实际状态。" if receipt["success"] else
+        self._import_duplicate = bool(receipt["success"]) and _duplicate_import(receipt)
+        self._import_notice = (("上次导入的资源内容已存在，正在核对实际状态。" if self._import_duplicate else
+            "上次资源导入已完成，正在核对实际状态。") if receipt["success"] else
             "上次资源未完成导入：" + str(receipt.get("reason", "结果不可用")))
         self._import_receipt_notification = bool(receipt["success"])
         self.changed.emit()
@@ -453,7 +465,8 @@ class ResourceService(QObject):
             self._rows, self._recovery, self._kind = result, False, ""
             if self._import_receipt_notification:
                 self._import_receipt_notification = False
-                self._import_notice = "上次资源导入已完成，实际状态已核对。"
+                self._import_notice = ("上次导入的资源内容已存在，实际状态已核对。" if self._import_duplicate else
+                                       "上次资源导入已完成，实际状态已核对。")
                 self.resourcesChanged.emit()
             self._message = "本地资源已核对。" if result else "尚未安装资源，可导入 ZIP 资源包。"
             if self._receipt_needs_notification:
@@ -485,8 +498,10 @@ class ResourceService(QObject):
             # A successful return is the commit result even if Cancel arrived
             # just after the helper's commit point. Never label that cancelled.
             self._kind = ""
-            self._message = ("资源已备份并移除。备份：" + result["backupPath"] if kind == "remove"
-                             else "资源安装完成，正在核对状态…")
+            self._duplicate_after_write = kind == "install" and _duplicate_import(result)
+            self._message = ("资源已备份并移除。备份：" + result["backupPath"] if kind == "remove" else
+                             "资源内容已存在，正在核对登记与状态…" if self._duplicate_after_write else
+                             "资源安装完成，正在核对状态…")
             self.resourcesChanged.emit()
             if kind == "recover":
                 self._recovery_rows = []
@@ -496,6 +511,9 @@ class ResourceService(QObject):
             return
         elif kind == "refresh-after-write":
             self._rows, self._recovery, self._kind = result, False, ""
+            if self._duplicate_after_write:
+                self._message = "资源内容已存在，登记与状态已核对。"
+            self._duplicate_after_write = False
         self._release_lease()
         self.changed.emit()
 

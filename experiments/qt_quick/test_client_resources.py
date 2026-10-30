@@ -377,11 +377,25 @@ class ResourceServiceTests(unittest.TestCase):
 
     def test_real_import_repeat_remove_and_reimport_preserve_unknown(self):
         self.write("player-custom-route.json", b"keep")
-        self.install()
-        self.assertEqual((self.root / IMAGE).read_bytes(), b"route")
-        self.assertEqual(len(self.changes), 1)
-        self.assertTrue(any(r["status"] == "installed" for r in self.service.packageRows))
-        self.install()
+        archive = self.package()
+        results = []
+        real_install = importer._install_staged
+        def capture_result(*args, **kwargs):
+            result = real_install(*args, **kwargs)
+            results.append(result)
+            return result
+        with patch.object(importer, "_install_staged", side_effect=capture_result):
+            self.install(archive)
+            self.assertEqual((self.root / IMAGE).read_bytes(), b"route")
+            self.assertEqual(len(self.changes), 1)
+            self.assertNotIn("内容已存在", self.service.message)
+            self.assertTrue(any(r["status"] == "installed" for r in self.service.packageRows))
+            self.install(archive)
+        self.assertEqual([(r['added'], r['alreadyPresent']) for r in results], [(1, 0), (0, 1)])
+        self.assertIn("资源内容已存在，登记与状态已核对", self.service.message)
+        self.assertEqual(len(self.changes), 2)
+        self.assertEqual(len(self.lease.released), 2)
+        self.assertFalse(self.lease.active)
         self.assertFalse(self.confirmations)
         self.service.requestRemove("nightmare-suju")
         self.settle()
@@ -397,6 +411,46 @@ class ResourceServiceTests(unittest.TestCase):
         self.assertFalse(self.lease.active)
         self.install()
         self.assertEqual((self.root / IMAGE).read_bytes(), b"route")
+
+    def test_existing_same_bytes_without_receipt_still_registers(self):
+        self.write(IMAGE, b"route")
+        receipt = self.root / "work/map-packages/nightmare-suju.json"
+        self.assertFalse(receipt.exists())
+        self.install(self.package())
+        self.assertTrue(receipt.is_file())
+        self.assertEqual(json.loads(receipt.read_text())["alreadyPresent"], 1)
+        self.assertEqual(json.loads(receipt.read_text())["added"], 0)
+        self.assertIn("内容已存在", self.service.message)
+        self.assertEqual(len(self.changes), 1)
+        self.assertFalse(self.lease.active)
+        self.assertTrue(any(r["status"] == "installed" for r in self.service.packageRows))
+
+    def test_helper_duplicate_notice_survives_scan_and_failure_is_not_duplicate(self):
+        archive = self.package()
+        self.install(archive)
+        result = importer.install_package(archive, self.root, application_stopped=True)
+        self.assertEqual((result['added'], result['alreadyPresent']), (0, 1))
+        self.changes.clear()
+        self.service.recordImportReceipt(dict(result, success=True))
+        self.assertIn("内容已存在", self.service.message)
+        self.assertIn("正在核对", self.service.message)
+        self.assertFalse(self.changes)
+        self.service.refresh()
+        self.settle()
+        self.assertIn("内容已存在，实际状态已核对", self.service.message)
+        self.assertEqual(len(self.changes), 1)
+        self.service.refresh()
+        self.settle()
+        self.assertIn("内容已存在，实际状态已核对", self.service.message)
+        self.assertEqual(len(self.changes), 1)
+        self.service.recordImportReceipt(dict(result, success=False, reason="fixture import failed"))
+        self.service.refresh()
+        self.settle()
+        self.assertIn("fixture import failed", self.service.message)
+        self.assertNotIn("内容已存在", self.service.message)
+        self.assertEqual(len(self.changes), 1)
+        self.service.recordImportReceipt(dict(result, success=True, replaced=1, replaceFiles=[{}]))
+        self.assertNotIn("内容已存在", self.service.message)
 
     def test_owned_upgrade_confirmation_cancel_then_commit(self):
         self.install(self.package("old.zip", b"old"))
