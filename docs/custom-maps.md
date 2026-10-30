@@ -1,12 +1,13 @@
 # 自定义地图
 
-自定义地图页使用作者自己的地图底图（旧版 PC/安卓自定义地图的 24 张噩梦图），路线按旧版方式规划，进游戏后随地图结构自动贴合。
+自定义地图页使用噩梦地图的清晰绘制版底图（26 张图、78 层），路线按旧版方式规划，进游戏后随地图结构自动贴合。早期资源包用的是旧版 PC/安卓自定义地图的 24 张作者底图，软件两种都能读。
 
 ## 三类数据
 
 | 用途 | 来源 | 坐标 |
 | --- | --- | --- |
-| 显示底图 | 旧版路线编辑器的 `blank/` 底图（负一楼用 `maps/` 图） | 底图像素；每层带一个到游戏原生像素的 3×3 矩阵 |
+| 显示底图 | 清晰绘制版（白底重绘，自带正门/侧门出口图标）；`--art` 不给时用旧版路线编辑器的 `blank/` 底图（负一楼用 `maps/` 图） | 底图像素；每层带一个到游戏原生像素的 3×3 矩阵 |
+| 模板坐标 | 旧版模板底图（与安卓路线编辑器同一套网格） | 每层 `template` 里另存旧模板尺寸和矩阵，楼梯和路线广场的安卓格子都按它换算 |
 | 同层寻路 | 噩梦 24 图交接包的道路网 `topology-*.json`：格中心点、所属房间、房间内格边、配对门 | 游戏原生像素（与公开结构资源逐层哈希一致） |
 | 跨层楼梯 | 旧版编辑器中已核实的楼梯，换算到原生像素后接到最近的道路点 | 游戏原生像素 |
 
@@ -25,20 +26,28 @@
 
 ## 对齐
 
+### 清晰绘制版与新增地图
+
+- `--art` 指向 `<地图ID>/<B1|1F|2F>.png`。白底变透明（先闭运算，保住房间内细的浅色墙线），再按游戏数据里同层的正常渲染图（与原生画布同尺寸）对齐。78 层重合度 0.84–0.97，比旧底图（0.83–0.93）好；用同一指标比边界误差，P90 中位数 6.7 px，最大 11.5 px（旧底图 9.3 px、16.0 px）。
+- 旧模板仍会对齐一遍，矩阵和 -3 版逐层一致，存进每层的 `template`；入口从模板像素换算到新底图像素。
+- 新底图自带出口图标，manifest 写 `art.includesExits: true`，软件不再叠加自己的出口图标。
+- `--increment` 接入游戏 2.104.3085069 新增的 104026、104027（`nightmare-layout-104026/104027`）：道路网、楼梯（来源楼梯房间的静态关联，室内路线未在游戏里验证）和正门来自安卓交接包的 `editor-manifest.json`，构建时核对拓扑和结构 mask 哈希。安卓路线编辑器给这两张图画的模板是 28、29 号，正好是原生画布的 0.7 倍（逐层核对重合度 0.96–0.97），所以每层 `template` 直接按 0.7 记录，路线广场的安卓路线也能换算过来（两张图共 132 个房间点、24 个楼梯端点全部落在道路上）。
+- 软件当前的识别结构资源里还没有这两张图，所以游戏内暂时显示不出来，只能在编辑器里画路线。
+
 构建时每层先按重心和面积对齐，再用 ECC（仿射）以底图不透明区域对齐结构轮廓。72 层重合度 0.83–0.93，两轴缩放基本一致、剪切接近 0；重合度低于 0.8 时构建失败。194 个旧楼梯端点换算后到最近道路点不超过 42 像素（一格 60 像素）。
 
 ## 资源包
 
-当前版本：[custom-maps-20261028-3](https://github.com/chenhuanh9-a11y/xiaochao-assistant/releases/tag/custom-maps-20261028-3)，`xingtu-custom-maps-20261028-3.zip`，8,392,815 字节，SHA-256 `9b10fd9d6b37bf987548fe4fa5d015b22110943d91408d2fa64e5bfad47ce416`。打包软件前下载并安装：
+当前版本：[custom-maps-20261029-1](https://github.com/chenhuanh9-a11y/xiaochao-assistant/releases/tag/custom-maps-20261029-1)，`xingtu-custom-maps-20261029-1.zip`，4,121,810 字节，SHA-256 `bf38aaed53307ecf7c5c2d29ee90873b08b4765a3c4d8b15e0c04f5473123347`。打包软件前下载并安装：
 
 ```
-python tools/maps/install_custom_maps.py --archive xingtu-custom-maps-20261028-3.zip --sha256 9b10fd9d6b37bf987548fe4fa5d015b22110943d91408d2fa64e5bfad47ce416
+python tools/maps/install_custom_maps.py --archive xingtu-custom-maps-20261029-1.zip --sha256 bf38aaed53307ecf7c5c2d29ee90873b08b4765a3c4d8b15e0c04f5473123347
 ```
 
 重新构建：
 
 ```
-python tools/maps/build_custom_map_package.py --legacy 旧版/nightmare-route-editor --game-data 噩梦24图交接包 --structures 结构资源 --out 新目录 --version 新版本号 --zip 发布目录 [--review 对比图目录]
+python tools/maps/build_custom_map_package.py --legacy 旧版/nightmare-route-editor --game-data 噩梦24图交接包 --structures 结构资源 --art 清晰绘制版/images --art-label 清晰绘制版名称 --increment 新增地图交接包 --out 新目录 --version 新版本号 --zip 发布目录 [--review 对比图目录]
 python tools/maps/install_custom_maps.py --archive xingtu-custom-maps-VERSION.zip --sha256 压缩包SHA256
 ```
 
@@ -72,10 +81,10 @@ python tools/draw_custom_routes.py
 - 尚未在 Windows 实机和游戏内验证对齐效果。
 # 构建交接与兼容修复
 
-固定资源 Release：`custom-maps-20261028-3`，资源 ZIP `xingtu-custom-maps-20261028-3.zip`，8,392,815 字节，SHA256 `9b10fd9d6b37bf987548fe4fa5d015b22110943d91408d2fa64e5bfad47ce416`。Release 是编辑器资源包，不是软件安装包。
+固定资源 Release：`custom-maps-20261029-1`，资源 ZIP `xingtu-custom-maps-20261029-1.zip`，4,121,810 字节，SHA256 `bf38aaed53307ecf7c5c2d29ee90873b08b4765a3c4d8b15e0c04f5473123347`。Release 是编辑器资源包，不是软件安装包。
 
 ```powershell
-python tools/maps/install_custom_maps.py --archive <下载的ZIP> --sha256 9b10fd9d6b37bf987548fe4fa5d015b22110943d91408d2fa64e5bfad47ce416 --root <干净构建输出根目录>
+python tools/maps/install_custom_maps.py --archive <下载的ZIP> --sha256 bf38aaed53307ecf7c5c2d29ee90873b08b4765a3c4d8b15e0c04f5473123347 --root <干净构建输出根目录>
 ```
 
 资源安装在应用根目录 `assets/custom-maps`，包含 manifest、图片和道路拓扑；`app/custom_default_gallery.json` 由构建脚本随程序收集。不要把验证目录、玩家图库或设置打进安装包。安装工具会替换目标资源目录，仅用于已确认的构建 stage；不应拿它覆盖未知用户自制资源。
