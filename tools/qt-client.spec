@@ -32,9 +32,9 @@ for distribution in ("PySide6-Essentials", "shiboken6", "numpy", "opencv-python-
     datas += copy_metadata(distribution)
 
 a = Analysis(
-    [str(qt_root / "client.py")],
+    [str(root / "tools" / "qt_client_entry.py")],
     pathex=[str(qt_root), str(root / "app")], binaries=[], datas=datas,
-    hiddenimports=["PySide6.QtCore", "PySide6.QtGui", "PySide6.QtQml",
+    hiddenimports=["client", "PySide6.QtCore", "PySide6.QtGui", "PySide6.QtQml",
                    "PySide6.QtQuick", "PySide6.QtQuickControls2", "numpy", "cv2",
                    "PIL.PngImagePlugin", "PIL.JpegImagePlugin", "PIL.WebPImagePlugin",
                    "client_providers", "map_identity_engine", "alignment_core_v2",

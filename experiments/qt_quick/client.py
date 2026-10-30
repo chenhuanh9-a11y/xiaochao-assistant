@@ -168,6 +168,9 @@ def main():
             result["providers"] = registry.capabilities()
             result["tkLoaded"] = "tkinter" in sys.modules
             result["ready"] = all(row.get("available") for row in result["providers"].values())
+        if FROZEN:
+            WORK_ROOT.mkdir(parents=True, exist_ok=True)
+            (WORK_ROOT / "client-self-check.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
         print(json.dumps(result))
         return 0 if result["ready"] and result["qml"] and not result["tkLoaded"] else 1
     app = QGuiApplication([])
