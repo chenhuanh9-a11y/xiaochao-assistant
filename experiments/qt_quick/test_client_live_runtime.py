@@ -527,17 +527,64 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertEqual(self.runtime.snapshot()["core"]["poses"], {})
         self.assertFalse(self.capture.enabled)
 
-    def test_profile_change_and_identical_settings_preserve_structure_only(self):
+    def test_profile_change_and_identical_settings_preserve_current_grant_without_refit(self):
         first = self.begin_and_capture()
         before = self.runtime.snapshot()
         self.runtime.configure_settings(dict(opacity=.5))
         self.dispatch("set_context")
         self.assertIsNotNone(self.runtime.render_payload(first["renderToken"]))
-        self.dispatch("set_route_profile", profileId="another-author")
+        with patch.object(_AlignmentHost, "fit", side_effect=AssertionError("author switch must not fit")):
+            result = self.dispatch("set_route_profile", profileId="another-author")
+        self.assertTrue(result["success"], result)
+        self.assertTrue(result["renderToken"])
         self.assertEqual(self.runtime.snapshot()["mapId"], before["mapId"])
         self.assertEqual(self.runtime.snapshot()["core"]["poses"], before["core"]["poses"])
         self.assertIsNone(self.runtime.render_payload(first["renderToken"]))
-        self.assertFalse(self.runtime.snapshot()["core"]["displayAuthorized"])
+        self.assertTrue(self.runtime.snapshot()["core"]["displayAuthorized"])
+        self.assertEqual(self.capture.count, 1)
+        self.assertEqual(self.runtime._core.display_authorization.authorization_id,
+                         self.runtime.render_payload(result["renderToken"])["authorizationId"])
+
+    def test_author_reprojection_uses_nonidentity_shared_basis_and_preserves_root_and_tracking(self):
+        first = self.begin_and_capture()
+        source = self.runtime.render_payload(first["renderToken"])
+        root = self.runtime._group.root_pose.copy()
+        old_generation = self.runtime._group.generation
+        canonical = np.array(source["canonicalMatrix"])
+        basis = np.array([[2.,0,4.],[0,3.,-7.],[0,0,1.]])
+        bridge = np.array([[.5,0,8.],[0,.75,2.],[0,0,1.]])
+        layer = self.runtime._display_layer(self.engine, "fixture-map", "1", "shared-structure")
+        layer.update(matrixDisplayToReference=bridge, pixels=np.full((12,16,4), 77, np.uint8),
+                     routeProfileId="another-author", effectiveProfileId="another-author")
+        self.engine.qt_adapters.matrix_profile_to_canonical = lambda *a: basis
+        before = self.runtime.snapshot()
+        with patch("client_route_reprojection.prepare_display_layer", return_value=layer), \
+             patch.object(_AlignmentHost, "fit", side_effect=AssertionError("display repaint reached solver")):
+            changed = self.dispatch("set_route_profile", profileId="another-author")
+        self.assertTrue(changed["success"], changed)
+        row = self.runtime.render_payload(changed["renderToken"])
+        np.testing.assert_allclose(row["matrix"], canonical @ basis @ bridge)
+        np.testing.assert_allclose(row["canonicalMatrix"], canonical)
+        np.testing.assert_allclose(self.runtime._group.root_pose, root)
+        self.assertEqual(self.runtime._group.generation, old_generation)
+        self.assertEqual(before["core"], self.runtime.snapshot()["core"])
+        self.assertEqual(self.runtime.reference_payload()["pixels"].shape, (12,16,4))
+        self.assertEqual(self.capture.count, 1)
+
+    def test_late_author_pixels_cannot_reappear_after_end(self):
+        self.begin_and_capture()
+        from client_route_reprojection import prepare_route_reprojection
+        entered, release = threading.Event(), threading.Event()
+        def blocked(*args, **kwargs):
+            entered.set(); release.wait(2)
+            return prepare_route_reprojection(*args, **kwargs)
+        output = []
+        with patch("client_route_reprojection.prepare_route_reprojection", side_effect=blocked):
+            worker = threading.Thread(target=lambda: output.append(self.dispatch("set_route_profile", profileId="another")))
+            worker.start(); self.assertTrue(entered.wait(2))
+            self.dispatch("end_round"); release.set(); worker.join(2)
+        self.assertFalse(worker.is_alive()); self.assertTrue(output[0]["stale"])
+        self.assertIsNone(self.runtime.reference_payload()); self.assertIsNone(self.runtime._render)
 
     def test_mode_change_or_full_client_mismatch_fails_closed(self):
         first = self.begin_and_capture()

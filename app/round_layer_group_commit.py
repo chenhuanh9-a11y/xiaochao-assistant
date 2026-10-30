@@ -370,3 +370,48 @@ def map_anchor_focus_point(
     candidates.sort(key=lambda row: row[0])
     point = candidates[0][1]
     return (point, True) if return_detection else point
+
+
+def rebase_group_display_tracking(self, group, map_id, effective):
+    if group is not None and group.map_id == map_id:
+                for tracked_floor, tracking in group.tracking_by_floor.items():
+                    rebased = dict(tracking)
+                    try:
+                        cached_bridge = tracking.get('routeDisplayBridge')
+                        old_bridge = (np.asarray(cached_bridge, dtype=np.float64) if cached_bridge is not None
+                                      else self._shared_display_bridge(group.route_profile_id, map_id, tracked_floor))
+                        new_profile = self._effective_route_profile(map_id, tracked_floor)
+                        new_layer = self._shared_display_layer(new_profile, map_id, tracked_floor)
+                        if (old_bridge is None or old_bridge.shape != (3, 3)
+                            or not np.isfinite(old_bridge).all() or new_layer is None):
+                            raise ValueError('display bridge unavailable')
+                        transport = np.linalg.inv(old_bridge) @ new_layer['matrixDisplayToReference']
+                        rebased['routeDisplayBridge'] = np.asarray(new_layer['matrixDisplayToReference']).tolist()
+                        for key in ('translationMaskMatrix', 'layoutAnchorMatrix'):
+                            if rebased.get(key) is None:
+                                continue
+                            matrix = np.asarray(rebased[key], dtype=np.float64)
+                            if matrix.shape != (3, 3) or not np.isfinite(matrix).all():
+                                raise ValueError('invalid display tracking matrix')
+                            rebased[key] = (matrix @ transport).tolist()
+                        point = rebased.get('verifiedPlayerAuthorPoint')
+                        if point is not None:
+                            point = np.asarray(point, dtype=np.float64)
+                            if point.shape != (2,) or not np.isfinite(point).all():
+                                raise ValueError('invalid display tracking point')
+                            projected = np.linalg.inv(transport) @ np.array([*point, 1.0])
+                            if abs(projected[2]) < 1e-12 or not np.isfinite(projected).all():
+                                raise ValueError('invalid transported display point')
+                            rebased['verifiedPlayerAuthorPoint'] = (projected[:2] / projected[2]).tolist()
+                    except (OSError, ValueError, TypeError, KeyError, np.linalg.LinAlgError, cv2.error):
+                        # A render cache cannot undo an already-saved selection.
+                        # Drop only its author basis; retain canonical evidence.
+                        for key in ('translationMaskMatrix', 'layoutAnchorMatrix', 'verifiedPlayerAuthorPoint', 'routeDisplayBridge'):
+                            rebased.pop(key, None)
+                    tracking.clear()
+                    tracking.update(rebased)
+                    tracking['poseVerifiedAgainstRenderedProfile'] = False
+                    tracking.pop('renderedProfileResidual', None)
+                group.render_profile_verified_floors.clear()
+                group.route_profile_id = effective
+                group.displayed_overlay = None

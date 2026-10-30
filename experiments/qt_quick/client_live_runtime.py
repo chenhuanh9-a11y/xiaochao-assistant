@@ -1161,6 +1161,81 @@ class LiveRuntime:
         if changed:
             self._notify("aligned-visibility-changed", reason="settings-updated")
 
+    def _reproject_route_display(self, action, payload, cancelled):
+        """A saved author changes pixels/basis only, never runs a pose sensor."""
+        import numpy as np
+        from types import SimpleNamespace
+        from client_route_reprojection import prepare_route_reprojection
+        from round_layer_group_commit import rebase_group_display_tracking
+        with self._work:
+            with self._lock:
+                engine, profile, map_id, floor = self._engine, self._profile, self._map_id, self._floor
+                generation = getattr(self, "_display_generation", 0)
+                scope = (self._epoch, self._round, self._cycle, self._frame_id, engine, profile, map_id, floor, generation)
+                source = self._render
+                sheet = self._reference_sheet
+                if not self._active or engine is None or not map_id or not floor:
+                    return self._receipt(action, payload, success=True, reason="context-updated")
+                pose_current = bool(source and self._display_current(source)
+                    and self._capture_is_current(self._render_capture_context, source.get("captureGeneration")))
+                source_context = self._render_capture_context
+                sheet_context = self._reference_capture_context
+                staged_group = copy.deepcopy(self._group)
+                variant = self._settings.get("zhan10CoffinVariantId", "variant-01")
+                canonical = source["canonicalMatrix"] if pose_current else None
+            try:
+                prepared = prepare_route_reprojection(engine, map_id, floor, profile, canonical, variant_id=variant)
+                layer = prepared["layer"]
+                if staged_group is not None:
+                    owner = SimpleNamespace(
+                        _effective_route_profile=lambda *args: profile,
+                        _shared_display_layer=lambda pref, mid, fl: prepare_route_reprojection(
+                            engine, mid, fl, pref, variant_id=variant)["layer"],
+                        _shared_display_bridge=lambda pref, mid, fl: prepare_route_reprojection(
+                            engine, mid, fl, pref, variant_id=variant)["layer"]["matrixDisplayToReference"])
+                    rebase_group_display_tracking(owner, staged_group, map_id, profile)
+                pixels = np.ascontiguousarray(layer["pixels"][:, :, [2, 1, 0, 3]])
+                pixels.setflags(write=False)
+            except Exception as error:
+                with self._lock:
+                    if scope == (self._epoch, self._round, self._cycle, self._frame_id, self._engine,
+                            self._profile, self._map_id, self._floor, getattr(self, "_display_generation", 0)):
+                        self._render = self._render_capture_context = None
+                        self._reference_sheet = self._reference_capture_context = None
+                return self._receipt(action, payload, success=False, reason=f"route-display-reprojection-failed:{error}")
+            with self._lock:
+                if (self._cancelled(cancelled) or scope != (self._epoch, self._round, self._cycle,
+                        self._frame_id, self._engine, self._profile, self._map_id, self._floor,
+                        getattr(self, "_display_generation", 0))):
+                    return self._receipt(action, payload, success=False, reason="stale-display-settings", stale=True)
+                metadata = dict(profileId=profile, preferredProfileId=profile,
+                    effectiveProfileId=layer.get("effectiveProfileId", layer["routeProfileId"]),
+                    resourceIdentity=layer["resourceIdentity"], displayKind=layer["displayKind"],
+                    displayLabel=layer["displayLabel"], routeProfileId=layer["routeProfileId"],
+                    authorStatus=layer.get("authorStatus", "none"), fallback=layer.get("fallback", False),
+                    fallbackReason=layer.get("fallbackReason", ""), variantId=layer.get("variantId"),
+                    displayGeneration=generation, referencePath=layer.get("referencePath", ""))
+                if sheet is not None:
+                    self._reference_sheet = dict(sheet, **metadata)
+                    self._reference_sheet.update(token=uuid4().hex, pixels=pixels)
+                    self._reference_capture_context = sheet_context
+                render_token = ""
+                if (pose_current and self._render is source and self._display_current(source)
+                        and self._capture_is_current(source_context, source.get("captureGeneration"))):
+                    self._render = dict(source, **metadata)
+                    self._render.update(token=uuid4().hex, pixels=pixels,
+                        matrix=prepared["matrixSourceToClient"].tolist(),
+                        routeWidth=pixels.shape[1], routeHeight=pixels.shape[0])
+                    self._render_capture_context = source_context
+                    render_token = self._render["token"]
+                else:
+                    self._render = self._render_capture_context = None
+                self._group = staged_group
+            if render_token:
+                self._notify("render-ready", reason="route-display-reprojected", token=render_token, unchanged=False)
+            self._notify("reference-ready", reason="route-display-reprojected")
+            return self._receipt(action, payload, success=True, reason="route-display-reprojected", renderToken=render_token)
+
     def route_preferences_metadata(self):
         from client_route_preferences import coffin_variant_metadata
         with self._lock:
@@ -1355,8 +1430,11 @@ class LiveRuntime:
                 if changed_mode and self._active:
                     return self._receipt(action, payload, success=False,
                                          reason="end-round-before-changing-mode")
-                if changed_mode or changed_profile:
-                    self.invalidate("mode-changed" if changed_mode else "profile-changed")
+                if changed_mode:
+                    self.invalidate("mode-changed")
+                elif changed_profile:
+                    self._display_generation = getattr(self, "_display_generation", 0) + 1
+                    self._discard_sibling()
                 if changed_mode:
                     self._active = self._map_open = False
                     self._core.reset_round(reason="mode-changed")
@@ -1367,6 +1445,8 @@ class LiveRuntime:
                         self._capture.disable()
                 self._mode, self._profile = mode, profile
                 self._offline.dispatch("set_context", dict(mode=mode, profileId=profile))
+            if changed_profile and not changed_mode:
+                return self._reproject_route_display(action, payload, cancelled)
             return self._receipt(action, payload, success=True, reason="context-updated")
         if self._cancelled(cancelled):
             return self._receipt(action, payload, success=False, reason="cancelled", cancelled=True)
@@ -1728,7 +1808,7 @@ class LiveRuntime:
         owner._active_round_layer_group = lambda mid, profile=None: (
             owner.round_layer_group if owner.round_layer_group is not None
             and owner.round_layer_group.map_id == mid
-            and (profile is None or owner.round_layer_group.route_profile_id == profile) else None)
+            else None)
         owner._prime_round_layer_group_relations = lambda mid, anchor: prime_round_layer_group_relations(owner, mid, anchor)
         context = captured.context
         signature = (tuple(context.full_client_size), tuple(context.client_screen_bounds), context.dpi)
