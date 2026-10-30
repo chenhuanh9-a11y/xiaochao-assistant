@@ -8690,8 +8690,11 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         )
 
     @staticmethod
-    def _set_noactivate(window: tk.Misc, enabled: bool, *, sync_layout: bool = True) -> None:
+    def _set_noactivate(window: tk.Misc, enabled: bool, *, sync_layout: bool = False) -> None:
         try:
+            # Extended styles need the HWND, not the final child geometry.
+            # Startup already realizes this window before scheduling this call;
+            # avoid recursively draining every page's pending layout here.
             if sync_layout:
                 window.update_idletasks()
             hwnd = ctypes.windll.user32.GetAncestor(window.winfo_id(), 2)
@@ -10622,7 +10625,8 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         else:
             state.update(stage='ready', packages=event.get('packages', []), ready=None, message='本地资源状态已更新。')
 
-    def inspect_map_package(self, path: str | Path, *, _expected_archive: dict | None = None) -> dict:
+    def inspect_map_package(self, path: str | Path, *, _expected_archive: dict | None = None,
+                            auto_import: bool = False) -> dict:
         if getattr(self, '_map_package_live_request', None) is not None:
             return dict(success=False, reason='import-busy', message='作者资源正在导入，请稍后操作。')
         self._ensure_map_package_import_state()
@@ -10647,7 +10651,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         self._map_package_import_cancel = cancelled
         self._map_package_import_result = None
         self._map_package_import_state = dict(stage='checking', message='正在检查地图包，暂不修改已安装资源。',
-            packagePath=str(archive), ready=None)
+            packagePath=str(archive), ready=None, autoImport=bool(auto_import))
         request = dict(generation=self._map_package_import_generation, archive=archive,
             installRoot=Path(ROOT).resolve(), resourceRoot=Path(RESOURCE_ROOT).resolve(), cancelled=cancelled,
             expectedArchive=copy.deepcopy(_expected_archive))
@@ -10685,6 +10689,13 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                     helper = self._map_package_helper_path()
                     available = helper.is_file() and helper.resolve() != Path(sys.executable).resolve()
                     event.update(result=result, fileIdentity=after, helperAvailable=available)
+                    # Re-selecting an exact installed ZIP is a no-op only after
+                    # the worker verifies both actual files and its receipt.
+                    from star_map_import import supports_live_author_import, verified_installed_package
+                    if (supports_live_author_import(result) and result.get('fileCount', 0) > 0
+                            and result.get('alreadyPresent') == result.get('fileCount')):
+                        event['installation'] = verified_installed_package(
+                            request['installRoot'], result['packageId'], result['archiveSha256'])
             except Exception as error:
                 event['error'] = f'{type(error).__name__}: {error}'
             event['cancelled'] = request['cancelled'].is_set()
@@ -10717,9 +10728,36 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 self._map_package_import_state.update(stage='ready',
                     ready=dict(title=title, summary=summary),
                     message='地图包检查通过。退出并导入后，请手动重新启动星图。')
+                installed = event.get('installation') or {}
+                if (self._map_package_import_state.get('autoImport')
+                        and installed.get('status') == 'installed'
+                        and installed.get('archiveSha256') == result.get('archiveSha256')):
+                    self._map_package_import_result = None
+                    self._map_package_import_state.update(stage='complete', ready=None,
+                        restartRequired=False, alreadyInstalled=True,
+                        message='此图包已安装，无需重复导入。')
+                    self._online_installed_packages = getattr(self, '_online_installed_packages', {})
+                    self._online_installed_packages[result['packageId']] = installed
         self._finish_online_map_inspection(event)
         if self._map_package_import_pending is not None and not self.closed:
             self._start_map_package_inspection()
+        if self._map_package_import_state.get('autoImport'):
+            self.continue_auto_map_package_import()
+
+    def continue_auto_map_package_import(self) -> None:
+        state = self._map_package_import_state
+        if self.closed or not state.get('autoImport') or state.get('stage') != 'ready':
+            return
+        snapshot = self.map_package_import_snapshot()
+        # Core replacement/exit-helper packages still require explicit consent.
+        # An active round simply keeps this inspected author request waiting.
+        if not snapshot.get('liveAvailable') or not snapshot.get('canImport'):
+            return
+        result = self.confirm_map_package_import()
+        if isinstance(result, dict) and result.get('success') is False:
+            if result.get('reason') not in {'import-busy', 'live-import-requires-idle'}:
+                self._map_package_import_state.update(stage='error', ready=None,
+                    message=str(result.get('message') or '导入未启动，请重新选择图包。'))
 
     def cancel_map_package_import(self, reason: str = 'user-cancelled') -> dict:
         self._ensure_map_package_import_state()

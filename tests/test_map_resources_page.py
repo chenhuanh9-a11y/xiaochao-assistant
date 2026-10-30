@@ -46,7 +46,7 @@ class Actions:
     def cancel_online_map_package(self, reason):
         self.calls.append(('cancel-download',reason)); self.online.update(stage='cancelled',busy=False,canCancel=False)
         return dict(success=True)
-    def inspect_map_package(self, path):
+    def inspect_map_package(self, path, *, auto_import=False):
         self.calls.append(('inspect',path)); self.import_state.update(stage='ready', packagePath=str(path),
             ready=dict(title='fixture', summary='检查通过'), canImport=True)
         return dict(success=True)
@@ -68,6 +68,10 @@ class Actions:
 
 class MapResourcesPageTests(unittest.TestCase):
     def setUp(self):
+        # This controller substitute keeps the old manual-ready scenario;
+        # real automatic file transactions have their separate short-flow audit.
+        prompt = patch('tkinter.messagebox.askyesno', return_value=True)
+        prompt.start(); self.addCleanup(prompt.stop)
         self.data = context_fixture.BrowseContextTests()
         self.data.setUp(); self.addCleanup(self.data.doCleanups)
         self.data.nightmare()

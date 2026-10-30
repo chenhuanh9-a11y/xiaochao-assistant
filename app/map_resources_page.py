@@ -621,6 +621,24 @@ class MapResourcesPage(MapResourceBrowser):
         state = self._managed_snapshot()
         if (self._managed_open and self._management_context == self._current_management_context()
                 and ready and ready.get('packageId') == self._selected_package and not state.get('busy')):
+            from tkinter import messagebox
+            context = self._management_context
+            title = (self._row_data.get(ready['packageId']) or {}).get('title') or ready['packageId']
+            message = (f"移除“{title}”？\n\n仅移除此图包的作者文件，原文件会保留备份。"
+                       "结构底图、预制数据和自定义路线不变。")
+            if ready.get('modifiedFiles'):
+                message += '\n包含的本地修改也会原样备份。'
+            if not messagebox.askyesno('移除图包', message, parent=self.winfo_toplevel(), default='no'):
+                self._cancel_managed_confirmation()
+                self._show_feedback('已取消移除。')
+                return
+            # A native owned dialog runs a nested loop: recheck the selection
+            # and immutable plan again after the user answers.
+            if (self._closed or not self._managed_open or context != self._current_management_context()
+                    or any((self._managed_ready or {}).get(key) != ready.get(key)
+                           for key in ('packageId', 'receiptSha256', 'planSha256'))
+                    or self._managed_snapshot().get('busy')):
+                return
             self._removal_package = ready['packageId']
             result = self.assistant.confirm_author_package_removal(ready['packageId'],
                 expected_receipt_sha256=ready['receiptSha256'], expected_plan_sha256=ready['planSha256'])
@@ -647,6 +665,7 @@ class MapResourcesPage(MapResourceBrowser):
     def _map_package_action(self, name, *args, **kwargs):
         if self._closed: return None
         callback = getattr(self.assistant, name, None)
+        if name == 'inspect_map_package': kwargs['auto_import'] = True
         result = callback(*args, **kwargs) if callable(callback) else None
         if self._closed: return result
         if isinstance(result, dict) and result.get('success') is False:
@@ -689,6 +708,12 @@ class MapResourcesPage(MapResourceBrowser):
         if self._closed: return
         state = self._map_package_snapshot()
         stage, busy = state.get('stage', 'idle'), bool(state.get('busy'))
+        if state.get('autoImport') and stage == 'ready' and state.get('canImport') and state.get('liveAvailable'):
+            resume = getattr(self.assistant, 'continue_auto_map_package_import', None)
+            if callable(resume):
+                resume()
+                state = self._map_package_snapshot()
+                stage, busy = state.get('stage', 'idle'), bool(state.get('busy'))
         available = (callable(getattr(self.assistant, 'inspect_map_package', None))
                      and callable(getattr(self.assistant, 'map_package_import_snapshot', None)))
         self.import_button.configure(state='normal' if available and not busy
@@ -696,7 +721,8 @@ class MapResourcesPage(MapResourceBrowser):
         if self._operation_kind == 'import' and not busy and stage in {'complete', 'idle'}:
             self._operation_kind = None
             if stage == 'complete':
-                self._show_feedback('已导入并刷新，无需重启。' if state.get('restartRequired') is False
+                self._show_feedback(str(state.get('message')) if state.get('alreadyInstalled') else
+                    '已导入并刷新，无需重启。' if state.get('restartRequired') is False
                     else str(state.get('message') or '资源导入完成。'))
             elif state.get('message'): self._show_feedback(str(state['message']))
         if self._operation_kind != 'import':
@@ -716,7 +742,8 @@ class MapResourcesPage(MapResourceBrowser):
             if title: self.import_title.pack(fill='x', pady=(0, 4))
             self.import_confirm_button.configure(state='normal' if can_import else 'disabled',
                 text='导入并刷新' if state.get('liveAvailable') else '退出并导入')
-            if stage == 'ready': self.import_confirm_button.pack(side='left')
+            if stage == 'ready' and not (state.get('autoImport') and state.get('liveAvailable')):
+                self.import_confirm_button.pack(side='left')
             else: self.import_confirm_button.pack_forget()
             self.import_cancel_button.configure(state='normal', text='关闭' if stage == 'error' else '取消')
             self.import_cancel_button.pack(side='left', padx=(8 if stage == 'ready' else 0, 0))
@@ -744,13 +771,11 @@ class MapResourcesPage(MapResourceBrowser):
         if self._operation_kind != 'managed': self.managed_surface.pack_forget(); return
         if valid:
             title = (self._row_data.get(self._selected_package) or {}).get('title') or '此图包'
-            message = f"移除{title}的 {len(ready.get('files', ()))} 个作者文件？\n原文件会保留备份，底图和自定义路线不变。"
-            modified = len(ready.get('modifiedFiles', ()))
-            if modified: message += f"\n含 {modified} 个本地修改文件，也会原样备份。"
+            message = f"已核对{title}。移除前会弹窗确认，原文件保留备份。"
         else: message = str(state.get('message') or '正在检查图包…')
         self.managed_message.configure(text=message); self.managed_list.pack_forget()
         if valid:
-            self.managed_confirm.configure(state='disabled' if busy else 'normal')
+            self.managed_confirm.configure(state='disabled' if busy else 'normal', text='移除图包…')
             self.managed_confirm.pack(side='left', padx=(0, 8), pady=(6, 0))
         else: self.managed_confirm.pack_forget()
         self.managed_cancel_button.configure(state='disabled' if busy else 'normal')
