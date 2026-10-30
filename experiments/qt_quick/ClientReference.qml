@@ -8,22 +8,28 @@ Window {
     objectName: "clientReferenceWindow"
     title: "星图 · " + (referenceData.title || "参考地图")
     visible: false
-    width: Math.round(520 * preferences.sheetScale)
-    height: Math.round(width * (mapImage.implicitWidth > 0 ? mapImage.implicitHeight / mapImage.implicitWidth : 1)) + (editing ? 58 : 0)
-    x: preferences.sheetPosition ? preferences.sheetPosition[0] : 420
-    y: preferences.sheetPosition ? preferences.sheetPosition[1] : 100
+    // Applied by the owner after image/screen changes; never a preference writer.
+    property var restoredGeometry: ({})
+    readonly property real preferredWidth: Math.round(520 * preferences.sheetScale)
+    readonly property real preferredHeight: Math.round(preferredWidth * (mapImage.implicitWidth > 0 ? mapImage.implicitHeight / mapImage.implicitWidth : 1)) + (editing ? 58 : 0)
+    width: restoredGeometry.width > 0 ? restoredGeometry.width : preferredWidth
+    height: restoredGeometry.height > 0 ? restoredGeometry.height : preferredHeight
+    x: typeof restoredGeometry.x === "number" && isFinite(restoredGeometry.x) ? restoredGeometry.x : (preferences.sheetPosition ? preferences.sheetPosition[0] : 420)
+    y: typeof restoredGeometry.y === "number" && isFinite(restoredGeometry.y) ? restoredGeometry.y : (preferences.sheetPosition ? preferences.sheetPosition[1] : 100)
     color: "transparent"
     flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus
     readonly property var preferences: settingsService.values
     readonly property var referenceData: clientCoordinator.referenceData
     readonly property bool editing: clientCoordinator.referenceEditing
+    readonly property bool previewOnly: referenceData.previewOnly === true
     function reportSurface() {
         if (!clientCoordinator || typeof clientCoordinator.reportPresentation !== "function") return
         var labels = ["empty", "ready", "loading", "error"]
         clientCoordinator.reportPresentation("reference", {visible: visible,
             imageStatus: labels[mapImage.status] || "unknown", materialReady: mapImage.status === Image.Ready,
             effectiveOpacity: opacity * mapImage.opacity, geometry: [x,y,width,height],
-            paintedSize: [mapImage.paintedWidth, mapImage.paintedHeight]})
+            paintedSize: [mapImage.paintedWidth, mapImage.paintedHeight],
+            preferredSize: [preferredWidth, preferredHeight], previewOnly: previewOnly})
     }
     function scheduleReport() { Qt.callLater(reportSurface) }
     onVisibleChanged: scheduleReport()
@@ -32,6 +38,8 @@ Window {
     onHeightChanged: scheduleReport()
     onXChanged: scheduleReport()
     onYChanged: scheduleReport()
+    onPreferredWidthChanged: scheduleReport()
+    onPreferredHeightChanged: scheduleReport()
     onClosing: function(event) {
         event.accepted = clientCoordinator.closeReady
         if (!event.accepted) clientCoordinator.hideReference()
@@ -47,15 +55,17 @@ Window {
             source: reference.referenceData.imageUrl || ""
             asynchronous: true
             fillMode: Image.PreserveAspectFit
-            opacity: reference.preferences.referenceOpacity
+            opacity: reference.editing ? Math.max(0.4, reference.preferences.referenceOpacity) : reference.preferences.referenceOpacity
             onStatusChanged: reference.scheduleReport()
             onOpacityChanged: reference.scheduleReport()
         }
         Label {
+            objectName: "referencePreviewBadge"
             anchors.left: mapImage.left; anchors.right: mapImage.right; anchors.top: mapImage.top
-            visible: reference.referenceData.provisional === true
-            text: "暂选地图｜组内确认中"; color: "#ffd773"; padding: 5; font.pixelSize: 14
-            background: Rectangle { color: "#2d230c" }
+            visible: reference.previewOnly || reference.referenceData.provisional === true
+            text: reference.previewOnly ? "位置预览（不参与识别）" : "暂选地图｜组内确认中"
+            color: reference.previewOnly ? "#ffffff" : "#ffd773"; padding: 5; font.pixelSize: 14
+            background: Rectangle { color: reference.previewOnly ? "#234b63" : "#2d230c" }
         }
         MouseArea {
             anchors.fill: mapImage

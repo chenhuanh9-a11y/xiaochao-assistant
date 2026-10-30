@@ -68,6 +68,7 @@ class QtClient:
         from client_preview import PreviewService
         from client_control_snap import ControlSnap
         from client_problems import ProblemsService
+        from client_reference_presentation import ReferencePreviewProvider
         self.app, self.sandbox = app, owned_sandbox(sandbox)
         self.paths = runtime_paths(self.sandbox)
         from client_lifecycle import LifecycleJournal
@@ -77,7 +78,10 @@ class QtClient:
         self.settings = SettingsService(self.sandbox)
         self.custom_galleries = CustomGalleryService(self.sandbox)
         self.custom_display = CustomGalleryDisplay(self.custom_galleries)
-        self.capture = ClientCaptureProvider()
+        from client_capture_exclusion import QtCaptureExclusion
+        self.capture_exclusion = QtCaptureExclusion(parent=app,
+            is_closing=lambda: self._closed or bool(getattr(getattr(self, "coordinator", None), "closing", False)))
+        self.capture = ClientCaptureProvider(full_capture=self.capture_exclusion.full_capture)
         self.input = NativeShortcutBackend()
         self.providers = build_engine_factories(self.paths.resource_root)
         self.providers.set_custom_display(self.custom_display.layer, base_provider=self.custom_display.base_layer)
@@ -108,6 +112,7 @@ class QtClient:
         self.settings.changed.connect(lambda: self.route_choices.setMode(self.settings.values.get("gameMode", "nightmare")))
         self.route_choices.setMode(mode)
         self.windows = WindowController()
+        self.windows.setBeforeShow(self.capture_exclusion.protectWindow)
         self.preview = PreviewService(self.backend, self.windows)
         self.backend.overlayRequested.connect(self.preview.show)
         self.images = LiveImages()
@@ -115,6 +120,13 @@ class QtClient:
             resources=self.resources, session=self.session, windows=self.windows,
             native_input=self.input, capture=self.capture, runtime=self.runtime, images=self.images,
             **({"window_catalog": lambda: []} if probe_output else {}))
+        self.reference_preview = ReferencePreviewProvider(self.providers, parent=self.coordinator)
+        self.coordinator.setReferencePreviewProvider(self.reference_preview)
+        self._reference_screens = set()
+        self.app.screenAdded.connect(self._reference_screen_added)
+        self.app.screenRemoved.connect(self._reference_screen_removed)
+        for screen in self.app.screens():
+            self._reference_screen_added(screen)
         self.coordinator.lifecycleEvent.connect(self.lifecycle.record_event)
         self.feedback = UiFeedback(settings=self.settings, windows=self.windows, session=self.session,
             coordinator=self.coordinator, enabled=not bool(probe_output))
@@ -139,11 +151,14 @@ class QtClient:
         self.problems = ProblemsService(self.paths, build_fingerprint=self.info._build_fingerprint,
             source_commit=self.info._package_metadata.get('qtSourceCommit') or self.info._package_metadata.get('releaseReportSourceCommit') or '')
         self.coordinator.errorReported.connect(self.problems.record)
+        self.resources.errorReported.connect(self._resource_problem)
+        self.online_packages.errorReported.connect(self._resource_problem)
         self.coordinator.traceReported.connect(self.problems.recordTrace)
         self.info.setProviders(session=self.session, resources=self.resources, input=self.input,
                                coordinator=self.coordinator, problems=self.problems)
         self.coordinator.close_writers = (self.custom_galleries, self.info, self.online_packages,
-                                         self.backend, self.route_choices, self.problems)
+                                         self.backend, self.route_choices, self.problems, self.reference_preview,
+                                         self.capture_exclusion)
         self.custom_galleries.setUseHandler(self._use_custom_gallery)
         self.custom_galleries.galleriesChanged.connect(self._custom_gallery_changed)
         self.custom_galleries.changed.connect(self._sync_custom_gallery_active)
@@ -153,6 +168,15 @@ class QtClient:
         self.resources.resourcesChanged.connect(lambda: self._refresh_route_preferences(force=True))
         self._refresh_route_preferences()
         self.settings.saved.connect(self._sync_custom_gallery_active)
+        self._home_preview_request = None
+        self._applying_home_preview = False
+        self.info.homePreviewRequested.connect(self._open_home_preview)
+        self.backend.changed.connect(self._finish_home_preview)
+        self.backend.viewChanging.connect(self._cancel_home_preview)
+        self.coordinator.pageRequested.connect(self._home_preview_page_changed)
+        self.session.changed.connect(self._refresh_home_context)
+        self.resources.resourcesChanged.connect(lambda: self._refresh_home_context(force=True))
+        self._refresh_home_context()
         self.engine = QQmlApplicationEngine()
         self.engine.addImageProvider("live", self.images)
         self.warnings = []
@@ -188,6 +212,82 @@ class QtClient:
         self._initialize_timer.setInterval(120)
         self._initialize_timer.timeout.connect(self._initialize_resources)
         self._initialize_timer.start()
+        self.info.scheduleStartupCheck(bool(self.paths.production and not probe_output))
+
+    def _reference_screen_added(self, screen):
+        if screen not in self._reference_screens:
+            self._reference_screens.add(screen)
+            for signal in (screen.availableGeometryChanged, screen.geometryChanged,
+                           screen.logicalDotsPerInchChanged):
+                signal.connect(self.coordinator.referenceScreensChanged)
+        self.coordinator.referenceScreensChanged()
+
+    def _reference_screen_removed(self, screen):
+        self._reference_screens.discard(screen)
+        self.coordinator.referenceScreensChanged()
+
+    def _resource_problem(self, event):
+        if self._closed or not isinstance(event, dict) or event.get("kind") not in {"error", "warning"}:
+            return
+        self.problems.record(event)
+        if not self.coordinator.closing:
+            self.coordinator.notificationRequested.emit(event["title"], event["summary"], event["kind"])
+
+    def _refresh_home_context(self, *, force=False):
+        if self._closed or self.coordinator.closing:
+            return
+        mode, profile = self.session.appliedMode, self.session.appliedProfile
+        request = self._home_preview_request
+        if request is not None and request[:2] != (mode, profile):
+            self._home_preview_request = None
+        self.info.setHomeContext(mode, profile, force=force)
+
+    def _cancel_home_preview(self, _view_key=None):
+        if not self._applying_home_preview:
+            self._home_preview_request = None
+
+    def _home_preview_page_changed(self, page):
+        if page != "gallery":
+            self._cancel_home_preview()
+
+    def _open_home_preview(self, mode, profile, key):
+        if (self._closed or self.coordinator.closing
+                or (mode, profile) != (self.session.appliedMode, self.session.appliedProfile)
+                or not key.startswith(f"{mode}/{profile}/")):
+            return
+        # Explicit user navigation happens first; normal gallery initialization
+        # cannot cancel the request that is installed immediately afterwards.
+        self.coordinator.navigate("gallery")
+        self._home_preview_request = (mode, profile, key)
+        self._applying_home_preview = True
+        try:
+            self.backend.setMode(mode)
+        finally:
+            self._applying_home_preview = False
+        self._finish_home_preview()
+
+    def _finish_home_preview(self):
+        request = self._home_preview_request
+        if (request is None or self._applying_home_preview or self._closed
+                or self.coordinator.closing or self.backend.busy):
+            return
+        mode, profile, key = request
+        context = self.backend.context
+        if context is None or context.mode != mode or self.backend.mode != mode:
+            self._home_preview_request = None
+            return
+        # setMode loads asynchronously; profiles/rows belong to the new context
+        # only now. Clear old browsing filters before selecting the exact tile.
+        self._applying_home_preview = True
+        self._home_preview_request = None
+        try:
+            self.backend.setProfile(profile)
+            if self.backend.profileId == profile:
+                self.backend.clearGallerySearch()
+                self.backend.setFloor("")
+                self.backend.select(key)
+        finally:
+            self._applying_home_preview = False
 
     def _refresh_route_preferences(self, *, force=False):
         if self._closed or self.coordinator.closing:
@@ -325,9 +425,12 @@ class QtClient:
         self._initialize_timer.stop()
         self.coordinator.shutdown()
         self.session.shutdown()
+        self.capture_exclusion.shutdown()
         self.resources.shutdown()
         self.settings.shutdown()
         self.preview.shutdown()
+        self.reference_preview.close()
+        self.reference_preview.pool.waitForDone()
         self.control_snap.shutdown()
         self.backend.shutdown()
         self.route_choices.shutdown()

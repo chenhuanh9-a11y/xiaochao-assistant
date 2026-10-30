@@ -10,6 +10,7 @@ if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 from star_map_download import MapPackageDownloadService
 from star_map_import import verified_installed_package
+from client_resources import package_problem, package_cancelled, _error_text
 
 
 class _Signals(QObject):
@@ -26,11 +27,13 @@ class _Work(QRunnable):
         try:
             self.signals.done.emit(self.generation, self.function(), None)
         except Exception as error:
-            self.signals.done.emit(self.generation, None, str(error))
+            self.signals.done.emit(self.generation, None, dict(reason=_error_text(error),
+                code=_error_text(getattr(error, "reason", "")), errorType=type(error).__name__))
 
 
 class OnlinePackagesService(QObject):
     changed = Signal()
+    errorReported = Signal(object)
 
     def __init__(self, sandbox, resources, *, index_url=None, transport=None):
         super().__init__()
@@ -164,11 +167,12 @@ class OnlinePackagesService(QObject):
         self._timer.stop()
         if self._closed:
             return
-        if generation != self._generation or self._cancel.is_set():
+        if generation != self._generation or self._cancel.is_set() or (error and package_cancelled(error)):
             self._stage = "ready" if self._entries else "idle"
             self._message = "已取消；迟到的图包不会自动导入。"
         elif error:
-            self._stage, self._message = "error", "在线操作失败：" + error
+            self._stage = "error"
+            self._report_problem(error)
         elif self._operation == "index":
             try:
                 entries = {row["packageId"]: dict(row) for row in result}
@@ -183,7 +187,8 @@ class OnlinePackagesService(QObject):
                     self._selection_generation += 1
                 self._stage, self._message = "ready", "在线列表已更新。"
             except (KeyError, TypeError, ValueError) as problem:
-                self._stage, self._message = "error", "图包列表不可用：" + str(problem)
+                self._stage = "error"
+                self._report_problem(problem)
         else:
             self._stage = "cached"
             if (self._selected != self._active
@@ -198,6 +203,11 @@ class OnlinePackagesService(QObject):
                 self._message = ("已交给本地图包检查；覆盖确认和安装结果见本地管理。" if accepted
                                  else "图包已缓存；本地操作或会话忙，未提交导入，可稍后重试。")
         self.changed.emit()
+
+    def _report_problem(self, error):
+        problem = package_problem(error, self._operation, online=True)
+        self._message = problem["summary"]
+        self.errorReported.emit(problem)
 
     @Slot()
     def cancel(self):

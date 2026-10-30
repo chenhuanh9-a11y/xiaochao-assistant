@@ -84,6 +84,12 @@ class WindowController(QObject):
         self._state = {}
         self._message = ""
         self.globalHotkeys = DisabledGlobalHotkeyBackend()
+        self._before_show = None
+
+    def setBeforeShow(self, callback):
+        if callback is not None and not callable(callback):
+            raise TypeError("A before-show callback must be callable")
+        self._before_show = callback
 
     message = Property(str, lambda self: self._message, notify=changed)
     snapshot = Property("QVariantMap", lambda self: {name: dict(value) for name, value in self._state.items()}, notify=changed)
@@ -147,6 +153,8 @@ class WindowController(QObject):
         window = self._window(name)
         if window is None:
             return
+        if self._before_show is not None:
+            self._before_show(window)
         window.show()
         if name not in self.FOCUSABLE:
             _native_overlay_style(window, self._state[name]["clickThrough"])

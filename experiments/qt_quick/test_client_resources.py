@@ -64,6 +64,8 @@ class ResourceServiceTests(unittest.TestCase):
         self.confirmations = []
         self.changes = []
         self.completions = []
+        self.problems = []
+        self.service.errorReported.connect(self.problems.append)
         self.service.importCompleted.connect(lambda *args: self.completions.append(args))
         self.service.confirmationRequested.connect(lambda *args: self.confirmations.append(args))
         self.service.resourcesChanged.connect(lambda: self.changes.append(True))
@@ -189,7 +191,7 @@ class ResourceServiceTests(unittest.TestCase):
                 replacement.replace(target)  # Same bytes, different owned object.
                 self.service.confirmOperation(True)
                 self.settle()
-                self.assertIn("reinspect", self.service.message)
+                self.assertIn("reinspect", self.problems[-1]["raw"])
                 self.assertEqual((self.root / IMAGE).read_bytes(), b"new")
                 self.assertTrue((self.root / recovery.upgrade.PENDING).exists())
                 self.assertFalse(self.lease.active)
@@ -203,7 +205,7 @@ class ResourceServiceTests(unittest.TestCase):
         self.request_recovery()
         self.service.confirmOperation(True)
         self.settle()
-        self.assertIn("rollback-incomplete", self.service.message)
+        self.assertIn("rollback-incomplete", self.problems[-1]["raw"])
         self.assertEqual((self.root / IMAGE).read_bytes(), b"player edit")
         self.assertTrue((self.root / recovery.upgrade.PENDING).exists())
         directory = self.root / f"work/map-packages/upgrades/{transaction_id}"
@@ -230,7 +232,7 @@ class ResourceServiceTests(unittest.TestCase):
         with patch.object(importer, "_check_closed", side_effect=importer.ImportRejected("application-running-or-not-writable")):
             self.service.confirmOperation(True)
             self.settle()
-        self.assertIn("application-running-or-not-writable", self.service.message)
+        self.assertIn("application-running-or-not-writable", self.problems[-1]["raw"])
         self.assertEqual((self.root / IMAGE).read_bytes(), b"new")
         self.assertTrue((self.root / recovery.upgrade.PENDING).exists())
         self.assertEqual(self.changes, [])
@@ -245,7 +247,7 @@ class ResourceServiceTests(unittest.TestCase):
         with patch.object(importer, "_check_closed", side_effect=phase_changed):
             self.service.confirmOperation(True)
             self.settle()
-        self.assertIn("resource-consumers-not-stopped", self.service.message)
+        self.assertIn("resource-consumers-not-stopped", self.problems[-1]["raw"])
         self.assertEqual((self.root / IMAGE).read_bytes(), b"new")
         self.assertEqual(self.changes, [])
 
@@ -260,7 +262,7 @@ class ResourceServiceTests(unittest.TestCase):
         with patch.object(recovery, "execute_locked", side_effect=OSError("fixture disk failure")):
             self.service.confirmOperation(True)
             self.settle()
-        self.assertIn("fixture disk failure", self.service.message)
+        self.assertIn("fixture disk failure", self.problems[-1]["raw"])
         self.assertEqual(self.changes, [])
         self.request_recovery()
         with patch.object(recovery, "execute_locked", side_effect=commit):
@@ -313,7 +315,7 @@ class ResourceServiceTests(unittest.TestCase):
         self.request_recovery()
         self.service.confirmOperation(True)
         self.settle()
-        self.assertIn("fixture helper missing", self.service.message)
+        self.assertIn("fixture helper missing", self.problems[-1]["raw"])
         self.assertFalse(self.service.recoveryHandoffPending)
         self.assertFalse(self.lease.active)
         self.assertEqual(close_requests, [])
@@ -327,7 +329,7 @@ class ResourceServiceTests(unittest.TestCase):
         self.service.inspectRecovery()
         self.settle()
         self.assertTrue(self.service.recoveryRequired)
-        self.assertIn("pending-upgrade-journal-missing", self.service.message)
+        self.assertIn("pending-upgrade-journal-missing", self.problems[-1]["raw"])
 
     def test_bound_helper_receipt_reports_actual_result_and_notifies_after_scan(self):
         transaction_id = self.upgrade()
@@ -337,7 +339,7 @@ class ResourceServiceTests(unittest.TestCase):
         self.service.recordRecoveryReceipt(receipt)
         self.service.refresh()
         self.settle()
-        self.assertIn("fixture conflict", self.service.message)
+        self.assertIn("fixture conflict", self.problems[-1]["raw"])
         self.assertEqual(self.changes, [])
         result = importer.rollback_package_upgrade(self.root, transaction_id, application_stopped=True)
         receipt.update(success=True, operationResult=result)
@@ -373,7 +375,7 @@ class ResourceServiceTests(unittest.TestCase):
         self.service.requestRollback("")
         self.settle()
         self.assertEqual(self.service.pendingKind, "")
-        self.assertIn("invalid-upgrade-transaction-id", self.service.message)
+        self.assertIn("invalid-upgrade-transaction-id", self.problems[-1]["raw"])
         self.assertFalse(self.lease.active)
         self.assertTrue((self.root / recovery.upgrade.PENDING).exists())
 
@@ -464,13 +466,45 @@ class ResourceServiceTests(unittest.TestCase):
             finally:
                 finish.set()
             self.settle()
-        self.assertIn("fixture post-import scan failed", self.service.message)
+        self.assertIn("fixture post-import scan failed", self.problems[-1]["raw"])
         self.assertNotIn("登记与状态已核对", self.service.message)
         self.assertFalse(self.lease.active)
         self.service.refresh()
         self.settle()
         self.assertTrue(any(r["status"] == "installed" for r in self.service.packageRows))
         self.assertEqual(self.service.message, "本地资源已核对。")
+
+    def test_failure_has_chinese_summary_bounded_original_and_no_cancel_or_late_error(self):
+        archive = self.package()
+        raw = "file-integrity-mismatch: " + "诊断" * 3000
+        with patch.object(importer, "inspect_package", side_effect=importer.ImportRejected(raw)):
+            self.service.importArchive(QUrl.fromLocalFile(str(archive)).toString())
+            self.settle()
+        self.assertEqual(len(self.problems), 1)
+        self.assertIn("校验不一致", self.service.message)
+        self.assertNotIn("file-integrity-mismatch", self.service.message)
+        problem = self.problems[0]
+        self.assertTrue(problem["raw"].startswith("file-integrity-mismatch"))
+        self.assertLessEqual(len(problem["raw"].encode("utf-8")), 4096)
+        self.assertEqual((problem["phase"], problem["kind"]), ("operation", "error"))
+        self.service._completed(self.service._token, None, dict(reason=raw))
+        self.service._completed(self.service._token - 1, None, dict(reason=raw))
+        self.assertEqual(len(self.problems), 1)
+        with patch.object(importer, "inspect_package", side_effect=importer.ImportRejected("import-cancelled")):
+            self.service.importArchive(QUrl.fromLocalFile(str(archive)).toString())
+            self.settle()
+        self.assertIn("已取消", self.service.message)
+        self.assertEqual(len(self.problems), 1)
+        self.service.recordImportReceipt(dict(success=False, reason="import-request-cancelled"))
+        self.service.recordRecoveryReceipt(dict(success=False, requestId="fixture-cancel", planSha256="a" * 64,
+                                               action="recover", reason="import-request-cancelled"))
+        APP.processEvents()
+        self.assertEqual(len(self.problems), 1)
+        self.assertIn("恢复操作已取消", self.service.message)
+        self.service.importArchive(QUrl.fromLocalFile(str(archive)).toString())
+        self.settle()
+        self.assertEqual(len(self.completions), 1)
+        self.assertEqual(len(self.problems), 1)
 
     def test_first_import_scan_cancel_keeps_committed_result_without_success_footer(self):
         started, finish = threading.Event(), threading.Event()
@@ -534,7 +568,7 @@ class ResourceServiceTests(unittest.TestCase):
         self.service.recordImportReceipt(dict(result, success=False, reason="fixture import failed"))
         self.service.refresh()
         self.settle()
-        self.assertIn("fixture import failed", self.service.message)
+        self.assertIn("fixture import failed", self.problems[-1]["raw"])
         self.assertNotIn("内容已存在", self.service.message)
         self.assertEqual(len(self.changes), 1)
         self.service.recordImportReceipt(dict(result, success=True, replaced=1, replaceFiles=[{}]))
@@ -561,7 +595,7 @@ class ResourceServiceTests(unittest.TestCase):
         self.write(IMAGE, b"changed after confirmation")
         self.service.confirmOperation(True)
         self.settle()
-        self.assertIn("reinspect", self.service.message)
+        self.assertIn("reinspect", self.problems[-1]["raw"])
         self.assertEqual((self.root / IMAGE).read_bytes(), b"changed after confirmation")
 
     def test_upgrade_rejects_changed_archive(self):
@@ -572,7 +606,7 @@ class ResourceServiceTests(unittest.TestCase):
         self.service.confirmOperation(True)
         self.settle()
         self.assertEqual((self.root / IMAGE).read_bytes(), b"old")
-        self.assertIn("失败", self.service.message)
+        self.assertEqual(self.problems[-1]["kind"], "error")
         self.assertFalse(self.lease.active)
 
     def test_removal_cancel_rolls_back_and_late_install_cancel_reports_commit(self):
@@ -603,7 +637,7 @@ class ResourceServiceTests(unittest.TestCase):
     def test_unknown_file_conflict_never_overwrites(self):
         self.write(IMAGE, b"unknown")
         self.install()
-        self.assertIn("existing-data-conflict", self.service.message)
+        self.assertIn("existing-data-conflict", self.problems[-1]["raw"])
         self.assertEqual((self.root / IMAGE).read_bytes(), b"unknown")
 
     def test_pending_upgrade_explicitly_blocks_writes_and_retains_pointer(self):
@@ -659,7 +693,7 @@ class ResourceServiceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ResourceService(self.root)
         self.install()
-        self.assertIn("marked", self.service.message)
+        self.assertIn("marked", self.problems[-1]["raw"])
         self.assertFalse((self.root / IMAGE).exists())
 
     @unittest.skipUnless(os.environ.get("QT_RESOURCE_PRIVATE_ZIP"), "private ZIP not supplied")

@@ -15,13 +15,67 @@ import sys
 import threading
 from uuid import uuid4
 
-from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, QUrl, Qt, Signal, Slot
+from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, QTimer, QUrl, Qt, Signal, Slot
 
 from client_paths import RESOURCE_ROOT as ROOT, validate_installation_root
 sys.path.insert(0, str(ROOT / "app"))
 import star_map_import as importer
 import author_package_management as manager
 import client_resource_recovery as recovery
+
+
+def _error_text(value):
+    return str(value).encode("utf-8", errors="replace")[:4096].decode("utf-8", errors="ignore")
+
+
+def package_cancelled(error):
+    reason = (error.get("code") or error.get("reason", "")) if isinstance(error, dict) else str(error)
+    return reason in {"cancelled", "import-cancelled", "import-request-cancelled"}
+
+
+def package_problem(error, action, *, online=False, recovery_required=False):
+    """Small presentation adapter; original details stay separate for diagnosis."""
+    raw = _error_text(error.get("reason", "") if isinstance(error, dict) else error)
+    code = (str(error.get("code", "")) + " " + str(error.get("errorType", ""))
+            if isinstance(error, dict) else "")
+    reason = (code + " " + raw).casefold()
+    title = "在线图包操作未完成" if online else "资源操作未完成"
+    summary = ("在线操作未完成，请重新检查图包列表后重试。" if online else
+               "资源操作未完成，请点击“核对状态”检查实际结果后重试。")
+    if raw == "non-local-archive":
+        summary = "请选择保存在本机的 ZIP 图包文件，不能直接导入网页地址。"
+    elif recovery_required:
+        title, summary = "资源事务需要恢复", "资源事务尚未完成。备份和日志已保留；请点击“恢复记录”，核对后恢复旧资源。"
+    elif action == "refresh-after-write":
+        summary = "资源写入已完成，但安装状态核对失败。请点击“核对状态”重试；本次未显示安装完成提示。"
+    elif any(value in reason for value in ("deadline", "timeout", "network", "connection", "urlerror", "http-response")):
+        summary = "网络连接失败或请求超时，在线图包操作未完成。请检查网络后重试；失败的下载不会自动导入。"
+    elif any(value in reason for value in ("https-required", "invalid-url", "url-", "redirect", "index-not-configured")):
+        summary = "图包下载地址未配置或未通过安全校验。请向发行方核对有效地址；仍可使用本地 ZIP 导入。"
+    elif "binding-mismatch" in reason:
+        summary = "本地图包与所选在线条目不一致，未通过导入检查。请重新检查列表并下载对应图包。"
+    elif any(value in reason for value in ("sha", "integrity", "length-mismatch", "size-mismatch", "file-size-or-case")):
+        summary = "图包内容不完整或校验不一致，未通过导入检查。请重新获取完整图包后重试。"
+    elif "size-limit" in reason:
+        summary = "图包或在线列表超过支持的大小限制。请向发行方获取符合当前版本要求的文件。"
+    elif any(value in reason for value in ("dependency", "compatibility", "client-version", "package-version")):
+        summary = "图包与当前客户端或基础资源不匹配。请核对客户端版本，并选择对应的图包。"
+    elif any(value in reason for value in ("conflict", "changed", "reinspect", "ownership")):
+        summary = "资源、登记或备份在核对后发生变化，本次操作未能完成。请保留本地文件，重新核对并确认操作范围。"
+    elif any(value in reason for value in ("linked", "unsafe", "outside-root", "allowlist", "noncanonical")):
+        summary = "图包或目标目录包含不允许的路径，操作已被安全检查拒绝。请使用发行方提供的原始图包。"
+    elif any(value in reason for value in ("running", "requires-idle", "not-stopped", "close-application")):
+        summary = "资源仍被当前会话或其他操作使用。请先停止本局和相关操作，再按页面提示重试。"
+    elif any(value in reason for value in ("helper", "parent-", "process-handle")):
+        summary = "独立资源工具未能完成启动或返回可核对的结果。请重新核对状态；仍失败时可在帮助页导出诊断 ZIP。"
+    elif any(value in reason for value in ("permission", "not-writable", "disk", "oserror")):
+        summary = "资源文件无法读取或写入。请检查磁盘空间、目录权限和文件占用，再核对实际状态后重试。"
+    elif any(value in reason for value in ("index", "manifest", "archive", "package-unreadable", "badzipfile", "invalid-json")):
+        summary = ("在线图包列表格式或校验信息不可用。请重新检查列表；仍失败时请联系发行方。" if online else
+                   "所选文件不是当前版本支持的完整图包。请重新选择发行方提供的 ZIP，勿自行修改包内文件。")
+    return dict(title=title, summary=summary + " 详细原因可在帮助页的“最近问题”查看。",
+                raw=raw, action=("online:" if online else "resource:") + action,
+                phase="operation", kind="error")
 
 
 class _Signals(QObject):
@@ -43,7 +97,8 @@ class _Work(QRunnable):
                 recovery = self.recovery_probe()
             except OSError:
                 recovery = False
-            self.signals.done.emit(self.token, None, dict(reason=str(error), recovery=recovery))
+            self.signals.done.emit(self.token, None, dict(reason=_error_text(error), recovery=recovery,
+                                                        errorType=type(error).__name__))
 
 
 def _confirmation_fingerprint(result):
@@ -62,6 +117,7 @@ def _duplicate_import(result):
 
 class ResourceService(QObject):
     changed = Signal()
+    errorReported = Signal(object)
     confirmationRequested = Signal(str, str)
     resourcesChanged = Signal()
     recoveryCloseRequested = Signal()
@@ -120,7 +176,7 @@ class ResourceService(QObject):
         self._import_duplicate = bool(receipt["success"]) and _duplicate_import(receipt)
         self._import_notice = (("上次导入的资源内容已存在，正在核对实际状态。" if self._import_duplicate else
             "上次资源导入已完成，正在核对实际状态。") if receipt["success"] else
-            "上次资源未完成导入：" + str(receipt.get("reason", "结果不可用")))
+            self._report_problem(receipt.get("reason", "import-helper-result-unavailable"), "import-receipt", deferred=True))
         self._import_receipt_notification = bool(receipt["success"])
         self._import_package_id = str(receipt.get("packageId", ""))
         request = str(receipt.get("requestId", ""))
@@ -195,8 +251,21 @@ class ResourceService(QObject):
             self._recovery_notice = "恢复工具已还原旧资源，正在核对实际状态。"
             self._receipt_needs_notification = True
         else:
-            self._recovery_notice = "恢复工具未能完成，备份和冲突文件已保留。详情：" + str(receipt.get("reason", "结果未提供失败原因"))
+            self._recovery_notice = self._report_problem(receipt.get("reason", "recovery-helper-result-unavailable"),
+                                                        "recovery-receipt", recovery_required=True, deferred=True)
         self.changed.emit()
+
+    def _report_problem(self, error, action, *, recovery_required=False, deferred=False):
+        if package_cancelled(error):
+            return ("恢复操作已取消；备份和事务记录已保留，可重新核对恢复记录。"
+                    if recovery_required else "操作已取消。")
+        problem = package_problem(error, action, recovery_required=recovery_required)
+        if deferred:
+            # Startup receipts precede composition's ProblemsService wiring.
+            QTimer.singleShot(0, lambda: self.errorReported.emit(problem) if not self._closed else None)
+        else:
+            self.errorReported.emit(problem)
+        return problem["summary"]
 
     def _recovery_history(self, cancel):
         importer._check_cancelled(cancel.is_set)
@@ -292,7 +361,7 @@ class ResourceService(QObject):
         url = QUrl(file_url)
         path = Path(url.toLocalFile()) if url.isLocalFile() else Path(file_url)
         if (url.scheme() and not url.isLocalFile()) or not str(file_url).strip():
-            self._message = "请选择本地 ZIP 资源包。"
+            self._message = self._report_problem("non-local-archive", "inspect")
             self.changed.emit()
             return
         self._start("inspect", lambda cancel: (str(path), importer.inspect_package(path, self.sandbox)),
@@ -325,7 +394,7 @@ class ResourceService(QObject):
             if not path.resolve().is_relative_to(self.sandbox / "work/map-packages/downloads"):
                 raise ValueError("在线图包不在此客户端的下载缓存内")
         except (OSError, ValueError, TypeError, KeyError) as error:
-            self._message = str(error)
+            self._message = self._report_problem(error, "online-binding")
             self.changed.emit()
             return False
         def inspect(cancel):
@@ -439,7 +508,8 @@ class ResourceService(QObject):
 
     @Slot(int, object, object)
     def _completed(self, token, result, error):
-        self._jobs.pop(token, None)
+        if self._jobs.pop(token, None) is None:
+            return
         if self._closed or token != self._token:
             if self._closed:
                 self._release_lease()
@@ -450,16 +520,16 @@ class ResourceService(QObject):
             if kind == "refresh-after-write":
                 self._import_completion_message = ""
             recovery = error.get("recovery", False) if isinstance(error, dict) else False
-            error = error["reason"] if isinstance(error, dict) else str(error)
-            self._recovery = "upgrade-recovery-required" in error or "pending-upgrade" in error or recovery
+            raw = error.get("reason", "") if isinstance(error, dict) else str(error)
+            self._recovery = "upgrade-recovery-required" in raw or "pending-upgrade" in raw or recovery
             if self._recovery:
                 self._rows = [dict(row, canRemove=False, status="recovery-required") for row in self._rows]
-                self._message = "资源事务需要恢复。备份与日志已保留，请核对恢复记录并在恢复阶段还原旧资源。详情：" + error
-            elif "import-cancelled" in error:
+                self._message = self._report_problem(error, kind, recovery_required=True)
+            elif package_cancelled(error):
                 self._message = "操作已取消。"
             else:
                 # Do not claim rollback succeeded: recovery conflicts retain backups.
-                self._message = "资源操作失败：" + error
+                self._message = self._report_problem(error, kind)
             self._kind = ""
             self._release_lease()
             self.changed.emit()

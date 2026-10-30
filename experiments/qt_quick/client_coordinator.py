@@ -134,7 +134,7 @@ def another_assistant_running():
     for process in psutil.process_iter(["pid", "name"]):
         try:
             if process.info["pid"] != os.getpid() and (process.info.get("name") or "").casefold() in {
-                    "星图.exe", "第五人格小抄助手.exe", "xingtuqtclienttest.exe"}:
+                    "星图.exe", "第五人格小助手.exe", "第五人格小抄助手.exe", "xingtuqtclienttest.exe"}:
                 return True
         except (psutil.Error, OSError):
             continue
@@ -172,10 +172,16 @@ class ClientCoordinator(QObject):
         self._aligned = {}
         self._pending_aligned = {}
         self._accepted_material = {}
+        self._last_material_ack = None
+        from route_display_notice import FallbackNoticeTracker
+        self._fallback_notices = FallbackNoticeTracker()
         self._edit = None
         self._before_edit = None
         self._edit_generation = 0
         self._reference_clickthrough = True
+        self._reference_placement_signature = None
+        self._reference_preview_provider = None
+        self._reference_preview_context = None
         self._saving_position = False
         self._last_render_token = None
         values = settings.persistedValues
@@ -281,6 +287,10 @@ class ClientCoordinator(QObject):
             return
         data = self._aligned if name == "aligned" else self._reference
         self._trace("surface-state", payload=data, window=dict(details, name=name))
+        if name == "reference" and data and not self._closing:
+            self._restore_reference_placement(details.get("preferredSize"))
+        if name == "aligned" and not self._closing:
+            self._accept_current_material(data, details)
         if (details.get("imageStatus") == "error" and details.get("visible")
                 and details.get("sourceMatchesPayload", True) and not self._closing):
             key = ("surface-error", name, data.get("key", data.get("token")))
@@ -290,6 +300,44 @@ class ClientCoordinator(QObject):
                 self.errorReported.emit(dict(title="地图显示未完成", summary=summary,
                     raw=str(details), phase="presentation", action=name, kind="error"))
                 self.notificationRequested.emit("地图显示未完成", summary, "error")
+
+    def _accept_current_material(self, data, details):
+        """Image readiness acknowledges material only, never identity or a pose."""
+        token = data.get("token")
+        if (not token or details.get("token") != token or not details.get("visible")
+                or details.get("materialReady") is not True
+                or details.get("sourceMatchesPayload") is not True
+                or details.get("validPayload") is not True or not data.get("liveAuthorization")):
+            return
+        getter = getattr(self.runtime, "render_payload", None)
+        current = getter(token) if callable(getter) else None
+        if not current or current.get("token") != token or not current.get("liveAuthorization"):
+            return
+        geometry = details.get("geometry", ())
+        import math
+        expected = (data.get("originX"), data.get("originY"),
+                    math.ceil(data["clientWidth"] / data["deviceScale"]),
+                    math.ceil(data["clientHeight"] / data["deviceScale"]))
+        if len(geometry) != 4 or any(not isinstance(a, (int, float)) or not math.isfinite(a)
+                                    or abs(a-b) > 1 for a,b in zip(geometry, expected)):
+            return
+        acknowledge = getattr(self.runtime, "acknowledge_render_material", None)
+        if self._last_material_ack != token and callable(acknowledge):
+            acknowledge(token)
+            self._last_material_ack = token
+        if current.get("provisional") or current.get("previewOnly"):
+            return
+        from route_display_notice import DisplayNoticeContext
+        def context(payload):
+            return DisplayNoticeContext(payload.get("roundId"), payload.get("mode"),
+                payload.get("mapId"), payload.get("floor"), repr(payload.get("resourceIdentity")),
+                (payload.get("cycleId"), payload.get("frameId"), payload.get("generation")))
+        self._fallback_notices.begin_round(current.get("roundId"))
+        notice = self._fallback_notices.consume(context(data), context(current),
+            display_kind=current.get("displayKind", ""), author_status=current.get("authorStatus", "none"),
+            current_commit=True)
+        if notice:
+            self.notificationRequested.emit("地图显示已就绪", notice, "info")
 
     def _cancel_pending_material(self, reason):
         pending = self._pending_aligned
@@ -483,19 +531,26 @@ class ClientCoordinator(QObject):
         if self._closing or self._closed:
             return
         self._automatic_live = True
-        if self.input.configureSettings(self.settings.persistedValues):
+        if self._input_enable_allowed() and self.input.configureSettings(self.settings.persistedValues):
             enable = getattr(self.input, "enableManagement", None)
             if callable(enable):
                 enable()
         self._discovery_timer.start()
         self._discover_game()
 
+    def _input_enable_allowed(self):
+        if another_assistant_running():
+            self._message = "检测到另一个小抄客户端仍在运行，请先退出后再启用快捷键"
+            self.changed.emit()
+            return False
+        return True
+
     @staticmethod
     def _window_identity(row):
         return (str(row["hwnd"]), row.get("pid"), row.get("processCreateTime"), row.get("executable"))
 
     def _clear_reference(self):
-        if not self._reference and not self._edit:
+        if not self._reference and not self._edit and self._reference_preview_context is None:
             return
         self.cancelReferenceEdit()
         had_reference = bool(self._reference)
@@ -522,6 +577,8 @@ class ClientCoordinator(QObject):
 
     def _discover_game(self):
         if self._closing or self._closed:
+            return
+        if self._automatic_live and not self._input_enable_allowed():
             return
         try:
             rows = list(self._catalog())
@@ -589,8 +646,8 @@ class ClientCoordinator(QObject):
                 self._message = "请先选择并连接游戏窗口"
             elif self.session.busy:
                 self._message = "请等待窗口连接或当前任务完成"
-            elif another_assistant_running():
-                self._message = "检测到另一个小抄客户端仍在运行，请先退出后再启用快捷键"
+            elif not self._input_enable_allowed():
+                pass
             elif self.input.configureSettings(self.settings.persistedValues) and self.input.enable():
                 self._message = "快捷键已启用；结束测试时可在此关闭"
             else:
@@ -666,7 +723,6 @@ class ClientCoordinator(QObject):
     def setRouteProfile(self, profile):
         if self.settings.busy or self.resources.busy:
             return
-        self._revoke_runtime("route-preference-changed")
         values = self.settings.values
         choices = dict(values.get("modeRouteProfiles", {}))
         choices[self.session.currentMode] = profile
@@ -674,6 +730,9 @@ class ClientCoordinator(QObject):
             self.settings.saveFields(["routeProfileId", "modeRouteProfiles"])
 
     def _sync_reference_payload(self, payload):
+        if self._edit is not None and self._reference.get("previewOnly"):
+            self._show_reference_current()
+            return  # Explicit position preview never becomes a runtime grant.
         if not payload or not payload.get("referenceAuthorized"):
             self._clear_reference()
             return
@@ -696,12 +755,67 @@ class ClientCoordinator(QObject):
         self._trace("reference-publish", payload=self._reference)
         self._show_reference_current()
 
+    def _reference_focus_allowed(self):
+        """Use the old game/own-editor focus rule for every presentation path."""
+        try:
+            foreground = self._native_windows.foreground_window()
+            if self._bound and foreground == int(self._bound):
+                return True
+            if self._edit is not None and foreground:
+                return self._native_windows.window_process_id(foreground) == os.getpid()
+        except (OSError, ValueError, AttributeError):
+            pass
+        return False
+
+    def _restore_reference_placement(self, preferred_size=None):
+        window = self.windows._windows.get("reference")
+        if window is None or (self._edit is not None and
+                              (preferred_size is None or self._edit.offset is not None)):
+            return
+        from client_reference_presentation import restore_reference_geometry, UNKNOWN
+        screens = QGuiApplication.screens() if isinstance(QGuiApplication.instance(), QGuiApplication) else []
+        if not screens:
+            return
+        values = self.settings.values
+        size = preferred_size or [window.property("preferredWidth") or window.width(),
+                                  window.property("preferredHeight") or window.height()]
+        position = [window.x(), window.y()] if self._edit else values.get("sheetPosition")
+        space = "qt-logical-v1" if self._edit else values.get("sheetPositionSpace", UNKNOWN)
+        signature = (repr(position), space,
+            tuple(size), tuple((s.name(), s.geometry().getRect(), s.availableGeometry().getRect(),
+                                s.devicePixelRatio()) for s in screens))
+        if signature == self._reference_placement_signature:
+            return
+        try:
+            placement = restore_reference_geometry(position, size, screens, position_space=space)
+            window.setScreen(placement.screen)
+            window.setProperty("restoredGeometry", dict(x=placement.x, y=placement.y,
+                width=placement.width, height=placement.height))
+            self._reference_placement_signature = signature
+            if self._edit is not None:
+                self._edit.place((placement.x, placement.y))
+                self._edit.size = (placement.width, placement.height)
+            self._trace("reference-placement", payload=self._reference, diag=placement.diagnostics)
+        except (ValueError, RuntimeError, TypeError) as error:
+            self._trace("reference-placement-rejected", payload=self._reference, reason=str(error))
+
+    def referenceScreensChanged(self):
+        self._reference_placement_signature = None
+        window = self.windows._windows.get("reference")
+        size = [window.property("preferredWidth") or window.width(),
+                window.property("preferredHeight") or window.height()] if window else None
+        self._restore_reference_placement(size)
+
     def _show_reference_current(self):
-        if self._reference and self.settings.values.get("referenceSheetVisible", True):
+        allowed = self._reference_focus_allowed()
+        if self._reference and (self._edit is not None or self.settings.values.get("referenceSheetVisible", True)) and allowed:
+            self._restore_reference_placement()
             if self._edit is None:
                 self.windows.setClickThrough("reference", True)
             if not self.windows.snapshot.get("reference", {}).get("visible"):
                 self.windows.show("reference")
+        else:
+            self.windows.hide("reference")
 
     @Slot()
     def showReference(self):
@@ -745,19 +859,68 @@ class ClientCoordinator(QObject):
 
     @Slot()
     def beginReferenceEdit(self):
-        if not self._reference or self.resources.busy:
+        if self.resources.busy or self._closing or self._closed:
+            return
+        if not self._reference:
+            provider = self._reference_preview_provider
+            if provider is None:
+                self._message = "尚无可预览的地图资源，请先导入图包"
+                self.changed.emit()
+                return
+            if self._reference_preview_context is None:
+                self._edit_generation += 1
+                context = (*self._applied_context, self._edit_generation)
+                self._reference_preview_context = context
+                provider.request(*self._applied_context, context=context,
+                    variant_id=self.settings.values.get("zhan10CoffinVariantId", "variant-01"))
+                self._message = "正在准备位置预览，不参与本局识别"
+                self.changed.emit()
             return
         window = self.windows._windows.get("reference")
         if window is None or self._edit:
             return
+        self._restore_reference_placement()
         self._edit_generation += 1
         self._before_edit = (window.x(), window.y())
         self._reference_clickthrough = bool(self.windows.snapshot["reference"]["clickThrough"])
         self._edit = ReferencePositionEdit(self._edit_generation, (self._reference["key"],),
                                           self._before_edit, (window.width(), window.height()))
         self.windows.setClickThrough("reference", False)
-        self.windows.show("reference")
+        self._show_reference_current()
         self._message = "正在编辑定点位置；松开鼠标后仍可继续移动，点击完成保存"
+        self.changed.emit()
+
+    def setReferencePreviewProvider(self, provider):
+        self._reference_preview_provider = provider
+        provider.ready.connect(self._reference_preview_ready)
+        provider.failed.connect(self._reference_preview_failed)
+
+    def _reference_preview_ready(self, payload):
+        context = self._reference_preview_context
+        if (self._closed or self._closing or context is None
+                or tuple(payload.get("context", ())) != context
+                or tuple(context[:2]) != self._applied_context
+                or payload.get("previewOnly") is not True
+                or payload.get("referenceAuthorized") or payload.get("liveAuthorization")):
+            return
+        self._reference_preview_context = None
+        if self.resources.busy:
+            self._message = "资源操作尚未完成，请稍后重试位置预览"
+            self.changed.emit()
+            return
+        key = "reference:preview:" + str(payload["requestId"])
+        self._reference = {k: v for k, v in payload.items() if k != "pixels"}
+        self._reference.update(key=key, imageUrl=self.images.publish(key, payload["pixels"]))
+        self.beginReferenceEdit()
+
+    def _reference_preview_failed(self, raw):
+        if self._reference_preview_context is None or self._closing or self._closed:
+            return
+        self._reference_preview_context = None
+        self._message = "位置预览读取失败，请检查已安装地图资源"
+        self.errorReported.emit(dict(title="位置预览未完成", summary=self._message,
+            raw=str(raw), phase="presentation", action="reference-preview", kind="error"))
+        self.notificationRequested.emit("位置预览未完成", self._message, "error")
         self.changed.emit()
 
     @Slot(str, float, float)
@@ -772,6 +935,10 @@ class ClientCoordinator(QObject):
                 window.setX(point[0]); window.setY(point[1])
 
     def _end_reference_edit(self, restore):
+        if self._reference_preview_context is not None:
+            self._reference_preview_context = None
+            if self._reference_preview_provider is not None:
+                self._reference_preview_provider.cancel()
         if not self._edit:
             return
         self._edit.cancel()
@@ -781,6 +948,12 @@ class ClientCoordinator(QObject):
             window.setX(self._before_edit[0]); window.setY(self._before_edit[1])
         self._before_edit = None
         self.windows.setClickThrough("reference", self._reference_clickthrough)
+        if self._reference.get("previewOnly"):
+            self._reference = {}
+            clear = getattr(self.images, "clear_reference", None)
+            if callable(clear):
+                clear()
+            self.windows.hide("reference")
         self.changed.emit()
 
     @Slot()
@@ -795,7 +968,9 @@ class ClientCoordinator(QObject):
                         max(area.top(), min(position[1], area.bottom()-window.height()+1))]
             window.setX(position[0]); window.setY(position[1])
         self.settings.setValue("sheetPosition", position)
-        self._saving_position = self.settings.saveFields(["sheetPosition"])
+        from client_reference_presentation import QT_LOGICAL
+        self.settings.setValue("sheetPositionSpace", QT_LOGICAL)
+        self._saving_position = self.settings.saveFields(["sheetPosition", "sheetPositionSpace"])
         # Applying position is separate from persistence; error remains in settings.
         self._end_reference_edit(False)
         self._message = "位置已应用，正在保存" if self._saving_position else self.settings.message
@@ -842,10 +1017,10 @@ class ClientCoordinator(QObject):
             was_enabled = self.input.enabled
             if self.input.configureSettings(values):
                 self._binding_signature = signature
-                if was_enabled:
+                if was_enabled and self._input_enable_allowed():
                     self.input.enable()
                 enable_management = getattr(self.input, "enableManagement", None)
-                if self._automatic_live and callable(enable_management):
+                if self._automatic_live and callable(enable_management) and self._input_enable_allowed():
                     enable_management()
         configure = getattr(self.runtime, "configure_settings", None)
         if configure:
@@ -855,8 +1030,14 @@ class ClientCoordinator(QObject):
         # Mode and author reconfiguration is serialized by SessionService; don't
         # race two independent commands with different generation tokens.
         if (mode, profile) != self._applied_context:
-            self._clear_reference()
-            self._revoke_runtime("preferences-committed")
+            if mode != self._applied_context[0]:
+                self._clear_reference()
+                self._revoke_runtime("preferences-committed")
+            else:
+                # Author selection changes pixels/bridge, never recognition
+                # identity or the already verified canonical pose.
+                self.cancelReferenceEdit()
+                self._cancel_pending_material("route-preference-changed")
             self._pending_context = (mode, profile)
             self._context_timer.start()
             self._try_apply_context()
@@ -917,7 +1098,10 @@ class ClientCoordinator(QObject):
         if self._closing or self._closed:
             return
         if self.session.busy:
-            if self.session.snapshot.get("pendingAction") not in {
+            pending = self.session.snapshot.get("pendingAction")
+            reprojecting = (pending == "set_context" and self._pending_context
+                            and self._pending_context[0] == self._applied_context[0])
+            if not reprojecting and pending not in {
                     "refresh_map", "reselect_map", "previous_candidate", "next_candidate",
                     "select_candidate", "confirm_route", "set_floor", "cycle_floor"}:
                 self._invalidate_display()
@@ -933,7 +1117,7 @@ class ClientCoordinator(QObject):
         if receipt.get("action") == "bind_capture":
             if receipt.get("success") and self._bound:
                 self._message = "窗口已连接；点击开始本局后切回游戏"
-                if self._automatic_live and not self.input.enabled:
+                if self._automatic_live and not self.input.enabled and self._input_enable_allowed():
                     self.input.enable()
             else:
                 self._bound = ""
@@ -1077,6 +1261,7 @@ class ClientCoordinator(QObject):
                 self._notified.clear()
                 self.notificationRequested.emit("开始本局", "已开始本局，打开游戏地图后自动识别", "info")
             else:
+                self._fallback_notices.end_round()
                 self._clear_reference()
                 self.notificationRequested.emit("本局已结束", "本局显示与识别已停止", "info")
         receipt = state.get("lastReceipt", {})
@@ -1158,16 +1343,28 @@ class ClientCoordinator(QObject):
             window.setScreen(projection.screen)
 
     def _watch_foreground(self):
-        if self._closed or self._closing or not self._bound or not self.session.snapshot.get("roundActive"):
+        if self._closed or self._closing:
+            return
+        if self._edit is not None:
+            self._show_reference_current()
+        if not self._bound or not self.session.snapshot.get("roundActive"):
             return
         try:
             if self._native_windows.foreground_window() != int(self._bound or 0):
+                first_loss = not self._waiting_foreground
                 self._waiting_foreground = True
                 self._map_was_open = self._map_was_open or self.session.snapshot.get("mapOpen") or (self.session.busy and self._requested_action in {"map", "capture_now"})
-                self.windows.hide("aligned")
-                self.windows.hide("reference")
-                self._trace("hide", payload=self._aligned, reason="game-not-foreground",
-                            window=dict(name="aligned", visible=False))
+                if first_loss:
+                    # Revoke before the worker can finish; returning to the same
+                    # HWND/size does not make a pre-focus-loss frame current.
+                    self._revoke_runtime("foreground-lost")
+                    cancel = getattr(self.session, "cancelPending", None)
+                    if callable(cancel):
+                        cancel("foreground-lost")
+                if not self._reference_focus_allowed():
+                    self.windows.hide("reference")
+                    self._trace("hide", payload=self._reference, reason="game-not-foreground",
+                                window=dict(name="reference", visible=False))
             elif self._waiting_foreground:
                 if self.session.busy:
                     return
@@ -1205,6 +1402,10 @@ class ClientCoordinator(QObject):
                 self._trace("drop-event", payload=event, reason="presentation-context-pending")
                 return
             self._prepare_sibling_material(event)
+        elif name == "render-material-accepted":
+            enqueue = getattr(self.session, "dispatchMaintenance", None)
+            if callable(enqueue):
+                enqueue("remember_render_material", {"renderToken": event.get("token")})
         elif name in {"sibling-rolled-back", "sibling-committed"}:
             if self._pending_aligned and event.get("token") == self._pending_aligned.get("token"):
                 finish = getattr(self.images, "finish_staging", None)

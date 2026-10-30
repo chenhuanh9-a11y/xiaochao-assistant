@@ -38,7 +38,7 @@ DEFAULTS = {**BOOL_DEFAULTS, "sheetOpacity": .55, "referenceOpacity": .55,
             "routeProfileId": "wang-qingxin", "modeRouteProfiles": {},
             "zhan10CoffinVariantId": "variant-01", "hotkey": "G",
             "actionHotkeys": FRESH_ACTIONS, "gameControlLayout": preset_layout(),
-            "sheetPosition": None, "compactPosition": None}
+            "sheetPosition": None, "sheetPositionSpace": "unknown", "compactPosition": None}
 
 
 def _validate(key, value):
@@ -69,6 +69,9 @@ def _validate(key, value):
         if value is not None and (not isinstance(value, list) or len(value) != 2
                                   or any(type(v) is not int or not -(2**31) <= v < 2**31 for v in value)):
             raise ValueError("位置需要两个整数坐标 [x, y]，或空值")
+    elif key == "sheetPositionSpace":
+        if value not in ("unknown", "qt-logical-v1", "legacy-physical-v1"):
+            raise ValueError("位置坐标类型无效")
     elif key == "hotkey":
         if not isinstance(value, str):
             raise ValueError("快捷键需要文本")

@@ -18,7 +18,7 @@ Window {
         var corners = [routeImage.mapToItem(viewport, 0, 0), routeImage.mapToItem(viewport, routeImage.width, 0),
                        routeImage.mapToItem(viewport, 0, routeImage.height), routeImage.mapToItem(viewport, routeImage.width, routeImage.height)]
         var xs = corners.map(function(p) { return p.x }), ys = corners.map(function(p) { return p.y })
-        clientCoordinator.reportPresentation("aligned", {visible: visible, validPayload: valid,
+        clientCoordinator.reportPresentation("aligned", {token: String(alignedData.token || ""), visible: visible, validPayload: valid,
             imageStatus: labels[routeImage.status] || "unknown", materialReady: valid && matches && routeImage.status === Image.Ready,
             sourceMatchesPayload: matches, effectiveOpacity: opacity * routeImage.opacity,
             geometry: [x, y, width, height], mappedBounds: [Math.min.apply(null,xs), Math.min.apply(null,ys), Math.max.apply(null,xs), Math.max.apply(null,ys)]})

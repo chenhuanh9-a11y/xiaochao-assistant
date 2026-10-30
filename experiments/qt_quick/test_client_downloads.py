@@ -14,6 +14,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QCoreApplication, QObject, QUrl, Signal
 from client_paths import WORK_ROOT
 from client_downloads import OnlinePackagesService
+from star_map_download import DownloadError
 import test_client_resources as resource_fixtures
 
 APP = QCoreApplication.instance() or QCoreApplication([])
@@ -79,6 +80,8 @@ class OnlineTests(unittest.TestCase):
         self.resources = Resources()
         self.transport = Transport(self.root / "work/map-packages/downloads")
         self.service = OnlinePackagesService(self.root, self.resources, transport=self.transport)
+        self.problems = []
+        self.service.errorReported.connect(self.problems.append)
     def tearDown(self):
         self.transport.block.set()
         self.service.shutdown()
@@ -152,6 +155,28 @@ class OnlineTests(unittest.TestCase):
         until(lambda: not self.service.busy)
         self.assertEqual(len(self.resources.calls), 1)
 
+    def test_failure_reports_chinese_once_and_cancel_or_late_completion_is_not_error(self):
+        raw = "private failure detail " + "原因" * 3000
+        with patch.object(self.transport, "read_index", side_effect=DownloadError("network-or-file-error", raw)):
+            self.service.checkPackages()
+            generation = self.service._generation
+            until(lambda: not self.service.busy)
+        self.assertEqual(len(self.problems), 1)
+        self.assertIn("网络连接失败", self.service.snapshot["message"])
+        self.assertNotIn("private failure", self.service.snapshot["message"])
+        self.assertTrue(self.problems[0]["raw"].startswith("private failure detail"))
+        self.assertLessEqual(len(self.problems[0]["raw"].encode("utf-8")), 4096)
+        self.service._complete(generation, None, raw)
+        self.assertEqual(len(self.problems), 1)
+        self.index()
+        self.transport.block.clear()
+        self.service.downloadPackage("sample-author")
+        self.service.cancel()
+        self.transport.block.set()
+        until(lambda: not self.service.busy)
+        self.assertIn("已取消", self.service.snapshot["message"])
+        self.assertEqual(len(self.problems), 1)
+
 
 class VerifiedHandoffTests(unittest.TestCase):
     def setUp(self):
@@ -172,7 +197,7 @@ class VerifiedHandoffTests(unittest.TestCase):
         self.assertTrue(accepted)
         until(lambda: not fixture.service.busy)
         self.assertEqual(fixture.changes, [])
-        self.assertIn("binding-mismatch", fixture.service.message)
+        self.assertIn("binding-mismatch", fixture.problems[-1]["raw"])
 
     def test_stale_generation_cannot_start_and_correct_proof_uses_real_import(self):
         fixture = self.fixture

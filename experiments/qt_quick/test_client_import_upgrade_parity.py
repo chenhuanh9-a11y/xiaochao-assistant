@@ -54,7 +54,7 @@ class ImportUpgradeParityTests(TestCase):
         receipt.write_text(json.dumps(value))
         self.service.confirmOperation(True)
         self.settle()
-        self.assertIn("reinspect", self.service.message)
+        self.assertIn("reinspect", self.problems[-1]["raw"])
         self.assertEqual((self.root / IMAGE).read_bytes(), b"old")
 
     def test_closed_import_launch_has_no_commit_notification_and_keeps_lease(self):
@@ -117,7 +117,7 @@ class ImportUpgradeParityTests(TestCase):
             self.install(self.package("new.zip", b"new"))
             self.service.confirmOperation(True); self.settle()
         close.assert_not_called()
-        self.assertIn("missing helper", self.service.message)
+        self.assertIn("missing helper", self.problems[-1]["raw"])
         self.assertFalse(self.lease.active)
 
     def test_owner_persists_binding_cancels_and_reads_only_matching_receipt(self):

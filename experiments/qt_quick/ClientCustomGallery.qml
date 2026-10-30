@@ -76,7 +76,7 @@ Item {
                         AppButton { text: "改名"; Layout.fillWidth: true; implicitWidth: 74; enabled: !root.state.busy && !root.state.readonly; onClicked: root.askName("rename", root.state.galleryName) }
                         AppButton { text: "删除"; Layout.fillWidth: true; implicitWidth: 74; enabled: !root.state.busy && !root.state.readonly; onClicked: customGalleryService.requestDeleteGallery() }
                         AppButton { text: "导入"; Layout.fillWidth: true; implicitWidth: 74; enabled: !root.state.busy; onClicked: importPicker.open() }
-                        AppButton { text: "导出"; Layout.fillWidth: true; implicitWidth: 74; enabled: !root.state.busy; onClicked: root.askName("export", "gallery.json") }
+                        AppButton { objectName: "customExportGallery"; text: "导出"; Layout.fillWidth: true; implicitWidth: 74; enabled: !root.state.busy && !root.state.pendingKind; onClicked: exportPicker.open() }
                     }
                 }
             }
@@ -182,7 +182,7 @@ Item {
                         anchors.fill: parent
                         onPaint: {
                             var ctx=getContext("2d"); ctx.reset()
-                            if (art.status !== Image.Ready || !root.state.imageWidth || !art.paintedWidth) return
+                            if (art.status !== Image.Ready || root.state.imageWidth <= 0 || art.paintedWidth <= 0 || art.paintedHeight <= 0 || width <= 0 || height <= 0) return
                             var scale=art.paintedWidth/root.state.imageWidth
                             var ox=(width-art.paintedWidth)/2, oy=(height-art.paintedHeight)/2
                             ctx.translate(ox,oy); ctx.scale(scale,scale)
@@ -259,14 +259,13 @@ Item {
         id: nameDialog
         parent: root; anchors.centerIn: parent; width: 350; modal: true
         property string operation: ""
-        title: operation === "export" ? "导出到测试数据目录" : "图集名称"
+        title: "图集名称"
         standardButtons: Dialog.Ok | Dialog.Cancel
-        TextField { id: nameField; objectName: "customGalleryName"; width: parent.width; maximumLength: nameDialog.operation === "export" ? 80 : 24; selectByMouse: true }
+        TextField { id: nameField; objectName: "customGalleryName"; width: parent.width; maximumLength: 24; selectByMouse: true }
         onAccepted: {
             if (operation === "create") customGalleryService.createGallery(nameField.text)
             else if (operation === "copy") customGalleryService.copyGallery(nameField.text)
             else if (operation === "rename") customGalleryService.renameGallery(nameField.text)
-            else if (operation === "export") customGalleryService.exportGallery(nameField.text)
         }
     }
     Dialog {
@@ -277,6 +276,16 @@ Item {
         Label { id: confirmationMessage; width: parent.width; wrapMode: Text.WordWrap; color: "#354f75" }
         onAccepted: customGalleryService.confirmOperation(true)
         onRejected: customGalleryService.confirmOperation(false)
+    }
+    FileDialog {
+        id: exportPicker
+        objectName: "customExportDialog"
+        title: "导出图库"
+        fileMode: FileDialog.SaveFile
+        currentFolder: customGalleryService.exportDirectoryUrl
+        defaultSuffix: "json"
+        nameFilters: ["星图图库 (*.json)"]
+        onAccepted: customGalleryService.exportGalleryTo(selectedFile.toString())
     }
     FileDialog { id: importPicker; title: "导入自定义图集"; nameFilters: ["图集 JSON (*.json)"]; onAccepted: customGalleryService.importGallery(selectedFile.toString()) }
 }

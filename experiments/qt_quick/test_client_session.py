@@ -91,6 +91,50 @@ class SessionTests(unittest.TestCase):
         self.session.shutdown()
         until(lambda: not self.session._jobs)
 
+    def test_material_maintenance_never_supersedes_primary_work_or_receipt(self):
+        # Maintenance is private; production never offers it as a UI command.
+        self.assertNotIn("remember_render_material", self.runtime.state["availableCommands"])
+        self.session.refreshRuntime()
+        self.runtime.release.clear()
+        self.session.dispatch("capture_now")
+        until(self.runtime.started.is_set)
+        primary = self.session._jobs[self.session._pending][0]
+        generation = self.session._generation
+        self.assertTrue(self.session.dispatchMaintenance("remember_render_material", {"renderToken": "ready-1"}))
+        self.assertFalse(primary.cancelled.is_set())
+        self.assertEqual(self.session._generation, generation)
+        self.assertEqual(self.session.snapshot["pendingAction"], "capture_now")
+        self.runtime.release.set()
+        until(lambda: not self.session._jobs and not self.session._maintenance)
+        self.assertEqual(self.session.snapshot["lastReceipt"]["action"], "capture_now")
+        self.assertEqual([call[0] for call in self.runtime.calls], ["capture_now", "remember_render_material"])
+        self.assertEqual(self.runtime.calls[-1][1], {"renderToken": "ready-1"})
+
+    def test_maintenance_is_bounded_and_cancelled_with_its_lifetime(self):
+        self.session.refreshRuntime()
+        self.runtime.release.clear()
+        self.assertTrue(self.session.dispatchMaintenance("remember_render_material", {"renderToken": "one"}))
+        until(self.runtime.started.is_set)
+        self.assertTrue(self.session.dispatchMaintenance("remember_render_material", {"renderToken": "two"}))
+        self.assertFalse(self.session.dispatchMaintenance("remember_render_material", {"renderToken": "three"}))
+        self.assertFalse(self.session.acquireResourceLease())
+        jobs = tuple(self.session._maintenance.values())
+        self.session.cancelPending("foreground-lost")
+        self.assertTrue(all(job.cancelled.is_set() for job in jobs))
+        self.runtime.release.set()
+        until(lambda: not self.session._maintenance)
+
+    def test_pending_author_context_keeps_actual_round_lock(self):
+        self.runtime.state["roundActive"] = True
+        self.session.refreshRuntime()
+        self.runtime.release.clear()
+        self.assertTrue(self.session.reconfigure("nightmare", "other-author"))
+        self.assertTrue(self.session.snapshot["roundActive"])
+        self.assertTrue(self.session.snapshot["contextPending"])
+        self.assertFalse(self.session.snapshot["liveAuthorization"])
+        self.runtime.release.set()
+        until(lambda: not self.session._jobs)
+
     def test_active_mode_guard_preserves_context_generation_and_current_worker(self):
         self.runtime.state["roundActive"] = True
         self.runtime.release.clear()

@@ -68,6 +68,7 @@ class SessionService(QObject):
         self._generation = 0
         self._closed = False
         self._jobs = {}
+        self._maintenance = {}
         self._pending = None
         self._leases = set()
         self._actions = ImmediateUiActionStateMachine()
@@ -88,7 +89,12 @@ class SessionService(QObject):
         pending = self._jobs.get(self._pending)
         if (state.get("mode", self._mode) != self._mode
                 or state.get("profileId", self._profile) != self._profile):
-            state = dict(contextPending=True, liveAuthorization=False)
+            # Desired author/mode can be pending without ending its actual
+            # round. Keep lifecycle facts so guards cannot unlock mid-round;
+            # old identity/render data is still withheld from the new context.
+            state = {key: state[key] for key in ("roundActive", "roundPreparing",
+                "roundWorkActive", "roundId", "cycleId") if key in state}
+            state.update(contextPending=True, liveAuthorization=False)
         available = self._available() if not self._closed else set()
         commands = set(COMMANDS) | available
         state.update(
@@ -131,6 +137,8 @@ class SessionService(QObject):
         for job, token in self._jobs.values():
             job.cancelled.set()
             self._actions.cancel(token, reason=reason)
+        for job in self._maintenance.values():
+            job.cancelled.set()
         self._pending = None
 
     @Slot()
@@ -262,6 +270,32 @@ class SessionService(QObject):
             self._message = str(receipt.get("message", receipt.get("reason", self._state.get("message", "Request completed."))))
         self.changed.emit()
 
+    def dispatchMaintenance(self, action, payload):
+        """Bounded serial cache work, independent of the visible command receipt.
+
+        The runtime seals/validates its material token. This lane never replaces
+        a foreground command, publishes its snapshot, or grants a display pose.
+        """
+        if (self._closed or self._runtime is None or self._leases
+                or action != "remember_render_material"
+                or len(self._maintenance) >= 2):
+            return False
+        token = payload.get("renderToken")
+        if not token or any(job.payload.get("renderToken") == token for job in self._maintenance.values()):
+            return False
+        work = _RuntimeWork(self._runtime, action, {"renderToken": token},
+                            self._context(), threading.Event())
+        self._maintenance[id(work)] = work
+        work.signals.done.connect(self._complete_maintenance, Qt.QueuedConnection)
+        self._pool.start(work)
+        return True
+
+    @Slot(object, object, object, object)
+    def _complete_maintenance(self, key, context, value, error):
+        self._maintenance.pop(key, None)
+        # A failed/stale cache warmup cannot replace an actual recognition
+        # receipt or its error. The runtime retains its bounded diagnostics.
+
     @Slot(str, str, result=bool)
     def reconfigure(self, mode, profile):
         """Atomically enqueue one desired mode/profile context on the UI thread."""
@@ -307,9 +341,9 @@ class SessionService(QObject):
     @Slot(result=str)
     def acquireResourceLease(self):
         """Exclusive idle lease; caller releases in success/failure/cancel paths."""
-        if not self._closed and not self._jobs and not self._leases:
+        if not self._closed and not self._jobs and not self._maintenance and not self._leases:
             self.refreshRuntime()
-        if (self._closed or self._leases or self._jobs or self._state.get("roundActive")
+        if (self._closed or self._leases or self._jobs or self._maintenance or self._state.get("roundActive")
                 or self._state.get("roundWorkActive") or self._state.get("roundPreparing")):
             self._message = "Resources require an idle session."
             self.changed.emit()
@@ -329,6 +363,11 @@ class SessionService(QObject):
     def stop(self):
         self._invalidate("cancelled")
         self._message = "Pending requests cancelled."
+        self.changed.emit()
+
+    def cancelPending(self, reason):
+        """Cancel a frame lifetime without ending its round or closing services."""
+        self._invalidate(str(reason))
         self.changed.emit()
 
     @Slot()

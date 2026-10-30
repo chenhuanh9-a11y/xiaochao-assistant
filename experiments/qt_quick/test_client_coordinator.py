@@ -90,6 +90,140 @@ class CoordinatorTests(unittest.TestCase):
         self.input.enabled = True
         return True
 
+    def test_author_context_change_keeps_current_display_during_reprojection(self):
+        self.coordinator._aligned = dict(token="old-valid")
+        self.coordinator._reference = dict(key="reference:old-valid")
+        self.settings.persistedValues["routeProfileId"] = "profile-two"
+        self.session.reconfigure.side_effect = lambda *args: setattr(self.session, "busy", True) or True
+        self.settings.saved.emit()
+        self.runtime.invalidate.assert_not_called()
+        self.assertEqual(self.coordinator._aligned["token"], "old-valid")
+        self.assertEqual(self.coordinator._reference["key"], "reference:old-valid")
+        self.session.snapshot["pendingAction"] = "set_context"
+        self.coordinator._session_changed()
+        self.windows.hide.assert_not_called()
+
+    def test_material_ack_and_missing_route_notice_require_current_loaded_token(self):
+        payload = dict(token="material-1", mode="nightmare", mapId="map-1", floor="F1",
+            roundId=1, cycleId=1, frameId="1:1", generation=1, resourceIdentity=["v1"],
+            liveAuthorization=True, clientWidth=800, clientHeight=600, deviceScale=1,
+            originX=-800, originY=100, displayKind="base-map", authorStatus="missing")
+        self.coordinator._aligned = deepcopy(payload)
+        self.runtime.render_payload.return_value = deepcopy(payload)
+        self.runtime.acknowledge_render_material = Mock()
+        notices = []
+        self.coordinator.notificationRequested.connect(lambda *args: notices.append(args))
+        details = dict(token="stale", visible=True, materialReady=True,
+            sourceMatchesPayload=True, validPayload=True, geometry=[-800,100,800,600])
+        self.coordinator.reportPresentation("aligned", details)
+        self.runtime.acknowledge_render_material.assert_not_called()
+        details["token"] = payload["token"]
+        details["materialReady"] = False
+        self.coordinator.reportPresentation("aligned", details)
+        self.runtime.acknowledge_render_material.assert_not_called()
+        details["materialReady"] = True
+        self.coordinator.reportPresentation("aligned", details)
+        self.coordinator.reportPresentation("aligned", details)
+        self.runtime.acknowledge_render_material.assert_called_once_with("material-1")
+        self.assertEqual(len(notices), 1)
+        self.assertIn("基础地图", notices[0][1])
+        self.runtime.render_payload.return_value = None
+        self.coordinator.reportPresentation("aligned", details)
+        self.assertEqual(len(notices), 1)
+
+    def test_preview_ready_enters_edit_without_session_or_pose_authorization(self):
+        class Provider(QObject):
+            ready = Signal(object)
+            failed = Signal(str)
+        provider = Provider()
+        provider.request, provider.cancel = Mock(), Mock()
+        self.coordinator.setReferencePreviewProvider(provider)
+        self.images.publish = Mock(return_value="image://live/reference:preview:1")
+        self.images.clear_reference = Mock()
+        self.windows._windows["reference"] = SimpleNamespace(x=lambda:9000, y=lambda:-500,
+            width=lambda:520, height=lambda:520, setX=Mock(), setY=Mock(),
+            property=lambda name: None, setProperty=Mock(), setScreen=Mock())
+        self.windows.snapshot["reference"] = dict(clickThrough=True)
+        self.coordinator.beginReferenceEdit()
+        provider.ready.emit(dict(context=self.coordinator._reference_preview_context,
+            requestId=1, pixels=object(), previewOnly=True, referenceAuthorized=False,
+            liveAuthorization=False, mode="nightmare", mapId="map-1", floor="F1"))
+        self.assertTrue(self.coordinator.referenceEditing)
+        self.assertTrue(self.coordinator.referenceData["previewOnly"])
+        self.assertFalse(self.coordinator.referenceData["referenceAuthorized"])
+        self.windows.show.assert_called_with("reference")
+        self.session.dispatch.assert_not_called()
+        self.coordinator.cancelReferenceEdit()
+        self.assertFalse(self.coordinator.referenceData)
+        self.windows.hide.assert_called_with("reference")
+
+    def test_automatic_bind_and_startup_respect_existing_legacy_instance(self):
+        self.input.enableManagement = Mock()
+        self.coordinator._catalog = Mock(return_value=[])
+        self.coordinator._automatic_live = True
+        with patch("client_coordinator.another_assistant_running", return_value=True):
+            self.coordinator.startLiveServices()
+            self.input.enableManagement.assert_not_called()
+            self.coordinator._catalog.assert_not_called()
+            self.session.snapshot["lastReceipt"] = dict(action="bind_capture", success=True)
+            self.input.enabled = False
+            self.coordinator._session_changed()
+            self.input.enable.assert_not_called()
+        self.coordinator._discovery_timer.stop()
+
+    def test_reference_uses_one_focus_policy_for_publish_and_editing(self):
+        self.coordinator._reference = {"key": "reference:current"}
+        self.native.foreground_window.return_value = 456
+        self.native.window_process_id = Mock(return_value=os.getpid())
+        self.coordinator._show_reference_current()
+        self.windows.show.assert_not_called()
+        self.windows.hide.assert_called_with("reference")
+        self.coordinator._edit = SimpleNamespace(cancel=Mock())
+        self.coordinator._show_reference_current()
+        self.windows.show.assert_called_with("reference")
+        self.windows.show.reset_mock()
+        self.native.window_process_id.return_value = os.getpid() + 1
+        self.coordinator._show_reference_current()
+        self.windows.show.assert_not_called()
+        self.coordinator._edit = None
+        self.native.foreground_window.return_value = 123
+        self.coordinator._show_reference_current()
+        self.windows.show.assert_called_with("reference")
+
+    def test_focus_round_trip_revokes_worker_lifetime_once_before_return(self):
+        self.session.cancelPending = Mock()
+        self.native.foreground_window.return_value = 456
+        self.coordinator._watch_foreground()
+        self.runtime.invalidate.assert_called_once_with("foreground-lost")
+        self.session.cancelPending.assert_called_once_with("foreground-lost")
+        self.coordinator._watch_foreground()
+        self.assertEqual(self.runtime.invalidate.call_count, 1)
+        self.native.foreground_window.return_value = 123
+        self.session.busy = True
+        self.coordinator._watch_foreground()
+        self.session.dispatch.assert_not_called()
+        self.session.busy = False
+        self.coordinator._watch_foreground()
+        self.session.dispatch.assert_called_once_with("capture_now")
+
+    def test_position_preview_is_display_only_and_late_reply_is_cancelled(self):
+        class Provider(QObject):
+            ready = Signal(object)
+            failed = Signal(str)
+        provider = Provider()
+        provider.request, provider.cancel = Mock(), Mock()
+        self.coordinator.setReferencePreviewProvider(provider)
+        self.coordinator.beginReferenceEdit()
+        context = self.coordinator._reference_preview_context
+        self.assertEqual(context[:2], self.coordinator._applied_context)
+        self.coordinator.cancelReferenceEdit()
+        provider.cancel.assert_called_once_with()
+        provider.ready.emit(dict(context=context, requestId=1, pixels=object(),
+            previewOnly=True, referenceAuthorized=False, liveAuthorization=False))
+        self.assertFalse(self.coordinator._reference)
+        self.session.dispatch.assert_not_called()
+        self.runtime.render_payload.assert_not_called()
+
     def test_opacity_save_preserves_enabled_input_and_uses_persisted_settings(self):
         self.settings.persistedValues["sheetOpacity"] = .8
         self.settings.values["hotkey"] = "F12"  # unrelated open settings draft

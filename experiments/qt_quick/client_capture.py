@@ -24,9 +24,16 @@ class ClientCaptureProvider:
     the full-client intent: each worker capture derives its rectangle from that
     transaction's backend context. Neither binding method takes a frame.
     """
-    def __init__(self, native=None, backend=None):
+    def __init__(self, native=None, backend=None, *, full_capture=None):
+        # Same callback contract as client_region_capture: (hwnd) -> (BGR,
+        # physical client bounds). The owner must exclude ALL its Qt surfaces
+        # through its existing owner-thread lane and restore them before return
+        # or exception. No callback means no screen fallback at all.
+        if full_capture is not None and not callable(full_capture):
+            raise TypeError("A display-excluding full capture callback is required")
         self._native = native if native is not None else NativeWindowAPI()
         self._backend = backend
+        self._full_capture = full_capture
         self._lock = threading.RLock()
         self._hwnd, self._region = 0, None
         self._full_client = False
@@ -172,7 +179,7 @@ class ClientCaptureProvider:
             if region[2] > context.full_client_size[0] or region[3] > context.full_client_size[1]:
                 raise CaptureUnavailable("Bound client rectangle exceeds the current client; rebind explicitly")
             frame = capture_client_region(hwnd, region, expected_context=expected or context,
-                                          _backend=self._backend)
+                                          full_capture=self._full_capture, _backend=self._backend)
             with self._lock:
                 if (generation != self._generation or not self._enabled or self._closed
                         or self._cancelled(cancelled)):

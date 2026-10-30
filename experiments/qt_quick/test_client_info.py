@@ -76,6 +76,79 @@ class InfoTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 2)
         self.assertEqual(self.opened, [])
 
+    def test_explicit_startup_schedule_is_once_nonmanual_and_disabled_for_probe(self):
+        service = self.service()
+        announced = []
+        service.startupAnnouncement.connect(announced.append)
+        self.assertFalse(service.scheduleStartupCheck(False))
+        self.app.processEvents()
+        self.assertEqual(self.calls, [])
+        with patch.object(service._service, "check", wraps=service._service.check) as check:
+            self.assertTrue(service.scheduleStartupCheck(True))
+            self.assertEqual(service._startup_timer.interval(), 2500)
+            self.assertFalse(service.scheduleStartupCheck(True))
+            service._startup_timer.setInterval(1)
+            self.wait(lambda: service.updatePhase == "available" and len(announced) == 1)
+            self.assertEqual(check.call_count, 1)
+            self.assertEqual(check.call_args.kwargs, {"manual": False})
+            service._startup_check()
+            self.assertEqual(check.call_count, 1)
+        self.assertEqual(announced[0]["version"], "9.1")
+        self.assertEqual(self.opened, [])
+
+    def test_home_preview_uses_applied_context_and_ignores_browsing_changes(self):
+        from PySide6.QtCore import Signal
+        from PySide6.QtGui import QImage
+        from map_resource_model import ResourceMap, ResourceVariant
+        class Browse(QObject):
+            changed = Signal()
+            context = SimpleNamespace(mode="difficult")
+            profileId = "unrelated-browse-author"
+            preview_model = SimpleNamespace(rows=[])
+        path = self.root / "home.png"
+        image = QImage(20, 10, QImage.Format_RGBA8888); image.fill(0xffeaf2fd)
+        self.assertTrue(image.save(str(path)))
+        item = ResourceMap('map-a', 'Actual map', (ResourceVariant('v1', 'Route', {'1': path, '2': path}),))
+        profile = SimpleNamespace(profile_id='actual-author', maps=(item,))
+        context = SimpleNamespace(error='', pack=SimpleNamespace(default_entry_floor='1'),
+            profiles=(profile,), path_stamps={path:(path.stat().st_mtime_ns,path.stat().st_size)})
+        service = self.service()
+        backend = Browse()
+        service.setProviders(coordinator=SimpleNamespace(backend=backend))
+        requests=[]; service.homePreviewRequested.connect(lambda *args:requests.append(args))
+        with patch('client_info.load_browse_context', return_value=context) as load:
+            self.assertTrue(service.setHomeContext('nightmare','actual-author'))
+            self.wait(lambda: bool(service.homePreviews))
+            self.assertEqual(service.homePreviews[0]['mode'], 'nightmare')
+            self.assertEqual(service.homePreviews[0]['profileId'], 'actual-author')
+            self.assertIn('nightmare/actual-author/', service.homePreviews[0]['key'])
+            backend.changed.emit();self.app.processEvents()
+            self.assertFalse(service.setHomeContext('nightmare','actual-author'))
+            self.assertEqual(load.call_count, 1)
+            service.openHomePreview(service.homePreviews[0]['key'])
+            self.assertEqual(requests[0][:2], ('nightmare','actual-author'))
+            service.setHomeContext('difficult','actual-author')
+            self.wait(lambda: bool(service.homePreviews) and service.homePreviews[0]['mode']=='difficult')
+            self.assertEqual(load.call_count, 2)
+            service.setHomeContext('difficult','actual-author',force=True)
+            self.wait(lambda: bool(service.homePreviews))
+            self.assertEqual(load.call_count, 3)
+        started, finish = threading.Event(), threading.Event()
+        def delayed_load(*args):
+            if not started.is_set():
+                started.set(); finish.wait(2)
+            return context
+        published = []
+        service.changed.connect(lambda: published.append(service.homePreviews[0]['mode']) if service.homePreviews else None)
+        with patch('client_info.load_browse_context', side_effect=delayed_load):
+            service.setHomeContext('nightmare','actual-author',force=True)
+            self.wait(started.is_set)
+            service.setHomeContext('difficult','actual-author')
+            finish.set()
+            self.wait(lambda: bool(service.homePreviews) and service.homePreviews[0]['mode']=='difficult')
+        self.assertEqual(published, ['difficult'])
+        self.assertEqual(self.calls, [])
+
     def test_failed_check_retries_and_optional_history_failure_is_visible(self):
         fail = [True]
         def fetch(url):

@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 from backend import ROOT, Work
+from map_resource_context import load_browse_context
 from client_paths import PRODUCTION, WORK_ROOT, runtime_paths
 from PySide6.QtCore import QThreadPool, Qt
 from update_service import UpdateService, DOWNLOAD_HOSTS
@@ -21,6 +22,8 @@ from diagnostic_export import export_safe_diagnostic_bundle, diagnostic_package_
 
 class ClientInfoService(QObject):
     changed = Signal()
+    startupAnnouncement = Signal("QVariantMap")
+    homePreviewRequested = Signal(str, str, str)
 
     def __init__(self, sandbox, *, fetch=None, open_url=None):
         super().__init__()
@@ -56,8 +59,10 @@ class ClientInfoService(QObject):
         self._diagnostics = {}
         self._help_topic_template = json.loads(Path(__file__).with_name("help-topics.json").read_text("utf-8"))
         self._home_previews = []
-        self._home_preview_signature = None
+        self._home_context = None
         self._home_preview_generation = 0
+        self._home_preview_job = None
+        self._home_preview_pending = False
         self._open_url = open_url or QDesktopServices.openUrl
         self._providers = {}
         self._pool = QThreadPool(self)
@@ -67,6 +72,12 @@ class ClientInfoService(QObject):
         self._timer = QTimer(self)
         self._timer.setInterval(100)
         self._timer.timeout.connect(self._poll)
+        self._startup_requested = False
+        self._startup_checked = False
+        self._startup_timer = QTimer(self)
+        self._startup_timer.setSingleShot(True)
+        self._startup_timer.setInterval(2500)
+        self._startup_timer.timeout.connect(self._startup_check)
 
     version = Property(str, lambda s: s._version + ("" if PRODUCTION else " · Qt 迁移测试"), constant=True)
     message = Property(str, lambda s: s._message, notify=changed)
@@ -136,59 +147,112 @@ class ClientInfoService(QObject):
         if coordinator is not None and page in {"preferences", "maps"}:
             coordinator.navigate("settings" if page == "preferences" else "gallery")
 
-    def _refresh_home_previews(self):
-        backend = self._home_backend
-        context = getattr(backend, "context", None)
-        if self._closed or context is None or getattr(backend, "busy", False):
-            return
-        rows = getattr(getattr(backend, "preview_model", None), "rows", [])
-        signature = (id(context), getattr(backend, "profile", ""),
-                     tuple((row.get("key"), row.get("imageUrl")) for row in rows))
-        if signature == self._home_preview_signature:
-            return
-        self._home_preview_signature = signature
+    def setHomeContext(self, mode, profile_id, *, force=False):
+        """Receive the actual applied runtime context, never the browsing selection."""
+        if self._closed or mode not in ("nightmare", "difficult"):
+            return False
+        context = (str(mode), str(profile_id or ""))
+        if context == self._home_context and not force:
+            return False
+        self._home_context = context
         self._home_preview_generation += 1
-        generation = self._home_preview_generation
+        self._home_previews = []
+        self.changed.emit()
+        self._refresh_home_previews()
+        return True
+
+    @staticmethod
+    def _home_rows(root, mode, profile_id):
+        context = load_browse_context(root, mode)
+        if context.error or context.pack is None:
+            return []
+        profile = next((p for p in context.profiles if p.profile_id == profile_id), None)
+        rows = []
+        if profile is not None:
+            for item in profile.maps:
+                floors = tuple(dict.fromkeys((str(context.pack.default_entry_floor), *item.floors)))
+                chosen = next(((variant, floor, Path(variant.layers[floor]))
+                    for floor in floors for variant in item.variants
+                    if floor in variant.layers and context.path_stamps.get(Path(variant.layers[floor]))), None)
+                if chosen is None:
+                    continue
+                variant, floor, path = chosen
+                stamp = context.path_stamps[path]
+                url = QUrl.fromLocalFile(str(path)); url.setQuery(f"v={stamp[0]}-{stamp[1]}")
+                rows.append(dict(key=f"{mode}/{profile_id}/{item.id}/{variant.id}/{floor}",
+                    title=item.name, floor=floor, mode=mode, profileId=profile_id,
+                    structure=False, imageUrl=url.toString()))
+                if len(rows) == 3:
+                    break
         if rows:
-            self._home_previews = [dict(row, structure=False) for row in rows[:3]]
-            self.changed.emit()
+            return rows
+        from map_resource_overview import structure_previews, load_structure_preview
+        for asset in structure_previews(context.pack):
+            image = load_structure_preview(asset, (400, 250))
+            stream = BytesIO(); image.save(stream, format="PNG")
+            rows.append(dict(key="", title=asset.name, floor=asset.floor, mode=mode,
+                profileId=profile_id, structure=True,
+                imageUrl="data:image/png;base64," + base64.b64encode(stream.getvalue()).decode("ascii")))
+        return rows
+
+    def _refresh_home_previews(self):
+        if self._closed or self._home_context is None:
             return
-        pack = context.pack
-        def render():
-            from map_resource_overview import structure_previews, load_structure_preview
-            result = []
-            for asset in structure_previews(pack):
-                image = load_structure_preview(asset, (400, 250))
-                stream = BytesIO()
-                image.save(stream, format="PNG")
-                result.append(dict(key="", title=asset.name, floor=asset.floor, structure=True,
-                    imageUrl="data:image/png;base64," + base64.b64encode(stream.getvalue()).decode("ascii")))
-            return result
-        job = Work(render)
+        if self._home_preview_job is not None:
+            self._home_preview_pending = True
+            return
+        context = self._home_context
+        generation = self._home_preview_generation
+        job = self._home_preview_job = Work(lambda: self._home_rows(self.paths.resource_root, *context))
         self._jobs.add(job)
         def done(value, error):
             self._jobs.discard(job)
-            if not self._closed and generation == self._home_preview_generation:
+            self._home_preview_job = None
+            if not self._closed and generation == self._home_preview_generation and context == self._home_context:
                 self._home_previews = value if not error else []
                 self.changed.emit()
+            pending, self._home_preview_pending = self._home_preview_pending, False
+            if pending and not self._closed:
+                self._refresh_home_previews()
         job.signals.done.connect(done, Qt.QueuedConnection)
         self._pool.start(job)
+
+    @Slot(str)
+    def openHomePreview(self, key):
+        row = next((row for row in self._home_previews if row.get("key") == key), None)
+        if not self._closed and row is not None and self._home_context is not None:
+            self.homePreviewRequested.emit(*self._home_context, str(key))
 
     def setProviders(self, **providers):
         self._providers = providers
         for provider in providers.values():
             if hasattr(provider, "changed"):
                 provider.changed.connect(self.changed)
-        backend = self._home_backend
-        if backend is not None:
-            backend.changed.connect(self._refresh_home_previews)
-            self._refresh_home_previews()
+
+    @Slot(bool, result=bool)
+    def scheduleStartupCheck(self, enabled=True):
+        """Owner explicitly disables this for probes; constructors never fetch."""
+        if not enabled or self._closed or self._startup_requested:
+            return False
+        self._startup_requested = True
+        self._startup_timer.start()
+        return True
+
+    @Slot()
+    def _startup_check(self):
+        if self._closed or self._startup_checked:
+            return
+        self._startup_checked = True
+        self._check_updates(manual=False)
 
     @Slot()
     def checkUpdates(self):
+        self._check_updates(manual=True)
+
+    def _check_updates(self, *, manual):
         if self._closed or self.checking:
             return
-        if self._service.check(manual=True):
+        if self._service.check(manual=manual):
             self._action_error = False
             self._operation = "正在读取最新版本与更新历史…"
             self._message = self._service.message
@@ -208,6 +272,9 @@ class ClientInfoService(QObject):
                                          else "暂无更早的更新公告" if not self.history else "")
             self._timer.stop()
             self.changed.emit()
+            if "error" not in event and not event.get("manual", False) and self._service.should_prompt():
+                self._service.mark_prompted()
+                self.startupAnnouncement.emit(self._release_row(self._service.latest))
 
     def _write(self, function, message, *, operation="正在保存…", complete=None):
         if self.checking or self._closed:
@@ -351,6 +418,7 @@ class ClientInfoService(QObject):
         self._write(save, f"已导出到 {destination}", operation="正在导出本次诊断…", complete=complete)
 
     def shutdown(self):
+        self._startup_timer.stop()
         self._closed = True
         self._home_preview_generation += 1
         self._timer.stop()
