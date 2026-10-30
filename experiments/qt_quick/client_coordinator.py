@@ -658,6 +658,10 @@ class ClientCoordinator(QObject):
             self._clear_reference()
         self._focus_notice = ""
         self._requested_action = action
+        if action in {"select_group_member", "resume_group_automatic"}:
+            # Supersede an older candidate material, while retaining the current
+            # surface until this explicit choice validates and is accepted.
+            self._cancel_pending_material("group-choice-requested")
         state = self.session.snapshot
         if action == "select_candidate" and payload.get("index") != state.get("selectedCandidateIndex", -1):
             self._invalidate_display()
@@ -1311,7 +1315,8 @@ class ClientCoordinator(QObject):
                             and self._pending_context[0] == self._applied_context[0])
             if not reprojecting and pending not in {
                     "refresh_map", "reselect_map", "previous_candidate", "next_candidate",
-                    "select_candidate", "confirm_route", "set_floor", "cycle_floor"}:
+                    "select_candidate", "confirm_route", "set_floor", "cycle_floor",
+                    "select_group_member", "resume_group_automatic"}:
                 self._invalidate_display()
             self.changed.emit(); return
         state = self.session.snapshot

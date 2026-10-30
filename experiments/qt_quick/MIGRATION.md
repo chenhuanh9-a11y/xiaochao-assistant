@@ -1,5 +1,24 @@
 # Qt Quick migration map
 
+## Current acceptance boundary after 9A6
+
+The retained `9a6e8d596278056df53002396f673fa16f892e81` Setup passed its own
+bounded UI, recorded-core, exit and independent screenshot checks. Its two saved
+F1 frames use the real bundled Session queue/providers/rank/fit, but deliberately
+remain recorded: production aligned/reference authorization is refused and the
+visible result is diagnostic Replay. They do not prove production material ACK,
+game overlay pixels, continuous group/floor behavior or the missing map08/B1
+failure input. The historical checkpoint sections below are version-scoped.
+
+Follow-up review found a new manual-group integration defect: Session emits busy
+before starting the choice worker, and the coordinator cleared the current
+aligned surface for `select_group_member` / `resume_group_automatic`. The source
+repair retains current pixels while cancelling only superseded pending material;
+end/floor/resource revocation still applies. New candidate freezing and controlled
+production-QML group/floor checks must pass before this repair is called delivered.
+No numerical solver, rank threshold or valid geometry/material guard changes.
+
+
 ## Bounded behavior audit after F2
 
 **F2CB49F7 remains the only delivered current candidate. None of the following

@@ -111,6 +111,34 @@ class CoordinatorTests(unittest.TestCase):
         self.coordinator._session_changed()
         self.windows.hide.assert_not_called()
 
+    def test_group_choice_queue_keeps_source_and_cancels_older_pending_material(self):
+        for action in ("select_group_member", "resume_group_automatic"):
+            with self.subTest(action=action):
+                self.coordinator._aligned = dict(token="current-source", mapId="map-a")
+                self.coordinator._last_render_token = "current-source"
+                self.coordinator._reference = dict(key="current-reference", mapId="map-a")
+                self.coordinator._pending_aligned = dict(token="old-automatic-target")
+                self.runtime.acknowledge_sibling = Mock(return_value=dict(success=False, sourceRetained=True))
+                self.windows.hide.reset_mock()
+                # Session emits changed before actionRequested and worker launch.
+                self.session.busy = True
+                self.session.snapshot["pendingAction"] = action
+                self.session.changed.emit()
+                self.assertEqual(self.coordinator.alignedData["token"], "current-source")
+                self.session.actionRequested.emit(action, {})
+                self.runtime.acknowledge_sibling.assert_called_once_with(
+                    "old-automatic-target", False, reason="group-choice-requested")
+                self.assertEqual(self.coordinator._pending_aligned, {})
+                self.assertEqual(self.coordinator.referenceData["mapId"], "map-a")
+                self.assertEqual(self.coordinator.alignedData["token"], "current-source")
+                self.assertEqual(self.coordinator._last_render_token, "current-source")
+                self.windows.hide.assert_not_called()
+        # Lifecycle revocation still hides current pixels immediately.
+        self.session.snapshot["pendingAction"] = "end_round"
+        self.session.changed.emit()
+        self.assertFalse(self.coordinator.alignedData)
+        self.windows.hide.assert_called_with("aligned")
+
     def map_edge(self, sequence, opening):
         self.input.mapInputRequested.emit(dict(sequence=sequence, openIntent=opening,
             createdAt=100. + sequence, hwnd=123, source="hotkey"))
@@ -461,7 +489,8 @@ class CoordinatorTests(unittest.TestCase):
         self.coordinator._action_requested("capture_now", {})
         self.assertNotEqual(self.coordinator.runtimeStatus, "系统未允许切回游戏，请手动切换")
 
-    def test_changed_bindings_reconfigure_once_and_restore_explicit_input_enable(self):
+    @patch("client_coordinator.another_assistant_running", return_value=False)
+    def test_changed_bindings_reconfigure_once_and_restore_explicit_input_enable(self, _other_assistant):
         self.settings.persistedValues["hotkey"] = "Ctrl+G"
         self.settings.saved.emit()
         self.input.configureSettings.assert_called_once_with(self.settings.persistedValues)
