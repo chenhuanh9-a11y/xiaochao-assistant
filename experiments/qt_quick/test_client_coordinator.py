@@ -282,6 +282,26 @@ class CoordinatorTests(unittest.TestCase):
             dict(gestureId=7, pointerSequence=2, context=context))
         self.session.dispatch.assert_not_called()
 
+    def test_same_token_transform_revision_preserves_material_and_rejects_scope_change(self):
+        row = dict(token="stable-material", liveAuthorization=True, matrix=[[1,0,0],[0,1,0],[0,0,1]],
+            routeUrl="image://live/stable-material", routeWidth=100, routeHeight=80,
+            clientWidth=800, clientHeight=600, deviceScale=1, originX=0, originY=0,
+            mapId="map-1", floor="1", roundId=1, cycleId=2, frameId="1:2", generation=2,
+            resourceIdentity="exact-material", transformRevision=0)
+        self.coordinator._aligned = deepcopy(row)
+        self.coordinator._last_render_token = row["token"]
+        self.images.publish = Mock(side_effect=AssertionError("Transform reloaded material"))
+        self.runtime.render_payload.return_value = dict(row, matrix=[[1,0,35],[0,1,12],[0,0,1]],
+            transformRevision=1, transient=True, transientOffset=[35,12], pixels=object())
+        self.coordinator._present_runtime_state(dict(render=row), trigger="pointer-drag-move")
+        self.assertEqual(self.coordinator.alignedData["matrix"][0][2], 35)
+        self.assertEqual(self.coordinator.alignedData["routeUrl"], row["routeUrl"])
+        self.images.publish.assert_not_called()
+        self.runtime.render_payload.return_value = dict(self.runtime.render_payload.return_value,
+            transformRevision=2, mapId="other-map")
+        self.coordinator._present_runtime_state(dict(render=row), trigger="pointer-drag-move")
+        self.assertFalse(self.coordinator.alignedData)
+
     def test_material_ack_and_missing_route_notice_require_current_loaded_token(self):
         payload = dict(token="material-1", mode="nightmare", mapId="map-1", floor="F1",
             roundId=1, cycleId=1, frameId="1:1", generation=1, resourceIdentity=["v1"],

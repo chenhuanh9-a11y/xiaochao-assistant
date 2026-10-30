@@ -1361,11 +1361,29 @@ class ClientCoordinator(QObject):
             self.showReference()
             current = get_payload(token) if get_payload else None
             if current and current.get("liveAuthorization"):
+                changed = False
+                revision = current.get("transformRevision", 0)
+                if (type(revision) is int and revision > self._aligned.get("transformRevision", 0)):
+                    scope = ("mode", "profileId", "mapId", "floor", "roundId", "cycleId", "frameId",
+                             "generation", "resourceIdentity", "routeWidth", "routeHeight", "clientWidth", "clientHeight")
+                    if any(current.get(key) != self._aligned.get(key) for key in scope):
+                        self._invalidate_display("render-transform-scope-changed")
+                        self.changed.emit()
+                        return
+                    # The runtime owns this current-frame transient transform.
+                    # Keep material/URL and capture-to-DIP projection unchanged.
+                    for key in ("matrix", "transformRevision", "transient", "transientOffset", "persistentPoseUpdated"):
+                        if key in current:
+                            self._aligned[key] = deepcopy(current[key])
+                    self._trace("publish-transform", payload=self._aligned, reason=trigger)
+                    changed = True
                 metadata = {key: current.get(key) for key in
                             ("identityPhase", "provisional", "groupId", "durableMapId")}
                 if any(self._aligned.get(key) != value for key, value in metadata.items()):
                     self._aligned.update(metadata)
                     self._trace("publish-metadata", payload=self._aligned, reason=trigger)
+                    changed = True
+                if changed:
                     self.changed.emit()
                 self._notify_first_valid_output(self._aligned)
             if not self.settings.values.get("sheetVisibilityEnabled", True):
