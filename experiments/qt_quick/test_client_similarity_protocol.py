@@ -117,6 +117,117 @@ class SimilarityProtocolTests(unittest.TestCase):
             remember.assert_called_once()
             self.assertIs(remember.call_args.args[0].group, self.runtime._group)
 
+    def group_choice(self, target=None, action="select_group_member", **changes):
+        state=self.runtime.snapshot()
+        payload={key:state[key] for key in ("groupId","groupGeneration","cycleId","floor")}
+        if target is not None:payload["mapId"]=target
+        payload.update(changes)
+        return self.dispatch(action,**payload)
+
+    def test_manual_group_member_commits_only_after_material_and_holds_until_explicit_resume(self):
+        source=self.capture_group()["renderToken"]
+        with patch.object(self.runtime,"_learn_confirmation",side_effect=AssertionError("new chooser must not train")):
+            result=self.group_choice(IDS[1])
+            self.assertTrue(result["success"],result)
+            target=result["pendingSiblingToken"]
+            self.assertTrue(self.runtime.snapshot()["groupMemberSelectionPending"])
+            self.assertFalse(self.runtime.snapshot()["manualGroupMemberHeld"])
+            self.assertEqual(self.runtime.render_payload(source)["mapId"],IDS[0])
+            self.assertTrue(self.runtime.acknowledge_sibling(target,True)["success"])
+        state=self.runtime.snapshot()
+        self.assertEqual((state["identityPhase"],state["identitySource"],state["mapId"]),
+            ("MANUAL_MEMBER_CONFIRMED","manual-group-member",IDS[1]))
+        self.assertTrue(state["manualGroupMemberHeld"])
+        self.assertEqual(self.runtime._identity_native.state,"GROUP_LOCKED")
+        self.assertEqual(self.runtime.reference_payload()["mapId"],IDS[1])
+        with patch.object(_AlignmentHost,"fit",side_effect=AssertionError("same manual choice must be idempotent")):
+            self.assertEqual(self.group_choice(IDS[1])["reason"],"already-current")
+        self.engine.rank_established_group.reset_mock()
+        self.now=8.;self.capture.frame[0,0,0]=8
+        self.assertTrue(self.dispatch("capture_now")["success"])
+        self.engine.rank_established_group.assert_not_called()
+        self.dispatch("set_route_profile",profileId="another-author")
+        self.assertTrue(self.runtime.snapshot()["manualGroupMemberHeld"])
+        self.dispatch("close_map")
+        self.assertTrue(self.runtime.snapshot()["manualGroupMemberHeld"])
+        self.assertTrue(self.group_choice(action="resume_group_automatic")["success"])
+        state=self.runtime.snapshot()
+        self.assertEqual(state["identityPhase"],"GROUP_LOCKED")
+        self.assertFalse(state["manualGroupMemberHeld"]);self.assertFalse(state["identityLocked"])
+        self.assertEqual(state["provisionalMapId"],IDS[1])
+        self.dispatch("end_round")
+        self.assertFalse(self.runtime.snapshot()["manualGroupMemberHeld"])
+
+    def test_manual_group_hold_survives_floor_change_but_new_floor_requires_own_pose(self):
+        self.capture_group()
+        pending=self.group_choice(IDS[1])["pendingSiblingToken"]
+        self.assertTrue(self.runtime.acknowledge_sibling(pending,True)["success"])
+        result=self.dispatch("set_floor",floor="2")
+        self.assertEqual(result["reason"],"current-frame-floor-conflict")
+        self.assertTrue(self.runtime.snapshot()["manualGroupMemberHeld"])
+        self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
+        with patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=2)):
+            self.assertTrue(self.dispatch("capture_now")["success"])
+        state=self.runtime.snapshot()
+        self.assertEqual((state["mapId"],state["floor"]),(IDS[1],"2"))
+        self.assertEqual(self.runtime.reference_payload()["floor"],"2")
+        self.assertTrue(state["manualGroupMemberHeld"])
+
+    def test_manual_same_provisional_uses_current_pose_but_still_waits_material(self):
+        self.capture_group()
+        with patch.object(_AlignmentHost,"fit",side_effect=AssertionError("same current member must reuse fit")):
+            result=self.group_choice(IDS[0])
+        self.assertEqual(self.runtime.snapshot()["identityPhase"],"GROUP_LOCKED")
+        self.assertTrue(self.runtime.acknowledge_sibling(result["pendingSiblingToken"],True)["success"])
+        self.assertEqual(self.runtime.snapshot()["identityPhase"],"MANUAL_MEMBER_CONFIRMED")
+
+    def test_manual_group_failure_or_rejected_material_keeps_source_and_rejects_stale_scope(self):
+        source=self.capture_group()["renderToken"]
+        self.fit=dict(success=False,reason="controlled-target-pose-failure")
+        self.assertFalse(self.group_choice(IDS[1])["success"])
+        self.assertEqual(self.runtime.render_payload(source)["mapId"],IDS[0])
+        self.assertFalse(self.runtime.snapshot()["manualGroupMemberHeld"])
+        with patch.object(_AlignmentHost,"fit",side_effect=AssertionError("invalid choice reached fit")):
+            self.assertFalse(self.group_choice("outside")["success"])
+            self.assertFalse(self.group_choice(IDS[1],floor="2")["success"])
+        self.fit=dict(
+            success=True,matrixSourceToClient=np.array([[.5,0,40],[0,.5,60],[0,0,1]]),
+            selectedRouteCurrentFrameResidual=dict(verified=True,poseVerifiedAgainstCanonicalGeometry=True,
+                profileRenderDerivedFromCanonical=True,coordinatePackId="fixture-pack",
+                validationBasis="shared-canonical-geometry-current-frame"))
+        pending=self.group_choice(IDS[1])["pendingSiblingToken"]
+        self.assertFalse(self.runtime.acknowledge_sibling(pending,False,"Image.Error")["success"])
+        self.assertEqual(self.runtime.render_payload(source)["mapId"],IDS[0])
+        self.assertFalse(self.runtime.snapshot()["manualGroupMemberHeld"])
+
+    def test_manual_group_target_can_be_verified_without_existing_source_pose(self):
+        good=copy.deepcopy(self.fit)
+        self.prepare_group();self.fit=dict(success=False,reason="source-current-pose-failed")
+        self.assertFalse(self.dispatch("capture_now")["success"])
+        self.assertIsNone(self.runtime._render)
+        self.fit=good
+        result=self.group_choice(IDS[1])
+        self.assertTrue(result["success"],result)
+        target=result["pendingSiblingToken"]
+        pending=self.runtime.pending_sibling_payload(target)
+        self.assertEqual(pending["sourceToken"],"")
+        self.assertTrue(self.runtime.acknowledge_sibling(target,True)["success"])
+        self.assertEqual(self.runtime.snapshot()["mapId"],IDS[1])
+        self.assertTrue(self.runtime.snapshot()["manualGroupMemberHeld"])
+
+    def test_manual_group_late_target_fit_after_end_never_replaces_source_or_sets_hold(self):
+        self.capture_group()
+        entered,release=threading.Event(),threading.Event();good=copy.deepcopy(self.fit)
+        def blocked(*a,**kw):entered.set();release.wait(2);return good
+        output=[]
+        with patch.object(_AlignmentHost,"fit",side_effect=blocked):
+            worker=threading.Thread(target=lambda:output.append(self.group_choice(IDS[1])))
+            worker.start();self.assertTrue(entered.wait(2))
+            self.dispatch("end_round");release.set();worker.join(2)
+        self.assertFalse(worker.is_alive());self.assertFalse(output[0]["success"])
+        self.assertFalse(self.runtime.snapshot()["manualGroupMemberHeld"])
+        self.assertIsNone(self.runtime._render)
+
     def test_original_unique_review_plus_current_pose_commits_identity(self):
         self.capture_group()
         self.engine.rank_established_group.return_value = rows(IDS[0])
