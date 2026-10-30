@@ -6,7 +6,7 @@
 source repairs is contained in that Setup.** The baseline is actual Tk
 `3438365b4cef003f76d08a001f772c888156bd03`; `38490F4F` is the earlier artifact
 fingerprint, not another Git commit. Historical build receipts below remain
-version-scoped. The current coherent source checkpoint is `89e2e6b`.
+version-scoped. Source checkpoints include ordered input/preparation `ed1e15e` / `59d928f`, ordinary hard-unique caller `d18029f`, scoped focus/transient drag `96564ef`, verified-monitor notices `fd4168b`, stable transform consumer `663431f` and provisional cross-floor transaction `addfbc5`; source review and bounded source integration gates pass; final clean-source freeze and its own execution gates remain pending.
 
 Five independent audit partitions covered the code/call chains below. Coverage
 of a partition is not a claim of behavior equivalence, real game acceptance or
@@ -16,11 +16,30 @@ as independently executing the player's game.
 
 | Domain / old contract | Changes found and concrete locations | Source closure and evidence | Still open / unverified |
 | --- | --- | --- | --- |
-| A: identity, entry preselection, provisional group, unique identity, first/repeated fit, floors, memory, author selection. Original callers own rank budgets, current-frame residuals and group/pose authority. | `client_engine.stage_similarity_rank`, `LiveRuntime._rank_identity/_continue_group/_solve_observation`, `_AlignmentHost.fit`; original helpers in `app/alignment_structure_dispatch.py`, `round_layer_group_commit.py`, `native_similarity_groups.py`; `client_idvb0059_adapter.py`. | Explicit rank-none reset `6681766`; strong-conflict consumer `ebdf0dc`; relations/verified-pool writer `78c5baa`; author-only reproject without fit `56d7094`; persistent 0059 adapter/material-accepted memory `9c0764f`; actual dispatch order and relation recovery/conditional pose-index fallback `e75f768`. Original extracted bodies are AST-equivalent to 343. Targeted tests include non-unit basis, stale frames, independent floors and real generated input through unchanged 0059 numerical functions. Original floor-intent/conflict restoration is `7ac5770`. | Internal maintenance enqueue was independently found blocked by UI command availability and fixed in `89e2e6b`; the actual coordinator-to-session-to-runtime remember chain still needs its controlled integration receipt. The real map08/B1 continuous failure input is unavailable. Two single saved frames are being checked with real providers, not treated as a group/floor sequence or historical-H ground truth. |
-| B: global input, startup preparation, repeated G, mouse map-X/drag, capture, foreground suspension, exit/IPC and other-assistant coexistence. | `client_input.py`, `client_native_keys.py`, `client_map_input.py`, `client_capture.py`, `client_capture_exclusion.py`, coordinator native/focus paths. | `89e2e6b` revokes the frame lifetime before cancelling on foreground loss and applies the old-assistant guard to automatic enabling as well as manual enabling. Safe full-client fallback uses owner-thread exclusion of owned Qt surfaces, original `capture_client`, and finally restoration; it is injected into production composition, drains pending restoration on normal close and enrolls before WindowController show. Fake native/worker checks and independent helper review are version-scoped. | Ordered second-G, G automatic round start/start-before-game, map-X and original transient drag consumers remain in progress. Native affinity/new QWindow events, real global keys and the final frozen error/exit/restart journey are not certified by fake transport checks. An owner-ACK timeout does not bound an uninterruptible native capture/DwmFlush call. |
+| A: identity, entry preselection, provisional group, unique identity, first/repeated fit, floors, memory, author selection. Original callers own rank budgets, current-frame residuals and group/pose authority. | `client_engine.stage_similarity_rank`, `LiveRuntime._rank_identity/_continue_group/_solve_observation`, `_AlignmentHost.fit`; original helpers in `app/alignment_structure_dispatch.py`, `round_layer_group_commit.py`, `native_similarity_groups.py`; `client_idvb0059_adapter.py`. | Explicit rank-none reset `6681766`; strong-conflict consumer `ebdf0dc`; relations/verified-pool writer `78c5baa`; author-only reproject without fit `56d7094`; persistent 0059 adapter/material-accepted memory `9c0764f`; actual dispatch order and relation recovery/conditional pose-index fallback `e75f768`. Original extracted bodies are AST-equivalent to 343. Targeted tests include non-unit basis, stale frames, independent floors and real generated input through unchanged 0059 numerical functions. Original floor-intent/conflict restoration is `7ac5770`. | Internal maintenance enqueue was independently found blocked by UI command availability and fixed in `89e2e6b`; the independent coordinator-to-session-to-runtime remember attempt was interrupted without a result; it is not counted as passing execution evidence. The real map08/B1 continuous failure input is unavailable. Two single saved frames now have actual valid H and visible recorded Replay with real providers at fixed `d18029f`; they are not a group/floor sequence or historical-H ground truth. |
+| B: global input, startup preparation, repeated G, mouse map-X/drag, capture, foreground suspension, exit/IPC and other-assistant coexistence. | `client_input.py`, `client_native_keys.py`, `client_map_input.py`, `client_capture.py`, `client_capture_exclusion.py`, coordinator native/focus paths. | `89e2e6b` revokes the frame lifetime before cancelling on foreground loss and applies the old-assistant guard to automatic enabling as well as manual enabling. Safe full-client fallback uses owner-thread exclusion of owned Qt surfaces, original `capture_client`, and finally restoration; it is injected into production composition, drains pending restoration on normal close and enrolls before WindowController show. Fake native/worker checks and independent helper review are version-scoped. | Ordered second-G/map-X composition is committed at `59d928f`; original preparation/G automatic start is `ed1e15e`. Transient drag is restored at `96564ef` / `addfbc5`, with same-token transform delivery at `663431f`; actual Runtime-to-coordinator-to-QML coupling passes with stable token/pixels/URL and no move-time material reload. Independent fixed `addfbc5` cross-floor source review passes; neither is real hook/game evidence. Native affinity/new QWindow events, real global keys and the final frozen error/exit/restart journey are not certified by fake transport checks. An owner-ACK timeout does not bound an uninterruptible native capture/DwmFlush call. |
 | C: resources, configuration, optional catalogs, preferences, original custom-route migration and transactions. | `client_providers.py`, `client_custom_gallery.py`, `client_settings.py`, `client_resources.py`, `client_downloads.py`, original app import/recovery/store services. | `fd82f89` restores bad optional catalog tolerance while keeping typed resource validation strict, the production settings-sibling legacy-route path and Save-As service support. `89e2e6b` separates Chinese user summaries from bounded raw details, reports post-write scan failure accurately and suppresses cancellation/duplicate/stale errors. Source transaction/import/receipt checks pass without modifying real user data. | Online catalog URL is externally missing; no endpoint is guessed. Original helper import/readback evidence is partial for native PID/exit observation. Recent problems are 32 visible, queue 64, batch 16, per-run 1 MiB plus one backup; cross-run aggregate retention is still unbounded. No historical user logs were deleted. |
 | D: actual old layout/icons, Home images/context, help/editor, real export destination, startup update prompt. | `ClientHome.qml`, `ClientCustomGallery.qml`, `ClientInfoService`, `QtClient` composition; existing resource/help/editor pages. | `89e2e6b` connects actual applied mode/profile to Home and waits for the correct async gallery before selecting. Navigation/context changes cancel stale previews. Startup uses original prompt/skip rules, waits while main is hidden and does not activate it. Real owned QML Save-As selects the original schema/path and preserves overwrite verification. Independent source review found no remaining P0/P1 in this bounded batch. | Offscreen dialogs are not Windows native-picker acceptance. Earlier visual receipts remain tied to their recorded source/build; final candidate ordinary/large visible pages still need review. |
 | E: static reference versus aligned surface, author fallback, position/editing, visibility/opacity and notices. | Runtime `reference_payload`/`render_payload`; `client_coordinator.py`; `ClientReference.qml`, `ClientAligned.qml`; `client_reference_presentation.py`, `client_screen_geometry.py`, original display notice policy. | `fd82f89` restores durable static independence from pose/window geometry, the original provisional exception, shared effective-author policy and correct full-fit source classification. Declared broken author layers keep the original structural fallback; undeclared layers use the actual base-map provider. Screen names are verified by unique native/Qt geometry rather than exact friendly-name equality. `89e2e6b` unifies game/own-editor focus, visible-area placement with explicit Qt-coordinate markers, no-identity display-only position preview, pool draining and current-material fallback notices. Actual owned QML coordinator entry, focus round trip, cancel, drag and Finish pass with no warnings and a drained worker. | F2 static pixels were Ready/visible then hidden with preference true and opacity .52; logs do not uniquely attribute every hide. Source fixes do not prove the player's exact incident resolved. Old unmarked position provenance stays unknown and is only clamped. Preview layout can retain temporary vertical whitespace during image-size/drag convergence. Real mixed-DPI game overlay and final pixel latency are unverified. |
+
+
+### Actual saved-frame caller failure and repair
+
+Both actual e75 production-provider saved frames reached schema-V2 conditions
+state with a provisional winner but empty established members. Qt returned
+pending before fit, whereas the old daily outer caller still checked the
+ordinary top strong/hard candidate. No H or visible replay was fabricated.
+`d18029f` restores that exact shared old predicate after no legal group choice,
+retaining final-wrapper, floor, prior-confirmation and current-context gates.
+Independent fixed-source review passes. The same two frames were each solved
+once on changed `d18029f`, both with real strong/hard flags and valid H. The
+original Replay is visible with unchanged transforms and zero QML warnings.
+Nightmare first failed only the consumer path guard, then consumed the existing
+export in a separate successful process without solving again; difficult
+completed its first changed-source process successfully. Recorded results were
+correctly refused by the live game publisher. This establishes the source
+recorded diagnostic chain, not old343 full-H equality, live game acceptance or
+a passing frozen artifact.
 
 ### Independent review corrections and authorized changes
 
@@ -39,7 +58,7 @@ capture, floor, residual, context or material guards.
 The user separately promoted automatic-mode current-group manual selection into
 this version. `ClientRecognition.qml` and `client_group_member_choice.py` have
 an owned-UI/helper receipt and runtime checkpoint `22c2a73`; independent
-transaction review is pending. The implementation must commit
+transaction review passed on fixed `a64e93e` after an independently reproduced old-automatic-ACK race and reselect-hold correction. The implementation must commit
 identity/route/aligned/reference together after current geometry and material
 acceptance, never pretend native unique verification. Hold applies to the
 current round/group until explicit **Restore automatic**, and resets on end,
@@ -67,6 +86,13 @@ seam is not real game authorization. Actual game/global-key/mixed-DPI behavior,
 map08/B1 reproduction, online service availability and 500ms/300ms performance
 remain unverified until measured. Difficult map29's missing original native
 bindings remain a supplied-baseline gap. None is silently declared solved.
+
+Source drag integration uses controlled capture/solver grants, actual Runtime
+producer and original QML: mapped bounds move 35 by 15 pixels, with one image
+publish, no move-time Loading or additional material ACK, and unchanged
+persistent pose/root. See `test_client_aligned_transform.py`. Independent
+projection review is fixed to `addfbc5`; source test counts are not frozen
+execution receipts.
 
 ## Follow-up source after 24857072
 
