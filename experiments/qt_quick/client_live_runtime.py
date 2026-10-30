@@ -331,8 +331,47 @@ class LiveRuntime:
         self._identity_source = ""
         self._identity_rank_rows = []
         self._identity_review_last = None
+        self._native_group_conflicts = None
         self._pose_attempt = dict(status="pending", reason="identity-pending")
         self._pose_result = dict(status="pending", reason="identity-pending")
+
+    def _consume_identity_conflict(self, fit, *, engine, epoch, captured,
+                                   capture_generation, frame_id, frame_generation, cycle, map_id, floor):
+        """Original failure consumer on a worker-owned NativeState clone only."""
+        from types import SimpleNamespace
+        from native_similarity_groups import native_similarity_strong_conflict
+        with self._lock:
+            if (epoch != self._epoch or engine is not self._engine or frame_id != self._frame_id
+                    or frame_generation != self._frame_generation or cycle != self._cycle
+                    or map_id != self._map_id or str(floor) != str(self._floor)
+                    or not self._capture_is_current(captured.context, capture_generation)):
+                return False
+            state = self._identity_native
+            if state is None or state.state != "MEMBER_VERIFIED":
+                return False
+            stage = clone_similarity_state(state)
+            events = []
+            owner = SimpleNamespace(native_similarity_state=stage, gate=self._gate,
+                active_map_cycle_id=cycle, current_frame_generation=frame_generation,
+                current_floor=floor, surface_visibility_generation=epoch,
+                floor_required=self._floor_required, map_is_open=self._map_open,
+                _native_group_conflicts=copy.deepcopy(self._native_group_conflicts),
+                _log=lambda event, **values: events.append((event, values)))
+            reopened = native_similarity_strong_conflict(owner, dict(mapId=map_id, floor=floor,
+                cycleId=cycle, sourceFrameGeneration=frame_generation, sourceSurfaceGeneration=epoch,
+                fit=fit, frontGroupDifferenceEvidence=fit.get("frontGroupDifferenceEvidence")))
+            self._native_group_conflicts = owner._native_group_conflicts
+            if reopened:
+                self._identity_native = stage
+                self._durable_map_id = ""
+                self._identity_source = "native-similar-group"
+                self._identity_priority = None
+                self._identity_review_last = None
+                self._pending_sibling = None
+                self._provisional_reference_context = None
+                self._notify("group-state", reason="repeated-current-structure-contradictions",
+                             legacyEvents=[dict(event=event, **values) for event, values in events])
+            return reopened
 
     def _identity_fields(self):
         native = self._identity_native
@@ -1733,8 +1772,11 @@ class LiveRuntime:
             return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
         if not fit.get("success"):
             reason = str(fit.get("reason", "pose-fit-failed"))
+            reopened = self._consume_identity_conflict(fit, engine=engine, epoch=epoch, captured=captured,
+                capture_generation=capture_generation, frame_id=frame_id, frame_generation=frame_generation,
+                cycle=cycle, map_id=map_id, floor=floor)
             self._set_pose_phase("rejected", reason, map_id, floor, frame_id, frame_generation)
-            return self._receipt(action, payload, success=False, reason=reason)
+            return self._receipt(action, payload, success=False, reason=reason, identityReopened=reopened)
         residual = fit.get("selectedRouteCurrentFrameResidual")
         if not rendered_profile_residual_is_verified(residual):
             raise ValueError("current-frame-canonical-verification-required")

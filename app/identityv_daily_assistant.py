@@ -14670,50 +14670,8 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 positiveDifferences=(proposal.get('differenceEvidence') or {}),candidateOnly=True)
 
     def _native_similarity_strong_conflict(self, event):
-        """Reopen a final family only after repeated explicit current contradictions.
-
-        Missing geometry, low confidence, timeouts and residual misses alone do
-        not contradict identity. Each counted observation must name a different
-        group member with confident structural evidence or a contradicted entry.
-        """
-        state = getattr(self, 'native_similarity_state', None)
-        if getattr(state, 'state', None) != 'MEMBER_VERIFIED' or not isinstance(event, dict):
-            return False
-        source = state.verified_member_id
-        if (getattr(self.gate, 'confirmed_id', None) != source
-                or event.get('mapId') != source or event.get('cycleId') != self.active_map_cycle_id
-                or event.get('sourceFrameGeneration') != self.current_frame_generation
-                or str(event.get('floor')) != str(self.current_floor)
-                or event.get('sourceSurfaceGeneration', self.surface_visibility_generation)
-                    != self.surface_visibility_generation
-                or self.floor_required or not self.map_is_open):
-            return False
-        difference = event.get('frontGroupDifferenceEvidence') or {}
-        fit = event.get('fit') or {}
-        strong = bool((fit.get('entryCrossCheck') or {}).get('contradicted') is True
-            or (difference.get('confident') is True
-                and difference.get('candidateMapId') in state.member_ids
-                and difference.get('candidateMapId') != source))
-        key = (self.active_map_cycle_id, str(self.current_floor), source)
-        old = getattr(self, '_native_group_conflicts', None)
-        frames = set(old[1]) if old and old[0] == key else set()
-        if not strong:
-            self._native_group_conflicts = (key, set())
-            return False
-        frames.add(self.current_frame_generation)
-        self._native_group_conflicts = (key, frames)
-        if len(frames) < 2:return False
-        state.state = 'GROUP_LOCKED'
-        self._native_group_review_floor = (state.resource_key, str(self.current_floor))
-        state.verified_member_id = None
-        state.pending_identity = None
-        state.generation += 1
-        self.active_confirmation = None
-        self._native_group_conflicts = None
-        self._native_group_review_last_scope = None
-        self._log('similar-group-final-lock-reopened', mapId=source, floor=self.current_floor,
-                  reason='repeated-current-structure-contradictions', fullMapIdentitySearch=False)
-        return True
+        from native_similarity_groups import native_similarity_strong_conflict
+        return native_similarity_strong_conflict(self, event)
 
     def _native_similarity_member_committed(self, map_id, floor, *, global_verified):
         state = getattr(self, 'native_similarity_state', None)

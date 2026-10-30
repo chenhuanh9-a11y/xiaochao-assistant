@@ -124,6 +124,68 @@ class SimilarityProtocolTests(unittest.TestCase):
         self.assertFalse(self.runtime.render_payload(result["renderToken"])["provisional"])
         self.assertEqual(sum(e["event"] == "identity-committed" for e in events), 1)
 
+    def verify_group_member(self):
+        self.capture_group()
+        self.engine.rank_established_group.return_value = rows(IDS[0])
+        self.now = 3.; self.capture.frame[0, 0, 0] = 1
+        result = self.dispatch("capture_now")
+        self.assertTrue(self.runtime.acknowledge_sibling(result["pendingSiblingToken"], True)["success"])
+        self.assertEqual(self.runtime.snapshot()["identityPhase"], "MEMBER_VERIFIED")
+
+    def test_original_strong_conflicts_require_two_distinct_current_frames(self):
+        self.verify_group_member()
+        prior = self.runtime._identity_prior
+        published = self.runtime._identity_native
+        self.fit = dict(success=False, reason="entry-reverification-failed",
+                        entryCrossCheck=dict(contradicted=True))
+        self.capture.frame[0, 0, 0] = 2
+        first = self.dispatch("capture_now")
+        self.assertFalse(first["identityReopened"])
+        self.assertTrue(self.runtime.snapshot()["identityLocked"])
+        saved = self.runtime._last_observation
+        # Re-consuming the same failed current frame cannot count twice.
+        self.assertFalse(self.runtime._consume_identity_conflict(self.fit, engine=self.engine,
+            epoch=self.runtime._epoch, captured=saved["captured"],
+            capture_generation=saved["capture_generation"], frame_id=saved["frame_id"],
+            frame_generation=saved["generation"], cycle=saved["cycle_id"], map_id=IDS[0], floor="1"))
+        self.capture.frame[0, 0, 0] = 3
+        second = self.dispatch("capture_now")
+        self.assertTrue(second["identityReopened"])
+        state = self.runtime.snapshot()
+        self.assertEqual(state["identityPhase"], "GROUP_LOCKED")
+        self.assertFalse(state["identityLocked"]); self.assertFalse(state["displayAuthorized"])
+        self.assertEqual(state["provisionalMapId"], IDS[0])
+        self.assertEqual(self.runtime._identity_prior, prior)
+        self.assertEqual(published.state, "MEMBER_VERIFIED")  # published owner was never mutated
+        self.assertEqual(self.engine.rank.call_count, 1)
+
+    def test_ordinary_failure_resets_strong_count_and_action_flags_are_not_evidence(self):
+        self.verify_group_member()
+        for number, strong in [(2, True), (3, False), (4, True)]:
+            self.fit = dict(success=False, reason="controlled-failure",
+                entryCrossCheck=dict(contradicted=strong))
+            self.capture.frame[0, 0, 0] = number
+            result = self.runtime.dispatch("capture_now", dict(entryCrossCheck=dict(contradicted=True)))
+            self.assertFalse(result["identityReopened"])
+            self.assertTrue(self.runtime.snapshot()["identityLocked"])
+
+    def test_late_strong_fit_does_not_publish_after_end(self):
+        self.verify_group_member()
+        entered, release = threading.Event(), threading.Event()
+        def blocked(*args, **kwargs):
+            entered.set(); release.wait(2)
+            return dict(success=False, reason="entry-reverification-failed",
+                        entryCrossCheck=dict(contradicted=True))
+        output = []
+        with patch.object(_AlignmentHost, "fit", side_effect=blocked):
+            worker = threading.Thread(target=lambda: output.append(self.dispatch("capture_now")))
+            worker.start(); self.assertTrue(entered.wait(2))
+            self.dispatch("end_round"); release.set(); worker.join(2)
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(output[0]["stale"])
+        self.assertIsNone(self.runtime._native_group_conflicts)
+        self.assertEqual(self.runtime.snapshot()["identityPhase"], "UNLOCKED")
+
     def test_complete_group_is_not_unique_identity_and_pose_failure_does_not_grant_sheet(self):
         self.prepare_group(); self.fit = dict(success=False, reason="original-residual-failed")
         result = self.dispatch("capture_now")
