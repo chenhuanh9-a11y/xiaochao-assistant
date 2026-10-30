@@ -5869,7 +5869,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 'legacyCleanLayerCount':legacy_clean_count} if native is not None else {}),
             extraBindings=[list(key) for key in extras])
 
-    def _install_map_mode(self, mode, *, asset_root=None, memory_root=None, resource_root=None, before_publish=None):
+    def _install_map_mode(self, mode, *, asset_root=None, memory_root=None, resource_root=None, before_publish=None, prepare_only=False):
         """Construct one isolated resource context; lifecycle invalidation is caller-owned."""
         if mode not in {'nightmare','difficult'}:raise ValueError('Unknown game mode')
         shared_resources = None
@@ -6090,8 +6090,27 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             optional_author_displays = OptionalAuthorDisplays(nightmare_root,pack,catalog,adapters,shared_version_context)
             catalog,adapters = optional_author_displays.catalog,optional_author_displays.adapters
             base._structure_profile_provider = lambda: SHARED_STRUCTURE_PROFILE_ID
+        context = dict(mode=mode, pack=pack, catalog=catalog, adapters=adapters,
+            resources=resources, memory=memory, engine=engine, native_context=native_context,
+            difficult_identity_resources=difficult_identity_resources,
+            optional_author_displays=optional_author_displays, shared_resources=shared_resources,
+            shared_version_context=shared_version_context, ui=ui)
+        if prepare_only:
+            # File/import workers may construct data, never publish UI/runtime state.
+            return context
         if before_publish is not None:
             before_publish()
+        self._publish_map_mode_context(context)
+
+    def _publish_map_mode_context(self, context):
+        mode, pack = context['mode'], context['pack']
+        catalog, adapters, resources = (context[key] for key in ('catalog', 'adapters', 'resources'))
+        memory, engine, ui = (context[key] for key in ('memory', 'engine', 'ui'))
+        native_context = context['native_context']
+        difficult_identity_resources = context['difficult_identity_resources']
+        optional_author_displays = context['optional_author_displays']
+        shared_resources = context['shared_resources']
+        shared_version_context = context['shared_version_context']
         self._invalidate_native_resource_context('resource-context-published')
         self._invalidate_base_display()
         self._native_resource_rejected = False
@@ -10378,6 +10397,10 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                     cancelled=request['cancelled'].is_set)
                 from star_map_import import verified_installed_package
                 event['installation'] = verified_installed_package(request['installRoot'], request['packageId'])
+                try:
+                    event['preparedContext'] = self._install_map_mode(request['mode'], prepare_only=True)
+                except Exception as error:
+                    event['refreshError'] = f'{type(error).__name__}: {error}'
             except Exception as error:
                 event['error'] = f'{type(error).__name__}: {error}'
             self.events.put(event)
@@ -10394,10 +10417,15 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         if browser is not None:
             browser.invalidate_resource_context()
 
-    def _refresh_imported_author_resources(self) -> None:
+    def _refresh_imported_author_resources(self, prepared_context=None) -> None:
         # Construct before publishing. No recognition, pose, custom route or
         # preference is rewritten: this operation is allowed only outside a round.
-        self._install_map_mode(self.game_mode)
+        if prepared_context is None:
+            self._install_map_mode(self.game_mode)
+        else:
+            if prepared_context['mode'] != self.game_mode:
+                raise ValueError('prepared resource mode changed')
+            self._publish_map_mode_context(prepared_context)
         self._managed_author_packages_state = None
         self._invalidate_author_browser()
         self.route_profile_var.set(self._route_profile_label(self._shown_route_profile()))
@@ -10436,7 +10464,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 message='已取消导入，新增文件已回滚。' if cancelled else f"导入失败：{event.get('error') or '没有结果'}")
             return
         try:
-            self._refresh_imported_author_resources()
+            if event.get('refreshError'):
+                raise RuntimeError(event['refreshError'])
+            self._refresh_imported_author_resources(event.get('preparedContext'))
         except Exception as error:
             self._map_package_import_state.update(stage='error', ready=None,
                 message=f'作者文件已安装，但列表刷新失败，请重新检查并导入以重试刷新：{type(error).__name__}')
@@ -10536,6 +10566,11 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                     event['result'] = remove_author_package_live(request['context'][0], package_id,
                         application_idle=True, expected_receipt_sha256=receipt,
                         expected_plan_sha256=plan_sha256, cancelled=request['cancelled'].is_set)
+                    if event['result'].get('status') == 'author-removed-live':
+                        try:
+                            event['preparedContext'] = self._install_map_mode(self.game_mode, prepare_only=True)
+                        except Exception as error:
+                            event['refreshError'] = f'{type(error).__name__}: {error}'
             except Exception as error:
                 event['error'] = f'{type(error).__name__}: {error}'
             event['cancelled'] = request['cancelled'].is_set()
@@ -10571,7 +10606,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             self._online_installed_packages = getattr(self, '_online_installed_packages', {})
             self._online_installed_packages[request['packageId']] = dict(status='not-installed')
             try:
-                self._refresh_imported_author_resources()
+                if event.get('refreshError'):
+                    raise RuntimeError(event['refreshError'])
+                self._refresh_imported_author_resources(event.get('preparedContext'))
             except Exception as error:
                 state.update(stage='error', ready=None, message=f'文件已移出并保留备份，但界面刷新失败：{type(error).__name__}')
                 self._managed_author_packages_state = state
