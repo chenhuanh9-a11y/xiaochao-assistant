@@ -4,6 +4,7 @@ from concurrent.futures import Future
 import copy
 from pathlib import Path
 import queue
+import re
 import sys
 import tempfile
 import threading
@@ -31,6 +32,7 @@ class ControllerTests(unittest.TestCase):
         self.root = root
         names = {'_ensure_online_map_package_state', '_ensure_map_package_import_state', '_author_import_idle',
                  'map_package_import_snapshot', '_start_live_author_import',
+                 'confirm_map_package_import', 'continue_auto_map_package_import',
                  '_consume_live_author_import', 'cancel_map_package_import',
                  '_refresh_imported_author_resources', '_invalidate_author_browser',
                  'inspect_map_package', 'select_route_profile', 'set_game_mode',
@@ -39,6 +41,8 @@ class ControllerTests(unittest.TestCase):
         cls = subject('identityv_daily_assistant.py', names,
                       dict(Path=Path, ROOT=root, RESOURCE_ROOT=root/'_internal', copy=copy,
                            threading=threading, sys=sys, tk=SimpleNamespace(Misc=object),
+                           re=re, ctypes=SimpleNamespace(windll=SimpleNamespace(
+                               user32=SimpleNamespace(MessageBoxW=Mock(return_value=6)))),
                            tk_widget_exists=lambda x:x is not None))
         s = self.s = cls(); s.closed=False; s.events=queue.Queue(); s.pack=object()
         s.game_mode='nightmare'; s.gate=SimpleNamespace(confirmed_id=None)
@@ -52,6 +56,8 @@ class ControllerTests(unittest.TestCase):
         s._invalidate_capture_work=Mock(); s._invalidate_author_browser=Mock()
         s._invalidate_native_resource_context=Mock(); s._invalidate_base_display=Mock()
         s._refresh_imported_author_resources=Mock()
+        s._install_map_mode=Mock(return_value={'mode': 'nightmare'})
+        s._log=Mock()
 
     def test_import_invalidates_only_target_and_obsoletes_online_worker(self):
         self.s._ensure_online_map_package_state()
@@ -89,6 +95,82 @@ class ControllerTests(unittest.TestCase):
         state=self.s.map_package_import_snapshot()
         self.assertFalse(state['liveAvailable']);self.assertTrue(state['restartRequired'])
         self.assertFalse(state['canImport'])
+
+    def prepare_upgrade_confirmation(self):
+        self.checked['result']['replaceFiles'] = [dict(path='_internal/assets/suju/nightmare-03/floor-2.png')]
+        self.s._map_package_import_state['autoImport'] = True
+        self.s._current_map_package_inspection = lambda: self.checked
+        self.s._reap_cancelled_map_package_helper = Mock()
+        self.s._exit_confirmation_owner = lambda owner: 123
+        self.s._start_live_author_import = Mock(return_value=dict(success=True))
+        return self.s.confirm_map_package_import.__globals__['ctypes'].windll.user32.MessageBoxW
+
+    def test_owned_upgrade_is_live_but_asks_once_before_mutation(self):
+        message = self.prepare_upgrade_confirmation()
+        self.assertFalse(self.s.map_package_import_snapshot()['restartRequired'])
+        self.s.continue_auto_map_package_import()
+        self.s._start_live_author_import.assert_called_once_with(self.checked)
+        message.assert_called_once()
+        self.assertIn('无需退出', message.call_args.args[1])
+        self.assertFalse(self.s._map_package_upgrade_confirmation)
+
+    def test_upgrade_popup_cancel_does_not_mutate_or_repeat_auto_prompt(self):
+        message = self.prepare_upgrade_confirmation(); message.return_value = 7
+        self.s.continue_auto_map_package_import()
+        self.s.continue_auto_map_package_import()
+        message.assert_called_once()
+        self.s._start_live_author_import.assert_not_called()
+        self.assertFalse(self.s._map_package_import_state['autoImport'])
+        self.assertEqual(self.s._map_package_import_state['stage'], 'ready')
+
+    def test_upgrade_popup_cannot_authorize_a_changed_selection(self):
+        message = self.prepare_upgrade_confirmation()
+        def change(*args):
+            self.s._current_map_package_inspection = lambda: dict(self.checked)
+            return 6
+        message.side_effect = change
+        result = self.s.confirm_map_package_import()
+        self.assertEqual(result['reason'], 'selection-changed')
+        self.s._start_live_author_import.assert_not_called()
+        self.assertFalse(self.s._map_package_upgrade_confirmation)
+
+    def test_upgrade_modal_reentry_cannot_duplicate_confirmation(self):
+        message = self.prepare_upgrade_confirmation()
+        def reenter(*args):
+            self.assertFalse(self.s.map_package_import_snapshot()['canImport'])
+            self.assertEqual(self.s.confirm_map_package_import()['reason'], 'import-busy')
+            return 6
+        message.side_effect = reenter
+        self.s.confirm_map_package_import()
+        message.assert_called_once()
+        self.s._start_live_author_import.assert_called_once()
+
+    def test_old_upgrade_no_answer_cannot_change_new_selection(self):
+        message = self.prepare_upgrade_confirmation()
+        def change(*args):
+            self.s._current_map_package_inspection = lambda: dict(self.checked)
+            self.s._map_package_import_state.update(autoImport=True, message='new selection')
+            return 7
+        message.side_effect = change
+        result = self.s.confirm_map_package_import()
+        self.assertEqual(result['reason'], 'selection-changed')
+        self.assertTrue(self.s._map_package_import_state['autoImport'])
+        self.assertEqual(self.s._map_package_import_state['message'], 'new selection')
+        self.s._start_live_author_import.assert_not_called()
+
+    def test_old_auto_popup_result_cannot_mark_new_request_failed(self):
+        message = self.prepare_upgrade_confirmation()
+        def change(*args):
+            self.s._map_package_import_state = dict(stage='checking', autoImport=True, message='new request')
+            self.s._map_package_import_generation += 1
+            self.s._map_package_import_result = None
+            self.s._current_map_package_inspection = Mock(side_effect=ValueError('new request'))
+            return 7
+        message.side_effect = change
+        self.s.continue_auto_map_package_import()
+        self.assertEqual(self.s._map_package_import_state,
+            dict(stage='checking', autoImport=True, message='new request'))
+        self.s._start_live_author_import.assert_not_called()
 
     def test_repeated_snapshot_does_not_probe_helper_on_ui_thread(self):
         self.checked['helperAvailable'] = True
