@@ -1712,6 +1712,33 @@ class LiveRuntime:
         return self._solve_observation(action, payload, cancelled, engine, group, epoch, captured, frame,
             floor, digest, capture_generation, frame_generation, frame_id, cycle, map_id, entry_candidate)
 
+    def _stage_round_group_commit(self, engine, group, map_id, floor, canonical, render_matrix,
+                                  display, frame, captured, cycle, frame_generation, residual):
+        """Reuse the original single-root relation and validation-pool writer."""
+        from types import SimpleNamespace
+        from round_layer_group_commit import (commit_alignment_v2_round_pose,
+            prime_round_layer_group_relations, map_anchor_focus_point)
+        stage = group if group is not None and group.map_id == map_id else None
+        owner = SimpleNamespace(pack=engine.pack, round_layer_group=stage,
+            author_coordinate_adapters=engine.qt_adapters, active_map_cycle_id=cycle,
+            current_frame_generation=frame_generation, display_environment=None,
+            _native_similarity_resources_ready=lambda: True,
+            _open_cycle_transient_motion_active=lambda _map: False,
+            _shared_structure_mode_enabled=lambda: True, _log=lambda *args, **kwargs: None)
+        owner._active_round_layer_group = lambda mid, profile=None: (
+            owner.round_layer_group if owner.round_layer_group is not None
+            and owner.round_layer_group.map_id == mid
+            and (profile is None or owner.round_layer_group.route_profile_id == profile) else None)
+        owner._prime_round_layer_group_relations = lambda mid, anchor: prime_round_layer_group_relations(owner, mid, anchor)
+        context = captured.context
+        signature = (tuple(context.full_client_size), tuple(context.client_screen_bounds), context.dpi)
+        accepted = commit_alignment_v2_round_pose(owner, map_id, floor, display["pixels"], frame,
+            context.client_screen_bounds, render_matrix=render_matrix, canonical_matrix=canonical,
+            route_profile_id="shared-structure", source="initial-structure-v2", residual=residual,
+            normalize_route_profile_id=lambda profile: profile,
+            display_environment_signature=lambda _: signature, map_anchor_focus_point=map_anchor_focus_point)
+        return owner.round_layer_group if accepted else None
+
     def _solve_observation(self, action, payload, cancelled, engine, group, epoch, captured, frame,
                            floor, digest, capture_generation, frame_generation, frame_id, cycle,
                            map_id, entry_candidate=None, *, review_group=True, identity_stage=None):
@@ -1787,6 +1814,14 @@ class LiveRuntime:
         canonical = source_matrix @ np.linalg.inv(np.asarray(basis))
         render_matrix = source_matrix @ display["matrixDisplayToReference"]
         with self._lock:
+            previous_group = copy.deepcopy(group) if group is not None else None
+        target_group = self._stage_round_group_commit(engine, previous_group, map_id, floor, canonical,
+            render_matrix, display, frame, captured, cycle, frame_generation, residual)
+        if target_group is None:
+            reason = "round-group-pose-commit-rejected"
+            self._set_pose_phase("rejected", reason, map_id, floor, frame_id, frame_generation)
+            return self._receipt(action, payload, success=False, reason=reason)
+        with self._lock:
             if display_generation != getattr(self, "_display_generation", 0):
                 return self._receipt(action, payload, success=False, reason="stale-display-settings", stale=True)
             if obsolete() or frame_id != self._frame_id or cycle != self._cycle or floor != self._floor:
@@ -1813,9 +1848,6 @@ class LiveRuntime:
             token = core.authorize(decision)
             if token is None or not core.commit(token):
                 return self._receipt(action, payload, success=False, reason="core-commit-rejected")
-            target_group = RoundLayerGroup(map_id, "shared-structure", floor, canonical,
-                cycle_id=cycle, source=candidate.source, pose_client_size=(width, height))
-            target_group.canonical_geometry_verified_floors.add(floor)
             rgba = np.ascontiguousarray(display["pixels"][:, :, [2, 1, 0, 3]])
             rgba.setflags(write=False)
             live = self._evidence_kind == "live-client-capture"

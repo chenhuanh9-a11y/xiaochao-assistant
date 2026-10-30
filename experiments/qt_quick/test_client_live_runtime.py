@@ -51,7 +51,8 @@ def fixture_engine(mode="nightmare"):
              structureVersionKey="fixture-version"), Path("fixture.npz"))
     engine = SimpleNamespace(pack=SimpleNamespace(mode=mode, maps=[SimpleNamespace(id="fixture-map")]),
         identity_floors=("1", "2", "B1") if mode == "nightmare" else ("1", "2"),
-        qt_adapters=SimpleNamespace(canonical_pack_id="fixture-pack", matrix_profile_to_canonical=lambda *a: np.eye(3)),
+        qt_adapters=SimpleNamespace(canonical_pack_id="fixture-pack", matrix_profile_to_canonical=lambda *a: np.eye(3),
+            canonical_cross_floor_search_seed=lambda *a, **kw: None),
         qt_shared_provider=lambda *a: reference, qt_optional_displays=SimpleNamespace(binding=lambda *a: None),
         rank_count=0)
     engine.pack.by_id = {item.id: item for item in engine.pack.maps}
@@ -93,6 +94,46 @@ class LiveRuntimeContracts(unittest.TestCase):
         result = self.dispatch("capture_now")
         self.assertTrue(result["success"], result)
         return result
+
+    def test_v2_commit_primes_real_floor_relation_and_adopts_one_root_with_validation_pools(self):
+        relation = np.array([[1., 0, 7.], [0, 1., -5.], [0, 0, 1.]])
+        def seed(mid, source, target, matrix, **kw):
+            return dict(targetToSourceMatrix=(relation if source == "1" else np.linalg.inv(relation)),
+                        requiresCurrentFrameDisplayValidation=True, directProjectionAllowed=False)
+        self.engine.qt_adapters.canonical_cross_floor_search_seed = seed
+        self.begin_and_capture()
+        first = self.runtime._group
+        np.testing.assert_allclose(first.relations["2"], relation)
+        self.assertNotIn("B1", first.relations)
+        self.assertEqual(first.canonical_geometry_verified_floors, {"1"})
+        self.assertIn("1", first.tracking_by_floor)
+        old_root = first.root_pose.copy()
+        desired_root = old_root.copy(); desired_root[0, 2] += 3
+        self.fit["matrixSourceToClient"] = desired_root @ relation
+        with patch("map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=2)):
+            result = self.dispatch("set_floor", floor="2")
+        self.assertTrue(result["success"], result)
+        group = self.runtime._group
+        self.assertEqual(group.anchor_floor, "1")
+        np.testing.assert_allclose(group.root_pose, desired_root)
+        np.testing.assert_allclose(group.canonical_pose_for_floor("2"), desired_root @ relation)
+        self.assertEqual(group.canonical_geometry_verified_floors, {"1", "2"})
+        self.assertEqual(set(group.tracking_by_floor), {"1", "2"})
+        np.testing.assert_allclose(first.root_pose, old_root)  # staged commit did not mutate prior owner
+
+    def test_v2_verified_floor_without_relation_is_new_root_and_cannot_project_previous_floor(self):
+        self.begin_and_capture()
+        first = self.runtime._group
+        self.assertEqual(set(first.relations), {"1"})
+        with patch("map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=2)):
+            result = self.dispatch("set_floor", floor="2")
+        self.assertTrue(result["success"], result)
+        group = self.runtime._group
+        self.assertEqual(group.anchor_floor, "2")
+        self.assertEqual(set(group.relations), {"2"})
+        self.assertEqual(group.canonical_geometry_verified_floors, {"2"})
+        self.assertIsNone(group.canonical_pose_for_floor("1"))
+        self.assertIsNone(group.canonical_pose_for_floor("B1"))
 
     def test_game_mode_locked_during_round_and_unlocked_after_end(self):
         self.assertTrue(self.dispatch("start_round")["success"])
