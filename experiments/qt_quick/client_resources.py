@@ -90,7 +90,7 @@ class ResourceService(QObject):
         self._import_notice = ""
         self._import_receipt_notification = False
         self._import_duplicate = False
-        self._duplicate_after_write = False
+        self._import_completion_message = ""
 
     packageRows = Property("QVariantList", lambda s: s._rows, notify=changed)
     busy = Property(bool, lambda s: s._busy, notify=changed)
@@ -411,6 +411,8 @@ class ResourceService(QObject):
         kind = self._kind
         self._busy, self._can_cancel = False, False
         if error:
+            if kind == "refresh-after-write":
+                self._import_completion_message = ""
             recovery = error.get("recovery", False) if isinstance(error, dict) else False
             error = error["reason"] if isinstance(error, dict) else str(error)
             self._recovery = "upgrade-recovery-required" in error or "pending-upgrade" in error or recovery
@@ -429,6 +431,7 @@ class ResourceService(QObject):
         if kind in ("refresh", "inspect", "inspect-remove", "refresh-after-write", "recovery-history", "inspect-recovery") and self._cancel.is_set():
             self._message, self._kind = "操作已取消。", ""
             if kind == "refresh-after-write":
+                self._import_completion_message = ""
                 self._message = "状态核对已取消；已完成的资源改动仍然保留，可重新核对。"
             self._release_lease()
             self.changed.emit()
@@ -498,9 +501,12 @@ class ResourceService(QObject):
             # A successful return is the commit result even if Cancel arrived
             # just after the helper's commit point. Never label that cancelled.
             self._kind = ""
-            self._duplicate_after_write = kind == "install" and _duplicate_import(result)
+            duplicate = kind == "install" and _duplicate_import(result)
+            # Keep the final feedback pending until the actual-state scan succeeds.
+            self._import_completion_message = (("资源内容已存在，登记与状态已核对。" if duplicate else
+                "资源安装完成，登记与状态已核对。") if kind == "install" else "")
             self._message = ("资源已备份并移除。备份：" + result["backupPath"] if kind == "remove" else
-                             "资源内容已存在，正在核对登记与状态…" if self._duplicate_after_write else
+                             "资源内容已存在，正在核对登记与状态…" if duplicate else
                              "资源安装完成，正在核对状态…")
             self.resourcesChanged.emit()
             if kind == "recover":
@@ -511,9 +517,9 @@ class ResourceService(QObject):
             return
         elif kind == "refresh-after-write":
             self._rows, self._recovery, self._kind = result, False, ""
-            if self._duplicate_after_write:
-                self._message = "资源内容已存在，登记与状态已核对。"
-            self._duplicate_after_write = False
+            if self._import_completion_message:
+                self._message = self._import_completion_message
+            self._import_completion_message = ""
         self._release_lease()
         self.changed.emit()
 

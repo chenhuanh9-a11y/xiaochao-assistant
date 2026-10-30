@@ -389,6 +389,7 @@ class ResourceServiceTests(unittest.TestCase):
             self.assertEqual((self.root / IMAGE).read_bytes(), b"route")
             self.assertEqual(len(self.changes), 1)
             self.assertNotIn("内容已存在", self.service.message)
+            self.assertEqual(self.service.message, "资源安装完成，登记与状态已核对。")
             self.assertTrue(any(r["status"] == "installed" for r in self.service.packageRows))
             self.install(archive)
         self.assertEqual([(r['added'], r['alreadyPresent']) for r in results], [(1, 0), (0, 1)])
@@ -411,6 +412,63 @@ class ResourceServiceTests(unittest.TestCase):
         self.assertFalse(self.lease.active)
         self.install()
         self.assertEqual((self.root / IMAGE).read_bytes(), b"route")
+
+    def test_first_import_scan_failure_does_not_publish_completion(self):
+        started, finish = threading.Event(), threading.Event()
+        def failed_scan(_cancel):
+            started.set()
+            finish.wait(3)
+            raise OSError("fixture post-import scan failed")
+        with patch.object(self.service, "_snapshot", side_effect=failed_scan):
+            self.service.importArchive(QUrl.fromLocalFile(str(self.package())).toString())
+            try:
+                deadline = time.monotonic() + 3
+                while not started.is_set() and time.monotonic() < deadline:
+                    APP.processEvents()
+                    time.sleep(.005)
+                self.assertTrue(started.is_set())
+                self.assertTrue(self.service.busy)
+                self.assertEqual((self.root / IMAGE).read_bytes(), b"route")
+                self.assertIn("正在核对", self.service.message)
+                self.assertNotIn("登记与状态已核对", self.service.message)
+            finally:
+                finish.set()
+            self.settle()
+        self.assertIn("fixture post-import scan failed", self.service.message)
+        self.assertNotIn("登记与状态已核对", self.service.message)
+        self.assertFalse(self.lease.active)
+        self.service.refresh()
+        self.settle()
+        self.assertTrue(any(r["status"] == "installed" for r in self.service.packageRows))
+        self.assertEqual(self.service.message, "本地资源已核对。")
+
+    def test_first_import_scan_cancel_keeps_committed_result_without_success_footer(self):
+        started, finish = threading.Event(), threading.Event()
+        actual_snapshot = self.service._snapshot
+        def delayed_scan(cancel):
+            started.set()
+            finish.wait(3)
+            return actual_snapshot(cancel)
+        with patch.object(self.service, "_snapshot", side_effect=delayed_scan):
+            self.service.importArchive(QUrl.fromLocalFile(str(self.package())).toString())
+            try:
+                deadline = time.monotonic() + 3
+                while not started.is_set() and time.monotonic() < deadline:
+                    APP.processEvents()
+                    time.sleep(.005)
+                self.assertTrue(started.is_set())
+                self.service.cancel()
+            finally:
+                finish.set()
+            self.settle()
+        self.assertIn("取消", self.service.message)
+        self.assertNotIn("登记与状态已核对", self.service.message)
+        self.assertEqual((self.root / IMAGE).read_bytes(), b"route")
+        self.assertTrue((self.root / "work/map-packages/nightmare-suju.json").is_file())
+        self.assertFalse(self.lease.active)
+        self.service.refresh()
+        self.settle()
+        self.assertEqual(self.service.message, "本地资源已核对。")
 
     def test_existing_same_bytes_without_receipt_still_registers(self):
         self.write(IMAGE, b"route")
