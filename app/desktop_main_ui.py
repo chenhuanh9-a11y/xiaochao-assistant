@@ -2150,20 +2150,32 @@ class DesktopMainUI:
     def show_page(self, page: str) -> None:
         if page not in self.PAGES:
             raise ValueError(page)
+        target = self._page_frames[page]
+        active = getattr(self, '_active_page_frame', None)
+        if active is target and target.winfo_manager() == 'pack':
+            return
         if self._page == "help" and page != "help":
             self._close_help_images()
         if self._page == "preferences" and page != "preferences":
             self._commit_display_opacity()
             self._cancel_map_key()
-        for name, frame in self._page_frames.items():
-            frame.pack_forget()
+        if active is None:
+            # Initial construction may have mapped a child. Normalize once;
+            # ordinary navigation only unmaps the previous page.
+            for frame in self._page_frames.values():
+                if frame is not target and frame.winfo_manager():
+                    frame.pack_forget()
+        elif active is not target:
+            active.pack_forget()
+        for name in self._page_frames:
             selected = name == page
             self._nav_buttons[name].configure(
                 bg=SIDEBAR_SELECTED if selected else SIDEBAR,
                 fg=SIDEBAR_TEXT if selected else SIDEBAR_MUTED,
                 activebackground=SIDEBAR_SELECTED if selected else SIDEBAR_HOVER)
 
-        self._page_frames[page].pack(fill="both", expand=True)
+        target.pack(fill="both", expand=True)
+        self._active_page_frame = target
         changed = page != self._page
         self._page = page
         self._place_nav_mark(animate=changed)

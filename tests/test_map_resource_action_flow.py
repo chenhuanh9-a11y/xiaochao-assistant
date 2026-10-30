@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import tkinter as tk
 from tkinter import ttk
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import test_map_resources_page as fixtures
 
@@ -18,6 +18,59 @@ class MapResourceActionFlowTests(unittest.TestCase):
     setUp = fixtures.MapResourcesPageTests.setUp
     tearDown = fixtures.MapResourcesPageTests.tearDown
     settle = fixtures.MapResourcesPageTests.settle
+
+    def test_unchanged_page_poll_does_not_reconfigure_selected_actions(self):
+        self.page.refresh()
+        self.settle()
+        self.page._render_library()
+        with patch.object(self.page, '_show_selected') as detail, \
+             patch.object(self.page.primary_button, 'configure') as primary, \
+             patch.object(self.page.actual_selection, 'configure') as selection, \
+             patch.object(self.page.catalog_refresh_button, 'configure') as refresh:
+            for _ in range(10):
+                self.page._render_library()
+                self.page.sync_online_packages()
+            detail.assert_not_called()
+            primary.assert_not_called()
+            selection.assert_not_called()
+            refresh.assert_not_called()
+
+    def test_current_tab_click_keeps_existing_list_and_context(self):
+        self.page._detail_open = False
+        context = self.page._browse_context
+        signature = self.page._library_signature
+        with patch.object(self.page, '_render_library') as render:
+            self.page.tab_buttons[self.page._tab].invoke()
+            render.assert_not_called()
+        self.assertIs(self.page._browse_context, context)
+        self.assertEqual(self.page._library_signature, signature)
+
+    def test_unchanged_management_ready_does_not_repack_confirmation(self):
+        self.show_managed()
+        with patch.object(self.page.managed_message, 'configure') as message, \
+             patch.object(self.page.managed_confirm, 'pack') as confirm, \
+             patch.object(self.page.managed_surface, 'pack') as surface:
+            for _ in range(10): self.page.sync_managed_packages()
+            message.assert_not_called()
+            confirm.assert_not_called()
+            surface.assert_not_called()
+
+    def test_navigation_only_unmaps_previous_page_and_current_click_is_noop(self):
+        from desktop_main_ui import DesktopMainUI
+        frames = {key: Mock() for key in ('home', 'maps', 'help')}
+        for frame in frames.values(): frame.winfo_manager.return_value = 'pack'
+        ui = SimpleNamespace(PAGES=tuple(frames), _page_frames=frames,
+            _active_page_frame=frames['home'], _page='home',
+            _nav_buttons={key: Mock() for key in frames}, header=Mock(),
+            header_title=Mock(), _place_nav_mark=Mock(), _rise_page=Mock(),
+            _apply_icons=Mock(), _refresh_maps=Mock())
+        DesktopMainUI.show_page(ui, 'maps')
+        frames['home'].pack_forget.assert_called_once()
+        frames['help'].pack_forget.assert_not_called()
+        frames['maps'].pack.assert_called_once()
+        DesktopMainUI.show_page(ui, 'maps')
+        frames['maps'].pack.assert_called_once()
+        ui._refresh_maps.assert_called_once()
 
     def compact(self):
         # 560 px of page content approximates a 650 px window with its sidebar.
