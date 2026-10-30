@@ -51,17 +51,18 @@ class Actions:
             ready=dict(title='fixture', summary='检查通过'), canImport=True)
         return dict(success=True)
     def confirm_map_package_import(self, owner):
-        self.calls.append(('import',)); self.import_state.update(stage='completed',ready=None,canImport=False)
+        self.calls.append(('import',)); self.import_state.update(stage='complete',ready=None,canImport=False,restartRequired=False)
         return dict(success=True)
     def cancel_map_package_import(self, reason):
         self.calls.append(('cancel-import',reason)); self.import_state=dict(stage='idle',busy=False,liveAvailable=True)
         return dict(success=True)
     def inspect_author_package_removal(self, package):
-        self.calls.append(('inspect-remove',package));self.managed['ready']=dict(packageId=package,title='爱吃醋',
-            fileCount=2, receiptSha256='receipt',planSha256='plan')
+        self.calls.append(('inspect-remove',package));self.managed.update(stage='ready');self.managed['ready']=dict(packageId=package,title='爱吃醋',
+            fileCount=2,files=[{'path':'author/a'},{'path':'author/b'}], receiptSha256='receipt',planSha256='plan')
         return dict(success=True)
     def confirm_author_package_removal(self, package, **kwargs):
         self.calls.append(('remove',package,kwargs)); self.managed.pop('ready',None)
+        self.managed.update(stage='complete',packages=[dict(packageId=package,status='not-installed')])
         return dict(success=True)
 
 
@@ -76,8 +77,19 @@ class MapResourcesPageTests(unittest.TestCase):
         self.root = tk.Tk(); self.root.withdraw()
         self.callback_errors = []
         self.root.report_callback_exception = lambda kind, error, tb: self.callback_errors.append((kind.__name__,str(error)))
-        self.host = tk.Toplevel(self.root);self.host.overrideredirect(True)
+        self.host = tk.Toplevel(self.root)
+        import ctypes
+        from ctypes import wintypes
+        import ui_packaged_audit as audit
+        user = ctypes.WinDLL('user32', use_last_error=True)
+        user.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+        user.GetAncestor.restype = wintypes.HWND
+        user.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+        user.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
+        audit.isolate_window(self.host, tk.Wm.attributes, user)
+        audit.set_isolated_override(self.host, True, tk.Wm.overrideredirect, tk.Wm.attributes, user)
         self.host.geometry('960x680+24000+24000')
+        self.host.deiconify()
         self.actions = Actions(self.data.root)
         self.page = MapResourcesPage(self.host, self.actions)
         self.page.pack(fill='both',expand=True)

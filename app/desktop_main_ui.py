@@ -1643,6 +1643,9 @@ class DesktopMainUI:
                 elif action == "export":
                     self.export_button = _button(body, "导出排查信息", self._export_diagnostics)
                     self.export_button.pack(anchor="w", pady=(8, 0))
+                    self._ghost(body, "资源下载诊断", self._toggle_map_download_diagnostics, size=9).pack(anchor="w", pady=(6, 0))
+                    self.map_download_diagnostics = self._label(body, size=9, color=SUBTLE,
+                        anchor="w", justify="left", wraplength=510)
                     self.export_feedback = self._label(body, size=9, color=SUBTLE, anchor="w", justify="left", wraplength=510)
                     self.export_feedback.pack(fill="x", pady=(6, 0))
             image_toggle = self._ghost(details, "查看操作图", lambda topic=topic: self._toggle_help_image(topic), size=9)
@@ -1943,6 +1946,22 @@ class DesktopMainUI:
         display.start(self.window)
         cancel.focus_set()
         return dialog
+
+    def _toggle_map_download_diagnostics(self):
+        label = self.map_download_diagnostics
+        if label.winfo_manager():
+            label.pack_forget()
+            return
+        getter = getattr(self.assistant, "online_map_packages_snapshot", None)
+        state = getter() if callable(getter) else {}
+        stages = {"idle": "空闲", "checking": "检查中", "ready": "列表已读取",
+                  "downloading": "下载中", "error": "检查或下载失败", "unavailable": "暂不可用"}
+        # Capability facts only: do not expose configured URLs or credentials.
+        label.configure(text="状态：" + stages.get(state.get("stage"), "未知")
+            + "\n在线检查：" + ("可用" if state.get("canCheck") else "不可用")
+            + "；下载：" + ("可用" if state.get("canDownload") else "不可用")
+            + "。本地导入不依赖在线服务。")
+        label.pack(fill="x", pady=(6, 0))
 
     def _export_diagnostics(self):
         callback = getattr(self.assistant, "export_diagnostic_logs", None)

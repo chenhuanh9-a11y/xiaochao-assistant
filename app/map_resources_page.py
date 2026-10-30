@@ -41,6 +41,9 @@ class MapResourcesPage(MapResourceBrowser):
         self._action_feedback = ''
         self._management_context = None
         self._controls_layout = None
+        self._operation_kind = None
+        self._removal_package = None
+        self._feedback_job = None
         super().__init__(parent, assistant)
 
     def _build(self):
@@ -70,6 +73,7 @@ class MapResourcesPage(MapResourceBrowser):
         self.task_cancel = _button(tabs, '取消', self._cancel_current_task)
         self.task_status = _label(self, size=9, color=MUTED, anchor='w', justify='left', wraplength=640)
         self.task_status.pack(fill='x', padx=20, pady=(0, 6))
+        self.operation_host = tk.Frame(self, bg=BG)
         self.content = tk.Frame(self, bg=BG)
         self.content.pack(fill='both', expand=True, padx=20)
         self.content.columnconfigure(0, weight=5)
@@ -86,16 +90,15 @@ class MapResourcesPage(MapResourceBrowser):
         self.empty_host = tk.Frame(self.cards_host, bg=BG)
         self.empty_title = _label(self.empty_host, size=13, bold=True, anchor='w', justify='left', wraplength=280)
         self.empty_title.pack(fill='x', pady=(18, 10))
-        _label(self.empty_host, '可以查看已安装图包，或导入本地图包。', color=MUTED,
+        _label(self.empty_host, '可用右上角“导入本地图包”添加资源。', color=MUTED,
                wraplength=280, justify='left').pack(fill='x', pady=(0, 10))
-        _button(self.empty_host, '导入本地图包', self._choose_map_package).pack(anchor='w')
-        self.empty_installed = _button(self.empty_host, '查看已安装', lambda: self._select_tab('installed'))
-        self.empty_advanced = _button(self.empty_host, '高级：下载服务状态', self._show_source_status)
         self._list_window = self.list_canvas.create_window(0, 0, window=self.cards_host, anchor='nw')
         self.cards_host.bind('<Configure>', lambda _e: self.list_canvas.configure(scrollregion=self.list_canvas.bbox('all')))
         self.list_canvas.bind('<Configure>', self._list_width)
         self.detail_host = tk.Frame(self.content, bg=BG)
         self.detail_host.grid(row=0, column=1, sticky='nsew')
+        self.detail_actions = tk.Frame(self.detail_host, bg=CARD)
+        self.detail_actions.pack(side='bottom', fill='x')
         self.detail_canvas = tk.Canvas(self.detail_host, bg=BG, highlightthickness=0, width=300, height=1)
         self.detail_scroll = tk.Scrollbar(self.detail_host, command=self.detail_canvas.yview)
         self.detail_canvas.configure(yscrollcommand=self.detail_scroll.set)
@@ -124,20 +127,21 @@ class MapResourcesPage(MapResourceBrowser):
         self.coverage_label.pack(fill='x', padx=16, pady=(0, 6))
         self.version_label = _label(self.detail_body, color=MUTED, size=9, anchor='w', wraplength=400)
         self.version_label.pack(fill='x', padx=16, pady=(0, 8))
-        self.primary_button = _button(self.detail_body, '使用此作者', self._primary_action)
+        self.primary_button = _button(self.detail_actions, '使用此作者', self._primary_action)
         self.primary_button.pack(fill='x', padx=16, pady=(0, 6))
-        actions = tk.Frame(self.detail_body, bg=CARD)
+        actions = tk.Frame(self.detail_actions, bg=CARD)
         actions.pack(fill='x', padx=16, pady=(0, 8))
         self.update_button = _button(actions, '更新图包', self._download_selected)
         self.update_button.pack(side='left')
         self.manage_button = _button(actions, '管理 / 修复', self._manage_selected)
         self.manage_button.pack(side='left', padx=(6, 0))
-        self.selection_note = _label(self.detail_body, size=9, color=MUTED, anchor='w', justify='left', wraplength=400)
+        self.selection_note = _label(self.detail_actions, size=9, color=MUTED, anchor='w', justify='left', wraplength=400)
         self.selection_note.pack(fill='x', padx=16, pady=(0, 8))
-        self.operation_host = tk.Frame(self.detail_body, bg=CARD)
-        self.operation_host.pack(fill='x', padx=16, pady=(0, 10))
-        # Existing action surfaces and callbacks remain the only mutation route.
-        self._build_operation_surfaces()
+        self._build_operation_surfaces(import_parent=self.operation_host,
+            managed_parent=self.detail_actions, online_parent=self.operation_host)
+        self.managed_surface.configure(bg=CARD)
+        self.managed_message.configure(bg=CARD)
+        self.managed_list.pack_forget()
         self.managed_cancel_button = _button(self.managed_surface, '取消', self._cancel_managed_confirmation)
         self.filter_host = self.subtitle = self.content  # Transfer placement anchor (same parent).
         self.online_bar_status = self.task_status
@@ -161,7 +165,7 @@ class MapResourcesPage(MapResourceBrowser):
 
     def _detail_width(self, event):
         self.detail_canvas.itemconfigure(self._detail_window, width=event.width)
-        for label in (self.coverage_label, self.version_label, self.selection_note):
+        for label in (self.coverage_label, self.version_label, self.selection_note, self.managed_message):
             label.configure(wraplength=max(100, event.width - round(32*self._scale)))
         self._cancel(self._resize_job)
         self._resize_job = self._schedule(100, self._request_detail)
@@ -240,8 +244,10 @@ class MapResourcesPage(MapResourceBrowser):
             return
         key = (str(root), self.browse_mode, self._browse_epoch)
         work = self._browse_work
-        if ((work is not None and work[1] == key and not work[2].is_set() and self._browse_pending is None)
-                or (self._browse_pending is not None and self._browse_pending[1] == key)):
+        if work is not None and work[1] == key and not work[2].is_set() and self._browse_pending is None:
+            return
+        if self._browse_pending is not None and self._browse_pending[1] == key:
+            self._start_context()
             return
         self._browse_serial += 1
         if self._browse_work is not None:
@@ -256,7 +262,8 @@ class MapResourcesPage(MapResourceBrowser):
         self._start_context()
 
     def _start_context(self):
-        if self._closed or not self._active or self._browse_work is not None or self._browse_pending is None:
+        if (self._closed or not self._active or self._browse_work is not None
+                or self._browse_pending is None or self._resources_busy()):
             return
         serial, key, root = self._browse_pending
         self._browse_pending = None
@@ -265,6 +272,9 @@ class MapResourcesPage(MapResourceBrowser):
         self._browse_work = serial, key, cancel, future
 
     def _poll_context(self):
+        if (self._browse_context is None and self._browse_work is None
+                and self._browse_pending is None and self._active and not self._resources_busy()):
+            self._queue_context()
         work = self._browse_work
         if work is not None and work[3].done():
             self._browse_work = None
@@ -285,7 +295,7 @@ class MapResourcesPage(MapResourceBrowser):
                 self._browse_context, self.model = context, context.model
                 self._library_signature = None
                 self._render_library()
-            self._start_context()
+        self._start_context()
 
     def _select_resource_mode(self, mode):
         if mode not in {'nightmare', 'difficult'} or self._closed or mode == self.browse_mode:
@@ -356,11 +366,7 @@ class MapResourcesPage(MapResourceBrowser):
             self._selected_package = next(iter(rows), None)
         if signature != self._library_signature:
             self._library_signature = signature
-            if self._card_context != id(self._browse_context):
-                self._card_context = id(self._browse_context)
-                for record in self._card_records.values(): record['frame'].destroy()
-                self._card_records.clear()
-                self._card_widgets.clear()
+            self._card_context = id(self._browse_context)
             for record in self._card_records.values(): record['frame'].grid_remove()
             self._author_frames = []
             self._author_cards = {}
@@ -371,11 +377,6 @@ class MapResourcesPage(MapResourceBrowser):
                     message = self._browse_context.error
                 self.empty_title.configure(text=message)
                 self.empty_host.grid(row=0, column=0, columnspan=2, sticky='ew')
-                if self._tab == 'discover':
-                    self.empty_installed.pack(anchor='w', pady=8)
-                    self.empty_advanced.pack(anchor='w', pady=8)
-                else:
-                    self.empty_installed.pack_forget(); self.empty_advanced.pack_forget()
             else:
                 self.empty_host.grid_remove()
             for key, row in rows.items():
@@ -593,12 +594,14 @@ class MapResourcesPage(MapResourceBrowser):
             self._download_online_package(self._selected_package)
 
     def _choose_map_package(self):
-        self._detail_open = True
-        self._layout_controls()
         return super()._choose_map_package()
 
     def _manage_selected(self):
-        if self._selected_package:
+        if self._selected_package and not self._resources_busy():
+            self._removal_package = None
+            if self._operation_kind == 'import': self._cancel_map_package()
+            self._operation_kind = 'managed'
+            self._action_feedback = ''
             self._management_context = self._current_management_context()
             self._managed_open = True
             self._detail_open = True
@@ -610,14 +613,21 @@ class MapResourcesPage(MapResourceBrowser):
         self._managed_open = False
         self._managed_ready = None
         self._managed_signature = None
+        if self._operation_kind == 'managed': self._operation_kind = None
         self.sync_managed_packages()
 
     def _confirm_managed_removal(self):
         ready = self._managed_ready
-        state = self.assistant.managed_author_packages_snapshot()
+        state = self._managed_snapshot()
         if (self._managed_open and self._management_context == self._current_management_context()
                 and ready and ready.get('packageId') == self._selected_package and not state.get('busy')):
-            super()._confirm_managed_removal()
+            self._removal_package = ready['packageId']
+            result = self.assistant.confirm_author_package_removal(ready['packageId'],
+                expected_receipt_sha256=ready['receiptSha256'], expected_plan_sha256=ready['planSha256'])
+            if isinstance(result, dict) and result.get('success') is False:
+                self._removal_package = None
+                self._show_feedback(str(result.get('message') or '当前不能移除资源。'), expires=False)
+            self.sync_managed_packages()
 
     def _current_management_context(self):
         return self.browse_mode, self._selected_package, self._browse_epoch
@@ -635,11 +645,19 @@ class MapResourcesPage(MapResourceBrowser):
         return result
 
     def _map_package_action(self, name, *args, **kwargs):
-        self._action_feedback = ''
-        result = super()._map_package_action(name, *args, **kwargs)
+        if self._closed: return None
+        callback = getattr(self.assistant, name, None)
+        result = callback(*args, **kwargs) if callable(callback) else None
+        if self._closed: return result
         if isinstance(result, dict) and result.get('success') is False:
-            self._action_feedback = str(result.get('message') or '操作未完成，请重试')
-            self.task_status.configure(text=self._action_feedback)
+            self._show_feedback(str(result.get('message') or '操作未完成，请重试'), expires=False)
+        else:
+            self._action_feedback = ''
+            if name == 'inspect_map_package':
+                self._removal_package = None
+                self._cancel_managed_confirmation()
+                self._operation_kind = 'import'
+        self.sync_map_package_import()
         return result
 
     def _cancel_current_task(self):
@@ -662,31 +680,82 @@ class MapResourcesPage(MapResourceBrowser):
         self.sync_route_selection()
 
     def _put_operations(self):
-        for surface in (self.import_surface, self.managed_surface, self.online_surface):
-            if surface.winfo_manager():
-                surface.pack(in_=self.operation_host, fill='x', padx=0, pady=(0, 8))
+        if self._operation_kind == 'import' and self.import_surface.winfo_manager():
+            self.operation_host.pack(fill='x', padx=20, pady=(0, 8), before=self.content)
+        else: self.operation_host.pack_forget()
+        self.online_surface.pack_forget()
 
     def sync_map_package_import(self):
-        super().sync_map_package_import()
-        self._put_operations()
+        if self._closed: return
+        state = self._map_package_snapshot()
+        stage, busy = state.get('stage', 'idle'), bool(state.get('busy'))
+        available = (callable(getattr(self.assistant, 'inspect_map_package', None))
+                     and callable(getattr(self.assistant, 'map_package_import_snapshot', None)))
+        self.import_button.configure(state='normal' if available and not busy
+            and not self._managed_snapshot().get('busy') else 'disabled')
+        if self._operation_kind == 'import' and not busy and stage in {'complete', 'idle'}:
+            self._operation_kind = None
+            if stage == 'complete':
+                self._show_feedback('已导入并刷新，无需重启。' if state.get('restartRequired') is False
+                    else str(state.get('message') or '资源导入完成。'))
+            elif state.get('message'): self._show_feedback(str(state['message']))
+        if self._operation_kind != 'import':
+            self.import_surface.pack_forget(); self._put_operations(); return
+        ready = state.get('ready') if stage == 'ready' else None
+        can_import = bool(ready and state.get('canImport') and not busy
+            and callable(getattr(self.assistant, 'confirm_map_package_import', None)))
+        message = str(state.get('message') or ('正在检查资源包…' if busy else '请选择本地图包。'))
+        package = Path(str(state.get('packagePath') or '')).name
+        title = package if len(package) <= 52 else package[:32] + '…' + package[-16:]
+        signature = stage, busy, can_import, bool(state.get('liveAvailable')), title, message
+        if signature != self._import_signature:
+            self._import_signature, self._import_message_text = signature, message
+            for widget in (self.import_title, self.import_message, self.import_summary, self.import_actions, self.import_feedback):
+                widget.pack_forget()
+            self.import_title.configure(text=title)
+            if title: self.import_title.pack(fill='x', pady=(0, 4))
+            self.import_confirm_button.configure(state='normal' if can_import else 'disabled',
+                text='导入并刷新' if state.get('liveAvailable') else '退出并导入')
+            if stage == 'ready': self.import_confirm_button.pack(side='left')
+            else: self.import_confirm_button.pack_forget()
+            self.import_cancel_button.configure(state='normal', text='关闭' if stage == 'error' else '取消')
+            self.import_cancel_button.pack(side='left', padx=(8 if stage == 'ready' else 0, 0))
+            self.import_actions.pack(anchor='w', pady=(0, 4))
+            self.import_message.configure(text=message); self.import_message.pack(fill='x')
+        self.import_surface.pack(fill='x'); self._put_operations()
 
     def sync_managed_packages(self):
-        super().sync_managed_packages()
-        if (self._management_context != self._current_management_context()
-                or (self._managed_ready and self._managed_ready.get('packageId') != self._selected_package)):
-            self._managed_ready = None
-            self.managed_confirm.pack_forget()
-        if self._managed_open and self._managed_ready:
-            state = self.assistant.managed_author_packages_snapshot()
-            self.managed_cancel_button.configure(state='disabled' if state.get('busy') else 'normal')
-            self.managed_cancel_button.pack(anchor='w', pady=6)
-        else:
-            self.managed_cancel_button.pack_forget()
-            if not self._managed_open: self._managed_ready = None
-        if self._selected_package:
-            for key, row in self._managed_rows.items():
-                if key != self._selected_package: row['frame'].pack_forget()
-        self._put_operations()
+        if self._closed: return
+        state = self._managed_snapshot()
+        busy, stage = bool(state.get('busy')), state.get('stage', 'idle')
+        if self._removal_package and not busy and stage in {'complete', 'ready', 'idle', 'error'}:
+            removed = any(row.get('packageId') == self._removal_package and row.get('status') == 'not-installed'
+                          for row in state.get('packages', ()))
+            if stage == 'error': self._show_feedback(str(state.get('message') or '移除未完成，请重试。'), expires=False)
+            elif removed or stage == 'complete': self._show_feedback('已移除，原文件已保留备份。')
+            elif stage == 'idle': self._show_feedback('资源操作已取消。')
+            else: self._show_feedback(str(state.get('message') or '本地资源状态已刷新。'))
+            self._removal_package = None; self._operation_kind = None; self._managed_open = False
+        ready = state.get('ready') if stage == 'ready' else None
+        valid = (self._operation_kind == 'managed' and self._managed_open and ready
+            and self._management_context == self._current_management_context()
+            and ready.get('packageId') == self._selected_package)
+        self._managed_ready = ready if valid else None
+        if self._operation_kind != 'managed': self.managed_surface.pack_forget(); return
+        if valid:
+            title = (self._row_data.get(self._selected_package) or {}).get('title') or '此图包'
+            message = f"移除{title}的 {len(ready.get('files', ()))} 个作者文件？\n原文件会保留备份，底图和自定义路线不变。"
+            modified = len(ready.get('modifiedFiles', ()))
+            if modified: message += f"\n含 {modified} 个本地修改文件，也会原样备份。"
+        else: message = str(state.get('message') or '正在检查图包…')
+        self.managed_message.configure(text=message); self.managed_list.pack_forget()
+        if valid:
+            self.managed_confirm.configure(state='disabled' if busy else 'normal')
+            self.managed_confirm.pack(side='left', padx=(0, 8), pady=(6, 0))
+        else: self.managed_confirm.pack_forget()
+        self.managed_cancel_button.configure(state='disabled' if busy else 'normal')
+        self.managed_cancel_button.pack(side='left', pady=(6, 0))
+        self.managed_surface.pack(fill='x', padx=16, pady=(0, 10))
 
     def sync_online_packages(self):
         if self._closed or not hasattr(self, 'task_status'): return
@@ -696,7 +765,8 @@ class MapResourcesPage(MapResourceBrowser):
                                state.get('canCheck') and not state.get('busy')) else 'disabled')
         busy = bool(state.get('busy'))
         received, total = (state.get('progress') or {}).get('receivedBytes'), (state.get('progress') or {}).get('totalBytes')
-        message = str(state.get('message') or '') if busy or state.get('stage') == 'error' else self._action_feedback
+        message = (str(state.get('message') or '') if busy else self._action_feedback or
+                   (str(state.get('message') or '') if state.get('stage') == 'error' else ''))
         if busy and received:
             message += f" · {self._online_size(received)}" + (f" / {self._online_size(total)}" if total else '')
         self.task_status.configure(text=message)
@@ -728,14 +798,18 @@ class MapResourcesPage(MapResourceBrowser):
         super()._drain()
 
     def invalidate_resource_context(self):
-        self._cancel_managed_confirmation()
+        if not self._removal_package: self._cancel_managed_confirmation()
         super().invalidate_resource_context()
-        self._browse_epoch += 1
-        self._browse_context = None
-        self._browse_cache.clear()
+        self._runtime_identity = (id(getattr(self.assistant, 'pack', None)),
+                                  id(getattr(self.assistant, 'author_route_catalog', None)))
+        self._browse_epoch += 1; self._browse_serial += 1; self._browse_pending = None
+        self._browse_context = None; self._browse_cache.clear()
         self._library_signature = None
+        for record in self._card_records.values():
+            record['image'].configure(image='', text='正在更新…'); record['image']._map_photo = None
+            record['image']._image_request = record['image']._displayed_image_request = None
         if self._browse_work is not None: self._browse_work[2].set()
-        if self._active: self._queue_context()
+        if self._active and not self._resources_busy(): self._queue_context()
 
     def suspend(self):
         self._cancel_managed_confirmation()
@@ -747,6 +821,26 @@ class MapResourcesPage(MapResourceBrowser):
     def _resume(self):
         if not self._closed:
             self.refresh()
+
+    def _managed_snapshot(self):
+        getter = getattr(self.assistant, 'managed_author_packages_snapshot', None)
+        return getter() if callable(getter) else {}
+
+    def _resources_busy(self):
+        return bool(self._map_package_snapshot().get('busy') or self._managed_snapshot().get('busy'))
+
+    def _show_feedback(self, text, *, expires=True):
+        self._cancel(self._feedback_job)
+        self._feedback_job = None
+        self._action_feedback = text
+        if expires:
+            def clear():
+                self._feedback_job = None
+                if self._action_feedback == text:
+                    self._action_feedback = ''
+                    self.sync_online_packages()
+            self._feedback_job = self._schedule(4500, clear)
+        self.sync_online_packages()
 
     def _destroy(self, event):
         if event.widget is self:

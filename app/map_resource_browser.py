@@ -213,9 +213,9 @@ class MapResourceBrowser(tk.Frame):
         _label(footer, "“实际使用路线”影响定点地图和游戏贴合；“浏览来源”只切换预览。", size=8, color=MUTED,
                anchor="w", wraplength=500).pack(fill="x")
 
-    def _build_operation_surfaces(self):
+    def _build_operation_surfaces(self, *, import_parent=None, managed_parent=None, online_parent=None):
         """Shared safe action surfaces; page composition owns their placement."""
-        self.online_surface = tk.Frame(self, bg=BG)
+        self.online_surface = tk.Frame(online_parent if online_parent is not None else self, bg=BG)
         self.online_message = _label(self.online_surface, color=MUTED, anchor="w", justify="left", wraplength=460)
         self.online_message.pack(fill="x")
         online_actions = tk.Frame(self.online_surface, bg=BG)
@@ -234,7 +234,7 @@ class MapResourceBrowser(tk.Frame):
         self._online_message_text = ""
         self._online_rows = {}
         self.online_surface.bind("<Configure>", self._fit_online_text, add="+")
-        self.import_surface = tk.Frame(self, bg=BG)
+        self.import_surface = tk.Frame(import_parent if import_parent is not None else self, bg=BG)
         self.import_message = _label(self.import_surface, color=MUTED, anchor="w", justify="left", wraplength=460)
         self.import_message.pack(fill="x")
         self.import_title = _label(self.import_surface, bold=True, anchor="w", justify="left", wraplength=460)
@@ -248,7 +248,7 @@ class MapResourceBrowser(tk.Frame):
         self._import_signature = None
         self._import_message_text = ""
         self.import_surface.bind("<Configure>", self._fit_import_text, add="+")
-        self.managed_surface = tk.Frame(self, bg=BG)
+        self.managed_surface = tk.Frame(managed_parent if managed_parent is not None else self, bg=BG)
         self.managed_message = _label(self.managed_surface, color=MUTED, anchor="w", justify="left", wraplength=500)
         self.managed_message.pack(fill="x")
         self.managed_list = tk.Frame(self.managed_surface, bg=BG)
