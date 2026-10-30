@@ -42,6 +42,7 @@ PICK_RADIUS = 45  # Native pixels: within one road tile (60 px) of a point.
 PROFILE_PREFIX = "custom:"
 DEFAULT_GALLERY_ID = "default"
 LEGACY_SCHEMA = "xingtu-custom-routes-v1"
+PLAZA_SOURCE_KEYS = ("workId", "versionId", "revision", "author", "title")
 
 USER_ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]
 DEFAULT_LIBRARY_ROOT = Path(os.environ.get("XINGTU_CUSTOM_MAPS_ROOT", "") or USER_ROOT / "assets" / "custom-maps")
@@ -127,6 +128,10 @@ class CustomMapLibrary:
 
     def maps(self) -> list[tuple[str, str]]:
         return [(map_id, self._maps[map_id]["name"]) for map_id in self._order]
+
+    def templates(self) -> dict[str, str]:
+        """Map id -> legacy template id (``nightmare-layout-NN``)."""
+        return {map_id: row["templateId"] for map_id, row in self._maps.items() if isinstance(row.get("templateId"), str)}
 
     def has(self, map_id) -> bool:
         return str(map_id) in self._maps
@@ -478,7 +483,12 @@ def _clean_gallery(raw) -> dict | None:
         points = _clean_points(route.get("points") if isinstance(route, dict) else None)
         if points:
             maps[str(map_id)] = dict(points=points)
-    return dict(id=raw["id"], name=str(raw.get("name") or "未命名图库")[:24], maps=maps)
+    gallery = dict(id=raw["id"], name=str(raw.get("name") or "未命名图库")[:24], maps=maps)
+    source = raw.get("source")
+    if isinstance(source, dict) and isinstance(source.get("workId"), str) and isinstance(source.get("versionId"), str):
+        # Downloaded from the route plaza: read-only, replaced by newer versions of the same work.
+        gallery["source"] = {key: source[key] for key in PLAZA_SOURCE_KEYS if isinstance(source.get(key), (str, int))}
+    return gallery
 
 
 class GalleryStore:
@@ -586,7 +596,8 @@ class GalleryStore:
 
     def galleries(self) -> list[tuple[str, str, bool]]:
         with self._lock:
-            return [(self.default["id"], self.default["name"], True)] + [(g["id"], g["name"], False) for g in self._galleries]
+            return [(self.default["id"], self.default["name"], True)] + [(g["id"], g["name"], "source" in g)
+                                                                         for g in self._galleries]
 
     def _find(self, gallery_id) -> dict | None:
         if gallery_id == DEFAULT_GALLERY_ID:
@@ -599,7 +610,35 @@ class GalleryStore:
             return gallery["name"] if gallery else None
 
     def readonly(self, gallery_id) -> bool:
-        return gallery_id == DEFAULT_GALLERY_ID
+        with self._lock:
+            return gallery_id == DEFAULT_GALLERY_ID or "source" in (self._find(gallery_id) or {})
+
+    def source(self, gallery_id) -> dict | None:
+        with self._lock:
+            source = (self._find(gallery_id) or {}).get("source")
+            return dict(source) if source else None
+
+    def plaza_versions(self) -> dict[str, str]:
+        """Plaza work id -> installed version id."""
+        with self._lock:
+            return {g["source"]["workId"]: g["source"]["versionId"] for g in self._galleries if "source" in g}
+
+    def install_plaza(self, name, maps, source) -> str:
+        """Save a downloaded plaza gallery, replacing an earlier version of the same work."""
+        gallery = _clean_gallery(dict(id=uuid.uuid4().hex[:12], name=name, maps=maps, source=source))
+        if gallery is None or not gallery["maps"] or "source" not in gallery:
+            raise ValueError("路线内容无效")
+        with self._lock:
+            earlier = next((g for g in self._galleries if g.get("source", {}).get("workId") == source["workId"]), None)
+            if earlier is not None:
+                gallery["id"] = earlier["id"]  # Keeps "use in game" pointing at the same gallery.
+                self._galleries[self._galleries.index(earlier)] = gallery
+            else:
+                self._galleries.append(gallery)
+            self.revision += 1
+            if not self._save():
+                raise OSError("图库保存失败")
+            return gallery["id"]
 
     def route(self, gallery_id, map_id) -> list[dict]:
         with self._lock:
@@ -614,7 +653,7 @@ class GalleryStore:
     def create(self, name, copy_from=None) -> str:
         with self._lock:
             source = self._find(copy_from) if copy_from else None
-            gallery = dict(id=uuid.uuid4().hex[:12], name=(str(name).strip() or "我的路线")[:24],
+            gallery = dict(id=uuid.uuid4().hex[:12], name=(str(name).strip() or "我的路线")[:24],  # Copies are editable.
                            maps=json.loads(json.dumps(source["maps"])) if source else {})
             self._galleries.append(gallery)
             self.revision += 1
@@ -657,12 +696,16 @@ class GalleryStore:
             gallery = self._find(gallery_id)
             if gallery is None:
                 raise KeyError(gallery_id)
-            return dict(schema=GALLERY_SCHEMA, **json.loads(json.dumps(gallery)))
+            exported = json.loads(json.dumps(gallery))
+            exported.pop("source", None)
+            return dict(schema=GALLERY_SCHEMA, **exported)
 
     def import_gallery(self, payload) -> str:
         if not isinstance(payload, dict) or payload.get("schema") != GALLERY_SCHEMA:
             raise ValueError("不是星图图库文件")
         gallery = _clean_gallery(dict(payload, id=uuid.uuid4().hex[:12]))
+        if gallery is not None:
+            gallery.pop("source", None)  # An imported file is the player's own, editable gallery.
         if gallery is None:
             raise ValueError("图库内容无效")
         with self._lock:

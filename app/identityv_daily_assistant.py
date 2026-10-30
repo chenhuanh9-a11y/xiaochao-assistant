@@ -30993,6 +30993,13 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             store = self._custom_galleries = GalleryStore(self.settings_path.parent / 'custom-galleries.json')
         return store
 
+    def account_service(self):
+        account = getattr(self, '_account_service', None)
+        if account is None:
+            from account_service import AccountService
+            account = self._account_service = AccountService(self.settings_path.parent)
+        return account
+
     def _custom_maps_ready(self) -> bool:
         return (getattr(self, 'game_mode', 'nightmare') == 'nightmare'
                 and getattr(self, 'difficult_native_context', None) is None

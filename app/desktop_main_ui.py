@@ -40,6 +40,7 @@ from map_resources_page import MapResourcesPage
 from map_resource_model import MapResourceModel, choose_resource, floor_label, resource_inventory
 from map_resource_overview import structure_previews, load_structure_preview
 from update_service import UpdateService
+from route_plaza_page import RoutePlazaPage
 from support_window import open_support_window
 
 
@@ -226,7 +227,20 @@ def _route_mask(size: int = 128) -> Image.Image:
     return mask
 
 
-_GLYPHS = {"keyboard": _keyboard_mask, "route": _route_mask}
+def _plaza_mask(size: int = 128) -> Image.Image:
+    """Route plaza glyph: an arrow dropping into a tray."""
+    mask = Image.new("L", (size, size), 0)
+    draw = ImageDraw.Draw(mask)
+    stroke = round(size * .08)
+    draw.line([(size * .5, size * .18), (size * .5, size * .6)], fill=255, width=stroke)
+    draw.line([(size * .32, size * .44), (size * .5, size * .62), (size * .68, size * .44)], fill=255,
+              width=stroke, joint="curve")
+    draw.line([(size * .2, size * .62), (size * .2, size * .8), (size * .8, size * .8), (size * .8, size * .62)],
+              fill=255, width=stroke, joint="curve")
+    return mask
+
+
+_GLYPHS = {"keyboard": _keyboard_mask, "route": _route_mask, "plaza": _plaza_mask}
 
 
 def _icon_tile(icons, name: str, size: int, *, fill=BUTTON_BG, color=PRIMARY, background=SURFACE) -> Image.Image:
@@ -436,7 +450,7 @@ class HotkeyEditorView(tk.Frame):
 class DesktopMainUI:
     """A normal desktop window, not an always-on-top game overlay."""
 
-    PAGES = ("home", "preferences", "maps", "custom", "help")
+    PAGES = ("home", "preferences", "maps", "custom", "plaza", "help")
     HELP_IMAGE_FILES = {"quick-start": "home.png", "shortcuts-visibility": "settings.png",
                         "resources-opacity": "resources.png", "check-feedback": "help.png"}
 
@@ -462,6 +476,7 @@ class DesktopMainUI:
         self._icons = DesktopIcons(self.root) if DesktopIcons is not None else None
         if self._icons is not None:
             self._icons._masks.setdefault("route", _route_mask())
+            self._icons._masks.setdefault("plaza", _plaza_mask())
         self._brand_images = BrandImages(self.window)
         self._window_brand_icons = self._brand_images.window_icons(self.window)
         self._action_feedback = tk.StringVar(self.root)
@@ -497,7 +512,8 @@ class DesktopMainUI:
     def _apply_icons(self):
         compact = getattr(self, "_compact", False)
         for page, button in self._nav_buttons.items():
-            name = {"home": "home", "preferences": "settings", "maps": "map", "custom": "route", "help": "help"}[page]
+            name = {"home": "home", "preferences": "settings", "maps": "map", "custom": "route", "plaza": "plaza",
+                    "help": "help"}[page]
             selected = page == self._page
             photo = self._icons.get(name, self._px(20), SIDEBAR_TEXT if selected else SIDEBAR_MUTED) if self._icons else None
             button._desktop_icon = photo
@@ -769,6 +785,7 @@ class DesktopMainUI:
         self._label(self.brand_text, "地图与路线助手", size=8, color=SIDEBAR_MUTED).pack(anchor="center")
         self._nav_labels = {}
         for key, label in (("home", "主页面"), ("maps", "地图资源"), ("custom", "自定义地图"),
+                           ("plaza", "路线广场"),
                            ("preferences", "设置"), ("help", "帮助")):
             button = RoundedButton(
                 rail, text=label, command=lambda page=key: self.show_page(page),
@@ -843,6 +860,8 @@ class DesktopMainUI:
         self._build_help()
         self.custom_editor = CustomMapEditor(self.body, self)
         self._page_frames["custom"] = self.custom_editor
+        self.route_plaza = RoutePlazaPage(self.body, self)
+        self._page_frames["plaza"] = self.route_plaza
         self.show_page("home")
         self.window.bind("<Configure>", lambda event: self._layout_shell()
                          if event.widget is self.window else None, add="+")
@@ -1938,6 +1957,8 @@ class DesktopMainUI:
         self.map_browser.sync_game_mode(snapshot)
         if self._page == "custom":
             self.custom_editor.refresh()
+        elif self._page == "plaza":
+            self.route_plaza.refresh()
         elif self._page == "preferences":
             self._sync_chest_auto_tap()
         self.hide_button.configure(text="最小化到任务栏")
@@ -2134,13 +2155,15 @@ class DesktopMainUI:
             self.header.pack(fill="x", before=self.body)
         else:
             self.header.pack_forget()
-        self.header_title.configure(text={"home": "主页面", "maps": "地图资源", "custom": "自定义地图",
+        self.header_title.configure(text={"home": "主页面", "maps": "地图资源", "custom": "自定义地图", "plaza": "路线广场",
                                           "preferences": "设置", "help": "帮助"}[page])
         self._apply_icons()
         if page == "maps":
             self._refresh_maps()
         elif page == "custom":
             self.custom_editor.refresh()
+        elif page == "plaza":
+            self.route_plaza.refresh()
         elif page == "preferences":
             self._refresh_route_choices()
 

@@ -248,13 +248,18 @@ class CustomMapEditor(tk.Frame):
         self.use_button.configure(text="停止使用" if using else "在游戏中使用",
                                   bg=BUTTON_BG if using else PRIMARY, fg=BUTTON_TEXT if using else "white")
         note = f"已画 {len(drawn)} / {len(self._maps)} 张。"
-        note += "默认图库只读；复制一份后就能编辑。" if store.readonly(self.gallery_id) else "点一张地图开始编辑，改动会自动保存。"
+        source = store.source(self.gallery_id)
+        if source:
+            note += f"来自路线广场（作者 {source.get('author') or '匿名'}），只读；复制一份后就能编辑。"
+        else:
+            note += "默认图库只读；复制一份后就能编辑。" if store.readonly(self.gallery_id) else "点一张地图开始编辑，改动会自动保存。"
         if using:
             note += " 游戏内正在使用这个图库。"
         self.gallery_note.configure(text=note)
         readonly = store.readonly(self.gallery_id)
-        for name_ in ("_gallery__rename_gallery", "_gallery__delete_gallery"):
-            getattr(self, name_).configure(state="disabled" if readonly else "normal")
+        self._gallery__rename_gallery.configure(state="disabled" if readonly else "normal")
+        # Downloaded plaza galleries can be removed; the default one cannot.
+        self._gallery__delete_gallery.configure(state="disabled" if readonly and not source else "normal")
         self._layout_tiles(drawn)
 
     def _grid_resized(self, event):
@@ -353,7 +358,7 @@ class CustomMapEditor(tk.Frame):
 
     def _delete_gallery(self):
         store = self._galleries()
-        if store.readonly(self.gallery_id):
+        if store.readonly(self.gallery_id) and not store.source(self.gallery_id):
             return
         if not self._confirm(f"删除图库「{store.name(self.gallery_id)}」？里面的路线会一起删除。"):
             return
