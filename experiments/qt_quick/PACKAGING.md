@@ -89,3 +89,10 @@ $qtOutput = 'work/qt-setup/NEW_BUILD_ID'
 `--plan-only` performs read-only validation and prints the adopted inputs. The build stages inventoried retained resources, freezes once, reads the PE manifest without launching, validates collected files/plugins, then compiles Setup once. Source identity is rechecked before Setup and after compilation. A failed stage stops; it does not retry, install, publish or reuse a previous output. The build record starts with `buildCompleted=false` and becomes true only after the expected Setup exists.
 
 Private `build-record.json` records source commit/tree, display/numeric version, resource version/inventory hash, retained/omitted file hashes, compiler/package versions, manifest/closure gates, recipe hashes and final Setup bytes/SHA256. Deliver the Setup path and exact size/hash with this record; label build, installation, native GUI, game checks and publishing separately. At preparation handoff, the remaining blockers are the final clean committed source, approved complete resource inventory/provider reports, and final frozen artifact/plugin/source-obligation review. No Setup exists from this work.
+
+
+## Frozen startup verification
+
+The windowed wrapper records Python startup failures to its own work/qt-client-startup-error.txt and exits instead of waiting on an error dialog. Frozen --self-check --verify-resources writes work/client-self-check.json without creating Qt windows or enabling native input. Run only in an already elevated, authorized test context; do not bypass UAC.
+
+Qt 6.11 on Windows consumes the operating system ICU ABI. A first freeze incorrectly found an unrelated PATH ICU78 build exporting suffixed symbols, causing QtCore import failure. The recipe now checks every retained ICU import against Windows System32 exports, omits collected foreign ICU DLLs and records that decision; it does not redistribute a system DLL. The corrected prior-stage diagnostic completed both mode preparations with exit code zero. Final Setup must pass its own check separately.

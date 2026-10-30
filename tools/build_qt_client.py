@@ -128,6 +128,8 @@ def prune_unneeded_qt(stage):
                 or name in {"qpdf.dll", "opengl32sw.dll"}):
             removed.append(dict(path=relative, sha256=sha256(path), bytes=path.stat().st_size))
             path.unlink()
+    windows_icu = use_windows_icu(internal)
+    removed.extend(windows_icu["removed"])
     # Check both normal and delay imports without loading any binary. This
     # catches an accidental dependency on a removed optional library.
     import pefile
@@ -149,7 +151,40 @@ def prune_unneeded_qt(stage):
                 if dependency.startswith("qt6") and dependency.endswith(".dll") and dependency not in names:
                     raise ValueError(f"Missing retained Qt dependency: {path.name} -> {dependency}")
     return dict(removed=removed, retainedQtModules=sorted(modules),
+                windowsIcu=windows_icu,
                 softwareOpenGLIncluded=False, renderingScope="Qt default Windows D3D backend; optional Mesa software OpenGL omitted")
+
+
+def use_windows_icu(internal):
+    """Keep Qt's Windows ICU ABI; reject unrelated PATH-resolved ICU builds."""
+    import pefile
+    icu_files = [path for path in internal.rglob("*.dll") if re.fullmatch(r"icu.*\.dll", path.name, re.I)]
+    required = set()
+    for path in [*internal.rglob("*.dll"), *internal.rglob("*.pyd")]:
+        if path in icu_files:
+            continue
+        with pefile.PE(str(path), fast_load=True) as pe:
+            pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"],
+                                                   pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT"]])
+            for entry in [*getattr(pe, "DIRECTORY_ENTRY_IMPORT", []), *getattr(pe, "DIRECTORY_ENTRY_DELAY_IMPORT", [])]:
+                name = entry.dll.decode("ascii").lower()
+                if not name.startswith("icu"):
+                    continue
+                if name != "icuuc.dll" or any(item.name is None for item in entry.imports):
+                    raise ValueError(f"Unreviewed ICU dependency: {path.name} -> {name}")
+                required.update(item.name for item in entry.imports)
+    system = Path(os.environ["SystemRoot"]) / "System32/icuuc.dll"
+    with pefile.PE(str(system)) as pe:
+        exported = {item.name for item in pe.DIRECTORY_ENTRY_EXPORT.symbols}
+    if not required or not required <= exported:
+        raise ValueError("Windows ICU does not supply the exact Qt ICU imports")
+    removed = []
+    for path in icu_files:
+        removed.append(dict(path=path.relative_to(internal).as_posix(), bytes=path.stat().st_size,
+                            sha256=sha256(path), reason="Qt uses Windows native unversioned ICU ABI"))
+        path.unlink()
+    return dict(provider="Windows System32/icuuc.dll", requiredSymbols=sorted(name.decode("ascii") for name in required),
+                systemLibraryBundled=False, removed=removed)
 
 
 def collect_notices(stage, qt_closure):
