@@ -21,6 +21,7 @@ MAX_TOTAL_BYTES = 1536 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024
 MANIFEST = "map-package.json"
 AUTHOR_PACKAGES = {
+    "nightmare-zhan10": "zhan10-nightmare",
     "difficult-aichicu": "aichicu-difficult",
     "nightmare-wang-qingxin": "wang-qingxin",
     "nightmare-nightingale": "nightingale",
@@ -28,6 +29,7 @@ AUTHOR_PACKAGES = {
 }
 AUTHOR_SIDECARS = {"catalog.json", "display-bindings.json"}
 LIVE_AUTHOR_IMAGE_ROOTS = {
+    "nightmare-zhan10": ("_internal/assets/authors/zhan10-nightmare/",),
     "difficult-aichicu": ("_internal/assets/authors/aichicu-difficult/",),
     "nightmare-suju": ("_internal/assets/suju/",),
     "difficult-zhan10": ("_internal/assets/zhan10-native/", "_internal/assets/zhan10-legacy-clean/"),

@@ -220,6 +220,7 @@ SHARED_STRUCTURE_PROFILE_ID = "shared-structure"
 SUJU_ROUTE_PROFILE_ID = "suju"
 PROCESSED_AUTHOR_PROFILE_IDS = {"zhan10-speed", "zhan10-coffin"}
 ROUTE_PROFILE_OPTIONS = (
+    ('zhan10-nightmare', '展十 · 噩梦'),
     ('aichicu-difficult', '爱吃醋 · 困难'),
     (SUJU_ROUTE_PROFILE_ID, "滋酥居"),
     (DEFAULT_ROUTE_PROFILE_ID, "王清心（默认）"),
@@ -6214,7 +6215,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             profile = self._shared_display_profile_id() if getattr(self, 'author_route_catalog', None) is not None else SHARED_STRUCTURE_PROFILE_ID
             return ((profile, ROUTE_PROFILE_LABELS[profile]),)
         return tuple((key,label) for key,label in ROUTE_PROFILE_OPTIONS
-            if key not in {SUJU_ROUTE_PROFILE_ID,'nightingale','aichicu-difficult'} and (getattr(self,'game_mode','nightmare')!='difficult' or key=='zhan10-speed'))
+            if key not in {SUJU_ROUTE_PROFILE_ID,'nightingale','aichicu-difficult','zhan10-nightmare'} and (getattr(self,'game_mode','nightmare')!='difficult' or key=='zhan10-speed'))
 
     def _sync_active_mode_ui(self) -> None:
         """Describe the loaded mode, never a combobox choice still being applied."""
