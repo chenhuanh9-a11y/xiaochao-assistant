@@ -5642,6 +5642,12 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 if binding is not None and binding['usable']:
                     return display_profile
                 return self._legacy_difficult_display_profile(map_id, floor) or SHARED_STRUCTURE_PROFILE_ID
+            if (optional is not None and display_profile != SUJU_ROUTE_PROFILE_ID
+                    and not (getattr(self, 'difficult_native_context', None) is not None
+                             and display_profile == 'zhan10-speed')):
+                # Match the selected-author intent contract: leftover files in
+                # the base catalog cannot register an optional author.
+                return SHARED_STRUCTURE_PROFILE_ID
             if optional is not None and profile is not None:
                 path = catalog.route_path(display_profile,map_id,str(floor),include_inactive=True) if map_id else None
                 available = Path(path).is_file() if path is not None else (not map_id and any(
@@ -31569,6 +31575,10 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         optional = getattr(self,'optional_author_displays',None)
         if optional is not None and preferred in optional.profiles:
             return preferred
+        if optional is not None and getattr(self, 'difficult_native_context', None) is None:
+            # Availability is resolved per map/floor, separately from intent.
+            # Importing an unrelated author must not replace a saved selection.
+            return preferred or DEFAULT_ROUTE_PROFILE_ID
         return 'zhan10-speed' if getattr(self, 'difficult_native_context', None) is not None else SUJU_ROUTE_PROFILE_ID
 
     def _legacy_difficult_display_profile(self, map_id, floor):

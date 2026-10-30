@@ -93,6 +93,46 @@ class DifficultCompatibilityTests(unittest.TestCase):
         s._custom_route_active = lambda *a: True
         self.assertEqual(s._effective_route_profile('difficult-map-29', '1'), 'shared-structure')
 
+    def test_nightmare_missing_selected_author_does_not_switch_to_an_imported_author(self):
+        s = self.make_subject()
+        s.difficult_native_context = None
+        s.preferred_route_profile_id = 'wang-qingxin'
+        s.optional_author_displays.profiles = {'suju', 'nightingale'}
+        s.author_route_catalog.profiles = {}
+        self.assertEqual(s._shared_display_profile_id(), 'wang-qingxin')
+        self.assertEqual(s._effective_route_profile('nightmare-03', '1'), 'shared-structure')
+        self.assertEqual(s.preferred_route_profile_id, 'wang-qingxin')
+
+    def test_nightmare_leftover_catalog_image_cannot_replace_validated_sidecar(self):
+        s = self.make_subject()
+        s.difficult_native_context = None
+        s.preferred_route_profile_id = 'wang-qingxin'
+        s.optional_author_displays.profiles = {'nightingale'}
+        s.author_route_catalog.profiles = {'wang-qingxin': SimpleNamespace(runtime_enabled=True)}
+        s.author_route_catalog.route_path = lambda *a, **k: self.fail('unregistered image must not be probed')
+        self.assertEqual(s._effective_route_profile('nightmare-03', '1'), 'shared-structure')
+
+    def test_absent_optional_loader_retains_the_legacy_default_in_each_mode(self):
+        s = self.make_subject()
+        s.optional_author_displays = None
+        self.assertEqual(s._shared_display_profile_id(), 'zhan10-speed')
+        s.difficult_native_context = None
+        self.assertEqual(s._shared_display_profile_id(), 'suju')
+
+    def test_legacy_catalog_without_pr64_cache_helper_keeps_suju_available(self):
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix='legacy-author-path-') as folder:
+            path = Path(folder) / 'display.png'
+            path.write_bytes(b'path-availability-fixture-not-decoded')
+            s = self.make_subject()
+            s.difficult_native_context = None
+            s.preferred_route_profile_id = 'suju'
+            s.optional_author_displays.profiles = set()
+            profile = SimpleNamespace(runtime_enabled=True,
+                maps={'map': [SimpleNamespace(layers={'1': path})]})
+            s.author_route_catalog = SimpleNamespace(profiles={'suju': profile})
+            self.assertEqual(s._effective_route_profile(None, '1'), 'suju')
+
 
 if __name__ == '__main__':
     unittest.main()
