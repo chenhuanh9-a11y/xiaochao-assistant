@@ -40,6 +40,26 @@ class FullClientCaptureTests(unittest.TestCase):
         self.assertEqual(captured.requested_client_bounds,(0,0,width,height))
         self.assertEqual(captured.roi_screen_bounds,captured.context.client_screen_bounds)
         np.testing.assert_array_equal(LiveRuntime._full_frame(captured),captured.frame_bgr)
+    def test_blank_full_dc_uses_only_explicit_safe_fallback_but_uniform_roi_is_valid(self):
+        self.backend.capture = lambda hwnd, roi: np.zeros((roi[3]-roi[1],roi[2]-roi[0],3),np.uint8)
+        fallback = []
+        pixels = np.arange(100*80*3,dtype=np.uint8).reshape(80,100,3)
+        capture = ClientCaptureProvider(Native(),self.backend,
+            full_capture=lambda hwnd: fallback.append(hwnd) or (pixels,self.backend.current.client_screen_bounds))
+        self.addCleanup(capture.shutdown)
+        capture.bindFullClient(42);capture.enable()
+        result = capture.capture()
+        np.testing.assert_array_equal(result.frame_bgr,pixels)
+        self.assertEqual(fallback,[42])
+        self.assertEqual(result.acquisition,'full-frame-fallback-crop')
+        capture.bind(42,(0,0,10,10));capture.enable()
+        result = capture.capture()
+        self.assertEqual(result.frame_bgr.sum(),0)
+        self.assertEqual(fallback,[42])
+        self.capture.bindFullClient(42);self.capture.enable()
+        with self.assertRaisesRegex(OSError,'game-client-dc-returned-blank-frame'):
+            self.capture.capture()
+
     def test_original_fixed_roi_mismatch_reproduces_exact_consumer_guard(self):
         self.capture.bind(42,(0,0,100,80));self.capture.enable();self.changed()
         captured=self.capture.capture()

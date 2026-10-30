@@ -1,4 +1,4 @@
-"""Explicitly bound foreground client capture; no discovery or screen fallback."""
+"""Bound foreground capture; fallback requires an owner's exclusion transaction."""
 from __future__ import annotations
 
 import operator
@@ -179,7 +179,8 @@ class ClientCaptureProvider:
             if region[2] > context.full_client_size[0] or region[3] > context.full_client_size[1]:
                 raise CaptureUnavailable("Bound client rectangle exceeds the current client; rebind explicitly")
             frame = capture_client_region(hwnd, region, expected_context=expected or context,
-                                          full_capture=self._full_capture, _backend=self._backend)
+                                          full_capture=self._full_capture, _backend=self._backend,
+                                          reject_blank_full_client=full_client)
             with self._lock:
                 if (generation != self._generation or not self._enabled or self._closed
                         or self._cancelled(cancelled)):
