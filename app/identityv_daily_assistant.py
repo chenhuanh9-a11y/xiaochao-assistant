@@ -6248,8 +6248,10 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         previous_profile=self.preferred_route_profile_id
         # Validate before publishing the target. A failed requested mode also
         # ends the old round; it must not keep recognizing as the previous mode.
+        # Any resource failure (including a truncated npz: EOFError/BadZipFile)
+        # keeps the previous mode instead of escaping into Tk's error handler.
         try:self._install_map_mode(mode, before_publish=lambda: self.end_round(notify=False))
-        except (OSError,ValueError,KeyError,TypeError,cv2.error) as error:
+        except Exception as error:
             self.mode_resource_error = str(error)
             self.startup_resource_error = self.mode_resource_error
             self.resource_preload_pending = False
@@ -6637,8 +6639,10 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         self.mode_route_profiles=dict(self.settings.get('modeRouteProfiles') or {})
         self.mode_resource_error=None
         if self.settings.get('gameMode')=='difficult':
+            # A damaged difficult resource must not stop startup; the app
+            # opens in nightmare mode and reports the resource problem.
             try:self._install_map_mode('difficult')
-            except (OSError,ValueError,KeyError,TypeError,cv2.error) as error:
+            except Exception as error:
                 self.mode_resource_error=str(error)
                 self.startup_resource_error=self.mode_resource_error
         self.onboarding_completed = self.settings.get("onboardingCompleted") is True
@@ -11751,16 +11755,28 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
 
     def _load_settings(self) -> dict:
         self.settings_read_error = ""
+        self._settings_write_blocked = False
         try:
             payload = json.loads(self.settings_path.read_text(encoding="utf-8")) if self.settings_path.is_file() else {}
             if not isinstance(payload, dict):
                 raise ValueError("settings must be an object")
             return payload
         except (OSError, ValueError):
-            self.settings_read_error = "本地设置无法读取，快捷键已暂时解绑；请在设置中重新确认。"
+            # Startup saves right after loading, so set the unreadable file
+            # aside first; if that fails, never overwrite it this session.
+            backup = self.settings_path.with_name(f"ui-settings.unreadable-{datetime.now():%Y%m%d-%H%M%S}.json")
+            try:
+                os.replace(self.settings_path, backup)
+                kept = f"原文件已另存为 {backup.name}"
+            except OSError:
+                self._settings_write_blocked = True
+                kept = "本次不会改写设置文件，修改将不会保存"
+            self.settings_read_error = f"本地设置无法读取（{kept}），快捷键已暂时解绑；请在设置中重新确认。"
             return {}
 
     def _save_settings(self, *, hotkey_proposal: dict | None = None) -> bool:
+        if getattr(self, "_settings_write_blocked", False):
+            return False
         try:
             self.settings_path.parent.mkdir(parents=True, exist_ok=True)
             payload = {
