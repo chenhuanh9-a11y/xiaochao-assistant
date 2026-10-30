@@ -3,6 +3,7 @@ import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
 ApplicationWindow {
+    palette: ClientPalette {}
     id: boot
     objectName: "qtClientBoot"
     width: 520; height: 260; visible: true; title: productionProduct ? "星图" : "星图 · Qt 私测"

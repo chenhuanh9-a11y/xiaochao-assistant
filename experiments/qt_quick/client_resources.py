@@ -56,6 +56,7 @@ class ResourceService(QObject):
     confirmationRequested = Signal(str, str)
     resourcesChanged = Signal()
     recoveryCloseRequested = Signal()
+    importCloseRequested = Signal()
 
     def __init__(self, sandbox: Path, parent=None):
         super().__init__(parent)
@@ -76,10 +77,14 @@ class ResourceService(QObject):
         self._recovery_notice = ""
         self._receipt_needs_notification = False
         self._lease_provider, self._lease_id = None, None
+        self._import_launcher = None
+        self._import_handoff = False
+        self._import_notice = ""
+        self._import_receipt_notification = False
 
     packageRows = Property("QVariantList", lambda s: s._rows, notify=changed)
     busy = Property(bool, lambda s: s._busy, notify=changed)
-    message = Property(str, lambda s: "\n".join(filter(None, (s._recovery_notice, s._message))), notify=changed)
+    message = Property(str, lambda s: "\n".join(filter(None, (s._import_notice, s._recovery_notice, s._message))), notify=changed)
     pendingKind = Property(str, lambda s: s._kind if s._pending else "", notify=changed)
     canCancel = Property(bool, lambda s: s._can_cancel, notify=changed)
     recoveryRequired = Property(bool, lambda s: s._recovery, notify=changed)
@@ -88,6 +93,20 @@ class ResourceService(QObject):
     recoveryExecutionAllowed = Property(bool, lambda s: s._recovery_launcher is not None or bool(s._recovery_allowed()), notify=changed)
     recoveryHandoffPending = Property(bool, lambda s: s._recovery_handoff, notify=changed)
     recoveryUsesHelper = Property(bool, lambda s: s._recovery_launcher is not None, notify=changed)
+
+    def setImportLauncher(self, launcher):
+        if not self._available() or not callable(launcher):
+            raise RuntimeError("Cannot change import launcher during an operation")
+        self._import_launcher = launcher
+
+    def recordImportReceipt(self, receipt):
+        # Owner validates the persisted request binding before forwarding it.
+        if type(receipt.get("success")) is not bool:
+            raise ValueError("Invalid import receipt")
+        self._import_notice = ("上次资源导入已完成，正在核对实际状态。" if receipt["success"] else
+            "上次资源未完成导入：" + str(receipt.get("reason", "结果不可用")))
+        self._import_receipt_notification = bool(receipt["success"])
+        self.changed.emit()
 
     def setRecoveryLauncher(self, launcher):
         """Inject a separate helper launcher; it must wait for normal parent exit.
@@ -182,7 +201,8 @@ class ResourceService(QObject):
         validate_installation_root(self.sandbox)
 
     def _available(self):
-        return not self._closed and not self._busy and self._pending is None and not self._recovery_handoff
+        return (not self._closed and not self._busy and self._pending is None
+                and not self._recovery_handoff and not self._import_handoff)
 
     def _start(self, kind, function, message, *, cancellable=True):
         if self._lease_provider is not None and self._lease_id is None:
@@ -275,10 +295,30 @@ class ResourceService(QObject):
 
     def _install(self, path, result):
         live = importer.supports_live_author_import(result)
+        if not live and self._import_launcher is not None:
+            launcher = self._import_launcher
+            def launch(_cancel):
+                with importer._writer_locked_installation(self.sandbox, require_closed=False) as (root, _state):
+                    current = importer.inspect_package(path, root)
+                    if _confirmation_fingerprint(current) != _confirmation_fingerprint(result):
+                        raise importer.ImportRejected("resource-plan-changed-reinspect-required")
+                    request_id = launcher(path, dict(result))
+                if not isinstance(request_id, str) or not request_id:
+                    raise importer.ImportRejected("import-helper-launch-not-confirmed")
+                return request_id
+            self._start("launch-import", launch, "正在准备导入工具，随后正常关闭客户端。", cancellable=False)
+            return
         def install(cancel):
             if live:
-                return importer.install_author_package_live(path, self.sandbox, application_idle=True,
-                    expected_archive_sha256=result["archiveSha256"], cancelled=cancel.is_set)
+                # The session lease remains held through commit. Revalidate
+                # consent under the same OS writer lock as the shared live
+                # transaction, including the previous receipt fingerprint.
+                with importer._writer_locked_installation(self.sandbox, require_closed=False) as (root, state):
+                    current = importer.inspect_package(path, root)
+                    if _confirmation_fingerprint(current) != _confirmation_fingerprint(result):
+                        raise importer.ImportRejected("resource-plan-changed-reinspect-required")
+                    return importer._install_staged(path, root, state, live=True,
+                        expected_archive_sha256=result["archiveSha256"], cancelled=cancel.is_set)
             # Hold the same writer lock between confirmation recheck and the
             # existing staging/upgrade transaction; never expand an old consent.
             with importer._locked_installation(self.sandbox, True) as (root, state):
@@ -403,8 +443,18 @@ class ResourceService(QObject):
                     plan["packageId"], plan["transactionId"], plan["status"], plan["fileCount"], plan["planSha256"])
                 + ("\n\n确认后将正常关闭客户端。恢复工具仅在客户端正常退出后执行；重新打开客户端核对结果。" if self._recovery_launcher is not None else ""))
             return
+        elif kind == "launch-import":
+            self._kind, self._import_handoff = "", True
+            self._message = "导入工具已准备；正在正常关闭客户端。重新打开后核对结果。"
+            self.changed.emit()
+            self.importCloseRequested.emit()
+            return
         elif kind == "refresh":
             self._rows, self._recovery, self._kind = result, False, ""
+            if self._import_receipt_notification:
+                self._import_receipt_notification = False
+                self._import_notice = "上次资源导入已完成，实际状态已核对。"
+                self.resourcesChanged.emit()
             self._message = "本地资源已核对。" if result else "尚未安装资源，可导入 ZIP 资源包。"
             if self._receipt_needs_notification:
                 self._receipt_needs_notification = False
@@ -412,12 +462,14 @@ class ResourceService(QObject):
                 self.resourcesChanged.emit()
         elif kind == "inspect":
             path, inspection = result
-            if inspection.get("replaceFiles"):
+            if (inspection.get("replaceFiles") or (self._import_launcher is not None
+                    and not importer.supports_live_author_import(inspection))):
                 self._kind, self._pending = "overwrite", (path, inspection)
                 self._message = "等待确认资源更新。"
                 self.changed.emit()
                 self.confirmationRequested.emit("确认更新资源", "将替换 %s 中 %s 个已登记且未改动的文件，并新增 %s 个文件。旧文件将由现有事务备份；未知文件与本地改动不会覆盖。\n\n仅作用于当前资源目录。" % (
-                    inspection["packageId"], len(inspection["replaceFiles"]), len(inspection["missingFiles"])))
+                    inspection["packageId"], len(inspection["replaceFiles"]), len(inspection["missingFiles"]))
+                    + ("\n\n确认后正常关闭客户端，由独立导入工具执行；请重新打开客户端核对结果。" if self._import_launcher is not None and not importer.supports_live_author_import(inspection) else ""))
                 return
             self._install(path, inspection)
             return

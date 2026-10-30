@@ -114,17 +114,19 @@ def verify_invoker_manifest(executable):
     return count
 
 
-def assemble_recovery_helper(output, stage, environment_vars):
+def assemble_recovery_helper(output, stage, environment_vars, *, kind="recovery"):
     """One separate helper freeze in the same build chain; no EXE launch."""
-    product = "star-map-recovery-helper"
+    if kind not in ("recovery", "import"):
+        raise ValueError("Unknown resource helper")
+    product = "star-map-" + kind + "-helper"
     subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
-                    "--distpath", str(output / "helper-freeze"),
-                    "--workpath", str(output / "helper-pyinstaller"),
-                    str(TOOLS / "qt-recovery-helper.spec")], cwd=ROOT, env=environment_vars, check=True)
-    helper_stage = output / "helper-freeze" / product
+                    "--distpath", str(output / (kind + "-helper-freeze")),
+                    "--workpath", str(output / (kind + "-helper-pyinstaller")),
+                    str(TOOLS / ("qt-" + kind + "-helper.spec"))], cwd=ROOT, env=environment_vars, check=True)
+    helper_stage = output / (kind + "-helper-freeze") / product
     executable = helper_stage / (product + ".exe")
     manifests = verify_invoker_manifest(executable)
-    runtime = helper_stage / "_star_map_recovery_runtime"
+    runtime = helper_stage / ("_star_map_" + kind + "_runtime")
     if not runtime.is_dir() or {p.name for p in helper_stage.iterdir()} != {executable.name, runtime.name}:
         raise ValueError("Recovery helper must have a separate exact runtime directory")
     files = {}
@@ -531,6 +533,29 @@ def stage_production_fingerprint(resource_stage, resources, source_commit):
                 replacedBaselineFingerprintSha256=previous)
 
 
+def stage_editor_baseline(stage, resources):
+    """Program-owned fallback; never repairs/replaces a player's legacy family."""
+    prefix = "assets/custom-maps/"
+    copied = []
+    for name in resources:
+        if not name.startswith(prefix):
+            continue
+        source = Path(stage) / "_internal" / name
+        row = resources[name]
+        if source.stat().st_size != row["bytes"] or sha256(source) != row["sha256"].lower():
+            raise ValueError(f"Editor baseline differs from source inventory: {name}")
+        destination = Path(stage) / "_internal/qt-editor-base" / name[len(prefix):]
+        if destination.exists():
+            raise ValueError("Editor baseline destination must be fresh")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        if sha256(source) != sha256(destination):
+            raise ValueError("Editor baseline changed while staging")
+        copied.append(dict(source=name, destination=destination.relative_to(stage).as_posix(),
+                           bytes=destination.stat().st_size, sha256=sha256(destination)))
+    return dict(policy="program-owned-fallback; preserve-existing-legacy-families", files=copied)
+
+
 def write_production_files_include(stage, resources, output):
     families = production_file_projection(stage, resources)
     lines = ["; Generated exact production projection; no directory wildcard copies."]
@@ -600,6 +625,7 @@ def main(argv=None):
                 installerInstance=instance,
                 resourceInstallationPolicy=RESOURCE_INSTALLATION_POLICY if args.instance == "production" else None,
                 recoveryHelper=dict(included=args.instance == "production", product="star-map-recovery-helper"),
+                importHelper=dict(included=args.instance == "production", product="star-map-import-helper"),
                 sourceRoot=str(ROOT), version=version, profileId=LIGHT_PROFILE,
                 resourceRoot=str(args.resource_root.resolve()), resourceVersion=declaration["resourceVersion"],
                 resourceInventorySha256=sha256(args.resource_inventory), resourceFiles=len(resources),
@@ -634,6 +660,7 @@ def main(argv=None):
                    installerInstance=instance,
                    resourceInstallationPolicy=RESOURCE_INSTALLATION_POLICY if args.instance == "production" else None,
                    recoveryHelper=dict(included=args.instance == "production", executable="star-map-recovery-helper.exe"),
+                   importHelper=dict(included=args.instance == "production", executable="star-map-import-helper.exe"),
                    resourceVersion=declaration["resourceVersion"], authorDisplayPackagesIncluded=[],
                    authorDisplayFilesIncluded=0, omittedAuthorDisplayFiles=len(omitted),
                    omittedAuthorDisplayBytes=sum(row["bytes"] for row in omitted.values()),
@@ -657,6 +684,7 @@ def main(argv=None):
     stage = output / "freeze" / product
     if args.instance == "production":
         plan["recoveryHelper"] = assemble_recovery_helper(output, stage, environment_vars)
+        plan["importHelper"] = assemble_recovery_helper(output, stage, environment_vars, kind="import")
     plan["qtClosure"] = prune_unneeded_qt(stage)
     plan["notices"] = collect_notices(stage, plan["qtClosure"])
     plan["frozenVerification"] = verify_frozen(stage, resources, [p.name for p in qt.glob("*.qml")], product)
@@ -670,6 +698,7 @@ def main(argv=None):
     if args.instance == "production":
         # Relative program ownership drives the existing exact-file backup and
         # failed-upgrade rollback. No work/settings/imports are frozen or owned.
+        plan["editorBaseline"] = stage_editor_baseline(stage, resources)
         ownership = stage / "_installer-owned-files.txt"
         owned_files = sorted(p.relative_to(stage).as_posix().replace("/", "\\")
                              for p in stage.rglob("*") if p.is_file())
@@ -696,7 +725,7 @@ def main(argv=None):
     if not setup.is_file():
         raise ValueError("Inno Setup completed without the expected Setup artifact")
     plan["installer"] = dict(fileName=setup.name, bytes=setup.stat().st_size, sha256=sha256(setup))
-    plan["recipes"] = {p.name: sha256(p) for p in (Path(__file__), TOOLS / "qt-client.spec", TOOLS / "qt-recovery-helper.spec", TOOLS / "qt-client.iss")}
+    plan["recipes"] = {p.name: sha256(p) for p in (Path(__file__), TOOLS / "qt-client.spec", TOOLS / "qt-recovery-helper.spec", TOOLS / "qt-import-helper.spec", TOOLS / "qt-client.iss")}
     plan["source"] = source_identity(args.source_commit)
     plan["buildCompleted"] = True
     record_path.write_text(json.dumps(plan, indent=2), encoding="utf-8")

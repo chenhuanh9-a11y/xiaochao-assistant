@@ -1,4 +1,5 @@
-// Layout: existing Tk _layout_home proportions and blue/white static reference.
+// Geometry and component grouping: shipped Tk 3438365b (38490F4F).
+// The requested blue/white palette is kept across the migrated surfaces.
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
@@ -21,24 +22,29 @@ Item {
             columnSpacing: page.wide ? Math.round(page.width * .034 / 8) * 8 : 0
             rowSpacing: 24
             ColumnLayout {
-                Layout.fillWidth: true; Layout.alignment: Qt.AlignTop; spacing: 20
-                Item {
-                    Layout.fillWidth: true; implicitHeight: page.wide && page.width >= 1100 ? 250 : 212
+                Layout.fillWidth: true; Layout.alignment: Qt.AlignTop; spacing: 12
+                Rectangle {
+                    id: hero
+                    objectName: "homeHero"
+                    Layout.fillWidth: true; implicitHeight: Math.max(279, heroContents.implicitHeight + 48)
+                    radius: 12; color: "#e9effd"
                     ColumnLayout {
-                        anchors.fill: parent; spacing: 14
-                        Label { text: "地图与路线，\n随手查看。"; color: "#142b4b"; font.pixelSize: page.width >= 1100 ? 52 : 42; font.bold: true; lineHeight: 1.15; Layout.topMargin: 14 }
-                        Label { text: "先打开游戏控件，再回到游戏按地图键查看小抄。"; color: "#567096"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                        id: heroContents
+                        anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                        anchors.leftMargin: 28; anchors.rightMargin: 28; anchors.topMargin: 24; spacing: 10
+                        Label { text: "YOUR ROUTE, YOUR WAY"; color: "#526785"; font.pixelSize: 11; font.bold: true }
+                        Label { objectName: "homeHeroTitle"; text: "地图与路线，\n随手查看。"; color: "#142035"; font.pixelSize: page.width >= 1200 ? 34 : hero.width >= 560 ? 30 : 26; font.bold: true; lineHeight: 1.15 }
+                        Label { text: "先打开游戏控件，再回到游戏按地图键查看小抄。"; color: "#5c677d"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                         RowLayout {
-                            spacing: 10
-                            AppButton { text: "打开游戏控件"; primary: true; implicitHeight: 46; onClicked: windows.show("controls") }
-                            AppButton { text: "返回游戏"; implicitHeight: 46; enabled: clientCoordinator.boundWindow !== ""; onClicked: clientCoordinator.returnToGame() }
+                            Layout.topMargin: 10; spacing: 10
+                            AppButton { text: "打开游戏控件"; icon.source: "icons/panel.png"; icon.color: "transparent"; primary: false; implicitHeight: 44; onClicked: windows.show("controls") }
+                            AppButton { text: "返回游戏"; implicitHeight: 44; enabled: clientCoordinator.boundWindow !== ""; onClicked: clientCoordinator.returnToGame() }
                         }
-                        Item { Layout.fillHeight: true }
                     }
                 }
                 Rectangle {
                     Layout.fillWidth: true; implicitHeight: roundContents.implicitHeight + 40
-                    radius: 20; color: "white"
+                    radius: 12; color: "white"
                     ColumnLayout {
                         id: roundContents
                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
@@ -51,6 +57,25 @@ Item {
                             Item { Layout.fillWidth: true }
                             AppButton { text: "识别详情"; implicitHeight: 32; onClicked: clientCoordinator.navigate("recognition") }
                         }
+                        RowLayout {
+                            objectName: "homeRoundStats"
+                            Layout.fillWidth: true; spacing: 10
+                            Repeater {
+                                model: [{label: "状态", value: session.snapshot.controlStatusText || (session.snapshot.roundActive ? "本局进行中" : "等待开始")},
+                                        {label: "地图", value: session.snapshot.mapName || session.snapshot.mapId || "尚未确认"},
+                                        {label: "楼层", value: session.snapshot.observedFloor ? (session.snapshot.observedFloor === "B1" ? "B1" : "F" + session.snapshot.observedFloor) : "尚未确认"}]
+                                delegate: Rectangle {
+                                    required property var modelData
+                                    Layout.fillWidth: true; Layout.preferredWidth: 1; implicitHeight: 68
+                                    radius: 12; color: "#f5f7fb"
+                                    ColumnLayout {
+                                        anchors.fill: parent; anchors.margins: 12; spacing: 3
+                                        Label { text: modelData.label; font.pixelSize: 11; color: "#5c677d" }
+                                        Label { text: modelData.value; font.pixelSize: 14; font.bold: true; color: "#142035"; Layout.fillWidth: true; elide: Text.ElideRight }
+                                    }
+                                }
+                            }
+                        }
                         Label { text: clientCoordinator.runtimeStatus; color: "#567096"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                         RowLayout {
                             Layout.fillWidth: true
@@ -62,7 +87,7 @@ Item {
                 }
                 Rectangle {
                     Layout.fillWidth: true; implicitHeight: previewContents.implicitHeight + 40
-                    radius: 20; color: "white"
+                    radius: 12; color: "white"
                     ColumnLayout {
                         id: previewContents
                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
@@ -100,21 +125,22 @@ Item {
                 Layout.fillWidth: !page.wide
                 Layout.preferredWidth: page.wide ? Math.max(250, Math.round(page.width * .261 / 8) * 8) : -1
                 Layout.maximumWidth: page.wide ? Math.max(250, Math.round(page.width * .261 / 8) * 8) : Infinity
-                Layout.alignment: Qt.AlignTop; spacing: 20
+                Layout.alignment: Qt.AlignTop; spacing: 12
                 Rectangle {
-                    Layout.fillWidth: true; implicitHeight: shortcutContents.implicitHeight + 40; radius: 20; color: "white"
+                    Layout.fillWidth: true; implicitHeight: shortcutContents.implicitHeight + 40; radius: 12; color: "white"
                     ColumnLayout {
                         id: shortcutContents
-                        anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 20; spacing: 16
-                        Label { text: "快捷键概览"; color: "#17365e"; font.pixelSize: 20; font.bold: true }
+                        anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 20; spacing: 8
+                        Label { text: "快捷键概览"; color: "#17365e"; font.pixelSize: 18; font.bold: true }
                         Label { text: "当前已保存的快捷键"; color: "#567096"; font.pixelSize: 12 }
                         Repeater {
-                            model: [{label:"显示 / 隐藏控件", key:settingsService.persistedValues.actionHotkeys[0]},
+                            model: [{label:"游戏开图", key:settingsService.persistedValues.hotkey},
+                                    {label:"显示 / 隐藏控件", key:settingsService.persistedValues.actionHotkeys[0]},
                                     {label:"开始 / 结束本局", key:settingsService.persistedValues.actionHotkeys[8]},
                                     {label:"小抄显隐", key:settingsService.persistedValues.actionHotkeys[6]}]
                             delegate: ColumnLayout {
                                 required property var modelData
-                                Layout.fillWidth: true; spacing: 14
+                                Layout.fillWidth: true; spacing: 8
                                 RowLayout {
                                     Layout.fillWidth: true
                                     Label { text: modelData.label; color: "#17365e"; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WordWrap }
@@ -124,22 +150,35 @@ Item {
                                         Label { id: hotkey; anchors.centerIn: parent; text: modelData.key || "未设置"; color: "#245de7"; font.bold: true; font.pixelSize: 13 }
                                     }
                                 }
-                                Rectangle { Layout.fillWidth: true; height: 1; color: "#d5e2f5" }
                             }
                         }
                         AppButton { text: "修改快捷键"; implicitHeight: 34; onClicked: clientCoordinator.navigate("settings") }
                     }
                 }
                 Rectangle {
-                    Layout.fillWidth: true; implicitHeight: helpContents.implicitHeight + 40; radius: 20; color: "white"
+                    Layout.fillWidth: true; implicitHeight: helpContents.implicitHeight + 40; radius: 12; color: "white"
                     ColumnLayout {
                         id: helpContents
                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 20; spacing: 12
-                        AppButton { text: "使用帮助"; Layout.fillWidth: true; onClicked: clientCoordinator.navigate("help") }
-                        Label { text: "地图键、显隐与常见问题"; color: "#567096"; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-                        Rectangle { Layout.fillWidth: true; height: 1; color: "#d5e2f5" }
-                        Label { text: "版本信息"; font.bold: true; color: "#17365e" }
-                        Label { text: infoService.version; color: "#567096"; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                        Repeater {
+                            model: [{title:"使用帮助", note:"地图键、显隐与常见问题", icon:"help"},
+                                    {title:"排查与反馈", note:"查看运行信息，导出排查文件", icon:"note"}]
+                            delegate: ToolButton {
+                                required property var modelData
+                                Layout.fillWidth: true; implicitHeight: 56
+                                onClicked: clientCoordinator.navigate("help")
+                                contentItem: RowLayout {
+                                    spacing: 12
+                                    Image { source: "icons/" + modelData.icon + ".png"; sourceSize.width: 60; sourceSize.height: 60; Layout.preferredWidth: 30; Layout.preferredHeight: 30 }
+                                    ColumnLayout {
+                                        Layout.fillWidth: true; spacing: 3
+                                        Label { text: modelData.title; font.bold: true; color: "#17365e"; font.pixelSize: 13 }
+                                        Label { text: modelData.note; color: "#567096"; font.pixelSize: 11; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+                                    }
+                                }
+                                background: Rectangle { radius: 8; color: parent.hovered ? "#f1f5fc" : "transparent" }
+                            }
+                        }
                         AppButton { text: "查看识别回放"; implicitHeight: 32; onClicked: clientCoordinator.navigate("replay") }
                     }
                 }

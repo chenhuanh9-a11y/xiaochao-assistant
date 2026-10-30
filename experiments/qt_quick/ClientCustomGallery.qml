@@ -32,6 +32,7 @@ Item {
         RowLayout {
             Label { text: "自定义图集"; color: "#142b4b"; font.pixelSize: 26; font.bold: true }
             Item { Layout.fillWidth: true }
+            AppButton { text: "刷新"; objectName: "customRefresh"; enabled: !root.state.busy; onClicked: customGalleryService.refresh() }
             AppButton { text: "导入"; enabled: !root.state.busy; onClicked: importPicker.open() }
             AppButton { text: "导出"; enabled: !root.state.busy; onClicked: root.askName("export", "gallery.json") }
         }
@@ -46,8 +47,8 @@ Item {
                 enabled: !root.state.busy && !root.state.pendingKind
                 onActivated: customGalleryService.selectGallery(currentValue)
             }
-            AppButton { text: "新建"; enabled: !root.state.busy; onClicked: root.askName("create", "我的路线") }
-            AppButton { text: "复制"; enabled: !root.state.busy; onClicked: root.askName("copy", "我的路线副本") }
+            AppButton { text: "新建"; enabled: !root.state.busy && !root.state.dataError; onClicked: root.askName("create", "我的路线") }
+            AppButton { text: "复制"; enabled: !root.state.busy && !root.state.dataError; onClicked: root.askName("copy", "我的路线副本") }
             AppButton { text: "改名"; enabled: !root.state.busy && !root.state.readonly; onClicked: root.askName("rename", galleries.currentText) }
             AppButton { text: "删除"; enabled: !root.state.busy && !root.state.readonly; onClicked: customGalleryService.requestDeleteGallery() }
             Item { Layout.fillWidth: true }
@@ -69,6 +70,7 @@ Item {
                 onActivated: customGalleryService.selectMap(currentValue)
             }
             ComboBox {
+                objectName: "customFloorChoice"
                 Layout.preferredWidth: 110
                 model: root.state.floors; textRole: "name"; valueRole: "id"
                 currentIndex: root.selectedIndex(root.state.floors, root.state.selectedFloor)
@@ -93,9 +95,11 @@ Item {
             Rectangle {
                 id: mapArea
                 Layout.fillWidth: true; Layout.fillHeight: true
+                Layout.preferredWidth: 720; Layout.minimumWidth: 200
                 radius: 12; color: "#e8eff9"; clip: true
                 Image {
                     id: art
+                    objectName: "customMapImage"
                     anchors.fill: parent; anchors.margins: 12
                     source: root.state.imageUrl || ""
                     asynchronous: true; cache: true; fillMode: Image.PreserveAspectFit
@@ -130,6 +134,7 @@ Item {
                         }
                     }
                     MouseArea {
+                        objectName: "customMapDrawingSurface"
                         anchors.fill: parent
                         enabled: !root.state.busy && !root.state.readonly && art.status === Image.Ready
                         onClicked: function(mouse) {
@@ -143,7 +148,8 @@ Item {
                 Label { anchors.centerIn: parent; width: parent.width-40; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; color: "#526785"; visible: !root.state.imageUrl; text: root.state.libraryMessage || "请选择一张地图" }
             }
             ColumnLayout {
-                Layout.preferredWidth: 230; Layout.fillHeight: true; spacing: 8
+                Layout.preferredWidth: 230; Layout.minimumWidth: 230; Layout.maximumWidth: 230
+                Layout.fillWidth: false; Layout.fillHeight: true; spacing: 8
                 Label { text: "目标顺序"; color: "#183a73"; font.bold: true }
                 Label { text: "点房间选目标，点道路加必经点。"; color: "#526785"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                 ListView {

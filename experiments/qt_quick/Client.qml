@@ -6,10 +6,11 @@ import QtQuick.Dialogs
 
 ApplicationWindow {
     id: root
+    palette: ClientPalette {}
     objectName: "qtClientMain"
     width: 1000; height: 720; minimumWidth: 650; minimumHeight: 470
     visible: true; title: productionProduct ? "星图" : "星图 · Qt 私测"
-    color: "#edf4ff"; font.family: "Microsoft YaHei UI"; font.pixelSize: 13
+    color: "#f3f5fa"; font.family: "Microsoft YaHei UI"; font.pixelSize: 13
     property string page: "home"
     property real replayAlpha: 0.55
     property var pages: ["home", "gallery", "resources", "settings", "replay", "help", "recognition", "custom", "downloads"]
@@ -51,15 +52,15 @@ ApplicationWindow {
             Layout.preferredWidth: root.compactRail ? 80 : 96; Layout.fillHeight: true; color: "white"
             ColumnLayout {
                 anchors.fill: parent; anchors.margins: 8; spacing: 4
-                Item { Layout.fillWidth: true; Layout.preferredHeight: root.compactRail ? 54 : 90
+                Item { Layout.fillWidth: true; Layout.preferredHeight: root.compactRail ? 84 : 122
                     Column { anchors.centerIn: parent; spacing: 7
-                        Image { anchors.horizontalCenter: parent.horizontalCenter; width: 26; height: 26; source: "icons/note.png"; sourceSize.width: 52; sourceSize.height: 52 }
+                        Image { anchors.horizontalCenter: parent.horizontalCenter; width: root.compactRail ? 36 : 40; height: width; source: "icons/xingtu-round.png"; sourceSize.width: 104; sourceSize.height: 104 }
                         Label { anchors.horizontalCenter: parent.horizontalCenter; visible: !root.compactRail; text: "星图"; color: "#17365e"; font.bold: true; font.pixelSize: 13 }
                     }
                 }
                 Repeater {
                     model: [{key:"home",label:"主页面",icon:"home"},{key:"gallery",label:"地图资源",icon:"map"},
-                            {key:"custom",label:"自定义",icon:"note"},{key:"settings",label:"设置",icon:"settings"},{key:"help",label:"帮助",icon:"help"}]
+                            {key:"custom",label:"自定义",icon:"route"},{key:"settings",label:"设置",icon:"settings"},{key:"help",label:"帮助",icon:"help"}]
                     ToolButton {
                         id: navigation
                         required property var modelData
@@ -77,6 +78,16 @@ ApplicationWindow {
                     }
                 }
                 Item { Layout.fillHeight: true }
+                Rectangle {
+                    visible: !root.compactRail
+                    Layout.fillWidth: true; implicitHeight: railStatus.implicitHeight + 20
+                    radius: 10; color: "#f3f7ff"
+                    ColumnLayout {
+                        id: railStatus; anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 10; spacing: 6
+                        Label { text: clientCoordinator.boundWindow ? "已连接游戏" : "等待游戏"; color: "#354f75"; font.pixelSize: 11; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+                        Label { text: infoService.facts.version; color: "#5b7294"; font.pixelSize: 10; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+                    }
+                }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#d5e2f5"; Layout.leftMargin: 4; Layout.rightMargin: 4 }
                 ToolButton { Layout.fillWidth: true; Layout.preferredHeight: root.compactRail ? 42 : 64; Accessible.name: "退出"; onClicked: clientCoordinator.requestClose()
                     contentItem: Column { spacing: 5

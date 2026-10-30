@@ -149,3 +149,12 @@ Private `build-record.json` records source commit/tree, display/numeric version,
 The windowed wrapper records Python startup failures to its own work/qt-client-startup-error.txt and exits instead of waiting on an error dialog. Frozen --self-check --verify-resources writes work/client-self-check.json without creating Qt windows or enabling native input. Run only in an already elevated, authorized test context; do not bypass UAC.
 
 Qt 6.11 on Windows consumes the operating system ICU ABI. A first freeze incorrectly found an unrelated PATH ICU78 build exporting suffixed symbols, causing QtCore import failure. The recipe now checks every retained ICU import against Windows System32 exports, omits collected foreign ICU DLLs and records that decision; it does not redistribute a system DLL. The corrected prior-stage diagnostic completed both mode preparations with exit code zero. Final Setup must pass its own check separately.
+
+
+## Post-AD7 production additions
+
+The next recipe assembles the original separate import helper as well as the recovery helper, each with its own asInvoker runtime directory and manifest/hash gate. The importer validates data-only ZIP bytes/CRC/SHA and metadata using its standard-library closure; it does not need the runtime image decoders. No helper runs inside the mapped main EXE.
+
+After validating original input hashes, `stage_editor_baseline` also copies the exact editor family to program-owned `_internal/qt-editor-base`. This independent default is updated/rolled back with exact program ownership, while prior outer/internal editor families remain untouched. Runtime selects a complete validated existing family or this default on its worker; a stray empty old directory cannot remove all maps. The original inventory, copied mapping/hashes and existing-resource preservation policy remain recorded.
+
+The full-client probe requires a marked owned build directory before making a test gallery. It checks image width/height and painted pixels, then sends Qt-local mouse events to draw two targets and a real planned route. The check never enables capture/global keys or installs the Setup. Its temporary gallery/config lives only in the tested build's own work directory and is created after the Setup has already been compiled.

@@ -114,7 +114,15 @@ class QtClient:
         self.chest_auto_tap = ChestAutoTapService(self.paths, self.coordinator, self.input, self.settings)
         self._recovery_process = None
         self._recovery_request = None
+        self._import_handoff = None
         if self.paths.production:
+            from client_import_handoff import ImportHandoff
+            self._import_handoff = ImportHandoff(self.sandbox)
+            self.resources.setImportLauncher(self._import_handoff.launch)
+            self.resources.importCloseRequested.connect(self.coordinator.requestClose)
+            receipt = self._import_handoff.read_receipt()
+            if receipt is not None:
+                self.resources.recordImportReceipt(receipt)
             self.resources.setRecoveryLauncher(self._launch_recovery)
             self.resources.recoveryCloseRequested.connect(self.coordinator.requestClose)
             self._read_recovery_receipt()
@@ -288,6 +296,8 @@ class QtClient:
             return
         self._closed = True
         self.chest_auto_tap.shutdown()
+        if self._import_handoff is not None and not self.coordinator.closeReady:
+            self._import_handoff.cancel()
         if self._recovery_request and not self.coordinator.closeReady:
             from star_map_recovery_helper import cancel_recovery_request
             cancel_recovery_request(self.sandbox, self._recovery_request)
@@ -336,6 +346,8 @@ def main():
         print(json.dumps(result))
         return 0 if result["ready"] and result["qml"] and not result["tkLoaded"] else 1
     app = QGuiApplication([])
+    from client_theme import apply_light_theme
+    apply_light_theme(app)
     app.setOrganizationName("XiaochaoAssistant" if PRODUCTION else "XingtuQtClientTest")
     app.setApplicationName("星图" if PRODUCTION else "XingtuQtClientTest")
     app.setFont(QFont("Microsoft YaHei UI", 10))

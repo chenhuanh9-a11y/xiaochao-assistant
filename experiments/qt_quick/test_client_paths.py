@@ -71,9 +71,9 @@ class RuntimePathTests(unittest.TestCase):
         self.assertEqual(paths.update_state_path, sandbox / "qt-update-state.json")
         self.assertEqual(paths.resource_root, sandbox / "_internal")
 
-    def test_existing_outer_editor_base_has_priority_even_if_invalid(self):
+    def test_editor_path_lookup_defers_validation_to_worker(self):
         module = self.load()
-        self.assertEqual(module.runtime_paths().editor_base_root, self.internal / "assets/custom-maps")
+        self.assertEqual(module.runtime_paths().editor_base_root, self.internal / "qt-editor-base")
         outer = self.root / "assets/custom-maps"
         outer.mkdir(parents=True)
         self.assertEqual(module.runtime_paths().editor_base_root, outer)

@@ -3,6 +3,7 @@ import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
 Window {
+    palette: ClientPalette {}
     id: overlay
     objectName: "overlayWindow"
     title: "星图 · 悬浮预览"

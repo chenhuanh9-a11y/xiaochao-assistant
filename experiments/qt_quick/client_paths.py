@@ -1,6 +1,7 @@
 """Installation paths: baked production identity or explicitly marked test data."""
 from dataclasses import dataclass
 import json
+import hashlib
 import stat
 from pathlib import Path
 import sys
@@ -102,11 +103,42 @@ class RuntimePaths:
         return self.settings_path.with_name("update-state.json") if self.production else self.installation_root / "qt-update-state.json"
 
     @property
+    def editor_base_candidates(self):
+        candidates = ([self.installation_root / "assets/custom-maps"] if self.production else [])
+        return candidates + [self.resource_root / "assets/custom-maps", self.resource_root / "qt-editor-base"]
+
+    @property
     def editor_base_root(self):
-        outer = self.installation_root / "assets/custom-maps"
-        if self.production and outer.exists():
-            return outer
-        return self.resource_root / "assets/custom-maps"
+        # Cheap path lookup used by general UI services. Full family validation
+        # and fallback selection belong to CustomGalleryService's worker.
+        return next((p for p in self.editor_base_candidates if p.exists()), self.resource_root / "qt-editor-base")
+
+
+def editor_library_usable(root):
+    """Select complete, verified editor families without modifying old installs."""
+    root = Path(root)
+    try:
+        _no_links(root)
+        manifest = root / "manifest.json"
+        _no_links(manifest)
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        rows = data["maps"]
+        if data.get("schema") != "xingtu-custom-maps-v1" or not isinstance(rows, list) or not rows:
+            return False
+        for row in rows:
+            if not row["mapId"] or not row["name"] or not row["floors"]:
+                return False
+            for floor in row["floors"].values():
+                for name in ("image", "topology"):
+                    asset = root / floor[name]
+                    _no_links(asset)
+                    if not asset.resolve().is_relative_to(root.resolve()):
+                        return False
+                    if hashlib.sha256(asset.read_bytes()).hexdigest() != floor[name + "Sha256"]:
+                        return False
+        return True
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
 
 
 def runtime_paths(root=None):

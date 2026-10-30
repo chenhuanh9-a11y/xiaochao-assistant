@@ -3,6 +3,7 @@ import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
 Window {
+    palette: ClientPalette {}
     id: reference
     objectName: "clientReferenceWindow"
     title: "星图 · " + (referenceData.title || "参考地图")

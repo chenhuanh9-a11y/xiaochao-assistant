@@ -11,7 +11,7 @@ import threading
 
 from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, QTimer, Qt, QUrl, Signal, Slot
 
-from client_paths import APP_ROOT, runtime_paths
+from client_paths import APP_ROOT, runtime_paths, editor_library_usable
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 from custom_maps import (COLORS, DEFAULT_COLOR, DEFAULT_GALLERY_FILE, FLOORS, FLOOR_LABELS,
@@ -62,6 +62,7 @@ class CustomGalleryService(QObject):
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(1)
         self._store = None
+        self._data_error = ""
         self._digest = None
         self._job = None
         self._closed = False
@@ -86,23 +87,28 @@ class CustomGalleryService(QObject):
         return dict(deepcopy(self._state), busy=self._busy, message=self._message,
                     pendingKind=self._pending["kind"] if self._pending else "",
                     color=self._color, colors=[dict(value=c, name=n) for c, n in COLORS],
-                    newStart=self._start, canUse=self._use_handler is not None, inUse=self._in_use)
+                    newStart=self._start, canUse=self._use_handler is not None and not self._data_error, inUse=self._in_use)
 
     snapshot = Property("QVariantMap", _snapshot, notify=changed)
     busy = Property(bool, lambda s: s._busy, notify=changed)
     message = Property(str, lambda s: s._message, notify=changed)
 
     def _load(self):
-        if self.path.exists():
-            if self.path.is_symlink() or self.path.stat().st_size > 4 * 1024 * 1024:
-                raise ValueError("图集文件不可读取，原文件已保留")
-            data = json.loads(self.path.read_text(encoding="utf-8-sig"))
-            if not isinstance(data, dict) or data.get("schema") != GALLERY_SCHEMA or not isinstance(data.get("galleries"), list):
-                raise ValueError("图集文件格式异常，已停止写入以保留原文件")
-        self._store = GalleryStore(self.path, self.default_path,
+        self._data_error = ""
+        try:
+            if self.path.exists():
+                if self.path.is_symlink() or self.path.stat().st_size > 4 * 1024 * 1024:
+                    raise ValueError("图库文件不可读取")
+                data = json.loads(self.path.read_text(encoding="utf-8-sig"))
+                if not isinstance(data, dict) or data.get("schema") != GALLERY_SCHEMA or not isinstance(data.get("galleries"), list):
+                    raise ValueError("图库文件格式不兼容")
+        except (OSError, ValueError) as error:
+            self._data_error = f"{error}；原文件已保留，当前仅浏览地图。请备份并检查 custom-galleries.json 后刷新。"
+        store_path = self.path / "read-only" if self._data_error else self.path
+        self._store = GalleryStore(store_path, self.default_path,
                                   legacy_path=self.sandbox / "qt-no-implicit-legacy-import.json")
         self.library = CustomMapLibrary(self._library_root)
-        self._digest = _file_digest(self.path)
+        self._digest = None if self._data_error else _file_digest(self.path)
         self._publish_committed()
 
     def _publish_committed(self):
@@ -115,6 +121,8 @@ class CustomGalleryService(QObject):
 
     def display_snapshot(self, gallery_id, map_id=None):
         """Pure worker-safe committed data; never exposes a mutating store/Qt property."""
+        if self._data_error:
+            return None
         with self._committed_lock:
             row = self._committed.get(str(gallery_id))
             if row is None:
@@ -128,6 +136,8 @@ class CustomGalleryService(QObject):
         return result
 
     def _write(self, operation):
+        if self._data_error:
+            raise ValueError(self._data_error)
         if self.path.is_symlink() or not self.path.resolve().is_relative_to(self.sandbox):
             raise ValueError("图集路径不可写，原文件已保留")
         temporary = self.path.with_suffix(".tmp")
@@ -165,9 +175,9 @@ class CustomGalleryService(QObject):
         if self._map not in [row["id"] for row in maps]:
             self._map = maps[0]["id"] if maps else ""
         state = dict(galleries=galleries, maps=maps, selectedGallery=self._gallery, selectedMap=self._map,
-            selectedFloor=self._floor, floors=[], points=[], lines=[], markers=[], readonly=store.readonly(self._gallery),
+            selectedFloor=self._floor, floors=[], points=[], lines=[], markers=[], readonly=bool(self._data_error) or store.readonly(self._gallery),
             imageUrl="", imageWidth=0, imageHeight=0, planError="", available=self.library.available,
-            libraryMessage=self.library.error, canUndo=bool(self._past), canRedo=bool(self._future))
+            libraryMessage=self.library.error, dataError=self._data_error, canUndo=bool(self._past), canRedo=bool(self._future))
         if not self._map:
             return state
         try:
@@ -215,7 +225,7 @@ class CustomGalleryService(QObject):
                 return
             if state is not None:
                 self._state = state
-            self._message = str(error) if error else message
+            self._message = str(error) if error else (self._data_error or message)
             self.changed.emit()
             if galleries_changed and not error:
                 self.galleriesChanged.emit()
@@ -227,7 +237,10 @@ class CustomGalleryService(QObject):
     def refresh(self):
         def reload():
             if not self._injected_library:
-                self.library = CustomMapLibrary(runtime_paths(self.sandbox).editor_base_root)
+                paths = runtime_paths(self.sandbox)
+                root = next((candidate for candidate in paths.editor_base_candidates
+                             if editor_library_usable(candidate)), paths.editor_base_root)
+                self.library = CustomMapLibrary(root)
                 self._library_root = self.library.root
             self._load()
         self._run(reload)
@@ -485,7 +498,7 @@ class CustomGalleryService(QObject):
 
     @Slot()
     def useGallery(self):
-        if self._busy or self._pending or self._use_handler is None:
+        if self._busy or self._pending or self._use_handler is None or self._data_error:
             return
         target = "" if self._in_use == self._gallery else self._gallery
         try:

@@ -405,7 +405,62 @@ class LiveRuntime:
             self._map_id = selected
             self._candidate_edit = False
             self._selection_pending = False
-        return self._solve_retained(action, payload, cancelled)
+            confirmation = (self._epoch, self._engine, self._mode, self._round,
+                            selected, self._floor, self._frame_generation)
+        with self._work:
+            try:
+                result = self._solve_retained(action, payload, cancelled)
+            except Exception as error:
+                # Legacy also records a valid human identity when pose work raises.
+                # Keep the dispatcher's existing pose error/revocation behavior,
+                # and retain independent learning diagnostics in its receipt.
+                learning = self._learn_confirmation(confirmation, cancelled)
+                self.invalidate("manual-action-error")
+                result = self._receipt(action, payload, success=False,
+                    reason=f"{type(error).__name__}:{error}", error=True)
+            else:
+                learning = self._learn_confirmation(confirmation, cancelled)
+            result["learning"] = learning
+            if learning["status"] == "error":
+                warning = ("标签已存，但记忆刷新失败" if learning["saved"]
+                           else "学习标签保存失败")
+                result["message"] = f"{result['message']}；{warning}：{learning['error']}"
+            return result
+
+    def _learn_confirmation(self, confirmation, cancelled):
+        from client_learning import persist_manual_confirmation
+        # No action payload can promote saved/replayed/fixture pixels to live
+        # evidence. Automatic gate.confirm calls never enter this method.
+        if self._evidence_kind != "live-client-capture":
+            return dict(status="skipped", reason="non-live-evidence", saved=False)
+        epoch, engine, mode, round_id, map_id, floor, generation = confirmation
+        with self._lock:
+            observation = self._last_observation
+            if (self._cancelled(cancelled) or epoch != self._epoch
+                    or engine is not self._engine or mode != self._mode or round_id != self._round
+                    or not self._active or not self._map_open or map_id != self._map_id
+                    or floor != self._floor or self._selection_pending
+                    or observation is None or observation["frame_id"] != self._frame_id
+                    or self._frame_generation != generation + 1):
+                return dict(status="skipped", reason="confirmation-context-obsolete", saved=False)
+            captured = observation["captured"]
+            if not self._capture_is_current(captured.context, observation["capture_generation"]):
+                return dict(status="skipped", reason="capture-context-changed", saved=False)
+            # This is the acceptance point for the human label: invalidation
+            # before this check rejects it; after acceptance the original write
+            # drains even if the round closes. Retain the immutable captured
+            # pixels/context, never read replacement state during disk IO.
+            frame = observation["frame"]
+            bounds = tuple(captured.context.client_screen_bounds)
+        # The existing worker/_work owns this one submission. Keep filesystem IO
+        # and engine cache reload outside the hot state lock so snapshot/close
+        # stay responsive. No later automatic result can retry this submission,
+        # including after a partial write/reload failure.
+        learning = persist_manual_confirmation(engine, map_id, floor, frame, bounds)
+        learning.update(mode=mode, roundId=round_id, mapId=map_id, floor=floor)
+        self._notify("memory-saved" if learning["status"] == "saved" else "memory-error",
+                     reason=learning.get("error", "human-confirmed"), learning=learning)
+        return learning
 
     def _set_floor(self, action, payload, cancelled):
         with self._lock:

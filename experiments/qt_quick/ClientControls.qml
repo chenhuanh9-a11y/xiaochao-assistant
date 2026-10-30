@@ -5,6 +5,7 @@ import QtQuick.Layouts
 
 Window {
     id: panel
+    palette: ClientPalette {}
     objectName: "clientControlsWindow"
     title: "星图 · 游戏控制"
     visible: false
@@ -185,15 +186,7 @@ Window {
         anchors.fill: parent; visible: panel.effectiveCollapsed
         radius: 32; color: orbDrag.pressed ? "#dce6fc" : "#eaf1ff"
         border.color: "#c0d0e9"; border.width: 1
-        Canvas {
-            width: 26; height: 22; x: 19; y: 12
-            onPaint: {
-                var context = getContext("2d"); context.clearRect(0, 0, width, height)
-                context.strokeStyle = "#2f66eb"; context.lineWidth = 1.6
-                context.strokeRect(2, 2, 22, 15); context.beginPath(); context.moveTo(9, 2); context.lineTo(9, 17); context.stroke()
-                context.beginPath(); context.moveTo(10, 19); context.lineTo(13, 22); context.lineTo(16, 19); context.stroke()
-            }
-        }
+        Image { width: 30; height: 30; x: 17; y: 8; source: "icons/panel.png"; sourceSize.width: 60; sourceSize.height: 60 }
         Label { anchors.horizontalCenter: parent.horizontalCenter; y: 40; text: "展开"; color: "#2f66eb"; font.family: "Microsoft YaHei UI"; font.pixelSize: 11 }
         PanelDrag { id: orbDrag; anchors.fill: parent; expandOnClick: true; cursorShape: Qt.PointingHandCursor }
     }

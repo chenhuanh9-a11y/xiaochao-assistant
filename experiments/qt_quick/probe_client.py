@@ -2,7 +2,9 @@
 from pathlib import Path
 import json
 import time
-from PySide6.QtCore import QObject, QTimer
+from PySide6.QtCore import QObject, QPointF, QTimer, Qt
+from PySide6.QtQuick import QQuickItem
+from PySide6.QtTest import QTest
 
 
 def run_client_probe(client, output):
@@ -15,6 +17,16 @@ def run_client_probe(client, output):
         state["assertions"][key] = bool(value)
     def capture(name):
         window.grabWindow().save(str(output / name))
+    def click_map_point(point):
+        image = window.findChild(QQuickItem, "customMapImage")
+        surface = window.findChild(QQuickItem, "customMapDrawingSurface")
+        asset = client.custom_galleries.library.floor("nightmare-09", "1")
+        u, v, z = asset.to_image @ [point["x"], point["y"], 1]
+        scale = image.property("paintedWidth") / asset.image_size[0]
+        position = surface.mapToScene(QPointF(
+            (surface.width()-image.property("paintedWidth"))/2 + u/z*scale,
+            (surface.height()-image.property("paintedHeight"))/2 + v/z*scale))
+        QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, position.toPoint())
     def advance():
         step = state["step"]
         try:
@@ -94,6 +106,71 @@ def run_client_probe(client, output):
                 if client.settings.busy:
                     return
                 capture("settings-960.png")
+                window.setProperty("page", "custom")
+            elif step == 8:
+                image = window.findChild(QObject, "customMapImage")
+                if (client.custom_galleries.busy or image is None
+                        or image.property("paintedWidth") <= 0) and time.monotonic()-started < 35:
+                    return
+                check("editor_maps_loaded", bool(client.custom_galleries.snapshot.get("maps")))
+                check("editor_viewport_has_width", image is not None and image.property("width") > 100
+                      and image.property("height") > 100)
+                check("editor_map_pixels_visible", image is not None and image.property("paintedWidth") > 0
+                      and image.property("paintedHeight") > 0)
+                capture("editor-960.png")
+                marker = client.paths.work_root / ".qt-client-probe-owner"
+                isolated = client.sandbox / ".qt-lab-owner"
+                owned = (isolated.is_file() and isolated.read_text(encoding="utf-8").strip() == "qt-quick-isolated-v1"
+                         or marker.is_file() and marker.read_text(encoding="utf-8").strip() == "qt-quick-build-probe-v1")
+                if not owned:
+                    raise RuntimeError("Route-writing probe requires an owned build/test directory")
+                client.custom_galleries.selectMap("nightmare-09")
+            elif step == 9:
+                if client.custom_galleries.busy:
+                    return
+                client.custom_galleries.selectFloor("1")
+            elif step == 10:
+                if client.custom_galleries.busy:
+                    return
+                client.custom_galleries.createGallery("窗口绘线检查 " + str(time.monotonic_ns())[-6:])
+            elif step == 11:
+                image = window.findChild(QQuickItem, "customMapImage")
+                if client.custom_galleries.busy or image.property("paintedWidth") <= 0:
+                    return
+                graph = client.custom_galleries.library.graph("nightmare-09")
+                asset = client.custom_galleries.library.floor("nightmare-09", "1")
+                picked = []
+                for xy in graph.floors["1"].points:
+                    point = graph.pick("1", *xy)
+                    if not point or (picked and abs(point["x"]-picked[0]["x"]) + abs(point["y"]-picked[0]["y"]) < 400):
+                        continue
+                    u, v, z = asset.to_image @ [point["x"], point["y"], 1]
+                    if not (10 < u/z < asset.image_size[0]-10 and 10 < v/z < asset.image_size[1]-10):
+                        continue
+                    if picked:
+                        try:
+                            if not graph.plan([picked[0], point]):
+                                continue
+                        except ValueError:
+                            continue
+                    picked.append(point)
+                    if len(picked) == 2:
+                        break
+                if len(picked) != 2:
+                    raise RuntimeError("No connected representative editor points")
+                state["drawing_points"] = picked
+                click_map_point(picked[0])
+            elif step == 12:
+                if client.custom_galleries.busy:
+                    return
+                check("editor_mouse_first_point", len(client.custom_galleries.snapshot["points"]) == 1)
+                click_map_point(state["drawing_points"][1])
+            elif step == 13:
+                if client.custom_galleries.busy:
+                    return
+                check("editor_mouse_second_point", len(client.custom_galleries.snapshot["points"]) == 2)
+                check("editor_route_drawn", bool(client.custom_galleries.snapshot["lines"]))
+                capture("editor-route-960.png")
                 check("native_input_still_disabled", not client.input.enabled and not client.capture.snapshot["enabled"])
                 check("no_qml_warnings", not client.warnings)
                 state["qml_warnings"] = client.warnings

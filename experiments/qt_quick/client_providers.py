@@ -232,8 +232,9 @@ class EngineFactories(dict):
         if not exit_icon.is_file():
             raise ProviderUnavailable(f"missing-resource:{exit_icon.relative_to(root)}")
         # Production ranking may read the original exemplar/history store.
-        # Constructor performs no IO; Qt ranking still submits no learning or
-        # human-label writes. Source/test diagnostics retain isolated memory.
+        # Constructor performs no IO; ranking submits no human-label writes.
+        # Explicit live manual confirmation reuses this store on its worker.
+        # Source/test diagnostics retain isolated memory.
         memory_root = runtime_paths().memory_root(mode) if PRODUCTION else root / ".qt-saved-frame-memory" / mode
         memory = NightmareMemoryStore(pack, memory_root,
                                       portable_seed_path=root / ".qt-no-portable-seeds.json")
