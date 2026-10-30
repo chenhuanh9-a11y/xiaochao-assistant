@@ -292,6 +292,9 @@ class LiveRuntime:
         self._mode, self._profile, self._map_id, self._floor = "nightmare", "shared-structure", "", ""
         self._frame_id = ""
         self._active, self._map_open = False, False
+        self._round_preparing = False
+        self._prepared_round_ready = False
+        self._last_map_input_sequence = 0
         self._capture_pending = False
         self._probe_misses = 0
         self._aligned_visible = True
@@ -1209,7 +1212,7 @@ class LiveRuntime:
                 commands.append("bind_capture")
                 if ready and guarded:
                     commands += ["start_round", "toggle_round"]
-                if ready and guarded and self._active:
+                if ready and guarded:
                     commands += ["capture_now", "map"]
                     if self._map_open:
                         commands.append("refresh_map")
@@ -1227,7 +1230,7 @@ class LiveRuntime:
                 liveUnavailableReason=("capture-context-recheck-unavailable" if not guarded else
                                        "capture-provider-unavailable" if self._capture is None else
                                        capabilities[self._mode]["reason"] if not ready else ""),
-                roundActive=self._active, roundPreparing=False, mapOpen=self._map_open,
+                roundActive=self._active, roundPreparing=self._round_preparing, mapOpen=self._map_open,
                 captureInProgress=self._capture_pending,
                 alignedVisible=self._aligned_visible,
                 candidateRows=copy.deepcopy(self._candidate_rows), selectedCandidateIndex=selected,
@@ -1264,7 +1267,8 @@ class LiveRuntime:
             if reason in ("map-closed", "escape", "foreground-lost", "capture-context-changed", "floor-unknown"):
                 self._map_open = False
             if "resource" in str(reason):
-                self._active = self._map_open = False
+                self._active = self._map_open = self._round_preparing = False
+                self._prepared_round_ready = False
                 self._core.reset_round(reason=str(reason))
                 self._group = self._engine = None
                 self._clear_candidates()
@@ -1573,10 +1577,21 @@ class LiveRuntime:
                 self._aligned_visible = not self._aligned_visible
             self._notify("aligned-visibility-changed", reason="visibility-toggled")
             return self._receipt(action, payload, success=True, reason="visibility-toggled")
+        capture_request_epoch = self._epoch
         if action == "map":
             from session_state_machine import map_hotkey_transition
             with self._lock:
-                transition = map_hotkey_transition(self._map_open, self._capture_pending)
+                sequence = payload.get("inputSequence")
+                if sequence is not None:
+                    if type(sequence) is not int or sequence <= self._last_map_input_sequence:
+                        return self._receipt(action, payload, success=False, reason="map-input-sequence-expired", stale=True)
+                    self._last_map_input_sequence = sequence
+                if "openIntent" in payload:
+                    if type(payload["openIntent"]) is not bool:
+                        return self._receipt(action, payload, success=False, reason="map-input-intent-invalid")
+                    transition = "open" if payload["openIntent"] else "close"
+                else:
+                    transition = map_hotkey_transition(self._map_open, self._capture_pending)
             if transition == "close":
                 self.invalidate("map-closed")
                 return self._receipt(action, payload, success=True, reason="map-closed")
@@ -1586,7 +1601,8 @@ class LiveRuntime:
             self.invalidate("map-closed" if action == "close_map" else action)
             with self._lock:
                 if action != "close_map":
-                    self._active = self._map_open = False
+                    self._active = self._map_open = self._round_preparing = False
+                    self._prepared_round_ready = False
                     self._core.reset_round(reason=action)
                     self._group = self._engine = None
                     self._clear_candidates()
@@ -1611,7 +1627,8 @@ class LiveRuntime:
                     self._display_generation = getattr(self, "_display_generation", 0) + 1
                     self._discard_sibling()
                 if changed_mode:
-                    self._active = self._map_open = False
+                    self._active = self._map_open = self._round_preparing = False
+                    self._prepared_round_ready = False
                     self._core.reset_round(reason="mode-changed")
                     self._group = self._engine = None
                     self._clear_candidates()
@@ -1638,17 +1655,28 @@ class LiveRuntime:
                 if action == "bind_capture":
                     if self._capture is None:
                         raise RuntimeError("capture-provider-unavailable")
+                    preparing = self._round_preparing and not self._active
                     self.dispatch("end_round", payload)
                     bind_full = getattr(self._capture, "bindFullClient", None)
                     if not callable(bind_full):
                         raise RuntimeError("full-client-capture-binding-unavailable")
                     bind_full(int(payload["hwnd"]))
+                    if preparing:
+                        prepared = self._start(payload, cancelled)
+                        if not prepared["success"]:
+                            return prepared
                     return self._receipt(action, payload, success=True, reason="capture-bound-disabled")
                 if action == "toggle_round":
-                    return self.dispatch("end_round" if self._active else "start_round", payload, cancelled)
+                    return self.dispatch("end_round" if self._active or self._round_preparing else "start_round", payload, cancelled)
                 if action == "start_round":
                     return self._start(payload, cancelled)
                 if action in ("capture_now", "map"):
+                    if capture_request_epoch != self._epoch or self._cancelled(cancelled):
+                        return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+                    activated = self._ensure_round_active(payload, cancelled)
+                    if not activated["success"]:
+                        return self._receipt(action, payload, success=False, reason=activated["reason"],
+                            stale=bool(activated.get("stale")))
                     with self._lock:
                         self._capture_pending = True
                     try:
@@ -1669,22 +1697,33 @@ class LiveRuntime:
             raise RuntimeError("capture-context-recheck-unavailable")
         with self._lock:
             epoch, mode = self._epoch, self._mode
-            if self._active:
-                return self._receipt("start_round", payload, success=True, reason="round-already-active")
+            if self._active or (self._round_preparing and self._prepared_round_ready):
+                return self._receipt("start_round", payload, success=True,
+                    reason="round-already-active" if self._active else "round-already-prepared")
             preselected = self._gate.selected_id if self._candidate_edit and self._gate is not None else None
-        engine = self._factories[mode]()
+            self._round_preparing = True
+            self._prepared_round_ready = False
+        try:
+            engine = self._factories[mode]()
+        except Exception:
+            with self._lock:
+                if epoch == self._epoch:
+                    self._round_preparing = False
+            raise
         if self._cancelled(cancelled):
+            with self._lock:
+                if epoch == self._epoch:
+                    self._round_preparing = False
             return self._receipt("start_round", payload, success=False, reason="cancelled", cancelled=True)
         with self._lock:
             if epoch != self._epoch or mode != self._mode:
                 return self._receipt("start_round", payload, success=False, reason="stale-context", stale=True)
-            if not self._capture.enable():
-                raise RuntimeError("capture-enable-rejected")
-            self._core.reset_round(reason="round-started")
+            self._core.reset_round(reason="round-prepared")
             self._round += 1
             self._cycle = self._frame_generation = 0
             self._probe_misses = 0
-            self._active, self._map_open = True, False
+            self._active, self._map_open = False, False
+            self._round_preparing = self._prepared_round_ready = True
             self._map_id = self._floor = self._frame_id = ""
             self._group = self._render = None
             self._engine = engine
@@ -1696,7 +1735,28 @@ class LiveRuntime:
             if preselected and preselected in engine.pack.by_id:
                 self._gate.select(preselected)
                 self._candidate_edit = self._selection_pending = True
-        return self._receipt("start_round", payload, success=True, reason="round-started")
+        return self._receipt("start_round", payload, success=True, reason="round-prepared")
+
+    def _ensure_round_active(self, payload, cancelled):
+        with self._lock:
+            if self._active:
+                return dict(success=True, reason="round-already-active")
+        prepared = self._start(payload, cancelled)
+        if not prepared["success"]:
+            return prepared
+        with self._lock:
+            epoch, engine = self._epoch, self._engine
+        if self._cancelled(cancelled):
+            return dict(success=False, reason="cancelled-or-stale", stale=True)
+        if not self._capture.enable():
+            return dict(success=False, reason="capture-enable-rejected")
+        with self._lock:
+            if (self._cancelled(cancelled) or epoch != self._epoch or engine is not self._engine
+                    or not self._round_preparing or not self._prepared_round_ready):
+                self._capture.disable()
+                return dict(success=False, reason="cancelled-or-stale", stale=True)
+            self._active, self._round_preparing = True, False
+        return dict(success=True, reason="round-active")
 
     def _refresh_map(self, payload, cancelled):
         # Passive timer requests never build an unbounded worker backlog.

@@ -178,7 +178,7 @@ class LiveRuntimeContracts(unittest.TestCase):
             self.assertFalse(self.runtime.dispatch("remember_render_material", {"renderToken": token})["success"])
 
     def test_game_mode_locked_during_round_and_unlocked_after_end(self):
-        self.assertTrue(self.dispatch("start_round")["success"])
+        self.begin_and_capture()
         for action in ("set_game_mode", "set_context"):
             result = self.dispatch(action, mode="difficult")
             self.assertFalse(result["success"])
@@ -527,8 +527,10 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertEqual(self.capture.enable_count, 0)
         self.assertEqual(self.capture.count, 0)
         self.assertTrue(self.dispatch("start_round")["success"])
-        self.assertEqual(self.capture.enable_count, 1)
+        self.assertEqual(self.capture.enable_count, 0)
         self.assertEqual(self.capture.count, 0)
+        self.assertTrue(self.runtime.snapshot()["roundPreparing"])
+        self.assertFalse(self.runtime.snapshot()["roundActive"])
         code = ("import sys; from client_live_runtime import LiveRuntime; "
                 "a=LiveRuntime(engine_factories={}); "
                 "assert not ({'tkinter','identityv_daily_assistant','identityv_live_mvp','client_capture'} & set(sys.modules)); "
@@ -670,6 +672,82 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertFalse(result["success"])
         self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
         self.assertIsNone(self.runtime.render_payload(first["renderToken"]))
+
+    def test_inactive_ordered_g_is_one_atomic_prepare_capture_and_close_preserves_round_reference(self):
+        self.assertIn("map",self.runtime.snapshot()["availableCommands"])
+        first=self.dispatch("map",inputSequence=1,openIntent=True,inputCreatedAt=1.)
+        self.assertTrue(first["success"],first)
+        state=self.runtime.snapshot();self.assertTrue(state["roundActive"])
+        self.assertFalse(state["roundPreparing"])
+        round_id=state["roundId"];sheet=self.runtime.reference_payload()
+        self.assertTrue(self.dispatch("map",inputSequence=2,openIntent=False)["success"])
+        state=self.runtime.snapshot()
+        self.assertFalse(state["mapOpen"]);self.assertTrue(state["roundActive"])
+        self.assertEqual(state["roundId"],round_id)
+        self.assertEqual(self.runtime.reference_payload()["token"],sheet["token"])
+        self.assertTrue(self.dispatch("map",inputSequence=3,openIntent=True)["success"])
+        self.assertEqual(self.runtime.snapshot()["roundId"],round_id)
+        self.assertEqual(self.engine.rank_count,1)
+        self.dispatch("end_round")
+        self.assertTrue(self.dispatch("map",inputSequence=4,openIntent=True)["success"])
+        self.assertGreater(self.runtime.snapshot()["roundId"],round_id)
+        self.assertEqual(self.engine.rank_count,2)
+
+    def test_prepare_without_binding_never_enables_capture_and_toggle_can_cancel_then_g_restarts(self):
+        self.capture.enable=Mock(return_value=False)
+        prepared=self.dispatch("start_round")
+        self.assertTrue(prepared["success"]);self.capture.enable.assert_not_called()
+        self.assertTrue(self.runtime.snapshot()["roundPreparing"])
+        self.assertFalse(self.runtime.snapshot()["roundActive"])
+        failed=self.dispatch("map",inputSequence=1,openIntent=True)
+        self.assertEqual(failed["reason"],"capture-enable-rejected")
+        self.assertFalse(self.runtime.snapshot()["roundActive"])
+        self.assertTrue(self.runtime.snapshot()["roundPreparing"])
+        self.assertEqual(self.capture.count,0)
+        self.assertTrue(self.dispatch("toggle_round")["success"])
+        self.assertFalse(self.runtime.snapshot()["roundPreparing"])
+        self.capture.enable=lambda:setattr(self.capture,"enabled",True) or True
+        self.assertTrue(self.dispatch("map",inputSequence=2,openIntent=True)["success"])
+        self.assertTrue(self.runtime.snapshot()["roundActive"])
+
+    def test_explicit_open_intent_is_not_toggled_by_runtime_and_old_sequence_is_rejected(self):
+        self.assertTrue(self.dispatch("map",inputSequence=1,openIntent=True)["success"])
+        before=self.capture.count
+        self.assertTrue(self.dispatch("map",inputSequence=2,openIntent=True)["success"])
+        self.assertTrue(self.runtime.snapshot()["mapOpen"])
+        self.assertGreater(self.capture.count,before)
+        self.assertEqual(self.dispatch("map",inputSequence=1,openIntent=False)["reason"],"map-input-sequence-expired")
+        self.assertTrue(self.runtime.snapshot()["mapOpen"])
+
+    def test_queued_g_before_end_cannot_restart_a_new_round_after_work_lock_releases(self):
+        entered=threading.Event();output=[]
+        with self.runtime._work:
+            worker=threading.Thread(target=lambda:(entered.set(),output.append(self.dispatch("map",inputSequence=1,openIntent=True))))
+            worker.start();self.assertTrue(entered.wait(2))
+            # The pre-worker input sequence proves the queued request was accepted.
+            for _ in range(10000):
+                if self.runtime._last_map_input_sequence==1:break
+                threading.Event().wait(.0001)
+            self.assertEqual(self.runtime._last_map_input_sequence,1)
+            self.dispatch("end_round")
+        worker.join(2)
+        self.assertFalse(worker.is_alive());self.assertTrue(output[0]["stale"])
+        self.assertFalse(self.runtime.snapshot()["roundActive"])
+        self.assertEqual(self.capture.count,0)
+
+    def test_close_during_resource_preparation_does_not_leave_a_false_ready_round(self):
+        entered,release=threading.Event(),threading.Event();output=[]
+        def factory():entered.set();release.wait(2);return self.engine
+        self.runtime._factories["nightmare"]=factory
+        worker=threading.Thread(target=lambda:output.append(self.dispatch("start_round")))
+        worker.start();self.assertTrue(entered.wait(2))
+        self.assertTrue(self.runtime.snapshot()["roundPreparing"])
+        self.dispatch("close_map");release.set();worker.join(2)
+        self.assertFalse(worker.is_alive());self.assertTrue(output[0]["stale"])
+        self.runtime._factories["nightmare"]=lambda:self.engine
+        self.assertTrue(self.dispatch("map",inputSequence=1,openIntent=True)["success"])
+        self.assertTrue(self.runtime.snapshot()["roundActive"])
+        self.assertIs(self.runtime._engine,self.engine)
 
     def test_map_open_preparation_retries_fade_then_uses_settled_frame(self):
         self.dispatch("start_round")
