@@ -21,12 +21,14 @@ MAX_TOTAL_BYTES = 1536 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024
 MANIFEST = "map-package.json"
 AUTHOR_PACKAGES = {
+    "difficult-aichicu": "aichicu-difficult",
     "nightmare-wang-qingxin": "wang-qingxin",
     "nightmare-nightingale": "nightingale",
     "nightmare-lianghapi": "lianghapi-single",
 }
 AUTHOR_SIDECARS = {"catalog.json", "display-bindings.json"}
 LIVE_AUTHOR_IMAGE_ROOTS = {
+    "difficult-aichicu": ("_internal/assets/authors/aichicu-difficult/",),
     "nightmare-suju": ("_internal/assets/suju/",),
     "difficult-zhan10": ("_internal/assets/zhan10-native/", "_internal/assets/zhan10-legacy-clean/"),
     "nightmare-wang-qingxin": ("_internal/assets/authors/wang-qingxin/",),
@@ -43,6 +45,19 @@ BASE_DEPENDENCIES = {
     "_internal/references/nightmare-shared-structure-index.json",
     "_internal/references/nightmare-structure-version-bindings.json",
 }
+DIFFICULT_AUTHOR_DEPENDENCIES = {
+    "_internal/references/difficult-shared-structure-index.json",
+    "_internal/references/difficult-native-coordinate-pack.json",
+    "_internal/references/difficult-native-source-manifest.json",
+    "_internal/references/difficult-native-version-bindings.json",
+}
+
+
+def author_profiles_for_mode(mode):
+    return tuple(profile for package, profile in AUTHOR_PACKAGES.items()
+                 if package.startswith(str(mode) + "-"))
+
+
 # Exact canonical r6 runtime closure: 58 native floors and two legacy-clean floors.
 # Keep the older difficult package rules below for existing package compatibility.
 DIFFICULT_R6_PATHS = frozenset({
@@ -383,7 +398,8 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None) -
         raise ImportRejected("unsupported-client-compatibility")
     rows = _rows(metadata.get("files"))
     dependencies = _rows(metadata.get("requiresFiles"), dependencies=True)
-    if not BASE_DEPENDENCIES <= {r["path"] for r in dependencies.values()}:
+    required = DIFFICULT_AUTHOR_DEPENDENCIES if package_id == "difficult-aichicu" else BASE_DEPENDENCIES
+    if not required <= {r["path"] for r in dependencies.values()}:
         raise ImportRejected("base-dependencies-not-declared")
     version_path = _target(root, "_internal/version.json")
     if not version_path.is_file() or version_path.stat().st_size > 1024 * 1024:

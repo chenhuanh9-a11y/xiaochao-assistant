@@ -220,6 +220,7 @@ SHARED_STRUCTURE_PROFILE_ID = "shared-structure"
 SUJU_ROUTE_PROFILE_ID = "suju"
 PROCESSED_AUTHOR_PROFILE_IDS = {"zhan10-speed", "zhan10-coffin"}
 ROUTE_PROFILE_OPTIONS = (
+    ('aichicu-difficult', '爱吃醋 · 困难'),
     (SUJU_ROUTE_PROFILE_ID, "滋酥居"),
     (DEFAULT_ROUTE_PROFILE_ID, "王清心（默认）"),
     ('nightingale', '爱吃醋'),
@@ -5638,7 +5639,15 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 if not map_id:
                     return display_profile
                 binding = optional.binding(display_profile,map_id,floor)
-                return display_profile if binding is not None and binding['usable'] else SHARED_STRUCTURE_PROFILE_ID
+                if binding is not None and binding['usable']:
+                    return display_profile
+                return self._legacy_difficult_display_profile(map_id, floor) or SHARED_STRUCTURE_PROFILE_ID
+            if (optional is not None and display_profile != SUJU_ROUTE_PROFILE_ID
+                    and not (getattr(self, 'difficult_native_context', None) is not None
+                             and display_profile == 'zhan10-speed')):
+                # Match the selected-author intent contract: leftover files in
+                # the base catalog cannot register an optional author.
+                return SHARED_STRUCTURE_PROFILE_ID
             if optional is not None and profile is not None:
                 path = catalog.route_path(display_profile,map_id,str(floor),include_inactive=True) if map_id else None
                 available = Path(path).is_file() if path is not None else (not map_id and any(
@@ -6081,11 +6090,13 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             shared_version_context = self._load_shared_version_context(nightmare_root, pack, resources,
                 adapters, catalog, getattr(getattr(base, 'side_entry_identity', None), 'entries', []))
         optional_author_displays = None
-        if mode == 'nightmare' and shared_resources is not None:
+        if shared_resources is not None and (mode == 'nightmare' or native_context is not None):
             from optional_author_displays import OptionalAuthorDisplays
-            optional_author_displays = OptionalAuthorDisplays(nightmare_root,pack,catalog,adapters,shared_version_context)
+            optional_root = native_context.root if native_context is not None else nightmare_root
+            optional_author_displays = OptionalAuthorDisplays(optional_root,pack,catalog,adapters,shared_version_context,mode=mode)
             catalog,adapters = optional_author_displays.catalog,optional_author_displays.adapters
-            base._structure_profile_provider = lambda: SHARED_STRUCTURE_PROFILE_ID
+            if mode == 'nightmare' or native_identity:
+                base._structure_profile_provider = lambda: SHARED_STRUCTURE_PROFILE_ID
         if before_publish is not None:
             before_publish()
         self._invalidate_native_resource_context('resource-context-published')
@@ -6151,7 +6162,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
     def _restore_route_profile_preference(self):
         selected = normalize_route_profile_id(self.settings.get('routeProfileId', DEFAULT_ROUTE_PROFILE_ID))
         if self.game_mode == 'difficult':
-            selected = 'zhan10-speed'
+            optional = getattr(self, 'optional_author_displays', None)
+            if optional is None or selected not in optional.profiles:
+                selected = 'zhan10-speed'
         elif not gallery_of(selected):
             catalog = getattr(self, 'author_route_catalog', None)
             available = {profile.id for profile in catalog.settings_choices()} if catalog is not None else set()
@@ -6168,8 +6181,10 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         if self._shared_structure_mode_enabled():
             optional = getattr(self,'optional_author_displays',None)
             if optional is not None:
-                installed = [profile for profile in (SUJU_ROUTE_PROFILE_ID,DEFAULT_ROUTE_PROFILE_ID,'nightingale','lianghapi-single')
-                    if profile in optional.profiles or (profile == SUJU_ROUTE_PROFILE_ID
+                builtin = 'zhan10-speed' if getattr(self,'difficult_native_context',None) is not None else SUJU_ROUTE_PROFILE_ID
+                candidates = (builtin, *sorted(optional.profiles))
+                installed = [profile for profile in candidates
+                    if profile in optional.profiles or (profile == builtin
                         and getattr(self,'author_route_catalog',None) is not None
                         and profile in self.author_route_catalog.profiles
                         and any(Path(path).is_file() for variants in self.author_route_catalog.profiles[profile].maps.values()
@@ -6178,7 +6193,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             profile = self._shared_display_profile_id() if getattr(self, 'author_route_catalog', None) is not None else SHARED_STRUCTURE_PROFILE_ID
             return ((profile, ROUTE_PROFILE_LABELS[profile]),)
         return tuple((key,label) for key,label in ROUTE_PROFILE_OPTIONS
-            if key not in {SUJU_ROUTE_PROFILE_ID,'nightingale'} and (getattr(self,'game_mode','nightmare')!='difficult' or key=='zhan10-speed'))
+            if key not in {SUJU_ROUTE_PROFILE_ID,'nightingale','aichicu-difficult'} and (getattr(self,'game_mode','nightmare')!='difficult' or key=='zhan10-speed'))
 
     def _sync_active_mode_ui(self) -> None:
         """Describe the loaded mode, never a combobox choice still being applied."""
@@ -31556,11 +31571,30 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                    for entry in getattr(resources, 'entries', {}).values())
 
     def _shared_display_profile_id(self):
-        if getattr(self, 'difficult_native_context', None) is not None:
-            return 'zhan10-speed'
         preferred = getattr(self,'preferred_route_profile_id',None)
         optional = getattr(self,'optional_author_displays',None)
-        return preferred if optional is not None and preferred in optional.profiles else SUJU_ROUTE_PROFILE_ID
+        if optional is not None and preferred in optional.profiles:
+            return preferred
+        if optional is not None and getattr(self, 'difficult_native_context', None) is None:
+            # Availability is resolved per map/floor, separately from intent.
+            # Importing an unrelated author must not replace a saved selection.
+            return preferred or DEFAULT_ROUTE_PROFILE_ID
+        return 'zhan10-speed' if getattr(self, 'difficult_native_context', None) is not None else SUJU_ROUTE_PROFILE_ID
+
+    def _legacy_difficult_display_profile(self, map_id, floor):
+        """Keep the registered legacy display on floors without optional author art."""
+        native = getattr(self, 'difficult_native_context', None)
+        key = ('zhan10-speed', str(map_id), 'variant-01', str(floor))
+        if native is None or key not in getattr(native, 'legacy_bindings', {}):
+            return None
+        catalog = getattr(self, 'author_route_catalog', None)
+        adapters = getattr(self, 'author_coordinate_adapters', None)
+        if catalog is None or adapters is None:
+            return None
+        path = catalog.route_path('zhan10-speed', str(map_id), str(floor), include_inactive=True)
+        source = adapters.matrix_profile_to_canonical(SHARED_STRUCTURE_PROFILE_ID, str(map_id), str(floor))
+        display = adapters.matrix_profile_to_canonical('zhan10-speed', str(map_id), str(floor))
+        return 'zhan10-speed' if path is not None and source is not None and display is not None else None
 
     def _alignment_entry_locator(self):
         # Legacy entry verdicts stay inside the identity engine. The native
@@ -31758,7 +31792,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                     return SHARED_STRUCTURE_PROFILE_ID, key[1], key[2]
             for key, image in getattr(self, 'aligned_author_route_cache', {}).items():
                 if (key[0] == self._shared_display_profile_id()
-                        or key[0] in getattr(getattr(self,'optional_author_displays',None),'profiles',set())) and image is route:
+                        or key[0] in getattr(getattr(self,'optional_author_displays',None),'profiles',set())
+                        or (key[0] == self._legacy_difficult_display_profile(key[1], key[2])
+                            and key[0] == self._effective_route_profile(key[1], key[2]))) and image is route:
                     return key[0], str(key[1]), str(key[2])
         return None
 

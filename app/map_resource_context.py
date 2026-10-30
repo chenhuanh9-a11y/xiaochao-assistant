@@ -15,7 +15,7 @@ from typing import Mapping
 
 from author_route_catalog import AuthorRouteCatalog, AuthorRouteProfile, AuthorRouteVariant
 from map_resource_model import MapResourceModel, ResourceMap
-from star_map_import import AUTHOR_PACKAGES
+from star_map_import import AUTHOR_PACKAGES, author_profiles_for_mode
 
 
 @dataclass(frozen=True)
@@ -279,8 +279,8 @@ def load_browse_context(resource_root: Path, mode: str, *, cancelled=lambda: Fal
         # Optional catalogs declare preview paths, not permission to render them
         # in the running game. Keep partial catalogs visible against all pack maps.
         profile_errors = {}
-        if mode == "nightmare":
-            for package, profile in AUTHOR_PACKAGES.items():
+        if mode in {"nightmare", "difficult"}:
+            for profile in author_profiles_for_mode(mode):
                 check()
                 sidecar = local(f"references/author-packs/{profile}/catalog.json")
                 if not sidecar.is_file():
