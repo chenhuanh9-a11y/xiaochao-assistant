@@ -22,7 +22,7 @@ PACKAGE = 'difficult-aichicu'
 def runtime_methods():
     path = Path(__file__).resolve().parents[1] / 'app/identityv_daily_assistant.py'
     names = {'_shared_display_profile_id', '_effective_route_profile',
-             '_author_route_options', '_restore_route_profile_preference'}
+             '_author_route_options', '_restore_route_profile_preference', '_legacy_difficult_display_profile'}
     tree = ast.parse(path.read_text('utf-8-sig'))
     methods = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name in names]
     ns = dict(Path=Path, SHARED_STRUCTURE_PROFILE_ID='shared-structure',
@@ -96,6 +96,7 @@ class DifficultAuthorTests(unittest.TestCase):
             preferred_route_profile_id=PROFILE,pack=SimpleNamespace(),_shared_structure_mode_enabled=lambda:True,
             _custom_route_active=lambda *a:False,_custom_gallery_selected=lambda:False)
         s._shared_display_profile_id=lambda:ns['_shared_display_profile_id'](s)
+        s._legacy_difficult_display_profile=lambda m,f:ns['_legacy_difficult_display_profile'](s,m,f)
         self.assertEqual(s._shared_display_profile_id(),PROFILE)
         self.assertEqual(ns['_effective_route_profile'](s,'m1','1'),PROFILE)
         self.assertEqual(ns['_effective_route_profile'](s,'m1','2'),'shared-structure')
