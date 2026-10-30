@@ -2853,24 +2853,9 @@ def reusable_manual_confirmation(
     return remembered_map_id
 
 
-def should_auto_lock_candidate(
-    top: dict | None,
-    floor_required: bool,
-    existing_confirmation: str | None,
-) -> bool:
-    """Only an explicit multi-evidence identity gate may replace the first click.
-
-    An automatic lock is round state, not a training label. If the player
-    corrects it, the explicit confirmation becomes the remembered truth.
-    """
-    return bool(
-        isinstance(top, dict)
-        and top.get("mapId")
-        and top.get("strongSuggestion")
-        and top.get("identityHardGatePassed")
-        and not floor_required
-        and not existing_confirmation
-    )
+def should_auto_lock_candidate(top, floor_required, existing_confirmation):
+    from native_similarity_groups import should_auto_lock_candidate as shared_auto_lock_candidate
+    return shared_auto_lock_candidate(top, floor_required, existing_confirmation)
 
 
 def scaled_sheet_max_size(scale: float) -> tuple[int, int]:

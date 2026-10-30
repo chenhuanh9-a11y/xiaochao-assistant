@@ -793,3 +793,23 @@ def native_similarity_strong_conflict(self, event):
         self._log('similar-group-final-lock-reopened', mapId=source, floor=self.current_floor,
                   reason='repeated-current-structure-contradictions', fullMapIdentitySearch=False)
         return True
+
+
+def should_auto_lock_candidate(
+    top: dict | None,
+    floor_required: bool,
+    existing_confirmation: str | None,
+) -> bool:
+    """Only an explicit multi-evidence identity gate may replace the first click.
+
+    An automatic lock is round state, not a training label. If the player
+    corrects it, the explicit confirmation becomes the remembered truth.
+    """
+    return bool(
+        isinstance(top, dict)
+        and top.get("mapId")
+        and top.get("strongSuggestion")
+        and top.get("identityHardGatePassed")
+        and not floor_required
+        and not existing_confirmation
+    )

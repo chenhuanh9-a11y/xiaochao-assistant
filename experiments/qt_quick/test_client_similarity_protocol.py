@@ -71,6 +71,54 @@ class SimilarityProtocolTests(unittest.TestCase):
         self.assertTrue(self.dispatch("capture_now")["success"])
         self.assertEqual(self.runtime.snapshot()["mapId"], IDS[0])
 
+    def test_both_modes_hard_unique_empty_conditions_use_original_strong_top_fallback(self):
+        from client_live_runtime import LiveRuntime
+        for mode in ("nightmare","difficult"):
+            with self.subTest(mode=mode):
+                self.engine=fixtures.fixture_engine(mode)
+                native=dict(status="conditions",mode=mode,floor="1",resourceKey="empty-fixture-index",
+                    conditionObservations=[],candidateMemberId=IDS[0],memberIds=[IDS[0]],
+                    originalIdentityHardGatePassed=True,complete=True)
+                self.engine.rank=Mock(return_value=[dict(mapId=IDS[0],strongSuggestion=True,
+                    identityHardGatePassed=True,nativeSimilarity=native)])
+                self.runtime=LiveRuntime(engine_factories={mode:lambda:self.engine},capture_provider=self.capture,
+                    evidence_kind="synthetic",clock=lambda:1.)
+                self.dispatch("set_context",mode=mode)
+                events=[];self.runtime.set_event_callback(events.append)
+                self.dispatch("start_round")
+                result=self.dispatch("capture_now")
+                self.assertTrue(result["success"],result)
+                self.assertTrue(result.get("renderToken"))
+                state=self.runtime.snapshot()
+                self.assertEqual(state["mapId"],IDS[0]);self.assertTrue(state["identityLocked"])
+                self.assertEqual(self.runtime._identity_native.member_ids,())  # no fabricated bindings
+                self.assertEqual(state["identitySource"],"automatic-hard-gate")
+                self.assertFalse(self.runtime.render_payload(result["renderToken"])["liveAuthorization"])
+                verdict=next(e["rankVerdict"] for e in events if "rankVerdict" in e)
+                self.assertEqual(verdict["establishedMemberIds"],[])
+                self.assertTrue(verdict["topStrongSuggestion"])
+                self.dispatch("end_round")
+
+    def test_empty_native_group_does_not_bypass_top_strong(self):
+        native=dict(status="conditions",mode="nightmare",floor="1",resourceKey="empty-index",
+            conditionObservations=[],candidateMemberId=IDS[0],memberIds=[IDS[0]],
+            originalIdentityHardGatePassed=True,complete=True)
+        cases=[
+            [dict(mapId=IDS[0],strongSuggestion=False,identityHardGatePassed=True,nativeSimilarity=native)],
+            [dict(mapId=IDS[0],identityHardGatePassed=True,nativeSimilarity=native)],
+            [dict(mapId=IDS[1],strongSuggestion=True,identityHardGatePassed=False,nativeSimilarity=native),
+             dict(mapId=IDS[0],strongSuggestion=True,identityHardGatePassed=True)]]
+        second=SimpleNamespace(id=IDS[1]);self.engine.pack.maps.append(second);self.engine.pack.by_id[second.id]=second
+        for ranked in cases:
+            with self.subTest(ranked=ranked):
+                self.engine.rank=Mock(return_value=ranked)
+                self.dispatch("start_round")
+                with patch.object(_AlignmentHost,"fit",side_effect=AssertionError("non-strong/non-top must not fit")):
+                    self.dispatch("capture_now")
+                self.assertFalse(self.runtime.snapshot()["identityLocked"])
+                self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
+                self.dispatch("end_round")
+
     def test_group_provisional_uses_current_pose_without_durable_identity(self):
         result = self.capture_group()
         state = self.runtime.snapshot()

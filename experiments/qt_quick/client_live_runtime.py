@@ -549,19 +549,19 @@ class LiveRuntime:
                 self._group = None
                 self._reference_sheet = self._reference_capture_context = None
                 self._provisional_reference_context = None
-            if grouped:
-                selected = (state.provisional_member_id
-                    if state.context_snapshot() and state.provisional_member_id in state.member_ids else None)
-            else:
-                # Exact non-group predicate from Tk should_auto_lock_candidate:
-                # only the top strong hard-gate suggestion can replace a click.
-                # Keep it here rather than importing the Tk application module.
-                top = rows[0] if rows else None
-                auto_lock = bool(isinstance(top, dict) and top.get("mapId")
-                    and top.get("strongSuggestion") and top.get("identityHardGatePassed")
-                    and not self._floor_required and not self._gate.confirmed_id)
-                selected = top["mapId"] if auto_lock and len(accepted) == 1 else None
-                if selected:
+            selected = (state.provisional_member_id if grouped and state.context_snapshot()
+                and state.provisional_member_id in state.member_ids else None)
+            top = rows[0] if rows else None
+            # Tk first consumes the optional native group, then independently
+            # tests the final top-row auto-lock predicate. A hard unique native
+            # proposal may have no established condition bindings/member list.
+            from native_similarity_groups import should_auto_lock_candidate
+            if selected is None and len(accepted) == 1 and should_auto_lock_candidate(
+                    top, self._floor_required, self._gate.confirmed_id):
+                selected = top["mapId"]
+                front_provisional = bool(top.get("frontDoorGroupState") == "GROUP_LOCKED"
+                    and top.get("frontDoorProvisionalMemberId") == selected)
+                if not front_provisional:
                     self._durable_map_id = selected
                     self._identity_source = "automatic-hard-gate"
             if selected:
@@ -569,7 +569,15 @@ class LiveRuntime:
                 self._gate.select(selected)
                 self._gate.confirm()
         self._notify("group-state", reason=proposal.get("reason", proposal.get("status", "ranked")),
-                     identity=self._identity_fields())
+            identity=self._identity_fields(), rankVerdict=dict(
+                topMapId=top.get("mapId") if top else None,
+                topStrongSuggestion=top.get("strongSuggestion") if top else None,
+                topIdentityHardGatePassed=top.get("identityHardGatePassed") if top else None,
+                frontDoorGroupState=top.get("frontDoorGroupState") if top else None,
+                frontDoorProvisionalMemberId=top.get("frontDoorProvisionalMemberId") if top else None,
+                acceptedMapIds=[row.get("mapId") for row in accepted][:32],
+                nativeStatus=proposal.get("status"), nativeCandidateMemberId=proposal.get("candidateMemberId"),
+                establishedMemberIds=list(state.member_ids)[:32], selectedMapId=selected))
         seed = seeds.get(selected)
         if seed is None and len(accepted) == 1 and accepted[0].get("mapId") == selected:
             seed = accepted[0].get("difficultEntry")
