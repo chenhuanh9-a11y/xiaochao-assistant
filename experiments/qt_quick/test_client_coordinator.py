@@ -164,6 +164,61 @@ class CoordinatorTests(unittest.TestCase):
         self.coordinator._session_changed()
         self.assertEqual(self.input.resetMapInput.call_count, count)
 
+    def test_end_rebind_and_mouse_close_discard_previous_focus_return_plan_without_new_g(self):
+        for boundary in ("end_round", "bind_capture", "mouse-close"):
+            with self.subTest(boundary=boundary):
+                self.native.foreground_window.return_value = 456
+                self.session.snapshot.update(roundActive=True, mapOpen=True)
+                self.coordinator._watch_foreground()
+                self.assertTrue(self.coordinator._waiting_foreground)
+                self.assertTrue(self.coordinator._map_was_open)
+                sequence = self.coordinator._map_input_sequence
+                if boundary == "mouse-close":
+                    self.native.foreground_window.return_value = 123
+                    self.coordinator._close_map_from_input(dict(inputSequence=sequence, inputSource=boundary))
+                else:
+                    self.coordinator._action_requested(boundary, {})
+                self.assertFalse(self.coordinator._waiting_foreground)
+                self.assertFalse(self.coordinator._map_was_open)
+                self.assertIsNone(self.coordinator._focus_loss_map_sequence)
+                self.assertEqual(self.coordinator._map_input_sequence, sequence)
+                self.session.dispatch.reset_mock()
+                self.native.foreground_window.return_value = 123
+                self.coordinator._watch_foreground()
+                self.session.dispatch.assert_not_called()
+
+    def test_background_ticks_during_end_or_rebind_cannot_rearm_old_session_snapshot(self):
+        for boundary in ("end_round", "bind_capture"):
+            with self.subTest(boundary=boundary):
+                self.session.busy = False
+                self.session.snapshot.update(roundActive=True, mapOpen=True)
+                self.runtime_state.update(roundActive=True, mapOpen=True)
+                self.native.foreground_window.return_value = 456
+                self.coordinator._watch_foreground()
+                self.assertTrue(self.coordinator._waiting_foreground)
+                self.coordinator._action_requested(boundary, {})
+                resets = self.input.resetMapInput.call_count
+                self.session.busy = True
+                self.session.snapshot["pendingAction"] = boundary
+                for _ in range(3):
+                    self.coordinator._watch_foreground()
+                self.assertFalse(self.coordinator._waiting_foreground)
+                self.assertFalse(self.coordinator._map_was_open)
+                self.assertEqual(self.input.resetMapInput.call_count, resets)
+                # Real runtime finishes while Session's applied state is old.
+                self.runtime_state.update(roundActive=False, mapOpen=False)
+                self.session.busy = False
+                self.coordinator._watch_foreground()
+                self.assertIsNone(self.coordinator._focus_loss_map_sequence)
+                # A newly prepared/started round has no new physical G edge.
+                self.runtime_state.update(roundActive=False, roundPreparing=True)
+                self.coordinator._watch_foreground()
+                self.runtime_state.update(roundActive=True, roundPreparing=False)
+                self.native.foreground_window.return_value = 123
+                self.session.dispatch.reset_mock()
+                self.coordinator._watch_foreground()
+                self.session.dispatch.assert_not_called()
+
     def test_mouse_x_uses_urgent_close_but_rejected_native_context_cannot_close(self):
         context = self.pointer_fixture()
         self.coordinator._reference = dict(key="correct-static-map")
@@ -212,6 +267,20 @@ class CoordinatorTests(unittest.TestCase):
             hwnd=123, x=330, y=300, context=context, createdAt=11.))
         self.assertEqual(self.runtime.observe_game_drag.call_args.args[0]["phase"], "cancel")
         self.assertIsNone(self.coordinator._pointer_drag)
+
+    def test_mouseup_requests_only_scoped_observation_probe_when_runtime_requires_it(self):
+        context = self.pointer_fixture()
+        self.runtime.observe_game_drag = Mock(side_effect=lambda event:
+            dict(success=True, probeRequired=event["phase"] == "up"))
+        self.coordinator._present_runtime_state = Mock()
+        down = dict(phase="down", gestureId=7, sequence=1, hwnd=123, x=300, y=300,
+            context=context, createdAt=10.)
+        self.input.gamePointerEvent.emit(down)
+        self.input.gamePointerEvent.emit(dict(down, phase="up", sequence=2, x=320))
+        self.session.refreshRuntime.assert_called_once()
+        self.session.dispatchWithPayload.assert_called_once_with("probe_map_after_drag",
+            dict(gestureId=7, pointerSequence=2, context=context))
+        self.session.dispatch.assert_not_called()
 
     def test_material_ack_and_missing_route_notice_require_current_loaded_token(self):
         payload = dict(token="material-1", mode="nightmare", mapId="map-1", floor="F1",

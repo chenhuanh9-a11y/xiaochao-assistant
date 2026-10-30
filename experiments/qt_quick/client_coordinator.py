@@ -457,7 +457,15 @@ class ClientCoordinator(QObject):
         if callable(cancel):
             cancel(reason)
 
+    def _clear_focus_return_plan(self):
+        self._waiting_foreground = False
+        self._map_was_open = False
+        self._focus_loss_map_sequence = None
+
     def _reset_map_input(self, reason, *, open_intent=False):
+        if reason != "foreground-lost":
+            # Only the first focus loss preserves a same-round return plan.
+            self._clear_focus_return_plan()
         self._cancel_pointer_drag(reason)
         reset = getattr(self.input, "resetMapInput", None)
         if callable(reset):
@@ -607,6 +615,13 @@ class ClientCoordinator(QObject):
             if phase == "up":
                 self._pointer_drag = None
             self._present_runtime_state(self.runtime.snapshot(), trigger="pointer-drag-" + phase)
+            if phase == "up" and result.get("probeRequired") is True:
+                # The old mouse-up requests observation only. Runtime scopes
+                # this private probe and redirects later transient refreshes;
+                # neither this request nor raw motion may fit/commit a pose.
+                self.session.refreshRuntime()
+                self.session.dispatchWithPayload("probe_map_after_drag", dict(
+                    gestureId=gesture, pointerSequence=sequence, context=deepcopy(drag["context"])))
         except (OSError, ValueError, TypeError, KeyError) as error:
             self._cancel_pointer_drag("invalid-pointer-input")
             self._trace("pointer-rejected", reason="invalid-input-context", diag=dict(error=str(error)))
@@ -1527,13 +1542,24 @@ class ClientCoordinator(QObject):
             return
         if self._edit is not None:
             self._show_reference_current()
-        if not self._bound or not self.session.snapshot.get("roundActive"):
+        state = self.session.snapshot
+        pending = state.get("pendingAction") if self.session.busy else ""
+        if pending in {"end_round", "stop_round", "reset_round", "bind_capture", "close_map", "toggle_round"}:
+            # Session's applied snapshot can still describe the previous round
+            # while this terminal/rebinding job drains. It cannot re-arm an
+            # obsolete return plan, even across repeated background ticks.
+            self._clear_focus_return_plan()
+            return
+        actual = self.runtime.snapshot()
+        active = actual.get("roundActive", state.get("roundActive"))
+        if not self._bound or not active:
+            self._clear_focus_return_plan()
             return
         try:
             if self._native_windows.foreground_window() != int(self._bound or 0):
                 first_loss = not self._waiting_foreground
                 self._waiting_foreground = True
-                self._map_was_open = self._map_was_open or self.session.snapshot.get("mapOpen") or (self.session.busy and self._requested_action in {"map", "capture_now"})
+                self._map_was_open = self._map_was_open or actual.get("mapOpen", state.get("mapOpen")) or (self.session.busy and self._requested_action in {"map", "capture_now"})
                 if first_loss:
                     # Revoke before the worker can finish; returning to the same
                     # HWND/size does not make a pre-focus-loss frame current.

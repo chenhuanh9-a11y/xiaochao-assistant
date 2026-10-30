@@ -295,6 +295,7 @@ class LiveRuntime:
         self._round_preparing = False
         self._prepared_round_ready = False
         self._last_map_input_sequence = 0
+        self._transient_drag = self._transient_cycle = None
         self._capture_pending = False
         self._probe_misses = 0
         self._aligned_visible = True
@@ -339,6 +340,7 @@ class LiveRuntime:
         self._reset_floor_policy()
 
     def _reset_identity(self):
+        self._transient_drag = self._transient_cycle = None
         if hasattr(self, "_steady"):
             self._steady.reset()
         self._steady_material_ready = False
@@ -366,6 +368,7 @@ class LiveRuntime:
     def _steady_is_current(self, context, captured=None):
         with self._lock:
             return bool(context == self._steady_context() and self._active and self._map_open
+                and not self._transient_cycle_current()
                 and (captured is None or self._capture_is_current(captured.context, context[-1])))
 
     @staticmethod
@@ -386,7 +389,7 @@ class LiveRuntime:
         with self._lock:
             proposal = self._remember_proposals.get(token)
             if (proposal is None or proposal["accepted"] or self._render is None
-                    or self._render["token"] != token or not self._display_current(self._render)
+                    or self._render["token"] != token or not self._display_current(self._render) or self._render.get("transient")
                     or proposal["context"] != self._steady_context() or proposal["group"] is not self._group):
                 return dict(success=False, reason="material-token-expired-or-already-accepted", token=token)
             proposal["accepted"] = True
@@ -844,6 +847,129 @@ class LiveRuntime:
         finally:
             self._lock.release()
 
+    def _transient_cycle_current(self):
+        row = self._transient_cycle
+        return bool(row and self._active and self._map_open and row["scope"] ==
+                    (self._mode, self._round, self._cycle, self._map_id))
+
+    def observe_game_drag(self, event):
+        """Apply only coordinator-approved physical deltas to transient pixels.
+
+        Original calibrated motion/hit rules run in DragMotionAccumulator.
+        This fast owner receipt never captures, fits, changes a pose, or learns.
+        """
+        import numpy as np
+        if not isinstance(event, dict):
+            return dict(success=False, reason="drag-event-invalid")
+        phase, gesture = event.get("phase"), event.get("gestureId")
+        with self._lock:
+            if phase == "cancel":
+                if self._transient_drag and self._transient_drag["gestureId"] == gesture:
+                    self._transient_drag = None
+                    return dict(success=True, reason="drag-cancelled", probeRequired=self._transient_cycle_current())
+                return dict(success=False, reason="drag-gesture-expired")
+            context = event.get("context")
+            current = self._game_floor_click_context_locked()
+            sequence = event.get("pointerSequence")
+            if (phase not in ("down", "move", "up") or not isinstance(context, dict) or current is None
+                    or any(context.get(key) != value for key, value in current.items())
+                    or type(sequence) is not int or sequence < 1 or not gesture):
+                return dict(success=False, reason="drag-context-expired")
+            observation = self._last_observation
+            if (self._pending_sibling is not None or self._group_choice_inflight is not None
+                    or self._render is None or not self._display_current(self._render)
+                    or not self._capture_is_current(observation["captured"].context, observation["capture_generation"])):
+                return dict(success=False, reason="drag-current-display-unavailable")
+            if phase == "down":
+                created = event.get("createdAt")
+                if (isinstance(created, bool) or not isinstance(created, (int,float)) or not math.isfinite(created)
+                        or not 0 <= self._monotonic() - created <= MANUAL_FLOOR_HOLD_SECONDS):
+                    return dict(success=False, reason="drag-press-expired")
+                self._transient_drag = dict(gestureId=gesture, context=dict(current), lastSequence=sequence,
+                    baseMatrix=np.asarray(self._render["matrix"], dtype=np.float64).copy(),
+                    baseOffset=tuple(self._transient_cycle["offset"]) if self._transient_cycle_current() else (0.,0.),
+                    moved=False)
+                return dict(success=True, reason="drag-started", persistentPoseUpdated=False)
+            drag = self._transient_drag
+            if (drag is None or drag["gestureId"] != gesture or drag["context"] != current
+                    or sequence <= drag["lastSequence"]):
+                return dict(success=False, reason="drag-gesture-expired")
+            try:
+                total = np.asarray(event.get("totalDelta"), dtype=np.float64)
+                delta = np.asarray(event.get("delta"), dtype=np.float64)
+            except (ValueError, TypeError):
+                return dict(success=False, reason="drag-delta-invalid")
+            if total.shape != (2,) or delta.shape != (2,) or not np.isfinite([*total,*delta]).all():
+                return dict(success=False, reason="drag-delta-invalid")
+            previous = np.asarray(drag.get("lastTotal", (0.,0.)))
+            if not np.allclose(total - previous, delta, rtol=0, atol=1e-6):
+                return dict(success=False, reason="drag-approved-delta-inconsistent")
+            drag["lastSequence"], drag["lastTotal"] = sequence, total.tolist()
+            if np.any(delta):
+                if not drag["moved"]:
+                    self._group_intent_generation += 1
+                drag["moved"] = True
+                matrix = drag["baseMatrix"].copy()
+                matrix[:2, :] += total[:,None] * matrix[2:3, :]
+                if not np.isfinite(matrix).all():
+                    return dict(success=False, reason="drag-matrix-invalid")
+                offset = np.asarray(drag["baseOffset"]) + total
+                self._transient_cycle = dict(scope=(self._mode,self._round,self._cycle,self._map_id),
+                    offset=offset.tolist(), gestureId=gesture, pointerSequence=sequence)
+                self._render = dict(self._render, token=uuid4().hex, matrix=matrix.tolist(),
+                    transient=True, transientOffset=offset.tolist(), persistentPoseUpdated=False)
+            moved = drag["moved"]
+            if phase == "up":
+                if self._transient_cycle_current():
+                    self._transient_cycle.update(gestureId=gesture,pointerSequence=sequence)
+                self._transient_drag = None
+            return dict(success=True, reason="drag-transient-updated" if moved else "drag-click-ignored",
+                renderToken=self._render["token"], transient=moved, persistentPoseUpdated=False,
+                poseCommits=0, probeRequired=bool(phase == "up" and moved))
+
+    def _probe_map_after_drag(self, payload, cancelled):
+        """Original post-mouse-up observation only; no fit or pose write."""
+        with self._lock:
+            if not self._transient_cycle_current() or self._transient_drag is not None:
+                return self._receipt("probe_map_after_drag", payload, success=False, reason="transient-probe-unavailable")
+            cycle = dict(self._transient_cycle)
+            scope = self._sibling_scope()
+            engine, epoch, target = self._engine, self._epoch, self._floor
+            if (payload.get("gestureId") is not None and (payload["gestureId"] != cycle["gestureId"]
+                    or payload.get("pointerSequence") != cycle["pointerSequence"])):
+                return self._receipt("probe_map_after_drag", payload, success=False, reason="transient-probe-expired", stale=True)
+            requested = payload.get("context")
+            if requested is not None and (not isinstance(requested,dict) or any(requested.get(key) != value
+                    for key,value in self._game_floor_click_context_locked().items())):
+                return self._receipt("probe_map_after_drag", payload, success=False, reason="transient-probe-expired", stale=True)
+        capture_generation = self._capture_generation()
+        captured = self._capture_frame(cancelled)
+        frame = self._full_frame(captured)
+        obsolete = lambda: self._cancelled(cancelled) or epoch != self._epoch
+        if obsolete():
+            return self._receipt("probe_map_after_drag", payload, success=False, reason="cancelled-or-stale", stale=True)
+        observation, floor, floor_read = self._observe(engine, frame)
+        detected = observation.get("mapOpen") is True if self._mode == "difficult" else observation.get("detected") is True
+        with self._lock:
+            current_scope = self._sibling_scope()
+            if (obsolete() or scope[:7] + scope[8:] != current_scope[:7] + current_scope[8:]
+                    or not self._capture_is_current(captured.context, capture_generation)):
+                return self._receipt("probe_map_after_drag", payload, success=False, reason="transient-probe-expired", stale=True)
+            if not detected:
+                self._probe_misses += 1
+                if self._probe_misses >= 2:
+                    self.invalidate("map-closed")
+                return self._receipt("probe_map_after_drag", payload, success=False, reason="map-not-observed")
+            self._probe_misses = 0
+            self._observe_floor_policy(floor_read, obsolete=obsolete)
+            if self._floor_read_conflicts(floor_read, target):
+                self._revoke_render("post-drag-floor-conflict")
+                self._reference_sheet = self._reference_capture_context = None
+                return self._receipt("probe_map_after_drag", payload, success=False, reason="current-frame-floor-conflict",
+                    observedFloor=self._observed_floor, targetFloor=target, fitAttempted=False)
+        return self._receipt("probe_map_after_drag", payload, success=True, reason="post-drag-observation-current",
+                             poseCommits=0, persistentPoseUpdated=False, fitAttempted=False)
+
     def observe_game_floor_click(self, screen_x, screen_y, context):
         """UI ordered click intent; fresh highlighted pixels still own floor."""
         if not isinstance(context, dict):
@@ -1252,6 +1378,8 @@ class LiveRuntime:
                     commands.append("resume_group_automatic")
                 if self._map_open and not self._floor_required and self._last_observation is not None:
                     commands.append("select_group_member")
+            if self._transient_cycle_current() and self._transient_drag is None:
+                commands.append("probe_map_after_drag")
             selected = next((i for i, row in enumerate(self._candidate_rows)
                              if self._gate is not None and row["key"] == self._gate.selected_id), -1)
             if self._capture is not None:
@@ -1300,6 +1428,10 @@ class LiveRuntime:
         """Owner-thread fast path: revoke before canceling/queueing slow work."""
         with self._lock:
             previous_token = self._render.get("token", "") if self._render is not None else ""
+            self._transient_drag = None
+            if reason in ("map-closed","escape","foreground-lost","capture-context-changed","floor-unknown") or any(
+                    marker in str(reason) for marker in ("round","resource","identity","candidate","mode","reselection")):
+                self._transient_cycle = None
             self._discard_sibling()
             self._group_intent_generation += 1
             self._group_choice_inflight = None
@@ -1439,8 +1571,12 @@ class LiveRuntime:
                 if (pose_current and self._render is source and self._display_current(source)
                         and self._capture_is_current(source_context, source.get("captureGeneration"))):
                     self._render = dict(source, **metadata)
+                    display_matrix = prepared["matrixSourceToClient"].copy()
+                    if self._transient_cycle_current():
+                        offset = self._transient_cycle["offset"]
+                        display_matrix[:2,:] += np.asarray(offset)[:,None] * display_matrix[2:3,:]
                     self._render.update(token=uuid4().hex, pixels=pixels,
-                        matrix=prepared["matrixSourceToClient"].tolist(),
+                        matrix=display_matrix.tolist(),
                         routeWidth=pixels.shape[1], routeHeight=pixels.shape[0])
                     self._render_capture_context = source_context
                     render_token = self._render["token"]
@@ -1702,6 +1838,8 @@ class LiveRuntime:
             return self._receipt(action, payload, success=result["success"], reason=result["reason"], offline=result)
         try:
             with self._work:
+                if action == "probe_map_after_drag":
+                    return self._probe_map_after_drag(payload, cancelled)
                 if action == "remember_render_material":
                     return self._remember_render_material(str(payload.get("renderToken", "")), payload, cancelled)
                 if action == "bind_capture":
@@ -1817,11 +1955,14 @@ class LiveRuntime:
         owns_capture = False
         try:
             with self._lock:
-                if self._capture_pending or self._group_choice_inflight is not None:
+                if self._capture_pending or self._group_choice_inflight is not None or self._transient_drag is not None:
                     return self._receipt("refresh_map", payload, success=True, reason="refresh-coalesced", coalesced=True)
                 if not self._active or not self._map_open:
                     return self._receipt("refresh_map", payload, success=False, reason="map-refresh-not-active")
+                transient = self._transient_cycle_current()
                 self._capture_pending = owns_capture = True
+            if transient:
+                return self._probe_map_after_drag(payload, cancelled)
             return self._capture_and_solve("refresh_map", payload, cancelled)
         except Exception as error:
             self.invalidate("runtime-error")
@@ -1881,6 +2022,8 @@ class LiveRuntime:
             self._revoke_render("current-frame-residual-failed")
             return None
         with self._lock:
+            if self._transient_drag is not None or self._transient_cycle_current():
+                return self._receipt("refresh_map", payload, success=True, reason="refresh-coalesced", coalesced=True)
             if (obsolete() or self._render is None or self._render["token"] != row["token"]
                     or current_frame != self._frame_id or epoch != self._epoch
                     or cycle != self._cycle or self._floor != floor):
@@ -2169,6 +2312,9 @@ class LiveRuntime:
             if not self._capture_is_current(captured.context, capture_generation):
                 self.invalidate("capture-context-changed")
                 return self._receipt(action, payload, success=False, reason="capture-context-changed", stale=True)
+        with self._lock:
+            if self._transient_cycle_current():
+                return self._receipt(action, payload, success=False, reason="transient-display-owns-open-cycle", fitAttempted=False)
         self._set_pose_phase("pending", "current-frame-fit", map_id, floor, frame_id, frame_generation)
         with self._lock:
             steady_context = self._steady_context()
