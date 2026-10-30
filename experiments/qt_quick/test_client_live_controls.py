@@ -261,6 +261,7 @@ class SharedRuntimeDeliveryTests(unittest.TestCase):
         runtime = LiveRuntime(engine_factories={"nightmare": lambda: engine},
             capture_provider=capture, evidence_kind="live-client-capture")
         session = SessionService(runtime)
+        coordinator_seams.CoordinatorTests.setUpClass()
         fixture = coordinator_seams.CoordinatorTests();fixture.setUp()
         fixture.coordinator._closed = True
         fixture.coordinator._foreground_timer.stop();fixture.coordinator._tracking_timer.stop()

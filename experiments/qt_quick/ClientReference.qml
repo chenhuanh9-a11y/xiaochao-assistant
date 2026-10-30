@@ -17,7 +17,10 @@ Window {
     readonly property var preferences: settingsService.values
     readonly property var referenceData: clientCoordinator.referenceData
     readonly property bool editing: clientCoordinator.referenceEditing
-    onClosing: function(event) { event.accepted = false; clientCoordinator.hideReference() }
+    onClosing: function(event) {
+        event.accepted = clientCoordinator.closeReady
+        if (!event.accepted) clientCoordinator.hideReference()
+    }
 
     Item {
         anchors.fill: parent

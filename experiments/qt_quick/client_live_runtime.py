@@ -12,6 +12,7 @@ from pathlib import Path
 import sys
 import threading
 import time
+import traceback
 from uuid import uuid4
 
 from client_paths import APP_ROOT, WORK_ROOT
@@ -57,7 +58,7 @@ class _PreparationHost:
         if not self._map_ready_current(token, context, cancelled):
             return None, True
         capture_generation = self.runtime._capture_generation()
-        captured = self.runtime._capture.capture(cancelled)
+        captured = self.runtime._capture_frame(cancelled)
         frame = self.runtime._full_frame(captured)
         if self.initial_context is None:
             self.initial_context = captured.context
@@ -435,7 +436,8 @@ class LiveRuntime:
                 learning = self._learn_confirmation(confirmation, cancelled)
                 self.invalidate("manual-action-error")
                 result = self._receipt(action, payload, success=False,
-                    reason=f"{type(error).__name__}:{error}", error=True)
+                    reason=f"{type(error).__name__}:{error}", error=True,
+                    **self._error_fields(error, action))
             else:
                 learning = self._learn_confirmation(confirmation, cancelled)
             result["learning"] = learning
@@ -726,6 +728,38 @@ class LiveRuntime:
                 return None
             return {key: value if key == "pixels" else copy.deepcopy(value) for key, value in row.items()}
 
+    def _capture_frame(self, cancelled):
+        try:
+            return self._capture.capture(cancelled)
+        except Exception as error:
+            error.error_phase = "capture"
+            raise
+
+    def _error_fields(self, error, action):
+        fields = dict(traceback="".join(traceback.format_exception(
+            type(error), error, error.__traceback__, limit=-12, chain=False))[-8192:])
+        if getattr(error, "error_phase", None) == "capture" or action == "bind_capture":
+            fields["errorPhase"] = "capture"
+            raw_diagnostics = getattr(error, "capture_diagnostics", {})
+            allowed = {"frameShape", "frameDtype", "roiClientBounds", "requestedClientBounds",
+                       "fullClientSize", "clientBounds", "dpi"}
+            diagnostics = {key:value for key,value in raw_diagnostics.items() if key in allowed} if isinstance(raw_diagnostics, dict) else {}
+            try:
+                state = getattr(self._capture, "snapshot", {})
+                state = state() if callable(state) else state
+                generation = getattr(self._capture, "generation", None)
+                if generation is None and isinstance(state, dict):
+                    generation = state.get("generation")
+                if type(generation) is int:
+                    diagnostics["providerGeneration"] = generation
+                    diagnostics["providerGenerationSource"] = "current-provider-at-error"
+                if isinstance(state, dict) and state.get("captureIntent") in ("full-client", "roi"):
+                    diagnostics["providerIntent"] = state["captureIntent"]
+            except Exception:
+                pass
+            fields["captureDiagnostics"] = diagnostics
+        return fields
+
     def _capture_generation(self):
         generation = getattr(self._capture, "generation", None)
         if generation is None:
@@ -776,7 +810,8 @@ class LiveRuntime:
             except Exception as error:
                 self.invalidate("manual-action-error")
                 return self._receipt(action, payload, success=False,
-                    reason=f"{type(error).__name__}:{error}", error=True)
+                    reason=f"{type(error).__name__}:{error}", error=True,
+                    **self._error_fields(error, action))
         if action == "toggle_sheet_visibility":
             with self._lock:
                 self._aligned_visible = not self._aligned_visible
@@ -841,7 +876,10 @@ class LiveRuntime:
                     if self._capture is None:
                         raise RuntimeError("capture-provider-unavailable")
                     self.dispatch("end_round", payload)
-                    self._capture.bind(int(payload["hwnd"]), tuple(payload["region"]))
+                    bind_full = getattr(self._capture, "bindFullClient", None)
+                    if not callable(bind_full):
+                        raise RuntimeError("full-client-capture-binding-unavailable")
+                    bind_full(int(payload["hwnd"]))
                     return self._receipt(action, payload, success=True, reason="capture-bound-disabled")
                 if action == "toggle_round":
                     return self.dispatch("end_round" if self._active else "start_round", payload, cancelled)
@@ -858,7 +896,8 @@ class LiveRuntime:
             return self._receipt(action, payload, success=False, reason="unsupported-action", unavailable=True)
         except Exception as error:
             self.invalidate("runtime-error")
-            return self._receipt(action, payload, success=False, reason=f"{type(error).__name__}:{error}", error=True)
+            return self._receipt(action, payload, success=False, reason=f"{type(error).__name__}:{error}", error=True,
+                    **self._error_fields(error, action))
 
     def _start(self, payload, cancelled):
         if self._capture is None:
@@ -911,7 +950,8 @@ class LiveRuntime:
         except Exception as error:
             self.invalidate("runtime-error")
             return self._receipt("refresh_map", payload, success=False,
-                                 reason=f"{type(error).__name__}:{error}", error=True)
+                                 reason=f"{type(error).__name__}:{error}", error=True,
+                    **self._error_fields(error, "refresh_map"))
         finally:
             if owns_capture:
                 with self._lock:
@@ -1021,7 +1061,7 @@ class LiveRuntime:
             opened = True
         else:
             capture_generation = self._capture_generation()
-            captured = self._capture.capture(obsolete)
+            captured = self._capture_frame(obsolete)
             observation, floor, floor_read = self._observe(engine, self._full_frame(captured))
             from session_state_machine import verified_map_hotkey_frame
             opened = (observation.get("mapOpen") if engine.pack.mode == "difficult"
@@ -1243,7 +1283,21 @@ class LiveRuntime:
         width, height = captured.context.full_client_size
         if (frame.dtype != np.uint8 or frame.shape != (height, width, 3)
                 or tuple(captured.roi_client_bounds) != (0, 0, width, height)):
-            raise ValueError("live-runtime-requires-full-client-capture")
+            error = ValueError("live-runtime-requires-full-client-capture")
+            def bounds(value, size):
+                try:
+                    return [int(item) for item in tuple(value)[:size]]
+                except (TypeError, ValueError, OverflowError):
+                    return None
+            error.error_phase = "capture"
+            dpi = bounds((getattr(captured.context, "dpi", None),), 1)
+            error.capture_diagnostics = dict(frameShape=list(frame.shape[:4]), frameDtype=str(frame.dtype)[:64],
+                roiClientBounds=bounds(captured.roi_client_bounds, 4),
+                requestedClientBounds=bounds(getattr(captured, "requested_client_bounds", None), 4),
+                fullClientSize=bounds(captured.context.full_client_size, 2),
+                clientBounds=bounds(getattr(captured.context, "client_screen_bounds", None), 4),
+                dpi=dpi[0] if dpi else None)
+            raise error
         return frame
 
     @staticmethod

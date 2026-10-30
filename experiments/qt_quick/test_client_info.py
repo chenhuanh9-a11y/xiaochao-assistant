@@ -167,8 +167,12 @@ class InfoTests(unittest.TestCase):
 
     def test_qml_local_check_history_and_plain_notes_no_warnings(self):
         service = self.service()
+        from client_problems import ProblemsService
+        problems = ProblemsService(service.paths, parent=service)
+        self.addCleanup(problems.shutdown)
         engine = QQmlEngine()
         engine.rootContext().setContextProperty("infoService", service)
+        engine.rootContext().setContextProperty("problemService", problems)
         warnings = []
         engine.warnings.connect(lambda rows: warnings.extend(str(row) for row in rows))
         component = QQmlComponent(engine)

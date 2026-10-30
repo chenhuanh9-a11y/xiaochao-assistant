@@ -73,6 +73,11 @@ class ToastTests(unittest.TestCase):
         self.assertLessEqual(self.toast.x()+self.toast.width(), area['x']+area['width'])
         self.assertLessEqual(self.toast.y()+self.toast.height(), area['y']+area['height'])
 
+    def assert_status_icon(self, kind, name, color):
+        self.assertEqual(self.toast.property("statusKind"), kind)
+        self.assertEqual(self.toast.findChild(QObject, "toastStatusGlyph").property("iconName"), name)
+        self.assertEqual(self.toast.findChild(QObject, "toastStatusIcon").property("color").name(), color)
+
     def test_event_replaces_fade_expires_and_close_clears_jobs_without_focus(self):
         self.assertFalse(self.toast.isVisible())
         self.assertEqual(self.expiry.property("interval"), 3200)
@@ -83,6 +88,7 @@ class ToastTests(unittest.TestCase):
         self.assertEqual(self.toast.flags() & Qt.WindowType_Mask, Qt.Tool)
         self.coordinator.notificationRequested.emit("地图已确认", "正在核对路线", "success")
         until(lambda: self.toast.isVisible())
+        self.assert_status_icon("success", "check", "#17775a")
         self.assert_in_area()
         # Accelerate only the test clock after checking the shipped 3200 ms.
         self.expiry.setProperty("interval", 35)
@@ -92,6 +98,7 @@ class ToastTests(unittest.TestCase):
         self.assertEqual(self.toast.property("eventRevision"), 2)
         self.assertEqual(self.toast.property("notificationMessage"), "原样短文案")
         self.assertEqual(self.toast.property("notificationKind"), "warning")
+        self.assert_status_icon("warning", "warning", "#b7791f")
         self.assertFalse(self.fade.property("running"))
         self.assertEqual(self.toast.opacity(), 1)
         until(lambda: not self.toast.isVisible())
@@ -99,6 +106,7 @@ class ToastTests(unittest.TestCase):
         self.assertFalse(self.fade.property("running"))
         self.coordinator.notificationRequested.emit("失败事件", "失败原因原样保留", "error")
         self.assertTrue(self.toast.isVisible())
+        self.assert_status_icon("error", "cross", "#b8364a")
         self.assertTrue(self.toast.close())
         self.assertFalse(self.toast.isVisible())
         self.assertFalse(self.expiry.property("running"))
@@ -112,6 +120,7 @@ class ToastTests(unittest.TestCase):
         self.coordinator.notificationRequested.emit("通知", "一段需要换行的原始通知文字", "info")
         APP.processEvents()
         self.assertTrue(self.toast.isVisible())
+        self.assert_status_icon("info", "info", "#526785")
         self.assert_in_area()
         self.coordinator.area = dict(x=0, y=0, width=0, height=0)
         self.coordinator.notificationRequested.emit("通知", "没有有效屏幕区域时不越界显示", "info")

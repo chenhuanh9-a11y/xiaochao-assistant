@@ -30,6 +30,7 @@ Item {
             ProgressBar { Layout.fillWidth: true; visible: infoService.checking; indeterminate: true; Accessible.name: infoService.operation }
             Label { text: infoService.operation || infoService.message; color: infoService.hasError ? "#b8364a" : "#526785"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
             Label { visible: !!infoService.diagnosticsReceipt.path; text: "诊断文件：" + (infoService.diagnosticsReceipt.path || ""); textFormat: Text.PlainText; color: "#17775a"; wrapMode: Text.WrapAnywhere; Layout.fillWidth: true }
+            ClientProblemsPanel { Layout.fillWidth: true }
             Rectangle {
                 visible: !!infoService.release.version
                 Layout.fillWidth: true; implicitHeight: notes.implicitHeight+36; color: "white"; radius: 12

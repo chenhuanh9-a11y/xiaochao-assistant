@@ -211,6 +211,8 @@ class SessionService(QObject):
         if error:
             self._actions.fail(token, fallback_state="failed", reason=error)
             self._message = error
+            self._last_receipt = dict(action=work.action, success=False, reason=error,
+                                      message=error, error=True, errorPhase="operation")
         else:
             receipt, state = value
             receipt = receipt if isinstance(receipt, dict) else {}

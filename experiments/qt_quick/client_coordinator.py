@@ -1,4 +1,4 @@
-"""Qt-owned commands and display delivery. No algorithm or automatic native input."""
+"""Qt-owned live commands, display delivery and ordered shutdown."""
 from __future__ import annotations
 from copy import deepcopy
 import ctypes
@@ -14,6 +14,7 @@ import sys
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 from reference_position_editor import ReferencePositionEdit
+from client_problem_messages import operation_problem
 
 
 class LiveImages(QQuickImageProvider):
@@ -124,6 +125,8 @@ class ClientCoordinator(QObject):
     quitRequested = Signal()
     runtimeEvent = Signal(object)
     controlVisibilityChanged = Signal(bool, str)
+    errorReported = Signal(object)
+    lifecycleEvent = Signal(object)
     notificationRequested = Signal(str, str, str)
 
     def __init__(self, *, backend, settings, resources, session, windows, native_input,
@@ -165,6 +168,7 @@ class ClientCoordinator(QObject):
         self._map_was_open = False
         self._closing = False
         self._close_ready = False
+        self._last_close_wait = None
         from client_game_focus import GameFocusService
         self._game_focus = GameFocusService(lambda: int(self._bound) if self._bound else None,
             is_closed=lambda: self._closed or self._closing, parent=self)
@@ -816,7 +820,10 @@ class ClientCoordinator(QObject):
             key = ("input-failure", state.get("message"))
             if key not in self._notified:
                 self._notified.add(key)
-                self.notificationRequested.emit("快捷键暂不可用", state.get("message", ""), "warning")
+                summary = "全局快捷键暂不可用，原始原因已保存在帮助页的“最近问题”。"
+                self.errorReported.emit(dict(title="快捷键暂不可用", summary=summary,
+                    raw=state.get("message", ""), action="native-input", phase="input", kind="warning"))
+                self.notificationRequested.emit("快捷键暂不可用", summary, "warning")
 
     def _notify_session_transitions(self, state):
         active = bool(state.get("roundActive"))
@@ -830,11 +837,14 @@ class ClientCoordinator(QObject):
                 self.notificationRequested.emit("本局已结束", "本局显示与识别已停止", "info")
         receipt = state.get("lastReceipt", {})
         reason = receipt.get("reason", "")
-        if receipt.get("success") is False and receipt.get("action") not in {"refresh_map", "inspect_engine_resources"}:
+        if receipt.get("success") is False:
             key = ("failure", state.get("roundId"), state.get("cycleId"), receipt.get("action"), reason)
             if key not in self._notified:
                 self._notified.add(key)
-                self.notificationRequested.emit("操作未完成", str(receipt.get("message") or reason), "warning")
+                problem = operation_problem(receipt, state)
+                self.errorReported.emit(problem)
+                if receipt.get("action") not in {"refresh_map", "inspect_engine_resources"}:
+                    self.notificationRequested.emit(problem["title"], problem["summary"], problem["kind"])
     def _native_action(self, action):
         if self._closing or self._closed:
             return
@@ -969,6 +979,7 @@ class ClientCoordinator(QObject):
         if self._closing:
             return
         self._closing = True
+        self.lifecycleEvent.emit(dict(stage="close-requested", closing=True, closeReady=False))
         self._discovery_timer.stop()
         self._startup_timer.stop()
         self._foreground_timer.stop()
@@ -1000,18 +1011,39 @@ class ClientCoordinator(QObject):
     def _finish_close(self):
         if self._close_ready or self._closed:
             return
+        pools = dict(session=self.session._pool.activeThreadCount(),
+                     resources=self.resources.pool.activeThreadCount(), settings=self.settings.pool.activeThreadCount())
+        for index, writer in enumerate(self.close_writers):
+            pool = getattr(writer, "pool", getattr(writer, "_pool", None))
+            if pool is not None:
+                pools[type(writer).__name__ + str(index)] = pool.activeThreadCount()
+        hook_running = bool(getattr(self.input, "snapshot", {}).get("hookRunning", False))
+        writes = any(bool(getattr(writer, "pendingWrites", False)) for writer in self.close_writers)
+        wait_state = (tuple(pools.values()), hook_running, writes)
+        if wait_state != self._last_close_wait:
+            self._last_close_wait = wait_state
+            self.lifecycleEvent.emit(dict(stage="close-draining", pools=pools,
+                                         hookRunning=hook_running, pendingWrites=writes))
         if getattr(self.input, "snapshot", {}).get("hookRunning", False):
             return
         if (self.resources.pool.activeThreadCount() or self.settings.pool.activeThreadCount()
                 or self.session._pool.activeThreadCount()):
             return
         for writer in self.close_writers:
+            if getattr(writer, "pendingWrites", False):
+                return
             pool = getattr(writer, "pool", getattr(writer, "_pool", None))
             if pool is not None and pool.activeThreadCount():
                 return
         self._close_timer.stop()
         self._close_ready = True
         self.changed.emit()
+        # Close vetoes belong to normal window interaction, not a completed
+        # application shutdown. Hide all owned surfaces before requesting quit.
+        shutdown_windows = getattr(self.windows, "shutdown", None)
+        if callable(shutdown_windows):
+            shutdown_windows()
+        self.lifecycleEvent.emit(dict(stage="close-ready", closing=True, closeReady=True, hookRunning=False))
         self.quitRequested.emit()
 
     def shutdown(self):

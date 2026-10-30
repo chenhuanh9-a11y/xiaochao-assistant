@@ -309,6 +309,9 @@ class ClientInfoService(QObject):
             state = session.snapshot
             report["session"] = {key: state.get(key) for key in (
                 "mode", "profileId", "engineConnected", "busy", "generation", "availableCommands")}
+        problems = self._providers.get("problems")
+        if problems is not None:
+            report["recentProblems"] = problems.recent
         resources = self._providers.get("resources")
         if resources is not None:
             report["resourceStates"] = [{key: row.get(key) for key in ("packageId", "status")}

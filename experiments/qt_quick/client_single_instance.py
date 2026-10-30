@@ -19,6 +19,7 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 PRODUCTION_ID = "D04394A0-DACE-4FF9-874D-3DCB43EE53D1"
 REQUEST = b"XINGTU_ACTIVATE_MAIN_V1\n"
 ACK = b"XINGTU_ACTIVATE_ACCEPTED_V1\n"
+RESULT_V2 = b"XINGTU_ACTIVATE_RESULT_V2 "
 HELLO = b"XINGTU_PRIMARY_V1 "
 
 
@@ -118,9 +119,15 @@ class SingleInstanceGuard(QObject):
         self._owner = None
         self._server = None
         self._clients = set()
+        self._activation_handler = None
+
+    def setActivationHandler(self, callback):
+        if not callable(callback):
+            raise TypeError("An activation callback is required")
+        self._activation_handler = callback
 
     def start(self, timeout_ms=3000):
-        """True: primary. False: existing instance acknowledged activation."""
+        """True: primary. False: existing instance confirmed a restored window."""
         if self._owner is not None:
             raise SingleInstanceError("Instance guard already started")
         ownership_error = None
@@ -166,12 +173,26 @@ class SingleInstanceGuard(QObject):
                         user.AllowSetForegroundWindow(int(pid))
                     socket.write(REQUEST)
                     socket.flush()
-                    if self._read_line(socket, deadline) == ACK:
+                    reply = self._read_line(socket, deadline)
+                    if reply:
                         socket.abort()
-                        return True
+                        return self._activation_result(reply)
             socket.abort()
             QThread.msleep(20)
         return False
+
+    @staticmethod
+    def _activation_result(reply):
+        if reply == ACK:
+            raise SingleInstanceError("旧版已收到恢复请求，但不能确认窗口已恢复。"
+                "若窗口未出现，请先退出旧版后重试；不会打开第二个实例。")
+        if reply == RESULT_V2 + b"restored\n":
+            return True
+        if reply == RESULT_V2 + b"starting\n":
+            raise SingleInstanceError("星图正在启动，主窗口尚未准备好。请稍候，启动完成后再试；不会打开第二个实例。")
+        if reply == RESULT_V2 + b"closing\n":
+            raise SingleInstanceError("星图正在退出，暂时不能恢复主窗口。请等待退出完成后再启动；本次不会打开第二个实例。")
+        raise SingleInstanceError("已有星图实例未能恢复可见窗口。请先正常退出已有实例后重试；本次不会打开第二个实例。")
 
     @staticmethod
     def _read_line(socket, deadline):
@@ -198,8 +219,15 @@ class SingleInstanceGuard(QObject):
                 if len(buffer) > 128 or (b"\n" in buffer and bytes(buffer) != REQUEST):
                     socket.abort()
                 elif bytes(buffer) == REQUEST:
-                    self.activationRequested.emit()
-                    socket.write(ACK)
+                    try:
+                        status = self._activation_handler() if self._activation_handler is not None else 'starting'
+                    except Exception:
+                        status = 'unavailable'
+                    if not isinstance(status, str) or status not in {'restored', 'starting', 'closing', 'unavailable'}:
+                        status = 'unavailable'
+                    if status == 'restored':
+                        self.activationRequested.emit()  # Observer notification, never proof of restoration.
+                    socket.write(RESULT_V2 + status.encode('ascii') + b"\n")
                     socket.flush()
                     socket.disconnectFromServer()
             socket.readyRead.connect(consume)

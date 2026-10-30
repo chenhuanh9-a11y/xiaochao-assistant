@@ -10,15 +10,19 @@ import unittest
 from unittest.mock import patch
 
 
-def child(directory, tag, once=False, crash=False):
+def child(directory, tag, once=False, crash=False, activation='normal'):
     from PySide6.QtCore import QTimer
     from PySide6.QtGui import QGuiApplication, QWindow
-    from client_single_instance import SingleInstanceGuard, instance_namespace, restore_main_window
+    from client_single_instance import SingleInstanceGuard, SingleInstanceError, instance_namespace, restore_main_window
     root = Path(directory)
     app = QGuiApplication([])
     guard = SingleInstanceGuard(instance_namespace(production=False,frozen=False,sandbox=root), app)
     try:
-        primary = guard.start()
+        try:
+            primary = guard.start()
+        except SingleInstanceError as error:
+            (root / (tag + '.role')).write_text(json.dumps(dict(primary=False,error=str(error))),encoding='utf-8')
+            return 2
         result = dict(primary=primary,pid=os.getpid())
         (root / (tag + '.role')).write_text(json.dumps(result),encoding='utf-8')
         if not primary:
@@ -26,10 +30,13 @@ def child(directory, tag, once=False, crash=False):
         # A hidden OWNED window stands in for main; no product object created.
         window = QWindow(); window.setTitle('Owned single-instance test')
         def activate():
+            if activation != 'normal':
+                return activation
             restore_main_window(window)
             (root / 'activated.json').write_text(json.dumps(dict(visible=window.isVisible(),
                 minimized=window.visibility()==QWindow.Minimized)),encoding='utf-8')
-        guard.activationRequested.connect(activate)
+            return 'restored' if window.isVisible() and window.visibility()!=QWindow.Minimized else 'unavailable'
+        guard.setActivationHandler(activate)
         if crash:
             os._exit(23)  # OS must release this owned process's mutex/pipe.
         if once:
@@ -90,6 +97,24 @@ class SingleInstanceTests(unittest.TestCase):
         roles = [self.wait_json(name+'.role')['primary'] for name in ('race-a','race-b')]
         self.assertEqual(sorted(roles),[False,True])
 
+    def test_closing_primary_gives_feedback_instead_of_silent_success(self):
+        self.spawn('closing','closing');self.assertTrue(self.wait_json('closing.role')['primary'])
+        second=self.spawn('blocked');role=self.wait_json('blocked.role')
+        self.assertFalse(role['primary']);self.assertIn('正在退出',role['error'])
+        self.assertEqual(second.wait(timeout=4),2)
+        self.assertFalse((self.root/'activated.json').exists())
+
+    def test_unavailable_primary_and_unproven_legacy_ack_are_not_success(self):
+        self.spawn('unavailable','unavailable');self.assertTrue(self.wait_json('unavailable.role')['primary'])
+        second=self.spawn('unconfirmed');role=self.wait_json('unconfirmed.role')
+        self.assertFalse(role['primary']);self.assertIn('未能恢复可见窗口',role['error'])
+        self.assertEqual(second.wait(timeout=4),2)
+        from client_single_instance import SingleInstanceGuard,SingleInstanceError,RESULT_V2,ACK
+        with self.assertRaisesRegex(SingleInstanceError,'正在启动'):
+            SingleInstanceGuard._activation_result(RESULT_V2+b'starting\n')
+        with self.assertRaisesRegex(SingleInstanceError,'旧版已收到恢复请求'):
+            SingleInstanceGuard._activation_result(ACK)
+
     def test_crashed_owned_primary_can_be_started_again(self):
         crashed = self.spawn('crashed','crash')
         self.assertTrue(self.wait_json('crashed.role')['primary']); self.assertEqual(crashed.wait(timeout=4),23)
@@ -120,5 +145,6 @@ class SingleInstanceTests(unittest.TestCase):
 
 if __name__=='__main__':
     if len(sys.argv)>1 and sys.argv[1]=='child':
-        raise SystemExit(child(sys.argv[2],sys.argv[3],once='once' in sys.argv[4:],crash='crash' in sys.argv[4:]))
+        activation=next((value for value in sys.argv[4:] if value in {'closing','unavailable'}),'normal')
+        raise SystemExit(child(sys.argv[2],sys.argv[3],once='once' in sys.argv[4:],crash='crash' in sys.argv[4:],activation=activation))
     unittest.main()

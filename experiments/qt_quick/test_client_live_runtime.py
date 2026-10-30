@@ -29,6 +29,8 @@ class FixtureCapture:
         return dict(enabled=self.enabled, hwnd="synthetic-fixture", region=list(self.roi))
     def bind(self, hwnd, region):
         self.disable(); self.roi = tuple(region)
+    def bindFullClient(self, hwnd):
+        self.disable(); self.roi = (0, 0, self.frame.shape[1], self.frame.shape[0])
     def enable(self):
         self.enabled = True; self.enable_count += 1; return True
     def disable(self):

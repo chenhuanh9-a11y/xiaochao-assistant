@@ -8,7 +8,7 @@ import shutil
 import sys
 from uuid import uuid4
 from PySide6.QtCore import QTimer, QUrl, QThreadPool, Qt
-from PySide6.QtGui import QFont, QFontDatabase, QGuiApplication, QIcon
+from PySide6.QtGui import QFont, QFontDatabase, QGuiApplication, QIcon, QWindow
 from PySide6.QtQml import QQmlApplicationEngine
 from client_paths import APP_ROOT, DEFAULT_SANDBOX, FROZEN, PRODUCTION, RESOURCE_ROOT, WORK_ROOT, owned_sandbox, runtime_paths
 
@@ -67,8 +67,12 @@ class QtClient:
         from client_chest_auto_tap import ChestAutoTapService
         from client_preview import PreviewService
         from client_control_snap import ControlSnap
+        from client_problems import ProblemsService
         self.app, self.sandbox = app, owned_sandbox(sandbox)
         self.paths = runtime_paths(self.sandbox)
+        from client_lifecycle import LifecycleJournal
+        self.lifecycle = LifecycleJournal(self.paths.work_root)
+        self.lifecycle.record_event(dict(stage="client-created"))
         self._closed = False
         self.settings = SettingsService(self.sandbox)
         self.custom_galleries = CustomGalleryService(self.sandbox)
@@ -111,6 +115,7 @@ class QtClient:
             resources=self.resources, session=self.session, windows=self.windows,
             native_input=self.input, capture=self.capture, runtime=self.runtime, images=self.images,
             **({"window_catalog": lambda: []} if probe_output else {}))
+        self.coordinator.lifecycleEvent.connect(self.lifecycle.record_event)
         self.feedback = UiFeedback(settings=self.settings, windows=self.windows, session=self.session,
             coordinator=self.coordinator, enabled=not bool(probe_output))
         self.onboarding = OnboardingService(settings=self.settings, windows=self.windows,
@@ -131,10 +136,13 @@ class QtClient:
             self.resources.recoveryCloseRequested.connect(self.coordinator.requestClose)
             self._read_recovery_receipt()
         self.info = ClientInfoService(self.sandbox, fetch=info_fetch)
+        self.problems = ProblemsService(self.paths, build_fingerprint=self.info._build_fingerprint,
+            source_commit=self.info._package_metadata.get('qtSourceCommit') or self.info._package_metadata.get('releaseReportSourceCommit') or '')
+        self.coordinator.errorReported.connect(self.problems.record)
         self.info.setProviders(session=self.session, resources=self.resources, input=self.input,
-                               coordinator=self.coordinator)
+                               coordinator=self.coordinator, problems=self.problems)
         self.coordinator.close_writers = (self.custom_galleries, self.info, self.online_packages,
-                                         self.backend, self.route_choices)
+                                         self.backend, self.route_choices, self.problems)
         self.custom_galleries.setUseHandler(self._use_custom_gallery)
         self.custom_galleries.galleriesChanged.connect(self._custom_gallery_changed)
         self.custom_galleries.changed.connect(self._sync_custom_gallery_active)
@@ -155,7 +163,7 @@ class QtClient:
             windows=self.windows, clientCoordinator=self.coordinator, infoService=self.info,
             customGalleryService=self.custom_galleries, onlinePackageService=self.online_packages,
             onboardingService=self.onboarding, chestAutoTapService=self.chest_auto_tap,
-            previewService=self.preview).items():
+            previewService=self.preview, problemService=self.problems).items():
             context.setContextProperty(key, value)
         for name, file in (("main", "Client.qml"), ("controls", "ClientControls.qml"),
                            ("reference", "ClientReference.qml"), ("aligned", "ClientAligned.qml"),
@@ -303,7 +311,10 @@ class QtClient:
     def shutdown(self):
         if self._closed:
             return
+        self.lifecycle.record_event(dict(stage="shutdown-entered", closing=self.coordinator.closing,
+                                         closeReady=self.coordinator.closeReady))
         self._closed = True
+        self.problems.shutdown()
         self.chest_auto_tap.shutdown()
         if self._import_handoff is not None and not self.coordinator.closeReady:
             self._import_handoff.cancel()
@@ -323,6 +334,8 @@ class QtClient:
         self.custom_galleries.shutdown()
         self.online_packages.shutdown()
         self.windows.shutdown()
+        self.lifecycle.record_event(dict(stage="shutdown-completed", closing=self.coordinator.closing,
+                                         closeReady=self.coordinator.closeReady))
 
 
 def main():
@@ -401,9 +414,15 @@ def main():
         client = holder.get("client")
         if client is None:
             holder["activationPending"] = True
-        elif not client.coordinator.closing:
+            return 'starting'
+        if client.coordinator.closing:
+            return 'closing'
+        try:
             restore_main_window(client.main)
-    guard.activationRequested.connect(restore_existing_main)
+            return 'restored' if client.main.isVisible() and client.main.visibility() != QWindow.Minimized else 'unavailable'
+        except (RuntimeError, AttributeError):
+            return 'unavailable'
+    guard.setActivationHandler(restore_existing_main)
     def open_client(sandbox):
         try:
             local_manifest = (lambda url: dict(schemaVersion=1, platform="windows", version="1.0.5",
@@ -411,6 +430,7 @@ def main():
             client = holder["client"] = QtClient(app, sandbox, probe_output=args.probe_output, info_fetch=local_manifest)
             if holder.pop("activationPending", False):
                 restore_main_window(client.main)
+            app.aboutToQuit.connect(lambda: client.lifecycle.record_event(dict(stage="about-to-quit")))
             app.aboutToQuit.connect(client.shutdown)
             if "boot" in holder:
                 holder["boot"].rootObjects()[0].hide()
@@ -441,10 +461,17 @@ def main():
         pool.start(job)
         app.aboutToQuit.connect(pool.waitForDone)
     try:
-        return app.exec()
+        exit_code = app.exec()
+        client = holder.get("client")
+        if client is not None:
+            client.lifecycle.record_event(dict(stage="app-loop-return", exitCode=exit_code))
+        return exit_code
     finally:
         # Keep ownership through aboutToQuit's existing writer-drain callbacks.
         guard.close()
+        client = holder.get("client")
+        if client is not None:
+            client.lifecycle.record_event(dict(stage="instance-guard-closed"))
 
 
 if __name__ == "__main__":
