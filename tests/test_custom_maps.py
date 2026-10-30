@@ -213,7 +213,10 @@ class GalleryTests(unittest.TestCase):
             (folder / "custom-routes.json").write_text(json.dumps(dict(schema="xingtu-custom-routes-v1", maps={})))
             store = GalleryStore(path)
             self.assertTrue(store.migration_error)
-            self.assertEqual(path.read_bytes(), b"unreadable existing galleries")
+            # The unreadable file is set aside intact (not overwritten) before any save.
+            [backup] = folder.glob("g.unreadable-*.json")
+            self.assertEqual(backup.read_bytes(), b"unreadable existing galleries")
+            self.assertIn(backup.name, store.load_error)
 
     def test_default_is_readonly_and_player_galleries_persist(self):
         with tempfile.TemporaryDirectory() as folder:
