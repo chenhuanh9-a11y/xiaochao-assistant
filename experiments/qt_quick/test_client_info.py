@@ -6,8 +6,10 @@ import tempfile
 import threading
 import time
 import unittest
+import zipfile
 from dataclasses import replace
 from unittest.mock import patch
+from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QObject, QMetaObject, QUrl
 from PySide6.QtGui import QGuiApplication
@@ -122,19 +124,45 @@ class InfoTests(unittest.TestCase):
 
     def test_diagnostics_receipt_selected_path_and_no_overwrite(self):
         service = self.service()
-        path = self.root / "chosen.json"
+        path = self.root / "chosen.zip"
         service.exportDiagnosticsTo(QUrl.fromLocalFile(str(path)).toString())
         self.wait(lambda: not service.checking)
         self.assertTrue(service.diagnosticsReceipt["success"])
         self.assertEqual(service.diagnosticsReceipt["path"], str(path))
         payload = path.read_bytes()
-        self.assertEqual(json.loads(payload)["schema"], "xingtu-qt-client-diagnostics-v1")
+        with zipfile.ZipFile(path) as archive:
+            self.assertEqual(json.loads(archive.read("qt-client-summary.json"))["schema"], "xingtu-qt-client-diagnostics-v1")
+            manifest = json.loads(archive.read("diagnostic-manifest.json"))
+            self.assertTrue(manifest["textOnly"])
+            self.assertEqual(manifest["failureEvidence"]["status"], "not-requested")
+            self.assertFalse(any(name.startswith("evidence/") for name in archive.namelist()))
         service.exportDiagnosticsTo(QUrl.fromLocalFile(str(path)).toString())
         self.wait(lambda: not service.checking)
         self.assertFalse(service.diagnosticsReceipt["success"])
         self.assertEqual(path.read_bytes(), payload)
-        service.exportDiagnosticsTo("https://example.test/report.json")
+        service.exportDiagnosticsTo("https://example.test/report.zip")
         self.assertTrue(service.hasError)
+        self.assertEqual(self.calls, [])
+
+    def test_zip_uses_existing_safe_window_snapshot_and_saved_frame_opt_in(self):
+        service = self.service()
+        service.setProviders(
+            input=SimpleNamespace(enabled=False, snapshot=dict(hwnd="123", readPermission="unknown")),
+            coordinator=SimpleNamespace(boundWindow="123", gameWindows=[dict(hwnd="123", pid=456,
+                title="private window title", width=1280, height=720, dpi=96, clientBounds=[0, 0, 1280, 720])]))
+        service.setIncludeFailureEvidence(True)
+        path = self.root / "with-existing-evidence.zip"
+        service.exportDiagnosticsTo(QUrl.fromLocalFile(str(path)).toString())
+        self.wait(lambda: not service.checking)
+        self.assertTrue(service.diagnosticsReceipt["success"])
+        with zipfile.ZipFile(path) as archive:
+            manifest = json.loads(archive.read("diagnostic-manifest.json"))
+            self.assertEqual(manifest["windowEnvironment"]["candidates"],
+                             [dict(width=1280, height=720, dpi=96, clientBounds=[0, 0, 1280, 720])])
+            self.assertEqual(manifest["failureEvidence"]["status"], "no-matching-saved-frame")
+            self.assertEqual(len(manifest["failureEvidence"]["journals"]), 2)
+            self.assertNotIn("private window title", json.dumps(manifest))
+            self.assertEqual(manifest["windowEnvironment"]["readPermission"], "unknown")
         self.assertEqual(self.calls, [])
 
     def test_qml_local_check_history_and_plain_notes_no_warnings(self):

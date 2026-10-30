@@ -1,4 +1,4 @@
-"""Freeze the opt-in Qt TEST product, verify it, then produce a private Setup.
+"""Freeze an allowlisted Qt product, verify it, then produce a private Setup.
 
 No install, executable launch, portable ZIP, network call or release operation.
 --check-environment and --plan-only are read-only. A build needs a clean exact
@@ -29,10 +29,13 @@ PRODUCT = "XingtuQtClientTest"
 INSTANCES = {
     "client": dict(appId="AF19AFD9-3016-44C9-9D20-6F216C5D8C51", appName="Xingtu Qt Test Client",
                    installFolder="XingtuQtClientTest", startMenuGroup="Xingtu Qt Test Client",
-                   setupPrefix="XingtuQtTest-Setup", versionSuffix="-qt-test"),
+                   setupPrefix="XingtuQtTest-Setup", versionSuffix="-qt-test", product=PRODUCT),
     "layout-preview": dict(appId="D4B8E562-EA62-4A43-AF1D-043A5646971E", appName="Xingtu Qt Layout Preview",
                            installFolder="XingtuQtLayoutPreview", startMenuGroup="Xingtu Qt Layout Preview",
-                           setupPrefix="XingtuQtLayout-Setup", versionSuffix="-qt-layout-test"),
+                           setupPrefix="XingtuQtLayout-Setup", versionSuffix="-qt-layout-test", product=PRODUCT),
+    "production": dict(appId="D04394A0-DACE-4FF9-874D-3DCB43EE53D1", appName="星图",
+                       installFolder="XiaochaoAssistant", startMenuGroup="星图",
+                       setupPrefix="星图-Qt-Setup", versionSuffix="-qt", product="第五人格小抄助手"),
 }
 QML_MODULES = ("QtQml", "QtQuick", "QtQuick/Controls", "QtQuick/Controls/Basic",
                "QtQuick/Dialogs", "QtQuick/Dialogs/quickimpl", "QtQuick/Layouts")
@@ -68,21 +71,82 @@ def sha256(path):
     return digest.hexdigest()
 
 
-def qt_manifest():
+def qt_manifest(product=PRODUCT):
     # Preserve scoped default namespaces and unprefixed DOM tags. PyInstaller
     # locates security elements by tagName; ElementTree's nsN prefixes create
     # duplicate requestedExecutionLevel nodes during its manifest adjustment.
     with minidom.parse(str(TOOLS / "identityv-assistant.manifest")) as document:
-        document.getElementsByTagName("assemblyIdentity")[0].setAttribute("name", "Xingtu.QtClientTest")
+        document.getElementsByTagName("assemblyIdentity")[0].setAttribute(
+            "name", "Xingtu.Assistant" if product != PRODUCT else "Xingtu.QtClientTest")
         description = document.getElementsByTagName("description")[0]
         for child in list(description.childNodes):
             description.removeChild(child)
-        description.appendChild(document.createTextNode("Xingtu Qt Test Client"))
+        description.appendChild(document.createTextNode("星图" if product != PRODUCT else "Xingtu Qt Test Client"))
         data = document.toxml(encoding="utf-8")
     verify_manifest_xml(data)
     from PyInstaller.utils.win32.winmanifest import create_application_manifest
     verify_manifest_xml(create_application_manifest(data, uac_admin=True, uac_uiaccess=False))
     return data
+
+
+def verify_invoker_manifest(executable):
+    """Read the helper PE without loading it; it must inherit, never elevate."""
+    import pefile
+    count = 0
+    with pefile.PE(str(executable)) as pe:
+        resources = getattr(pe, "DIRECTORY_ENTRY_RESOURCE", None)
+        for resource in resources.entries if resources else ():
+            if resource.id != 24:
+                continue
+            for entry in resource.directory.entries:
+                if entry.id != 1:
+                    continue
+                for language in entry.directory.entries:
+                    data = language.data.struct
+                    with minidom.parseString(pe.get_data(data.OffsetToData, data.Size)) as document:
+                        levels = document.getElementsByTagNameNS("urn:schemas-microsoft-com:asm.v3", "requestedExecutionLevel")
+                        if (len(levels) != 1 or levels[0].getAttribute("level") != "asInvoker"
+                                or levels[0].getAttribute("uiAccess") != "false"):
+                            raise ValueError("Recovery helper must use asInvoker/uiAccess=false")
+                    count += 1
+    if not count:
+        raise ValueError("Recovery helper has no process manifest (RT_MANIFEST #1)")
+    return count
+
+
+def assemble_recovery_helper(output, stage, environment_vars):
+    """One separate helper freeze in the same build chain; no EXE launch."""
+    product = "star-map-recovery-helper"
+    subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
+                    "--distpath", str(output / "helper-freeze"),
+                    "--workpath", str(output / "helper-pyinstaller"),
+                    str(TOOLS / "qt-recovery-helper.spec")], cwd=ROOT, env=environment_vars, check=True)
+    helper_stage = output / "helper-freeze" / product
+    executable = helper_stage / (product + ".exe")
+    manifests = verify_invoker_manifest(executable)
+    runtime = helper_stage / "_star_map_recovery_runtime"
+    if not runtime.is_dir() or {p.name for p in helper_stage.iterdir()} != {executable.name, runtime.name}:
+        raise ValueError("Recovery helper must have a separate exact runtime directory")
+    files = {}
+    for path in helper_stage.rglob("*"):
+        if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
+            raise ValueError("Recovery helper output must not contain links")
+        if path.is_file():
+            relative = path.relative_to(helper_stage).as_posix()
+            files[relative] = dict(bytes=path.stat().st_size, sha256=sha256(path))
+    for name in (executable.name, runtime.name):
+        if (stage / name).exists():
+            raise ValueError("Recovery helper would replace an existing staged path")
+    shutil.copy2(executable, stage / executable.name)
+    shutil.copytree(runtime, stage / runtime.name)
+    for name, row in files.items():
+        path = stage / name
+        if path.stat().st_size != row["bytes"] or sha256(path) != row["sha256"]:
+            raise ValueError(f"Recovery helper changed during staging: {name}")
+    verify_invoker_manifest(stage / executable.name)
+    return dict(included=True, product=product, executable=executable.name,
+                runtimeDirectory=runtime.name, invokerManifests=manifests, files=files,
+                launched=False, nativeParentWaitTested=False)
 
 
 def notice_inputs():
@@ -371,9 +435,9 @@ def validate_resources(root, inventory):
     return declaration, retained, omitted, replaced, contract
 
 
-def verify_frozen(stage, resources, qml_names):
+def verify_frozen(stage, resources, qml_names, product=PRODUCT):
     internal = stage / "_internal"
-    executable = stage / (PRODUCT + ".exe")
+    executable = stage / (product + ".exe")
     manifests = verify_administrator_manifest(executable)
     for name, row in resources.items():
         path = internal / name
@@ -406,12 +470,91 @@ def verify_frozen(stage, resources, qml_names):
                 resourceFiles=len(resources), clientQmlFiles=len(qml_names), tkRuntimeAbsent=True)
 
 
+# Product identity travels with program updates, even inside the resource tree.
+_PROGRAM_IDENTITY = {"_internal/version.json", "_internal/installation-profile.json",
+                     "_internal/references/build-fingerprint.txt"}
+RESOURCE_INSTALLATION_POLICY = dict(existingBasePlane="preserve-whole-plane",
+    missingBasePlane="install-whole-bundled-baseline", partialExistingPlane="preserve-no-repair",
+    editorBase="seed-whole-family-only-when-both-outer-and-internal-absent",
+    resourceVersionMeaning="bundled-baseline; existing installed resource declarations remain authoritative")
+
+
+def resource_file_family(relative):
+    """Strict families used by the generated production [Files] projection."""
+    relative = relative.casefold()
+    if relative in _PROGRAM_IDENTITY:
+        return "program"
+    if relative.startswith("_internal/assets/custom-maps/"):
+        return "editor"
+    if (relative.startswith(("_internal/assets/", "_internal/references/", "_internal/recognition/"))
+            or relative == "_internal/difficult-native-manifest.json"):
+        return "base"
+    return "program"
+
+
+def production_file_projection(stage, resources):
+    """Read a clean assembled stage; every resource belongs to exactly one plane."""
+    stage = Path(stage).resolve()
+    families = dict(program=[], base=[], editor=[])
+    seen = set()
+    for path in sorted(stage.rglob("*")):
+        if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
+            raise ValueError("Production stage must not contain links")
+        if not path.is_file():
+            continue
+        name = path.relative_to(stage).as_posix()
+        if any(char in name for char in ('"', ';', '\r', '\n')) or name.lower().startswith("work/"):
+            raise ValueError(f"Invalid staged program/resource path: {name}")
+        if name.casefold() in seen:
+            raise ValueError("Case-colliding staged files")
+        seen.add(name.casefold())
+        families[resource_file_family(name)].append(name)
+    expected = {"_internal/" + name for name in resources
+                if resource_file_family("_internal/" + name) != "program"}
+    actual = set(families["base"]) | set(families["editor"])
+    if actual != expected:
+        raise ValueError(f"Resource projection differs from exact inventory: missing={sorted(expected-actual)}, extra={sorted(actual-expected)}")
+    return families
+
+
+def stage_production_fingerprint(resource_stage, resources, source_commit):
+    """Replace only program identity; never label Qt with a baseline Tk hash."""
+    name = "references/build-fingerprint.txt"
+    previous = resources.get(name, {}).get("sha256")
+    value = source_commit[:8].upper()
+    data = (value + "\n").encode("ascii")
+    path = Path(resource_stage) / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    resources[name] = dict(bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
+    return dict(buildFingerprint=value, fingerprintScheme="source-commit-prefix",
+                replacedBaselineFingerprintSha256=previous)
+
+
+def write_production_files_include(stage, resources, output):
+    families = production_file_projection(stage, resources)
+    lines = ["; Generated exact production projection; no directory wildcard copies."]
+    for family, names in families.items():
+        for name in names:
+            source = name.replace("/", "\\")
+            parent = str(PurePosixPath(name).parent)
+            destination = "{app}" + ("\\" + parent.replace("/", "\\") if parent != "." else "")
+            check = {"base": "; Check: InstallBaseResourcePlane", "editor": "; Check: InstallEditorResourceFamily"}.get(family, "")
+            lines.append(f'Source: "{{#StageDir}}\\{source}"; DestDir: "{destination}"; Flags: ignoreversion{check}')
+    include = Path(output) / "production-files.iss"
+    include.write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
+    report = dict(schema="xingtu-qt-installer-projection-v1", families=families,
+                  policy=RESOURCE_INSTALLATION_POLICY, includeSha256=sha256(include))
+    (Path(output) / "production-file-projection.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    return include, report
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check-environment", action="store_true")
     parser.add_argument("--plan-only", action="store_true", help="Validate and print inputs without writing/building")
     parser.add_argument("--instance", choices=tuple(INSTANCES), default="client",
-                        help="Installer identity only; layout-preview installs separately from the first Qt test client")
+                        help="Allowlisted installer/runtime identity; production upgrades the original per-user 星图 installation")
     parser.add_argument("--source-commit")
     parser.add_argument("--resource-root", type=Path, help="Exact isolated assets/references root, not its parent")
     parser.add_argument("--resource-inventory", type=Path)
@@ -435,7 +578,13 @@ def main(argv=None):
     support = source_support_assets(resources)
     resources = dict(resources, **support)
     instance = dict(id=args.instance, **INSTANCES[args.instance])
-    output_name = source["commit"][:12] + ("-layout-preview" if args.instance == "layout-preview" else "")
+    product = instance["product"]
+    instance.update(defaultDirName=("{localappdata}\\Programs\\XiaochaoAssistant" if args.instance == "production"
+                                    else "{autopf}\\" + instance["installFolder"]),
+                    usePreviousAppDir=args.instance == "production",
+                    installerPrivilege="lowest" if args.instance == "production" else "admin",
+                    runtimeDataProfile="production" if args.instance == "production" else "isolated")
+    output_name = source["commit"][:12] + ("-" + args.instance if args.instance != "client" else "")
     output = (args.output_dir or ROOT / "work/qt-setup" / output_name).resolve()
     if (not any(output.is_relative_to(ROOT / folder) for folder in ("work", "dist"))
             or output in (ROOT / "work", ROOT / "dist") or output.exists()):
@@ -447,8 +596,10 @@ def main(argv=None):
     numeric = str(version["numericVersion"])
     if not re.fullmatch(r"[0-9A-Za-z.+_-]+", display) or not re.fullmatch(r"\d+\.\d+\.\d+\.\d+", numeric):
         raise ValueError("Version metadata is not safe/valid for Setup")
-    plan = dict(schema="xingtu-qt-setup-build-v1", product=PRODUCT, source=source,
+    plan = dict(schema="xingtu-qt-setup-build-v1", product=product, source=source,
                 installerInstance=instance,
+                resourceInstallationPolicy=RESOURCE_INSTALLATION_POLICY if args.instance == "production" else None,
+                recoveryHelper=dict(included=args.instance == "production", product="star-map-recovery-helper"),
                 sourceRoot=str(ROOT), version=version, profileId=LIGHT_PROFILE,
                 resourceRoot=str(args.resource_root.resolve()), resourceVersion=declaration["resourceVersion"],
                 resourceInventorySha256=sha256(args.resource_inventory), resourceFiles=len(resources),
@@ -457,6 +608,11 @@ def main(argv=None):
                 noticeInputs=notices, sourceSupportAssets=support,
                 action="plan-only" if args.plan_only else "build-setup-only",
                 buildCompleted=False, installPerformed=False, executableLaunched=False, published=False)
+    if args.instance == "production":
+        plan.update(buildFingerprint=source["commit"][:8].upper(), fingerprintScheme="source-commit-prefix",
+                    replacedBaselineFingerprintSha256=resources.get("references/build-fingerprint.txt", {}).get("sha256"))
+        if "references/build-fingerprint.txt" in resources:
+            plan["replacedResourceMetadata"].append("references/build-fingerprint.txt")
     if args.plan_only:
         print(json.dumps(plan, indent=2))
         return 0
@@ -469,17 +625,25 @@ def main(argv=None):
         shutil.copy2(source_path, destination)
         if sha256(destination) != row["sha256"].lower():
             raise ValueError(f"Resource changed while staging: {name}")
-    profile = dict(profileId=LIGHT_PROFILE, product=PRODUCT, sourceCommit=source["commit"],
+    fingerprint = (stage_production_fingerprint(resource_stage, resources, source["commit"])
+                   if args.instance == "production" else {})
+    if fingerprint:
+        plan.update(fingerprint)
+        plan["resourceFiles"] = len(resources)
+    profile = dict(profileId=LIGHT_PROFILE, product=product, sourceCommit=source["commit"],
                    installerInstance=instance,
+                   resourceInstallationPolicy=RESOURCE_INSTALLATION_POLICY if args.instance == "production" else None,
+                   recoveryHelper=dict(included=args.instance == "production", executable="star-map-recovery-helper.exe"),
                    resourceVersion=declaration["resourceVersion"], authorDisplayPackagesIncluded=[],
                    authorDisplayFilesIncluded=0, omittedAuthorDisplayFiles=len(omitted),
                    omittedAuthorDisplayBytes=sum(row["bytes"] for row in omitted.values()),
                    publicDownloadConfigured=False, localMapImportPreserved=True)
+    profile.update(fingerprint)
     profile_path = output / "installation-profile.json"
     profile_path.write_text(json.dumps(profile, indent=2), encoding="utf-8")
     manifest_path = output / "qt-client.manifest"
-    manifest_path.write_bytes(qt_manifest())
-    inputs = dict(sourceRoot=str(ROOT), product=PRODUCT, resourceStage=str(resource_stage),
+    manifest_path.write_bytes(qt_manifest(product))
+    inputs = dict(sourceRoot=str(ROOT), product=product, resourceStage=str(resource_stage),
                   resources=resources, profilePath=str(profile_path), manifestPath=str(manifest_path))
     input_path = output / "freeze-inputs.json"
     input_path.write_text(json.dumps(inputs, indent=2), encoding="utf-8")
@@ -490,16 +654,34 @@ def main(argv=None):
     subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
                     "--distpath", str(output / "freeze"), "--workpath", str(output / "pyinstaller"),
                     str(TOOLS / "qt-client.spec")], cwd=ROOT, env=environment_vars, check=True)
-    stage = output / "freeze" / PRODUCT
+    stage = output / "freeze" / product
+    if args.instance == "production":
+        plan["recoveryHelper"] = assemble_recovery_helper(output, stage, environment_vars)
     plan["qtClosure"] = prune_unneeded_qt(stage)
     plan["notices"] = collect_notices(stage, plan["qtClosure"])
-    plan["frozenVerification"] = verify_frozen(stage, resources, [p.name for p in qt.glob("*.qml")])
+    plan["frozenVerification"] = verify_frozen(stage, resources, [p.name for p in qt.glob("*.qml")], product)
     # Root metadata is consumed by first-run sandbox seeding; source version is
     # authoritative. No user work/config, screenshots or import receipts copied.
     shutil.copy2(ROOT / "version.json", stage / "version.json")
     shutil.copy2(profile_path, stage / "installation-profile.json")
     if source_identity(args.source_commit) != source:
         raise ValueError("Source changed during freeze; do not create a Setup")
+    production_defines = []
+    if args.instance == "production":
+        # Relative program ownership drives the existing exact-file backup and
+        # failed-upgrade rollback. No work/settings/imports are frozen or owned.
+        ownership = stage / "_installer-owned-files.txt"
+        owned_files = sorted(p.relative_to(stage).as_posix().replace("/", "\\")
+                             for p in stage.rglob("*") if p.is_file())
+        if any(name.lower() == "work" or name.lower().startswith("work\\") for name in owned_files):
+            raise ValueError("Production ownership must not contain user work/data")
+        owned_files.append(ownership.name)
+        ownership.write_text("\n".join(owned_files) + "\n", encoding="utf-8-sig")
+        plan["programOwnership"] = dict(files=len(owned_files), sha256=sha256(ownership),
+                                        backup="{app}/work/installer-backups", userDataOwned=False)
+        include, projection = write_production_files_include(stage, resources, output)
+        plan["fileProjection"] = projection
+        production_defines = ["/DProductionInstaller", f"/DProductionFilesInclude={include}"]
     setup_name = f"{instance['setupPrefix']}-{display}-{source['commit'][:12]}"
     subprocess.run([str(args.iscc.resolve()), f"/DStageDir={stage}", f"/DSetupOutputDir={output / 'setup'}",
                     f"/DSetupName={setup_name}", f"/DDisplayVersion={display}", f"/DNumericVersion={numeric}",
@@ -507,12 +689,14 @@ def main(argv=None):
                     f"/DInstallerAppName={instance['appName']}",
                     f"/DInstallerFolder={instance['installFolder']}",
                     f"/DInstallerGroup={instance['startMenuGroup']}",
+                    f"/DInstallerExeName={product}.exe",
+                    *production_defines,
                     str(TOOLS / "qt-client.iss")], cwd=ROOT, check=True)
     setup = output / "setup" / (setup_name + ".exe")
     if not setup.is_file():
         raise ValueError("Inno Setup completed without the expected Setup artifact")
     plan["installer"] = dict(fileName=setup.name, bytes=setup.stat().st_size, sha256=sha256(setup))
-    plan["recipes"] = {p.name: sha256(p) for p in (Path(__file__), TOOLS / "qt-client.spec", TOOLS / "qt-client.iss")}
+    plan["recipes"] = {p.name: sha256(p) for p in (Path(__file__), TOOLS / "qt-client.spec", TOOLS / "qt-recovery-helper.spec", TOOLS / "qt-client.iss")}
     plan["source"] = source_identity(args.source_commit)
     plan["buildCompleted"] = True
     record_path.write_text(json.dumps(plan, indent=2), encoding="utf-8")

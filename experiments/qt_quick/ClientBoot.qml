@@ -5,7 +5,7 @@ import QtQuick.Layouts
 ApplicationWindow {
     id: boot
     objectName: "qtClientBoot"
-    width: 520; height: 260; visible: true; title: "星图 · Qt 私测"
+    width: 520; height: 260; visible: true; title: productionProduct ? "星图" : "星图 · Qt 私测"
     color: "#f3f6fc"; font.family: "Microsoft YaHei UI"
     property string statusText: "正在准备独立测试数据…"
     ColumnLayout {

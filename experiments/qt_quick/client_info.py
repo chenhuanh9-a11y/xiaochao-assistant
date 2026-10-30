@@ -4,14 +4,16 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import platform
+import re
 import sys
 from urllib.parse import urlsplit
 from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 from backend import ROOT, Work
-from client_paths import WORK_ROOT
+from client_paths import PRODUCTION, WORK_ROOT, runtime_paths
 from PySide6.QtCore import QThreadPool, Qt
 from update_service import UpdateService, DOWNLOAD_HOSTS
+from diagnostic_export import export_safe_diagnostic_bundle, diagnostic_package_metadata
 
 
 class ClientInfoService(QObject):
@@ -19,12 +21,29 @@ class ClientInfoService(QObject):
 
     def __init__(self, sandbox, *, fetch=None, open_url=None):
         super().__init__()
-        self.sandbox = Path(sandbox).resolve()
-        if not self.sandbox.is_relative_to(WORK_ROOT) or not (self.sandbox / ".qt-lab-owner").is_file():
-            raise ValueError("notice state requires the isolated client sandbox")
+        self.paths = runtime_paths(sandbox)
+        self.sandbox = self.paths.installation_root
         version = json.loads((ROOT / "version.json").read_text(encoding="utf-8"))
         self._version = version.get("displayVersion", "unknown")
-        self._service = UpdateService(self._version, self.sandbox / "qt-update-state.json",
+        self._app_version = version.get("version", "unknown")
+        self._build_fingerprint = "UNKNOWN"
+        self._package_metadata = {}
+        profile_path = self.paths.resource_root / "installation-profile.json"
+        try:
+            if profile_path.stat().st_size <= 1024 * 1024:
+                profile = json.loads(profile_path.read_text(encoding="utf-8"))
+                commit = profile.get("sourceCommit", "")
+                if isinstance(commit, str) and re.fullmatch(r"[0-9a-fA-F]{40}", commit):
+                    self._build_fingerprint = commit[:8].upper()
+                    self._package_metadata = dict(qtSourceCommit=commit, qtFingerprintScheme="source-commit-prefix",
+                        qtInstallerInstance=(profile.get("installerInstance") or {}).get("id"),
+                        resourceVersion=profile.get("resourceVersion"))
+        except (OSError, ValueError, AttributeError, TypeError):
+            pass
+        self._package_metadata = dict(diagnostic_package_metadata(self.paths.installation_root,
+            app_version=self._app_version, build_fingerprint=self._build_fingerprint), **self._package_metadata)
+        self._include_failure_evidence = False
+        self._service = UpdateService(self._version, self.paths.update_state_path,
                                       **({"fetch": fetch} if fetch is not None else {}))
         self._message = "尚未检查更新"
         self._writing = False
@@ -42,7 +61,7 @@ class ClientInfoService(QObject):
         self._timer.setInterval(100)
         self._timer.timeout.connect(self._poll)
 
-    version = Property(str, lambda s: s._version + " · Qt 迁移测试", constant=True)
+    version = Property(str, lambda s: s._version + ("" if PRODUCTION else " · Qt 迁移测试"), constant=True)
     message = Property(str, lambda s: s._message, notify=changed)
     checking = Property(bool, lambda s: s._service.phase == "checking" or s._writing, notify=changed)
     updatePhase = Property(str, lambda s: s._service.phase, notify=changed)
@@ -51,6 +70,7 @@ class ClientInfoService(QObject):
     hasUnread = Property(bool, lambda s: s._service.has_unread, notify=changed)
     skippedVersion = Property(str, lambda s: s._service.skipped_version, notify=changed)
     historyMessage = Property(str, lambda s: s._history_message, notify=changed)
+    includeFailureEvidence = Property(bool, lambda s: s._include_failure_evidence, notify=changed)
     diagnosticsReceipt = Property("QVariantMap", lambda s: dict(s._diagnostics), notify=changed)
     release = Property("QVariantMap", lambda s: s._release_row(s._service.latest) if s._service.latest else {}, notify=changed)
     history = Property("QVariantList", lambda s: [s._release_row(r) for r in s._service.history
@@ -166,15 +186,21 @@ class ClientInfoService(QObject):
             self._message, self._action_error = str(error) + "；请重试", True
         self.changed.emit()
 
+    @Slot(bool)
+    def setIncludeFailureEvidence(self, include):
+        if not self._closed and not self.checking:
+            self._include_failure_evidence = bool(include)
+            self.changed.emit()
+
     @Slot()
     def exportDiagnostics(self):
-        destination = self.sandbox / "diagnostics" / ("qt-client-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".json")
+        destination = self.paths.installation_root / "outputs" / "诊断日志" / ("qt-client-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".zip")
         self._export_diagnostics(destination)
 
     @Slot(str)
     def exportDiagnosticsTo(self, value):
         url = QUrl(value)
-        if not url.isLocalFile() or Path(url.toLocalFile()).suffix.lower() != ".json":
+        if not url.isLocalFile() or Path(url.toLocalFile()).suffix.lower() != ".zip":
             self._message, self._action_error = "请选择本地 JSON 文件保存诊断", True
             self.changed.emit()
             return
@@ -195,13 +221,36 @@ class ClientInfoService(QObject):
         if resources is not None:
             report["resourceStates"] = [{key: row.get(key) for key in ("packageId", "status")}
                                         for row in resources.packageRows]
+        input_provider = self._providers.get("input")
+        input_state = dict(input_provider.snapshot) if input_provider is not None else {}
+        # Snapshot existing state only: no window discovery, foreground query or capture.
+        state = session.snapshot if session is not None else {}
+        window_environment = dict(schema="identityv-window-environment-v1", candidateCount=0,
+            candidates=[], collectionStatus="existing-bound-state-only",
+            gameWindowBound=bool(input_state.get("hwnd") and str(input_state.get("hwnd")) != "0"),
+            readPermission=input_state.get("readPermission", "unknown"))
+        coordinator = self._providers.get("coordinator")
+        if coordinator is not None:
+            bound = str(coordinator.boundWindow)
+            rows = [row for row in coordinator.gameWindows if str(row.get("hwnd")) == bound][:1]
+            window_environment["candidates"] = [{key: row.get(key) for key in
+                ("width", "height", "dpi", "clientBounds") if key in row} for row in rows]
+            window_environment["candidateCount"] = len(rows)
+        runtime_context = dict(collectionStatus="existing-state-only",
+            gameWindowBound=window_environment["gameWindowBound"], mapOpen=bool(state.get("mapOpen")),
+            gameForeground=state.get("gameForeground", "unknown"))
+        failure_roots = tuple(self.paths.memory_root(mode) for mode in ("nightmare", "difficult")) if self._include_failure_evidence else ()
+        package_metadata = dict(self._package_metadata)
         self._diagnostics = {}
         def save():
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            # A selected existing file is never silently replaced.
-            with destination.open("x", encoding="utf-8") as stream:
-                json.dump(report, stream, ensure_ascii=False, indent=2)
-            return dict(path=str(destination), bytes=destination.stat().st_size, exportedAt=report["exportedAt"])
+            result = export_safe_diagnostic_bundle(self.paths.installation_root,
+                self.paths.work_root / "nightmare-live", destination=destination,
+                app_version=self._app_version, build_fingerprint=self._build_fingerprint,
+                package_metadata=package_metadata, window_environment=window_environment,
+                runtime_context=runtime_context, failure_roots=failure_roots, summary=report,
+                process_integrity=dict(level="Unknown", rank=-1, collectionStatus="not-collected"))
+            return dict(result, path=str(result["path"]), bytes=destination.stat().st_size,
+                        exportedAt=report["exportedAt"])
         def complete(receipt, error):
             self._diagnostics = dict(receipt or {}, success=not bool(error), error=error or "")
         self._write(save, f"已导出到 {destination}", operation="正在导出本次诊断…", complete=complete)

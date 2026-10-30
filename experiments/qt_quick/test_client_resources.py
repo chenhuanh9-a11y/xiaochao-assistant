@@ -15,6 +15,7 @@ import zipfile
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QCoreApplication, QUrl
 from client_resources import ResourceService, ROOT, importer, manager
+import client_resource_recovery as recovery
 
 APP = QCoreApplication.instance() or QCoreApplication([])
 IMAGE = "_internal/assets/suju/map-01-1.png"
@@ -100,6 +101,279 @@ class ResourceServiceTests(unittest.TestCase):
     def install(self, path=None):
         self.service.importArchive(QUrl.fromLocalFile(str(path or self.package())).toString())
         self.settle()
+
+    def upgrade(self, *, interrupted=False):
+        """Synthetic receipts and real unchanged transaction; no installed EXE."""
+        self.install(self.package("old.zip", b"old"))
+        receipt = self.root / "work/map-packages/nightmare-suju.json"
+        self.old_receipt = receipt.read_bytes()
+        archive = self.package("new.zip", b"new")
+        if interrupted:
+            actual_link = recovery.upgrade.os.link
+            def interrupt(source, target, *args, **kwargs):
+                if Path(target) == receipt:
+                    raise KeyboardInterrupt("fixture process interruption")
+                return actual_link(source, target, *args, **kwargs)
+            with patch.object(recovery.upgrade.os, "link", side_effect=interrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    importer.install_package(archive, self.root, application_stopped=True)
+            transaction_id = recovery.upgrade._pending_id(self.root)
+        else:
+            result = importer.install_package(archive, self.root, application_stopped=True)
+            transaction_id = result["upgradeTransactionId"]
+        self.service.setRecoveryAllowedProvider(lambda: True)
+        self.changes.clear()
+        self.confirmations.clear()
+        return transaction_id
+
+    def request_recovery(self, transaction_id=None):
+        if transaction_id is None:
+            self.service.requestRecovery()
+        else:
+            self.service.requestRollback(transaction_id)
+        self.settle()
+        self.assertEqual(self.service.pendingKind, "recovery", self.service.message)
+        self.assertTrue(self.lease.active)
+        self.assertIn(self.service._pending[1]["planSha256"], self.confirmations[-1][1])
+
+    def assert_old_resources(self):
+        self.assertEqual((self.root / IMAGE).read_bytes(), b"old")
+        self.assertEqual((self.root / "work/map-packages/nightmare-suju.json").read_bytes(), self.old_receipt)
+        self.assertFalse((self.root / recovery.upgrade.PENDING).exists())
+        self.assertFalse(self.lease.active)
+
+    def test_recovery_restores_old_resources_and_rescans_with_one_lease(self):
+        transaction_id = self.upgrade(interrupted=True)
+        self.service.inspectRecovery()
+        self.settle()
+        self.assertTrue(self.service.recoveryRequired)
+        self.assertEqual(self.service.recoveryTransactions[0]["transactionId"], transaction_id)
+        released = len(self.lease.released)
+        self.request_recovery()
+        self.service.requestRecovery()  # Repeated action cannot replace consent.
+        self.service.confirmOperation(True)
+        self.settle()
+        self.assert_old_resources()
+        self.assertEqual(len(self.changes), 1)
+        self.assertEqual(len(self.lease.released), released + 1)
+        self.assertFalse(self.service.recoveryRequired)
+        self.assertTrue(any(row["status"] == "installed" for row in self.service.packageRows))
+        self.assertTrue((self.root / f"work/map-packages/upgrades/{transaction_id}/backup" / IMAGE).is_file())
+
+    def test_completed_transaction_rollback_cancel_and_commit(self):
+        transaction_id = self.upgrade()
+        self.request_recovery(transaction_id)
+        self.service.confirmOperation(False)
+        self.assertFalse(self.lease.active)
+        self.assertEqual((self.root / IMAGE).read_bytes(), b"new")
+        self.request_recovery(transaction_id)
+        self.service.confirmOperation(True)
+        self.settle()
+        self.assert_old_resources()
+        self.service.inspectRecovery()
+        self.settle()
+        self.assertEqual(self.service.recoveryTransactions, [])
+
+    def test_recovery_confirmation_rejects_changed_journal_pointer_and_files(self):
+        transaction_id = self.upgrade(interrupted=True)
+        directory = self.root / f"work/map-packages/upgrades/{transaction_id}"
+        for target in (directory / "journal.json", self.root / recovery.upgrade.PENDING,
+                       directory / "pending-pointer.json", self.root / IMAGE,
+                       directory / "backup" / IMAGE):
+            with self.subTest(target=target):
+                self.request_recovery()
+                replacement = self.folder / "replacement"
+                replacement.write_bytes(target.read_bytes())
+                replacement.replace(target)  # Same bytes, different owned object.
+                self.service.confirmOperation(True)
+                self.settle()
+                self.assertIn("reinspect", self.service.message)
+                self.assertEqual((self.root / IMAGE).read_bytes(), b"new")
+                self.assertTrue((self.root / recovery.upgrade.PENDING).exists())
+                self.assertFalse(self.lease.active)
+        self.assertEqual(self.changes, [])
+
+    def test_recovery_conflict_retains_edits_backup_and_pending_journal(self):
+        transaction_id = self.upgrade(interrupted=True)
+        replacement = self.folder / "custom"
+        replacement.write_bytes(b"player edit")
+        replacement.replace(self.root / IMAGE)
+        self.request_recovery()
+        self.service.confirmOperation(True)
+        self.settle()
+        self.assertIn("rollback-incomplete", self.service.message)
+        self.assertEqual((self.root / IMAGE).read_bytes(), b"player edit")
+        self.assertTrue((self.root / recovery.upgrade.PENDING).exists())
+        directory = self.root / f"work/map-packages/upgrades/{transaction_id}"
+        self.assertEqual((directory / "backup" / IMAGE).read_bytes(), b"old")
+        self.assertEqual(json.loads((directory / "journal.json").read_bytes())["status"], "rollback-incomplete")
+        self.assertEqual(self.changes, [])
+        self.assertFalse(self.lease.active)
+
+    def test_recovery_closed_phase_and_original_exe_guard_are_required(self):
+        self.upgrade(interrupted=True)
+        allowed = [False]
+        self.service.setRecoveryAllowedProvider(lambda: allowed[0])
+        self.service.requestRecovery()
+        self.assertFalse(self.service.busy)
+        self.assertFalse(self.lease.active)
+        allowed[0] = True
+        self.request_recovery()
+        allowed[0] = False
+        self.service.confirmOperation(True)
+        self.assertFalse(self.service.busy)
+        self.assertFalse(self.lease.active)
+        allowed[0] = True
+        self.request_recovery()
+        with patch.object(importer, "_check_closed", side_effect=importer.ImportRejected("application-running-or-not-writable")):
+            self.service.confirmOperation(True)
+            self.settle()
+        self.assertIn("application-running-or-not-writable", self.service.message)
+        self.assertEqual((self.root / IMAGE).read_bytes(), b"new")
+        self.assertTrue((self.root / recovery.upgrade.PENDING).exists())
+        self.assertEqual(self.changes, [])
+
+    def test_recovery_phase_rechecked_after_original_closed_lock(self):
+        self.upgrade(interrupted=True)
+        allowed = [True]
+        self.service.setRecoveryAllowedProvider(lambda: allowed[0])
+        self.request_recovery()
+        def phase_changed(_root):
+            allowed[0] = False
+        with patch.object(importer, "_check_closed", side_effect=phase_changed):
+            self.service.confirmOperation(True)
+            self.settle()
+        self.assertIn("resource-consumers-not-stopped", self.service.message)
+        self.assertEqual((self.root / IMAGE).read_bytes(), b"new")
+        self.assertEqual(self.changes, [])
+
+    def test_recovery_commit_cannot_be_cancelled_and_failure_is_not_success(self):
+        self.upgrade(interrupted=True)
+        self.request_recovery()
+        actual_execute = recovery.execute_locked
+        def commit(root, plan, action):
+            self.assertFalse(self.service.canCancel)
+            self.service.cancel()
+            return actual_execute(root, plan, action)
+        with patch.object(recovery, "execute_locked", side_effect=OSError("fixture disk failure")):
+            self.service.confirmOperation(True)
+            self.settle()
+        self.assertIn("fixture disk failure", self.service.message)
+        self.assertEqual(self.changes, [])
+        self.request_recovery()
+        with patch.object(recovery, "execute_locked", side_effect=commit):
+            self.service.confirmOperation(True)
+            self.settle()
+        self.assert_old_resources()
+        self.assertEqual(len(self.changes), 1)
+
+    def test_history_uses_writer_lock_without_claiming_application_closed(self):
+        self.upgrade()
+        with patch.object(importer, "_check_closed", side_effect=AssertionError("inspection must not claim closed")):
+            self.service.inspectRecovery()
+            self.settle()
+        self.assertEqual(len(self.service.recoveryTransactions), 1)
+        self.assertFalse(self.lease.active)
+
+    def test_external_helper_handoff_retains_lease_and_never_claims_commit(self):
+        self.upgrade(interrupted=True)
+        self.service.setRecoveryAllowedProvider(lambda: False)
+        requests, close_requests = [], []
+        def launch(action, plan):
+            requests.append((action, plan))
+            return "fixture-request"
+        self.service.setRecoveryLauncher(launch)
+        self.service.recoveryCloseRequested.connect(lambda: close_requests.append(True))
+        self.request_recovery()
+        self.service.confirmOperation(True)
+        self.settle()
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0][0], "recover")
+        self.assertEqual(len(close_requests), 1)
+        self.assertTrue(self.service.recoveryHandoffPending)
+        self.assertTrue(self.lease.active)
+        self.assertFalse(self.service.canCancel)
+        self.assertEqual(self.changes, [])
+        self.assertEqual((self.root / IMAGE).read_bytes(), b"new")
+        self.service.requestRecovery()
+        self.service.refresh()
+        self.assertFalse(self.service.busy)
+        self.service.shutdown()
+        self.assertFalse(self.lease.active)
+
+    def test_external_helper_launch_failure_does_not_close_or_write(self):
+        self.upgrade(interrupted=True)
+        close_requests = []
+        def fail(action, plan):
+            raise OSError("fixture helper missing")
+        self.service.setRecoveryLauncher(fail)
+        self.service.recoveryCloseRequested.connect(lambda: close_requests.append(True))
+        self.request_recovery()
+        self.service.confirmOperation(True)
+        self.settle()
+        self.assertIn("fixture helper missing", self.service.message)
+        self.assertFalse(self.service.recoveryHandoffPending)
+        self.assertFalse(self.lease.active)
+        self.assertEqual(close_requests, [])
+        self.assertEqual(self.changes, [])
+        self.assertTrue((self.root / recovery.upgrade.PENDING).exists())
+
+    def test_missing_pending_journal_is_not_reported_as_clean_history(self):
+        import uuid
+        self.write(recovery.upgrade.PENDING, json.dumps(dict(
+            schema=recovery.upgrade.POINTER_SCHEMA, transactionId=str(uuid.uuid4()))).encode())
+        self.service.inspectRecovery()
+        self.settle()
+        self.assertTrue(self.service.recoveryRequired)
+        self.assertIn("pending-upgrade-journal-missing", self.service.message)
+
+    def test_bound_helper_receipt_reports_actual_result_and_notifies_after_scan(self):
+        transaction_id = self.upgrade()
+        receipt = dict(requestId="fixture-request", planSha256="a" * 64,
+            transactionId=transaction_id, action="rollback", success=False,
+            reason="fixture conflict; backups retained")
+        self.service.recordRecoveryReceipt(receipt)
+        self.service.refresh()
+        self.settle()
+        self.assertIn("fixture conflict", self.service.message)
+        self.assertEqual(self.changes, [])
+        result = importer.rollback_package_upgrade(self.root, transaction_id, application_stopped=True)
+        receipt.update(success=True, operationResult=result)
+        self.service.recordRecoveryReceipt(receipt)
+        self.assertEqual(self.changes, [])
+        self.service.refresh()
+        self.settle()
+        self.assertEqual(len(self.changes), 1)
+        self.assert_old_resources()
+        self.service.refresh()
+        self.settle()
+        self.assertEqual(len(self.changes), 1)
+        receipt["operationResult"] = {"status": "started"}
+        with self.assertRaises(ValueError):
+            self.service.recordRecoveryReceipt(receipt)
+
+    def test_pending_rolled_back_journal_can_finish_pointer_cleanup(self):
+        self.upgrade(interrupted=True)
+        with patch.object(recovery.upgrade, "_clear_pointer", side_effect=KeyboardInterrupt("fixture cleanup interruption")):
+            with self.assertRaises(KeyboardInterrupt):
+                importer.recover_package_upgrade(self.root, application_stopped=True)
+        self.service.inspectRecovery()
+        self.settle()
+        self.assertTrue(self.service.recoveryRequired)
+        self.assertEqual(self.service.recoveryTransactions[0]["status"], "rolled-back")
+        self.request_recovery()
+        self.service.confirmOperation(True)
+        self.settle()
+        self.assert_old_resources()
+
+    def test_empty_rollback_id_does_not_broaden_to_pending_recovery(self):
+        self.upgrade(interrupted=True)
+        self.service.requestRollback("")
+        self.settle()
+        self.assertEqual(self.service.pendingKind, "")
+        self.assertIn("invalid-upgrade-transaction-id", self.service.message)
+        self.assertFalse(self.lease.active)
+        self.assertTrue((self.root / recovery.upgrade.PENDING).exists())
 
     def test_real_import_repeat_remove_and_reimport_preserve_unknown(self):
         self.write("player-custom-route.json", b"keep")
@@ -243,7 +517,7 @@ class ResourceServiceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ResourceService(self.root)
         self.install()
-        self.assertIn("marker", self.service.message)
+        self.assertIn("marked", self.service.message)
         self.assertFalse((self.root / IMAGE).exists())
 
     @unittest.skipUnless(os.environ.get("QT_RESOURCE_PRIVATE_ZIP"), "private ZIP not supplied")

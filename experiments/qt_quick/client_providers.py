@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 import sys
 import threading
-from client_paths import APP_ROOT
+from client_paths import APP_ROOT, PRODUCTION, runtime_paths
 
 APP = str(APP_ROOT)
 if APP not in sys.path:
@@ -231,9 +231,11 @@ class EngineFactories(dict):
             _read(root, entry_root.relative_to(root) / name)
         if not exit_icon.is_file():
             raise ProviderUnavailable(f"missing-resource:{exit_icon.relative_to(root)}")
-        # Explicit, unused memory location; constructor performs no IO and rank
-        # has no feedback/learning side effects. Never bind the user's history.
-        memory = NightmareMemoryStore(pack, root / ".qt-saved-frame-memory" / mode,
+        # Production ranking may read the original exemplar/history store.
+        # Constructor performs no IO; Qt ranking still submits no learning or
+        # human-label writes. Source/test diagnostics retain isolated memory.
+        memory_root = runtime_paths().memory_root(mode) if PRODUCTION else root / ".qt-saved-frame-memory" / mode
+        memory = NightmareMemoryStore(pack, memory_root,
                                       portable_seed_path=root / ".qt-no-portable-seeds.json")
         provider = SharedReferenceProvider(root, resources, {}, native=native)
         engine = engine_type(pack, identity_root=entry_root, identity_profile_id=profile,

@@ -15,7 +15,12 @@ Window {
     property real controlAlpha: 0.96
     property real mapAlpha: 0.86
     property bool replayMode: false
-    Behavior on height { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+    readonly property bool reduceMotion: typeof settingsService !== "undefined" && settingsService.values.reduceMotion
+    Behavior on height {
+        objectName: "overlayHeightBehavior"
+        enabled: !overlay.reduceMotion
+        NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
+    }
     Rectangle {
         anchors.fill: parent; anchors.margins: 5
         radius: 16; color: Qt.rgba(0.94, 0.97, 1, overlay.controlAlpha)

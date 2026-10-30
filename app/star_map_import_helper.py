@@ -140,6 +140,15 @@ def launch_import_helper(helper_path, archive, install_root, archive_sha256, req
     retain the returned Popen for failure reporting, then execute its old close.
     No shell, no shutdown/restart here. Missing helper raises before closing.
     """
+    if not re.fullmatch(r"[0-9a-f]{64}", archive_sha256):
+        raise ImportRejected("invalid-helper-request")
+    return _launch_parent_bound_helper(helper_path, install_root, request_id,
+        ["--archive", os.path.abspath(archive), "--archive-sha256", archive_sha256],
+        wait_seconds=wait_seconds)
+
+
+def _launch_parent_bound_helper(helper_path, install_root, request_id, request_args, *, wait_seconds=120):
+    """Shared strict launch: different EXE, retained parent object, no shell/close."""
     helper = Path(helper_path).resolve()
     root = Path(os.path.abspath(install_root))
     _no_links(helper)
@@ -148,7 +157,7 @@ def launch_import_helper(helper_path, archive, install_root, archive_sha256, req
         raise ImportRejected("separate-helper-not-installed")
     if os.path.normcase(str(helper)) == os.path.normcase(os.path.realpath(sys.executable)):
         raise ImportRejected("helper-must-use-separate-executable")
-    if not re.fullmatch(r"[0-9a-f]{64}", archive_sha256) or not 1 <= wait_seconds <= 300:
+    if not 1 <= wait_seconds <= 300:
         raise ImportRejected("invalid-helper-request")
     if _cancel_path(root, request_id).exists():
         raise ImportRejected("request-id-already-cancelled; choose a fresh id")
@@ -165,10 +174,10 @@ def launch_import_helper(helper_path, archive, install_root, archive_sha256, req
             raise ctypes.WinError(ctypes.get_last_error())
         startup = subprocess.STARTUPINFO()
         startup.lpAttributeList = {"handle_list": [int(handle)]}
-        argv = [str(helper), "--archive", os.path.abspath(archive), "--install-root", str(root),
+        argv = [str(helper), *request_args, "--install-root", str(root),
                 "--parent-pid", str(identity["pid"]), "--parent-created", identity["creationTime"],
                 "--parent-executable", identity["executable"],
-                "--parent-handle", str(int(handle)), "--archive-sha256", archive_sha256,
+                "--parent-handle", str(int(handle)),
                 "--request-id", request_id, "--wait-seconds", str(wait_seconds)]
         return subprocess.Popen(argv, startupinfo=startup, close_fds=True,
                                 creationflags=subprocess.CREATE_NO_WINDOW)
@@ -176,8 +185,8 @@ def launch_import_helper(helper_path, archive, install_root, archive_sha256, req
         api.CloseHandle(handle)
 
 
-def _write_receipt(root, result):
-    path = receipt_path(root)
+def _write_receipt(root, result, *, path=None):
+    path = receipt_path(root) if path is None else Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     _no_links(path.parent)
     temporary = None

@@ -10,7 +10,7 @@ from uuid import uuid4
 from PySide6.QtCore import QTimer, QUrl, QThreadPool, Qt
 from PySide6.QtGui import QFont, QFontDatabase, QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
-from client_paths import APP_ROOT, DEFAULT_SANDBOX, FROZEN, RESOURCE_ROOT, WORK_ROOT, owned_sandbox
+from client_paths import APP_ROOT, DEFAULT_SANDBOX, FROZEN, PRODUCTION, RESOURCE_ROOT, WORK_ROOT, owned_sandbox, runtime_paths
 
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
@@ -21,6 +21,9 @@ HERE = Path(__file__).resolve().parent
 def prepare_first_run(sandbox):
     """Stage a new test resource tree and publish it only when complete."""
     sandbox = Path(sandbox).resolve()
+    if PRODUCTION:
+        # An upgrade uses the installed tree in place and never seeds test data.
+        return owned_sandbox(sandbox)
     if sandbox.exists():
         return owned_sandbox(sandbox)
     if not sandbox.is_relative_to(WORK_ROOT):
@@ -57,15 +60,20 @@ class QtClient:
         from client_info import ClientInfoService
         from client_custom_gallery import CustomGalleryService
         from client_custom_display import CustomGalleryDisplay
+        from client_downloads import OnlinePackagesService
         from client_coordinator import ClientCoordinator, LiveImages
+        from client_ui_feedback import UiFeedback
+        from client_onboarding import OnboardingService
+        from client_chest_auto_tap import ChestAutoTapService
         self.app, self.sandbox = app, owned_sandbox(sandbox)
+        self.paths = runtime_paths(self.sandbox)
         self._closed = False
         self.settings = SettingsService(self.sandbox)
         self.custom_galleries = CustomGalleryService(self.sandbox)
         self.custom_display = CustomGalleryDisplay(self.custom_galleries)
         self.capture = ClientCaptureProvider()
         self.input = NativeShortcutBackend()
-        self.providers = build_engine_factories(self.sandbox / "_internal")
+        self.providers = build_engine_factories(self.paths.resource_root)
         self.providers.set_custom_display(self.custom_display.layer)
         self.runtime = LiveRuntime(engine_factories=self.providers, capture_provider=self.capture,
                                    allowed_read_root=WORK_ROOT, evidence_kind="live-client-capture")
@@ -84,6 +92,8 @@ class QtClient:
         self.session = SessionService(self.runtime)
         self.resources = ResourceService(self.sandbox)
         self.resources.setLeaseProvider(self.session)
+        self.online_packages = OnlinePackagesService(self.sandbox, self.resources,
+            index_url=None if probe_output else os.environ.get("STAR_MAP_PACKAGE_INDEX_URL"))
         self.backend = Backend(self.sandbox)
         self.route_choices = Backend(self.sandbox)
         self.resources.resourcesChanged.connect(self.route_choices.refresh)
@@ -97,23 +107,42 @@ class QtClient:
             resources=self.resources, session=self.session, windows=self.windows,
             native_input=self.input, capture=self.capture, runtime=self.runtime, images=self.images,
             **({"window_catalog": lambda: []} if probe_output else {}))
+        self.feedback = UiFeedback(settings=self.settings, windows=self.windows, session=self.session,
+            coordinator=self.coordinator, enabled=not bool(probe_output))
+        self.onboarding = OnboardingService(settings=self.settings, windows=self.windows,
+            coordinator=self.coordinator, startup_enabled=not bool(probe_output))
+        self.chest_auto_tap = ChestAutoTapService(self.paths, self.coordinator, self.input, self.settings)
+        self._recovery_process = None
+        self._recovery_request = None
+        if self.paths.production:
+            self.resources.setRecoveryLauncher(self._launch_recovery)
+            self.resources.recoveryCloseRequested.connect(self.coordinator.requestClose)
+            self._read_recovery_receipt()
         self.info = ClientInfoService(self.sandbox, fetch=info_fetch)
-        self.info.setProviders(session=self.session, resources=self.resources, input=self.input)
-        self.coordinator.close_writers = (self.custom_galleries, self.info)
+        self.info.setProviders(session=self.session, resources=self.resources, input=self.input,
+                               coordinator=self.coordinator)
+        self.coordinator.close_writers = (self.custom_galleries, self.info, self.online_packages,
+                                         self.backend, self.route_choices)
         self.custom_galleries.setUseHandler(self._use_custom_gallery)
         self.custom_galleries.galleriesChanged.connect(self._custom_gallery_changed)
         self.custom_galleries.changed.connect(self._sync_custom_gallery_active)
         self.session.changed.connect(self._sync_custom_gallery_active)
+        self._route_preferences_context = None
+        self.session.changed.connect(self._refresh_route_preferences)
+        self.resources.resourcesChanged.connect(lambda: self._refresh_route_preferences(force=True))
+        self._refresh_route_preferences()
         self.settings.saved.connect(self._sync_custom_gallery_active)
         self.engine = QQmlApplicationEngine()
         self.engine.addImageProvider("live", self.images)
         self.warnings = []
         self.engine.warnings.connect(lambda rows: self.warnings.extend(str(row) for row in rows))
         context = self.engine.rootContext()
+        context.setContextProperty("productionProduct", PRODUCTION)
         for key, value in dict(backend=self.backend, resourceModel=self.backend.model, routeChoices=self.route_choices,
             settingsService=self.settings, resourceService=self.resources, session=self.session,
             windows=self.windows, clientCoordinator=self.coordinator, infoService=self.info,
-            customGalleryService=self.custom_galleries).items():
+            customGalleryService=self.custom_galleries, onlinePackageService=self.online_packages,
+            onboardingService=self.onboarding, chestAutoTapService=self.chest_auto_tap).items():
             context.setContextProperty(key, value)
         for name, file in (("main", "Client.qml"), ("controls", "ClientControls.qml"),
                            ("reference", "ClientReference.qml"), ("aligned", "ClientAligned.qml"),
@@ -134,7 +163,65 @@ class QtClient:
         self._initialize_timer.timeout.connect(self._initialize_resources)
         self._initialize_timer.start()
 
+    def _refresh_route_preferences(self, *, force=False):
+        if self._closed or self.coordinator.closing:
+            return
+        context = self.runtime.route_preferences_context()
+        if force or context != self._route_preferences_context:
+            self._route_preferences_context = context
+            self.settings.refreshRoutePreferences(self.runtime)
+
+    def _launch_recovery(self, action, plan):
+        """Worker-side handoff: launch first, then service requests normal close."""
+        from star_map_recovery_helper import HELPER_NAME, launch_recovery_helper, cancel_recovery_request
+        from client_paths import _no_links
+        helper = self.sandbox / (HELPER_NAME + ".exe")
+        _no_links(helper)
+        if not helper.is_file():
+            raise FileNotFoundError("Installed recovery helper is missing")
+        request_id = uuid4().hex
+        try:
+            process = launch_recovery_helper(helper, self.sandbox, plan, action, request_id)
+            pending = self.paths.work_root / "map-packages/qt-recovery-pending.json"
+            _no_links(pending)
+            temporary = pending.with_name(pending.name + "." + request_id + ".tmp")
+            with temporary.open("x", encoding="utf-8") as stream:
+                json.dump(dict(requestId=request_id, planSha256=plan["planSha256"], action=action), stream)
+            os.replace(temporary, pending)
+        except Exception:
+            cancel_recovery_request(self.sandbox, request_id)
+            raise
+        self._recovery_process, self._recovery_request = process, request_id
+        return request_id
+
+    def _read_recovery_receipt(self):
+        from star_map_recovery_helper import receipt_path
+        from client_paths import _no_links
+        pending = self.paths.work_root / "map-packages/qt-recovery-pending.json"
+        receipt = receipt_path(self.sandbox)
+        try:
+            _no_links(pending)
+            _no_links(receipt)
+            if not pending.is_file() or not receipt.is_file():
+                return
+            if pending.stat().st_size > 65536 or receipt.stat().st_size > 1048576:
+                return
+            expected = json.loads(pending.read_text(encoding="utf-8"))
+            result = json.loads(receipt.read_text(encoding="utf-8"))
+            if not all(result.get(key) == expected.get(key) and expected.get(key)
+                       for key in ("requestId", "planSha256", "action")):
+                return
+            self._recovery_receipt = result
+            self.resources.recordRecoveryReceipt(result)
+            self.resources.refresh()
+        except (OSError, ValueError, TypeError, AttributeError):
+            # Leave unmatched/malformed evidence intact for diagnostics.
+            return
+
     def _initialize_resources(self):
+        if self._closed or self.coordinator.closing:
+            self._initialize_timer.stop()
+            return
         if (self.resources.busy or self.resources.pendingKind or self.session.busy
                 or self.session.snapshot.get("resourceLocked")):
             return
@@ -143,11 +230,13 @@ class QtClient:
         self.session.dispatch("inspect_engine_resources")
 
     def _schedule_resource_preparation(self):
+        if self._closed or self.coordinator.closing:
+            return
         self._initialized = False
         self._initialize_timer.start()
 
     def _use_custom_gallery(self, gallery_id):
-        if (self._closed or self.settings.busy or self.resources.busy or self.session.busy
+        if (self._closed or self.coordinator.closing or self.settings.busy or self.resources.busy or self.session.busy
                 or getattr(self.resources, "pendingKind", "")):
             return dict(success=False, applied=False, message="请等待当前操作完成后再使用图集")
         values = self.settings.persistedValues
@@ -174,7 +263,7 @@ class QtClient:
         return dict(success=True, applied=False, message="正在保存并应用图集，完成后更新使用状态")
 
     def _sync_custom_gallery_active(self):
-        if self._closed:
+        if self._closed or self.coordinator.closing:
             return
         state = self.runtime.snapshot()
         values = self.settings.persistedValues
@@ -186,6 +275,8 @@ class QtClient:
             self.custom_galleries.setActiveGallery(active)
 
     def _custom_gallery_changed(self):
+        if self._closed or self.coordinator.closing:
+            return
         self.custom_display.invalidate()
         if str(self.runtime.snapshot().get("profileId", "")).startswith("custom:"):
             self.coordinator._revoke_runtime("custom-gallery-changed")
@@ -196,6 +287,10 @@ class QtClient:
         if self._closed:
             return
         self._closed = True
+        self.chest_auto_tap.shutdown()
+        if self._recovery_request and not self.coordinator.closeReady:
+            from star_map_recovery_helper import cancel_recovery_request
+            cancel_recovery_request(self.sandbox, self._recovery_request)
         self._initialize_timer.stop()
         self.coordinator.shutdown()
         self.session.shutdown()
@@ -205,6 +300,7 @@ class QtClient:
         self.route_choices.shutdown()
         self.info.shutdown()
         self.custom_galleries.shutdown()
+        self.online_packages.shutdown()
         self.windows.shutdown()
 
 
@@ -240,12 +336,14 @@ def main():
         print(json.dumps(result))
         return 0 if result["ready"] and result["qml"] and not result["tkLoaded"] else 1
     app = QGuiApplication([])
-    app.setOrganizationName("XingtuQtClientTest")
-    app.setApplicationName("XingtuQtClientTest")
+    app.setOrganizationName("XiaochaoAssistant" if PRODUCTION else "XingtuQtClientTest")
+    app.setApplicationName("星图" if PRODUCTION else "XingtuQtClientTest")
     app.setFont(QFont("Microsoft YaHei UI", 10))
     if args.probe_output and Path("C:/Windows/Fonts/msyh.ttc").is_file():
         QFontDatabase.addApplicationFont("C:/Windows/Fonts/msyh.ttc")
     args.sandbox = args.sandbox.resolve()
+    if PRODUCTION:
+        owned_sandbox(args.sandbox)
     holder = {}
     def open_client(sandbox):
         try:
@@ -269,6 +367,7 @@ def main():
     else:
         from backend import Work
         boot = holder["boot"] = QQmlApplicationEngine()
+        boot.rootContext().setContextProperty("productionProduct", PRODUCTION)
         boot.load(QUrl.fromLocalFile(str(HERE / "ClientBoot.qml")))
         pool = holder["bootPool"] = QThreadPool(app)
         job = holder["bootJob"] = Work(lambda: prepare_first_run(args.sandbox))

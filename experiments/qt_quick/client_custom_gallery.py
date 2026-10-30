@@ -11,7 +11,7 @@ import threading
 
 from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, QTimer, Qt, QUrl, Signal, Slot
 
-from client_paths import APP_ROOT, owned_sandbox
+from client_paths import APP_ROOT, runtime_paths
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 from custom_maps import (COLORS, DEFAULT_COLOR, DEFAULT_GALLERY_FILE, FLOORS, FLOOR_LABELS,
@@ -48,10 +48,11 @@ class CustomGalleryService(QObject):
 
     def __init__(self, sandbox, *, library=None, default_path=DEFAULT_GALLERY_FILE):
         super().__init__()
-        self.sandbox = owned_sandbox(sandbox)
-        self.path = self.sandbox / "custom-galleries.json"
+        self.paths = runtime_paths(sandbox)
+        self.sandbox = self.paths.installation_root
+        self.path = self.paths.custom_galleries_path
         self.exports = self.sandbox / "exports"
-        self.library = library or CustomMapLibrary(self.sandbox / "_internal/assets/custom-maps")
+        self.library = library or CustomMapLibrary(self.paths.editor_base_root)
         self._injected_library = library is not None
         self._library_root = self.library.root
         self._committed_lock = threading.RLock()
@@ -226,7 +227,8 @@ class CustomGalleryService(QObject):
     def refresh(self):
         def reload():
             if not self._injected_library:
-                self.library = CustomMapLibrary(self.sandbox / "_internal/assets/custom-maps")
+                self.library = CustomMapLibrary(runtime_paths(self.sandbox).editor_base_root)
+                self._library_root = self.library.root
             self._load()
         self._run(reload)
 

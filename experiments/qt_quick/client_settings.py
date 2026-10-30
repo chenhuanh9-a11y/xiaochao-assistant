@@ -16,7 +16,7 @@ import tempfile
 
 from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, Qt, Signal, Slot
 
-from client_paths import RESOURCE_ROOT as ROOT, WORK_ROOT
+from client_paths import RESOURCE_ROOT as ROOT, WORK_ROOT, runtime_paths
 if str(ROOT / "app") not in sys.path:
     sys.path.insert(0, str(ROOT / "app"))
 from control_layout import load_layout, preset_layout, validate_layout
@@ -30,7 +30,7 @@ LEGACY_ACTIONS = ["F5", "F6", "F7", "F8", "F9", "F10", "F11", "", ""]
 FRESH_ACTIONS = ["F9", "F6", "F7", "F8", "", "", "F11", "", "F10"]
 BOOL_DEFAULTS = {"referenceSheetVisible": True, "sheetVisibilityEnabled": True,
                  "orbVisible": True, "reduceMotion": False, "uiSoundEnabled": False,
-                 "difficultGridEnabled": False}
+                 "difficultGridEnabled": False, "onboardingCompleted": False}
 RANGES = {"sheetOpacity": (0., 1.), "referenceOpacity": (0., 1.),
           "interfaceOpacity": (.65, .95), "sheetScale": (.5, 1.5)}
 DEFAULTS = {**BOOL_DEFAULTS, "sheetOpacity": .55, "referenceOpacity": .55,
@@ -128,7 +128,7 @@ class SettingsService(QObject):
         super().__init__()
         self.sandbox = Path(sandbox).resolve()
         self._check_sandbox()
-        self.path = self.sandbox / "ui-settings.json"
+        self.path = runtime_paths(self.sandbox).settings_path
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(1)
         self._job = None
@@ -147,6 +147,11 @@ class SettingsService(QObject):
         self._shortcut_ready = False
         self._shortcut_message = ""
         self._shortcut_primary_seen = False
+        self._route_metadata = dict(context={}, options=[], message="连接当前全棺地图后可核对版本选项")
+        self._route_job = None
+        self._route_pending = None
+        self._route_generation = 0
+        self._route_runtime = None
         self.reload()
 
     values = Property("QVariantMap", lambda s: deepcopy(s._draft), notify=changed)
@@ -161,6 +166,53 @@ class SettingsService(QObject):
     shortcutCandidate = Property(str, lambda s: s._shortcut_candidate, notify=changed)
     shortcutCandidateReady = Property(bool, lambda s: s._shortcut_ready, notify=changed)
     shortcutMessage = Property(str, lambda s: s._shortcut_message, notify=changed)
+    coffinVariantOptions = Property("QVariantList", lambda s: deepcopy(s._route_metadata["options"]), notify=changed)
+    coffinVariantContext = Property("QVariantMap", lambda s: deepcopy(s._route_metadata["context"]), notify=changed)
+    coffinVariantMessage = Property(str, lambda s: s._route_metadata["message"], notify=changed)
+
+    def refreshRoutePreferences(self, runtime):
+        """Root calls after session/resource changes; one worker plus latest request."""
+        self._route_runtime = runtime
+        self._route_generation += 1
+        if self._route_job is not None:
+            self._route_pending = runtime
+            return
+        generation = self._route_generation
+        self._route_job_generation = generation
+        self._route_job = _Write(lambda: (generation, runtime.route_preferences_metadata()))
+        self._route_job.signals.done.connect(self._route_preferences_finished, Qt.QueuedConnection)
+        self.pool.start(self._route_job)
+
+    @Slot(object, object)
+    def _route_preferences_finished(self, result, error):
+        self._route_job = None
+        if self._route_job_generation != self._route_generation:
+            metadata = None
+        elif error:
+            metadata = dict(context={}, options=[], message=f"全棺版本资源读取失败：{error}")
+        elif result[1]["context"] != self._route_runtime.route_preferences_context():
+            metadata = None
+        else:
+            metadata = result[1]
+        if metadata is not None and metadata != self._route_metadata:
+            self._route_metadata = metadata
+            self.changed.emit()
+        pending, self._route_pending = self._route_pending, None
+        if pending is not None:
+            self.refreshRoutePreferences(pending)
+
+    @Slot(str, result=bool)
+    def selectCoffinVariant(self, variant):
+        context = self._route_metadata["context"]
+        mode = self._draft["gameMode"]
+        profile = self._draft["modeRouteProfiles"].get(mode) or self._draft["routeProfileId"]
+        if (self._route_runtime is None or self._route_runtime.route_preferences_context() != context
+                or context.get("mode") != mode or context.get("profileId") != profile
+                or not any(row["id"] == variant and row["available"] for row in self._route_metadata["options"])):
+            self._message = "当前地图/楼层没有该全棺版本的精确显示资源，请重新核对资源"
+            self.changed.emit()
+            return False
+        return self.setValue("zhan10CoffinVariantId", variant)
 
     @Slot(str, int, result=bool)
     def moveControlModule(self, module, offset):
@@ -327,14 +379,9 @@ class SettingsService(QObject):
         self.changed.emit()
 
     def _check_sandbox(self):
-        marker = self.sandbox / ".qt-lab-owner"
-        if (not self.sandbox.is_relative_to(WORK_ROOT)
-                or not marker.is_file() or marker.is_symlink()
-                or marker.read_text(encoding="utf-8").strip() != "qt-quick-isolated-v1"):
-            raise ValueError("Settings require a marked sandbox beneath this clone's work/")
-        target = self.sandbox / "ui-settings.json"
-        if target.is_symlink() or target.resolve().parent != self.sandbox:
-            raise ValueError("Settings path must remain inside the marked sandbox")
+        paths = runtime_paths(self.sandbox)
+        if hasattr(self, "path") and self.path != paths.settings_path:
+            raise ValueError("Settings path no longer matches the installation")
 
     @Slot(str, "QVariant", result=bool)
     def setValue(self, key, value):
@@ -405,7 +452,7 @@ class SettingsService(QObject):
         self._read_error = ""
         self._write_error = ""
         self._message = ("已读取；无效字段保留原值，只有编辑过的设置会写入：" + "、".join(invalid)
-                         if invalid else "已读取隔离设置" if data is not None else "尚未保存设置；编辑后保存")
+                         if invalid else "已读取设置" if data is not None else "尚未保存设置；编辑后保存")
         self.changed.emit()
         return True
 
@@ -424,6 +471,7 @@ class SettingsService(QObject):
 
     def _write(self, payload, expected):
         self._check_sandbox()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         current = self.path.read_bytes() if self.path.exists() else None
         if current != expected:
             raise ValueError("文件已被其他操作修改；请重新读取后再保存")
@@ -433,7 +481,7 @@ class SettingsService(QObject):
         temporary = None
         try:
             with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n",
-                                             dir=self.sandbox, prefix=".ui-settings-", suffix=".tmp",
+                                             dir=self.path.parent, prefix=".ui-settings-", suffix=".tmp",
                                              delete=False) as handle:
                 temporary = Path(handle.name)
                 handle.write(text)

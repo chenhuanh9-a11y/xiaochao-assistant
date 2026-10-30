@@ -100,6 +100,33 @@ class CoordinatorTests(unittest.TestCase):
         self.session.reconfigure.assert_not_called()
         self.runtime.invalidate.assert_not_called()
 
+    def test_close_ignores_late_presentation_and_native_callbacks(self):
+        self.coordinator._closing = True
+        self.settings.persistedValues["hotkey"] = "Ctrl+F12"
+        self.settings.saved.emit()
+        self.settings.changed.emit()
+        self.resources.resourcesChanged.emit()
+        self.session.changed.emit()
+        self.coordinator._native_action("toggle-panel")
+        self.coordinator._watch_foreground()
+        self.input.configureSettings.assert_not_called()
+        self.input.enable.assert_not_called()
+        self.runtime.configure_settings.assert_not_called()
+        self.session.refreshRuntime.assert_not_called()
+        self.backend.refresh.assert_not_called()
+        self.native.foreground_window.assert_not_called()
+        self.windows.show.assert_not_called()
+        self.windows.hide.assert_not_called()
+        self.assertFalse(self.coordinator._context_timer.isActive())
+
+    def test_return_to_game_failure_is_visible_in_the_main_status(self):
+        self.coordinator._game_focus = SimpleNamespace(requestFocus=Mock(return_value=dict(
+            success=False, reason="foreground-denied", message="系统未允许切回游戏，请手动切换")))
+        self.coordinator.returnToGame()
+        self.assertEqual(self.coordinator.runtimeStatus, "系统未允许切回游戏，请手动切换")
+        self.coordinator._action_requested("capture_now", {})
+        self.assertNotEqual(self.coordinator.runtimeStatus, "系统未允许切回游戏，请手动切换")
+
     def test_changed_bindings_reconfigure_once_and_restore_explicit_input_enable(self):
         self.settings.persistedValues["hotkey"] = "Ctrl+G"
         self.settings.saved.emit()
@@ -140,6 +167,16 @@ class CoordinatorTests(unittest.TestCase):
         self.coordinator._action_requested("select_candidate", {"index": 0})
         self.assertIsNone(self.coordinator._last_render_token)
         self.windows.hide.assert_called_with("aligned")
+
+    def test_return_to_game_only_uses_explicit_focus_receipt(self):
+        self.coordinator._game_focus.requestFocus = Mock(return_value={
+            "success": False, "reason": "foreground-denied", "message": "请手动切回游戏"})
+        self.coordinator._game_focus.requestFocus.assert_not_called()
+        self.coordinator.returnToGame()
+        self.coordinator._game_focus.requestFocus.assert_called_once_with()
+        self.assertEqual(self.coordinator.message, "请手动切回游戏")
+        self.windows.show.assert_not_called()
+        self.windows.hide.assert_not_called()
 
     def test_atomic_context_is_only_acknowledged_after_actual_runtime_matches(self):
         self.settings.persistedValues.update(gameMode="difficult", routeProfileId="fallback",

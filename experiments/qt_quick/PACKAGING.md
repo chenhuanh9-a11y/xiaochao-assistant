@@ -1,6 +1,6 @@
-# Private Qt test Setup recipe
+# Qt private Setup recipe
 
-This recipe builds the opt-in Qt test client from a clean, explicitly named commit. It does not build the Tk product, install or launch an executable, create a portable ZIP, publish artifacts, or change the separate `qt-lab` checkout. The coordinator must finish source/live-chain checks and authorize the build before running the final command. Preparing this recipe did **not** perform a build.
+This recipe builds the Qt client from a clean, explicitly named commit. Fixed installer profiles provide isolated tests or a user-authorized replacement of the original 星图 installation. It does not build the Tk UI, install or launch an executable, create a portable ZIP, publish artifacts, or change the separate `qt-lab` checkout. The coordinator must finish source/live-chain checks and authorize the build before running the final command. Preparing this recipe did **not** perform a build.
 
 Delivered baseline (2026-10-30): commit `f3d349347b1416f846ac2d3b4b553c63517a4562` produced the first private Qt Setup. Its package and installed state must remain separate from subsequent source changes. Current migration coverage is tracked in [MIGRATION.md](MIGRATION.md); source/offline/own-window evidence is not native-game acceptance or a performance claim. The optional installer-instance parameter below prepares a separate layout preview through the same build chain. This parameter change itself has not built, installed or launched anything.
 
@@ -25,7 +25,7 @@ The installer preserves runtime work/imported resources on uninstall; it contain
 
 ## Side-by-side layout preview instance
 
-`--instance` accepts only the two fixed profiles below; it does not accept arbitrary installer paths, labels or AppIds. Omitting it preserves the first test client's installer identity, folder, group, filename prefix and `-qt-test` version suffix.
+`--instance` accepts only fixed profiles; the two isolated profiles below retain their existing behavior. The production replacement is described separately below. It does not accept arbitrary installer paths, labels or AppIds. Omitting it preserves the first test client's installer identity, folder, group, filename prefix and `-qt-test` version suffix.
 
 | Instance | AppId | Install folder | Start-menu group / shortcut / uninstall name | Setup prefix and suffix |
 | --- | --- | --- | --- | --- |
@@ -43,6 +43,38 @@ For the next authorized build, append `--instance layout-preview` to the existin
 ```
 
 Use the same command with `--plan-only` first if a read-only adopted-input report is needed. The placeholder commit/output above are not build inputs. Only the coordinator runs the single actual freeze/Setup chain after integration checks; this document does not authorize changing the delivered `f3` artifact or starting an installer.
+
+## Original-product replacement profile (source preparation)
+
+The next user-requested Setup uses `--instance production`. This replaces the **original 星图 product**, not either isolated Qt test. Preparing this profile has not run a compiler, created a Setup, installed/uninstalled anything or stopped a process. Preserve the delivered f3 and layout installers and the old Tk source/installer as recovery inputs.
+
+The authoritative original identity was read from `D:/CodexBuilds/star-main-71908cde-20261029/installer/64710EF6-LIGHT-r1/effective-installer.iss`, the delivered original 1.0.5 / 64710EF6 recipe. Its `[Code]` backup/rollback, uninstall resource preservation and occupied-EXE guard are reused in this template only for production. No original `[Run]` action is copied. The public `xiaochao-assistant.spec` is a development skeleton and is **not** the product-identity authority.
+
+| Contract | Original installation | Qt `production` |
+| --- | --- | --- |
+| AppId | `D04394A0-DACE-4FF9-874D-3DCB43EE53D1` | same |
+| App / start-menu name | `星图` | same |
+| Main executable / staging product | `第五人格小抄助手.exe` | same; Qt entry and runtime replace its UI |
+| Default install directory | `{localappdata}\Programs\XiaochaoAssistant` | same |
+| Upgrade path/group | `UsePreviousAppDir=yes`, `UsePreviousGroup=yes` | same; original registered path required when present |
+| Installer privilege / EXE privilege | `lowest` / `requireAdministrator` | same; no UAC bypass |
+| Settings / memories | `{app}/work/nightmare-memory/ui-settings.json`, mode memory directories | reuse in place via production path adapter; no isolated seeding |
+| Other user data | work receipts/custom galleries/routes; outer `assets/custom-maps` and existing user resources | remain in place; never copied from a sandbox or owned as new installer payload |
+| Frozen base resources | `{app}/_internal` | same resource root; only inventoried authorized base resources bundled |
+
+Only the exact known uninstall GUID was checked read-only in HKCU/HKLM, 32/64-bit views; no matching key was present in this execution session. No broad registry enumeration, private setting values or user process inspection was performed. Installed path adoption on a real host therefore remains an acceptance item, not a claimed result.
+
+The production runtime chooses `installerInstance.id=production` from generated `installation-profile.json`. The build record/profile also include the EXE product, `runtimeDataProfile=production`, original default directory, installer privilege and path-adoption flag. The runtime adapter is responsible for resolving app/data/resource roots; changing installer identity alone is insufficient. The existing pinned Qt/Python, license, manifest and resource-closure gates still apply. Production's Setup prefix is `星图-Qt-Setup`, display suffix `-qt`, and default output `<commit12>-production`; output must be new.
+
+The build writes `_installer-owned-files.txt` from only the final staged program files, rejecting a `work/` payload. On install, reused original code backs up exact new/old-owned affected files, previous uninstall metadata and original settings under `{app}/work/installer-backups`; it restores affected files if upgrade fails. Old program code may be retired by its exact prior ownership list; resources are not retired by that rule. Work/import receipts/custom routes and outer user assets are never recursively removed. Production `[Files]` now comes from an exact generated projection rather than a tree wildcard. It splits program identity, the coupled base resource plane and the independent editor-base family. Before any copy, one cached decision checks for existing `_internal/assets`, `references`, `recognition` or the difficult root manifest (including invalid file collisions). Any existing/partial plane preserves **the whole plane**; Setup does not repair it by mixing individual baseline files. A fresh resource plane receives every inventoried baseline member together. `version.json`, `installation-profile.json` and `references/build-fingerprint.txt` are program identity and update independently. Production replaces the baseline fingerprint with the uppercase first eight source-commit characters; `fingerprintScheme=source-commit-prefix` and the replaced baseline hash are recorded in both build record and installation profile. This describes Qt source identity, not the older Tk fingerprint algorithm; isolated client/layout profiles keep their existing behavior. The editor family is seeded only when both outer `assets/custom-maps` and internal `assets/custom-maps` are absent; neither existing family is overwritten. Optional author displays remain excluded by the light profile. Existing imported catalogs, bindings, images, structure/recognition products and receipts remain byte-for-byte untouched by the resource projection, including paths also present in the baseline. `production-file-projection.json` records the exact families/include hash and `resourceInstallationPolicy` distinguishes bundled baseline metadata from retained installed resources. The generated ownership backup plan uses the same cached family decisions, so skipped existing resource bytes are not rolled back/replaced as new payload. Synthetic projection checks are not native Inno installation acceptance. On uninstall the reused original logic preserves resource files owned by historical uninstall logs and restores their original paths. Neither profile adds `[UninstallDelete]`, automatic launch or force-closing applications. Original Tk source and installer remain available; native rollback/reinstall and preservation acceptance still require an actual controlled installation, not just source checks.
+
+After final integration/commit/push, the coordinator uses the same one build chain:
+
+```powershell
+.\.venv-qt-isolated\Scripts\python.exe tools/build_qt_client.py --instance production --plan-only --source-commit FULL_40_CHARACTER_FINAL_COMMIT --resource-root work/qt-lab-installation/_internal --resource-inventory work/qt-resource-inventory.json --iscc 'E:/codex/tools/inno-setup-6.7.3/compiler/ISCC.exe' --output-dir work/qt-setup/NEW_COMMIT_PRODUCTION
+```
+
+Only after final source/profile checks, remove `--plan-only` for the coordinator's single authorized build. This command does not authorize installation, ending a game, merging main, formal publication or uploading an artifact.
 
 ## Pinned build interpreter and tools
 

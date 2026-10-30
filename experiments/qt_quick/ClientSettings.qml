@@ -286,24 +286,22 @@ Item {
                                         {key: "referenceSheetVisible", title: "显示定点地图"},
                                         {key: "orbVisible", title: "显示悬浮球"},
                                         {key: "reduceMotion", title: "减弱动态效果"},
-                                        {key: "uiSoundEnabled", title: "界面提示音"},
-                                        {key: "difficultGridEnabled", title: "困难模式网格"}
+                                        {key: "uiSoundEnabled", title: "界面提示音"}
                                     ]
                                     delegate: CheckBox {
                                         required property var modelData
                                         objectName: "setting_" + modelData.key
                                         text: modelData.title
-                                        enabled: modelData.key !== "uiSoundEnabled" && modelData.key !== "difficultGridEnabled"
                                         font.family: "Microsoft YaHei UI"; font.pixelSize: 13
                                         checked: root.preferences[modelData.key]
                                         onToggled: settingsService.setValue(modelData.key, checked)
                                     }
                                 }
-                                Note { text: "界面提示音、困难模式网格尚未接通；现有偏好会保留。" }
                             }
                         }
                     }
                     Rectangle { Layout.fillWidth: true; height: 1; color: "#edf2fa" }
+                    ClientChestAutoTap { Layout.fillWidth: true }
                     Disclosure { objectName: "modeSettingsToggle"; text: root.modeExpanded ? "收起模式与路线" : "模式与路线"; expanded: root.modeExpanded; onClicked: root.modeExpanded = !root.modeExpanded }
                     ColumnLayout {
                         visible: root.modeExpanded
@@ -337,14 +335,26 @@ Item {
                             settingsService.setValue("routeProfileId", currentValue)
                         }
                     }
-                    Label { text: "全棺路线变体 ID"; color: "#354f75"; font.pixelSize: 13 }
-                    Field {
+                    Label { text: "全棺路线版本"; color: "#354f75"; font.pixelSize: 13 }
+                    ComboBox {
+                        objectName: "setting_zhan10CoffinVariantId"
                         Layout.fillWidth: true
-                        text: root.preferences.zhan10CoffinVariantId
-                        enabled: false
-                        Accessible.name: "全棺路线变体 ID"
-                        onEditingFinished: { settingsService.setValue("zhan10CoffinVariantId", text); text = Qt.binding(function() { return root.preferences.zhan10CoffinVariantId }) }
+                        model: settingsService.coffinVariantOptions; textRole: "name"; valueRole: "id"
+                        currentIndex: { for (var i=0;i<settingsService.coffinVariantOptions.length;i++) if(settingsService.coffinVariantOptions[i].id===root.preferences.zhan10CoffinVariantId) return i; return -1 }
+                        displayText: currentIndex < 0 ? "当前版本不可用（偏好保留）" : currentText
+                        enabled: !settingsService.busy && root.preferences.gameMode===settingsService.coffinVariantContext.mode
+                                 && (root.preferences.modeRouteProfiles[root.preferences.gameMode] || root.preferences.routeProfileId)===settingsService.coffinVariantContext.profileId
+                                 && settingsService.coffinVariantOptions.some(function(row) { return row.available })
+                        delegate: ItemDelegate {
+                            required property var modelData
+                            width: parent ? parent.width : implicitWidth
+                            text: modelData.name + (modelData.available ? "" : " · " + modelData.reason)
+                            enabled: modelData.available
+                        }
+                        Accessible.name: "全棺路线版本"
+                        onActivated: settingsService.selectCoffinVariant(currentValue)
                     }
+                    Note { text: settingsService.coffinVariantMessage; Layout.columnSpan: parent.columns }
                 }
                     }
                     Disclosure { objectName: "controlLayoutToggle"; text: root.modulesExpanded ? "收起悬浮面板控件" : "自定义悬浮面板控件"; expanded: root.modulesExpanded; onClicked: root.modulesExpanded = !root.modulesExpanded }
@@ -409,6 +419,7 @@ Item {
             AppButton { objectName: "settingsSave"; text: settingsService.busy ? "正在保存…" : "保存更改"; primary: true; enabled: settingsService.dirty && !settingsService.busy && !settingsService.shortcutRecording; onClicked: { forceActiveFocus(); settingsService.save() } }
             AppButton { objectName: "settingsReload"; text: "重新读取"; enabled: !settingsService.busy; onClicked: settingsService.reload() }
             AppButton { objectName: "settingsReset"; text: "撤销草稿"; enabled: settingsService.dirty && !settingsService.busy; onClicked: settingsService.resetDraft() }
+            AppButton { objectName: "settingsReplayOnboarding"; text: "重新查看快捷键引导"; enabled: !settingsService.busy; onClicked: onboardingService.open() }
         }
     }
 }

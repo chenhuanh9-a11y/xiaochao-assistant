@@ -8,15 +8,15 @@ ApplicationWindow {
     id: root
     objectName: "qtClientMain"
     width: 1000; height: 720; minimumWidth: 650; minimumHeight: 470
-    visible: true; title: "星图 · Qt 私测"
+    visible: true; title: productionProduct ? "星图" : "星图 · Qt 私测"
     color: "#edf4ff"; font.family: "Microsoft YaHei UI"; font.pixelSize: 13
     property string page: "home"
     property real replayAlpha: 0.55
-    property var pages: ["home", "gallery", "resources", "settings", "replay", "help", "recognition", "custom"]
+    property var pages: ["home", "gallery", "resources", "settings", "replay", "help", "recognition", "custom", "downloads"]
     readonly property bool compactRail: width < 800 || height < 660
     readonly property int workspaceMargin: width >= 1200 ? 48 : 28
-    function section(name) { return name === "resources" ? "gallery" : name === "recognition" ? "home" : name === "replay" ? "help" : name }
-    function heading(name) { return ({home:"主页面",gallery:"地图资源",resources:"图包管理",settings:"设置",replay:"识别回放",help:"帮助与公告",recognition:"地图识别",custom:"自定义路线"})[name] || "星图" }
+    function section(name) { return name === "resources" || name === "downloads" ? "gallery" : name === "recognition" ? "home" : name === "replay" ? "help" : name }
+    function heading(name) { return ({home:"主页面",gallery:"地图资源",resources:"图包管理",downloads:"在线图包",settings:"设置",replay:"识别回放",help:"帮助与公告",recognition:"地图识别",custom:"自定义路线"})[name] || "星图" }
     readonly property var routeOptions: {
         var options = routeChoices.profiles.slice()
         var custom = customGalleryService.snapshot
@@ -34,12 +34,16 @@ ApplicationWindow {
     onActiveFocusItemChanged: updateInputGuard()
     onActiveChanged: updateInputGuard()
     Shortcut {
-        sequence: settingsService.values.actionHotkeys[0] || ""
+        sequence: settingsService.persistedValues.actionHotkeys[0] || ""
         context: Qt.ApplicationShortcut; autoRepeat: false
         enabled: !clientCoordinator.textEntryActive
-        onActivated: clientCoordinator.toggleControls()
+        onActivated: clientCoordinator.toggleControlsKeyboard()
     }
-    onClosing: function(event) { event.accepted = false; clientCoordinator.requestClose() }
+    ClientOnboarding {}
+    onClosing: function(event) {
+        event.accepted = clientCoordinator.closeReady
+        if (!event.accepted) clientCoordinator.requestClose()
+    }
     RowLayout {
         anchors.fill: parent; spacing: 0
         Rectangle {
@@ -87,7 +91,7 @@ ApplicationWindow {
         RowLayout {
             Layout.fillWidth: true; Layout.preferredHeight: 60
             Layout.leftMargin: root.workspaceMargin; Layout.rightMargin: root.workspaceMargin
-            AppButton { visible: root.page === "resources" || root.page === "recognition" || root.page === "replay"; text: "返回"; implicitWidth: 62; onClicked: root.page = root.section(root.page) }
+            AppButton { visible: root.page === "resources" || root.page === "downloads" || root.page === "recognition" || root.page === "replay"; text: "返回"; implicitWidth: 62; onClicked: root.page = root.section(root.page) }
             Label { text: root.heading(root.page); color: "#17365e"; font.pixelSize: 14; font.bold: true }
             Item { Layout.fillWidth: true }
             Label { visible: root.width >= 800; text: clientCoordinator.boundWindow ? "已连接游戏" : "等待连接游戏"; color: "#5b7294"; font.pixelSize: 12 }
@@ -126,13 +130,14 @@ ApplicationWindow {
             ClientHelp {}
             ClientRecognition {}
             ClientCustomGallery {}
+            ClientOnlinePackages {}
         }
         }
     }
     FileDialog { id: replayPicker; title: "选择隔离回放"; nameFilters: ["星图回放 (replay.json)"]; onAccepted: clientCoordinator.loadReplay(selectedFile.toString()) }
     Popup {
         anchors.centerIn: parent; width: 310; height: 110; modal: true; closePolicy: Popup.NoAutoClose
-        visible: clientCoordinator.closing
+        visible: clientCoordinator.closing && !clientCoordinator.closeReady
         background: Rectangle { color: "white"; radius: 12 }
         Label { anchors.centerIn: parent; width: parent.width-32; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; text: "正在结束任务并保存已接受的操作…"; color: "#183a73" }
     }

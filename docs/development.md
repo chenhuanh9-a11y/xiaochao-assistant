@@ -58,3 +58,7 @@ TokenElevation 的“管理员 / 普通 / 未知”状态；查询失败必须�
 交付回执记录 source commit、显示/数值版本、构建指纹、资源版本和锁文件哈希、实际内置范围、Setup 精确字节数与 SHA256。需要外部资源时明确获取与绑定合同；缺失时报告，不能静默退回旧本地源码/素材。软件只交付 Setup，地图导入包仍可用 ZIP；未生成安装器时不要用便携 ZIP 的大小估算安装包收益。
 
 源码/离线检查、包内模块检查、安装、真实 GUI/游戏和线上发布分别标明结果。生成 Setup 不代表自动授权安装或发布；保留旧交付物和用户数据，未包含的 PR/修复不得写进当前版本公告。
+
+## 通用机制优先复用
+
+下载、取消重试、导入和退出清理等通用机制，先查官方教程及成熟开源实现，再结合现有服务接入；核对版本、许可证与完整状态生命周期。不要只照搬外观、引入无关整套依赖或顺带改写识别贴合算法。相关说明应简记实际参考及适配点，例如 Qt 的 [Window 关闭](https://doc.qt.io/qt-6/qml-qtquick-window.html#closing-signal)、[QCoreApplication 退出](https://doc.qt.io/qt-6/qcoreapplication.html#quit)和 [QThreadPool 生命周期](https://doc.qt.io/qtforpython-6/PySide6/QtCore/QThreadPool.html)。

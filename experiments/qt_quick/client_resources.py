@@ -1,6 +1,6 @@
 """Qt resource actions over the production receipt/transaction helpers.
 
-Only a marked installation beneath this checkout's work/ is accepted. Workers
+Uses the shared baked-production or marked-isolated installation contract. Workers
 never touch Qt state; their queued results are checked against operation tokens.
 An upgrade cannot be cancelled once submitted: the shared transaction owns its
 rollback. Additive author imports/removals honour cancellation before commit.
@@ -9,16 +9,18 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 import sys
 import threading
 
 from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, QUrl, Qt, Signal, Slot
 
-from client_paths import RESOURCE_ROOT as ROOT, WORK_ROOT
+from client_paths import RESOURCE_ROOT as ROOT, validate_installation_root
 sys.path.insert(0, str(ROOT / "app"))
 import star_map_import as importer
 import author_package_management as manager
+import client_resource_recovery as recovery
 
 
 class _Signals(QObject):
@@ -53,6 +55,7 @@ class ResourceService(QObject):
     changed = Signal()
     confirmationRequested = Signal(str, str)
     resourcesChanged = Signal()
+    recoveryCloseRequested = Signal()
 
     def __init__(self, sandbox: Path, parent=None):
         super().__init__(parent)
@@ -66,14 +69,102 @@ class ResourceService(QObject):
         self._cancel = threading.Event()
         self._closed, self._can_cancel = False, False
         self._recovery = False
+        self._recovery_rows = []
+        self._recovery_allowed = lambda: False
+        self._recovery_launcher = None
+        self._recovery_handoff = False
+        self._recovery_notice = ""
+        self._receipt_needs_notification = False
         self._lease_provider, self._lease_id = None, None
 
     packageRows = Property("QVariantList", lambda s: s._rows, notify=changed)
     busy = Property(bool, lambda s: s._busy, notify=changed)
-    message = Property(str, lambda s: s._message, notify=changed)
+    message = Property(str, lambda s: "\n".join(filter(None, (s._recovery_notice, s._message))), notify=changed)
     pendingKind = Property(str, lambda s: s._kind if s._pending else "", notify=changed)
     canCancel = Property(bool, lambda s: s._can_cancel, notify=changed)
     recoveryRequired = Property(bool, lambda s: s._recovery, notify=changed)
+    operationGeneration = Property(int, lambda s: s._token, notify=changed)
+    recoveryTransactions = Property("QVariantList", lambda s: s._recovery_rows, notify=changed)
+    recoveryExecutionAllowed = Property(bool, lambda s: s._recovery_launcher is not None or bool(s._recovery_allowed()), notify=changed)
+    recoveryHandoffPending = Property(bool, lambda s: s._recovery_handoff, notify=changed)
+    recoveryUsesHelper = Property(bool, lambda s: s._recovery_launcher is not None, notify=changed)
+
+    def setRecoveryLauncher(self, launcher):
+        """Inject a separate helper launcher; it must wait for normal parent exit.
+
+        The worker callback receives (action, exact_plan) and returns requestId.
+        The owner retains the Popen, handles its receipt on the next launch, and
+        connects recoveryCloseRequested to the existing normal close sequence.
+        This callback never grants permission for in-process recovery writes.
+        """
+        if not self._available() or not callable(launcher):
+            raise RuntimeError("Cannot change recovery launcher during an operation")
+        self._recovery_launcher = launcher
+        self.changed.emit()
+
+    def setRecoveryAllowedProvider(self, provider):
+        """Caller proves all resource consumers stopped, not merely hidden."""
+        if self._busy or self._pending is not None or not callable(provider):
+            raise RuntimeError("Cannot change recovery phase during an operation")
+        self._recovery_allowed = provider
+        self.changed.emit()
+
+    def recordRecoveryReceipt(self, receipt):
+        """Display an owner's request-bound helper result on the next launch.
+
+        The owner verifies persisted requestId, planSha256 and action first.
+        Success invalidates consumers only after the next actual resource scan.
+        """
+        if (not isinstance(receipt, dict) or type(receipt.get("success")) is not bool
+                or not re.fullmatch(r"[A-Za-z0-9-]{1,64}", str(receipt.get("requestId", "")))
+                or not re.fullmatch(r"[0-9a-f]{64}", str(receipt.get("planSha256", "")))
+                or receipt.get("action") not in ("recover", "rollback")):
+            raise ValueError("Invalid request-bound recovery receipt")
+        if receipt["success"]:
+            result = receipt.get("operationResult", {})
+            if (not isinstance(result, dict) or result.get("status") != "rolled-back"
+                    or result.get("upgradeTransactionId") != receipt.get("transactionId")):
+                raise ValueError("Recovery receipt does not confirm old-resource restoration")
+            self._recovery_notice = "恢复工具已还原旧资源，正在核对实际状态。"
+            self._receipt_needs_notification = True
+        else:
+            self._recovery_notice = "恢复工具未能完成，备份和冲突文件已保留。详情：" + str(receipt.get("reason", "结果未提供失败原因"))
+        self.changed.emit()
+
+    def _recovery_history(self, cancel):
+        importer._check_cancelled(cancel.is_set)
+        # Inspection serializes with import writers but does not require closure.
+        with importer._writer_locked_installation(self.sandbox, require_closed=False) as (root, _state):
+            return recovery.history_locked(root)
+
+    @Slot()
+    def inspectRecovery(self):
+        if self._available():
+            self._start("recovery-history", self._recovery_history, "正在核对恢复记录…")
+
+    def _request_recovery(self, action, transaction_id=None):
+        if not self._available():
+            return
+        if self._recovery_launcher is None and not self._recovery_allowed():
+            self._message = "请先停止识别和所有资源读取，再进入资源恢复阶段。"
+            self.changed.emit()
+            return
+        def inspect(cancel):
+            importer._check_cancelled(cancel.is_set)
+            with importer._writer_locked_installation(self.sandbox, require_closed=False) as (root, _state):
+                plan = recovery.inspect_locked(root, transaction_id)
+                if action == "rollback" and plan["status"] == "rolled-back":
+                    raise importer.ImportRejected("recovery-operation-no-longer-valid")
+                return action, plan
+        self._start("inspect-recovery", inspect, "正在核对恢复范围…")
+
+    @Slot()
+    def requestRecovery(self):
+        self._request_recovery("recover")
+
+    @Slot(str)
+    def requestRollback(self, transaction_id):
+        self._request_recovery("rollback", transaction_id)
 
     def setLeaseProvider(self, provider):
         """Inject the session coordinator before exposing this service to QML."""
@@ -88,15 +179,10 @@ class ResourceService(QObject):
 
     def _validate_root(self):
         importer._no_links(self.sandbox)
-        if not self.sandbox.resolve().is_relative_to(WORK_ROOT):
-            raise ValueError("Only a marked sandbox beneath this clone's work/ is writable")
-        marker = self.sandbox / ".qt-lab-owner"
-        importer._no_links(marker)
-        if not marker.is_file() or marker.read_text(encoding="utf-8").strip() != "qt-quick-isolated-v1":
-            raise ValueError("Missing or invalid Qt sandbox owner marker")
+        validate_installation_root(self.sandbox)
 
     def _available(self):
-        return not self._closed and not self._busy and self._pending is None
+        return not self._closed and not self._busy and self._pending is None and not self._recovery_handoff
 
     def _start(self, kind, function, message, *, cancellable=True):
         if self._lease_provider is not None and self._lease_id is None:
@@ -150,6 +236,43 @@ class ResourceService(QObject):
             self._start("inspect-remove", lambda cancel: manager.inspect_author_package_removal(
                 self.sandbox, package_id), "正在核对备份与移除范围…")
 
+    def importVerifiedArchive(self, file_url, expected, expected_generation):
+        """Bind an online selection before reusing the original local import."""
+        if (not self._available() or self._recovery or type(expected_generation) is not int
+                or expected_generation != self._token):
+            return False
+        try:
+            expected = dict(expected)
+            if (set(expected) != {"packageId", "bytes", "sha256"}
+                    or not isinstance(expected["packageId"], str) or len(expected["packageId"]) > 64
+                    or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", expected["packageId"])
+                    or type(expected["bytes"]) is not int or expected["bytes"] <= 0
+                    or not re.fullmatch(r"[0-9a-f]{64}", str(expected["sha256"]))):
+                raise ValueError("在线图包校验信息无效")
+            url = QUrl(file_url)
+            if url.scheme() and not url.isLocalFile():
+                raise ValueError("在线图包必须位于本地下载缓存")
+            path = Path(url.toLocalFile() if url.isLocalFile() else file_url)
+            importer._no_links(path)
+            if not path.resolve().is_relative_to(self.sandbox / "work/map-packages/downloads"):
+                raise ValueError("在线图包不在此客户端的下载缓存内")
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            self._message = str(error)
+            self.changed.emit()
+            return False
+        def inspect(cancel):
+            importer._no_links(path)
+            if path.stat().st_size != expected["bytes"]:
+                raise importer.ImportRejected("online-archive-size-mismatch")
+            result = importer.inspect_package(path, self.sandbox)
+            if (result.get("packageId") != expected["packageId"]
+                    or result.get("archiveSha256") != expected["sha256"]
+                    or path.stat().st_size != expected["bytes"]):
+                raise importer.ImportRejected("online-archive-binding-mismatch")
+            return str(path), result
+        self._start("inspect", inspect, "正在核对在线索引与本地图包。")
+        return self._busy
+
     def _install(self, path, result):
         live = importer.supports_live_author_import(result)
         def install(cancel):
@@ -180,6 +303,35 @@ class ResourceService(QObject):
             return
         if kind == "overwrite":
             self._install(*pending)
+        elif kind == "recovery":
+            action, plan = pending
+            if self._recovery_launcher is not None:
+                launcher = self._recovery_launcher
+                def launch(_cancel):
+                    # The helper repeats this after normal process exit under
+                    # the unchanged closed-app lock. Launch is not a commit.
+                    with importer._writer_locked_installation(self.sandbox, require_closed=False) as (root, _state):
+                        if recovery.inspect_locked(root, plan["transactionId"]) != plan:
+                            raise importer.ImportRejected("recovery-plan-changed-reinspect-required")
+                    request_id = launcher(action, dict(plan))
+                    if not isinstance(request_id, str) or not request_id:
+                        raise importer.ImportRejected("recovery-helper-launch-not-confirmed")
+                    return request_id
+                self._start("launch-recovery", launch, "正在准备恢复工具，随后正常关闭客户端。", cancellable=False)
+                return
+            if not self._recovery_allowed():
+                self._message = "资源读取状态已改变，请重新进入恢复阶段并核对。"
+                self._release_lease()
+                self.changed.emit()
+                return
+            def execute(_cancel):
+                if not self._recovery_allowed():
+                    raise importer.ImportRejected("resource-consumers-not-stopped")
+                with importer._locked_installation(self.sandbox, True) as (root, _state):
+                    if not self._recovery_allowed():
+                        raise importer.ImportRejected("resource-consumers-not-stopped")
+                    return recovery.execute_locked(root, plan, action)
+            self._start("recover", execute, "正在恢复旧资源，请等待事务完成…", cancellable=False)
         elif kind == "remove":
             plan = pending
             self._start("remove", lambda cancel: manager.remove_author_package_live(
@@ -212,7 +364,7 @@ class ResourceService(QObject):
             self._recovery = "upgrade-recovery-required" in error or "pending-upgrade" in error or recovery
             if self._recovery:
                 self._rows = [dict(row, canRemove=False, status="recovery-required") for row in self._rows]
-                self._message = "资源事务需要恢复。备份与日志已保留；请关闭客户端，核对后使用现有恢复工具。"
+                self._message = "资源事务需要恢复。备份与日志已保留，请核对恢复记录并在恢复阶段还原旧资源。详情：" + error
             elif "import-cancelled" in error:
                 self._message = "操作已取消。"
             else:
@@ -222,23 +374,49 @@ class ResourceService(QObject):
             self._release_lease()
             self.changed.emit()
             return
-        if kind in ("refresh", "inspect", "inspect-remove", "refresh-after-write") and self._cancel.is_set():
+        if kind in ("refresh", "inspect", "inspect-remove", "refresh-after-write", "recovery-history", "inspect-recovery") and self._cancel.is_set():
             self._message, self._kind = "操作已取消。", ""
             if kind == "refresh-after-write":
                 self._message = "状态核对已取消；已完成的资源改动仍然保留，可重新核对。"
             self._release_lease()
             self.changed.emit()
             return
-        if kind == "refresh":
+        if kind == "recovery-history":
+            self._recovery_rows, self._kind = result, ""
+            self._recovery = any(row["pending"] for row in result)
+            self._message = "恢复记录已核对。" if result else "没有可恢复的升级记录。"
+        elif kind == "launch-recovery":
+            self._kind, self._recovery_handoff = "", True
+            self._message = "恢复工具已准备，正在正常关闭客户端；重新打开后核对实际结果。"
+            self.changed.emit()
+            # Keep the lease until shutdown. Never emit resourcesChanged or
+            # report success for a helper which has only started waiting.
+            self.recoveryCloseRequested.emit()
+            return
+        elif kind == "inspect-recovery":
+            action, plan = result
+            self._pending, self._kind = result, "recovery"
+            self._message = "等待确认恢复旧资源。"
+            self.changed.emit()
+            self.confirmationRequested.emit("恢复旧资源" if action == "recover" else "回滚已完成升级",
+                "%s\n事务：%s\n状态：%s，涉及 %s 个资源。\n核对指纹：%s\n\n恢复旧文件和登记记录并保留备份。本地改动或确认范围变化会拒绝执行；不会继续安装新版本。" % (
+                    plan["packageId"], plan["transactionId"], plan["status"], plan["fileCount"], plan["planSha256"])
+                + ("\n\n确认后将正常关闭客户端。恢复工具仅在客户端正常退出后执行；重新打开客户端核对结果。" if self._recovery_launcher is not None else ""))
+            return
+        elif kind == "refresh":
             self._rows, self._recovery, self._kind = result, False, ""
             self._message = "本地资源已核对。" if result else "尚未安装资源，可导入 ZIP 资源包。"
+            if self._receipt_needs_notification:
+                self._receipt_needs_notification = False
+                self._recovery_notice = "恢复工具已还原旧资源，实际状态已核对。"
+                self.resourcesChanged.emit()
         elif kind == "inspect":
             path, inspection = result
             if inspection.get("replaceFiles"):
                 self._kind, self._pending = "overwrite", (path, inspection)
                 self._message = "等待确认资源更新。"
                 self.changed.emit()
-                self.confirmationRequested.emit("确认更新资源", "将替换 %s 中 %s 个已登记且未改动的文件，并新增 %s 个文件。旧文件将由现有事务备份；未知文件与本地改动不会覆盖。\n\n仅作用于此 Qt 隔离副本。" % (
+                self.confirmationRequested.emit("确认更新资源", "将替换 %s 中 %s 个已登记且未改动的文件，并新增 %s 个文件。旧文件将由现有事务备份；未知文件与本地改动不会覆盖。\n\n仅作用于当前资源目录。" % (
                     inspection["packageId"], len(inspection["replaceFiles"]), len(inspection["missingFiles"])))
                 return
             self._install(path, inspection)
@@ -247,17 +425,20 @@ class ResourceService(QObject):
             self._kind, self._pending = "remove", result
             self._message = "等待确认备份并移除。"
             self.changed.emit()
-            self.confirmationRequested.emit("备份并移除资源", "%s\n将备份并移除 %s 个作者显示文件（%s 字节），其中 %s 个有本地改动、%s 个已缺失。保留 %s 个核心文件，以及未登记文件和自定义路线。\n\n备份保留在隔离副本 work/map-package-removals；此操作不提供自动恢复。" % (
+            self.confirmationRequested.emit("备份并移除资源", "%s\n将备份并移除 %s 个作者显示文件（%s 字节），其中 %s 个有本地改动、%s 个已缺失。保留 %s 个核心文件，以及未登记文件和自定义路线。\n\n备份保留在当前资源目录 work/map-package-removals；此操作不提供自动恢复。" % (
                 result["title"], result["fileCount"], result["bytes"], len(result["modifiedFiles"]),
                 len(result["missingFiles"]), result["preservedCoreFiles"]))
             return
-        elif kind in ("install", "remove"):
+        elif kind in ("install", "remove", "recover"):
             # A successful return is the commit result even if Cancel arrived
             # just after the helper's commit point. Never label that cancelled.
             self._kind = ""
             self._message = ("资源已备份并移除。备份：" + result["backupPath"] if kind == "remove"
                              else "资源安装完成，正在核对状态…")
             self.resourcesChanged.emit()
+            if kind == "recover":
+                self._recovery_rows = []
+                self._message = "旧资源已恢复，正在核对状态…"
             message = self._message
             self._start("refresh-after-write", self._snapshot, message)
             return

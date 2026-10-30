@@ -110,6 +110,7 @@ class ClientCoordinator(QObject):
     pageRequested = Signal(str)
     quitRequested = Signal()
     runtimeEvent = Signal(object)
+    controlVisibilityChanged = Signal(bool, str)
 
     def __init__(self, *, backend, settings, resources, session, windows, native_input,
                  capture, runtime, images, window_catalog=game_window_rows):
@@ -122,6 +123,7 @@ class ClientCoordinator(QObject):
         self._bound = ""
         self._message = "选择游戏窗口后，再按需启用实时功能"
         self._reference = {}
+        self._focus_notice = ""
         self._aligned = {}
         self._edit = None
         self._before_edit = None
@@ -143,6 +145,10 @@ class ClientCoordinator(QObject):
         self._waiting_foreground = False
         self._map_was_open = False
         self._closing = False
+        self._close_ready = False
+        from client_game_focus import GameFocusService
+        self._game_focus = GameFocusService(lambda: int(self._bound) if self._bound else None,
+            is_closed=lambda: self._closed or self._closing, parent=self)
         self.close_writers = ()
         self._close_timer = QTimer(self)
         self._close_timer.setInterval(40)
@@ -183,9 +189,12 @@ class ClientCoordinator(QObject):
     alignedData = Property("QVariantMap", lambda s: dict(s._aligned), notify=changed)
     inputEnabled = Property(bool, lambda s: s.input.enabled, notify=changed)
     closing = Property(bool, lambda s: s._closing, notify=changed)
+    closeReady = Property(bool, lambda s: s._close_ready, notify=changed)
     textEntryActive = Property(bool, lambda s: s._text_entry or s._shortcut_recording, notify=changed)
 
     def _status_text(self):
+        if self._focus_notice:
+            return self._focus_notice
         state = self.session.snapshot
         if self.session.busy and state.get("pendingAction") != "refresh_map":
             return {"inspect_engine_resources": "正在准备识别资源…", "start_round": "正在准备本局…"}.get(self._requested_action, "正在核对地图与位置…")
@@ -204,6 +213,7 @@ class ClientCoordinator(QObject):
     runtimeStatus = Property(str, _status_text, notify=changed)
 
     def _action_requested(self, action, payload):
+        self._focus_notice = ""
         self._requested_action = action
         state = self.session.snapshot
         if action == "select_candidate" and payload.get("index") != state.get("selectedCandidateIndex", -1):
@@ -220,9 +230,16 @@ class ClientCoordinator(QObject):
 
     @Slot(str)
     def navigate(self, name):
-        if name in {"home", "recognition", "gallery", "resources", "custom", "settings", "replay", "help"}:
+        if name in {"home", "recognition", "gallery", "resources", "downloads", "custom", "settings", "replay", "help"}:
             self.pageRequested.emit(name)
             self.windows.show("main")
+
+    @Slot()
+    def returnToGame(self):
+        result = self._game_focus.requestFocus()
+        self._message = str(result.get("message", ""))
+        self._focus_notice = self._message
+        self.changed.emit()
 
     @Slot()
     def refreshGameWindows(self):
@@ -245,6 +262,7 @@ class ClientCoordinator(QObject):
         self.input.disable()
         self.capture.disable()
         self._revoke_runtime("binding-changed")
+        self._focus_notice = ""
         self._bound = str(hwnd)
         try:
             self.input.bindWindow(int(hwnd))
@@ -301,12 +319,24 @@ class ClientCoordinator(QObject):
 
     @Slot()
     def toggleControls(self):
-        state = self.windows.snapshot.get("controls", {})
-        if state.get("visible"):
+        self._toggle_controls("mouse")
+
+    @Slot()
+    def toggleControlsKeyboard(self):
+        self._toggle_controls("keyboard")
+
+    def _toggle_controls(self, source):
+        if self._closing or self._closed or self._shortcut_recording:
+            return
+        before = bool(self.windows.snapshot.get("controls", {}).get("visible"))
+        if before:
             self.windows.hide("controls")
         else:
             self.settings.setValue("orbVisible", True)
             self.windows.show("controls")
+        after = bool(self.windows.snapshot.get("controls", {}).get("visible"))
+        if before != after:
+            self.controlVisibilityChanged.emit(after, source)
 
     @Slot(str)
     def setMode(self, mode):
@@ -424,6 +454,8 @@ class ClientCoordinator(QObject):
         self.session.dispatchWithPayload("load_saved_result", {"path": path})
 
     def _draft_changed(self):
+        if self._closing or self._closed:
+            return
         values = self.settings.values
         if not values.get("referenceSheetVisible", True):
             self.hideReference()
@@ -434,6 +466,8 @@ class ClientCoordinator(QObject):
         self.changed.emit()
 
     def _settings_saved(self):
+        if self._closing or self._closed:
+            return
         values = self.settings.persistedValues
         signature = (values.get("hotkey"), tuple(values.get("actionHotkeys", ())))
         if signature != self._binding_signature:
@@ -474,6 +508,8 @@ class ClientCoordinator(QObject):
             self._message = self.session.message
 
     def _resources_changed(self):
+        if self._closing or self._closed:
+            return
         self.cancelReferenceEdit()
         self._reference = {}
         self._invalidate_display()
@@ -497,6 +533,8 @@ class ClientCoordinator(QObject):
         self._invalidate_display()
 
     def _session_changed(self):
+        if self._closing or self._closed:
+            return
         if self.session.busy:
             if self.session.snapshot.get("pendingAction") not in {
                     "refresh_map", "reselect_map", "previous_candidate", "next_candidate",
@@ -555,8 +593,10 @@ class ClientCoordinator(QObject):
             self.windows.show("aligned")
 
     def _native_action(self, action):
+        if self._closing or self._closed:
+            return
         if action == "toggle-panel":
-            self.toggleControls()
+            self.toggleControlsKeyboard()
             return
         aliases = {"map": "map", "escape": "close_map", "candidate-prev": "previous_candidate",
                    "candidate-next": "next_candidate", "confirm-round": "confirm_route",
@@ -612,7 +652,7 @@ class ClientCoordinator(QObject):
             window.setScreen(screen)
 
     def _watch_foreground(self):
-        if self._closed or not self._bound or not self.session.snapshot.get("roundActive"):
+        if self._closed or self._closing or not self._bound or not self.session.snapshot.get("roundActive"):
             return
         try:
             if self._native_windows.foreground_window() != int(self._bound or 0):
@@ -643,7 +683,7 @@ class ClientCoordinator(QObject):
 
     @Slot(object)
     def _on_runtime_event(self, event):
-        if self._closed or not isinstance(event, dict):
+        if self._closed or self._closing or not isinstance(event, dict):
             return
         if event.get("event") == "render-revoked":
             getter = getattr(self.runtime, "render_payload", None)
@@ -675,6 +715,9 @@ class ClientCoordinator(QObject):
         if self._closing:
             return
         self._closing = True
+        self._foreground_timer.stop()
+        self._tracking_timer.stop()
+        self._context_timer.stop()
         self.input.disable()
         self.capture.disable()
         self._revoke_runtime("client-close-requested")
@@ -684,6 +727,9 @@ class ClientCoordinator(QObject):
         if self.resources.canCancel:
             self.resources.cancel()
         for writer in self.close_writers:
+            cancel = getattr(writer, "cancel", None)
+            if callable(cancel):
+                cancel()
             state = getattr(writer, "snapshot", {})
             if isinstance(state, dict) and state.get("pendingKind") and hasattr(writer, "confirmOperation"):
                 writer.confirmOperation(False)
@@ -692,6 +738,8 @@ class ClientCoordinator(QObject):
         self._finish_close()
 
     def _finish_close(self):
+        if self._close_ready or self._closed:
+            return
         if (self.resources.pool.activeThreadCount() or self.settings.pool.activeThreadCount()
                 or self.session._pool.activeThreadCount()):
             return
@@ -700,6 +748,8 @@ class ClientCoordinator(QObject):
             if pool is not None and pool.activeThreadCount():
                 return
         self._close_timer.stop()
+        self._close_ready = True
+        self.changed.emit()
         self.quitRequested.emit()
 
     def shutdown(self):
@@ -713,5 +763,6 @@ class ClientCoordinator(QObject):
             callback(None)
         self.input.shutdown()
         self.capture.shutdown()
+        self._game_focus.shutdown()
         self.cancelReferenceEdit()
         self._invalidate_display()

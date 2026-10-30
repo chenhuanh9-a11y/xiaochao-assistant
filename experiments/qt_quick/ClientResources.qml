@@ -28,13 +28,36 @@ Item {
             Layout.fillWidth: true
             Label { text: "管理本地资源"; color: "#142b4b"; font.pixelSize: 18; font.bold: true }
             Item { Layout.fillWidth: true }
+            AppButton { text: "恢复记录"; enabled: !resourceService.busy && resourceService.pendingKind === ""; onClicked: resourceService.inspectRecovery() }
+            AppButton { text: "在线图包"; onClicked: clientCoordinator.navigate("downloads") }
             AppButton { text: "核对状态"; enabled: !resourceService.busy && resourceService.pendingKind === ""; onClicked: resourceService.refresh() }
             AppButton { text: "导入 ZIP"; primary: true; enabled: !resourceService.busy && resourceService.pendingKind === "" && !resourceService.recoveryRequired; onClicked: archiveDialog.open() }
         }
         Label {
             Layout.fillWidth: true
-            text: "查看作者资源的实际文件状态；导入、更新和备份移除仅作用于此隔离副本。"
+            text: "查看作者资源的实际文件状态；导入、更新和备份移除仅作用于当前资源目录。"
             wrapMode: Text.Wrap; color: "#526785"; font.pixelSize: 12
+        }
+        ColumnLayout {
+            Layout.fillWidth: true
+            visible: resourceService.recoveryRequired || resourceService.recoveryTransactions.length > 0
+            Label { text: "升级恢复与回滚"; color: "#17365e"; font.bold: true }
+            Label { text: resourceService.recoveryUsesHelper ? "确认后正常关闭客户端，由恢复工具还原旧资源；重新打开后核对结果。" : resourceService.recoveryExecutionAllowed ? "已停止资源读取，可核对后恢复旧资源。" : "恢复需要单独的启动恢复阶段，识别和资源读取必须全部停止。"; color: "#526785"; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            AppButton { text: "恢复中断的升级"; visible: resourceService.recoveryRequired; enabled: resourceService.recoveryExecutionAllowed && !resourceService.busy && resourceService.pendingKind === ""; onClicked: resourceService.requestRecovery() }
+            ListView {
+                id: transactions
+                Layout.fillWidth: true
+                Layout.preferredHeight: Math.min(contentHeight, 156)
+                clip: true
+                ScrollBar.vertical: ScrollBar {}
+                model: resourceService.recoveryTransactions
+                delegate: RowLayout {
+                    required property var modelData
+                    width: transactions.width
+                    Label { Layout.fillWidth: true; text: modelData.packageId + " · " + modelData.transactionId.slice(0,8) + " · " + modelData.status; color: "#526785"; elide: Text.ElideRight }
+                    AppButton { text: "回滚"; enabled: resourceService.recoveryExecutionAllowed && !resourceService.busy && resourceService.pendingKind === ""; onClicked: resourceService.requestRollback(modelData.transactionId) }
+                }
+            }
         }
         ListView {
             id: packages
@@ -113,6 +136,7 @@ Item {
         }
         onAccepted: resourceService.confirmOperation(true)
         onRejected: resourceService.confirmOperation(false)
+        onClosed: if (resourceService.pendingKind !== "") resourceService.confirmOperation(false)
     }
     Connections {
         target: resourceService

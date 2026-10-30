@@ -8,7 +8,7 @@ import threading
 from PySide6.QtCore import (QAbstractListModel, QObject, Property, QRunnable,
                             QThreadPool, Qt, Signal, Slot, QUrl)
 
-from client_paths import RESOURCE_ROOT as ROOT, WORK_ROOT
+from client_paths import RESOURCE_ROOT as ROOT, WORK_ROOT, runtime_paths
 sys.path.insert(0, str(ROOT / "app"))
 from map_resource_context import load_browse_context
 from star_map_import import inspect_package, install_package
@@ -93,9 +93,8 @@ class Backend(QObject):
 
     def __init__(self, sandbox):
         super().__init__()
-        self.sandbox = Path(sandbox).resolve()
-        if not self.sandbox.is_relative_to(WORK_ROOT) or not (self.sandbox / ".qt-lab-owner").is_file():
-            raise ValueError("Only a marked sandbox beneath this clone's work/ is writable")
+        self.paths = runtime_paths(sandbox)
+        self.sandbox = self.paths.installation_root
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(2)
         self.model = ResourceRows()
@@ -183,7 +182,7 @@ class Backend(QObject):
             self.changed.emit()
             if self.viewKey != initial_view:
                 self.viewChanged.emit(self.viewKey)
-        self._submit(lambda: load_browse_context(self.sandbox / "_internal", mode,
+        self._submit(lambda: load_browse_context(self.paths.resource_root, mode,
                                                 cancelled=cancel.is_set), loaded)
 
     def _apply_rows(self):

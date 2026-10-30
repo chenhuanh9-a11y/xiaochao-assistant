@@ -1,4 +1,4 @@
-# Private, opt-in Qt TEST client. Invoked only by build_qt_client.py.
+# Allowlisted Qt clients. Invoked only by build_qt_client.py.
 from pathlib import Path
 import json
 import os
@@ -11,7 +11,9 @@ from runtime_exclusions import PYTHON_MODULE_EXCLUSIONS, filter_binaries
 from verify_admin_manifest import verify_administrator_manifest
 
 inputs = json.loads(Path(os.environ["XINGTU_QT_BUILD_INPUTS"]).read_text(encoding="utf-8"))
-if Path(inputs["sourceRoot"]).resolve() != root or inputs["product"] != "XingtuQtClientTest":
+product = inputs["product"]
+if (Path(inputs["sourceRoot"]).resolve() != root
+        or product not in {"XingtuQtClientTest", "第五人格小抄助手"}):
     raise ValueError("Build input identity does not match this source checkout")
 qt_root = root / "experiments" / "qt_quick"
 resource_stage = Path(inputs["resourceStage"])
@@ -60,10 +62,10 @@ for module, source, kind in list(a.pure):
 if any(row[0] == "identityv_daily_assistant" for row in a.pure):
     raise ValueError("Tk production entrypoint must not enter the Qt client")
 pyz = PYZ(a.pure)
-exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="XingtuQtClientTest",
+exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name=product,
           debug=False, bootloader_ignore_signals=False, strip=False, upx=False,
           uac_admin=True, console=False,
           manifest=inputs["manifestPath"])
 # This reads RT_MANIFEST #1 from the actual PE; it never launches the EXE.
 verify_administrator_manifest(exe.name)
-coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="XingtuQtClientTest")
+coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name=product)

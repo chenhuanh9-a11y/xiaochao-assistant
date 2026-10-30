@@ -16,10 +16,12 @@ Item {
             Label { text: infoService.version; color: "#526785" }
             RowLayout {
                 AppButton { objectName: "helpCheckUpdates"; text: infoService.updatePhase === "checking" ? "正在检查…" : infoService.updatePhase === "error" ? "重新检查" : "检查更新"; enabled: !infoService.checking; onClicked: infoService.checkUpdates() }
-                AppButton { objectName: "helpExportDiagnostics"; text: "导出本次诊断"; enabled: !infoService.checking; onClicked: infoService.exportDiagnostics() }
-                AppButton { objectName: "helpSaveDiagnostics"; text: "另存诊断…"; enabled: !infoService.checking; onClicked: saveDiagnostics.open() }
+                AppButton { objectName: "helpExportDiagnostics"; text: "导出诊断 ZIP"; enabled: !infoService.checking; onClicked: infoService.exportDiagnostics() }
+                AppButton { objectName: "helpSaveDiagnostics"; text: "另存 ZIP…"; enabled: !infoService.checking; onClicked: saveDiagnostics.open() }
                 AppButton { text: "自愿支持开发"; onClicked: support.open() }
             }
+            CheckBox { text: "附带已保存的失败画面（不截取新画面）"; checked: infoService.includeFailureEvidence; enabled: !infoService.checking; onToggled: infoService.setIncludeFailureEvidence(checked) }
+            Label { text: "默认只导出限量脱敏文本、版本和当前状态，不包含原图或个人设置。"; color: "#526785"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
             ProgressBar { Layout.fillWidth: true; visible: infoService.checking; indeterminate: true; Accessible.name: infoService.operation }
             Label { text: infoService.operation || infoService.message; color: infoService.hasError ? "#b8364a" : "#526785"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
             Label { visible: !!infoService.diagnosticsReceipt.path; text: "诊断文件：" + (infoService.diagnosticsReceipt.path || ""); textFormat: Text.PlainText; color: "#17775a"; wrapMode: Text.WrapAnywhere; Layout.fillWidth: true }
@@ -65,8 +67,8 @@ Item {
     }
     NativeDialogs.FileDialog {
         id: saveDiagnostics
-        title: "保存本次诊断"; fileMode: NativeDialogs.FileDialog.SaveFile
-        nameFilters: ["JSON 文件 (*.json)"]; defaultSuffix: "json"
+        title: "保存诊断 ZIP"; fileMode: NativeDialogs.FileDialog.SaveFile
+        nameFilters: ["ZIP 诊断包 (*.zip)"]; defaultSuffix: "zip"
         onAccepted: infoService.exportDiagnosticsTo(selectedFile.toString())
     }
     Dialog {

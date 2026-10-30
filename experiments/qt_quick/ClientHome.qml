@@ -31,7 +31,7 @@ Item {
                         RowLayout {
                             spacing: 10
                             AppButton { text: "打开游戏控件"; primary: true; implicitHeight: 46; onClicked: windows.show("controls") }
-                            AppButton { text: "浏览地图资源"; implicitHeight: 46; onClicked: clientCoordinator.navigate("gallery") }
+                            AppButton { text: "返回游戏"; implicitHeight: 46; enabled: clientCoordinator.boundWindow !== ""; onClicked: clientCoordinator.returnToGame() }
                         }
                         Item { Layout.fillHeight: true }
                     }

@@ -55,6 +55,7 @@ import identityv_live_mvp as live_capture
 import desktop_theme as floating_theme
 from client_region_capture import client_capture_context
 from hotkey_bindings import Chord, MODIFIERS, modifiers_match, parse_chord, primary_state, validate_unique
+from game_window_focus import focus_bound_game
 from orb_visual import build_orb_visual, paint_orb
 from desktop_rounded import (
     RoundedButton, RoundedFrame, RoundedEntry, RoundedCombobox, set_rounded_scale,
@@ -1327,120 +1328,14 @@ def export_safe_diagnostic_bundle(
     package_metadata: dict | None = None,
     failure_roots: tuple[Path, ...] = (),
 ) -> dict:
-    """Export bounded logs and explicitly requested, already saved failure evidence."""
-    from diagnostic_evidence import export_failure_evidence, log_window
-    moment = exported_at or datetime.now().astimezone()
-    destination_root = app_root / "outputs" / "诊断日志"
-    destination_root.mkdir(parents=True, exist_ok=True)
-    base_name = f"第五人格小抄助手-诊断日志-{moment:%Y%m%d-%H%M%S}"
-    destination = destination_root / f"{base_name}.zip"
-    suffix = 2
-    while destination.exists():
-        destination = destination_root / f"{base_name}-{suffix}.zip"
-        suffix += 1
-
-    logs = safe_diagnostic_log_files(live_root, limit=log_limit)
-    included_logs: list[dict] = []
-    log_windows = {}
-    included_bytes = 0
-    fd, temporary_name = tempfile.mkstemp(
-        prefix=".diagnostic-export-", suffix=".tmp", dir=destination_root,
-    )
-    os.close(fd)
-    temporary = Path(temporary_name)
-    try:
-        with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            for path in logs:
-                remaining = total_byte_limit - included_bytes
-                if remaining <= 0:
-                    break
-                payload, truncated = _bounded_log_tail(
-                    path, max(1, min(file_byte_limit, remaining)),
-                )
-                payload = _redact_local_paths(payload)
-                log_windows[path.name] = log_window(payload)
-                archive.writestr(f"logs/{path.name}", payload)
-                included_bytes += len(payload)
-                included_sha256 = hashlib.sha256(payload).hexdigest().upper()
-                included_logs.append({
-                    "name": path.name,
-                    "sourceBytes": path.stat().st_size,
-                    "includedBytes": len(payload),
-                    "truncatedToRecentLines": truncated,
-                    "includedSha256": included_sha256,
-                    "sessionId": (
-                        _event_log_session_id(path)
-                        or (
-                            included_sha256[:16].lower()
-                            if path.name.startswith("events-") else None
-                        )
-                    ),
-                })
-
-            version_files: list[str] = []
-            for name in ("VERSION.txt", "release-report.json", "SHA256SUMS.txt"):
-                path = app_root / name
-                if path.is_file() and path.stat().st_size <= 1024 * 1024:
-                    archive.write(path, f"version/{name}")
-                    version_files.append(name)
-
-            package_metadata_source = 'startup-snapshot' if package_metadata is not None else 'export-time-report'
-            package_metadata = package_metadata if package_metadata is not None else diagnostic_package_metadata(app_root)
-            failure_evidence = export_failure_evidence(
-                archive, failure_roots, log_windows, _redact_local_paths,
-                build_fingerprint=BUILD_FINGERPRINT,
-            )
-            manifest = {
-                "schema": "identityv-safe-diagnostic-export-v3" if failure_roots else "identityv-safe-diagnostic-export-v2",
-                "exportedAt": moment.isoformat(timespec="seconds"),
-                "appVersion": APP_VERSION,
-                "buildFingerprint": BUILD_FINGERPRINT,
-                "runtimeProcessIntegrity": process_integrity_level(),
-                "requestedExecutionLevel": "requireAdministrator",
-                "textOnly": failure_evidence['imageCount'] == 0,
-                "privacy": (
-                    "Recent text logs, package version files and Identity V window metadata; "
-                    "when requested, bounded saved failure game frames and measured evidence "
-                    "from the included log sessions. No new screenshots are captured. "
-                    "Full local paths, confirmations, settings and unrelated memory are excluded."
-                ),
-                "failureEvidence": failure_evidence,
-                "windowEnvironment": window_environment or {
-                    "schema": "identityv-window-environment-v1",
-                    "candidateCount": 0,
-                    "candidates": [],
-                    "collectionStatus": "not-requested",
-                },
-                "packageMetadata": package_metadata,
-                "packageMetadataSource": package_metadata_source,
-                "runtimeContext": runtime_context or {
-                    "collectionStatus": "not-provided",
-                },
-                "logs": included_logs,
-                "versionFiles": version_files,
-            }
-            archive.writestr(
-                "diagnostic-manifest.json",
-                json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
-            )
-        os.replace(temporary, destination)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
-    return {
-        "path": destination,
-        "includedLogCount": len(included_logs),
-        "windowCandidateCount": int(
-            (window_environment or {}).get("candidateCount", 0),
-        ),
-        "truncatedLogCount": sum(
-            1 for row in included_logs if row["truncatedToRecentLines"]
-        ),
-        "packageMetadataStatus": package_metadata["status"],
-        "includedFailureImageCount": failure_evidence['imageCount'],
-        "failureEvidenceStatus": failure_evidence['status'],
-        "omittedFailureCaseCount": failure_evidence['omittedBySampleLimit'],
-    }
+    """Use the shared bounded exporter with this process's original identity."""
+    from diagnostic_export import export_safe_diagnostic_bundle as export_bundle
+    return export_bundle(app_root, live_root, exported_at=exported_at,
+        log_limit=log_limit, file_byte_limit=file_byte_limit, total_byte_limit=total_byte_limit,
+        window_environment=window_environment, runtime_context=runtime_context,
+        package_metadata=package_metadata, failure_roots=failure_roots,
+        app_version=APP_VERSION, build_fingerprint=BUILD_FINGERPRINT,
+        process_integrity=process_integrity_level())
 
 
 def clamped_float(value, default: float, minimum: float, maximum: float) -> float:
@@ -7953,78 +7848,16 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
 
     def focus_game_from_desktop(self) -> dict:
         """Honor one explicit desktop click for the currently bound game only."""
-        hwnd = getattr(self, "game_hwnd", None)
-        process_id = None
-        restore_requested = False
-
-        def finish(success: bool, reason: str, message: str) -> dict:
-            result = dict(success=bool(success), reason=reason, message=message)
-            self._log("desktop-game-focus", success=result["success"], reason=reason,
-                gameWindowBound=bool(hwnd), gameProcessId=process_id,
-                restoreRequested=restore_requested)
-            return result
-
-        if getattr(self, "closed", False):
-            return finish(False, "assistant-closed", "助手已关闭，未切换窗口")
-        if not isinstance(hwnd, int) or isinstance(hwnd, bool) or not hwnd:
-            return finish(False, "game-not-bound", "尚未绑定游戏，请先打开第五人格")
-        user32 = ctypes.windll.user32
-
-        def validate() -> tuple[str, str] | None:
-            nonlocal process_id
-            if getattr(self, "closed", False):
-                return "assistant-closed", "助手已关闭，未继续切换窗口"
-            if getattr(self, "game_hwnd", None) != hwnd:
-                return "binding-changed", "游戏窗口绑定已变化，请重新点击切回游戏"
-            if not user32.IsWindow(hwnd):
-                return "game-window-unavailable", "已绑定的游戏窗口已失效，请先打开游戏"
-            current_pid = window_process_id(hwnd)
-            if current_pid is None:
-                return "identity-unavailable", "暂时无法核验游戏窗口，请手动切回游戏"
-            if process_id is not None and current_pid != process_id:
-                return "binding-changed", "游戏窗口已变化，请重新点击切回游戏"
-            process_id = current_pid
-            title = live_capture.window_text(hwnd)
-            image_path = live_capture.process_image_path(current_pid)
-            if not image_path:
-                return "identity-unavailable", "无法读取游戏进程信息，请手动切回游戏"
-            if not live_capture.identityv_window_identity_is_allowed(title, image_path):
-                return "identity-mismatch", "已绑定窗口不是第五人格，未切换窗口"
-            if (getattr(self, "closed", False)
-                or getattr(self, "game_hwnd", None) != hwnd
-                or not user32.IsWindow(hwnd)
-                or window_process_id(hwnd) != process_id):
-                return "binding-changed", "游戏窗口已变化，未继续切换窗口"
-            return None
-
-        try:
-            failure = validate()
-            if failure:
-                return finish(False, *failure)
-            if int(user32.GetForegroundWindow() or 0) == hwnd:
-                return finish(True, "already-foreground", "游戏已在前台")
-            if user32.IsIconic(hwnd):
-                failure = validate()
-                if failure:
-                    return finish(False, *failure)
-                restore_requested = True
-                user32.ShowWindow(hwnd, 9)  # SW_RESTORE, only for this click.
-            if user32.IsIconic(hwnd):
-                return finish(False, "restore-not-confirmed", "游戏仍处于最小化状态，请手动切回游戏")
-            failure = validate()
-            if failure:
-                return finish(False, *failure)
-            accepted = bool(user32.SetForegroundWindow(hwnd))
-            failure = validate()
-            if failure:
-                return finish(False, *failure)
-            if int(user32.GetForegroundWindow() or 0) == hwnd:
-                return finish(True, "focused", "已切回游戏")
-            if not accepted:
-                return finish(False, "foreground-denied", "系统未允许切回游戏，请手动点击游戏窗口")
-            return finish(False, "foreground-not-confirmed", "游戏尚未成为前台窗口，请手动切回游戏")
-        except (AttributeError, OSError, TypeError, ValueError):
-            return finish(False, "focus-request-failed", "切回游戏失败，窗口可能已关闭或权限不足，请手动切回")
+        return focus_bound_game(
+            get_bound_hwnd=lambda: getattr(self, "game_hwnd", None),
+            is_closed=lambda: getattr(self, "closed", False),
+            get_user32=lambda: ctypes.windll.user32,
+            window_process_id=window_process_id,
+            window_text=live_capture.window_text,
+            process_image_path=live_capture.process_image_path,
+            identity_is_allowed=live_capture.identityv_window_identity_is_allowed,
+            log=self._log,
+        )
 
     def _close_drag_boundary_calibration(self, *, return_focus: bool = True) -> None:
         window = getattr(self, "drag_boundary_calibration_window", None)

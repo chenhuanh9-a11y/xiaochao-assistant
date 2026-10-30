@@ -591,12 +591,30 @@ class LiveRuntime:
     def configure_settings(self, settings):
         """Update explicit solver preferences; mode/profile use set_context."""
         with self._lock:
+            variant_changed = settings.get("zhan10CoffinVariantId", "variant-01") != self._settings.get("zhan10CoffinVariantId", "variant-01")
             self._settings = copy.deepcopy(dict(settings))
+            if variant_changed:
+                self._display_generation = getattr(self, "_display_generation", 0) + 1
+                if (self._profile, self._map_id, str(self._floor)) == ("zhan10-coffin", "nightmare-01", "1"):
+                    # Retain identity, floor and canonical pose. Only presentation
+                    # authority expires; the next normal refresh revalidates it.
+                    self._revoke_render("coffin-variant-changed")
             visible = bool(settings.get("sheetVisibilityEnabled", self._aligned_visible))
             changed = visible != self._aligned_visible
             self._aligned_visible = visible
         if changed:
             self._notify("aligned-visibility-changed", reason="settings-updated")
+
+    def route_preferences_metadata(self):
+        from client_route_preferences import coffin_variant_metadata
+        with self._lock:
+            context = (self._engine, self._mode, self._profile, self._map_id, self._floor)
+        return coffin_variant_metadata(*context)
+
+    def route_preferences_context(self):
+        with self._lock:
+            return dict(mode=self._mode, profileId=self._profile, mapId=self._map_id,
+                        floor=str(self._floor), resourceIdentity=str(id(self._engine)))
 
     def shutdown(self):
         self.dispatch("end_round")
@@ -1041,9 +1059,14 @@ class LiveRuntime:
         if basis is None:
             raise ValueError("shared-reference-canonical-basis-unavailable")
         canonical = source_matrix @ np.linalg.inv(np.asarray(basis))
-        display = self._display_layer(engine, map_id, floor, self._profile)
+        with self._lock:
+            display_generation = getattr(self, "_display_generation", 0)
+            variant_id = self._settings.get("zhan10CoffinVariantId", "variant-01")
+        display = self._display_layer(engine, map_id, floor, self._profile, variant_id=variant_id)
         render_matrix = source_matrix @ display["matrixDisplayToReference"]
         with self._lock:
+            if display_generation != getattr(self, "_display_generation", 0):
+                return self._receipt(action, payload, success=False, reason="stale-display-settings", stale=True)
             if obsolete() or frame_id != self._frame_id or cycle != self._cycle or floor != self._floor:
                 return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
             if not self._capture_is_current(captured.context, capture_generation):
@@ -1084,6 +1107,7 @@ class LiveRuntime:
                 floorSource="manual" if self._manual_floor else "automatic", observedFloor=self._observed_floor,
                 resourceIdentity=display["resourceIdentity"], displayKind=display["displayKind"],
                 displayLabel=display["displayLabel"], routeProfileId=display["routeProfileId"],
+                variantId=display.get("variantId"), displayGeneration=display_generation,
                 liveAuthorization=live, evidenceKind=self._evidence_kind)
             self._render_capture_context = captured.context
             render_token = self._render["token"]
@@ -1117,7 +1141,7 @@ class LiveRuntime:
         return result, floor, floor_read
 
     @staticmethod
-    def _display_layer(engine, map_id, floor, profile):
+    def _display_layer(engine, map_id, floor, profile, *, variant_id="variant-01"):
         import numpy as np
         reference = engine.qt_shared_provider("shared-structure", map_id, floor)
         if reference is None:
@@ -1128,15 +1152,25 @@ class LiveRuntime:
             if layer is not None:
                 return layer
         optional = engine.qt_optional_displays
-        binding = optional.binding(profile, map_id, floor)
+        from client_route_preferences import selected_coffin_binding
+        binding = (selected_coffin_binding(engine, map_id, floor, profile, variant_id)
+                   if (profile, map_id, str(floor)) == ("zhan10-coffin", "nightmare-01", "1")
+                   else optional.binding(profile, map_id, floor))
         if binding is not None and binding["usable"]:
-            pixels = optional.pixels(binding["path"], "aligned-overlay")
+            if binding.get("optionalPixels", True):
+                pixels = optional.pixels(binding["path"], "aligned-overlay")
+            else:
+                import cv2
+                from nightmare_candidate import imread_unicode
+                pixels = imread_unicode(binding["path"], cv2.IMREAD_UNCHANGED)
+                if (pixels is None or pixels.dtype != np.uint8 or pixels.ndim != 3 or pixels.shape[2] != 4):
+                    raise ValueError("coffin-variant-original-BGRA-unavailable")
             source_basis = engine.qt_adapters.matrix_profile_to_canonical("shared-structure", map_id, floor)
             if source_basis is None:
                 raise ValueError("display-reference-bridge-unavailable")
             return dict(pixels=pixels, matrixDisplayToReference=np.linalg.inv(source_basis) @ binding["matrix"],
                 resourceIdentity=str(binding["path"]), displayKind="author-route", displayLabel=profile,
-                routeProfileId=profile)
+                routeProfileId=profile, variantId=variant_id if profile == "zhan10-coffin" else None)
         # The existing shared-structure fallback displays this exact typed mask;
         # no author bitmap participates in identity, fitting or residual checks.
         pixels = np.zeros((*reference.shape, 4), np.uint8)
