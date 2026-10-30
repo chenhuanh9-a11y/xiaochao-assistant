@@ -35,7 +35,7 @@ INSTANCES = {
                            setupPrefix="XingtuQtLayout-Setup", versionSuffix="-qt-layout-test", product=PRODUCT),
     "production": dict(appId="D04394A0-DACE-4FF9-874D-3DCB43EE53D1", appName="星图",
                        installFolder="XiaochaoAssistant", startMenuGroup="星图",
-                       setupPrefix="星图-Qt-Setup", versionSuffix="-qt", product="第五人格小抄助手"),
+                       setupPrefix="星图-安装程序", versionSuffix="-qt", product="第五人格小抄助手"),
 }
 QML_MODULES = ("QtQml", "QtQuick", "QtQuick/Controls", "QtQuick/Controls/Basic",
                "QtQuick/Dialogs", "QtQuick/Dialogs/quickimpl", "QtQuick/Layouts")

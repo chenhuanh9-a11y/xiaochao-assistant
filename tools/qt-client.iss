@@ -69,6 +69,13 @@ WizardStyle=modern
 CloseApplications=no
 RestartApplications=no
 SetupLogging=yes
+; One official Simplified Chinese catalog, including upgrade/uninstall strings.
+; Do not adopt the language of an earlier English private installer.
+ShowLanguageDialog=no
+UsePreviousLanguage=no
+
+[Languages]
+Name: "chinesesimp"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 
 #ifdef ProductionInstaller
 [Tasks]
