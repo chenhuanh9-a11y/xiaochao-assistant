@@ -4,14 +4,16 @@ from __future__ import annotations
 from copy import deepcopy
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import sys
+import tempfile
 import threading
 
 from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, QTimer, Qt, QUrl, Signal, Slot
 
-from client_paths import APP_ROOT, runtime_paths, editor_library_usable
+from client_paths import APP_ROOT, runtime_paths, editor_library_usable, _no_links
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 from custom_maps import (COLORS, DEFAULT_COLOR, DEFAULT_GALLERY_FILE, FLOORS, FLOOR_LABELS,
@@ -96,6 +98,17 @@ class CustomGalleryService(QObject):
     busy = Property(bool, lambda s: s._busy, notify=changed)
     message = Property(str, lambda s: s._message, notify=changed)
 
+    def _export_directory_url(self):
+        try:
+            _no_links(self.exports)
+            if self.exports.is_dir():
+                return QUrl.fromLocalFile(str(self.exports))
+        except (OSError, ValueError):
+            pass
+        return QUrl.fromLocalFile(str(self.sandbox))
+
+    exportDirectoryUrl = Property(QUrl, _export_directory_url, notify=changed)
+
     def _load(self):
         self._data_error = ""
         try:
@@ -109,7 +122,8 @@ class CustomGalleryService(QObject):
             self._data_error = f"{error}；原文件已保留，当前仅浏览地图。请备份并检查 custom-galleries.json 后刷新。"
         store_path = self.path / "read-only" if self._data_error else self.path
         self._store = GalleryStore(store_path, self.default_path,
-                                  legacy_path=self.sandbox / "qt-no-implicit-legacy-import.json")
+            legacy_path=(self.paths.settings_path.with_name("custom-routes.json") if self.paths.production
+                         else self.sandbox / "qt-no-implicit-legacy-import.json"))
         self.library = CustomMapLibrary(self._library_root)
         self._cache_map_metadata()
         self._digest = None if self._data_error else _file_digest(self.path)
@@ -137,6 +151,11 @@ class CustomGalleryService(QObject):
             self._committed_library = self.library
             self._committed_digest = self._digest
             self._committed_revision = self._store.revision
+
+    def base_display_library(self):
+        """Worker-safe immutable library snapshot for the original base renderer."""
+        with self._committed_lock:
+            return self._committed_library
 
     def display_snapshot(self, gallery_id, map_id=None):
         """Pure worker-safe committed data; never exposes a mutating store/Qt property."""
@@ -446,39 +465,80 @@ class CustomGalleryService(QObject):
         name = str(name).strip()
         if not re.fullmatch(r"[^\\/:*?\"<>|\x00-\x1f]{1,80}\.json", name, re.I) or name in (".json", "..json"):
             raise ValueError("请使用有效的 .json 文件名")
-        target = self.exports / name
-        if target.is_symlink() or self.exports.is_symlink() or not target.resolve().is_relative_to(self.sandbox):
+        return self._validate_export_path(self.exports / name)
+
+    def _validate_export_path(self, target):
+        target = Path(target)
+        _no_links(target)
+        if not target.is_absolute() or target.suffix.lower() != ".json":
+            raise ValueError("请选择本地 .json 文件")
+        if not self.paths.production and not target.resolve().is_relative_to(self.sandbox):
             raise ValueError("导出路径必须位于当前测试数据目录")
+        if target.exists() and not target.is_file():
+            raise ValueError("导出目标必须是文件")
         return target
 
     @Slot(str)
     def exportGallery(self, name):
-        if self._busy or self._pending:
+        if self._closed or self._busy or self._pending:
             return
         try:
             path = self._export_path(name)
-        except ValueError as error:
+        except (OSError, ValueError) as error:
             self._message = str(error); self.changed.emit(); return
-        if path.exists():
-            self._pending = dict(kind="export", path=str(path), digest=_file_digest(path), gallery=self._gallery)
+        self._request_export(path)
+
+    @Slot(str)
+    def exportGalleryTo(self, file_url):
+        if self._closed or self._busy or self._pending:
+            return
+        try:
+            url = QUrl(file_url)
+            if not url.isLocalFile():
+                raise ValueError("请选择本地 .json 文件")
+            path = self._validate_export_path(Path(url.toLocalFile()))
+        except (OSError, ValueError) as error:
+            self._message = str(error); self.changed.emit(); return
+        self._request_export(path)
+
+    def _request_export(self, path):
+        try:
+            if path.exists():
+                self._pending = dict(kind="export", path=str(path), digest=_file_digest(path), gallery=self._gallery)
+                self.changed.emit()
+                self.confirmationRequested.emit("覆盖导出文件", f"覆盖 {path.name}？")
+            else:
+                self._export(path, self._gallery)
+        except (OSError, ValueError) as error:
+            self._message = f"导出未开始：{error}"
             self.changed.emit()
-            self.confirmationRequested.emit("覆盖导出文件", f"覆盖 {path.name}？")
-        else:
-            self._export(path, self._gallery)
 
     def _export(self, path, gid):
-        def write():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            created = False
-            try:
-                with path.open("x", encoding="utf-8") as handle:
-                    created = True
-                    json.dump(self._store.export(gid), handle, ensure_ascii=False, indent=1)
-            except Exception:
-                if created:
-                    path.unlink(missing_ok=True)
-                raise
-        self._run(write, f"已导出到 {path}")
+        self._run(lambda: self._write_export(path, gid), f"已导出到 {path}")
+
+    def _write_export(self, path, gid, *, overwrite=False, expected=None):
+        path = self._validate_export_path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n", dir=path.parent,
+                                             prefix=".gallery-export-", suffix=".tmp", delete=False) as handle:
+                temporary = Path(handle.name)
+                json.dump(self._store.export(gid), handle, ensure_ascii=False, indent=1)
+                handle.flush()
+                os.fsync(handle.fileno())
+            self._validate_export_path(path)
+            if overwrite:
+                if _file_digest(path) != expected:
+                    raise ValueError("导出文件已变化，请重新确认")
+                os.replace(temporary, path)
+            else:
+                # Publish a complete file without replacing a destination that
+                # appeared after the chooser/inspection.
+                os.link(temporary, path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     @Slot(bool)
     def confirmOperation(self, accepted):
@@ -488,22 +548,10 @@ class CustomGalleryService(QObject):
             return
         def confirm():
             if pending["kind"] == "export":
-                path = self._export_path(Path(pending["path"]).name)
+                path = self._validate_export_path(Path(pending["path"]))
                 if _file_digest(path) != pending["digest"]:
                     raise ValueError("导出文件已变化，请重新确认")
-                payload = json.dumps(self._store.export(pending["gallery"]), ensure_ascii=False, indent=1)
-                temporary = path.with_suffix(".json.tmp")
-                if temporary.exists() or temporary.is_symlink():
-                    raise ValueError("导出暂存文件已存在，请检查后重试")
-                created = False
-                try:
-                    with temporary.open("x", encoding="utf-8") as handle:
-                        created = True
-                        handle.write(payload)
-                    temporary.replace(path)
-                finally:
-                    if created:
-                        temporary.unlink(missing_ok=True)
+                self._write_export(path, pending["gallery"], overwrite=True, expected=pending["digest"])
             else:
                 if _file_digest(self.path) != pending["digest"] or pending["gallery"] != self._gallery:
                     raise ValueError("图集已变化，请重新确认")

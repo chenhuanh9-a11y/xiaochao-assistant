@@ -16,7 +16,7 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 
 from client_custom_gallery import CustomGalleryService, CustomMapLibrary, GalleryStore, GALLERY_SCHEMA
-from client_paths import WORK_ROOT
+from client_paths import WORK_ROOT, RuntimePaths
 
 APP = QGuiApplication.instance() or QGuiApplication([])
 
@@ -99,6 +99,49 @@ class CustomGalleryTests(unittest.TestCase):
         self.call("confirmOperation", True)
         self.assertEqual(len(self.service.snapshot["galleries"]), 1)
 
+    def test_production_legacy_routes_migrate_once_beside_settings_and_preserve_source(self):
+        # Actual production path layout under this test's private root only.
+        paths = RuntimePaths(self.sandbox, True)
+        paths.settings_path.parent.mkdir(parents=True, exist_ok=True)
+        source = paths.settings_path.with_name("custom-routes.json")
+        original = json.dumps(dict(schema="xingtu-custom-routes-v1", useInGame=True, maps={"synthetic-map": {
+            "1": dict(points=[[20, 20], [120, 60]], color="#abcdef", snap=False),
+            "2": dict(points=[[180, 60]], color="#abcdef")}})).encode("utf-8")
+        source.write_bytes(original)
+        existing = GalleryStore(paths.custom_galleries_path, self.default).create("已有路线")
+        with patch("client_custom_gallery.runtime_paths", return_value=paths):
+            service = CustomGalleryService(self.sandbox, library=self.library, default_path=self.default)
+        try:
+            until(lambda: bool(service.snapshot["galleries"]) and not service.busy)
+            first = paths.custom_galleries_path.read_bytes()
+            rows = service.snapshot["galleries"]
+            self.assertEqual(len(rows), 4)  # default, existing, two separate legacy floors
+            self.assertEqual(service._store.name(existing), "已有路线")
+            imported = [service._store.route(row["id"], "synthetic-map") for row in rows
+                        if row["id"].startswith("legacy-import-")]
+            self.assertEqual(sorted(len(points) for points in imported), [1, 2])
+            self.assertTrue(all(len({point["floor"] for point in points}) == 1 for points in imported))
+            self.assertEqual(service.snapshot["inUse"], "")
+            service.refresh()
+            until(lambda: not service.busy)
+            self.assertEqual(paths.custom_galleries_path.read_bytes(), first)
+            self.assertEqual(len(service.snapshot["galleries"]), 4)
+            self.assertEqual(source.read_bytes(), original)
+            self.assertEqual(json.loads(first)["legacyRouteMigrations"], [hashlib.sha256(original).hexdigest()])
+        finally:
+            service.shutdown()
+            APP.processEvents()
+
+    def test_source_legacy_routes_stay_isolated(self):
+        source = self.service.paths.settings_path.with_name("custom-routes.json")
+        original = json.dumps(dict(schema="xingtu-custom-routes-v1", maps={"synthetic-map": {
+            "1": dict(points=[[20, 20]], color="#abcdef")}})).encode("utf-8")
+        source.write_bytes(original)
+        state = self.call("refresh")
+        self.assertEqual(len(state["galleries"]), 1)
+        self.assertFalse(self.service.path.exists())
+        self.assertEqual(source.read_bytes(), original)
+
     def test_real_graph_pick_plan_edit_order_undo_and_floor(self):
         self.call("createGallery", "线路")
         self.call("addPoint", 20., 20.)
@@ -146,6 +189,44 @@ class CustomGalleryTests(unittest.TestCase):
         self.assertEqual(target.read_text(), "external-change")
         self.call("exportGallery", "../escape.json")
         self.assertFalse((self.sandbox / "escape.json").exists())
+
+    def test_export_selected_production_path_preserves_fullpath_and_conflicts(self):
+        paths = RuntimePaths(self.sandbox, True)
+        with patch("client_custom_gallery.runtime_paths", return_value=paths):
+            service = CustomGalleryService(self.sandbox, library=self.library, default_path=self.default)
+        try:
+            until(lambda: bool(service.snapshot["galleries"]) and not service.busy)
+            self.assertEqual(Path(service.exportDirectoryUrl.toLocalFile()), self.sandbox)
+            # Explicit selection outside the installation, still wholly inside
+            # this test's private directory; no real user destinations.
+            target = self.folder / "selected-output" / "chosen.json"
+            url = QUrl.fromLocalFile(str(target)).toString()
+            service.exportGalleryTo(url)
+            until(lambda: not service.busy)
+            self.assertEqual(json.loads(target.read_text(encoding="utf-8")), service._store.export("default"))
+            service.exportGalleryTo(url)
+            self.assertEqual(service._pending["path"], str(target))
+            target.write_bytes(b"external-change")
+            service.confirmOperation(True)
+            until(lambda: not service.busy)
+            self.assertEqual(target.read_bytes(), b"external-change")
+            self.assertIn("已变化", service.message)
+            service.exportGalleryTo(url)
+            service.confirmOperation(True)
+            until(lambda: not service.busy)
+            self.assertEqual(json.loads(target.read_text(encoding="utf-8")), service._store.export("default"))
+            self.assertFalse((service.exports / target.name).exists())
+            self.assertFalse(list(target.parent.glob(".gallery-export-*.tmp")))
+            service.exports.mkdir()
+            self.assertEqual(Path(service.exportDirectoryUrl.toLocalFile()), service.exports)
+        finally:
+            service.shutdown()
+            APP.processEvents()
+        self.call("exportGalleryTo", QUrl.fromLocalFile(str(self.folder / "source-escape.json")).toString())
+        self.assertFalse((self.folder / "source-escape.json").exists())
+        self.assertIn("当前测试数据目录", self.service.message)
+        self.call("exportGalleryTo", "https://example.invalid/route.json")
+        self.assertIn("本地", self.service.message)
 
     def test_disk_conflict_and_failed_store_write_do_not_claim_save(self):
         self.call("createGallery", "已有")

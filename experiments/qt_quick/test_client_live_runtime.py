@@ -137,6 +137,72 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertTrue(self.dispatch("end_round")["success"])
         self.assertIsNone(self.runtime.reference_payload())
 
+    def test_static_reference_ignores_live_geometry_and_foreground_but_not_binding_lifetime(self):
+        from client_capture import ClientCaptureProvider
+        from test_client_capture_full import Backend, Native
+        backend, native = Backend(), Native()
+        backend.current = ClientCaptureContext((1280,720),(100,200,1380,920),96)
+        capture = ClientCaptureProvider(native,backend); self.addCleanup(capture.shutdown)
+        self.runtime._capture = capture
+        self.assertTrue(self.dispatch("bind_capture",hwnd=42)["success"])
+        first = self.begin_and_capture()
+        reference = self.runtime.reference_payload()
+        generation = capture.generation
+        backend.current = ClientCaptureContext((1600,900),(300,100,1900,1000),144)
+        native.foreground_window = lambda:99
+        self.assertFalse(capture.is_current(self.runtime._reference_capture_context,generation))
+        with patch.object(capture,"is_current",side_effect=AssertionError("static getter queried live geometry")):
+            self.assertEqual(self.runtime.reference_payload()["token"],reference["token"])
+            self.runtime.invalidate("foreground-lost")
+            self.assertEqual(self.runtime.reference_payload()["token"],reference["token"])
+            self.runtime.invalidate("capture-context-changed")
+            self.assertEqual(self.runtime.reference_payload()["token"],reference["token"])
+            self.assertIsNone(self.runtime.render_payload(first["renderToken"]))
+        capture.bindFullClient(42)
+        self.assertIsNone(self.runtime.reference_payload())
+
+    def test_static_reference_preparation_survives_pose_geometry_recheck_rejection(self):
+        from client_capture import ClientCaptureProvider
+        from test_client_capture_full import Backend, Native
+        backend, native = Backend(), Native()
+        backend.current = ClientCaptureContext((1280,720),(100,200,1380,920),96)
+        capture = ClientCaptureProvider(native,backend); self.addCleanup(capture.shutdown)
+        self.runtime._capture = capture
+        self.assertTrue(self.dispatch("bind_capture",hwnd=42)["success"])
+        self.assertTrue(self.dispatch("start_round")["success"])
+        def changed_after_reference(*args):
+            backend.current = ClientCaptureContext((1600,900),(300,100,1900,1000),144)
+            native.foreground_window = lambda:99
+            return copy.deepcopy(self.fit)
+        with patch.object(_AlignmentHost,"fit",side_effect=changed_after_reference):
+            result = self.dispatch("capture_now")
+        self.assertEqual(result["reason"],"capture-context-changed")
+        reference = self.runtime.reference_payload()
+        self.assertIsNotNone(reference)
+        self.assertEqual((reference["mapId"],reference["floor"]),("fixture-map","1"))
+        self.assertFalse(reference["referenceAuthorized"])
+        self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
+        self.dispatch("end_round")
+        self.assertIsNone(self.runtime.reference_payload())
+
+    def test_static_reference_still_rejects_current_floor_conflict_and_new_resource_owner(self):
+        self.begin_and_capture()
+        self.assertIsNotNone(self.runtime.reference_payload())
+        conflict = self.dispatch("set_floor",floor="2")
+        self.assertEqual(conflict["reason"],"current-frame-floor-conflict")
+        self.assertIsNone(self.runtime.reference_payload())
+        self.fit = dict(success=False,reason="fixture-pose-failed")
+        with patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=2)):
+            self.assertFalse(self.dispatch("refresh_map")["success"])
+        self.assertEqual(self.runtime.reference_payload()["floor"],"2")
+        self.runtime.invalidate("custom-gallery-changed")
+        self.assertIsNone(self.runtime.reference_payload())
+        with patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=2)):
+            self.dispatch("refresh_map")
+        self.assertIsNotNone(self.runtime.reference_payload())
+        self.runtime.invalidate("resources-changed")
+        self.assertIsNone(self.runtime.reference_payload())
+
     def unconfirmed_candidates(self):
         second = SimpleNamespace(id="second-map", name="Second map")
         self.engine.pack.maps.append(second)
@@ -648,6 +714,39 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertTrue(output[0]["stale"])
         self.assertIsNone(self.runtime.render_payload(first["renderToken"]))
         self.assertEqual([row["event"] for row in events], ["pose-attempt", "render-revoked"])
+
+    def test_same_floor_full_fit_keeps_original_sensor_classification(self):
+        self.begin_and_capture()
+        self.fit["matrixSourceToClient"] = np.array([[.55,.01,44],[.02,.56,65],[0,0,1.]])
+        with patch.object(self.runtime._core, "adjudicate", wraps=self.runtime._core.adjudicate) as decide:
+            result = self.dispatch("capture_now")
+        self.assertTrue(result["success"], result)
+        candidate = decide.call_args.args[0]
+        self.assertEqual(candidate.source, "initial-structure-v2")
+        self.assertFalse(candidate.translation_only)
+        np.testing.assert_allclose(self.runtime._core.pose_by_map["fixture-map"].pose_for_floor("1"),
+                                   self.fit["matrixSourceToClient"])
+
+    def test_actual_refresh_translation_source_keeps_core_linear_change_guards(self):
+        from dataclasses import replace
+        self.begin_and_capture()
+        core = self.runtime._core
+        with patch.object(_AlignmentHost, "_canonical_geometry_current_frame_residual",
+                return_value=(self.fit["selectedRouteCurrentFrameResidual"], None)), \
+                patch.object(core, "adjudicate", wraps=core.adjudicate) as decide:
+            result = self.dispatch("refresh_map")
+        self.assertTrue(result["success"], result)
+        candidate = decide.call_args.args[0]
+        self.assertEqual(candidate.source, "same-floor-reopen-verified-refresh")
+        self.assertTrue(candidate.translation_only)
+        changed = np.asarray(candidate.matrix_source_to_client).copy(); changed[0,0] += .1
+        for offset, values, expected in (
+                (1, dict(translation_only=False), "same-floor-reopen-must-be-translation-only"),
+                (2, dict(matrix_source_to_client=changed), "same-floor-reopen-linear-change")):
+            generation = candidate.frame_generation + offset
+            core.begin_observation(cycle_id=self.runtime._cycle, map_id="fixture-map", floor="1",
+                frame_generation=generation, frame_signature=("synthetic-negative-translation", offset))
+            self.assertEqual(core.adjudicate(replace(candidate, frame_generation=generation, **values)).reason, expected)
 
     def test_visibility_preserves_pose_and_hidden_refresh_still_runs(self):
         first = self.begin_and_capture()

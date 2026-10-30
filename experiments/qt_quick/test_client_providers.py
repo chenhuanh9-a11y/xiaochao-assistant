@@ -7,6 +7,7 @@ import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from client_engine import EngineAdapter
 from client_providers import build_engine_factories, SharedReferenceProvider, ProviderUnavailable
@@ -132,6 +133,74 @@ class ClientProviderTests(unittest.TestCase):
         versions[next(iter(versions))]["expected"] = dict(expected, sourceVersion="wrong-version")
         provider = SharedReferenceProvider(self.root, resources, versions)
         self.assertIsNone(provider("geometry", "fixture", "1"))
+
+    def test_malformed_optional_catalog_keeps_validated_typed_mode_available(self):
+        import numpy as np
+        binding = dict(profile="shared-structure", mapId="fixture", variant="variant-01", floor="1")
+        resource_key = dict(layoutId="fixture-layout", structureRawRecordSha256="a" * 64, floor="1")
+        expected = dict(structureVersionKey="fixture-layout@" + "a" * 64 + "/1",
+                        sourceVersion="fixture-source", baseSnapshot="fixture-base")
+        canvas = dict(shapeHW=[12, 16], width=16, height=12, floor="1", coordinateSpace="fixture-pixels")
+        product = self.root / "structure.npz"
+        metadata = dict(sourceKind="game-rendered-shared-structure", binding=binding, canvas=canvas,
+                        roles=dict(clean="clean", validation="validation"), **expected)
+        np.savez_compressed(product, metadata=np.asarray(json.dumps(metadata)),
+                            clean=np.ones((12, 16), np.uint8), validation=np.ones((12, 16), np.uint8))
+        self.write("references/nightmare-map-pack.json", dict(packId="fixture", displayName="fixture", maps=[
+            dict(id="fixture", name="fixture", direction="unknown", doorCount=0, shape="fixture",
+                 sideDoorCrop=[0, 0, 1, 1], resourceBase="resource-root", oneFlow="unused.png",
+                 layers={"1": "unused.png"}, identityProfileId="shared-structure",
+                 sourceLayout="fixture-layout", structureContentSha256="a" * 64, sourceVersion="fixture-source")]))
+        index = "references/nightmare-shared-structure-index.json"
+        self.write(index, dict(schemaVersion=1, resourceKind="shared-structure",
+            structureVersionBindings="references/versions.json",
+            entries=[dict(binding, resourcePath="structure.npz", **expected)]))
+        self.write("references/versions.json", dict(schemaVersion=1, resourceKind="native-structure-version-bindings",
+            entries=[dict(mapId="fixture", floor="1", resourceKey=resource_key, sourceVersion="fixture-source",
+                sharedLookup=dict(binding, resourcePath="structure.npz"), typedReference="structure.npz",
+                neutralDisplay=dict(baseResourceKey=resource_key))]))
+        self.write("references/nightmare-structure-display.json", dict(schemaVersion=1,
+            resourceKind="typed-shared-structure-display", indexPath=index,
+            entries=[dict(mapId="fixture", floor="1", binding=binding, referenceResource="structure.npz",
+                          canvas=canvas, **expected)]))
+        adapter_row = dict(structureVersionKey=expected["structureVersionKey"], sourceVersion="fixture-source",
+                           referenceResource="structure.npz")
+        self.write("references/nightmare-canonical-coordinate-pack.json", dict(
+            schema="identityv-nightmare-canonical-coordinate-pack-v1", coordinateReferenceProfileId="shared-structure",
+            policy=dict(requiresCurrentFrameGeometryFit=True, authorizesMapIdentity=False,
+                        authorizesCrossFloorProjection=False), maps={"fixture": dict(floors={"1": adapter_row})},
+            profiles={"shared-structure": dict(maps={"fixture": dict(floors={"1": adapter_row})})}))
+        for name in ("entries.json", "side-entries.json"):
+            self.write("references/nightmare-entries/" + name, {})
+        self.write("references/difficult-exit-icon.json", {})
+        catalog = self.write("references/nightmare-author-route-catalog.json", dict(schemaVersion=1, profiles=[]))
+        def identity_engine(pack, **_kwargs):
+            # Only ranking/index construction is stubbed; typed store, version
+            # context, adapters, optional catalog and NPZ loader remain real.
+            return SimpleNamespace(pack=pack, identity_floors=pack.floors,
+                entry_identity=SimpleNamespace(error=None, entries=[]),
+                side_entry_identity=SimpleNamespace(entries=[], side_door_error=None, side_search_error=None),
+                native_similarity_index=SimpleNamespace(error=None))
+        with patch("map_identity_engine.MapIdentityEngine", side_effect=identity_engine):
+            healthy = build_engine_factories(self.root)["nightmare"]()
+            catalog.write_text("{malformed", encoding="utf-8")
+            factories = build_engine_factories(self.root)
+            fallback = factories["nightmare"]()
+            self.assertTrue(factories.capabilities()["nightmare"]["available"])
+            self.assertIsNone(fallback.qt_catalog)
+            self.assertFalse(fallback.qt_optional_displays.profiles)
+            self.assertIn("JSONDecodeError", fallback.qt_resource_inventory["optionalAuthorCatalogError"])
+            for engine in (healthy, fallback):
+                self.assertEqual(engine.qt_resource_inventory["typedLayers"], 1)
+                self.assertIsNone(next(iter(engine.qt_shared_provider.versions.values()))["sharedError"])
+            np.testing.assert_array_equal(healthy.qt_shared_provider("shared-structure", "fixture", "1").clean_mask,
+                                          fallback.qt_shared_provider("shared-structure", "fixture", "1").clean_mask)
+            # Optional fallback must not weaken the independent version contract.
+            metadata["sourceVersion"] = "wrong-version"
+            np.savez_compressed(product, metadata=np.asarray(json.dumps(metadata)),
+                                clean=np.ones((12, 16), np.uint8), validation=np.ones((12, 16), np.uint8))
+            with self.assertRaisesRegex(ProviderUnavailable, "shared-NPZ-version-or-canvas-mismatch"):
+                build_engine_factories(self.root)["nightmare"]()
 
     def test_observation_and_entry_preprocessing_stay_tk_free(self):
         code = ("import sys, numpy as np, client_providers; from difficult_entry_identity import entry_geometry; "

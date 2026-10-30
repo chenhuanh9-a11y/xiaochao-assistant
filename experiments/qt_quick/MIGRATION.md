@@ -162,8 +162,35 @@ The native adapter follows Microsoft's [LowLevelMouseProc](https://learn.microso
 and [MSLLHOOKSTRUCT](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-msllhookstruct)
 contracts, reusing the existing message loop and unhook/drain lifecycle.
 
-Remaining known parity gaps must not be labelled complete: complete author
-fallback equivalence and native game timing need separate evidence.
+The representative author-fallback gap is closed in the next source node:
+Tk and Qt share the extracted original effective-author policy and shared
+validation branch. Base catalog authors and registered difficult legacy layers
+are consulted before structural fallback. An entirely undeclared nightmare
+author layer can use the existing BaseMapDisplay through the actual committed
+custom-library service; a declared but missing/corrupt/unregistered layer uses
+the original structural fallback. Preferred settings remain unchanged, with
+effective profile and display provenance reported separately. These checks
+cover representative real baseline and synthetic author cases, not every
+author/map combination; no optional author originals are bundled by the repair.
+
+F2's later real run supplied a separate presentation failure: a valid F1 pose
+was dropped because Qt's friendly screen name differed from the Win32 DISPLAY
+identifier. Screen correspondence now requires matching full native monitor
+geometry against Qt origin plus logical-size/DPR, with bounded rounding and
+unique selection; an ID match also requires matching geometry. No primary
+screen guess or pose/capture guard bypass is used. Source tests cover fractional
+scaling, negative coordinates and ambiguity; actual read-only desktop evidence
+uses this machine's three 100% screens and synthetic client rectangles, with no
+game or visible window.
+
+The same run also exposed a caller classification difference: Qt labelled any
+full shared fit after an existing pose as translation-only reopening work. The
+original full-fit consumer uses initial-structure-v2. That classification is
+restored; actual cached translation refresh retains its translation-only guard.
+This is not proof that every recorded rejected fit was geometrically correct.
+
+Remaining native-game timing and original continuous map08/B1 pose equality need
+separate evidence; the original failing frames are unavailable.
 Difficult highlight margin/diagnostic-field
 differences do not explain the reported nightmare B1 geometry failure. Synthetic
 state/Qt tests and saved-frame replay are explicitly distinct from game testing.

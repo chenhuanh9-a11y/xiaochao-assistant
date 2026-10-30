@@ -80,7 +80,7 @@ class QtClient:
         self.capture = ClientCaptureProvider()
         self.input = NativeShortcutBackend()
         self.providers = build_engine_factories(self.paths.resource_root)
-        self.providers.set_custom_display(self.custom_display.layer)
+        self.providers.set_custom_display(self.custom_display.layer, base_provider=self.custom_display.base_layer)
         self.runtime = LiveRuntime(engine_factories=self.providers, capture_provider=self.capture,
                                    allowed_read_root=WORK_ROOT, evidence_kind="live-client-capture")
         values = self.settings.persistedValues

@@ -29,6 +29,8 @@ class CustomGalleryDisplay:
         self._lock = threading.RLock()
         self._layers = {}
         self._last_error = ""
+        from base_map_display import BaseMapDisplay
+        self._base_display = BaseMapDisplay()
 
     @property
     def last_error(self):
@@ -64,6 +66,20 @@ class CustomGalleryDisplay:
     def invalidate(self):
         with self._lock:
             self._layers.clear()
+        self._base_display.clear()
+
+    def base_layer(self, map_id, floor, reference, mode):
+        """Original no-route base pixels; caller owns missing-author eligibility."""
+        if mode != "nightmare":
+            return None
+        library = self.service.base_display_library()
+        result = self._base_display.resolve(library, str(map_id), str(floor), reference)
+        if result.layer is None or library is not self.service.base_display_library():
+            return None
+        layer = result.layer
+        return dict(pixels=layer["routeSource"], matrixDisplayToReference=layer["matrixDisplayToReference"],
+            resourceIdentity=layer["displayResourceKey"], displayKind=layer["displayKind"],
+            displayLabel=layer["displayLabel"], routeProfileId="shared-structure", pixelFormat="BGRA")
 
     def layer(self, profile, map_id, floor, reference, mode):
         """Return BGRA for the runtime's existing single BGRA→RGBA conversion."""

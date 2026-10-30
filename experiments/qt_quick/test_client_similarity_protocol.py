@@ -135,6 +135,26 @@ class SimilarityProtocolTests(unittest.TestCase):
         self.assertIsNone(self.runtime.reference_payload())
         self.engine.rank_established_group.assert_not_called()
 
+    def test_provisional_reference_requires_current_pose_or_prior_verified_closed_context(self):
+        self.capture_group()
+        reference = self.runtime.reference_payload()
+        self.assertTrue(reference["provisional"])
+        self.runtime._revoke_render("fixture-current-pose-revoked")
+        self.assertTrue(self.runtime.snapshot()["mapOpen"])
+        self.assertIsNone(self.runtime.reference_payload())
+        self.dispatch("close_map")
+        remembered = self.runtime.reference_payload()
+        self.assertEqual(remembered["token"], reference["token"])
+        self.assertTrue(remembered["provisional"])
+        self.dispatch("end_round")
+        self.assertIsNone(self.runtime.reference_payload())
+        self.fit = dict(success=False, reason="fixture-new-round-pose-failed")
+        self.assertTrue(self.dispatch("start_round")["success"])
+        self.assertFalse(self.dispatch("capture_now")["success"])
+        self.assertIsNone(self.runtime.reference_payload())
+        self.dispatch("close_map")
+        self.assertIsNone(self.runtime.reference_payload())
+
     def test_group_floor_transition_does_not_carry_provisional_identity(self):
         self.capture_group()
         self.dispatch("set_floor", floor="2")

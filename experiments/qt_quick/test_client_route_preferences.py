@@ -57,6 +57,8 @@ class CoffinPreferenceTests(unittest.TestCase):
                    matrixProfileToCanonical=np.eye(3).tolist(), evidence=dict(algebraicallyExact=True))
         adapter_path = self.root / "coordinates.json"
         adapter_path.write_text(json.dumps(dict(schema=CANONICAL_SCHEMA, canonicalPackId="fixture",
+            coordinateReferenceProfileId="shared-structure",
+            referenceCanvas=dict(shapeHW=[20,24], coordinateSpace="fixture-pixels"),
             policy=dict(requiresCurrentFrameGeometryFit=True, authorizesMapIdentity=False,
                         authorizesCrossFloorProjection=False),
             profiles={p: dict(maps={"nightmare-01": dict(floors={"1": copy.deepcopy(row)})})
@@ -195,6 +197,95 @@ class CoffinPreferenceTests(unittest.TestCase):
             self.app.processEvents()
 
 
+class AuthorFallbackTests(unittest.TestCase):
+    setUp = CoffinPreferenceTests.setUp
+
+    def author_engine(self, mode="nightmare"):
+        profiles = []
+        for profile, color in (("suju",40), ("zhan10-speed",80), ("nightingale",120)):
+            path = self.root / (profile + ".png")
+            cv2.imencode(".png", np.full((20,24,4),(color,30,60,255),np.uint8))[1].tofile(str(path))
+            profiles.append(dict(id=profile, displayName=profile, authorName="fixture", routeFamilyName="fixture",
+                runtimeEnabled=True, settingsSelectable=True, alignedOverlayEligible=True,
+                maps={"fixture-map":[dict(id="variant-01",displayName="fixture", layers={"1":path.name},
+                    identityStatus="display-only",displayPolicy="requires-current-shared-structure-fit")]}))
+        catalog = self.root / "author-catalog.json"
+        catalog.write_text(json.dumps(dict(schemaVersion=1,profiles=profiles)),encoding="utf8")
+        row = lambda scale:dict(usableForCurrentFrameRendering=True,crossFloorProjectionAllowed=False,
+            matrixProfileToCanonical=np.diag([scale,scale,1.]).tolist(), evidence=dict(algebraicallyExact=True))
+        coordinates = self.root / "author-coordinates.json"
+        coordinates.write_text(json.dumps(dict(schema=CANONICAL_SCHEMA,canonicalPackId="fixture-pack",
+            coordinateReferenceProfileId="shared-structure",
+            referenceCanvas=dict(shapeHW=[20,24],coordinateSpace="fixture-pixels"),
+            policy=dict(requiresCurrentFrameGeometryFit=True,authorizesMapIdentity=False,authorizesCrossFloorProjection=False),
+            profiles={profile:dict(maps={"fixture-map":dict(floors={"1":row(scale)})})
+                for profile,scale in (("shared-structure",2),("suju",3),("zhan10-speed",4),("nightingale",5))})),encoding="utf8")
+        engine = contracts.fixture_engine(mode)
+        engine.qt_catalog = AuthorRouteCatalog(catalog,asset_base=self.root)
+        engine.qt_adapters = AuthorCoordinateAdapters(coordinates)
+        engine.qt_optional_displays = SimpleNamespace(profiles=set(),binding=lambda *a:None)
+        engine.qt_native_context = None
+        return engine
+
+    def test_base_catalog_author_uses_original_pixels_and_bridge_in_nightmare(self):
+        engine = self.author_engine()
+        layer = LiveRuntime._display_layer(engine,"fixture-map","1","suju")
+        self.assertEqual((layer["preferredProfileId"],layer["effectiveProfileId"],layer["displayKind"]),
+                         ("suju","suju","author-route"))
+        self.assertFalse(layer["fallback"])
+        np.testing.assert_array_equal(layer["pixels"],cv2.imread(str(self.root/"suju.png"),cv2.IMREAD_UNCHANGED))
+        np.testing.assert_allclose(layer["matrixDisplayToReference"],np.diag([1.5,1.5,1.]))
+        self.assertEqual(engine.rank_count,0)
+
+    def test_difficult_missing_optional_layer_uses_registered_legacy_then_structure(self):
+        engine = self.author_engine("difficult")
+        key=("zhan10-speed","fixture-map","variant-01","1")
+        engine.qt_native_context=SimpleNamespace(legacy_bindings={key:{}})
+        engine.qt_optional_displays.profiles={"nightingale"}
+        layer=LiveRuntime._display_layer(engine,"fixture-map","1","nightingale")
+        self.assertEqual((layer["preferredProfileId"],layer["effectiveProfileId"]),("nightingale","zhan10-speed"))
+        self.assertTrue(layer["fallback"])
+        np.testing.assert_allclose(layer["matrixDisplayToReference"],np.diag([2.,2.,1.]))
+        engine.qt_native_context.legacy_bindings.clear()
+        fallback=LiveRuntime._display_layer(engine,"fixture-map","1","nightingale")
+        self.assertEqual((fallback["effectiveProfileId"],fallback["displayKind"]),("shared-structure","shared-structure"))
+        self.assertEqual(fallback["preferredProfileId"],"nightingale")
+
+    def test_declared_bad_image_or_invalid_canvas_falls_to_structure_without_base_or_raise(self):
+        engine=self.author_engine()
+        from unittest.mock import Mock
+        engine.qt_base_display=Mock(side_effect=AssertionError("declared broken author used base"))
+        (self.root/"suju.png").write_bytes(b"invalid-image")
+        bad=LiveRuntime._display_layer(engine,"fixture-map","1","suju")
+        self.assertEqual((bad["displayKind"],bad["authorStatus"]),("shared-structure","load-error"))
+        self.assertEqual(bad["preferredProfileId"],"suju")
+        engine=self.author_engine()
+        engine.qt_base_display=Mock(side_effect=AssertionError("bad bridge used base"))
+        engine.qt_adapters._raw["referenceCanvas"]["coordinateSpace"]="other-canvas"
+        bad=LiveRuntime._display_layer(engine,"fixture-map","1","suju")
+        self.assertEqual((bad["displayKind"],bad["authorStatus"]),("shared-structure","load-error"))
+        np.testing.assert_array_equal(bad["matrixDisplayToReference"],np.eye(3))
+
+    def test_optional_decode_failure_does_not_block_current_pose_or_change_preference(self):
+        engine=self.author_engine()
+        optional=engine.qt_optional_displays
+        optional.profiles={"nightingale"}
+        optional.binding=lambda *a:dict(path=self.root/"nightingale.png",matrix=np.diag([5.,5.,1.]),usable=True)
+        optional.pixels=lambda *a:(_ for _ in ()).throw(ValueError("fixture decode failure"))
+        case=contracts.LiveRuntimeContracts();case.setUp();self.addCleanup(case.doCleanups)
+        case.runtime._factories["nightmare"]=lambda:engine
+        case.dispatch("set_route_profile",profileId="nightingale")
+        result=case.begin_and_capture()
+        state=case.runtime.snapshot()
+        self.assertEqual(state["profileId"],"nightingale")
+        self.assertEqual(state["effectiveProfileId"],"shared-structure")
+        self.assertTrue(state["displayAuthorized"])
+        self.assertEqual(case.runtime.render_payload(result["renderToken"])["authorStatus"],"load-error")
+        canonical=np.asarray(state["render"]["canonicalMatrix"])
+        np.testing.assert_allclose(canonical,np.asarray(case.fit["matrixSourceToClient"])@np.diag([.5,.5,1.]))
+
+
+
 class DisplayGenerationTests(unittest.TestCase):
     def test_unselected_map_metadata_matches_runtime_context(self):
         case = contracts.LiveRuntimeContracts()
@@ -211,7 +302,7 @@ class DisplayGenerationTests(unittest.TestCase):
         item = case.engine.pack.maps[0]
         item.id = "nightmare-01"
         case.engine.pack.by_id = {item.id: item}
-        case.engine.rank = lambda *a, **k: [dict(mapId=item.id, identityHardGatePassed=True)]
+        case.engine.rank = lambda *a, **k: [dict(mapId=item.id, identityHardGatePassed=True, strongSuggestion=True)]
         case.dispatch("set_route_profile", profileId="zhan10-coffin")
         case.begin_and_capture()
         before = case.runtime.snapshot()

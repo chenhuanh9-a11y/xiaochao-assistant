@@ -4,6 +4,7 @@ from copy import deepcopy
 import ctypes
 from ctypes import wintypes
 import os
+import json
 from pathlib import Path
 import threading
 from PySide6.QtCore import QObject, Property, QTimer, QUrl, Qt, Signal, Slot
@@ -15,6 +16,11 @@ if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 from reference_position_editor import ReferencePositionEdit
 from client_problem_messages import operation_problem
+
+
+def _presentation_error_details(error):
+    details = getattr(error, "diagnostics", None)
+    return str(error) + ("\n" + json.dumps(details, ensure_ascii=False) if details else "")
 
 
 class LiveImages(QQuickImageProvider):
@@ -328,7 +334,7 @@ class ClientCoordinator(QObject):
             result = self.runtime.acknowledge_sibling(token, False, reason="target-material-invalid")
             self._trace("sibling-material-rejected", payload=payload, reason="target-material-invalid",
                         diag=dict(error=str(error)))
-            self._report_display_failure(payload, "target-material-invalid", str(error))
+            self._report_display_failure(payload, "target-material-invalid", _presentation_error_details(error))
             if isinstance(result, dict) and not result.get("sourceRetained"):
                 self._present_runtime_state(self.runtime.snapshot(), trigger="sibling-source-expired")
             return
@@ -990,7 +996,7 @@ class ClientCoordinator(QObject):
         except (OSError, ValueError) as error:
             self._message = f"暂不显示贴合层：{error}"
             self._trace("drop", payload=payload, reason="window-geometry-unverified", diag=dict(error=str(error)))
-            self._report_display_failure(payload, "window-geometry-unverified", str(error))
+            self._report_display_failure(payload, "window-geometry-unverified", _presentation_error_details(error))
             self._invalidate_display("window-geometry-unverified")
             self.changed.emit(); return
         path = public.pop("routePath", None)
@@ -1138,19 +1144,18 @@ class ClientCoordinator(QObject):
         info = Monitor(); info.cbSize = ctypes.sizeof(info)
         if not handle or not user.GetMonitorInfoW(handle, ctypes.byref(info)):
             raise OSError("无法读取目标显示器")
-        screen = next((screen for screen in QGuiApplication.screens()
-                       if screen.name().casefold() == info.szDevice.casefold()), None)
-        if screen is None:
-            raise ValueError("无法核对 Qt 与游戏显示器坐标")
-        dpr = screen.devicePixelRatio()
-        if not dpr or dpr <= 0:
-            raise ValueError("显示缩放未知")
-        payload["deviceScale"] = dpr
-        payload["originX"] = screen.geometry().left() + (x-info.rcMonitor.left)/dpr
-        payload["originY"] = screen.geometry().top() + (y-info.rcMonitor.top)/dpr
+        from client_screen_geometry import project_client_geometry
+        projection = project_client_geometry((x, y), (width, height), info.szDevice,
+            (info.rcMonitor.left, info.rcMonitor.top, info.rcMonitor.right, info.rcMonitor.bottom),
+            QGuiApplication.screens())
+        payload["deviceScale"] = projection.device_scale
+        payload["originX"], payload["originY"] = projection.origin_x, projection.origin_y
+        self._trace("geometry-verified", payload=payload, window=dict(name="aligned",
+            origin=[projection.origin_x, projection.origin_y], deviceScale=projection.device_scale,
+            screen=projection.diagnostics["selectedQtScreen"]), diag=projection.diagnostics)
         window = self.windows._windows.get("aligned")
         if window is not None:
-            window.setScreen(screen)
+            window.setScreen(projection.screen)
 
     def _watch_foreground(self):
         if self._closed or self._closing or not self._bound or not self.session.snapshot.get("roundActive"):

@@ -325,6 +325,7 @@ class LiveRuntime:
     def _reset_identity(self):
         self._pending_sibling = None
         self._identity_native = None
+        self._provisional_reference_context = None
         self._identity_prior = self._identity_priority = None
         self._durable_map_id = ""
         self._identity_source = ""
@@ -1006,7 +1007,10 @@ class LiveRuntime:
             metadata = ({key: copy.deepcopy(value) for key, value in self._render.items()
                          if key not in ("pixels",)} if self._render is not None else {})
             return dict(**self._context(), cycleId=self._cycle, mapId=self._durable_map_id, floor=self._floor,
-                generation=self._frame_generation, engineConnected=True,
+                generation=self._frame_generation, preferredProfileId=self._profile,
+                effectiveProfileId=metadata.get("effectiveProfileId", ""),
+                displayFallback=metadata.get("fallback", False), fallbackReason=metadata.get("fallbackReason", ""),
+                engineConnected=True,
                 liveEngineAvailable=bool(ready and guarded and self._capture is not None),
                 liveUnavailableReason=("capture-context-recheck-unavailable" if not guarded else
                                        "capture-provider-unavailable" if self._capture is None else
@@ -1039,6 +1043,8 @@ class LiveRuntime:
             if reason != "game-floor-control-intent":
                 self._game_floor_intent = None
                 self._floor_click_epoch_span = None
+            if reason == "custom-gallery-changed":
+                self._reference_sheet = self._reference_capture_context = None
             self._epoch += 1
             self._core.close(reason=str(reason))
             self._render = None
@@ -1133,11 +1139,27 @@ class LiveRuntime:
                 return None
             return {key: value if key == "pixels" else copy.deepcopy(value) for key, value in row.items()}
 
+    @staticmethod
+    def _reference_owner_context(row):
+        return tuple(row.get(key) for key in ("mode", "roundId", "mapId", "floor",
+            "engineIdentity", "captureGeneration"))
+
+    def _remember_provisional_reference(self):
+        row = self._reference_sheet
+        if (row is not None and not self._durable_map_id and self._map_open
+                and row.get("mapId") == self._map_id and row.get("floor") == self._floor
+                and self._core.can_display(cycle_id=self._cycle, map_id=self._map_id,
+                    floor=self._floor, frame_generation=self._frame_generation)):
+            self._provisional_reference_context = self._reference_owner_context(row)
+
     def reference_payload(self):
-        """Confirmed identity/floor grants a static sheet, never an aligned pose.
+        """Current selection/floor grants a static sheet, never an aligned pose.
 
         Its pixels are prepared by the capture worker. Closing the map retains
-        this confirmed sheet; changing identity, floor, binding or round does not.
+        the selected current-round sheet. Binding/resource/identity/floor changes
+        revoke it. Durable static content ignores live window geometry,
+        foreground, pose and material ACK. Provisional members retain the old
+        current-pose / previously verified closed-context exception.
         """
         with self._lock:
             row = self._reference_sheet
@@ -1147,10 +1169,22 @@ class LiveRuntime:
                     or any(row.get(key) != expected for key, expected in (
                         ("mode", self._mode), ("profileId", self._profile), ("mapId", self._map_id),
                         ("floor", self._floor), ("roundId", self._round),
-                        ("displayGeneration", getattr(self, "_display_generation", 0))))
-                    or not self._capture_is_current(self._reference_capture_context, row.get("captureGeneration"))):
+                        ("displayGeneration", getattr(self, "_display_generation", 0)),
+                        ("engineIdentity", id(self._engine))))
+                    or row.get("captureGeneration") != self._capture_generation()
+                    or (self._evidence_kind == "live-client-capture" and row.get("captureGeneration") is None)):
                 return None
-            return {key: value if key == "pixels" else copy.deepcopy(value) for key, value in row.items()}
+            if not self._durable_map_id:
+                # Preserve the original provisional exception: an open-map
+                # reference needs current core authority; a closed-map sheet
+                # may reuse only its previously verified logical context.
+                valid_provisional = (self._core.can_display(cycle_id=self._cycle, map_id=self._map_id,
+                    floor=self._floor, frame_generation=self._frame_generation) if self._map_open
+                    else self._provisional_reference_context == self._reference_owner_context(row))
+                if not valid_provisional:
+                    return None
+            return {**{key: value if key == "pixels" else copy.deepcopy(value) for key, value in row.items()},
+                    **self._identity_fields()}
 
     def _capture_frame(self, cancelled):
         try:
@@ -1462,6 +1496,7 @@ class LiveRuntime:
             self._render_capture_context = captured.context
             if self._reference_sheet is not None:
                 self._reference_sheet.update(self._identity_fields())
+            self._remember_provisional_reference()
             render_token = self._render["token"]
         self._set_pose_phase("valid", "current-pose-refreshed", map_id, floor, frame_id, generation)
         self._notify("render-ready", reason="current-pose-refreshed", token=render_token, unchanged=True)
@@ -1658,21 +1693,30 @@ class LiveRuntime:
         reference_pixels = np.ascontiguousarray(display["pixels"][:, :, [2, 1, 0, 3]])
         reference_pixels.setflags(write=False)
         with self._lock:
-            if (obsolete() or frame_id != self._frame_id or floor != self._floor
-                    or display_generation != getattr(self, "_display_generation", 0)):
+            if display_generation != getattr(self, "_display_generation", 0):
+                return self._receipt(action, payload, success=False, reason="stale-display-settings", stale=True)
+            if obsolete() or frame_id != self._frame_id or floor != self._floor:
                 return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
-            if not self._capture_is_current(captured.context, capture_generation):
-                self.invalidate("capture-context-changed")
+            if capture_generation != self._capture_generation():
                 return self._receipt(action, payload, success=False, reason="capture-context-changed", stale=True)
             reference_sheet = dict(token=uuid4().hex, pixels=reference_pixels,
                 mode=self._mode, profileId=self._profile, mapId=map_id, floor=floor, roundId=self._round,
                 variantId=display.get("variantId"), displayGeneration=display_generation,
-                resourceIdentity=display["resourceIdentity"], captureGeneration=capture_generation,
+                resourceIdentity=display["resourceIdentity"], captureGeneration=capture_generation, engineIdentity=id(engine),
                 referenceAuthorized=self._evidence_kind == "live-client-capture", evidenceKind=self._evidence_kind,
-                **self._identity_fields())
-            if self._durable_map_id == map_id:
+                preferredProfileId=self._profile, effectiveProfileId=display.get("effectiveProfileId", display["routeProfileId"]),
+                displayKind=display["displayKind"], displayLabel=display["displayLabel"],
+                routeProfileId=display["routeProfileId"], authorStatus=display.get("authorStatus", "none"), fallback=display.get("fallback", False),
+                fallbackReason=display.get("fallbackReason", ""), **self._identity_fields())
+            if (identity_stage is None and self._gate is not None
+                    and self._gate.confirmed_id == map_id and self._map_id == map_id):
+                # A selected static sheet is not aligned pixels or a durable
+                # identity promotion. Keep its provisional metadata explicit.
                 self._reference_sheet = reference_sheet
                 self._reference_capture_context = captured.context
+            if not self._capture_is_current(captured.context, capture_generation):
+                self.invalidate("capture-context-changed")
+                return self._receipt(action, payload, success=False, reason="capture-context-changed", stale=True)
         self._set_pose_phase("pending", "current-frame-fit", map_id, floor, frame_id, frame_generation)
         host = _AlignmentHost(engine, group, self._settings)
         fit = host.fit(frame, map_id, floor, obsolete, entry_candidate) if entry_candidate is not None else host.fit(frame, map_id, floor, obsolete)
@@ -1702,14 +1746,14 @@ class LiveRuntime:
             core = self._copy_pose_core(self._core) if identity_stage is not None else self._core
             core.begin_observation(cycle_id=cycle, map_id=map_id, floor=floor,
                                          frame_generation=frame_generation, frame_signature=(digest,))
-            previous = core.pose_by_map.get(map_id)
-            previous_matrix = previous.pose_for_floor(floor) if previous is not None else None
-            reopen = previous_matrix is not None
+            # This is the full shared-structure sensor result, as in the Tk
+            # consumer. Existing pose presence cannot relabel it as a bounded
+            # translation recovery; the separate refresh path owns that source.
             candidate = AlignmentCandidate(map_id, floor, canonical,
-                "same-floor-reopen-shared-structure" if reopen else "initial-structure-v2", frame_generation,
+                "initial-structure-v2", frame_generation,
                 confidence=1.0, anchor_count=1, anchor_kind="global", current_frame_verified=True,
                 residual_verified=True, global_residual_verified=True,
-                translation_only=bool(reopen and np.allclose(previous_matrix[:2,:2], canonical[:2,:2], atol=1e-5, rtol=0)),
+                translation_only=False,
                 metadata=dict(routeProfileId="shared-structure", independentFloorAnchor=True))
             decision = core.adjudicate(candidate)
             if not decision.accepted:
@@ -1736,6 +1780,9 @@ class LiveRuntime:
                 resourceIdentity=display["resourceIdentity"], displayKind=display["displayKind"],
                 referencePath=display.get("referencePath", ""),
                 displayLabel=display["displayLabel"], routeProfileId=display["routeProfileId"],
+                preferredProfileId=self._profile, effectiveProfileId=display.get("effectiveProfileId", display["routeProfileId"]),
+                authorStatus=display.get("authorStatus", "none"), fallback=display.get("fallback", False),
+                fallbackReason=display.get("fallbackReason", ""),
                 variantId=display.get("variantId"), displayGeneration=display_generation,
                 liveAuthorization=live, evidenceKind=self._evidence_kind, **self._identity_fields())
             render_token = target_render["token"]
@@ -1758,6 +1805,7 @@ class LiveRuntime:
                 self._render_capture_context = captured.context
                 self._reference_sheet = reference_sheet
                 self._reference_capture_context = captured.context
+                self._remember_provisional_reference()
         self._set_pose_phase("valid", "current-frame-pose-authorized", map_id, floor, frame_id, frame_generation)
         if identity_stage is not None:
             self._notify("sibling-material-pending", reason="target-current-pose-awaiting-material", token=render_token,
@@ -1826,45 +1874,8 @@ class LiveRuntime:
 
     @staticmethod
     def _display_layer(engine, map_id, floor, profile, *, variant_id="variant-01"):
-        import numpy as np
-        reference = engine.qt_shared_provider("shared-structure", map_id, floor)
-        if reference is None:
-            raise ValueError("display-reference-unavailable")
-        custom = getattr(engine, "qt_custom_display", None)
-        if callable(custom):
-            layer = custom(profile, map_id, str(floor), reference)
-            if layer is not None:
-                return layer
-        optional = engine.qt_optional_displays
-        from client_route_preferences import selected_coffin_binding
-        binding = (selected_coffin_binding(engine, map_id, floor, profile, variant_id)
-                   if (profile, map_id, str(floor)) == ("zhan10-coffin", "nightmare-01", "1")
-                   else optional.binding(profile, map_id, floor))
-        if binding is not None and binding["usable"]:
-            if binding.get("optionalPixels", True):
-                pixels = optional.pixels(binding["path"], "aligned-overlay")
-            else:
-                import cv2
-                from nightmare_candidate import imread_unicode
-                pixels = imread_unicode(binding["path"], cv2.IMREAD_UNCHANGED)
-                if (pixels is None or pixels.dtype != np.uint8 or pixels.ndim != 3 or pixels.shape[2] != 4):
-                    raise ValueError("coffin-variant-original-BGRA-unavailable")
-            source_basis = engine.qt_adapters.matrix_profile_to_canonical("shared-structure", map_id, floor)
-            if source_basis is None:
-                raise ValueError("display-reference-bridge-unavailable")
-            return dict(pixels=pixels, matrixDisplayToReference=np.linalg.inv(source_basis) @ binding["matrix"],
-                resourceIdentity=str(binding["path"]), displayKind="author-route", displayLabel=profile,
-                referencePath=str(binding["path"]),
-                routeProfileId=profile, variantId=variant_id if profile == "zhan10-coffin" else None)
-        # The existing shared-structure fallback displays this exact typed mask;
-        # no author bitmap participates in identity, fitting or residual checks.
-        pixels = np.zeros((*reference.shape, 4), np.uint8)
-        pixels[reference.clean_mask != 0] = (218, 228, 238, 255)
-        return dict(pixels=pixels, matrixDisplayToReference=np.eye(3),
-            resourceIdentity=dict(path=str(reference.path), binding=reference.metadata["binding"],
-                                  structureVersionKey=reference.metadata.get("structureVersionKey")),
-            displayKind="shared-structure", displayLabel="Structure fallback; selected author display unavailable",
-            routeProfileId="shared-structure")
+        from client_route_preferences import prepare_display_layer
+        return prepare_display_layer(engine, map_id, floor, profile, variant_id=variant_id)
 
 
 SharedLiveRuntime = LiveRuntime

@@ -48,6 +48,29 @@ class CustomDisplayTests(unittest.TestCase):
         self.assertIsNone(display.layer(profile, "synthetic-map", "2", reference, "nightmare"))
         self.assertIsNone(display.layer(profile, "synthetic-map", "1", self.reference(mask=np.zeros((200, 200), np.uint8)), "nightmare"))
 
+    def test_missing_author_reaches_real_base_renderer_through_factory_binding(self):
+        from types import SimpleNamespace
+        from client_providers import build_engine_factories
+        from client_live_runtime import LiveRuntime
+        display=CustomGalleryDisplay(self.service)
+        engine=SimpleNamespace(pack=SimpleNamespace(mode="nightmare",maps=[SimpleNamespace(id="synthetic-map")]),
+            identity_floors=("1",),qt_catalog=None,
+            qt_optional_displays=SimpleNamespace(profiles=set(),binding=lambda *a:None),
+            qt_adapters=SimpleNamespace(matrix_profile_to_canonical=lambda *a:np.eye(3)),qt_native_context=None)
+        reference=self.reference()
+        engine.qt_shared_provider=lambda *a:reference
+        factory=build_engine_factories(self.folder/"_internal")
+        factory._build=lambda mode:engine
+        factory.set_custom_display(display.layer,base_provider=display.base_layer)
+        prepared=factory["nightmare"]()
+        layer=LiveRuntime._display_layer(prepared,"synthetic-map","1","suju")
+        expected=render_game_layer(self.service.base_display_library(),"synthetic-map","1",[])
+        self.assertEqual((layer["displayKind"],layer["authorStatus"],layer["preferredProfileId"]),("base-map","missing","suju"))
+        np.testing.assert_array_equal(layer["pixels"],expected)
+        self.assertIsNone(display.base_layer("synthetic-map","1",reference,"difficult"))
+        with self.assertRaisesRegex(ValueError,"custom-display-unavailable"):
+            LiveRuntime._display_layer(prepared,"synthetic-map","1","custom:missing-gallery")
+
     def test_uncommitted_or_changed_routes_never_become_current_display(self):
         self.call("createGallery", "路线")
         gid = self.service.snapshot["selectedGallery"]

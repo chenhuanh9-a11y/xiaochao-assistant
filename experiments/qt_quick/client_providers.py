@@ -117,6 +117,7 @@ class EngineFactories(dict):
         self._build_locks = {mode: threading.Lock() for mode in self.MODES}
         self._engines = {}
         self._custom_display = None
+        self._base_display = None
         self._revision = 0
         self._reports = {mode: dict(available=False, prepared=False,
                                    reason="resource-validation-pending") for mode in self.MODES}
@@ -126,12 +127,14 @@ class EngineFactories(dict):
         with self._lock:
             return copy.deepcopy(self._reports)
 
-    def set_custom_display(self, provider):
+    def set_custom_display(self, provider, *, base_provider=None):
         """Attach a display-only source; identity and geometry remain untouched."""
         if provider is not None and not callable(provider):
             raise TypeError("custom display provider must be callable")
+        if base_provider is not None and not callable(base_provider):
+            raise TypeError("base display provider must be callable")
         with self._lock:
-            self._custom_display = provider
+            self._custom_display, self._base_display = provider, base_provider
             for mode, engine in self._engines.items():
                 self._attach_custom_display(engine, mode)
 
@@ -139,6 +142,9 @@ class EngineFactories(dict):
         provider = self._custom_display
         engine.qt_custom_display = (lambda profile, map_id, floor, reference:
             provider(profile, map_id, floor, reference, mode)) if provider is not None else None
+        base = self._base_display
+        engine.qt_base_display = (lambda map_id, floor, reference:
+            base(map_id, floor, reference, mode)) if base is not None else None
 
     def prepare(self, cancelled=None):
         for mode in self.MODES:
@@ -196,6 +202,7 @@ class EngineFactories(dict):
 
         root = self.root
         native = None
+        catalog_error = ""
         if mode == "nightmare":
             raw = _read(root, "references/nightmare-map-pack.json")
             # NightmarePack supports developer/environment source roots. Reject
@@ -214,7 +221,12 @@ class EngineFactories(dict):
             # Author display is optional and never recognition evidence.
             catalog_path = _local(root, "references/nightmare-author-route-catalog.json")
             if catalog_path.is_file():
-                catalog = AuthorRouteCatalog(catalog_path, asset_base=root)
+                try:
+                    catalog = AuthorRouteCatalog(catalog_path, asset_base=root)
+                except (OSError, ValueError, KeyError, TypeError) as error:
+                    # Match the original typed-resource path: optional display
+                    # metadata must not disable independently validated geometry.
+                    catalog_error = f"{type(error).__name__}:{error}"
             entry_root = _local(root, "references/nightmare-entries")
             neutral = "references/nightmare-structure-display.json"
             entry_relative = "references/nightmare-entries"
@@ -291,6 +303,7 @@ class EngineFactories(dict):
         engine.qt_resource_inventory = dict(typedLayers=len(versions),
             mainEntries=len(engine.entry_identity.entries), sideEntries=len(engine.side_entry_identity.entries),
             declaredMissingNativeLayers=(native.unbound_layers if native is not None else []),
+            optionalAuthorCatalogError=catalog_error,
             optionalSideDoorError=engine.side_entry_identity.side_door_error,
             optionalSideSearchError=engine.side_entry_identity.side_search_error)
         engine.qt_shared_provider = provider
