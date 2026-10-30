@@ -16,7 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
-import xml.etree.ElementTree as ET
+from xml.dom import minidom
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS = ROOT / "tools"
@@ -58,6 +58,23 @@ def sha256(path):
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def qt_manifest():
+    # Preserve scoped default namespaces and unprefixed DOM tags. PyInstaller
+    # locates security elements by tagName; ElementTree's nsN prefixes create
+    # duplicate requestedExecutionLevel nodes during its manifest adjustment.
+    with minidom.parse(str(TOOLS / "identityv-assistant.manifest")) as document:
+        document.getElementsByTagName("assemblyIdentity")[0].setAttribute("name", "Xingtu.QtClientTest")
+        description = document.getElementsByTagName("description")[0]
+        for child in list(description.childNodes):
+            description.removeChild(child)
+        description.appendChild(document.createTextNode("Xingtu Qt Test Client"))
+        data = document.toxml(encoding="utf-8")
+    verify_manifest_xml(data)
+    from PyInstaller.utils.win32.winmanifest import create_application_manifest
+    verify_manifest_xml(create_application_manifest(data, uac_admin=True, uac_uiaccess=False))
+    return data
 
 
 def notice_inputs():
@@ -411,15 +428,8 @@ def main(argv=None):
                    publicDownloadConfigured=False, localMapImportPreserved=True)
     profile_path = output / "installation-profile.json"
     profile_path.write_text(json.dumps(profile, indent=2), encoding="utf-8")
-    # PyInstaller requires an unprefixed `assembly` DOM tag. ElementTree's
-    # default ns0 prefix is valid XML but rejected by its manifest parser.
-    ET.register_namespace("", "urn:schemas-microsoft-com:asm.v1")
-    manifest = ET.parse(TOOLS / "identityv-assistant.manifest")
-    manifest.getroot().find("{urn:schemas-microsoft-com:asm.v1}assemblyIdentity").set("name", "Xingtu.QtClientTest")
-    manifest.getroot().find("{urn:schemas-microsoft-com:asm.v1}description").text = "Xingtu Qt Test Client"
     manifest_path = output / "qt-client.manifest"
-    manifest.write(manifest_path, encoding="utf-8", xml_declaration=True)
-    verify_manifest_xml(manifest_path.read_bytes())
+    manifest_path.write_bytes(qt_manifest())
     inputs = dict(sourceRoot=str(ROOT), product=PRODUCT, resourceStage=str(resource_stage),
                   resources=resources, profilePath=str(profile_path), manifestPath=str(manifest_path))
     input_path = output / "freeze-inputs.json"
