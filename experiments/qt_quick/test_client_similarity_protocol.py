@@ -341,6 +341,64 @@ class SimilarityProtocolTests(unittest.TestCase):
                     self.assertEqual(isolated.portable_seed_path, root / "resources/.qt-no-portable-seeds.json")
                     self.assertFalse(memory.log_path.exists())
 
+    def test_explicit_none_resets_group_prior_and_provisional_choice_then_global_rank_resumes(self):
+        self.capture_group()
+        old = self.runtime._identity_native
+        self.assertIsNotNone(self.runtime._identity_prior)
+        self.engine.rank_established_group.return_value = []
+        self.capture.frame[0,0,0] = 9
+        result = self.dispatch("capture_now")
+        self.assertFalse(result["success"])
+        state = self.runtime.snapshot()
+        self.assertEqual((state["identityPhase"],state["provisionalMapId"]),("UNLOCKED",""))
+        self.assertIsNone(self.runtime._identity_prior); self.assertIsNone(self.runtime._identity_priority)
+        self.assertIsNone(self.runtime._gate.confirmed_id)
+        self.assertIsNone(self.runtime.reference_payload())
+        self.assertEqual(old.state,"GROUP_LOCKED")
+        self.dispatch("close_map")
+        self.assertIsNone(self.runtime.reference_payload())
+        self.engine.rank.return_value=[dict(mapId=IDS[1],identityHardGatePassed=True,strongSuggestion=True)]
+        self.assertTrue(self.dispatch("capture_now")["success"])
+        self.assertEqual(self.runtime.snapshot()["mapId"],IDS[1])
+        self.assertEqual(self.engine.rank.call_count,2)
+
+    def test_passive_review_none_keeps_established_group(self):
+        self.capture_group()
+        prior=self.runtime._identity_prior
+        self.engine.rank_established_group.return_value=[]
+        self.now=3.; self.capture.frame[0,0,0]=9
+        with patch.object(_AlignmentHost,"_canonical_geometry_current_frame_residual",
+                return_value=(self.fit["selectedRouteCurrentFrameResidual"],None)):
+            result=self.dispatch("refresh_map")
+        self.assertTrue(result["success"],result)
+        self.assertEqual(self.runtime.snapshot()["identityPhase"],"GROUP_LOCKED")
+        self.assertEqual(self.runtime._identity_prior,prior)
+        self.assertEqual(len(self.runtime._identity_native.observations),1)
+
+    def test_late_explicit_none_cannot_reset_a_newer_context(self):
+        self.capture_group()
+        entered,release=threading.Event(),threading.Event()
+        def blocked(*a,**k):
+            entered.set(); self.assertTrue(release.wait(4)); return []
+        self.engine.rank_established_group.side_effect=blocked
+        result=[]
+        worker=threading.Thread(target=lambda:result.append(self.dispatch("capture_now")))
+        worker.start(); self.assertTrue(entered.wait(4))
+        self.dispatch("end_round"); self.dispatch("set_game_mode",mode="difficult")
+        release.set();worker.join(4)
+        self.assertFalse(worker.is_alive());self.assertTrue(result[0]["stale"])
+        self.assertEqual((self.runtime.snapshot()["mode"],self.runtime.snapshot()["identityPhase"]),
+                         ("difficult","UNLOCKED"))
+
+    def test_explicit_context_mismatch_resets_only_worker_owned_clone(self):
+        context=("nightmare",1,"1",1,0)
+        old,_=stage_similarity_rank(None,rows(),context,"first")
+        mismatched=rows();mismatched[0]["nativeSimilarity"]["mode"]="difficult"
+        state,reply=stage_similarity_rank(old,mismatched,context,"second")
+        self.assertEqual(reply["reason"],"similarity-context-mismatch")
+        self.assertEqual(state.state,"UNLOCKED")
+        self.assertEqual(old.state,"GROUP_LOCKED")
+
     def test_state_clone_reowns_new_transaction_without_mutating_published_owner(self):
         context = ("nightmare", 1, "1", 1, 0)
         original, _ = stage_similarity_rank(None, rows(), context, "pixels")

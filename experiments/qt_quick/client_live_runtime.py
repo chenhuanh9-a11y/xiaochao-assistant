@@ -386,7 +386,7 @@ class LiveRuntime:
             return False
         self._identity_native = state
         self._identity_rank_rows = rows
-        self._identity_prior = state.context_snapshot() or self._identity_prior
+        self._identity_prior = state.context_snapshot()
         self._identity_priority = state.priority(self._mode)
         self._identity_source = "native-similarity"
         return True
@@ -410,8 +410,17 @@ class LiveRuntime:
                 return None, None, "capture-context-changed"
             self._update_candidates(rows, floor)
             grouped = state.state == "GROUP_LOCKED"
+            self._publish_identity_stage(state, rows, context, reason="ranked-current-frame")
+            if (not grouped and previous is not None and previous.state == "GROUP_LOCKED"
+                    and not self._durable_map_id):
+                # A reset state no longer owns an automatic provisional choice.
+                # Keep warm geometric cache separate from withdrawn identity.
+                self._map_id = ""
+                self._gate.select(None)
+                self._group = None
+                self._reference_sheet = self._reference_capture_context = None
+                self._provisional_reference_context = None
             if grouped:
-                self._publish_identity_stage(state, rows, context, reason="ranked-current-frame")
                 selected = (state.provisional_member_id
                     if state.context_snapshot() and state.provisional_member_id in state.member_ids else None)
             else:

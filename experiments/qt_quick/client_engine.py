@@ -43,15 +43,18 @@ def stage_similarity_rank(previous, rows, context, observation_id, display_membe
     proposal = copy.deepcopy((rows or [{}])[0].get("nativeSimilarity") or {"status": "none"})
     state = clone_similarity_state(previous)
     if proposal.get("mode") not in (None, context[0]) or proposal.get("floor") not in (None, context[2]):
+        state.reset()
         return state, dict(status="none", reason="similarity-context-mismatch")
     if proposal.get("originalIdentityHardGatePassed"):
         verified = [row for row in rows if row.get("identityHardGatePassed") is True]
         if len(verified) != 1 or verified[0]["mapId"] != proposal.get("candidateMemberId"):
             proposal["originalIdentityHardGatePassed"] = False
-    if proposal.get("status") in {"conditions", "group-candidate", "identity-pending"}:
-        state.accept(proposal, context, observation_id)
-        if state.state == "GROUP_LOCKED" and state.context_snapshot() and context[2] == "1":
-            state.prefer_display_member(display_members)
+    # Every current explicit rank is an observation. The original consumer
+    # calls accept even for status=none, whose existing reset revokes the group.
+    # Passive group review does not call this complete-rank consumer.
+    state.accept(proposal, context, observation_id)
+    if state.state == "GROUP_LOCKED" and state.context_snapshot() and context[2] == "1":
+        state.prefer_display_member(display_members)
     return state, proposal
 
 
