@@ -1,6 +1,6 @@
 """Pass-through native key events; management shortcuts do not need a game.
 
-Production uses WH_KEYBOARD_LL, never RegisterHotKey (G stays with the game).
+Production uses pass-through WH_KEYBOARD_LL/WH_MOUSE_LL; G and clicks stay with the game.
 The old pollOnce seam remains for injected fake-native diagnostic tests only.
 """
 from __future__ import annotations
@@ -84,6 +84,7 @@ class NativeWindowAPI:
 class NativeShortcutBackend(QObject):
     changed = Signal()
     actionTriggered = Signal(str)
+    gamePointerPressed = Signal(object)
 
     def __init__(self, native=None, parent=None, *, source=None):
         super().__init__(parent)
@@ -94,10 +95,15 @@ class NativeShortcutBackend(QObject):
         self._source = source
         self._management_enabled = False
         self._event_down = set()
+        self._pointer_error = ""
         if source is not None:
             source.eventReceived.connect(self._key_event, Qt.QueuedConnection)
             source.started.connect(self._hook_started, Qt.QueuedConnection)
             source.failed.connect(self._hook_failed, Qt.QueuedConnection)
+            pointer_signal = getattr(source, "pointerReceived", None)
+            if pointer_signal is not None:
+                pointer_signal.connect(self._pointer_event, Qt.QueuedConnection)
+                source.pointerFailed.connect(self._pointer_failed, Qt.QueuedConnection)
         self._hwnd = 0
         self._bindings = {}
         self._down = {}
@@ -123,11 +129,16 @@ class NativeShortcutBackend(QObject):
         readPermission="unknown", passThrough=True, globalRegistration=False,
         closed=self._closed, managementEnabled=self._management_enabled,
         hookRunning=bool(self._source and self._source.running),
+        floorClickObserverInstalled=bool(self._source and getattr(self._source, "pointer_installed", False)),
+        floorClickObserverError=self._pointer_error,
         eventSource="pass-through-hook" if self._source is not None else "injected-poll-fixture"), notify=changed)
 
     def _stop(self, status, message):
         self._timer.stop()
         self._enabled = False
+        update = getattr(self._source, "update_pointer_target", None)
+        if callable(update):
+            update(0)
         self._status, self._message = status, message
         self._prime, self._game_focus = True, None
         self.changed.emit()
@@ -201,6 +212,9 @@ class NativeShortcutBackend(QObject):
             return False
         self._prime, self._game_focus = True, None
         self._enabled, self._status = True, "ready"
+        update = getattr(self._source, "update_pointer_target", None)
+        if callable(update):
+            update(self._hwnd)
         self._message = "Pass-through native observer enabled; input permission is unknown."
         if self._source is None:
             self._timer.start()  # Injected diagnostic API only; never production.
@@ -222,7 +236,30 @@ class NativeShortcutBackend(QObject):
 
     def _hook_started(self, held):
         self._event_down.update(held)
+        if getattr(self._source, "pointer_installed", False):
+            self._pointer_error = ""
         self.changed.emit()
+
+    def setGamePointerContextProvider(self, provider):
+        setter = getattr(self._source, "set_pointer_context_provider", None)
+        if callable(setter):
+            setter(provider)
+
+    def _pointer_failed(self, error):
+        self._pointer_error = str(error)
+        self.changed.emit()  # A mouse-observer failure must not disable keys.
+
+    def _pointer_event(self, event):
+        if (self._closed or not self._enabled or self._text or self._editing or self._source is None
+                or event.get("pointerGeneration") != getattr(self._source, "pointer_generation", None)
+                or event.get("hwnd") != self._hwnd or event.get("foreground") != self._hwnd):
+            return
+        try:
+            if not self._native.is_window(self._hwnd) or self._native.foreground_window() != self._hwnd:
+                return
+        except OSError:
+            return
+        self.gamePointerPressed.emit(event)
 
     def _hook_failed(self, error):
         self._management_enabled = False
@@ -335,6 +372,7 @@ class NativeShortcutBackend(QObject):
         self._management_enabled = False
         self._closed = True
         self._hwnd = 0
+        self.setGamePointerContextProvider(None)
         if self._source is not None:
             self._source.stop()
         self.changed.emit()

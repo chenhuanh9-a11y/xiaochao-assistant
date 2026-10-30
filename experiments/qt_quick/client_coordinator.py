@@ -217,6 +217,12 @@ class ClientCoordinator(QObject):
         session.actionRequested.connect(self._action_requested)
         resources.resourcesChanged.connect(self._resources_changed)
         native_input.actionTriggered.connect(self._native_action)
+        pointer_signal = getattr(native_input, "gamePointerPressed", None)
+        pointer_provider = getattr(runtime, "game_floor_click_context", None)
+        pointer_setter = getattr(native_input, "setGamePointerContextProvider", None)
+        if pointer_signal is not None and callable(pointer_provider) and callable(pointer_setter):
+            pointer_setter(pointer_provider)
+            pointer_signal.connect(self._game_pointer_pressed)
         native_input.changed.connect(self.changed)
         native_input.changed.connect(self._input_changed)
         backend.replayOverlayRequested.connect(self.showAlignedReplay)
@@ -379,6 +385,30 @@ class ClientCoordinator(QObject):
         return "游戏窗口已连接，可以开始本局" if self._bound else "先连接游戏窗口，再开始本局"
 
     runtimeStatus = Property(str, _status_text, notify=changed)
+
+    @Slot(object)
+    def _game_pointer_pressed(self, event):
+        if (self._closed or self._closing or not isinstance(event, dict) or not self._bound
+                or event.get("hwnd") != int(self._bound) or self.resources.busy
+                or self.resources.pendingKind or self.session.snapshot.get("resourceLocked")
+                or self._pending_context or not self.session.snapshot.get("roundActive")):
+            return
+        try:
+            if self._native_windows.foreground_window() != int(self._bound):
+                return
+            result = self.runtime.observe_game_floor_click(event["x"], event["y"], event.get("context"))
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            self._trace("floor-click-rejected", reason="invalid-input-context", diag=dict(error=str(error)))
+            return
+        if not result.get("success"):
+            return
+        self._invalidate_display("game-floor-control-intent")
+        self._clear_reference()
+        self._trace("floor-click-intent", state=self.runtime.snapshot(), reason=result.get("reason", ""),
+                    diag=dict(clickedFloor=result.get("clickedFloorId"), expiresAt=result.get("expiresAt")))
+        if result.get("captureRequired"):
+            self.session.dispatchWithPayload("refresh_map", dict(
+                floorClickSequence=event.get("sequence"), floorClickCreatedAt=event.get("createdAt")))
 
     def _action_requested(self, action, payload):
         if action in {"end_round", "stop_round", "reset_round", "set_floor", "cycle_floor"}:
@@ -1016,6 +1046,14 @@ class ClientCoordinator(QObject):
         if self._closed or self._closing:
             return
         state = getattr(self.input, "snapshot", {})
+        pointer_error = state.get("floorClickObserverError")
+        pointer_key = ("floor-click-observer", pointer_error)
+        if pointer_error and pointer_key not in self._notified:
+            self._notified.add(pointer_key)
+            summary = "游戏内楼层按钮的点击监听暂不可用，自动楼层检测和快捷键仍独立运行；详情可在最近问题查看。"
+            self.errorReported.emit(dict(title="楼层点击监听暂不可用", summary=summary,
+                raw=pointer_error, action="game-floor-control", phase="input", kind="warning"))
+            self.notificationRequested.emit("楼层点击监听暂不可用", summary, "warning")
         if state.get("status") in {"failed", "conflict", "unknown"}:
             key = ("input-failure", state.get("message"))
             if key not in self._notified:

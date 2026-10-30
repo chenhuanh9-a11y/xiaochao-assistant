@@ -1,14 +1,16 @@
-"""Pass-through WH_KEYBOARD_LL source with its own Win32 message loop.
+"""Pass-through key and scoped left-click hooks on one Win32 message loop.
 
 No hook is installed at import/construction. The callback never runs business
-work or consumes input; it queues only subscribed key edges and always returns
-CallNextHookEx. See Microsoft LowLevelKeyboardProc/SetWindowsHookExW docs.
+work or consumes input; it queues subscribed key edges and bound-game left
+presses, and always returns CallNextHookEx. See Microsoft LowLevelKeyboardProc,
+LowLevelMouseProc and SetWindowsHookExW documentation.
 """
 from __future__ import annotations
 import ctypes
 from ctypes import wintypes as W
 import os
 import threading
+import time
 from PySide6.QtCore import QObject, Signal
 
 MODIFIER_KEYS = frozenset((0x10,0x11,0x12,0x5b,0x5c,0xa0,0xa1,0xa2,0xa3,0xa4,0xa5))
@@ -31,6 +33,8 @@ def physical_key(vk, scan, flags):
 
 class PassThroughKeyboardSource(QObject):
     eventReceived = Signal(object)
+    pointerReceived = Signal(object)
+    pointerFailed = Signal(str)
     started = Signal(object)
     failed = Signal(str)
 
@@ -43,6 +47,13 @@ class PassThroughKeyboardSource(QObject):
         self._thread_id = 0
         self._user = None
         self._callback = None
+        self._mouse_callback = None
+        self._pointer_target = 0
+        self._pointer_context_provider = None
+        self.pointer_generation = 0
+        self._pointer_sequence = 0
+        self.pointer_installed = False
+        self._pointer_failure_reported = False
         self.generation = 0
         self.installed = False
 
@@ -60,12 +71,44 @@ class PassThroughKeyboardSource(QObject):
             self._keys = frozenset(keys) | MODIFIER_KEYS
             self.generation += 1
 
+    def set_pointer_context_provider(self, provider):
+        # The provider only stamps cached metadata and must never block/perform
+        # capture or business work on the native hook thread.
+        with self._lock:
+            self._pointer_context_provider = provider if callable(provider) else None
+            self.pointer_generation += 1
+
+    def update_pointer_target(self, hwnd):
+        with self._lock:
+            if self._pointer_target != int(hwnd):
+                self._pointer_target = int(hwnd)
+                self.pointer_generation += 1
+
+    def _pointer_event(self, x, y, foreground, *, created_at=None):
+        with self._lock:
+            target, provider, generation = self._pointer_target, self._pointer_context_provider, self.pointer_generation
+        if not target or foreground != target or provider is None or self._stop.is_set():
+            return None
+        created_at = time.monotonic() if created_at is None else created_at
+        context = provider()
+        if not isinstance(context, dict):
+            return None
+        context = dict(context, createdAt=created_at)
+        with self._lock:
+            if generation != self.pointer_generation or target != self._pointer_target:
+                return None
+            self._pointer_sequence += 1
+            sequence = self._pointer_sequence
+        return dict(x=int(x), y=int(y), hwnd=target, foreground=foreground,
+                    createdAt=created_at, context=context, sequence=sequence, pointerGeneration=generation)
+
     def start(self):
         if self.running:
             return True
         if os.name != "nt":
             return False
         self._stop.clear()
+        self._pointer_failure_reported = False
         self._thread = threading.Thread(target=self._run, name="qt-pass-through-keys", daemon=False)
         self._thread.start()
         return True
@@ -97,6 +140,7 @@ class PassThroughKeyboardSource(QObject):
 
     def _run(self):
         handle = None
+        mouse_handle = None
         try:
             user = self._user = ctypes.WinDLL("user32", use_last_error=True)
             kernel = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -104,6 +148,9 @@ class PassThroughKeyboardSource(QObject):
             callback_type = ctypes.WINFUNCTYPE(result, ctypes.c_int, W.WPARAM, W.LPARAM)
             class Key(ctypes.Structure):
                 _fields_ = [("vk",W.DWORD),("scan",W.DWORD),("flags",W.DWORD),("time",W.DWORD),("extra",ctypes.c_size_t)]
+            class Mouse(ctypes.Structure):
+                _fields_ = [("pt",W.POINT),("mouseData",W.DWORD),("flags",W.DWORD),
+                            ("time",W.DWORD),("extra",ctypes.c_size_t)]
             user.SetWindowsHookExW.argtypes=[ctypes.c_int,callback_type,W.HINSTANCE,W.DWORD]
             user.SetWindowsHookExW.restype=W.HANDLE
             user.CallNextHookEx.argtypes=[W.HANDLE,ctypes.c_int,W.WPARAM,W.LPARAM]
@@ -145,6 +192,26 @@ class PassThroughKeyboardSource(QObject):
             handle=user.SetWindowsHookExW(13,callback,kernel.GetModuleHandleW(None),0)
             if not handle:
                 raise ctypes.WinError(ctypes.get_last_error())
+            @callback_type
+            def mouse_callback(code, message_id, pointer):
+                try:
+                    if code >= 0 and message_id == 0x0201 and not self._stop.is_set():
+                        foreground = int(user.GetForegroundWindow() or 0)
+                        if foreground and foreground == self._pointer_target:
+                            mouse = ctypes.cast(pointer,ctypes.POINTER(Mouse)).contents
+                            event = self._pointer_event(mouse.pt.x, mouse.pt.y, foreground)
+                            if event is not None:
+                                self.pointerReceived.emit(event)
+                except Exception as error:
+                    if not self._pointer_failure_reported:
+                        self._pointer_failure_reported = True
+                        self.pointerFailed.emit(f"Floor-click observation failed: {type(error).__name__}:{error}"[:512])
+                return user.CallNextHookEx(None,code,message_id,pointer)
+            self._mouse_callback = mouse_callback
+            mouse_handle = user.SetWindowsHookExW(14,mouse_callback,kernel.GetModuleHandleW(None),0)
+            self.pointer_installed = bool(mouse_handle)
+            if not mouse_handle:
+                self.pointerFailed.emit("Native floor-click observer could not be installed")
             self.installed=True
             self.started.emit(self.held)
             while not self._stop.is_set():
@@ -155,8 +222,12 @@ class PassThroughKeyboardSource(QObject):
         except Exception as error:
             self.failed.emit(f"{type(error).__name__}:{error}")
         finally:
+            if mouse_handle and not self._user.UnhookWindowsHookEx(mouse_handle):
+                self.pointerFailed.emit("Native floor-click hook could not be unregistered")
             if handle and not self._user.UnhookWindowsHookEx(handle):
                 self.failed.emit("Native keyboard hook could not be unregistered")
             self.installed=False
             self._thread_id=0
             self._callback=None
+            self._mouse_callback=None
+            self.pointer_installed=False

@@ -141,10 +141,30 @@ acceptance/hide/drop reasons use the existing bounded asynchronous diagnostic
 writer, independently of the human-facing recent-problem list. Cross-run log
 retention is still unbounded; no historical logs were deleted in this repair.
 
-Remaining known parity gaps must not be labelled complete: the legacy game's
-floor-button mouse-intent producer is absent (automatic floor detection still
-uses the original detector); complete author fallback equivalence and native
-game timing need separate evidence. Difficult highlight margin/diagnostic-field
+Post-F2 source restores the game's floor-button mouse-intent producer. The
+existing Win32 input thread observes pass-through left presses only for the
+bound foreground game and stamps a nonblocking current-frame context. The
+original hit-test body is shared with Tk. Ordered UI clicks create the original
+2-second intent, revoke old work/display, and request a fresh capture; the click
+records the target floor immediately, without fabricating an observed floor or
+pose. New highlight evidence must match before that floor's pose is authorized.
+The click does not add a hard lock against later stable automatic floor changes.
+Queued clicks from a changed capture, cycle,
+window or resource context are rejected. This source repair is **not included
+in the retained F2CB49F7 installer**, and no new Setup is implied.
+
+The dormant Qt intent branch's extra hard lock was removed to preserve the
+original automatic/hold rules. The original V2 known-frame floor-conflict guard
+is also restored before pose work (including manual confirmation and cached or
+retained refresh); an unknown observed floor still permits the original manual
+fallback. A conflict reports observed/target floors and `fitAttempted=false`.
+The native adapter follows Microsoft's [LowLevelMouseProc](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelmouseproc)
+and [MSLLHOOKSTRUCT](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-msllhookstruct)
+contracts, reusing the existing message loop and unhook/drain lifecycle.
+
+Remaining known parity gaps must not be labelled complete: complete author
+fallback equivalence and native game timing need separate evidence.
+Difficult highlight margin/diagnostic-field
 differences do not explain the reported nightmare B1 geometry failure. Synthetic
 state/Qt tests and saved-frame replay are explicitly distinct from game testing.
 

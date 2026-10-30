@@ -23,7 +23,7 @@ from client_engine import (EngineAdapter, clone_similarity_state, stage_similari
                            INITIAL_IDENTITY_BUDGET_SECONDS, GROUP_IDENTITY_REVIEW_BUDGET_SECONDS,
                            GROUP_IDENTITY_REVIEW_INTERVAL_SECONDS)
 from floor_observation_policy import (MANUAL_FLOOR_HOLD_SECONDS,
-                                      read_floor_evidence, decide_floor_transition)
+                                      read_floor_evidence, decide_floor_transition, game_floor_control_hit)
 
 
 class _Cancellation:
@@ -616,12 +616,12 @@ class LiveRuntime:
             self._gate.select(None)
             self._reference_sheet = None
 
-    def _set_pose_phase(self, status, reason, map_id, floor, frame_id, generation):
+    def _set_pose_phase(self, status, reason, map_id, floor, frame_id, generation, **extra):
         with self._lock:
             if not self._active or frame_id != self._frame_id:
                 return
             phase = dict(status=status, reason=reason, mapId=map_id, floor=floor,
-                         frameId=frame_id, generation=generation)
+                         frameId=frame_id, generation=generation, **extra)
             if status == "pending":
                 self._pose_attempt = phase
             self._pose_result = phase
@@ -634,14 +634,89 @@ class LiveRuntime:
         self._manual_hold_until = 0.0
         self._floor_required = True
         self._game_floor_intent = None
+        self._floor_click_epoch_span = None
         self._last_floor_policy = ""
 
-    def _observe_floor_policy(self, floor_read, *, obsolete=None):
+    def _game_floor_click_context_locked(self):
+        observation = self._last_observation
+        if (not self._active or not self._map_open or observation is None
+                or observation["frame_id"] != self._frame_id or "floor_read" not in observation):
+            return None
+        captured = observation["captured"].context
+        return dict(epoch=self._epoch, mode=self._mode, profileId=self._profile,
+            roundId=self._round, cycleId=self._cycle, frameId=self._frame_id,
+            generation=self._frame_generation, captureGeneration=observation["capture_generation"],
+            clientBounds=list(captured.client_screen_bounds), fullClientSize=list(captured.full_client_size),
+            dpi=captured.dpi)
+
+    def game_floor_click_context(self):
+        """Hook-safe bounded metadata only. Contention drops this click."""
+        if not self._lock.acquire(blocking=False):
+            return None
+        try:
+            context = self._game_floor_click_context_locked()
+            if context is not None:
+                context["createdAt"] = self._monotonic()
+            return context
+        finally:
+            self._lock.release()
+
+    def observe_game_floor_click(self, screen_x, screen_y, context):
+        """UI ordered click intent; fresh highlighted pixels still own floor."""
+        if not isinstance(context, dict):
+            return dict(success=False, reason="floor-click-context-unavailable")
+        with self._lock:
+            current = self._game_floor_click_context_locked()
+            if current is None:
+                return dict(success=False, reason="floor-click-context-unavailable")
+            supplied_epoch = context.get("epoch")
+            span = self._floor_click_epoch_span
+            own_click_epoch = bool(span is not None and span[1] == self._epoch
+                and isinstance(supplied_epoch, int) and span[0] <= supplied_epoch <= span[1])
+            if ((supplied_epoch != self._epoch and not own_click_epoch)
+                    or any(context.get(key) != value for key, value in current.items() if key != "epoch")):
+                return dict(success=False, reason="floor-click-context-stale")
+            created = context.get("createdAt")
+            now = self._monotonic()
+            if (isinstance(created, bool) or not isinstance(created, (int, float))
+                    or not math.isfinite(created) or not 0 <= now - created <= MANUAL_FLOOR_HOLD_SECONDS):
+                return dict(success=False, reason="floor-click-expired")
+            if (isinstance(screen_x, bool) or isinstance(screen_y, bool)
+                    or not isinstance(screen_x, (int, float)) or not isinstance(screen_y, (int, float))
+                    or not math.isfinite(screen_x) or not math.isfinite(screen_y)):
+                return dict(success=False, reason="floor-click-coordinate-invalid")
+            observation = self._last_observation
+            if not self._capture_is_current(observation["captured"].context, observation["capture_generation"]):
+                return dict(success=False, reason="capture-context-changed")
+            try:
+                clicked = game_floor_control_hit((screen_x, screen_y), current["clientBounds"], observation["floor_read"])
+            except Exception:
+                # Original native click producer treats malformed HUD geometry
+                # as no hit; it must never mutate floor/pose from an exception.
+                clicked = None
+            if clicked is None:
+                return dict(success=False, reason="floor-click-not-a-control")
+            first_epoch = span[0] if own_click_epoch else self._epoch
+            self.invalidate("game-floor-control-intent")
+            self._floor_click_epoch_span = (first_epoch, self._epoch)
+            self._floor_observations = []
+            self._floor_required = True
+            self._observe_floor_policy(observation["floor_read"], explicit_floor=clicked)
+            self._game_floor_intent = dict(cycleId=self._cycle, floor=clicked,
+                awaitingObservation=True, expiresAt=created + MANUAL_FLOOR_HOLD_SECONDS)
+            result = dict(success=True, reason="game-floor-control-intent", clickedFloor=clicked,
+                clickedFloorId="B1" if clicked == -1 else str(clicked), captureRequired=True,
+                expiresAt=self._game_floor_intent["expiresAt"])
+        self._notify("game-floor-control-intent", reason="awaiting-current-highlight", clickedFloor=clicked,
+            expiresAt=result["expiresAt"])
+        return result
+
+    def _observe_floor_policy(self, floor_read, *, obsolete=None, explicit_floor=None):
         """Apply the shared legacy temporal/intent decision, never pose authority."""
         with self._lock:
             if obsolete is not None and obsolete():
                 return None
-            evidence = read_floor_evidence(floor_read, self._floor_observations)
+            evidence = read_floor_evidence(floor_read, self._floor_observations, explicit_floor=explicit_floor)
             self._floor_observations = list(evidence.observations)
             self._observed_floor = ("B1" if evidence.observed == -1 else str(evidence.observed)
                                     if evidence.observed in (1, 2) else "")
@@ -659,11 +734,29 @@ class LiveRuntime:
             if policy.clear_floor_required:
                 self._floor_required = False
             if policy.apply_target:
+                self._reset_provisional_floor(policy.target)
                 self._floor = policy.target
                 self._manual_floor = None
             if policy.reason == "pending-click-mismatch":
                 return None
             return self._floor if evidence.stable is not None or self._manual_override else None
+
+    @staticmethod
+    def _floor_read_conflicts(floor_read, target):
+        observed = floor_read.get("selectedFloor")
+        return bool(observed in (-1, 1, 2)
+            and ("B1" if observed == -1 else str(observed)) != str(target))
+
+    def _current_frame_floor_conflicts(self, target, *, frame_id=None):
+        # Exact Tk V2 boundary: only the detector bound to this cycle/frame
+        # can contradict a target. Unknown/ambiguous reads grant no veto.
+        observation = self._last_observation
+        return bool(observation is not None
+            and observation.get("frame_id") == self._frame_id
+            and (frame_id is None or frame_id == self._frame_id)
+            and observation.get("cycle_id") == self._cycle
+            and observation.get("generation") == self._frame_generation
+            and self._floor_read_conflicts(observation.get("floor_read", {}), target))
 
     def _available_floors(self):
         if self._engine is None:
@@ -943,6 +1036,9 @@ class LiveRuntime:
         with self._lock:
             previous_token = self._render.get("token", "") if self._render is not None else ""
             self._discard_sibling()
+            if reason != "game-floor-control-intent":
+                self._game_floor_intent = None
+                self._floor_click_epoch_span = None
             self._epoch += 1
             self._core.close(reason=str(reason))
             self._render = None
@@ -1046,6 +1142,7 @@ class LiveRuntime:
         with self._lock:
             row = self._reference_sheet
             if (row is None or not self._active or self._selection_pending or self._floor_required
+                    or self._current_frame_floor_conflicts(self._floor)
                     or self._gate is None or self._gate.confirmed_id != self._map_id
                     or any(row.get(key) != expected for key, expected in (
                         ("mode", self._mode), ("profileId", self._profile), ("mapId", self._map_id),
@@ -1287,11 +1384,16 @@ class LiveRuntime:
             self._work.release()
 
     def _try_refresh_current(self, payload, captured, frame, floor, digest, capture_generation,
-                             engine, epoch, obsolete):
+                             engine, epoch, obsolete, *, floor_read=None):
         """Renew an unchanged measured H with fresh residual/core authority."""
         import numpy as np
         from alignment_core_v2 import AlignmentCandidate
         from alignment_observation import rendered_profile_residual_is_verified
+        # Do not renew a cached pose on a newly captured contradictory floor.
+        # The normal observation path below binds this frame/generation and
+        # emits the common structured rejection before any fit is attempted.
+        if self._floor_read_conflicts(floor_read or {}, floor):
+            return None
         with self._lock:
             row = self._render
             eligible = bool(row is not None and self._display_current(row)
@@ -1351,7 +1453,8 @@ class LiveRuntime:
             self._discard_sibling()
             self._frame_generation, self._frame_id = generation, frame_id
             self._last_observation = dict(captured=captured, frame=frame, floor=floor, digest=digest,
-                capture_generation=capture_generation, frame_id=frame_id, observed_floor=self._observed_floor)
+                capture_generation=capture_generation, frame_id=frame_id, observed_floor=self._observed_floor,
+                cycle_id=self._cycle, generation=self._frame_generation, floor_read=copy.deepcopy(floor_read or {}))
             self._probe_misses = 0
             self._render = dict(row, authorizationId=token.authorization_id, frameId=frame_id,
                 generation=generation, observedFloor=self._observed_floor,
@@ -1384,6 +1487,9 @@ class LiveRuntime:
                 return self._receipt(action, payload, success=False, reason="round-not-active")
             epoch, engine, group = self._epoch, self._engine, self._group
         if action != "refresh_map":
+            with self._lock:
+                self._game_floor_intent = None
+                self._floor_click_epoch_span = None
             self._revoke_render("new-capture")
         obsolete = lambda: self._cancelled(cancelled) or epoch != self._epoch
         if action == "map":
@@ -1437,7 +1543,8 @@ class LiveRuntime:
                 self._frame_generation += 1
                 self._frame_id = f"{self._round}:{self._frame_generation}:{digest[:16]}"
                 self._last_observation = dict(captured=captured, frame=frame, floor=None, digest=digest,
-                    capture_generation=capture_generation, frame_id=self._frame_id, observed_floor="")
+                    capture_generation=capture_generation, frame_id=self._frame_id, observed_floor="",
+                    cycle_id=self._cycle, generation=self._frame_generation, floor_read=copy.deepcopy(floor_read))
                 for row in self._candidate_rows:
                     row["floor"] = self._floor
             if effective_floor is not None:
@@ -1478,7 +1585,7 @@ class LiveRuntime:
             self._revoke_render("candidate-awaiting-confirmation")
         if action == "refresh_map" and not pending_selection:
             renewed = self._try_refresh_current(payload, captured, frame, floor, digest, capture_generation,
-                                                 engine, epoch, obsolete)
+                                                 engine, epoch, obsolete, floor_read=floor_read)
             if renewed is not None:
                 return renewed
         with self._lock:
@@ -1495,7 +1602,8 @@ class LiveRuntime:
             frame_generation, frame_id, cycle = self._frame_generation, self._frame_id, self._cycle
             map_id = self._map_id
             self._last_observation = dict(captured=captured, frame=frame, floor=floor, digest=digest,
-                capture_generation=capture_generation, frame_id=frame_id, observed_floor=self._observed_floor)
+                capture_generation=capture_generation, frame_id=frame_id, observed_floor=self._observed_floor,
+                cycle_id=self._cycle, generation=self._frame_generation, floor_read=copy.deepcopy(floor_read or {}))
             for row in self._candidate_rows:
                 row["floor"] = floor
         if pending_selection:
@@ -1531,6 +1639,17 @@ class LiveRuntime:
         obsolete = lambda: self._cancelled(cancelled) or epoch != self._epoch
         width, height = captured.context.full_client_size
         with self._lock:
+            if obsolete() or frame_id != self._frame_id or floor != self._floor:
+                return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
+            if self._current_frame_floor_conflicts(floor, frame_id=frame_id):
+                reason = "current-frame-floor-conflict"
+                observed_floor = self._observed_floor
+                self._revoke_render(reason)
+                self._reference_sheet = self._reference_capture_context = None
+                self._set_pose_phase("rejected", reason, map_id, floor, frame_id, frame_generation,
+                    observedFloor=observed_floor, targetFloor=str(floor), fitAttempted=False)
+                return self._receipt(action, payload, success=False, reason=reason,
+                    observedFloor=observed_floor, targetFloor=str(floor), fitAttempted=False)
             display_generation = getattr(self, "_display_generation", 0)
             variant_id = self._settings.get("zhan10CoffinVariantId", "variant-01")
         # Static reference follows the independently confirmed map and floor;
@@ -1693,7 +1812,11 @@ class LiveRuntime:
             result = engine.qt_map_ui.observe(frame)
             floor = str(result["floor"]) if result.get("floor") is not None else None
             return result, floor, dict(result, selectedFloor=int(floor) if floor in ("1", "2") else None,
-                                       scores={}, layout="difficult-two-buttons")
+                scores={}, margin=result.get("highlightDifference", 0.), confidence=1. if floor else 0.,
+                layout="difficult-two-buttons", layoutFamily="difficult-two-buttons", difficultObservation=result,
+                centers=[g["center"][0] / frame.shape[1] for g in result.get("glyphs", [])],
+                controlVertical=dict(regionTop=(min((g["center"][1] for g in result.get("glyphs", [])), default=0)-22)/frame.shape[0],
+                                     regionHeight=44/frame.shape[0]))
         from map_interface_observation import detect_map_interface, detect_selected_floor
         floor_read = detect_selected_floor(frame)
         result = detect_map_interface(frame, floor_read=floor_read)

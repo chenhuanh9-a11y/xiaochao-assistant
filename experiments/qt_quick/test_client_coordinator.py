@@ -343,6 +343,40 @@ class CoordinatorTests(unittest.TestCase):
         self.assertIsNone(self.coordinator._last_render_token)
         self.windows.hide.assert_called_with("aligned")
 
+    def test_floor_click_clears_old_layer_and_queues_distinct_ordered_refresh(self):
+        self.session.busy = True
+        self.session.dispatchWithPayload = Mock()
+        self.runtime.observe_game_floor_click = Mock(return_value=dict(success=True,
+            reason="game-floor-control-intent", clickedFloorId="2", captureRequired=True))
+        self.coordinator._aligned = dict(token="old-floor")
+        self.coordinator._reference = dict(key="old-floor-reference")
+        for sequence in (1, 2):
+            self.coordinator._game_pointer_pressed(dict(hwnd=123, x=42, y=43,
+                sequence=sequence, createdAt=100 + sequence, context=dict(cycleId=1)))
+        self.assertEqual(self.coordinator.alignedData, {})
+        self.assertEqual(self.coordinator.referenceData, {})
+        self.assertEqual(self.runtime.observe_game_floor_click.call_count, 2)
+        self.assertEqual([call.args[1]["floorClickSequence"] for call in self.session.dispatchWithPayload.call_args_list], [1, 2])
+
+    def test_rejected_or_late_floor_click_does_not_capture(self):
+        self.session.dispatchWithPayload = Mock()
+        self.runtime.observe_game_floor_click = Mock(return_value=dict(success=False, reason="expired-click"))
+        event = dict(hwnd=123, x=42, y=43, sequence=1, context={})
+        self.coordinator._game_pointer_pressed(event)
+        self.native.foreground_window.return_value = 456
+        self.coordinator._game_pointer_pressed(event)
+        self.assertEqual(self.runtime.observe_game_floor_click.call_count, 1)
+        self.session.dispatchWithPayload.assert_not_called()
+
+    def test_pointer_hook_failure_does_not_report_keyboard_disabled(self):
+        errors = []
+        self.coordinator.errorReported.connect(errors.append)
+        self.input.snapshot = dict(status="ready", floorClickObserverError="fixture-mouse-failure")
+        self.coordinator._input_changed(); self.coordinator._input_changed()
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["action"], "game-floor-control")
+        self.assertNotIn("快捷键暂不可用", errors[0]["title"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

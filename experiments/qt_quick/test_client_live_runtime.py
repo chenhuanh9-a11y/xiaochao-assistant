@@ -220,7 +220,7 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertEqual(self.runtime.snapshot()["mapId"], "second-map")
         self.assertEqual(set(self.runtime.snapshot()["core"]["poses"]), {"second-map"})
 
-    def test_floor_target_immediately_fits_current_capture_without_relabeling_sensor(self):
+    def test_floor_target_cannot_relabel_current_known_sensor_but_unknown_allows_manual(self):
         first = self.begin_and_capture()
         self.assertEqual(self.runtime.snapshot()["availableFloors"], ["1", "2", "B1"])
         count = self.capture.count
@@ -234,11 +234,17 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertIsNone(self.runtime.render_payload(first["renderToken"]))
         self.assertFalse(state["displayAuthorized"])
         self.fit["success"] = True
-        self.assertTrue(self.dispatch("set_floor", floor="2")["success"])
-        state = self.runtime.snapshot()
-        self.assertEqual((state["render"]["floor"], state["render"]["observedFloor"]), ("2", "1"))
-        self.assertEqual(state["render"]["floorSource"], "manual")
-        self.assertTrue(self.dispatch("refresh_map")["success"])
+        with patch.object(_AlignmentHost, "fit", side_effect=AssertionError("known conflict reached fit")):
+            conflict = self.dispatch("set_floor", floor="2")
+        self.assertEqual(conflict["reason"], "current-frame-floor-conflict")
+        self.assertEqual((conflict["observedFloor"], conflict["targetFloor"], conflict["fitAttempted"]), ("1", "2", False))
+        self.assertEqual(self.runtime.snapshot()["poseResult"]["status"], "rejected")
+        with patch("map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=None)):
+            self.assertTrue(self.dispatch("set_floor", floor="2")["success"])
+            state = self.runtime.snapshot()
+            self.assertEqual((state["render"]["floor"], state["render"]["observedFloor"]), ("2", ""))
+            self.assertEqual(state["render"]["floorSource"], "manual")
+            self.assertTrue(self.dispatch("refresh_map")["success"])
         self.assertEqual(self.runtime.snapshot()["floor"], "2")
         self.dispatch("cycle_floor")
         self.assertEqual(self.runtime.snapshot()["manualFloor"], "B1")
@@ -289,7 +295,8 @@ class LiveRuntimeContracts(unittest.TestCase):
             entered.set()
             self.assertTrue(release.wait(5))
             return copy.deepcopy(self.fit)
-        with patch.object(_AlignmentHost, "fit", side_effect=slow_fit):
+        with patch.object(_AlignmentHost, "fit", side_effect=slow_fit), patch(
+                "map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=2)):
             worker = threading.Thread(target=lambda: result.append(self.dispatch("set_floor", floor="2")))
             worker.start()
             try:
@@ -339,9 +346,9 @@ class LiveRuntimeContracts(unittest.TestCase):
                 self.now = 10.
                 self.runtime._monotonic = lambda: self.now
                 self.begin_and_capture()
-                self.assertTrue(self.dispatch("set_floor", floor="2")["success"])
+                self.assertEqual(self.dispatch("set_floor", floor="2")["reason"], "current-frame-floor-conflict")
                 self.now = 11.999
-                self.assertTrue(self.dispatch("refresh_map")["success"])
+                self.assertEqual(self.dispatch("refresh_map")["reason"], "current-frame-floor-conflict")
                 before = self.runtime.snapshot()
                 self.assertEqual((before["floor"], before["manualFloor"], before["observedFloor"]), ("2", "2", "1"))
                 self.assertEqual(before["floorPolicyReason"], "manual-hold-deferred")

@@ -19,6 +19,14 @@ def operation_problem(receipt, state):
     elif raw == 'candidate-awaiting-confirmation':
         title, summary = '请确认地图', '已保留所选地图，请打开游戏地图并确认候选后继续。'
         phase = 'identity'
+    elif raw == 'current-frame-floor-conflict':
+        def floor_label(value):
+            value = str(value)
+            return 'B1' if value in {'B1', '-1'} else 'F' + value if value in {'1', '2'} else '待确认楼层'
+        observed = floor_label(receipt.get('observedFloor', state.get('observedFloor')))
+        target = floor_label(receipt.get('targetFloor', state.get('floor')))
+        title, phase = '目标楼层与当前画面不一致', 'floor'
+        summary = f'当前画面仍是 {observed}，目标为 {target}，本次未进行贴合。请等待游戏楼层高亮稳定后重试；技术详情可在“最近问题”查看。'
     elif raw in {'structure-current-geometry-failed', 'initial-structure-supported-chains-insufficient'}:
         title, phase = '本次地图位置未核对通过', 'recognition-alignment'
         summary = ('当前画面的结构或位置证据不足，本次未生成新的贴合。'

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from floor_observation_policy import MANUAL_FLOOR_HOLD_SECONDS as SHARED_MANUAL_FLOOR_HOLD_SECONDS
+from floor_observation_policy import game_floor_control_hit
 
 import sys as _audit_sys
 
@@ -911,59 +912,6 @@ def cursor_is_map_close_control(
         and 0 <= client_y <= height * 0.22
     )
 
-
-def game_floor_control_hit(
-    cursor: tuple[int, int] | None,
-    client_bounds,
-    floor_read: dict | None,
-) -> int | None:
-    """Return the game floor button under a click, only for localized HUDs."""
-    if cursor is None or not client_bounds or not isinstance(floor_read, dict):
-        return None
-    difficult=floor_read.get('layout')=='difficult-two-buttons'
-    if floor_read.get("layout") != "localized-triplet" and not difficult:
-        return None
-    centers = floor_read.get("centers")
-    if not isinstance(centers, (list, tuple)) or len(centers) != (2 if difficult else 3):
-        return None
-    left, top, right, bottom = (int(value) for value in client_bounds)
-    width, height = right - left, bottom - top
-    if width < 100 or height < 100:
-        return None
-    if difficult:
-        observation = floor_read.get('difficultObservation') or {}
-        if observation.get('mapOpen') is not True:
-            return None
-        glyphs = observation.get('glyphs') or []
-        try:
-            points = np.asarray([g['center'] for g in glyphs], dtype=float)
-            sx, sy = map(float, observation.get('controlScale', (1., 1.)))
-        except (KeyError, ValueError, TypeError):
-            return None
-        if points.shape != (2, 2) or not np.isfinite(points).all() or not (np.isfinite([sx, sy]).all() and sx > 0 and sy > 0):
-            return None
-        spacing = float(points[1, 0] - points[0, 0])
-        if spacing <= 0:
-            return None
-        px, py = cursor[0] - left, cursor[1] - top
-        # Native glyph positions own hit geometry. Adjacent buttons meet at
-        # their midpoint instead of overlapping a fixed client-width strip.
-        index = 0 if px < float(points[:, 0].mean()) else 1
-        cx, cy = points[index]
-        if abs(px - cx) <= min(64. * sx, spacing / 2.) and abs(py - cy) <= 22. * sy:
-            return index + 1
-        return None
-    vertical = floor_control_vertical_geometry(width, height)
-    region_top = float(vertical.get("regionTop", 0.0))
-    region_height = float(vertical.get("regionHeight", 0.0))
-    x = (cursor[0] - left) / width
-    y = (cursor[1] - top) / height
-    if not (region_top <= y <= region_top + region_height):
-        return None
-    for floor, center in zip((1,2) if difficult else (-1, 1, 2), centers):
-        if abs(x - float(center)) <= 0.025:
-            return floor
-    return None
 
 
 def report_unhandled_error(exc_type, exc_value, exc_traceback) -> None:
