@@ -135,6 +135,48 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertIsNone(group.canonical_pose_for_floor("1"))
         self.assertIsNone(group.canonical_pose_for_floor("B1"))
 
+    def test_runtime_default_0059_precedes_entry_fast_and_remembers_only_in_material_worker(self):
+        steady = self.runtime._steady = Mock()
+        steady.try_alignment.side_effect = lambda *a, **kw: copy.deepcopy(self.fit)
+        steady.remember_committed.return_value = True
+        events = []; self.runtime.set_event_callback(events.append)
+        with patch.object(_AlignmentHost, "fit", self.original_fit), \
+             patch.object(_AlignmentHost, "_reverify_entry", side_effect=AssertionError("0059 must precede entry")), \
+             patch("fast_structure_alignment.try_alignment", side_effect=AssertionError("0059 must precede fast")):
+            first = self.begin_and_capture()
+        self.assertTrue(steady.try_alignment.call_args.kwargs["enabled"])
+        self.assertEqual(len(steady.try_alignment.call_args.kwargs["display_signature"]), 3)
+        self.assertFalse(steady.try_alignment.call_args.args[1].flags.writeable)
+        steady.remember_committed.assert_not_called()
+        token = first["renderToken"]
+        self.assertFalse(self.runtime.acknowledge_render_material("old-token")["success"])
+        accepted = self.runtime.acknowledge_render_material(token)
+        self.assertTrue(accepted["success"])
+        steady.remember_committed.assert_not_called()  # UI receipt performs no coverage work
+        self.assertFalse(self.runtime.acknowledge_render_material(token)["success"])
+        self.assertEqual(sum(e["event"] == "render-material-accepted" for e in events), 1)
+        result = self.runtime.dispatch("remember_render_material", {"renderToken": token})
+        self.assertTrue(result["success"], result)
+        steady.remember_committed.assert_called_once()
+        self.assertTrue(steady.remember_committed.call_args.kwargs["material_accepted"])
+        self.assertEqual(steady.remember_committed.call_args.args[4]["matrixSourceToClient"].shape, (3,3))
+        self.runtime.dispatch("remember_render_material", {"renderToken": token})
+        steady.remember_committed.assert_called_once()
+
+    def test_material_accepted_then_end_rejects_late_remember_and_author_repaint_keeps_group_identity(self):
+        self.begin_and_capture()
+        group = self.runtime._group
+        self.dispatch("set_route_profile", profileId="another-author")
+        self.assertIs(self.runtime._group, group)
+        # New display-only pixels do not implicitly run the old fit through remember.
+        self.assertFalse(self.runtime.acknowledge_render_material(self.runtime._render["token"])["success"])
+        self.dispatch("capture_now")
+        token = self.runtime._render["token"]
+        self.assertTrue(self.runtime.acknowledge_render_material(token)["success"])
+        self.dispatch("end_round")
+        with patch.object(self.runtime._steady, "remember_committed", side_effect=AssertionError("late cache write")):
+            self.assertFalse(self.runtime.dispatch("remember_render_material", {"renderToken": token})["success"])
+
     def test_game_mode_locked_during_round_and_unlocked_after_end(self):
         self.assertTrue(self.dispatch("start_round")["success"])
         for action in ("set_game_mode", "set_context"):

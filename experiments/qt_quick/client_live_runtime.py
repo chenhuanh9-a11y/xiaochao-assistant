@@ -83,13 +83,14 @@ class _PreparationHost:
 
 class _AlignmentHost:
     """Only explicit resource/pose inputs needed by the unchanged shared solvers."""
-    def __init__(self, engine, group=None, settings=None):
+    def __init__(self, engine, group=None, settings=None, *, steady=None):
         self.engine, self.pack = engine, engine.pack
         self.author_coordinate_adapters = engine.qt_adapters
         self.group = group
         self.current_alignment_candidate = None
         self.settings = dict(settings or {})
         self.events = []
+        self.steady = steady
 
     def _log(self, event, **values):
         self.events.append(dict(event=event, **values))
@@ -211,6 +212,14 @@ class _AlignmentHost:
         reference = self._shared_structure_reference("shared-structure", map_id, floor)
         if reference is None:
             return dict(success=False, reason="shared-reference-unavailable")
+        # Original structure-fit order: default 0059 prior before entry/fast.
+        if self.steady is not None:
+            adapter, context, current, signature = self.steady
+            steady = adapter.try_alignment(self, frame, map_id, floor, context=context,
+                is_current=current, cancelled=cancelled, display_signature=signature,
+                enabled=bool(self.settings.get("idvb0059Enabled", True)))
+            if steady is not None:
+                return steady
         # Preserve the legacy first-pose entry seam: the accepted rank row is
         # bound to this worker's current frame. Re-run its original verifier,
         # then the canonical residual; never accept a caller-supplied matrix.
@@ -298,6 +307,8 @@ class LiveRuntime:
         self._manual_floor = None
         self._observed_floor = ""
         self._last_observation = None
+        from client_idvb0059_adapter import Idvb0059Adapter
+        self._steady = Idvb0059Adapter()
         self._reset_identity()
         self._reset_floor_policy()
         self._message = "Bind a full client capture, then begin a round explicitly."
@@ -323,6 +334,10 @@ class LiveRuntime:
         self._reset_floor_policy()
 
     def _reset_identity(self):
+        if hasattr(self, "_steady"):
+            self._steady.reset()
+        self._steady_material_ready = False
+        self._remember_proposals = {}
         self._pending_sibling = None
         self._identity_native = None
         self._provisional_reference_context = None
@@ -334,6 +349,61 @@ class LiveRuntime:
         self._native_group_conflicts = None
         self._pose_attempt = dict(status="pending", reason="identity-pending")
         self._pose_result = dict(status="pending", reason="identity-pending")
+
+    def _steady_context(self):
+        return (self._epoch, self._mode, self._profile, self._round, self._cycle, self._frame_id,
+                self._frame_generation, self._map_id, str(self._floor), id(self._engine), self._capture_generation())
+
+    def _steady_is_current(self, context, captured=None):
+        with self._lock:
+            return bool(context == self._steady_context() and self._active and self._map_open
+                and (captured is None or self._capture_is_current(captured.context, context[-1])))
+
+    @staticmethod
+    def _steady_signature(captured):
+        context = captured.context
+        return (tuple(context.full_client_size), tuple(context.client_screen_bounds), context.dpi)
+
+    def _register_material_proposal(self, render, frame, fit, captured, group):
+        # Worker only. Capture frames are already owned immutable BGR arrays.
+        token = render["token"]
+        self._remember_proposals[token] = dict(context=self._steady_context(), frame=frame,
+            fit=fit, captured=captured, group=group, mapId=render["mapId"], floor=render["floor"], accepted=False)
+        while len(self._remember_proposals) > 3:
+            self._remember_proposals.pop(next(iter(self._remember_proposals)))
+
+    def acknowledge_render_material(self, token):
+        """Accept a current material receipt; coverage work remains off the UI."""
+        with self._lock:
+            proposal = self._remember_proposals.get(token)
+            if (proposal is None or proposal["accepted"] or self._render is None
+                    or self._render["token"] != token or not self._display_current(self._render)
+                    or proposal["context"] != self._steady_context() or proposal["group"] is not self._group):
+                return dict(success=False, reason="material-token-expired-or-already-accepted", token=token)
+            proposal["accepted"] = True
+        self._notify("render-material-accepted", token=token, reason="current-material-accepted")
+        return dict(success=True, reason="material-remember-queued", token=token, needsWorker=True)
+
+    def _remember_render_material(self, token, payload, cancelled):
+        with self._lock:
+            proposal = self._remember_proposals.get(token)
+            if (proposal is None or not proposal["accepted"] or proposal.get("consumed")
+                    or proposal["group"] is not self._group
+                    or not self._steady_is_current(proposal["context"], proposal["captured"])):
+                return self._receipt("remember_render_material", payload, success=False, reason="material-context-expired")
+            proposal["consumed"] = True
+            engine, group, settings = self._engine, self._group, dict(self._settings)
+        current = lambda context: not self._cancelled(cancelled) and self._steady_is_current(context, proposal["captured"])
+        remembered = self._steady.remember_committed(_AlignmentHost(engine, group, settings),
+            proposal["frame"], proposal["mapId"], proposal["floor"], proposal["fit"],
+            context=proposal["context"], is_current=current, material_accepted=True,
+            display_signature=self._steady_signature(proposal["captured"]),
+            enabled=bool(settings.get("idvb0059Enabled", True)))
+        with self._lock:
+            if remembered and current(proposal["context"]):
+                self._steady_material_ready = True
+        return self._receipt("remember_render_material", payload, success=bool(remembered),
+                             reason="material-prior-remembered" if remembered else "material-prior-not-remembered")
 
     def _consume_identity_conflict(self, fit, *, engine, epoch, captured,
                                    capture_generation, frame_id, frame_generation, cycle, map_id, floor):
@@ -549,6 +619,9 @@ class LiveRuntime:
                 sourceToken=source["token"], sourceMapId=self._map_id,
                 core=self._copy_pose_core(self._core), group=self._group, identity=state,
                 render=target, reference=dict(self._reference_sheet), captureContext=self._render_capture_context)
+            source_proposal = self._remember_proposals.get(source["token"])
+            if source_proposal is not None:
+                self._remember_proposals[target["token"]] = dict(source_proposal, accepted=False, consumed=False)
         self._notify("sibling-material-pending", reason="current-member-awaiting-material", token=target["token"],
             sourceMapId=source["mapId"], targetMapId=target["mapId"])
         return self._receipt(action, payload, success=True, reason="sibling-material-pending",
@@ -641,6 +714,10 @@ class LiveRuntime:
                     self._render.update(metadata, requiresMaterialAck=False)
                     self._reference_sheet.update(metadata)
                     self._render_capture_context = self._reference_capture_context = pending["captureContext"]
+                    proposal = self._remember_proposals.get(token)
+                    if proposal is not None:
+                        proposal["context"] = self._steady_context()
+                        proposal["group"] = self._group
                     self._pending_sibling = None
             if not committed:
                 self._discard_sibling()
@@ -651,6 +728,7 @@ class LiveRuntime:
         self._notify("sibling-committed" if committed else "sibling-rolled-back", token=token,
             reason=result["reason"], materialReason=str(reason)[:256], sourceRetained=source_retained)
         if committed:
+            self.acknowledge_render_material(token)
             self._notify("identity-committed", reason="original-identity-and-current-material-verified", identity=self._identity_fields())
             self._notify("render-ready", token=token, reason="sibling-material-and-identity-committed", unchanged=False)
         return result
@@ -1230,7 +1308,12 @@ class LiveRuntime:
                     render_token = self._render["token"]
                 else:
                     self._render = self._render_capture_context = None
-                self._group = staged_group
+                if self._group is not None and staged_group is not None:
+                    self._group.tracking_by_floor = staged_group.tracking_by_floor
+                    self._group.tracking = staged_group.tracking
+                    self._group.render_profile_verified_floors = staged_group.render_profile_verified_floors
+                    self._group.route_profile_id = staged_group.route_profile_id
+                    self._group.displayed_overlay = None
             if render_token:
                 self._notify("render-ready", reason="route-display-reprojected", token=render_token, unchanged=False)
             self._notify("reference-ready", reason="route-display-reprojected")
@@ -1458,6 +1541,8 @@ class LiveRuntime:
             return self._receipt(action, payload, success=result["success"], reason=result["reason"], offline=result)
         try:
             with self._work:
+                if action == "remember_render_material":
+                    return self._remember_render_material(str(payload.get("renderToken", "")), payload, cancelled)
                 if action == "bind_capture":
                     if self._capture is None:
                         raise RuntimeError("capture-provider-unavailable")
@@ -1556,6 +1641,8 @@ class LiveRuntime:
         # emits the common structured rejection before any fit is attempted.
         if self._floor_read_conflicts(floor_read or {}, floor):
             return None
+        if self._steady_material_ready and bool(self._settings.get("idvb0059Enabled", True)):
+            return None
         with self._lock:
             row = self._render
             eligible = bool(row is not None and self._display_current(row)
@@ -1626,6 +1713,8 @@ class LiveRuntime:
                 self._reference_sheet.update(self._identity_fields())
             self._remember_provisional_reference()
             render_token = self._render["token"]
+            self._register_material_proposal(self._render, frame,
+                dict(success=True, selectedRouteCurrentFrameResidual=residual), captured, self._group)
         self._set_pose_phase("valid", "current-pose-refreshed", map_id, floor, frame_id, generation)
         self._notify("render-ready", reason="current-pose-refreshed", token=render_token, unchanged=True)
         target = self._continue_group(engine, frame, floor, epoch, frame_id, digest, obsolete)
@@ -1873,7 +1962,11 @@ class LiveRuntime:
                 self.invalidate("capture-context-changed")
                 return self._receipt(action, payload, success=False, reason="capture-context-changed", stale=True)
         self._set_pose_phase("pending", "current-frame-fit", map_id, floor, frame_id, frame_generation)
-        host = _AlignmentHost(engine, group, self._settings)
+        with self._lock:
+            steady_context = self._steady_context()
+        host = _AlignmentHost(engine, group, self._settings, steady=(self._steady, steady_context,
+            lambda context: not obsolete() and self._steady_is_current(context, captured),
+            self._steady_signature(captured)))
         fit = host.fit(frame, map_id, floor, obsolete, entry_candidate) if entry_candidate is not None else host.fit(frame, map_id, floor, obsolete)
         if obsolete():
             return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
@@ -1949,6 +2042,7 @@ class LiveRuntime:
                 variantId=display.get("variantId"), displayGeneration=display_generation,
                 liveAuthorization=live, evidenceKind=self._evidence_kind, **self._identity_fields())
             render_token = target_render["token"]
+            self._register_material_proposal(target_render, frame, fit, captured, target_group)
             if identity_stage is not None:
                 if self._render is None or not self._display_current(self._render):
                     return self._receipt(action, payload, success=False, reason="sibling-source-authorization-expired", stale=True)

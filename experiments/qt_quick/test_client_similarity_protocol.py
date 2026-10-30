@@ -104,6 +104,19 @@ class SimilarityProtocolTests(unittest.TestCase):
         self.assertEqual(len(self.runtime._identity_native.observations), 2)
         self.assertEqual(self.engine.rank_established_group.call_args.kwargs["budget_seconds"], .2)
 
+    def test_sibling_material_must_commit_before_cache_receipt_and_worker_remember(self):
+        token = self.pending_sibling()["pendingSiblingToken"]
+        events = []; self.runtime.set_event_callback(events.append)
+        self.assertFalse(self.runtime.acknowledge_render_material(token)["success"])
+        with patch.object(self.runtime._steady, "remember_committed", return_value=True) as remember:
+            self.assertTrue(self.runtime.acknowledge_sibling(token, True)["success"])
+            remember.assert_not_called()
+            self.assertEqual(sum(e["event"] == "render-material-accepted" for e in events), 1)
+            result = self.runtime.dispatch("remember_render_material", {"renderToken": token})
+            self.assertTrue(result["success"], result)
+            remember.assert_called_once()
+            self.assertIs(remember.call_args.args[0].group, self.runtime._group)
+
     def test_original_unique_review_plus_current_pose_commits_identity(self):
         self.capture_group()
         self.engine.rank_established_group.return_value = rows(IDS[0])
