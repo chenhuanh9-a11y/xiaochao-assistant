@@ -9597,12 +9597,13 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 if state['stage'] == 'complete' else not live),
             canImport=bool(state['stage'] == 'ready' and checked is not None
                 and (idle if live else available) and not self.closed
+                and not getattr(self, '_map_package_upgrade_confirmation', False)
                 and self._map_package_helper_request is None))
         if state['stage'] == 'ready' and live:
             state['message'] = ('作者资源已检查。导入并刷新，无需重启；不会改变当前路线偏好。'
                 if idle else '请先结束本局并等待后台资源加载完成，再导入作者资源；无需退出软件。')
         elif state['stage'] == 'ready' and not available:
-            state['message'] = '此包涉及核心资源或替换，需要退出导入；尚未安装独立导入组件。'
+            state['message'] = '此包涉及核心资源变更，需要退出导入；尚未安装独立导入组件。'
         if state['stage'] == 'ready' and self._map_package_helper_request is not None:
             state['canImport'] = False
             state['message'] = '上次导入组件尚未确认结束，请稍后重试。'
@@ -9704,7 +9705,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         if event.get('error') or not isinstance(result, dict):
             cancelled = 'import-cancelled' in str(event.get('error', ''))
             self._map_package_import_state.update(stage='idle' if cancelled else 'error', ready=None,
-                message='已取消导入，新增文件已回滚。' if cancelled else f"导入失败：{event.get('error') or '没有结果'}")
+                message='已取消导入，本次文件变更已回滚，原图包保留。' if cancelled else f"导入失败：{event.get('error') or '没有结果'}")
             return
         try:
             if event.get('refreshError'):
@@ -9728,7 +9729,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             browser.sync_online_packages()
         self._map_package_import_state.update(stage='complete', ready=None,
             restartRequired=bool(result.get('restartRequired', True)),
-            message=f"作者资源已导入并刷新（新增 {result['authorFilesAdded']} 个文件），无需重启。请在“地图资源”中查看图包并点击“使用”。")
+            message=f"作者资源已导入并刷新（新增 {result['authorFilesAdded']} 个文件，更新 {result.get('authorFilesReplaced', 0)} 个文件），无需重启。请在“地图资源”中查看图包并点击“使用”。")
 
         if getattr(getattr(getattr(self, 'desktop_main_ui', None), 'map_browser', None), '_managed_open', False):
             self.managed_author_packages_snapshot(refresh=True)
@@ -9986,6 +9987,8 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
 
     def continue_auto_map_package_import(self) -> None:
         state = self._map_package_import_state
+        generation = self._map_package_import_generation
+        inspection = self._map_package_import_result
         if self.closed or not state.get('autoImport') or state.get('stage') != 'ready':
             return
         snapshot = self.map_package_import_snapshot()
@@ -9994,8 +9997,12 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         if not snapshot.get('liveAvailable') or not snapshot.get('canImport'):
             return
         result = self.confirm_map_package_import()
+        if (self._map_package_import_state is not state
+                or self._map_package_import_generation != generation
+                or self._map_package_import_result is not inspection):
+            return  # A modal result cannot report an error on a newer selection.
         if isinstance(result, dict) and result.get('success') is False:
-            if result.get('reason') not in {'import-busy', 'live-import-requires-idle'}:
+            if result.get('reason') not in {'import-busy', 'live-import-requires-idle', 'user-cancelled'}:
                 self._map_package_import_state.update(stage='error', ready=None,
                     message=str(result.get('message') or '导入未启动，请重新选择图包。'))
 
@@ -10089,7 +10096,33 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             return dict(success=False, reason='import-busy', message='资源正在导入。')
         if snapshot['liveAvailable'] and self._map_package_helper_request is None:
             try:
-                return self._start_live_author_import(self._current_map_package_inspection())
+                checked = self._current_map_package_inspection()
+                if checked['result'].get('replaceFiles'):
+                    if getattr(self, '_map_package_upgrade_confirmation', False):
+                        return dict(success=False, reason='import-busy', message='请先完成当前更新确认。')
+                    self._map_package_upgrade_confirmation = True
+                    try:
+                        hwnd = self._exit_confirmation_owner(owner)
+                        if not hwnd:
+                            raise ValueError('没有可用的本产品确认窗口。')
+                        answer = ctypes.windll.user32.MessageBoxW(hwnd,
+                            f"更新当前作者图包？\n\n{snapshot['ready']['title']}\n"
+                            f"将更新 {len(checked['result']['replaceFiles'])} 个已登记的作者文件，"
+                            "原文件保留在本地备份中。完成后自动刷新，无需退出星图。",
+                            '星图 · 更新作者图包', 0x00000004 | 0x00000020 | 0x00000100)
+                        # No is also an old dialog result: it must not disable
+                        # automatic import or replace feedback for a new request.
+                        if self._current_map_package_inspection() is not checked:
+                            raise ValueError('确认期间所选图包已改变，请重新选择。')
+                        if answer != 6:
+                            self._map_package_import_state.update(autoImport=False,
+                                message='已取消更新，原图包未改动。')
+                            return dict(success=False, reason='user-cancelled', message='已取消更新。')
+                        # The modal loop can deliver cancellation/selection/round
+                        # changes; never reuse the pre-dialog authorization.
+                    finally:
+                        self._map_package_upgrade_confirmation = False
+                return self._start_live_author_import(checked)
             except (OSError, ValueError) as error:
                 return dict(success=False, reason='selection-changed', message=str(error))
         if not snapshot['helperAvailable']:

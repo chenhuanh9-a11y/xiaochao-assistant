@@ -129,10 +129,11 @@ class LiveAuthorImportTests(unittest.TestCase):
                         self.assertTrue(importer.supports_live_author_import(dict(
                             packageId=package_id, replaceFiles=[], missingFiles=[])))
 
-    def test_support_hint_rejects_missing_core_unknown_ids_replacements_and_bad_rows(self):
+    def test_support_hint_rejects_missing_core_unknown_ids_and_bad_rows(self):
         valid = dict(packageId='difficult-zhan10', replaceFiles=[], missingFiles=[])
         cases = [None, [], {}, dict(valid, packageId='unknown'), dict(valid, packageId=[]),
-                 dict(valid, replaceFiles=[{'path': NATIVE}]), dict(valid, replaceFiles=None),
+                 dict(valid, replaceFiles=[{'path': CORE}]), dict(valid, replaceFiles=None),
+                 dict(valid, replaceFiles=[None]), dict(valid, replaceFiles=[{'path': []}]),
                  dict(valid, missingFiles=None), dict(valid, missingFiles='not-rows'),
                  dict(valid, missingFiles=[None]), dict(valid, missingFiles=[NATIVE]),
                  dict(valid, missingFiles=[{}]), dict(valid, missingFiles=[{'path': []}]),
@@ -218,15 +219,95 @@ class LiveAuthorImportTests(unittest.TestCase):
                 self.assertFalse(self.receipt(package_id).exists())
         self.assert_base_preserved()
 
-    def test_owned_replacement_still_requires_restart_and_preserves_receipt(self):
+    def test_owned_author_upgrade_is_live_and_retains_old_bytes_for_rollback(self):
         old = self.package('nightmare-suju', {SUJU: b'old-image'}, 'old.zip')
         self.live(old)
         receipt_bytes = self.receipt().read_bytes()
         newer = self.package('nightmare-suju', {SUJU: b'new-image'}, 'new.zip')
-        with self.assertRaisesRegex(importer.ImportRejected, 'live-import-requires-restart'):
-            self.live(newer)
+        self.assertTrue(importer.supports_live_author_import(importer.inspect_package(newer, self.root)))
+        result = self.live(newer)
+        self.assertEqual(result['status'], 'author-upgraded-live')
+        self.assertFalse(result['restartRequired'])
+        self.assertEqual(result['authorFilesReplaced'], 1)
+        self.assertEqual(result['authorFilesAdded'], 0)
+        self.assertEqual((self.root / SUJU).read_bytes(), b'new-image')
+        backup = self.root / 'work/map-packages/upgrades' / result['upgradeTransactionId'] / 'backup'
+        self.assertEqual((backup / SUJU).read_bytes(), b'old-image')
+        self.assertEqual((backup / 'work/map-packages/nightmare-suju.json').read_bytes(), receipt_bytes)
+        self.assertEqual(self.live(newer)['status'], 'author-already-installed')
+        importer.rollback_package_upgrade(self.root, result['upgradeTransactionId'], application_stopped=True)
         self.assertEqual((self.root / SUJU).read_bytes(), b'old-image')
         self.assertEqual(self.receipt().read_bytes(), receipt_bytes)
+
+    def test_live_upgrade_cancel_during_publication_restores_old_receipt_and_pixels(self):
+        old = self.package('nightmare-suju', {SUJU: b'old-image'}, 'old.zip')
+        self.live(old)
+        before = self.receipt().read_bytes()
+        second = '_internal/assets/suju/nightmare-03/floor-1.png'
+        newer = self.package('nightmare-suju', {SUJU: b'new-image', second: b'added'}, 'new.zip')
+        real_link = importer.os.link
+        stop = {'value': False}
+        def publish(source, target, *args, **kwargs):
+            real_link(source, target, *args, **kwargs)
+            if Path(target) in {self.root / SUJU, self.root / second}:
+                stop['value'] = True
+        with patch.object(importer.os, 'link', side_effect=publish):
+            with self.assertRaisesRegex(importer.ImportRejected, 'import-cancelled'):
+                self.live(newer, cancelled=lambda: stop['value'])
+        self.assertEqual((self.root / SUJU).read_bytes(), b'old-image')
+        self.assertFalse((self.root / second).exists())
+        self.assertEqual(self.receipt().read_bytes(), before)
+        self.assertFalse((self.root / 'work/map-packages/pending-upgrade.json').exists())
+        self.assert_base_preserved()
+
+    def test_live_upgrade_commit_wins_over_late_cancel(self):
+        self.live(self.package('nightmare-suju', {SUJU: b'old-image'}, 'old.zip'))
+        newer = self.package('nightmare-suju', {SUJU: b'new-image'}, 'new.zip')
+        real_link = importer.os.link
+        stop = {'value': False}
+        def publish(source, target, *args, **kwargs):
+            real_link(source, target, *args, **kwargs)
+            if Path(target) == self.receipt():
+                stop['value'] = True
+        with patch.object(importer.os, 'link', side_effect=publish):
+            result = self.live(newer, cancelled=lambda: stop['value'])
+        self.assertTrue(stop['value'])
+        self.assertFalse(result['restartRequired'])
+        self.assertEqual(importer.verified_installed_package(self.root, 'nightmare-suju')['status'], 'installed')
+
+    def test_modified_author_is_not_overwritten_live(self):
+        self.live(self.package('nightmare-suju', {SUJU: b'old-image'}, 'old.zip'))
+        before = self.receipt().read_bytes()
+        self.write(SUJU, b'user-edited')
+        with self.assertRaisesRegex(importer.ImportRejected, 'existing-data-conflict'):
+            self.live(self.package('nightmare-suju', {SUJU: b'new-image'}, 'new.zip'))
+        self.assertEqual((self.root / SUJU).read_bytes(), b'user-edited')
+        self.assertEqual(self.receipt().read_bytes(), before)
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows sharing protection')
+    def test_busy_author_file_rolls_back_and_can_be_retried_without_exit(self):
+        import ctypes
+        from ctypes import wintypes
+        self.live(self.package('nightmare-suju', {SUJU: b'old-image'}, 'old.zip'))
+        before = self.receipt().read_bytes()
+        newer = self.package('nightmare-suju', {SUJU: b'new-image'}, 'new.zip')
+        api = ctypes.WinDLL('kernel32', use_last_error=True)
+        api.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                   ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        api.CreateFileW.restype = wintypes.HANDLE
+        api.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = api.CreateFileW(str(self.root / SUJU), 0x80000000, 1, None, 3, 0x80, None)
+        self.assertNotEqual(handle, ctypes.c_void_p(-1).value)
+        try:
+            with self.assertRaises(OSError):
+                self.live(newer)
+            self.assertEqual((self.root / SUJU).read_bytes(), b'old-image')
+            self.assertEqual(self.receipt().read_bytes(), before)
+            self.assertFalse((self.root / 'work/map-packages/pending-upgrade.json').exists())
+        finally:
+            api.CloseHandle(handle)
+        self.assertFalse(self.live(newer)['restartRequired'])
+        self.assert_base_preserved()
 
     def test_package_roles_and_exact_sidecars_are_not_broadened(self):
         cases = (

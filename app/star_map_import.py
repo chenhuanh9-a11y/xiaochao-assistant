@@ -654,11 +654,11 @@ def supports_live_author_import(result) -> bool:
     package_id = result.get('packageId')
     replacements, missing = result.get('replaceFiles'), result.get('missingFiles')
     if (not isinstance(package_id, str) or package_id not in LIVE_AUTHOR_IMAGE_ROOTS
-            or not isinstance(replacements, list) or replacements
+            or not isinstance(replacements, list)
             or not isinstance(missing, list)):
         return False
     return all(isinstance(row, dict) and isinstance(row.get('path'), str)
-               and _live_author_path(package_id, row['path']) for row in missing)
+               and _live_author_path(package_id, row['path']) for row in replacements + missing)
 
 
 def _check_cancelled(cancelled):
@@ -745,7 +745,7 @@ def _install_staged(zip_path, root, state, *, expected_archive_sha256=None, live
         _check_cancelled(cancelled)
         if result["replaceFiles"]:
             from map_package_upgrade import commit_upgrade
-            return commit_upgrade(root, result, stage)
+            return commit_upgrade(root, result, stage, live=live, cancelled=cancelled)
         return _commit_additions(root, result, stage, live=live, cancelled=cancelled)
 
 
@@ -762,12 +762,13 @@ def install_package(zip_path, install_root, *, application_stopped=False, expect
 
 def install_author_package_live(zip_path, install_root, *, application_idle=False,
                                 expected_archive_sha256=None, cancelled=None) -> dict:
-    """Append optional author art while the caller owns an idle application.
+    """Install optional author art while the caller owns an idle application.
 
     The caller must keep its idle/generation token valid until completion and
     expose invalidation through ``cancelled``. No EXE-exclusive-open test is
-    used here; the same OS writer lock, archive checks and additive transaction
-    still apply. Core repair and every owned replacement require closed import.
+    used here; the same OS writer lock and archive checks still apply. Owned,
+    unchanged author pixels/sidecars may use the journaled upgrade transaction;
+    core repair/replacement and interrupted-transaction recovery remain closed-only.
     """
     if application_idle is not True:
         raise ImportRejected("live-import-requires-idle")
