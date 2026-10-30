@@ -115,6 +115,10 @@ class SessionService(QObject):
     engineConnected = Property(bool, _connected, notify=changed)
     currentMode = Property(str, lambda self: self._mode, notify=changed)
     currentProfile = Property(str, lambda self: self._profile, notify=changed)
+    # Desired context may change before its worker commits. Controls show the
+    # last applied context throughout that transition, including a failed save.
+    appliedMode = Property(str, lambda self: str(self._state.get("mode", self._mode)), notify=changed)
+    appliedProfile = Property(str, lambda self: str(self._state.get("profileId", self._profile)), notify=changed)
 
     def _context(self):
         return dict(generation=self._generation, mode=self._mode,

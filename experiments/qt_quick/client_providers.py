@@ -39,6 +39,19 @@ def _read(root, relative):
     return data
 
 
+def _build_memory_store(pack, memory_root, resource_root, *, map_ui=None, production=PRODUCTION):
+    """Original exemplar policy, with diagnostic stores/seeds kept isolated."""
+    from nightmare_candidate import NightmareMemoryStore
+    if pack.mode == "difficult":
+        validator = lambda frame: map_ui.observe(frame).get("mapOpen") is True
+    else:
+        from map_interface_observation import detect_map_interface
+        validator = lambda frame: detect_map_interface(frame).get("detected") is True
+    return NightmareMemoryStore(pack, memory_root, sample_validator=validator,
+        portable_seed_path=Path(resource_root) / "references" / "nightmare-portable-layout-seeds.json"
+        if production else Path(resource_root) / ".qt-no-portable-seeds.json")
+
+
 class SharedReferenceProvider:
     """Version-checked typed references; six-entry cache, no pose/UI state."""
     def __init__(self, root, resources, versions, *, native=None):
@@ -177,7 +190,7 @@ class EngineFactories(dict):
         from author_route_catalog import AuthorRouteCatalog
         from map_identity_engine import MapIdentityEngine
         from nightmare_author_coordinate_adapter import AuthorCoordinateAdapters
-        from nightmare_candidate import NightmarePack, NightmareMemoryStore
+        from nightmare_candidate import NightmarePack
         from shared_structure_reference import SharedStructureResourceStore
         from shared_structure_context import load_shared_version_context
 
@@ -236,8 +249,12 @@ class EngineFactories(dict):
         # Explicit live manual confirmation reuses this store on its worker.
         # Source/test diagnostics retain isolated memory.
         memory_root = runtime_paths().memory_root(mode) if PRODUCTION else root / ".qt-saved-frame-memory" / mode
-        memory = NightmareMemoryStore(pack, memory_root,
-                                      portable_seed_path=root / ".qt-no-portable-seeds.json")
+        if mode == "difficult":
+            from difficult_map_ui import DifficultMapUI
+            map_ui = DifficultMapUI(native.local(native.interfaces["uiControls"]))
+        else:
+            map_ui = None
+        memory = _build_memory_store(pack, memory_root, root, map_ui=map_ui)
         provider = SharedReferenceProvider(root, resources, {}, native=native)
         engine = engine_type(pack, identity_root=entry_root, identity_profile_id=profile,
             identity_floors=pack.floors, exit_icon_path=exit_icon,
@@ -286,11 +303,18 @@ class EngineFactories(dict):
         engine.qt_optional_displays = optional
         engine.qt_adapters, engine.qt_catalog = optional.adapters, optional.catalog
         if mode == "difficult":
-            from difficult_map_ui import DifficultMapUI
-            engine.qt_map_ui = DifficultMapUI(native.local(native.interfaces["uiControls"]))
+            engine.qt_map_ui = map_ui
         return engine
 
 
 def build_engine_factories(resource_root):
     """Pass the exact sandbox ``_internal`` path; no parent/root discovery."""
     return EngineFactories(resource_root)
+
+
+def bind_identity_context(engine, *, priority, context):
+    """Bind immutable owner snapshots to the existing ranker's temporal seams."""
+    if not callable(priority) or not callable(context):
+        raise TypeError("identity context providers must be callable")
+    engine.native_similarity_priority_provider = priority
+    engine.native_similarity_context_provider = context

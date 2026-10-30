@@ -19,7 +19,9 @@ from client_paths import APP_ROOT, WORK_ROOT
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 from alignment_core_v2 import AlignmentCoreV2
-from client_engine import EngineAdapter
+from client_engine import (EngineAdapter, clone_similarity_state, stage_similarity_rank,
+                           INITIAL_IDENTITY_BUDGET_SECONDS, GROUP_IDENTITY_REVIEW_BUDGET_SECONDS,
+                           GROUP_IDENTITY_REVIEW_INTERVAL_SECONDS)
 from floor_observation_policy import (MANUAL_FLOOR_HOLD_SECONDS,
                                       read_floor_evidence, decide_floor_transition)
 
@@ -216,7 +218,7 @@ class _AlignmentHost:
         if seed is not None:
             return seed
         context = current_geometry(frame)
-        fit = try_alignment(self, frame, map_id, floor, cancelled=cancelled, context=context)
+        fit = try_alignment(self, frame, map_id, floor, cancelled=cancelled, entry_seed=entry_candidate, context=context)
         strategy = "shared-fast-alignment"
         if fit is None:
             if self.group is not None and floor in self.group.verified_floors:
@@ -227,9 +229,22 @@ class _AlignmentHost:
             else:
                 static = (dict(source_known_boundary=reference.known_boundary, source_unknown=reference.unknown_mask)
                           if reference.known_boundary is not None else {})
+                indexed, diagnostic = [], dict(attempted=False, reason="pose-index-disabled", candidateCount=0)
+                if bool(self.settings.get("poseIndexCandidatesEnabled", self.settings.get("difficultGridEnabled", False))):
+                    provider = getattr(self.engine, "pose_index_candidates", None)
+                    if callable(provider):
+                        import cv2
+                        try:
+                            indexed, diagnostic = provider(frame, map_id, floor, cancelled=cancelled, context=context)
+                        except (ValueError, TypeError, KeyError, OSError, cv2.error) as error:
+                            diagnostic = dict(attempted=True, reason="pose-index-error", error=str(error), candidateCount=0)
+                        if cancelled and cancelled():
+                            return dict(success=False, reason="structure-work-obsolete")
                 fit = solve_initial_structure(frame, reference.clean_mask, reference.validation_mask,
                     reference.clean_mask, "shared-structure", cancelled=cancelled, _context=context,
-                    wall_correspondence_identity=True, **static)
+                    wall_correspondence_identity=True, pose_index_candidates=indexed,
+                    pose_index_diagnostics=diagnostic, **static)
+                fit.setdefault("diagnostics", {}).setdefault("poseIndexProvider", diagnostic)
                 strategy = "shared-initial-structure"
         if not fit.get("success"):
             return fit
@@ -283,6 +298,7 @@ class LiveRuntime:
         self._manual_floor = None
         self._observed_floor = ""
         self._last_observation = None
+        self._reset_identity()
         self._reset_floor_policy()
         self._message = "Bind a full client capture, then begin a round explicitly."
 
@@ -294,6 +310,7 @@ class LiveRuntime:
         return dict(mode=self._mode, profileId=self._profile, roundId=self._round, frameId=self._frame_id)
 
     def _clear_candidates(self):
+        self._reset_identity()
         self._reference_sheet = None
         self._reference_capture_context = None
         self._gate = None
@@ -304,6 +321,311 @@ class LiveRuntime:
         self._observed_floor = ""
         self._last_observation = None
         self._reset_floor_policy()
+
+    def _reset_identity(self):
+        self._pending_sibling = None
+        self._identity_native = None
+        self._identity_prior = self._identity_priority = None
+        self._durable_map_id = ""
+        self._identity_source = ""
+        self._identity_rank_rows = []
+        self._identity_review_last = None
+        self._pose_attempt = dict(status="pending", reason="identity-pending")
+        self._pose_result = dict(status="pending", reason="identity-pending")
+
+    def _identity_fields(self):
+        native = self._identity_native
+        grouped = bool(native is not None and native.state == "GROUP_LOCKED")
+        phase = "MEMBER_VERIFIED" if self._durable_map_id else "GROUP_LOCKED" if grouped else "UNLOCKED"
+        return dict(identityPhase=phase, identitySource=self._identity_source,
+            identityLocked=bool(self._durable_map_id), durableMapId=self._durable_map_id,
+            provisionalMapId=(native.provisional_member_id or self._map_id) if grouped else "",
+            provisional=grouped and not bool(self._durable_map_id), groupLocked=grouped,
+            groupId=native.group_id if native is not None else None,
+            groupMemberIds=list(native.member_ids) if native is not None else [],
+            groupGeneration=native.generation if native is not None else 0)
+
+    def _identity_context(self):
+        return (self._mode, self._cycle, str(self._floor), self._frame_generation, self._epoch)
+
+    def _attach_identity_engine(self, engine):
+        from client_providers import bind_identity_context
+        def current(field):
+            with self._lock:
+                return getattr(self, field) if engine is self._engine else None
+        bind_identity_context(engine, priority=lambda: current("_identity_priority"),
+                              context=lambda: current("_identity_prior"))
+
+    @staticmethod
+    def _current_entry_seeds(rows, floor):
+        import numpy as np
+        seeds = {}
+        for row in rows:
+            entry = row.get("difficultEntry") or {}
+            checked = entry.get("verification") or {}
+            if (entry.get("mapId") != row.get("mapId") or str(entry.get("floor", floor)) != str(floor)
+                    or checked.get("success") is not True or entry.get("poseAmbiguous")
+                    or (entry.get("entryCrossCheck") or {}).get("contradicted") is True):
+                continue
+            try:
+                matrix = np.asarray(checked.get("matrixSourceToClient"), dtype=float)
+                if matrix.shape == (3, 3) and np.isfinite(matrix).all():
+                    seeds[row["mapId"]] = entry
+            except (ValueError, TypeError):
+                pass
+        return seeds
+
+    def _identity_observation_current(self):
+        observation = self._last_observation
+        return bool(observation is not None and observation["frame_id"] == self._frame_id
+            and self._capture_is_current(observation["captured"].context, observation["capture_generation"]))
+
+    def _publish_identity_stage(self, state, rows, context, *, reason):
+        if context != self._identity_context() or not self._active or not self._identity_observation_current():
+            return False
+        self._identity_native = state
+        self._identity_rank_rows = rows
+        self._identity_prior = state.context_snapshot() or self._identity_prior
+        self._identity_priority = state.priority(self._mode)
+        self._identity_source = "native-similarity"
+        return True
+
+    def _rank_identity(self, engine, frame, floor, epoch, frame_id, cancelled):
+        with self._lock:
+            previous, prior = self._identity_native, self._identity_prior
+            context = self._identity_context()
+        review = getattr(engine, "rank_established_group", None)
+        rows = (review(frame, floor, prior=prior, budget_seconds=INITIAL_IDENTITY_BUDGET_SECONDS)
+                if prior and callable(review) else engine.rank(frame, floor=floor,
+                    limit=len(engine.pack.maps), budget_seconds=INITIAL_IDENTITY_BUDGET_SECONDS))
+        seeds = self._current_entry_seeds(rows, floor)
+        state, proposal = stage_similarity_rank(previous, rows, context, hashlib.sha256(frame.tobytes()).hexdigest(), seeds)
+        accepted = [row for row in rows if row.get("identityHardGatePassed") is True]
+        with self._lock:
+            if self._cancelled(cancelled) or epoch != self._epoch or frame_id != self._frame_id:
+                return None, None, "stale-context"
+            if not self._identity_observation_current():
+                self.invalidate("capture-context-changed")
+                return None, None, "capture-context-changed"
+            self._update_candidates(rows, floor)
+            grouped = state.state == "GROUP_LOCKED"
+            if grouped:
+                self._publish_identity_stage(state, rows, context, reason="ranked-current-frame")
+                selected = (state.provisional_member_id
+                    if state.context_snapshot() and state.provisional_member_id in state.member_ids else None)
+            else:
+                # Exact non-group predicate from Tk should_auto_lock_candidate:
+                # only the top strong hard-gate suggestion can replace a click.
+                # Keep it here rather than importing the Tk application module.
+                top = rows[0] if rows else None
+                auto_lock = bool(isinstance(top, dict) and top.get("mapId")
+                    and top.get("strongSuggestion") and top.get("identityHardGatePassed")
+                    and not self._floor_required and not self._gate.confirmed_id)
+                selected = top["mapId"] if auto_lock and len(accepted) == 1 else None
+                if selected:
+                    self._durable_map_id = selected
+                    self._identity_source = "automatic-hard-gate"
+            if selected:
+                self._map_id = selected
+                self._gate.select(selected)
+                self._gate.confirm()
+        self._notify("group-state", reason=proposal.get("reason", proposal.get("status", "ranked")),
+                     identity=self._identity_fields())
+        seed = seeds.get(selected)
+        if seed is None and len(accepted) == 1 and accepted[0].get("mapId") == selected:
+            seed = accepted[0].get("difficultEntry")
+        return selected, seed, False
+
+    def _continue_group(self, engine, frame, floor, epoch, frame_id, digest, obsolete):
+        """Original temporal consumer, after current residual/core commit only.
+
+        Every mutation belongs to a new worker-owned state. Publication is the
+        lock-protected context check; old worker results cannot advance a round.
+        """
+        with self._lock:
+            previous, prior, context = self._identity_native, self._identity_prior, self._identity_context()
+            map_id = self._map_id
+            if previous is None or previous.state != "GROUP_LOCKED" or self._durable_map_id:
+                return None
+        state = clone_similarity_state(previous)
+        target_seed = None
+        now = self._monotonic()
+        work_key = (self._mode, self._cycle, str(floor), epoch, digest)
+        with self._lock:
+            last = self._identity_review_last
+        review = getattr(engine, "rank_established_group", None)
+        if (prior and callable(review) and (last is None or
+                (last[0] != work_key and now - last[1] >= GROUP_IDENTITY_REVIEW_INTERVAL_SECONDS))):
+            rows = review(frame, floor, prior=prior, budget_seconds=GROUP_IDENTITY_REVIEW_BUDGET_SECONDS)
+            accepted = [row for row in rows if row.get("identityHardGatePassed") is True
+                        and row.get("mapId") in state.member_ids]
+            if len(accepted) == 1:
+                target = accepted[0]["mapId"]
+                seeds = self._current_entry_seeds(rows, floor)
+                if target == map_id or target in seeds:
+                    # Same as the Tk group-review consumer: the final original
+                    # rank verdict stages identity; only current pose confirms.
+                    state.pending_identity = (target, str(floor), context)
+                    state.member_reference = None
+                    if target != map_id:
+                        target_seed = (target, seeds[target], state)
+            with self._lock:
+                if not obsolete() and frame_id == self._frame_id:
+                    self._identity_review_last = (work_key, now)
+        with self._lock:
+            if (obsolete() or frame_id != self._frame_id or context != self._identity_context()
+                    or not self._identity_observation_current()
+                    or not self._core.can_display(cycle_id=self._cycle, map_id=map_id,
+                        floor=str(floor), frame_generation=self._frame_generation)):
+                return None
+            if target_seed is None and state.pending_identity == (map_id, str(floor), context):
+                target_seed = (map_id, None, state)
+            if target_seed is not None:
+                # Keep final identity off the published state until material
+                # acceptance, including a same-member/current-pose promotion.
+                return target_seed
+            self._publish_identity_stage(state, self._identity_rank_rows, context, reason="current-pose-observation")
+        self._notify("group-state", reason="similar-group-pending", identity=self._identity_fields())
+        return None
+
+    def _stage_current_member_material(self, action, payload, state):
+        with self._lock:
+            if self._render is None or not self._display_current(self._render):
+                return self._receipt(action, payload, success=False, reason="sibling-source-authorization-expired", stale=True)
+            self._discard_sibling()
+            source = self._render
+            target = dict(source, token=uuid4().hex, requiresMaterialAck=True,
+                sourceToken=source["token"], sourceMapId=self._map_id)
+            self._pending_sibling = dict(scope=self._sibling_scope(), sourceCore=self._core,
+                sourceToken=source["token"], sourceMapId=self._map_id,
+                core=self._copy_pose_core(self._core), group=self._group, identity=state,
+                render=target, reference=dict(self._reference_sheet), captureContext=self._render_capture_context)
+        self._notify("sibling-material-pending", reason="current-member-awaiting-material", token=target["token"],
+            sourceMapId=source["mapId"], targetMapId=target["mapId"])
+        return self._receipt(action, payload, success=True, reason="sibling-material-pending",
+            renderToken=source["token"], pendingSiblingToken=target["token"],
+            diagnosticOnly=self._evidence_kind != "live-client-capture")
+
+    def _sibling_scope(self):
+        return (self._epoch, self._mode, self._profile, self._round, self._cycle,
+            self._frame_id, self._frame_generation, str(self._floor),
+            getattr(self, "_display_generation", 0), id(self._engine))
+
+    @staticmethod
+    def _copy_pose_core(core):
+        staged = copy.copy(core)
+        for key, value in vars(core).items():
+            if key not in ("_clock", "_event_sink"):
+                setattr(staged, key, copy.deepcopy(value))
+        return staged
+
+    def _pending_sibling_current(self, pending):
+        row = pending["render"]
+        return bool(self._active and self._map_open and not self._selection_pending
+            and not self._floor_required and pending["scope"] == self._sibling_scope()
+            and self._core is pending["sourceCore"] and self._render is not None
+            and self._render["token"] == pending["sourceToken"]
+            and self._map_id == pending["sourceMapId"]
+            and self._gate.confirmed_id == pending["sourceMapId"]
+            and self._display_current(self._render)
+            and self._capture_is_current(pending["captureContext"], row["captureGeneration"])
+            and pending["core"].can_display(cycle_id=self._cycle, map_id=row["mapId"],
+                floor=self._floor, frame_generation=self._frame_generation))
+
+    def _discard_sibling(self):
+        pending = self._pending_sibling
+        self._pending_sibling = None
+        if pending is not None:
+            # A rejected target's authorization must never be recycled.
+            for name in ("_next_observation_id", "_next_authorization_id"):
+                setattr(pending["sourceCore"], name, max(getattr(pending["sourceCore"], name),
+                    getattr(pending["core"], name)))
+        return pending
+
+    def pending_sibling_payload(self, token):
+        """Target material only; source remains the sole published pose owner."""
+        import numpy as np
+        with self._lock:
+            pending = self._pending_sibling
+            if pending is None or pending["render"]["token"] != token or not self._pending_sibling_current(pending):
+                return None
+            row = pending["render"]
+            matrix = np.asarray(row["matrix"], dtype=float)
+            if (matrix.shape != (3, 3) or not np.isfinite(matrix).all()
+                    or (row["clientWidth"], row["clientHeight"]) != pending["captureContext"].full_client_size):
+                return None
+            return {key: value if key == "pixels" else copy.deepcopy(value) for key, value in row.items()}
+
+    def acknowledge_sibling(self, token, accepted, reason=""):
+        """Commit original sibling identity only after Image.Ready acceptance.
+
+        Pure bounded state work: callable on the Qt owner, with no fit/capture,
+        disk IO or dependency on overlay visibility. Clone reowns the identity
+        transaction on this caller without mutating the published source.
+        """
+        with self._lock:
+            pending = self._pending_sibling
+            if pending is None or pending["render"]["token"] != token:
+                return dict(success=False, reason="sibling-token-expired", token=token)
+            valid = self._pending_sibling_current(pending)
+            committed = False
+            failure = "sibling-context-expired" if not valid else "sibling-material-rejected"
+            if valid and accepted is True:
+                state = clone_similarity_state(pending["identity"])
+                target = pending["render"]["mapId"]
+                gate = copy.copy(self._gate)
+                gate.select(target)
+                try:
+                    committed = bool(gate.confirm() and state.confirm(target, self._floor, self._identity_context()))
+                except Exception:
+                    committed = False
+                if not committed:
+                    failure = "sibling-identity-commit-failed"
+                else:
+                    state.provisional_member_id = target
+                    self._core.revoke_display(reason="native-sibling-committed")
+                    self._core, self._group, self._gate = pending["core"], pending["group"], gate
+                    self._map_id = self._durable_map_id = target
+                    self._identity_native, self._identity_priority = state, None
+                    self._render, self._reference_sheet = pending["render"], pending["reference"]
+                    metadata = self._identity_fields()
+                    self._render.update(metadata, requiresMaterialAck=False)
+                    self._reference_sheet.update(metadata)
+                    self._render_capture_context = self._reference_capture_context = pending["captureContext"]
+                    self._pending_sibling = None
+            if not committed:
+                self._discard_sibling()
+            source_retained = bool(not committed and self._render is not None and self._display_current(self._render)
+                and self._capture_is_current(self._render_capture_context, self._render.get("captureGeneration")))
+            result = dict(success=committed, reason="sibling-material-and-identity-committed" if committed else failure,
+                token=token, sourceRetained=source_retained)
+        self._notify("sibling-committed" if committed else "sibling-rolled-back", token=token,
+            reason=result["reason"], materialReason=str(reason)[:256], sourceRetained=source_retained)
+        if committed:
+            self._notify("identity-committed", reason="original-identity-and-current-material-verified", identity=self._identity_fields())
+            self._notify("render-ready", token=token, reason="sibling-material-and-identity-committed", unchanged=False)
+        return result
+
+    def _reset_provisional_floor(self, floor):
+        if self._identity_native is not None and not self._durable_map_id and str(self._floor) != str(floor):
+            prior = self._identity_prior
+            self._reset_identity()
+            self._identity_prior = prior
+            self._map_id = ""
+            self._group = None
+            self._gate.select(None)
+            self._reference_sheet = None
+
+    def _set_pose_phase(self, status, reason, map_id, floor, frame_id, generation):
+        with self._lock:
+            if not self._active or frame_id != self._frame_id:
+                return
+            phase = dict(status=status, reason=reason, mapId=map_id, floor=floor,
+                         frameId=frame_id, generation=generation)
+            if status == "pending":
+                self._pose_attempt = phase
+            self._pose_result = phase
+        self._notify("pose-attempt" if status == "pending" else "pose-result", reason=reason, pose=phase)
 
     def _reset_floor_policy(self):
         self._floor_observations = []
@@ -379,6 +701,7 @@ class LiveRuntime:
                     if self._gate is None:
                         from nightmare_candidate import RouteDisplayGate
                         self._engine = engine
+                        self._attach_identity_engine(engine)
                         self._gate = RouteDisplayGate(engine.pack)
                         self._update_candidates([], self._floor)
                     self._candidate_edit = True
@@ -421,6 +744,9 @@ class LiveRuntime:
             if selected != self._map_id:
                 self._core.reset_round(reason="manual-map-changed")
                 self._group = None
+            self._reset_identity()
+            self._durable_map_id = selected
+            self._identity_source = "manual"
             self._map_id = selected
             self._candidate_edit = False
             self._selection_pending = False
@@ -502,6 +828,7 @@ class LiveRuntime:
             self._manual_hold_until = self._monotonic() + MANUAL_FLOOR_HOLD_SECONDS if target else 0.0
             self._floor_observations = []
             self._floor_required = target is None and not self._observed_floor
+            self._reset_provisional_floor(target or self._observed_floor)
             self._floor = target or self._observed_floor
             for row in self._candidate_rows:
                 row["floor"] = self._floor
@@ -532,20 +859,15 @@ class LiveRuntime:
                 return self._capture_and_solve(action, payload, cancelled)
             entry_candidate = None
             if not selected:
-                ranked = engine.rank(observation["frame"], floor=floor,
-                    limit=len(engine.pack.maps), budget_seconds=1.0)
-                with self._lock:
-                    if self._cancelled(cancelled) or epoch != self._epoch or frame_id != self._frame_id:
-                        return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
-                    self._update_candidates(ranked, floor)
-                    accepted = {row["mapId"] for row in ranked if row.get("identityHardGatePassed") is True}
-                    if len(accepted) != 1:
-                        return self._receipt(action, payload, success=False, reason="identity-not-uniquely-verified")
-                    selected = self._map_id = next(iter(accepted))
-                    self._gate.select(selected)
-                    self._gate.confirm()
-                    entry_candidate = next((row.get("difficultEntry") for row in ranked
-                        if row.get("mapId") == selected and row.get("identityHardGatePassed") is True), None)
+                selected, entry_candidate, stale = self._rank_identity(engine, observation["frame"], floor,
+                    epoch, frame_id, cancelled)
+                if stale:
+                    return self._receipt(action, payload, success=False, reason=str(stale), stale=True)
+                if not selected:
+                    grouped = self._identity_fields()["groupLocked"]
+                    return self._receipt(action, payload, success=grouped,
+                        reason="similar-group-pending" if grouped else "identity-not-uniquely-verified",
+                        posePending=True)
             return self._solve_observation(action, payload, cancelled, engine, group, epoch,
                 observation["captured"], observation["frame"], floor, observation["digest"],
                 observation["capture_generation"], generation, frame_id, cycle, selected, entry_candidate)
@@ -590,7 +912,7 @@ class LiveRuntime:
                 capture_state = capture_state()
             metadata = ({key: copy.deepcopy(value) for key, value in self._render.items()
                          if key not in ("pixels",)} if self._render is not None else {})
-            return dict(**self._context(), cycleId=self._cycle, mapId=self._map_id, floor=self._floor,
+            return dict(**self._context(), cycleId=self._cycle, mapId=self._durable_map_id, floor=self._floor,
                 generation=self._frame_generation, engineConnected=True,
                 liveEngineAvailable=bool(ready and guarded and self._capture is not None),
                 liveUnavailableReason=("capture-context-recheck-unavailable" if not guarded else
@@ -601,7 +923,10 @@ class LiveRuntime:
                 alignedVisible=self._aligned_visible,
                 candidateRows=copy.deepcopy(self._candidate_rows), selectedCandidateIndex=selected,
                 selectedCandidate=copy.deepcopy(self._candidate_rows[selected]) if selected >= 0 else {},
-                identityLocked=bool(self._map_id), candidateEditMode=self._candidate_edit,
+                **self._identity_fields(), candidateEditMode=self._candidate_edit,
+                poseAttempt=copy.deepcopy(self._pose_attempt), poseResult=copy.deepcopy(self._pose_result),
+                siblingPending=self._pending_sibling is not None,
+                pendingSiblingToken=self._pending_sibling["render"]["token"] if self._pending_sibling is not None else "",
                 availableFloors=self._available_floors(), manualFloor=self._manual_floor,
                 observedFloor=self._observed_floor, floorSource="manual" if self._manual_floor else "automatic",
                 floorRequired=self._floor_required, floorPolicyReason=self._last_floor_policy,
@@ -617,6 +942,7 @@ class LiveRuntime:
         """Owner-thread fast path: revoke before canceling/queueing slow work."""
         with self._lock:
             previous_token = self._render.get("token", "") if self._render is not None else ""
+            self._discard_sibling()
             self._epoch += 1
             self._core.close(reason=str(reason))
             self._render = None
@@ -662,6 +988,7 @@ class LiveRuntime:
         """Revoke presentation without invalidating the current worker lifetime."""
         with self._lock:
             token = self._render.get("token", "") if self._render is not None else ""
+            self._discard_sibling()
             self._core.revoke_display(reason=reason)
             self._render = None
             self._render_capture_context = None
@@ -925,6 +1252,7 @@ class LiveRuntime:
             self._map_id = self._floor = self._frame_id = ""
             self._group = self._render = None
             self._engine = engine
+            self._attach_identity_engine(engine)
             from nightmare_candidate import RouteDisplayGate
             self._clear_candidates()
             self._gate = RouteDisplayGate(engine.pack)
@@ -981,6 +1309,7 @@ class LiveRuntime:
         if not eligible:
             self._revoke_render(reason)
             return None
+        self._set_pose_phase("pending", "current-frame-refresh", map_id, floor, current_frame, self._frame_generation)
         host = _AlignmentHost(engine, group, self._settings)
         basis = engine.qt_adapters.matrix_profile_to_canonical("shared-structure", map_id, floor)
         if basis is None:
@@ -1019,6 +1348,7 @@ class LiveRuntime:
             if token is None or not self._core.commit(token, persist_pose=False):
                 self._revoke_render("refresh-core-commit-rejected")
                 return self._receipt("refresh_map", payload, success=False, reason=decision.reason)
+            self._discard_sibling()
             self._frame_generation, self._frame_id = generation, frame_id
             self._last_observation = dict(captured=captured, frame=frame, floor=floor, digest=digest,
                 capture_generation=capture_generation, frame_id=frame_id, observed_floor=self._observed_floor)
@@ -1027,8 +1357,23 @@ class LiveRuntime:
                 generation=generation, observedFloor=self._observed_floor,
                 floorSource="manual" if self._manual_floor else "automatic")
             self._render_capture_context = captured.context
+            if self._reference_sheet is not None:
+                self._reference_sheet.update(self._identity_fields())
             render_token = self._render["token"]
+        self._set_pose_phase("valid", "current-pose-refreshed", map_id, floor, frame_id, generation)
         self._notify("render-ready", reason="current-pose-refreshed", token=render_token, unchanged=True)
+        target = self._continue_group(engine, frame, floor, epoch, frame_id, digest, obsolete)
+        if target is not None:
+            target_id, seed, staged = target
+            if target_id == map_id:
+                return self._stage_current_member_material("refresh_map", payload, staged)
+            replacement = self._solve_observation("refresh_map", payload, obsolete, engine, None, epoch,
+                captured, frame, floor, digest, capture_generation, generation, frame_id, cycle,
+                target_id, seed, review_group=False, identity_stage=staged)
+            if replacement.get("success"):
+                return replacement
+        if obsolete():
+            return self._receipt("refresh_map", payload, success=False, reason="cancelled-or-stale", stale=True)
         return self._receipt("refresh_map", payload, success=True, reason="current-pose-refreshed",
                              renderToken=render_token, unchanged=True,
                              diagnosticOnly=self._evidence_kind != "live-client-capture")
@@ -1143,6 +1488,7 @@ class LiveRuntime:
                 self._cycle += 1
             self._map_open = True
             self._probe_misses = 0
+            self._reset_provisional_floor(floor)
             self._floor = floor
             self._frame_generation += 1
             self._frame_id = f"{self._round}:{self._frame_generation}:{digest[:16]}"
@@ -1156,31 +1502,28 @@ class LiveRuntime:
             return self._receipt(action, payload, success=False, reason="candidate-awaiting-confirmation")
         ranked = []
         entry_candidate = None
-        if not map_id:
-            ranked = engine.rank(frame, floor=floor, limit=len(engine.pack.maps), budget_seconds=1.0)
-            with self._lock:
-                if obsolete() or frame_id != self._frame_id:
-                    return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
-                self._update_candidates(ranked, floor)
-            accepted = {row["mapId"] for row in ranked if row.get("identityHardGatePassed") is True}
-            if len(accepted) != 1:
-                return self._receipt(action, payload, success=False, reason="identity-not-uniquely-verified",
-                                     candidateMapIds=[row["mapId"] for row in ranked[:8]])
-            map_id = next(iter(accepted))
-            entry_candidate = next((row.get("difficultEntry") for row in ranked
-                if row.get("mapId") == map_id and row.get("identityHardGatePassed") is True), None)
-            with self._lock:
-                if obsolete() or frame_id != self._frame_id:
-                    return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
-                self._map_id = map_id
-                self._gate.select(map_id)
-                self._gate.confirm()
+        with self._lock:
+            new_group_observation = bool(action in ("map", "capture_now") and not self._durable_map_id
+                and self._identity_native is not None and self._identity_native.state == "GROUP_LOCKED")
+        if not map_id or new_group_observation:
+            # Tk _begin_capture always ranks a fresh explicit map capture and
+            # _consume_native_similarity_ranked accumulates its current proposal.
+            # Passive refresh keeps its separate .2s final-identity review.
+            map_id, entry_candidate, stale = self._rank_identity(engine, frame, floor, epoch, frame_id, cancelled)
+            if stale:
+                return self._receipt(action, payload, success=False, reason=str(stale), stale=True)
+            if not map_id:
+                grouped = self._identity_fields()["groupLocked"]
+                return self._receipt(action, payload, success=grouped,
+                    reason="similar-group-pending" if grouped else "identity-not-uniquely-verified", posePending=True)
+        if group is not None and group.map_id != map_id:
+            group = None
         return self._solve_observation(action, payload, cancelled, engine, group, epoch, captured, frame,
             floor, digest, capture_generation, frame_generation, frame_id, cycle, map_id, entry_candidate)
 
     def _solve_observation(self, action, payload, cancelled, engine, group, epoch, captured, frame,
                            floor, digest, capture_generation, frame_generation, frame_id, cycle,
-                           map_id, entry_candidate=None):
+                           map_id, entry_candidate=None, *, review_group=True, identity_stage=None):
         import numpy as np
         from alignment_core_v2 import AlignmentCandidate
         from alignment_observation import rendered_profile_residual_is_verified
@@ -1202,18 +1545,24 @@ class LiveRuntime:
             if not self._capture_is_current(captured.context, capture_generation):
                 self.invalidate("capture-context-changed")
                 return self._receipt(action, payload, success=False, reason="capture-context-changed", stale=True)
-            self._reference_sheet = dict(token=uuid4().hex, pixels=reference_pixels,
+            reference_sheet = dict(token=uuid4().hex, pixels=reference_pixels,
                 mode=self._mode, profileId=self._profile, mapId=map_id, floor=floor, roundId=self._round,
                 variantId=display.get("variantId"), displayGeneration=display_generation,
                 resourceIdentity=display["resourceIdentity"], captureGeneration=capture_generation,
-                referenceAuthorized=self._evidence_kind == "live-client-capture", evidenceKind=self._evidence_kind)
-            self._reference_capture_context = captured.context
+                referenceAuthorized=self._evidence_kind == "live-client-capture", evidenceKind=self._evidence_kind,
+                **self._identity_fields())
+            if self._durable_map_id == map_id:
+                self._reference_sheet = reference_sheet
+                self._reference_capture_context = captured.context
+        self._set_pose_phase("pending", "current-frame-fit", map_id, floor, frame_id, frame_generation)
         host = _AlignmentHost(engine, group, self._settings)
         fit = host.fit(frame, map_id, floor, obsolete, entry_candidate) if entry_candidate is not None else host.fit(frame, map_id, floor, obsolete)
         if obsolete():
             return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
         if not fit.get("success"):
-            return self._receipt(action, payload, success=False, reason=str(fit.get("reason", "pose-fit-failed")))
+            reason = str(fit.get("reason", "pose-fit-failed"))
+            self._set_pose_phase("rejected", reason, map_id, floor, frame_id, frame_generation)
+            return self._receipt(action, payload, success=False, reason=reason)
         residual = fit.get("selectedRouteCurrentFrameResidual")
         if not rendered_profile_residual_is_verified(residual):
             raise ValueError("current-frame-canonical-verification-required")
@@ -1231,10 +1580,10 @@ class LiveRuntime:
             if not self._capture_is_current(captured.context, capture_generation):
                 self.invalidate("capture-context-changed")
                 return self._receipt(action, payload, success=False, reason="capture-context-changed", stale=True)
-            self._map_id = map_id
-            self._core.begin_observation(cycle_id=cycle, map_id=map_id, floor=floor,
+            core = self._copy_pose_core(self._core) if identity_stage is not None else self._core
+            core.begin_observation(cycle_id=cycle, map_id=map_id, floor=floor,
                                          frame_generation=frame_generation, frame_signature=(digest,))
-            previous = self._core.pose_by_map.get(map_id)
+            previous = core.pose_by_map.get(map_id)
             previous_matrix = previous.pose_for_floor(floor) if previous is not None else None
             reopen = previous_matrix is not None
             candidate = AlignmentCandidate(map_id, floor, canonical,
@@ -1243,19 +1592,20 @@ class LiveRuntime:
                 residual_verified=True, global_residual_verified=True,
                 translation_only=bool(reopen and np.allclose(previous_matrix[:2,:2], canonical[:2,:2], atol=1e-5, rtol=0)),
                 metadata=dict(routeProfileId="shared-structure", independentFloorAnchor=True))
-            decision = self._core.adjudicate(candidate)
+            decision = core.adjudicate(candidate)
             if not decision.accepted:
+                self._set_pose_phase("rejected", decision.reason, map_id, floor, frame_id, frame_generation)
                 return self._receipt(action, payload, success=False, reason=decision.reason)
-            token = self._core.authorize(decision)
-            if token is None or not self._core.commit(token):
+            token = core.authorize(decision)
+            if token is None or not core.commit(token):
                 return self._receipt(action, payload, success=False, reason="core-commit-rejected")
-            self._group = RoundLayerGroup(map_id, "shared-structure", floor, canonical,
+            target_group = RoundLayerGroup(map_id, "shared-structure", floor, canonical,
                 cycle_id=cycle, source=candidate.source, pose_client_size=(width, height))
-            self._group.canonical_geometry_verified_floors.add(floor)
+            target_group.canonical_geometry_verified_floors.add(floor)
             rgba = np.ascontiguousarray(display["pixels"][:, :, [2, 1, 0, 3]])
             rgba.setflags(write=False)
             live = self._evidence_kind == "live-client-capture"
-            self._render = dict(token=uuid4().hex, epoch=epoch, authorizationId=token.authorization_id,
+            target_render = dict(token=uuid4().hex, epoch=epoch, authorizationId=token.authorization_id,
                 mode=self._mode, profileId=self._profile, mapId=map_id, floor=floor,
                 roundId=self._round, cycleId=cycle, frameId=frame_id, generation=frame_generation,
                 matrix=render_matrix.tolist(), canonicalMatrix=canonical.tolist(), pixels=rgba,
@@ -1268,10 +1618,47 @@ class LiveRuntime:
                 referencePath=display.get("referencePath", ""),
                 displayLabel=display["displayLabel"], routeProfileId=display["routeProfileId"],
                 variantId=display.get("variantId"), displayGeneration=display_generation,
-                liveAuthorization=live, evidenceKind=self._evidence_kind)
-            self._render_capture_context = captured.context
-            render_token = self._render["token"]
+                liveAuthorization=live, evidenceKind=self._evidence_kind, **self._identity_fields())
+            render_token = target_render["token"]
+            if identity_stage is not None:
+                if self._render is None or not self._display_current(self._render):
+                    return self._receipt(action, payload, success=False, reason="sibling-source-authorization-expired", stale=True)
+                self._discard_sibling()
+                target_render.update(requiresMaterialAck=True, sourceToken=self._render["token"], sourceMapId=self._map_id,
+                    provisionalMapId=map_id, provisional=True, identityLocked=False, durableMapId="")
+                self._pending_sibling = dict(scope=self._sibling_scope(), sourceCore=self._core,
+                    sourceToken=self._render["token"], sourceMapId=self._map_id, core=core,
+                    group=target_group, identity=identity_stage, render=target_render,
+                    reference=reference_sheet, captureContext=captured.context)
+                source_token = self._render["token"]
+            else:
+                self._map_id = map_id
+                self._gate.select(map_id)
+                self._gate.confirm()
+                self._group, self._render = target_group, target_render
+                self._render_capture_context = captured.context
+                self._reference_sheet = reference_sheet
+                self._reference_capture_context = captured.context
+        self._set_pose_phase("valid", "current-frame-pose-authorized", map_id, floor, frame_id, frame_generation)
+        if identity_stage is not None:
+            self._notify("sibling-material-pending", reason="target-current-pose-awaiting-material", token=render_token,
+                sourceMapId=self._map_id, targetMapId=map_id)
+            return self._receipt(action, payload, success=True, reason="sibling-material-pending",
+                renderToken=source_token, pendingSiblingToken=render_token, diagnosticOnly=not live)
         self._notify("render-ready", reason="current-frame-pose-authorized", token=render_token, unchanged=False)
+        if review_group:
+            target = self._continue_group(engine, frame, floor, epoch, frame_id, digest, obsolete)
+            if target is not None:
+                target_id, seed, staged = target
+                if target_id == map_id:
+                    return self._stage_current_member_material(action, payload, staged)
+                replacement = self._solve_observation(action, payload, cancelled, engine, None, epoch,
+                    captured, frame, floor, digest, capture_generation, frame_generation, frame_id, cycle,
+                    target_id, seed, review_group=False, identity_stage=staged)
+                if replacement.get("success"):
+                    return replacement
+        if obsolete():
+            return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
         return self._receipt(action, payload, success=True, reason="current-frame-pose-authorized",
                              renderToken=render_token, diagnosticOnly=not live,
                              poseReason=fit.get("reason"), poseStrategy=fit.get("strategy", "not-recorded"))

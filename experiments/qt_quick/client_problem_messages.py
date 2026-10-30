@@ -19,6 +19,11 @@ def operation_problem(receipt, state):
     elif raw == 'candidate-awaiting-confirmation':
         title, summary = '请确认地图', '已保留所选地图，请打开游戏地图并确认候选后继续。'
         phase = 'identity'
+    elif raw in {'structure-current-geometry-failed', 'initial-structure-supported-chains-insufficient'}:
+        title, phase = '本次地图位置未核对通过', 'recognition-alignment'
+        summary = ('当前画面的结构或位置证据不足，本次未生成新的贴合。'
+                   '请完整打开游戏地图并等待画面稳定后重试；已有有效贴合是否保留，以当前显示状态为准。'
+                   '技术原因可在“最近问题”查看。')
     elif raw in {'current-floor-unavailable', 'floor-policy-deferred', 'candidate-or-floor-missing'}:
         title, summary = '暂未读到楼层', '请完整打开游戏地图，等待楼层高亮稳定后再试。'
         phase = 'floor'

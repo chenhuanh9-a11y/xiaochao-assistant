@@ -108,6 +108,46 @@ Production method names without a module qualifier belong to `app/identityv_dail
 
 ## Shared runtime boundary
 
+### 198B follow-up: actual caller parity
+
+The game report exposed orchestration omissions despite unchanged solver files.
+The follow-up restores the original `NativeSimilarityState` consumer and its
+separate `GROUP_LOCKED` provisional display and `MEMBER_VERIFIED` identity. A
+fresh explicit map/capture within a provisional group uses the old 1.85s rank path and accepts that frame's
+proposal; passive group review keeps its original 0.2s budget/1s interval. A
+group's provisional member is not replaced by a final candidate before its own
+pose/material transaction succeeds. Non-group auto-confirm still requires the
+top strong suggestion and hard gate. No extra pose/recovery identity consumer
+or mode-specific recognition algorithm was introduced.
+
+Native group promotion uses an isolated target core and material acknowledgement:
+the Qt staging Image must accept the target after matrix/client geometry checks,
+then the runtime rechecks capture/frame/floor/resource/epoch scope and commits
+core, identity, render and reference together. Rejection, identity failure or a
+late acknowledgement cannot revive an expired source. The still-current source
+is retained while a sibling is checked. Hidden staging is material acceptance,
+not proof of GPU presentation or real-game authorization.
+
+Production sample validation and the original optional portable-seed path are
+restored; diagnostic history remains isolated. The supplied baseline contains
+no portable-seed file, so restoring its path does not claim seeds were loaded.
+Original entry-seed/pose-index call parameters are restored with their existing
+switches and validation. Solver thresholds and algorithms are unchanged.
+
+Controls now keep difficulty selection/enabled styling stable during passive
+refresh, distinguish group provisional/member identity, and state when the
+user's aligned-display preference is off. Runtime transitions and surface
+acceptance/hide/drop reasons use the existing bounded asynchronous diagnostic
+writer, independently of the human-facing recent-problem list. Cross-run log
+retention is still unbounded; no historical logs were deleted in this repair.
+
+Remaining known parity gaps must not be labelled complete: the legacy game's
+floor-button mouse-intent producer is absent (automatic floor detection still
+uses the original detector); complete author fallback equivalence and native
+game timing need separate evidence. Difficult highlight margin/diagnostic-field
+differences do not explain the reported nightmare B1 geometry failure. Synthetic
+state/Qt tests and saved-frame replay are explicitly distinct from game testing.
+
 Both nightmare and difficult must use the **same** identity, initial/subsequent alignment, floor transition, front/side entry strategy, job queue/cancellation and commit implementation. Differences belong in resource providers, supported-floor metadata, coordinate contracts and required parameters. Missing entrances/bindings must remain explicit capability gaps. The integrated `LiveRuntime` now adapts the shared production path; further parity work must retain that single owner; importing or constructing `DailyAssistant` as a headless service is not a valid shortcut because it owns Tk variables/widgets, native input, scheduling, capture and display lifecycle.
 
 The Qt boundary should expose immutable snapshots, structured command results and revocable render payloads. `SessionService` already defines injected `snapshot()` / `dispatch(action, payload, cancelled)` and treats operation receipts as distinct from runtime authority; preserve that distinction during integration. Keep the existing `MapIdentityEngine`, `fast_structure_alignment`, `AlignmentCoreV2` / `RoundPose`, `AlignmentPoseTransaction`, `RoundLayerGroup`, `session_state_machine`, resource and transaction services as the computation/validation owners. UI code owns presentation and native-window delivery. A replacement UI must not create a second mode-specific solver or fabricate poses to complete a screen.

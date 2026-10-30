@@ -23,6 +23,38 @@ if APP not in sys.path:
 from alignment_core_v2 import AlignmentCoreV2
 
 
+INITIAL_IDENTITY_BUDGET_SECONDS = 1.85
+GROUP_IDENTITY_REVIEW_BUDGET_SECONDS = .2
+GROUP_IDENTITY_REVIEW_INTERVAL_SECONDS = 1.0
+
+
+def clone_similarity_state(previous=None):
+    """New worker-owned transaction; the published original is never mutated."""
+    from dataclasses import fields
+    from native_similarity_groups import NativeSimilarityState
+    values = ({field.name: copy.deepcopy(getattr(previous, field.name))
+               for field in fields(NativeSimilarityState) if field.init and field.name != "owner"}
+              if previous is not None else {})
+    return NativeSimilarityState(**values)
+
+
+def stage_similarity_rank(previous, rows, context, observation_id, display_members=()):
+    """Replay the legacy native state consumer without altering rank verdicts."""
+    proposal = copy.deepcopy((rows or [{}])[0].get("nativeSimilarity") or {"status": "none"})
+    state = clone_similarity_state(previous)
+    if proposal.get("mode") not in (None, context[0]) or proposal.get("floor") not in (None, context[2]):
+        return state, dict(status="none", reason="similarity-context-mismatch")
+    if proposal.get("originalIdentityHardGatePassed"):
+        verified = [row for row in rows if row.get("identityHardGatePassed") is True]
+        if len(verified) != 1 or verified[0]["mapId"] != proposal.get("candidateMemberId"):
+            proposal["originalIdentityHardGatePassed"] = False
+    if proposal.get("status") in {"conditions", "group-candidate", "identity-pending"}:
+        state.accept(proposal, context, observation_id)
+        if state.state == "GROUP_LOCKED" and state.context_snapshot() and context[2] == "1":
+            state.prefer_display_member(display_members)
+    return state, proposal
+
+
 class EngineAdapter:
     """Inject ``{mode: factory}`` of configured MapIdentityEngine instances.
 

@@ -18,11 +18,12 @@ from client_problem_messages import operation_problem
 
 
 class LiveImages(QQuickImageProvider):
-    """Two bounded immutable display images; no disk encoding or mutable QPixmap."""
+    """Source, staged target and reference images, bounded without disk encoding."""
     def __init__(self):
         super().__init__(QQuickImageProvider.Image)
         self._lock = threading.RLock()
         self._images = {}
+        self._staged_key = None
 
     def publish(self, key, pixels):
         import numpy as np
@@ -36,9 +37,22 @@ class LiveImages(QQuickImageProvider):
                                 if not name.startswith("reference:")}
             self._images.pop(str(key), None)
             self._images[str(key)] = image
-            while len(self._images) > 2:
+            if str(key).startswith("pending:"):
+                self._staged_key = str(key)
+            while len(self._images) > (3 if self._staged_key else 2):
                 self._images.pop(next(name for name in self._images if not name.startswith("reference:")))
         return "image://live/" + str(key)
+
+    def finish_staging(self, token, accepted):
+        key = "pending:" + str(token)
+        with self._lock:
+            if self._staged_key != key:
+                return
+            self._staged_key = None
+            if not accepted:
+                self._images.pop(key, None)
+            while len(self._images) > 2:
+                self._images.pop(next(name for name in self._images if not name.startswith("reference:") and name != key))
 
     def requestImage(self, identifier, size, requestedSize):
         with self._lock:
@@ -50,10 +64,12 @@ class LiveImages(QQuickImageProvider):
     def clear(self):
         with self._lock:
             self._images.clear()
+            self._staged_key = None
 
     def clear_aligned(self):
         with self._lock:
             self._images = {key:value for key,value in self._images.items() if key.startswith("reference:")}
+            self._staged_key = None
 
     def clear_reference(self):
         with self._lock:
@@ -126,6 +142,7 @@ class ClientCoordinator(QObject):
     runtimeEvent = Signal(object)
     controlVisibilityChanged = Signal(bool, str)
     errorReported = Signal(object)
+    traceReported = Signal(object)
     lifecycleEvent = Signal(object)
     notificationRequested = Signal(str, str, str)
 
@@ -147,6 +164,8 @@ class ClientCoordinator(QObject):
         self._reference = {}
         self._focus_notice = ""
         self._aligned = {}
+        self._pending_aligned = {}
+        self._accepted_material = {}
         self._edit = None
         self._before_edit = None
         self._edit_generation = 0
@@ -176,6 +195,10 @@ class ClientCoordinator(QObject):
         self._close_timer = QTimer(self)
         self._close_timer.setInterval(40)
         self._close_timer.timeout.connect(self._finish_close)
+        self._material_timer = QTimer(self)
+        self._material_timer.setSingleShot(True)
+        self._material_timer.setInterval(5000)
+        self._material_timer.timeout.connect(lambda: self._cancel_pending_material("target-material-timeout"))
         self._discovery_timer = QTimer(self)
         self._discovery_timer.setInterval(750)
         self._discovery_timer.timeout.connect(self._discover_game)
@@ -221,10 +244,121 @@ class ClientCoordinator(QObject):
     referenceData = Property("QVariantMap", lambda s: dict(s._reference), notify=changed)
     referenceEditing = Property(bool, lambda s: s._edit is not None, notify=changed)
     alignedData = Property("QVariantMap", lambda s: dict(s._aligned), notify=changed)
+    pendingAlignedData = Property("QVariantMap", lambda s: dict(s._pending_aligned), notify=changed)
     inputEnabled = Property(bool, lambda s: s.input.enabled, notify=changed)
     closing = Property(bool, lambda s: s._closing, notify=changed)
     closeReady = Property(bool, lambda s: s._close_ready, notify=changed)
     textEntryActive = Property(bool, lambda s: s._text_entry or s._shortcut_recording, notify=changed)
+
+    def _trace(self, stage, *, state=None, payload=None, reason="", window=None, **extra):
+        data = payload or state or {}
+        row = dict(role="presentation", stage=stage, reason=reason,
+                   mode=data.get("mode"), groupid=data.get("groupId"),
+                   identityPhase=data.get("identityPhase"), provisional=data.get("provisional"),
+                   durablemap=data.get("durableMapId", data.get("mapId")), floor=data.get("floor"),
+                   round=data.get("roundId"), cycle=data.get("cycleId"), frame=data.get("frameId"),
+                   generation=data.get("generation"), token=data.get("token"))
+        if window is not None:
+            row["window"] = window
+        row.update(extra)
+        self.traceReported.emit(row)
+
+    @Slot(str, "QVariantMap")
+    def reportPresentation(self, name, details):
+        if name not in {"aligned", "reference"} or self._closed:
+            return
+        data = self._aligned if name == "aligned" else self._reference
+        self._trace("surface-state", payload=data, window=dict(details, name=name))
+        if (details.get("imageStatus") == "error" and details.get("visible")
+                and details.get("sourceMatchesPayload", True) and not self._closing):
+            key = ("surface-error", name, data.get("key", data.get("token")))
+            if key not in self._notified:
+                self._notified.add(key)
+                summary = "地图图像读取失败，详细原因已保存在帮助页的“最近问题”。"
+                self.errorReported.emit(dict(title="地图显示未完成", summary=summary,
+                    raw=str(details), phase="presentation", action=name, kind="error"))
+                self.notificationRequested.emit("地图显示未完成", summary, "error")
+
+    def _cancel_pending_material(self, reason):
+        pending = self._pending_aligned
+        self._pending_aligned = {}
+        self._material_timer.stop()
+        if pending:
+            acknowledge = getattr(self.runtime, "acknowledge_sibling", None)
+            result = None
+            if callable(acknowledge):
+                result = acknowledge(pending["token"], False, reason=reason)
+            finish = getattr(self.images, "finish_staging", None)
+            if callable(finish):
+                finish(pending["token"], False)
+            self._trace("sibling-material-rejected", payload=pending, reason=reason)
+            if reason == "target-material-timeout":
+                self._report_display_failure(pending, reason, reason)
+                if isinstance(result, dict) and not result.get("sourceRetained"):
+                    self._present_runtime_state(self.runtime.snapshot(), trigger="sibling-source-expired")
+            self.changed.emit()
+
+    def _prepare_sibling_material(self, event):
+        token = event.get("token")
+        getter = getattr(self.runtime, "pending_sibling_payload", None)
+        payload = getter(token) if token and callable(getter) else None
+        if not payload or not payload.get("liveAuthorization"):
+            self._trace("drop", payload=event, reason="pending-sibling-not-current-live")
+            return
+        if self._pending_aligned.get("token") == token:
+            return
+        self._cancel_pending_material("target-material-replaced")
+        public = {key: value for key, value in payload.items() if key != "pixels"}
+        try:
+            self._convert_client_geometry(public)
+            path = public.pop("routePath", None)
+            if path:
+                public["routeUrl"] = QUrl.fromLocalFile(str(path)).toString()
+            elif payload.get("pixels") is not None:
+                public["routeUrl"] = self.images.publish("pending:" + str(token), payload["pixels"])
+            else:
+                raise ValueError("target-route-material-unavailable")
+        except (OSError, ValueError) as error:
+            result = self.runtime.acknowledge_sibling(token, False, reason="target-material-invalid")
+            self._trace("sibling-material-rejected", payload=payload, reason="target-material-invalid",
+                        diag=dict(error=str(error)))
+            self._report_display_failure(payload, "target-material-invalid", str(error))
+            if isinstance(result, dict) and not result.get("sourceRetained"):
+                self._present_runtime_state(self.runtime.snapshot(), trigger="sibling-source-expired")
+            return
+        self._pending_aligned = public
+        self._material_timer.start()
+        self._trace("sibling-material-loading", payload=public)
+        self.changed.emit()
+
+    @Slot(str, bool)
+    def acceptSiblingMaterial(self, token, accepted):
+        pending = self._pending_aligned
+        if self._closed or self._closing or not pending or pending.get("token") != token:
+            return
+        acknowledge = getattr(self.runtime, "acknowledge_sibling", None)
+        if not callable(acknowledge):
+            return
+        self._material_timer.stop()
+        result = acknowledge(token, bool(accepted), reason="target-material-ready" if accepted else "target-material-rejected")
+        self._pending_aligned = {}
+        committed = bool(accepted and isinstance(result, dict) and result.get("success"))
+        if committed:
+            self._accepted_material = pending
+            self._present_runtime_state(self.runtime.snapshot(), trigger="sibling-material-accepted")
+            if not self.session.busy:
+                self.session.refreshRuntime()
+        else:
+            self._trace("sibling-material-rejected", payload=pending,
+                        reason=(result or {}).get("reason", "target-material-rejected"))
+            if not accepted:
+                self._report_display_failure(pending, "target-material-rejected", "Target Image rejected the route material")
+            if isinstance(result, dict) and not result.get("sourceRetained"):
+                self._present_runtime_state(self.runtime.snapshot(), trigger="sibling-source-expired")
+        finish = getattr(self.images, "finish_staging", None)
+        if callable(finish):
+            finish(token, committed)
+        self.changed.emit()
 
     def _status_text(self):
         if self._focus_notice:
@@ -518,8 +652,12 @@ class ClientCoordinator(QObject):
                 return
             url = self.images.publish(key, payload["pixels"])
             self._reference = dict(imageUrl=url, context=context, key=key,
-                mapId=payload.get("mapId"), floor=payload.get("floor"), profileId=payload.get("profileId"),
-                title=f"定点地图 · {payload.get('mapId')} · {payload.get('floor')}层")
+                mapId=payload.get("mapId"), floor=payload.get("floor"), profileId=payload.get("profileId"))
+        for key in ("identityPhase", "provisional", "groupId", "durableMapId", "roundId", "cycleId", "frameId", "generation"):
+            self._reference[key] = payload.get(key)
+        label = "暂用地图" if payload.get("provisional") else "定点地图"
+        self._reference["title"] = f"{label} · {payload.get('mapId')} · {payload.get('floor')}层"
+        self._trace("reference-publish", payload=self._reference)
         self._show_reference_current()
 
     def _show_reference_current(self):
@@ -720,7 +858,10 @@ class ClientCoordinator(QObject):
         self.backend.refresh()
         self.changed.emit()
 
-    def _invalidate_display(self):
+    def _invalidate_display(self, reason="display-invalidated"):
+        self._cancel_pending_material(reason)
+        self._trace("clear", payload=self._aligned, reason=reason,
+                    window=dict(name="aligned", visible=False))
         self._aligned = {}
         self._last_render_token = None
         self.windows.hide("aligned")
@@ -734,7 +875,7 @@ class ClientCoordinator(QObject):
         invalidate = getattr(self.runtime, "invalidate", None)
         if invalidate:
             invalidate(reason)
-        self._invalidate_display()
+        self._invalidate_display(reason)
 
     def _session_changed(self):
         if self._closing or self._closed:
@@ -746,9 +887,6 @@ class ClientCoordinator(QObject):
                 self._invalidate_display()
             self.changed.emit(); return
         state = self.session.snapshot
-        reference_getter = getattr(self.runtime, "reference_payload", None)
-        if callable(reference_getter):
-            self._sync_reference_payload(reference_getter())
         self._notify_session_transitions(state)
         actual_context = self.runtime.snapshot()
         if self._pending_context and (actual_context.get("mode"), actual_context.get("profileId")) == self._pending_context:
@@ -767,50 +905,112 @@ class ClientCoordinator(QObject):
                 self._message = "连接失败，请刷新游戏窗口后重试"
         if receipt.get("action") == "start_round" and receipt.get("success") is False:
             self.input.disable()
+        self._present_runtime_state(state, trigger="session-completed")
+
+    def _present_runtime_state(self, state, *, trigger):
+        """Present only a current runtime grant; never alter Session job context.
+
+        A group-review worker can publish before its command completes. Copying
+        its new frameId into Session's transaction state here would stale that
+        very command, so presentation consumes immutable payloads separately.
+        """
+        reference_getter = getattr(self.runtime, "reference_payload", None)
+        if callable(reference_getter):
+            self._sync_reference_payload(reference_getter())
         render = state.get("render") or {}
         token = render.get("token") or state.get("renderToken")
+        get_payload = getattr(self.runtime, "render_payload", None)
         if not token or not render.get("liveAuthorization"):
-            self._invalidate_display()
-            self.changed.emit(); return
+            # A pending identity review may retain a separately verified frame.
+            # The runtime getter, not the old view, decides if it is still valid.
+            retained = get_payload(self._last_render_token) if get_payload and self._last_render_token else None
+            if retained and retained.get("liveAuthorization"):
+                token, render = retained["token"], retained
+                self._trace("retain-current", payload=retained, reason="current-grant-during-review")
+            else:
+                self._trace("drop", state=state, reason="no-current-live-grant", diag=dict(trigger=trigger))
+                self._invalidate_display("runtime-grant-unavailable")
+                self.changed.emit(); return
         if token == self._last_render_token:
             self.showReference()
+            current = get_payload(token) if get_payload else None
+            if current and current.get("liveAuthorization"):
+                metadata = {key: current.get(key) for key in
+                            ("identityPhase", "provisional", "groupId", "durableMapId")}
+                if any(self._aligned.get(key) != value for key, value in metadata.items()):
+                    self._aligned.update(metadata)
+                    self._trace("publish-metadata", payload=self._aligned, reason=trigger)
+                    self.changed.emit()
+                self._notify_first_valid_output(self._aligned)
             if not self.settings.values.get("sheetVisibilityEnabled", True):
                 self.windows.hide("aligned")
+                self._trace("hide", payload=self._aligned, reason="preference-disabled",
+                            window=dict(name="aligned", visible=False))
+            elif current and current.get("liveAuthorization"):
+                self.windows.show("aligned")
             return
-        get_payload = getattr(self.runtime, "render_payload", None)
         payload = get_payload(token) if get_payload else None
         if not payload or not payload.get("liveAuthorization"):
-            self._invalidate_display()
+            self._trace("drop", state=state, reason="payload-expired", diag=dict(trigger=trigger))
+            self._invalidate_display("runtime-payload-expired")
             self.changed.emit(); return
         public = {key: value for key, value in payload.items() if key != "pixels"}
         try:
             self._convert_client_geometry(public)
         except (OSError, ValueError) as error:
             self._message = f"暂不显示贴合层：{error}"
-            self._invalidate_display()
+            self._trace("drop", payload=payload, reason="window-geometry-unverified", diag=dict(error=str(error)))
+            self._report_display_failure(payload, "window-geometry-unverified", str(error))
+            self._invalidate_display("window-geometry-unverified")
             self.changed.emit(); return
         path = public.pop("routePath", None)
-        if path:
+        if self._accepted_material.get("token") == token:
+            public["routeUrl"] = self._accepted_material["routeUrl"]
+        elif path:
             public["routeUrl"] = QUrl.fromLocalFile(str(path)).toString()
         elif payload.get("pixels") is not None:
             public["routeUrl"] = self.images.publish(str(token), payload["pixels"])
         else:
-            self._invalidate_display(); return
+            self._trace("drop", payload=payload, reason="route-material-unavailable")
+            self._report_display_failure(payload, "route-material-unavailable", "Runtime returned no route path or pixels")
+            self._invalidate_display("route-material-unavailable"); return
         self._aligned, self._last_render_token = public, token
+        self._accepted_material = {}
+        self._trace("publish", payload=public, reason=trigger,
+                    window=dict(name="aligned", visible=bool(self.settings.values.get("sheetVisibilityEnabled", True)),
+                                opacity=self.settings.values.get("sheetOpacity")))
         if not callable(reference_getter):
             # Compatibility for explicitly injected older runtime fixtures only;
             # the production runtime has independent reference authorization.
             self._sync_reference_payload(dict(payload, referenceAuthorized=True))
-        success_key = ("success", public.get("roundId"), public.get("mapId"), public.get("floor"))
-        if success_key not in self._notified:
-            self._notified.add(success_key)
-            self.notificationRequested.emit("地图已识别", f"{public.get('mapId')} · {public.get('floor')}层", "success")
+        self._notify_first_valid_output(public)
         self.changed.emit()
         if self.settings.values.get("sheetVisibilityEnabled", True):
             self.windows.setClickThrough("aligned", True)
             self.windows.show("aligned")
         else:
             self.windows.hide("aligned")
+            self._trace("hide", payload=public, reason="preference-disabled",
+                        window=dict(name="aligned", visible=False))
+
+    def _notify_first_valid_output(self, public):
+        if public.get("provisional") or public.get("identityPhase") in {"UNLOCKED", "GROUP_LOCKED"}:
+            return
+        success_key = ("success", public.get("roundId"), public.get("mapId"))
+        if success_key not in self._notified:
+            self._notified.add(success_key)
+            self.notificationRequested.emit("地图已识别", f"{public.get('mapId')} · {public.get('floor')}层", "success")
+
+    def _report_display_failure(self, payload, reason, raw):
+        key = ("display-failure", payload.get("roundId"), payload.get("cycleId"),
+               payload.get("mapId"), payload.get("floor"), reason)
+        if key in self._notified:
+            return
+        self._notified.add(key)
+        summary = "贴合结果暂时无法显示，窗口或图像信息未能核对；详情已保存在帮助页的“最近问题”。"
+        self.errorReported.emit(dict(title="贴合显示未完成", summary=summary, raw=raw,
+            phase="presentation", action="publish", kind="error", mapId=payload.get("mapId"), floor=payload.get("floor")))
+        self.notificationRequested.emit("贴合显示未完成", summary, "error")
 
     def _input_changed(self):
         if self._closed or self._closing:
@@ -843,7 +1043,9 @@ class ClientCoordinator(QObject):
                 self._notified.add(key)
                 problem = operation_problem(receipt, state)
                 self.errorReported.emit(problem)
-                if receipt.get("action") not in {"refresh_map", "inspect_engine_resources"}:
+                pose = state.get("poseResult") or {}
+                meaningful_pose_failure = pose.get("status") == "rejected" and not state.get("displayAuthorized")
+                if receipt.get("action") not in {"refresh_map", "inspect_engine_resources"} or meaningful_pose_failure:
                     self.notificationRequested.emit(problem["title"], problem["summary"], problem["kind"])
     def _native_action(self, action):
         if self._closing or self._closed:
@@ -921,13 +1123,15 @@ class ClientCoordinator(QObject):
                 self._map_was_open = self._map_was_open or self.session.snapshot.get("mapOpen") or (self.session.busy and self._requested_action in {"map", "capture_now"})
                 self.windows.hide("aligned")
                 self.windows.hide("reference")
+                self._trace("hide", payload=self._aligned, reason="game-not-foreground",
+                            window=dict(name="aligned", visible=False))
             elif self._waiting_foreground:
                 if self.session.busy:
                     return
                 self._waiting_foreground = False
                 if self._map_was_open:
                     self._map_was_open = False
-                    self._invalidate_display()
+                    self._invalidate_display("foreground-return-recapture")
                     self.session.dispatch("capture_now")
                 else:
                     self.showReference()
@@ -949,14 +1153,42 @@ class ClientCoordinator(QObject):
     def _on_runtime_event(self, event):
         if self._closed or self._closing or not isinstance(event, dict):
             return
-        if event.get("event") == "render-revoked":
+        name = event.get("event", "unknown")
+        self._trace(name, payload=event, reason=event.get("reason", ""),
+                    role="runtime", status=event.get("status"),
+                    diag={key: event.get(key) for key in ("poseResult", "poseAttempt", "groupMemberIds") if key in event})
+        if name == "sibling-material-pending":
+            if self._pending_context:
+                self._trace("drop-event", payload=event, reason="presentation-context-pending")
+                return
+            self._prepare_sibling_material(event)
+        elif name in {"sibling-rolled-back", "sibling-committed"}:
+            if self._pending_aligned and event.get("token") == self._pending_aligned.get("token"):
+                finish = getattr(self.images, "finish_staging", None)
+                if callable(finish):
+                    finish(event["token"], name == "sibling-committed")
+                self._pending_aligned = {}
+                self._material_timer.stop()
+                self.changed.emit()
+        elif name in {"render-ready", "group-state", "pose-result", "identity-committed"}:
+            state = self.runtime.snapshot()
+            context = (state.get("mode", self._applied_context[0]), state.get("profileId", self._applied_context[1]))
+            if self._pending_context or context != self._applied_context:
+                self._trace("drop-event", payload=event, reason="presentation-context-pending")
+                return
+            # The worker can have a valid group pose while its identity review
+            # continues. Present it without changing Session's request/frame ID.
+            self._present_runtime_state(state, trigger=name)
+        elif name == "render-revoked":
             getter = getattr(self.runtime, "render_payload", None)
             if getter is None or not self._last_render_token or getter(self._last_render_token) is None:
-                self._invalidate_display()
+                self._invalidate_display(event.get("reason") or "render-revoked")
                 self.changed.emit()
-        elif event.get("event") == "aligned-visibility-changed":
+        elif name == "aligned-visibility-changed":
             if self.runtime.snapshot().get("alignedVisible") is False:
-                self._invalidate_display()
+                self.windows.hide("aligned")
+                self._trace("hide", payload=self._aligned, reason="preference-disabled",
+                            window=dict(name="aligned", visible=False))
                 self.changed.emit()
 
     def _track_map(self):
@@ -986,6 +1218,7 @@ class ClientCoordinator(QObject):
         self._tracking_timer.stop()
         self._context_timer.stop()
         shutdown_input = getattr(self.input, "shutdown", None)
+        self._material_timer.stop()
         if callable(shutdown_input):
             shutdown_input()
         else:

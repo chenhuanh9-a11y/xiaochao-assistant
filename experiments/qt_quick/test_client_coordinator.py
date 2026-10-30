@@ -75,7 +75,8 @@ class CoordinatorTests(unittest.TestCase):
     def tearDown(self):
         self.coordinator._closed = True
         for timer in (self.coordinator._foreground_timer, self.coordinator._tracking_timer,
-                      self.coordinator._context_timer, self.coordinator._close_timer):
+                      self.coordinator._context_timer, self.coordinator._close_timer,
+                      self.coordinator._material_timer):
             timer.stop()
         self.app.processEvents()
 
@@ -270,6 +271,77 @@ class CoordinatorTests(unittest.TestCase):
         self.app.processEvents()
         self.assertIsNone(self.coordinator._last_render_token)
         self.windows.hide.assert_called_once_with("aligned")
+
+    def test_material_ack_is_exact_and_never_changes_session_transaction(self):
+        """A queued Image callback cannot acknowledge a later target or job."""
+        self.session.busy = True
+        before = deepcopy(self.session.snapshot)
+        pending = dict(token="target", liveAuthorization=True, mode="nightmare",
+                       mapId="target-map", floor="1", routeUrl="image://live/pending:target")
+        self.coordinator._pending_aligned = pending
+        self.runtime.acknowledge_sibling = Mock(return_value=dict(success=True, token="target"))
+        with patch.object(self.coordinator, "_present_runtime_state") as present:
+            self.coordinator.acceptSiblingMaterial("stale", True)
+            self.runtime.acknowledge_sibling.assert_not_called()
+            self.coordinator.acceptSiblingMaterial("target", True)
+            self.runtime.acknowledge_sibling.assert_called_once_with("target", True, reason="target-material-ready")
+            present.assert_called_once_with(self.runtime_state, trigger="sibling-material-accepted")
+        self.assertEqual(self.coordinator._accepted_material, pending)
+        self.assertEqual(self.session.snapshot, before)
+        self.session.refreshRuntime.assert_not_called()
+        self.coordinator.acceptSiblingMaterial("target", True)
+        self.assertEqual(self.runtime.acknowledge_sibling.call_count, 1)
+
+    def test_material_failure_and_timeout_keep_valid_source_surface(self):
+        self.coordinator._aligned = dict(token="source", routeUrl="image://live/source")
+        self.coordinator._last_render_token = "source"
+        self.coordinator._pending_aligned = dict(token="target")
+        self.runtime.acknowledge_sibling = Mock(return_value=dict(success=False, reason="paint-rejected", sourceRetained=True))
+        self.coordinator.acceptSiblingMaterial("target", False)
+        self.assertEqual(self.coordinator._aligned["token"], "source")
+        self.assertEqual(self.coordinator._last_render_token, "source")
+        self.windows.hide.assert_not_called()
+        self.coordinator._pending_aligned = dict(token="next")
+        self.coordinator._cancel_pending_material("target-material-timeout")
+        self.runtime.acknowledge_sibling.assert_called_with("next", False, reason="target-material-timeout")
+        self.assertEqual(self.coordinator._aligned["token"], "source")
+        self.assertEqual(self.coordinator._pending_aligned, {})
+
+    def test_recorded_pending_material_cannot_enter_game_presenter(self):
+        self.runtime.pending_sibling_payload = Mock(return_value=dict(token="recorded", liveAuthorization=False))
+        self.runtime.acknowledge_sibling = Mock()
+        self.coordinator._prepare_sibling_material(dict(token="recorded"))
+        self.assertEqual(self.coordinator._pending_aligned, {})
+        self.runtime.acknowledge_sibling.assert_not_called()
+        self.windows.show.assert_not_called()
+
+    def test_queued_rollback_discards_target_material_without_losing_source(self):
+        import numpy as np
+        from client_coordinator import LiveImages
+        self.coordinator.images = images = LiveImages()
+        pixels = np.full((3, 4, 4), 255, dtype=np.uint8)
+        for key in ("source", "reference:source", "pending:target"):
+            images.publish(key, pixels)
+        self.assertEqual(len(images._images), 3)
+        self.coordinator._aligned = dict(token="source")
+        self.coordinator._pending_aligned = dict(token="target")
+        self.coordinator.runtimeEvent.emit(dict(event="sibling-rolled-back", token="target"))
+        self.app.processEvents()
+        self.assertEqual(set(images._images), {"source", "reference:source"})
+        self.assertEqual(self.coordinator._aligned, dict(token="source"))
+        self.assertEqual(self.coordinator.pendingAlignedData, {})
+        self.windows.hide.assert_not_called()
+
+    def test_invalid_target_geometry_does_not_keep_an_expired_source(self):
+        self.coordinator._aligned = dict(token="expired-source")
+        self.coordinator._last_render_token = "expired-source"
+        self.runtime.pending_sibling_payload = Mock(return_value=dict(token="target", liveAuthorization=True))
+        self.runtime.acknowledge_sibling = Mock(return_value=dict(success=False, sourceRetained=False))
+        with patch.object(self.coordinator, "_convert_client_geometry", side_effect=ValueError("screen-changed")):
+            self.coordinator._prepare_sibling_material(dict(token="target"))
+        self.assertEqual(self.coordinator.alignedData, {})
+        self.assertIsNone(self.coordinator._last_render_token)
+        self.windows.hide.assert_called_with("aligned")
 
 
 if __name__ == "__main__":

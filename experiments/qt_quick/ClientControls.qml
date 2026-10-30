@@ -22,11 +22,40 @@ Window {
     readonly property var preferences: settingsService.values
     readonly property var layout: preferences.gameControlLayout || ({order: [], enabled: [], display: {}})
     readonly property var snapshot: session.snapshot
+    readonly property string appliedMode: session.appliedMode || session.currentMode
     readonly property var activeModules: layout.order.filter(function(key) { return layout.enabled.indexOf(key) >= 0 })
     readonly property var actionOrder: ["toggle-panel", "candidate-prev", "candidate-next", "confirm-round", "cycle-floor", "end-round", "toggle-sheet-visibility", "start-round", "toggle-round"]
     function available(action) {
         return !!snapshot.commands && !!snapshot.commands[action] && snapshot.commands[action].available
                && !snapshot.resourceLocked && (!session.busy || action === "end_round")
+    }
+    function modeAvailable() {
+        return !!snapshot.commands && !!snapshot.commands.set_game_mode && snapshot.commands.set_game_mode.available
+               && !snapshot.roundActive && !snapshot.roundPreparing && !snapshot.resourceLocked
+               && !snapshot.contextPending && !settingsService.busy
+               && (!session.busy || snapshot.pendingAction === "refresh_map")
+    }
+    function provisionalGroup() {
+        return snapshot.identityPhase === "GROUP_LOCKED" || (snapshot.groupLocked && snapshot.identityPhase !== "MEMBER_VERIFIED")
+    }
+    function mapText() {
+        if (provisionalGroup()) return snapshot.provisionalMapId ? "暂用 " + snapshot.provisionalMapId : "相似组 " + (snapshot.groupId || "")
+        return snapshot.mapName || snapshot.mapId || ""
+    }
+    function statusText() {
+        if (snapshot.contextPending) return "正在切换模式或路线"
+        if (snapshot.roundPreparing || (session.busy && snapshot.pendingAction === "start_round")) return "正在准备本局"
+        if (provisionalGroup()) return snapshot.displayAuthorized ? "相似组已锁定 · " + outputStatus() : "相似组已锁定 · 位置待核对"
+        if (snapshot.identityPhase === "MEMBER_VERIFIED") return snapshot.displayAuthorized ? "地图已核对 · " + outputStatus() : "地图已核对 · 位置待核对"
+        if (!clientCoordinator.boundWindow) {
+            return snapshot.roundActive || snapshot.mapOpen || snapshot.mapId || snapshot.observedFloor ? "游戏连接待核对" : "等待游戏"
+        }
+        if (!snapshot.roundActive) return "游戏已连接 · 等待开始本局"
+        if (snapshot.mapOpen) return snapshot.displayAuthorized ? "地图已打开 · " + outputStatus() : "地图已打开 · 正在核对"
+        return "本局进行中"
+    }
+    function outputStatus() {
+        return preferences.sheetVisibilityEnabled === false ? "贴合已隐藏" + (shortcut("toggle-sheet-visibility") ? " · " + shortcut("toggle-sheet-visibility") + "显示" : "") : "贴合已就绪"
     }
     function shortcut(action) {
         var index = actionOrder.indexOf(action)
@@ -113,8 +142,8 @@ Window {
             ColumnLayout {
                 anchors.left: parent.left; anchors.right: tools.left; anchors.rightMargin: 8; anchors.top: parent.top
                 spacing: 3
-                Label { text: panel.snapshot.controlStatusText || panel.snapshot.title || "等待游戏"; color: "#5c677d"; font.family: "Microsoft YaHei UI"; font.pixelSize: 13; font.bold: true; Layout.fillWidth: true; elide: Text.ElideRight }
-                Label { text: (panel.snapshot.mapName || panel.snapshot.mapId || "") + (panel.snapshot.mapName || panel.snapshot.mapId ? " · " : "") + panel.floorText(); color: "#5c677d"; font.family: "Microsoft YaHei UI"; font.pixelSize: 12; Layout.fillWidth: true; elide: Text.ElideRight }
+                Label { objectName: "controlStatusText"; text: panel.statusText(); color: "#5c677d"; font.family: "Microsoft YaHei UI"; font.pixelSize: 13; font.bold: true; Layout.fillWidth: true; elide: Text.ElideRight }
+                Label { objectName: "controlMapFloorText"; text: panel.mapText() + (panel.mapText() ? " · " : "") + panel.floorText(); color: "#5c677d"; font.family: "Microsoft YaHei UI"; font.pixelSize: 12; Layout.fillWidth: true; elide: Text.ElideRight }
             }
             Label {
                 anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.bottomMargin: 8
@@ -223,8 +252,8 @@ Window {
             spacing: 4
             RowLayout {
                 Layout.fillWidth: true; Layout.topMargin: 8; spacing: 4
-                ControlButton { text: session.currentMode === "nightmare" ? "噩梦 · 已选" : "噩梦"; primary: session.currentMode === "nightmare"; enabled: panel.available("set_game_mode"); Layout.fillWidth: true; onClicked: clientCoordinator.setMode("nightmare") }
-                ControlButton { text: session.currentMode === "difficult" ? "困难 · 已选" : "困难"; primary: session.currentMode === "difficult"; enabled: panel.available("set_game_mode"); Layout.fillWidth: true; onClicked: clientCoordinator.setMode("difficult") }
+                ControlButton { objectName: "controlModeNightmare"; text: panel.appliedMode === "nightmare" ? "噩梦 · 已选" : "噩梦"; primary: panel.appliedMode === "nightmare"; selected: panel.appliedMode === "nightmare"; enabled: panel.modeAvailable(); Layout.fillWidth: true; onClicked: clientCoordinator.setMode("nightmare") }
+                ControlButton { objectName: "controlModeDifficult"; text: panel.appliedMode === "difficult" ? "困难 · 已选" : "困难"; primary: panel.appliedMode === "difficult"; selected: panel.appliedMode === "difficult"; enabled: panel.modeAvailable(); Layout.fillWidth: true; onClicked: clientCoordinator.setMode("difficult") }
             }
         }
     }

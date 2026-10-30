@@ -139,6 +139,7 @@ class QtClient:
         self.problems = ProblemsService(self.paths, build_fingerprint=self.info._build_fingerprint,
             source_commit=self.info._package_metadata.get('qtSourceCommit') or self.info._package_metadata.get('releaseReportSourceCommit') or '')
         self.coordinator.errorReported.connect(self.problems.record)
+        self.coordinator.traceReported.connect(self.problems.recordTrace)
         self.info.setProviders(session=self.session, resources=self.resources, input=self.input,
                                coordinator=self.coordinator, problems=self.problems)
         self.coordinator.close_writers = (self.custom_galleries, self.info, self.online_packages,

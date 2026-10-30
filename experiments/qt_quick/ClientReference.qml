@@ -17,6 +17,21 @@ Window {
     readonly property var preferences: settingsService.values
     readonly property var referenceData: clientCoordinator.referenceData
     readonly property bool editing: clientCoordinator.referenceEditing
+    function reportSurface() {
+        if (!clientCoordinator || typeof clientCoordinator.reportPresentation !== "function") return
+        var labels = ["empty", "ready", "loading", "error"]
+        clientCoordinator.reportPresentation("reference", {visible: visible,
+            imageStatus: labels[mapImage.status] || "unknown", materialReady: mapImage.status === Image.Ready,
+            effectiveOpacity: opacity * mapImage.opacity, geometry: [x,y,width,height],
+            paintedSize: [mapImage.paintedWidth, mapImage.paintedHeight]})
+    }
+    function scheduleReport() { Qt.callLater(reportSurface) }
+    onVisibleChanged: scheduleReport()
+    onReferenceDataChanged: scheduleReport()
+    onWidthChanged: scheduleReport()
+    onHeightChanged: scheduleReport()
+    onXChanged: scheduleReport()
+    onYChanged: scheduleReport()
     onClosing: function(event) {
         event.accepted = clientCoordinator.closeReady
         if (!event.accepted) clientCoordinator.hideReference()
@@ -33,6 +48,14 @@ Window {
             asynchronous: true
             fillMode: Image.PreserveAspectFit
             opacity: reference.preferences.referenceOpacity
+            onStatusChanged: reference.scheduleReport()
+            onOpacityChanged: reference.scheduleReport()
+        }
+        Label {
+            anchors.left: mapImage.left; anchors.right: mapImage.right; anchors.top: mapImage.top
+            visible: reference.referenceData.provisional === true
+            text: "暂选地图｜组内确认中"; color: "#ffd773"; padding: 5; font.pixelSize: 14
+            background: Rectangle { color: "#2d230c" }
         }
         MouseArea {
             anchors.fill: mapImage

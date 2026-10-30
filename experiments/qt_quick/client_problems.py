@@ -4,7 +4,7 @@ Only supplied diagnostic metadata is accepted. No frame/configuration is read.
 pendingWrites includes the queued completion callback, not just active threads.
 """
 from __future__ import annotations
-from collections import deque
+from collections import OrderedDict, deque
 from copy import deepcopy
 from datetime import datetime, timezone
 import json
@@ -45,6 +45,22 @@ def _metadata(value, depth=0):
     return None
 
 
+def _trace_state(value):
+    """Material state, excluding per-frame identity/clock values from dedup."""
+    if isinstance(value, dict):
+        result = {}
+        for key, item in value.items():
+            lowered = key.lower()
+            if ('token' in lowered or 'generation' in lowered or lowered in
+                    {'frame', 'frameid', 'timestamp', 'timestamputc', 'time', 'elapsed', 'latency'}):
+                continue
+            result[key] = bool(item) if lowered.endswith(('source', 'url')) else _trace_state(item)
+        return result
+    if isinstance(value, list):
+        return [_trace_state(item) for item in value]
+    return value
+
+
 def _details(row):
     return (f"时间：{row['localTime']}\nUTC：{row['timestampUTC']}\n"
             f"最近出现（UTC）：{row['lastTimestampUTC']} · 共 {row['count']} 次\n"
@@ -74,7 +90,7 @@ def _write_batch(path, rows):
     handler.setFormatter(logging.Formatter('%(message)s'))
     try:
         for row in rows:
-            message = json.dumps(dict(event='qt-runtime-problem', **row), ensure_ascii=False)
+            message = json.dumps(dict({'event': 'qt-runtime-problem'}, **row), ensure_ascii=False)
             handler.emit(logging.LogRecord('xingtu.problems', logging.WARNING, '', 0, message, (), None))
     finally:
         handler.close()
@@ -100,6 +116,7 @@ class _Write(QRunnable):
 
 class ProblemsService(QObject):
     changed = Signal()
+    recentChanged = Signal()
 
     def __init__(self, paths, parent=None, *, build_fingerprint='UNKNOWN', source_commit=''):
         super().__init__(parent)
@@ -113,9 +130,10 @@ class ProblemsService(QObject):
         self._inflight_rows, self._dropped = 0, 0
         self._build_fingerprint = _text(build_fingerprint, 64)
         self._source_commit = _text(source_commit, 40)
+        self._trace_states = OrderedDict()
 
     recent = Property('QVariantList', lambda self: [{key: deepcopy(value) for key,value in row.items()
-                       if key != '_signature'} for row in self._recent], notify=changed)
+                       if key != '_signature'} for row in self._recent], notify=recentChanged)
     pendingWrites = Property(bool, lambda self: bool(self._job is not None or self._queue), notify=changed)
     writeError = Property(str, lambda self: self._write_error, notify=changed)
     droppedWrites = Property(int, lambda self: self._dropped, notify=changed)
@@ -147,6 +165,7 @@ class ProblemsService(QObject):
         if existing is not None:
             existing.update(count=existing['count']+1, lastTimestampUTC=utc)
             self._recent.remove(existing); self._recent.insert(0, existing)
+            self.recentChanged.emit()
             self.changed.emit()
             return True  # Coalesced in memory; no per-refresh append or write.
         self._sequence += 1
@@ -160,8 +179,55 @@ class ProblemsService(QObject):
         else:
             self._dropped += 1
             self._write_error = '问题日志队列已满，部分问题仅保留在本次运行列表。'
+        self.recentChanged.emit()
         self.changed.emit()
         return accepted
+
+    @Slot(object, result=bool)
+    def recordTrace(self, event):
+        if not self._accepting or not isinstance(event, dict):
+            return False
+        names = ('role', 'kind', 'stage', 'action', 'reason', 'mode', 'groupid', 'identityPhase',
+                 'provisional', 'durablemap', 'floor', 'round', 'cycle', 'frame', 'generation',
+                 'token', 'window', 'phase', 'status', 'visible', 'material')
+        row = {}
+        for name in names:
+            if name not in event:
+                continue
+            value = _metadata(event[name])
+            encoded_value = json.dumps(value, ensure_ascii=False)
+            row[name] = value if len(encoded_value.encode('utf-8')) <= 2048 else dict(summary=_text(encoded_value, 1900), truncated=True)
+        diagnostics = _metadata(event.get('diag', event.get('diagnostics', {})))
+        encoded = json.dumps(diagnostics, ensure_ascii=False)
+        row['diag'] = diagnostics if len(encoded.encode('utf-8')) <= 2048 else dict(summary=_text(encoded, 1900), truncated=True)
+        window = row.get('window')
+        window_id = window.get('name', window.get('role', '')) if isinstance(window, dict) else window
+        key = json.dumps([row.get('role'), row.get('stage'), window_id], sort_keys=True)
+        signature = json.dumps(_trace_state({name: value for name,value in row.items()
+                               if name not in {'diag', 'frame', 'generation', 'token'}}), sort_keys=True)
+        previous = self._trace_states.get(key)
+        if previous is not None and previous[0] == signature:
+            self._trace_states[key] = (signature, previous[1]+1)
+            self._trace_states.move_to_end(key)
+            return True  # No per-refresh UI notification or disk append.
+        if len(self._queue) + self._inflight_rows >= PENDING_LIMIT:
+            self._dropped += 1
+            self._write_error = '运行诊断日志队列已满，部分状态未写入。'
+            self.changed.emit()
+            return False
+        now = datetime.now(timezone.utc)
+        row.update(event='qt-runtime-transition', timestampUTC=now.isoformat(timespec='milliseconds').replace('+00:00', 'Z'),
+                   buildFingerprint=self._build_fingerprint, sourceCommit=self._source_commit, count=1)
+        if previous is not None and previous[1] > 1:
+            row['previousRepeatedCount'] = previous[1]
+        self._trace_states[key] = (signature, 1)
+        self._trace_states.move_to_end(key)
+        while len(self._trace_states) > 64:
+            self._trace_states.popitem(last=False)
+        self._queue.append(row)
+        self._start_next()
+        self.changed.emit()
+        return True
 
     def _start_next(self):
         if self._job is not None or not self._queue:

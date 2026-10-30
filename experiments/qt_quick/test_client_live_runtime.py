@@ -58,7 +58,7 @@ def fixture_engine(mode="nightmare"):
     engine.pack.floors = engine.identity_floors
     def rank(*args, **kwargs):
         engine.rank_count += 1
-        return [dict(mapId="fixture-map", identityHardGatePassed=True)]
+        return [dict(mapId="fixture-map", identityHardGatePassed=True, strongSuggestion=True)]
     engine.rank = rank
     engine.qt_map_ui = SimpleNamespace(observe=lambda *a: dict(mapOpen=True, floor="1"))
     return engine
@@ -184,7 +184,7 @@ class LiveRuntimeContracts(unittest.TestCase):
     def test_refresh_cannot_overwrite_initial_manual_selection_before_confirm(self):
         self.unconfirmed_candidates()
         self.dispatch("select_candidate", index=1)
-        self.engine.rank = Mock(return_value=[dict(mapId="second-map", identityHardGatePassed=True)])
+        self.engine.rank = Mock(return_value=[dict(mapId="second-map", identityHardGatePassed=True, strongSuggestion=True)])
         self.assertEqual(self.dispatch("refresh_map")["reason"], "candidate-awaiting-confirmation")
         self.engine.rank.assert_not_called()
         self.assertEqual(self.runtime.snapshot()["selectedCandidate"]["key"], "fixture-map")
@@ -546,7 +546,7 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertEqual(after["generation"], before["generation"] + 1)
         self.assertNotEqual(after["authorizationId"], before["authorizationId"])
         self.assertEqual(self.runtime.snapshot()["core"]["poses"], poses)
-        self.assertEqual([row["event"] for row in events], ["render-ready"])
+        self.assertEqual([row["event"] for row in events], ["pose-attempt", "pose-result", "render-ready"])
         self.assertEqual(self.runtime.snapshot()["pendingRenderToken"], first["renderToken"])
         json.dumps(events, allow_nan=False)
 
@@ -594,7 +594,7 @@ class LiveRuntimeContracts(unittest.TestCase):
             worker = threading.Thread(target=lambda: output.append(self.runtime.dispatch("refresh_map", {}, cancelled)))
             worker.start(); self.assertTrue(entered.wait(5))
             self.assertIsNone(self.runtime.render_payload(first["renderToken"]))
-            self.assertEqual(events[0]["reason"], "current-frame-residual-failed")
+            self.assertEqual(next(row["reason"] for row in events if row["event"] == "render-revoked"), "current-frame-residual-failed")
             cancelled.set(); release.set(); worker.join(5)
         self.assertFalse(output[0]["success"])
         self.assertTrue(output[0]["stale"])
@@ -640,7 +640,7 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertFalse(output[0]["success"])
         self.assertTrue(output[0]["stale"])
         self.assertIsNone(self.runtime.render_payload(first["renderToken"]))
-        self.assertEqual([row["event"] for row in events], ["render-revoked"])
+        self.assertEqual([row["event"] for row in events], ["pose-attempt", "render-revoked"])
 
     def test_visibility_preserves_pose_and_hidden_refresh_still_runs(self):
         first = self.begin_and_capture()

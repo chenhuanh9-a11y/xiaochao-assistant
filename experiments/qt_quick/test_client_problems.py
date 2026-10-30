@@ -116,5 +116,32 @@ class ProblemTests(unittest.TestCase):
         rows=[json.loads(line) for line in self.service.log_path.read_text('utf-8').splitlines()]
         self.assertEqual(len(rows),1+sum(accepted))
 
+    def test_trace_deduplicates_frame_refresh_without_recent_and_drains(self):
+        original=list(self.service.recent)
+        recent_notifications=[]
+        self.service.recentChanged.connect(lambda:recent_notifications.append(1))
+        trace=dict(role='overlay',kind='publish',stage='display',action='refresh',reason='ready',
+            mode='nightmare',groupid='similar-198',identityPhase='provisional',provisional=True,
+            durablemap='',floor='1',round=2,cycle=7,frame=1,generation=1,token='first',
+            window={'name':'reference','visible':True,'hasImage':True,'imageSource':'image://live/1'},
+            diag={'available':True})
+        self.assertTrue(self.service.recordTrace(trace))
+        for index in range(100):
+            changed=dict(trace,frame=index+2,generation=index+2,token=str(index))
+            changed['window']=dict(trace['window'],imageSource='image://live/'+str(index))
+            self.assertTrue(self.service.recordTrace(changed))
+        self.assertTrue(self.service.recordTrace(dict(trace,kind='hide',reason='hidden',window={'name':'reference','visible':False,'hasImage':False})))
+        self.assertTrue(self.service.recordTrace(trace))  # Recovery is a transition, not a duplicate of the old publish.
+        self.service.shutdown();self.assertFalse(self.service.recordTrace(trace))
+        self.wait(lambda:not self.service.pendingWrites)
+        self.assertEqual(self.service.recent,original)
+        self.assertEqual(recent_notifications,[])
+        rows=[json.loads(line) for line in self.service.log_path.read_text('utf-8').splitlines()]
+        self.assertEqual(len(rows),3)
+        self.assertTrue(all(row['event']=='qt-runtime-transition' for row in rows))
+        self.assertEqual(rows[0]['token'],'first');self.assertEqual(rows[0]['generation'],1)
+        self.assertEqual(rows[1]['previousRepeatedCount'],101)
+        self.assertEqual(self.service.pool.maxThreadCount(),1)
+
 
 if __name__=='__main__':unittest.main()
