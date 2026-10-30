@@ -392,6 +392,14 @@ class HotkeyEditorView(tk.Frame):
         if editing and target in self._advanced_targets and not self._advanced_open:
             self._advanced_open = True
             self._layout_advanced()
+        signature = (editing, phase, target, self._advanced_open,
+            tuple((key, key in bindings, (bindings.get(key) or {}).get('text'), (bindings.get(key) or {}).get('label'),
+                   (bindings.get(key) or {}).get('canEdit')) for key in self.entries),
+            tuple(snapshot.get(key) for key in ('currentLabel', 'candidateLabel', 'canRecord',
+                                                'canConfirm', 'canClear', 'error')))
+        if signature == getattr(self, '_render_signature', None):
+            return
+        self._render_signature = signature
         for key, button in self.entries.items():
             binding = bindings.get(key) or {}
             raw = str(binding.get("text") or "未绑定") if key in bindings else "尚未读取"
@@ -451,6 +459,7 @@ class DesktopMainUI:
         self.window.protocol("WM_DELETE_WINDOW", self._request_main_close)
         self.window.bind("<Escape>", lambda _event: self.hide())
         self._page = "home"
+        self._view_ready = False
         self._nav_buttons: dict[str, tk.Button] = {}
         self._page_frames: dict[str, tk.Frame] = {}
         self._scroll_pages = {}
@@ -473,6 +482,7 @@ class DesktopMainUI:
         self._update_dialog = None
         self.updates = UpdateService(self._display_version_text(), self._update_state_path())
         self._build()
+        self._view_ready = True
         self.display.start(self.root)
         self.root.after(2500, lambda: None if self._closed else self._check_updates())
         self.window.bind("<Destroy>", self._destroy, add="+")
@@ -1088,6 +1098,8 @@ class DesktopMainUI:
         # Tile dimensions, pack and author own preview invalidation independently.
 
     def _poll_home_previews(self):
+        if self._closed or self._page != "home" or not self.window.winfo_viewable():
+            return
         # Decoding can finish in parallel; defer only noncritical Tk uploads
         # until both page motions finish. Keep the latest context check below.
         if (not self._closed and (getattr(self, '_nav_mark_animating', False)
@@ -1496,7 +1508,8 @@ class DesktopMainUI:
 
     def _sync_chest_auto_tap(self):
         state = self.assistant.chest_auto_tap_snapshot()
-        signature = (state.get("enabled"), state.get("status"), state.get("holding"), state.get("error"))
+        signature = tuple(state.get(key) for key in ('enabled', 'status', 'holding', 'error',
+                                                     'available', 'holdKey', 'tapKey'))
         if signature == self._chest_signature:
             return
         self._chest_signature = signature
@@ -1828,14 +1841,14 @@ class DesktopMainUI:
 
     def _refresh_route_choices(self) -> None:
         choices = [label for _key, label in self.assistant._mode_route_options()]
-        self.route_box.configure(values=choices)
+        self._configure_changed(self.route_box, values=tuple(choices))
 
     def _change_mode(self, event=None) -> None:
         requested = self._mode_choice.get()
         callback = getattr(self.assistant, "set_game_mode", None)
         result = callback("difficult" if requested == "困难" else "nightmare") if callable(callback) else None
         self._refresh_route_choices()
-        self._refresh_maps()
+        if self._page == "maps": self._refresh_maps()
         actual = self.assistant.game_mode_var.get()
         self._mode_choice.set(actual)
         self._action_feedback.set(str(result.get("message") or "模式未切换。")
@@ -1969,122 +1982,140 @@ class DesktopMainUI:
             callback()
         self._sync_view()
 
+    @staticmethod
+    def _configure_changed(widget, **options):
+        """Compare actual widget values; another owner cannot stale a UI cache."""
+        changed = {}
+        for key, value in options.items():
+            current = widget.cget(key)
+            if isinstance(value, (tuple, list)):
+                current = current if isinstance(current, (tuple, list)) else widget.tk.splitlist(current)
+                equal = tuple(map(str, current)) == tuple(map(str, value))
+            else:
+                equal = str(current) == str(value)
+            if not equal:
+                changed[key] = value
+        if changed:
+            widget.configure(**changed)
+
     def _sync_view(self):
         getter = getattr(self.assistant, "_route_presentation_snapshot", None)
         snapshot = getter() if callable(getter) else {}
-        self.map_browser.sync_game_mode(snapshot)
-        if self._page == "custom":
-            self.custom_editor.refresh()
-        elif self._page == "preferences":
-            self._sync_chest_auto_tap()
-        self.hide_button.configure(text="最小化到任务栏")
-        control_visible = snapshot.get("controlVisible")
-        self.panel_button.configure(text="  查看游戏控件" if control_visible is True else "  打开游戏控件")
+        update = self._configure_changed
         connected = bool(getattr(self.assistant, "game_hwnd", None))
-        self.header_caption.configure(text="●  已连接游戏" if connected else "○  等待连接游戏",
-                                      fg=SIDEBAR_SUCCESS if connected else SIDEBAR_MUTED)
-        foreground = snapshot.get("foreground") is True
-        phase = snapshot.get("phase")
-        title = snapshot.get("title") or "等待运行状态"
-        message = snapshot.get("message") or "尚未收到当前运行状态。"
-        color = status_color(snapshot)
-        self.home_status.configure(text=snapshot.get("controlStatusText") or title, fg=color)
-        self.home_message.configure(text=message)
-        mode = self.assistant.active_mode_var.get()
-        route = self.assistant.route_profile_var.get()
-        self.home_setup_summary.configure(text=f"{mode.removeprefix('当前模式：')} · {route}")
+        update(self.header_caption, text="●  已连接游戏" if connected else "○  等待连接游戏",
+               fg=SIDEBAR_SUCCESS if connected else SIDEBAR_MUTED)
+        mode, route = self.assistant.active_mode_var.get(), self.assistant.route_profile_var.get()
+        update(self.home_setup_summary, text=f"{mode.removeprefix('当前模式：')} · {route}")
         today = time.localtime()
-        self.header_greeting.configure(text=f"{today.tm_mon}月{today.tm_mday}日 · 星期{'一二三四五六日'[today.tm_wday]}")
-        self._mode_choice.set(self.assistant.game_mode_var.get())
-        key_getter = getattr(self.assistant, "hotkey_editor_snapshot", None)
-        key_snapshot = key_getter() if callable(key_getter) else {}
-        key_texts = {}
+        update(self.header_greeting, text=f"{today.tm_mon}月{today.tm_mday}日 · 星期{'一二三四五六日'[today.tm_wday]}")
+        key_snapshot = {}
+        if self._page in {"home", "preferences", "help"}:
+            getter = getattr(self.assistant, "hotkey_editor_snapshot", None)
+            key_snapshot = getter() if callable(getter) else {}
+        if self._page == "home":
+            self._sync_home_page(snapshot, key_snapshot)
+        elif self._page == "preferences":
+            self._sync_preferences_page(snapshot, key_snapshot)
+        elif self._page == "help":
+            bindings = key_snapshot.get("bindings") or {}
+            self._sync_help_bindings({key: str((bindings.get(key) or {}).get("text") or "未设置")
+                                      for key in self.home_keycaps})
+            exporting = bool(getattr(self.assistant, "diagnostic_export_in_progress", False))
+            update(self.export_button, text="正在导出…" if exporting else "导出排查信息",
+                state="disabled" if exporting or not callable(getattr(self.assistant, "export_diagnostic_logs", None)) else "normal")
+            update(self.export_feedback, text="导出操作正在后台进行。" if exporting else "完成后会显示文件位置。")
+            update(self.help_status, text=snapshot.get("message") or self.assistant.quick_connection_var.get(), fg=status_color(snapshot))
+        elif self._page == "maps":
+            self.map_browser.sync_game_mode(snapshot)
+            self.map_browser.sync_map_package_import()
+            self.map_browser.sync_online_packages()
+        elif self._page == "custom":
+            self.custom_editor.refresh()
+
+    def _sync_home_page(self, snapshot, key_snapshot):
+        update = self._configure_changed
+        update(self.panel_button, text="  查看游戏控件" if snapshot.get("controlVisible") is True else "  打开游戏控件")
+        foreground, phase = snapshot.get("foreground") is True, snapshot.get("phase")
+        title = snapshot.get("title") or "等待运行状态"
+        color = status_color(snapshot)
+        update(self.home_status, text=snapshot.get("controlStatusText") or title, fg=color)
+        update(self.home_message, text=snapshot.get("message") or "尚未收到当前运行状态。")
+        bindings = key_snapshot.get("bindings") or {}
         for target, label in self.home_keycaps.items():
-            key_texts[target] = str((key_snapshot.get("bindings", {}).get(target) or {}).get("text") or "未设置")
-            label.configure(text=key_texts[target])
-        self._sync_help_bindings(key_texts)
-        self._sync_reference_controls()
-        self.map_browser.sync_map_package_import()
-        self.map_browser.sync_online_packages()
-        self.home_session.configure(text=snapshot.get("roundStateText") or "本局状态未知")
-        self.home_dot.configure(fg=color)
-        map_id = snapshot.get("mapId")
-        item = getattr(self.assistant.pack, "by_id", {}).get(map_id)
+            update(label, text=str((bindings.get(target) or {}).get("text") or "未设置"))
+        update(self.home_session, text=snapshot.get("roundStateText") or "本局状态未知")
+        update(self.home_dot, fg=color)
+        item = getattr(self.assistant.pack, "by_id", {}).get(snapshot.get("mapId"))
         locked = snapshot.get("locked") is True
-        self.home_round.configure(text=(getattr(item, "name", "") if locked else "待确认"),
-                                  fg=TEXT if locked else MUTED)
+        update(self.home_round, text=(getattr(item, "name", "") if locked else "待确认"), fg=TEXT if locked else MUTED)
         floor = snapshot.get("controlFloorText")
-        self.home_display.configure(text=floor or "待核对", fg=MUTED if not floor or "待" in floor else TEXT)
-        redundant_status = self.home_status.cget("text") in {
+        update(self.home_display, text=floor or "待核对", fg=MUTED if not floor or "待" in floor else TEXT)
+        redundant = self.home_status.cget("text") in {
             self.home_session.cget("text"), self.home_round.cget("text"), self.home_display.cget("text")}
-        if redundant_status:
-            self.home_status.pack_forget()
-        elif not self.home_status.winfo_manager():
-            self.home_status.pack(fill="x")
         visible = snapshot.get("userVisible")
-        self.visibility_button.configure(
+        update(self.visibility_button,
             text="关闭显影" if visible is True else "允许显影" if visible is False else "显影状态未知",
-            state="normal" if (visible is True or visible is False) and callable(getattr(self.assistant, "toggle_sheet_visibility", None)) else "disabled",
-            bg=WARNING_BG if visible is False else BUTTON_BG,
-            fg=GOLD if visible is False else BUTTON_TEXT)
-        self.preferences_visibility_button.configure(
-            text="开启" if visible is True else "关闭" if visible is False else "未知",
-            state="normal" if isinstance(visible, bool) else "disabled",
-            bg=PRIMARY if visible is True else BUTTON_BG,
-            fg="white" if visible is True else BUTTON_TEXT)
+            state="normal" if isinstance(visible, bool) and callable(getattr(self.assistant, "toggle_sheet_visibility", None)) else "disabled",
+            bg=WARNING_BG if visible is False else BUTTON_BG, fg=GOLD if visible is False else BUTTON_TEXT)
         active = snapshot.get("roundActive") is True
         action_button = self.end_round_button if active else self.start_round_button
-        (self.start_round_button if active else self.end_round_button).pack_forget()
-        if not action_button.winfo_manager():
-            action_button.pack(side="left", before=self.visibility_button)
-        action_button.configure(text=snapshot.get("roundActionText") or ("结束本局" if active else "开始本局"),
-                                state="normal" if snapshot.get("roundEndEnabled" if active else "roundStartEnabled") is True
-                                and callable(getattr(self.assistant, "end_round" if active else "start_round", None)) else "disabled")
-        focus_callback = getattr(self.assistant, "focus_game_from_desktop", None)
-        can_return = callable(focus_callback) and bool(getattr(self.assistant, "game_hwnd", None))
-        recovery = phase in {"needs-user", "failed"}
+        update(action_button, text=snapshot.get("roundActionText") or ("结束本局" if active else "开始本局"),
+            state="normal" if snapshot.get("roundEndEnabled" if active else "roundStartEnabled") is True
+            and callable(getattr(self.assistant, "end_round" if active else "start_round", None)) else "disabled")
+        can_return = callable(getattr(self.assistant, "focus_game_from_desktop", None)) and bool(getattr(self.assistant, "game_hwnd", None))
         pending = snapshot.get("pending") is True
-        self.recognition_button.configure(
-            text="查看恢复步骤" if recovery else "查看识别与路线",
+        recovery = phase in {"needs-user", "failed"}
+        update(self.recognition_button, text="查看恢复步骤" if recovery else "查看识别与路线",
             state="normal" if callable(getattr(self.assistant, "_open_recognition_details", None)) and not pending else "disabled")
         next_action = ("先切回游戏，再从游戏控件查看。" if not foreground and can_return else
-                       "请先打开第五人格。" if not can_return else
-                       "正在处理，请稍候。" if pending else "")
-        self.recognition_hint.configure(text=next_action)
-        show_message = recovery or pending or self._home_details_open
-        # Keep a live anchor in every state. Empty Labels/Frames still request
-        # height in Tk, so they must not reserve a silent line in the hero.
-        previous = self.home_actions
-        for widget, shown in ((self.home_details, show_message and not redundant_status),
-                              (self.home_message, show_message),
-                              (self.recognition_hint, bool(next_action))):
-            if shown:
-                widget.pack(fill="x", pady=(10 if previous is self.home_actions else 4, 0), after=previous)
-                previous = widget
-            else:
-                widget.pack_forget()
-        if self._action_feedback.get():
-            self.home_feedback.pack(fill="x", pady=(10, 0))
-        else:
-            self.home_feedback.pack_forget()
-        self.return_game_button.configure(state="normal" if can_return else "disabled")
+                       "请先打开第五人格。" if not can_return else "正在处理，请稍候。" if pending else "")
+        update(self.recognition_hint, text=next_action)
+        shown = recovery or pending or self._home_details_open
+        layout = redundant, active, shown, bool(next_action), bool(self._action_feedback.get())
+        if layout != getattr(self, '_home_state_layout', None):
+            self._home_state_layout = layout
+            if redundant:
+                if self.home_status.winfo_manager(): self.home_status.pack_forget()
+            elif not self.home_status.winfo_manager(): self.home_status.pack(fill="x")
+            inactive_button = self.start_round_button if active else self.end_round_button
+            if inactive_button.winfo_manager(): inactive_button.pack_forget()
+            if not action_button.winfo_manager(): action_button.pack(side="left", before=self.visibility_button)
+            previous = self.home_actions
+            for widget, display in ((self.home_details, shown and not redundant),
+                                    (self.home_message, shown), (self.recognition_hint, bool(next_action))):
+                if display:
+                    widget.pack(fill="x", pady=(10 if previous is self.home_actions else 4, 0), after=previous)
+                    previous = widget
+                elif widget.winfo_manager(): widget.pack_forget()
+            if self._action_feedback.get(): self.home_feedback.pack(fill="x", pady=(10, 0))
+            elif self.home_feedback.winfo_manager(): self.home_feedback.pack_forget()
+        update(self.return_game_button, state="normal" if can_return else "disabled")
         self._refresh_home_resources()
+        self._poll_home_previews()
+        canvas, content = self._scroll_pages['home'][:2]
+        metrics = canvas.winfo_width(), canvas.winfo_height(), content.winfo_reqheight()
+        if metrics != getattr(self, '_home_canvas_metrics', None):
+            self._home_canvas_metrics = metrics
+            self._fit_home_canvas()
+
+    def _sync_preferences_page(self, snapshot, key_snapshot):
+        mode = self.assistant.game_mode_var.get()
+        if self._mode_choice.get() != mode: self._mode_choice.set(mode)
+        visible = snapshot.get("userVisible")
+        self._configure_changed(self.preferences_visibility_button,
+            text="开启" if visible is True else "关闭" if visible is False else "未知",
+            state="normal" if isinstance(visible, bool) else "disabled",
+            bg=PRIMARY if visible is True else BUTTON_BG, fg="white" if visible is True else BUTTON_TEXT)
+        self._sync_chest_auto_tap()
+        self._sync_reference_controls()
         preferred = getattr(self.assistant, "preferred_route_profile_id", None)
         if preferred == "zhan10-coffin" and hasattr(self.assistant, "coffin_variant_var"):
             if not self.variant_row.winfo_manager():
                 self.variant_row.pack(fill="x", pady=(0, 14), after=self._variant_anchor)
-        else:
-            self.variant_row.pack_forget()
+        elif self.variant_row.winfo_manager(): self.variant_row.pack_forget()
         self._refresh_route_choices()
-        self.hotkey_editor.render()
-        exporting = bool(getattr(self.assistant, "diagnostic_export_in_progress", False))
-        self.export_button.configure(text="正在导出…" if exporting else "导出排查信息",
-            state="disabled" if exporting or not callable(getattr(self.assistant, "export_diagnostic_logs", None)) else "normal")
-        self.export_feedback.configure(text="导出操作正在后台进行。" if exporting else "完成后会显示文件位置。")
-        self.help_status.configure(text=snapshot.get("message") or self.assistant.quick_connection_var.get(), fg=color)
-        # A child can change its requested height without changing the fixed
-        # Canvas item's allocation. Reconcile through the existing refresh.
-        self._fit_home_canvas()
+        self.hotkey_editor.render(key_snapshot)
 
     def _open_support_window(self):
         self._support_window = open_support_window(
@@ -2095,7 +2126,8 @@ class DesktopMainUI:
         if self._closed:
             return
         self._poll_updates()
-        self._poll_home_previews()
+        resume = getattr(self.assistant, "continue_auto_map_package_import", None)
+        if callable(resume): resume()
         if self.window.winfo_viewable():
             self.display.refresh()
             self._layout_shell()
@@ -2153,6 +2185,7 @@ class DesktopMainUI:
         target = self._page_frames[page]
         active = getattr(self, '_active_page_frame', None)
         if active is target and target.winfo_manager() == 'pack':
+            if getattr(self, '_view_ready', False): self._sync_view()
             return
         if self._page == "help" and page != "help":
             self._close_help_images()
@@ -2194,6 +2227,7 @@ class DesktopMainUI:
             self.custom_editor.refresh()
         elif page == "preferences":
             self._refresh_route_choices()
+        if getattr(self, "_view_ready", False): self._sync_view()
 
     # Updates -----------------------------------------------------------------
     def _update_state_path(self) -> Path:
@@ -2513,6 +2547,7 @@ class DesktopMainUI:
         self.window.deiconify()
         self.window.lift()
         self.window.focus_force()
+        self._sync_view()
 
     def restore(self) -> None:
         if not self.window.winfo_exists():
@@ -2521,6 +2556,7 @@ class DesktopMainUI:
         self.window.state('normal')
         self.window.lift()
         self.window.focus_force()
+        self._sync_view()
 
     def minimize(self) -> None:
         if self.window.winfo_exists():

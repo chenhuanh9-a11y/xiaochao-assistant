@@ -72,6 +72,34 @@ class MapResourceActionFlowTests(unittest.TestCase):
         frames['maps'].pack.assert_called_once()
         ui._refresh_maps.assert_called_once()
 
+    def test_hidden_window_keeps_auto_import_progress_but_does_not_render_pages(self):
+        from desktop_main_ui import DesktopMainUI
+        resume = Mock()
+        ui = SimpleNamespace(_refresh_job='old', _closed=False, _poll_updates=Mock(),
+            assistant=SimpleNamespace(continue_auto_map_package_import=resume),
+            window=Mock(), display=Mock(), _layout_shell=Mock(), _sync_view=Mock(), root=Mock())
+        ui.window.winfo_viewable.return_value = False
+        ui._refresh_view = lambda: DesktopMainUI._refresh_view(ui)
+        DesktopMainUI._refresh_view(ui)
+        resume.assert_called_once()
+        ui._sync_view.assert_not_called()
+        ui.display.refresh.assert_not_called()
+        ui.root.after.assert_called_once_with(350, ui._refresh_view)
+
+    def test_changed_options_read_actual_widget_after_another_writer(self):
+        from desktop_main_ui import DesktopMainUI
+        label = tk.Label(self.page, text='before')
+        raw = label.configure
+        with patch.object(label, 'configure', wraps=raw) as writes:
+            DesktopMainUI._configure_changed(label, text='before')
+            writes.assert_not_called()
+            DesktopMainUI._configure_changed(label, text='after')
+            self.assertEqual(label.cget('text'), 'after')
+            writes.reset_mock()
+            raw(text='external')
+            DesktopMainUI._configure_changed(label, text='after')
+            writes.assert_called_once_with(text='after')
+
     def compact(self):
         # 560 px of page content approximates a 650 px window with its sidebar.
         self.host.geometry('560x500+24000+24000')
