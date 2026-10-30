@@ -270,6 +270,12 @@ class SessionService(QObject):
             self.changed.emit()
             return False
         profile = str(profile)
+        if self._runtime is not None:
+            actual = self._runtime.snapshot()
+            if actual.get("roundActive") and mode != actual.get("mode", self._mode):
+                self._message = "请先结束本局，再切换游戏模式"
+                self.changed.emit()
+                return False
         if mode == self._mode and profile == self._profile:
             return True
         if self._runtime is None or "set_context" not in self._available():

@@ -11,8 +11,7 @@ Window {
     visible: false
     width: effectiveCollapsed ? 64 : 352
     height: effectiveCollapsed ? 64 : Math.min(expandedHeightLimit, Math.max(243, naturalExpandedHeight))
-    x: preferences.compactPosition ? preferences.compactPosition[0] : 24
-    y: preferences.compactPosition ? preferences.compactPosition[1] : 24
+    property var snapController: null
     color: "transparent"
     flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus
     property bool collapsed: false
@@ -46,7 +45,11 @@ Window {
     function visibilityText(value, yes, no, unknown) { return value === true ? yes : value === false ? no : unknown }
 
     component ControlButton: AppButton {
+        property string hint: ""
         implicitHeight: 34; font.pixelSize: 13; font.bold: true; padding: 6
+        ToolTip.visible: hovered && hint.length > 0
+        ToolTip.text: hint
+        ToolTip.delay: 450
     }
     component KeyHint: Label {
         color: "#5c677d"; font.family: "Microsoft YaHei UI"; font.pixelSize: 11
@@ -58,20 +61,22 @@ Window {
         property point previousPoint
         property point pressPoint
         property real travel: 0
+        property bool dragging: false
         onPressed: function(mouse) {
             previousPoint = mapToGlobal(mouse.x, mouse.y)
-            pressPoint = previousPoint; travel = 0
+            pressPoint = previousPoint; travel = 0; dragging = false
         }
         onPositionChanged: function(mouse) {
             if (!pressed) return
             var point = mapToGlobal(mouse.x, mouse.y)
             travel = Math.max(travel, Math.abs(point.x - pressPoint.x), Math.abs(point.y - pressPoint.y))
+            if (travel > 3 && !dragging) { dragging = true; if (panel.snapController) panel.snapController.beginDrag() }
             panel.x += point.x - previousPoint.x; panel.y += point.y - previousPoint.y
             previousPoint = point
         }
         onReleased: {
             if (expandOnClick && travel <= 3) windows.toggleCollapsed("controls")
-            else if (travel > 3) panel.savePosition()
+            else if (travel > 3) { if (panel.snapController) panel.snapController.releaseDrag(); panel.savePosition() }
         }
     }
     component OpacityControl: ColumnLayout {
@@ -141,7 +146,7 @@ Window {
                         MenuItem { text: "自定义控件"; onTriggered: clientCoordinator.navigate("settings") }
                         MenuItem { text: "隐藏控件"; onTriggered: windows.hide("controls") }
                         MenuSeparator {}
-                        MenuItem { text: "选择地图"; enabled: panel.available("reselect_map"); onTriggered: session.dispatch("reselect_map") }
+                        MenuItem { text: "选择地图"; enabled: panel.available("reselect_map"); onTriggered: clientCoordinator.requestManualMapSelection() }
                         MenuItem { text: "重新识别"; enabled: panel.available("capture_now"); onTriggered: session.dispatch("capture_now") }
                         MenuItem { text: "候选与识别"; onTriggered: clientCoordinator.navigate("recognition") }
                     }
@@ -162,7 +167,7 @@ Window {
                     delegate: Loader {
                         required property string modelData
                         Layout.fillWidth: true
-                        sourceComponent: modelData === "display" ? displayModule : modelData === "map" ? mapModule : modelData === "recognition" ? recognitionModule : roundModule
+                        sourceComponent: modelData === "display" ? displayModule : modelData === "mode" ? modeModule : modelData === "manual_map" || modelData === "map" ? manualMapModule : modelData === "recognition" ? recognitionModule : roundModule
                     }
                 }
             }
@@ -199,13 +204,13 @@ Window {
                 Layout.fillWidth: true; Layout.topMargin: 6; spacing: 6
                 ColumnLayout {
                     Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop; spacing: 2
-                    ControlButton { text: "贴合 " + panel.visibilityText(panel.snapshot.userVisible, "开", "关", "未知"); primary: panel.snapshot.userVisible === true; enabled: panel.available("toggle_sheet_visibility"); Layout.fillWidth: true; onClicked: session.dispatch("toggle_sheet_visibility") }
+                    ControlButton { objectName: "controlAlignedVisibility"; text: panel.preferences.sheetVisibilityEnabled ? "隐藏贴合" : "显示贴合"; icon.source: "icons/route.png"; selected: panel.preferences.sheetVisibilityEnabled === true; enabled: !settingsService.busy; Layout.fillWidth: true; hint: "切换贴合图显示，识别与地图状态继续保留"; onClicked: clientCoordinator.toggleAlignedVisibility() }
                     KeyHint { text: panel.shortcut("toggle-sheet-visibility") }
                 }
                 ColumnLayout {
                     Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop; spacing: 2
-                    ControlButton { text: "定点地图"; primary: panel.preferences.referenceSheetVisible === true; Layout.fillWidth: true; onClicked: clientCoordinator.showReference() }
-                    ControlButton { visible: !!panel.layout.display.referencePosition && !panel.editing; text: "编辑位置"; implicitHeight: 30; Layout.fillWidth: true; onClicked: clientCoordinator.beginReferenceEdit() }
+                    ControlButton { objectName: "controlReferenceVisibility"; text: panel.preferences.referenceSheetVisible ? "隐藏定点" : "显示定点"; icon.source: "icons/map.png"; selected: panel.preferences.referenceSheetVisible === true; enabled: !settingsService.busy; Layout.fillWidth: true; hint: "切换定点地图显示，保留已选择的地图"; onClicked: clientCoordinator.toggleReferenceVisibility() }
+                    ControlButton { visible: !!panel.layout.display.referencePosition && !panel.editing; objectName: "controlEditReferencePosition"; text: "编辑位置"; hint: "拖动定点地图，完成后保存位置"; implicitHeight: 30; Layout.fillWidth: true; onClicked: clientCoordinator.beginReferenceEdit() }
                 }
             }
             OpacityControl { visible: !!panel.layout.display.alignedOpacity; settingKey: "sheetOpacity"; title: "贴合层不透明度" }
@@ -213,7 +218,7 @@ Window {
         }
     }
     Component {
-        id: mapModule
+        id: modeModule
         ColumnLayout {
             spacing: 4
             RowLayout {
@@ -221,8 +226,16 @@ Window {
                 ControlButton { text: session.currentMode === "nightmare" ? "噩梦 · 已选" : "噩梦"; primary: session.currentMode === "nightmare"; enabled: panel.available("set_game_mode"); Layout.fillWidth: true; onClicked: clientCoordinator.setMode("nightmare") }
                 ControlButton { text: session.currentMode === "difficult" ? "困难 · 已选" : "困难"; primary: session.currentMode === "difficult"; enabled: panel.available("set_game_mode"); Layout.fillWidth: true; onClicked: clientCoordinator.setMode("difficult") }
             }
-            ControlButton { text: "选择地图"; Layout.fillWidth: true; enabled: panel.available("reselect_map"); onClicked: session.dispatch("reselect_map") }
+        }
+    }
+    Component {
+        id: manualMapModule
+        ColumnLayout {
+            spacing: 4
+            ControlButton { objectName: "controlReselectMap"; text: "选择地图"; icon.source: "icons/map.png"; Layout.fillWidth: true; enabled: panel.available("reselect_map"); hint: panel.available("reselect_map") ? "手动选择待确认地图，不改变作者路线" : "正在准备地图资源"; onClicked: clientCoordinator.requestManualMapSelection() }
+            KeyHint { visible: !panel.available("reselect_map"); text: panel.snapshot.resourceLocked ? "等待资源操作完成" : "正在准备地图资源" }
             RowLayout {
+                visible: (panel.snapshot.availableFloors || []).length > 0
                 Layout.fillWidth: true; spacing: 4
                 Repeater {
                     model: panel.snapshot.availableFloors || []
@@ -281,6 +294,7 @@ Window {
                 }
             }
             KeyHint { text: panel.shortcut("toggle-round") || panel.shortcut(roundControls.active ? "end-round" : "start-round") }
+            KeyHint { visible: !panel.available(roundControls.action); text: session.busy ? "正在处理当前操作" : !clientCoordinator.boundWindow ? "先在主页连接游戏窗口" : panel.snapshot.resourceLocked ? "等待资源操作完成" : "等待游戏与资源准备就绪" }
         }
     }
 }

@@ -1,8 +1,7 @@
-"""Opt-in pass-through Windows key observer; no hooks or key registration.
+"""Pass-through native key events; management shortcuts do not need a game.
 
-QShortcut/QML Shortcut remain application-local. Native polling starts only
-after configure(), an explicit HWND binding, and enable(). No game discovery,
-input injection, or RegisterHotKey is used, including for the bare map G key.
+Production uses WH_KEYBOARD_LL, never RegisterHotKey (G stays with the game).
+The old pollOnce seam remains for injected fake-native diagnostic tests only.
 """
 from __future__ import annotations
 
@@ -64,14 +63,41 @@ class NativeWindowAPI:
             raise ctypes.WinError(ctypes.get_last_error())
         return int(process.value)
 
+    def monitor_device(self, hwnd):
+        class Rect(ctypes.Structure):
+            _fields_=[(name,ctypes.c_long) for name in ("left","top","right","bottom")]
+        class Monitor(ctypes.Structure):
+            _fields_=[("cbSize",wintypes.DWORD),("monitor",Rect),("work",Rect),
+                      ("flags",wintypes.DWORD),("device",wintypes.WCHAR*32)]
+        user=self._api()
+        user.MonitorFromWindow.argtypes=[wintypes.HWND,wintypes.DWORD]
+        user.MonitorFromWindow.restype=wintypes.HANDLE
+        user.GetMonitorInfoW.argtypes=[wintypes.HANDLE,ctypes.POINTER(Monitor)]
+        user.GetMonitorInfoW.restype=wintypes.BOOL
+        info=Monitor();info.cbSize=ctypes.sizeof(info)
+        handle=user.MonitorFromWindow(hwnd,2)
+        if not handle or not user.GetMonitorInfoW(handle,ctypes.byref(info)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return info.device
+
 
 class NativeShortcutBackend(QObject):
     changed = Signal()
     actionTriggered = Signal(str)
 
-    def __init__(self, native=None, parent=None):
+    def __init__(self, native=None, parent=None, *, source=None):
         super().__init__(parent)
         self._native = native if native is not None else NativeWindowAPI()
+        if source is None and native is None:
+            from client_native_keys import PassThroughKeyboardSource
+            source = PassThroughKeyboardSource(self)
+        self._source = source
+        self._management_enabled = False
+        self._event_down = set()
+        if source is not None:
+            source.eventReceived.connect(self._key_event, Qt.QueuedConnection)
+            source.started.connect(self._hook_started, Qt.QueuedConnection)
+            source.failed.connect(self._hook_failed, Qt.QueuedConnection)
         self._hwnd = 0
         self._bindings = {}
         self._down = {}
@@ -95,7 +121,9 @@ class NativeShortcutBackend(QObject):
         hwnd=str(self._hwnd), bindings={name: chord.name for name, chord in self._bindings.items()},
         textEntryActive=self._text, editingBindings=self._editing,
         readPermission="unknown", passThrough=True, globalRegistration=False,
-        closed=self._closed), notify=changed)
+        closed=self._closed, managementEnabled=self._management_enabled,
+        hookRunning=bool(self._source and self._source.running),
+        eventSource="pass-through-hook" if self._source is not None else "injected-poll-fixture"), notify=changed)
 
     def _stop(self, status, message):
         self._timer.stop()
@@ -119,7 +147,9 @@ class NativeShortcutBackend(QObject):
         self.disable()
         if self._closed:
             return False
+        management_requested = self._management_enabled
         self._bindings, self._down = {}, {}
+        self._management_enabled = False
         if set(bindings) - KNOWN_ACTIONS:
             self._stop("unknown", "Unknown shortcut actions: " + ", ".join(sorted(set(bindings) - KNOWN_ACTIONS)))
             return False
@@ -135,6 +165,10 @@ class NativeShortcutBackend(QObject):
             self._stop("conflict", str(error))
             return False
         self._bindings = chords
+        self._management_enabled = management_requested
+        if self._source is not None:
+            self._source.update_keys(chord.vk for chord in chords.values() if chord.vk)
+            self._event_down = set(self._source.held)
         self._down = {name: False for name in chords}
         self._status, self._message = "disabled", "Bindings validated; native shortcuts remain disabled."
         self.changed.emit()
@@ -168,9 +202,69 @@ class NativeShortcutBackend(QObject):
         self._prime, self._game_focus = True, None
         self._enabled, self._status = True, "ready"
         self._message = "Pass-through native observer enabled; input permission is unknown."
-        self._timer.start()
+        if self._source is None:
+            self._timer.start()  # Injected diagnostic API only; never production.
+        elif not self._source.start():
+            self._stop("failed", "Native keyboard events are unavailable.")
+            return False
         self.changed.emit()
         return True
+
+    @Slot(result=bool)
+    def enableManagement(self):
+        if self._closed or not self._bindings or self._status in ("conflict", "unknown"):
+            return False
+        if self._source is None:
+            return False  # No production polling fallback.
+        self._management_enabled = bool(self._source.start())
+        self.changed.emit()
+        return self._management_enabled
+
+    def _hook_started(self, held):
+        self._event_down.update(held)
+        self.changed.emit()
+
+    def _hook_failed(self, error):
+        self._management_enabled = False
+        self._stop("failed", "Native keyboard observer failed: " + error)
+
+    def _key_event(self, event):
+        if self._closed or self._source is None or event.get("generation") != self._source.generation:
+            return
+        vk, down = event["vk"], event["down"]
+        previous = vk in self._event_down
+        if down:self._event_down.add(vk)
+        else:self._event_down.discard(vk)
+        if not down or previous or self._text or self._editing:
+            return
+        held = event["held"]
+        def read(key):
+            pairs={0x10:(0x10,0xa0,0xa1),0x11:(0x11,0xa2,0xa3),0x12:(0x12,0xa4,0xa5)}
+            return 0x8000 if any(k in held for k in pairs.get(key,(key,))) else 0
+        foreground = event["foreground"]
+        try:
+            game = bool(self._hwnd and self._native.is_window(self._hwnd)
+                and global_key_is_allowed(self._hwnd,foreground)
+                and self._native.foreground_window() == foreground)
+        except OSError:
+            game = False  # A lost game must not disable global management keys.
+        try:
+            assistant = bool(foreground and self._native.window_process_id(foreground) == os.getpid())
+        except OSError:
+            assistant = False
+        try:
+            for action,chord in self._bindings.items():
+                if chord.vk != vk or not modifiers_match(chord,read):continue
+                if action in MANAGEMENT_ACTIONS:
+                    allowed=self._management_enabled
+                else:
+                    allowed=self._enabled and game
+                # The existing app-local QML shortcut owns F9 when this app is
+                # foreground. The hook owns it globally when hidden/background.
+                if action == "toggle-panel" and assistant:allowed=False
+                if allowed:self.actionTriggered.emit(action)
+        except Exception as error:
+            self._hook_failed(str(error))
 
     @Slot()
     def disable(self):
@@ -238,6 +332,9 @@ class NativeShortcutBackend(QObject):
     @Slot()
     def shutdown(self):
         self.disable()
+        self._management_enabled = False
         self._closed = True
         self._hwnd = 0
+        if self._source is not None:
+            self._source.stop()
         self.changed.emit()

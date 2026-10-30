@@ -19,7 +19,7 @@ from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, Qt, Signal
 from client_paths import RESOURCE_ROOT as ROOT, WORK_ROOT, runtime_paths
 if str(ROOT / "app") not in sys.path:
     sys.path.insert(0, str(ROOT / "app"))
-from control_layout import load_layout, preset_layout, validate_layout
+from client_control_layout import load_layout, preset_layout, validate_layout
 from hotkey_bindings import parse_chord, validate_unique
 from hotkey_keys import _primary_hotkey_to_vk
 from opacity_controls import load_opacities
@@ -38,7 +38,7 @@ DEFAULTS = {**BOOL_DEFAULTS, "sheetOpacity": .55, "referenceOpacity": .55,
             "routeProfileId": "wang-qingxin", "modeRouteProfiles": {},
             "zhan10CoffinVariantId": "variant-01", "hotkey": "G",
             "actionHotkeys": FRESH_ACTIONS, "gameControlLayout": preset_layout(),
-            "sheetPosition": None, "compactPosition": [24, 24]}
+            "sheetPosition": None, "compactPosition": None}
 
 
 def _validate(key, value):
@@ -152,6 +152,7 @@ class SettingsService(QObject):
         self._route_pending = None
         self._route_generation = 0
         self._route_runtime = None
+        self._mode_change_guard = lambda: True
         self.reload()
 
     values = Property("QVariantMap", lambda s: deepcopy(s._draft), notify=changed)
@@ -383,12 +384,26 @@ class SettingsService(QObject):
         if hasattr(self, "path") and self.path != paths.settings_path:
             raise ValueError("Settings path no longer matches the installation")
 
+    def setModeChangeGuard(self, guard):
+        if not callable(guard):
+            raise TypeError("mode change guard must be callable")
+        self._mode_change_guard = guard
+
+    def _mode_change_allowed(self, value):
+        if value == self._baseline.get("gameMode") or self._mode_change_guard():
+            return True
+        self._message = "请先结束本局，再切换游戏模式"
+        self.changed.emit()
+        return False
+
     @Slot(str, "QVariant", result=bool)
     def setValue(self, key, value):
         if hasattr(value, "toVariant"):
             value = value.toVariant()
         try:
             value = _validate(key, value)
+            if key == "gameMode" and not self._mode_change_allowed(value):
+                return False
             proposal = {**self._draft, key: value}
             if key in ("hotkey", "actionHotkeys"):
                 _validate_hotkeys(proposal)
@@ -525,6 +540,8 @@ class SettingsService(QObject):
         if not edits:
             self._message = "没有需要保存的更改"
             self.changed.emit()
+            return False
+        if "gameMode" in edits and not self._mode_change_allowed(edits["gameMode"]):
             return False
         snapshot = {**deepcopy(self._baseline), **deepcopy(edits)}
         if set(edits) & {"hotkey", "actionHotkeys"}:

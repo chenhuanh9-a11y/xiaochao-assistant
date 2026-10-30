@@ -65,6 +65,8 @@ class QtClient:
         from client_ui_feedback import UiFeedback
         from client_onboarding import OnboardingService
         from client_chest_auto_tap import ChestAutoTapService
+        from client_preview import PreviewService
+        from client_control_snap import ControlSnap
         self.app, self.sandbox = app, owned_sandbox(sandbox)
         self.paths = runtime_paths(self.sandbox)
         self._closed = False
@@ -102,6 +104,8 @@ class QtClient:
         self.settings.changed.connect(lambda: self.route_choices.setMode(self.settings.values.get("gameMode", "nightmare")))
         self.route_choices.setMode(mode)
         self.windows = WindowController()
+        self.preview = PreviewService(self.backend, self.windows)
+        self.backend.overlayRequested.connect(self.preview.show)
         self.images = LiveImages()
         self.coordinator = ClientCoordinator(backend=self.backend, settings=self.settings,
             resources=self.resources, session=self.session, windows=self.windows,
@@ -150,11 +154,13 @@ class QtClient:
             settingsService=self.settings, resourceService=self.resources, session=self.session,
             windows=self.windows, clientCoordinator=self.coordinator, infoService=self.info,
             customGalleryService=self.custom_galleries, onlinePackageService=self.online_packages,
-            onboardingService=self.onboarding, chestAutoTapService=self.chest_auto_tap).items():
+            onboardingService=self.onboarding, chestAutoTapService=self.chest_auto_tap,
+            previewService=self.preview).items():
             context.setContextProperty(key, value)
         for name, file in (("main", "Client.qml"), ("controls", "ClientControls.qml"),
                            ("reference", "ClientReference.qml"), ("aligned", "ClientAligned.qml"),
-                           ("replay", "Overlay.qml")):
+                           ("replay", "Overlay.qml"), ("preview", "ClientPreview.qml"),
+                           ("toast", "ClientToast.qml")):
             before = len(self.engine.rootObjects())
             self.engine.load(QUrl.fromLocalFile(str(HERE / file)))
             if len(self.engine.rootObjects()) != before + 1:
@@ -162,6 +168,9 @@ class QtClient:
             window = self.engine.rootObjects()[-1]
             self.windows.bindWindow(name, window)
         self.main = self.windows._windows["main"]
+        self.control_snap = ControlSnap()
+        self.control_snap.bindWindow(self.windows._windows["controls"],
+                                     self.settings.persistedValues.get("compactPosition"))
         self.coordinator.quitRequested.connect(app.quit)
         self._closed = False
         self._probe_output = probe_output
@@ -306,6 +315,8 @@ class QtClient:
         self.session.shutdown()
         self.resources.shutdown()
         self.settings.shutdown()
+        self.preview.shutdown()
+        self.control_snap.shutdown()
         self.backend.shutdown()
         self.route_choices.shutdown()
         self.info.shutdown()
@@ -354,6 +365,26 @@ def main():
         if set_model_id(model_id) != 0:
             raise OSError("Could not set the Windows application identity")
     app = QGuiApplication([])
+    # Ownership precedes engine creation, first-run workers and every native
+    # listener. Production identity is stable across upgrades; probes are separate.
+    from client_single_instance import SingleInstanceGuard, SingleInstanceError, instance_namespace, restore_main_window
+    guard = None
+    try:
+        guard = SingleInstanceGuard(instance_namespace(production=PRODUCTION, frozen=FROZEN,
+            sandbox=args.sandbox, probe_output=args.probe_output), app)
+        primary = guard.start()
+    except (SingleInstanceError, OSError) as error:
+        message = str(error) if isinstance(error, SingleInstanceError) else f"无法确认当前用户会话的启动锁，未启动第二个实例：{error}"
+        print(message, file=sys.stderr)
+        if os.name == "nt":
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None, message, "星图启动提示", 0x10)
+        if guard is not None:
+            guard.close()
+        return 2
+    if not primary:
+        guard.close()
+        return 0
     app.setWindowIcon(QIcon(str(HERE / "icons" / "xingtu-round.png")))
     from client_theme import apply_light_theme
     apply_light_theme(app)
@@ -365,12 +396,21 @@ def main():
     args.sandbox = args.sandbox.resolve()
     if PRODUCTION:
         owned_sandbox(args.sandbox)
-    holder = {}
+    holder = {"activationPending": False}
+    def restore_existing_main():
+        client = holder.get("client")
+        if client is None:
+            holder["activationPending"] = True
+        elif not client.coordinator.closing:
+            restore_main_window(client.main)
+    guard.activationRequested.connect(restore_existing_main)
     def open_client(sandbox):
         try:
             local_manifest = (lambda url: dict(schemaVersion=1, platform="windows", version="1.0.5",
                               versionCode=9, releaseNotes="Local probe", publishedAt="2026-10-30", releases=[])) if args.probe_output else None
             client = holder["client"] = QtClient(app, sandbox, probe_output=args.probe_output, info_fetch=local_manifest)
+            if holder.pop("activationPending", False):
+                restore_main_window(client.main)
             app.aboutToQuit.connect(client.shutdown)
             if "boot" in holder:
                 holder["boot"].rootObjects()[0].hide()
@@ -400,7 +440,11 @@ def main():
         job.signals.done.connect(prepared, Qt.QueuedConnection)
         pool.start(job)
         app.aboutToQuit.connect(pool.waitForDone)
-    return app.exec()
+    try:
+        return app.exec()
+    finally:
+        # Keep ownership through aboutToQuit's existing writer-drain callbacks.
+        guard.close()
 
 
 if __name__ == "__main__":

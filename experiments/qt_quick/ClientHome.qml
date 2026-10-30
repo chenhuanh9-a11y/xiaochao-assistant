@@ -80,7 +80,7 @@ Item {
                         RowLayout {
                             Layout.fillWidth: true
                             AppButton { objectName: "clientStartRound"; text: session.snapshot.roundActive ? "结束本局" : "开始本局"; primary: true; enabled: page.canRun(session.snapshot.roundActive ? "end_round" : "start_round"); onClicked: session.snapshot.roundActive ? session.dispatch("end_round") : clientCoordinator.startRound() }
-                            AppButton { text: clientCoordinator.boundWindow ? "连接设置" : "连接游戏窗口"; onClicked: connectionDialog.open() }
+                            AppButton { text: "游戏连接设置"; onClicked: connectionDialog.open() }
                             Item { Layout.fillWidth: true }
                         }
                     }
@@ -190,13 +190,14 @@ Item {
         background: Rectangle { radius: 16; color: "white"; border.color: "#d5e2f5" }
         contentItem: ColumnLayout {
             spacing: 12
+            Label { text: "会自动连接唯一的第五人格窗口；有多个窗口或自动连接失败时，可在此选择。"; color: "#567096"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
             ComboBox { id: gameWindow; objectName: "gameWindowPicker"; Layout.fillWidth: true; model: clientCoordinator.gameWindows; textRole: "title"; valueRole: "hwnd"; displayText: currentIndex < 0 ? "选择游戏窗口" : currentText }
             RowLayout {
                 AppButton { text: "查找游戏"; onClicked: clientCoordinator.refreshGameWindows() }
                 AppButton { text: "连接窗口"; enabled: gameWindow.currentIndex >= 0 && !session.busy; onClicked: clientCoordinator.bindGameWindow(gameWindow.currentValue) }
                 Item { Layout.fillWidth: true }
             }
-            CheckBox { text: "启用快捷键"; checked: clientCoordinator.inputEnabled; onClicked: clientCoordinator.setInputEnabled(checked) }
+            CheckBox { text: "启用游戏内操作快捷键"; checked: clientCoordinator.inputEnabled; onClicked: clientCoordinator.setInputEnabled(checked) }
             Label { text: clientCoordinator.message; color: "#567096"; wrapMode: Text.WordWrap; Layout.fillWidth: true; font.pixelSize: 12 }
         }
     }

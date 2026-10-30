@@ -179,6 +179,7 @@ class CoordinatorTests(unittest.TestCase):
         self.windows.hide.assert_not_called()
 
     def test_atomic_context_is_only_acknowledged_after_actual_runtime_matches(self):
+        self.session.snapshot["roundActive"] = False
         self.settings.persistedValues.update(gameMode="difficult", routeProfileId="fallback",
                                              modeRouteProfiles={"difficult": "profile-two"})
         def accepted(mode, profile):
@@ -217,7 +218,8 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(self.coordinator._reference, {})
         self.assertEqual(self.coordinator._aligned, {})
         self.assertIsNone(self.coordinator._last_render_token)
-        self.windows.hide.assert_called_with("aligned")
+        self.windows.hide.assert_any_call("aligned")
+        self.windows.hide.assert_any_call("reference")
         self.images.clear.assert_called_once_with()
         self.runtime.invalidate.assert_called_once_with("resources-changed")
         self.session.refreshRuntime.assert_called_once_with()

@@ -272,6 +272,8 @@ class LiveRuntime:
         self._event_delivery_error = ""
         self._group = self._render = self._engine = None
         self._render_capture_context = None
+        self._reference_sheet = None
+        self._reference_capture_context = None
         self._settings = {}
         self._gate = None
         self._candidate_rows = []
@@ -291,6 +293,8 @@ class LiveRuntime:
         return dict(mode=self._mode, profileId=self._profile, roundId=self._round, frameId=self._frame_id)
 
     def _clear_candidates(self):
+        self._reference_sheet = None
+        self._reference_capture_context = None
         self._gate = None
         self._candidate_rows = []
         self._candidate_edit = False
@@ -362,14 +366,26 @@ class LiveRuntime:
     def _manual_action(self, action, payload, cancelled):
         if action in ("set_floor", "cycle_floor"):
             return self._set_floor(action, payload, cancelled)
+        if action in ("reselect_map", "map_reselection"):
+            with self._work:
+                with self._lock:
+                    epoch, mode = self._epoch, self._mode
+                    engine = self._engine
+                engine = engine or self._factories[mode]()
+                with self._lock:
+                    if self._cancelled(cancelled) or epoch != self._epoch or mode != self._mode:
+                        return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+                    if self._gate is None:
+                        from nightmare_candidate import RouteDisplayGate
+                        self._engine = engine
+                        self._gate = RouteDisplayGate(engine.pack)
+                        self._update_candidates([], self._floor)
+                    self._candidate_edit = True
+                    self._gate.selected_id = self._gate.confirmed_id or self._gate.selected_id
+                    return self._receipt(action, payload, success=True, reason="candidate-reselection-opened")
         with self._lock:
-            if not self._active or not self._map_open or self._gate is None:
+            if self._gate is None or (not self._active and not self._candidate_edit):
                 return self._receipt(action, payload, success=False, reason="candidate-control-unavailable")
-            if action in ("reselect_map", "map_reselection"):
-                self._candidate_edit = True
-                # Legacy _start_map_reselection preserves confirmation/display.
-                self._gate.selected_id = self._gate.confirmed_id or self._gate.selected_id
-                return self._receipt(action, payload, success=True, reason="candidate-reselection-opened")
             if action in ("previous_candidate", "next_candidate", "select_candidate"):
                 if self._map_id and (action != "select_candidate" or not self._candidate_edit):
                     return self._receipt(action, payload, success=False, reason="identity-locked")
@@ -393,6 +409,8 @@ class LiveRuntime:
                 return self._receipt(action, payload, success=True, reason="candidate-selected")
             if action != "confirm_route":
                 return self._receipt(action, payload, success=False, reason="unsupported-action")
+            if not self._active:
+                return self._receipt(action, payload, success=False, reason="start-round-before-confirming-map")
             if self._map_id and not self._candidate_edit:
                 return self._receipt(action, payload, success=False, reason="identity-locked")
             if not self._floor or not self._gate.confirm():
@@ -539,6 +557,10 @@ class LiveRuntime:
                        or callable(getattr(self._capture, "is_current", None)))
             commands = list(offline["availableCommands"])
             commands += ["end_round", "close_map", "toggle_sheet_visibility"]
+            if ready:
+                commands.append("reselect_map")
+            if self._candidate_edit and self._gate is not None:
+                commands += ["select_candidate", "previous_candidate", "next_candidate"]
             if self._engine is not None:
                 commands.append("set_floor")
             if self._active and self._map_open:
@@ -686,6 +708,24 @@ class LiveRuntime:
                 return None
             return {key: value if key == "pixels" else copy.deepcopy(value) for key, value in row.items()}
 
+    def reference_payload(self):
+        """Confirmed identity/floor grants a static sheet, never an aligned pose.
+
+        Its pixels are prepared by the capture worker. Closing the map retains
+        this confirmed sheet; changing identity, floor, binding or round does not.
+        """
+        with self._lock:
+            row = self._reference_sheet
+            if (row is None or not self._active or self._selection_pending or self._floor_required
+                    or self._gate is None or self._gate.confirmed_id != self._map_id
+                    or any(row.get(key) != expected for key, expected in (
+                        ("mode", self._mode), ("profileId", self._profile), ("mapId", self._map_id),
+                        ("floor", self._floor), ("roundId", self._round),
+                        ("displayGeneration", getattr(self, "_display_generation", 0))))
+                    or not self._capture_is_current(self._reference_capture_context, row.get("captureGeneration"))):
+                return None
+            return {key: value if key == "pixels" else copy.deepcopy(value) for key, value in row.items()}
+
     def _capture_generation(self):
         generation = getattr(self._capture, "generation", None)
         if generation is None:
@@ -771,6 +811,9 @@ class LiveRuntime:
             with self._lock:
                 changed_mode = mode != self._mode
                 changed_profile = profile != self._profile
+                if changed_mode and self._active:
+                    return self._receipt(action, payload, success=False,
+                                         reason="end-round-before-changing-mode")
                 if changed_mode or changed_profile:
                     self.invalidate("mode-changed" if changed_mode else "profile-changed")
                 if changed_mode:
@@ -826,6 +869,7 @@ class LiveRuntime:
             epoch, mode = self._epoch, self._mode
             if self._active:
                 return self._receipt("start_round", payload, success=True, reason="round-already-active")
+            preselected = self._gate.selected_id if self._candidate_edit and self._gate is not None else None
         engine = self._factories[mode]()
         if self._cancelled(cancelled):
             return self._receipt("start_round", payload, success=False, reason="cancelled", cancelled=True)
@@ -846,6 +890,9 @@ class LiveRuntime:
             self._clear_candidates()
             self._gate = RouteDisplayGate(engine.pack)
             self._update_candidates([], "")
+            if preselected and preselected in engine.pack.by_id:
+                self._gate.select(preselected)
+                self._candidate_edit = self._selection_pending = True
         return self._receipt("start_round", payload, success=True, reason="round-started")
 
     def _refresh_map(self, payload, cancelled):
@@ -1100,6 +1147,27 @@ class LiveRuntime:
         from round_layer_group import RoundLayerGroup
         obsolete = lambda: self._cancelled(cancelled) or epoch != self._epoch
         width, height = captured.context.full_client_size
+        with self._lock:
+            display_generation = getattr(self, "_display_generation", 0)
+            variant_id = self._settings.get("zhan10CoffinVariantId", "variant-01")
+        # Static reference follows the independently confirmed map and floor;
+        # a failed pose solve must not also remove the player's reference map.
+        display = self._display_layer(engine, map_id, floor, self._profile, variant_id=variant_id)
+        reference_pixels = np.ascontiguousarray(display["pixels"][:, :, [2, 1, 0, 3]])
+        reference_pixels.setflags(write=False)
+        with self._lock:
+            if (obsolete() or frame_id != self._frame_id or floor != self._floor
+                    or display_generation != getattr(self, "_display_generation", 0)):
+                return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
+            if not self._capture_is_current(captured.context, capture_generation):
+                self.invalidate("capture-context-changed")
+                return self._receipt(action, payload, success=False, reason="capture-context-changed", stale=True)
+            self._reference_sheet = dict(token=uuid4().hex, pixels=reference_pixels,
+                mode=self._mode, profileId=self._profile, mapId=map_id, floor=floor, roundId=self._round,
+                variantId=display.get("variantId"), displayGeneration=display_generation,
+                resourceIdentity=display["resourceIdentity"], captureGeneration=capture_generation,
+                referenceAuthorized=self._evidence_kind == "live-client-capture", evidenceKind=self._evidence_kind)
+            self._reference_capture_context = captured.context
         host = _AlignmentHost(engine, group, self._settings)
         fit = host.fit(frame, map_id, floor, obsolete, entry_candidate) if entry_candidate is not None else host.fit(frame, map_id, floor, obsolete)
         if obsolete():
@@ -1114,10 +1182,6 @@ class LiveRuntime:
         if basis is None:
             raise ValueError("shared-reference-canonical-basis-unavailable")
         canonical = source_matrix @ np.linalg.inv(np.asarray(basis))
-        with self._lock:
-            display_generation = getattr(self, "_display_generation", 0)
-            variant_id = self._settings.get("zhan10CoffinVariantId", "variant-01")
-        display = self._display_layer(engine, map_id, floor, self._profile, variant_id=variant_id)
         render_matrix = source_matrix @ display["matrixDisplayToReference"]
         with self._lock:
             if display_generation != getattr(self, "_display_generation", 0):
@@ -1161,6 +1225,7 @@ class LiveRuntime:
                 poseReason=fit.get("reason"), poseStrategy=fit.get("strategy", "not-recorded"),
                 floorSource="manual" if self._manual_floor else "automatic", observedFloor=self._observed_floor,
                 resourceIdentity=display["resourceIdentity"], displayKind=display["displayKind"],
+                referencePath=display.get("referencePath", ""),
                 displayLabel=display["displayLabel"], routeProfileId=display["routeProfileId"],
                 variantId=display.get("variantId"), displayGeneration=display_generation,
                 liveAuthorization=live, evidenceKind=self._evidence_kind)
@@ -1225,6 +1290,7 @@ class LiveRuntime:
                 raise ValueError("display-reference-bridge-unavailable")
             return dict(pixels=pixels, matrixDisplayToReference=np.linalg.inv(source_basis) @ binding["matrix"],
                 resourceIdentity=str(binding["path"]), displayKind="author-route", displayLabel=profile,
+                referencePath=str(binding["path"]),
                 routeProfileId=profile, variantId=variant_id if profile == "zhan10-coffin" else None)
         # The existing shared-structure fallback displays this exact typed mask;
         # no author bitmap participates in identity, fitting or residual checks.

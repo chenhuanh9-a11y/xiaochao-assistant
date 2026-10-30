@@ -91,6 +91,21 @@ class SessionTests(unittest.TestCase):
         self.session.shutdown()
         until(lambda: not self.session._jobs)
 
+    def test_active_mode_guard_preserves_context_generation_and_current_worker(self):
+        self.runtime.state["roundActive"] = True
+        self.runtime.release.clear()
+        self.session.dispatch("capture_now")
+        until(self.runtime.started.is_set)
+        before = (self.session._mode, self.session._profile, self.session._generation, self.session._pending)
+        job = self.session._jobs[self.session._pending][0]
+        self.assertFalse(self.session.setMode("difficult"))
+        self.assertFalse(self.session.reconfigure("difficult", "new-profile"))
+        self.assertEqual((self.session._mode, self.session._profile, self.session._generation, self.session._pending), before)
+        self.assertFalse(job.cancelled.is_set())
+        self.assertEqual(len(self.runtime.calls), 1)
+        self.runtime.release.set()
+        until(lambda: not self.session.busy)
+
     def test_unattached_and_unsupported_commands_do_not_claim_live_state(self):
         unattached = SessionService()
         unattached.dispatch("start_round")

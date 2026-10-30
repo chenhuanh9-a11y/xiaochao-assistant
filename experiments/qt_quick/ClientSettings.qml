@@ -11,7 +11,7 @@ Item {
     property string profilesMode: ""
     readonly property var actionNames: ["显示/隐藏面板", "上一个候选", "下一个候选", "确认本局", "切换楼层", "结束本局", "显示/隐藏小抄", "开始本局", "开始/结束本局"]
     readonly property var actionIds: ["toggle-panel", "candidate-prev", "candidate-next", "confirm-round", "cycle-floor", "end-round", "toggle-sheet-visibility", "start-round", "toggle-round"]
-    readonly property var moduleNames: ({display: "显示", map: "模式与选图", recognition: "候选与再识别", round: "本局动作"})
+    readonly property var moduleNames: ({display: "显示", mode: "游戏模式", manual_map: "选择地图与楼层", recognition: "候选与再识别", round: "本局动作"})
     property bool advancedShortcuts: false
     property bool advancedDisplay: false
     property bool modeExpanded: false

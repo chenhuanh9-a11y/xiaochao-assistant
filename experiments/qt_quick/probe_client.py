@@ -33,7 +33,8 @@ def run_client_probe(client, output):
             if step == 0:
                 if (not client._initialized or client.session.busy or client.resources.busy or backend.busy) and time.monotonic()-started < 30:
                     return
-                check("five_surfaces", len(client.engine.rootObjects()) == 5)
+                check("registered_surfaces", set(client.windows._windows) == {
+                    "main", "controls", "reference", "aligned", "replay", "preview", "toast"})
                 check("no_implicit_native_input", not client.input.enabled and not client.capture.snapshot["enabled"])
                 check("no_tk_import", "tkinter" not in __import__("sys").modules)
                 check("resource_list_ready", backend.count > 0)
@@ -66,26 +67,21 @@ def run_client_probe(client, output):
                     return
                 check("real_settings_persisted", json.loads(client.settings.path.read_text(encoding="utf-8"))["sheetOpacity"] == .42)
                 capture("settings-1180.png")
-                client.coordinator.showReference()
-                client.coordinator.beginReferenceEdit()
-                reference = client.windows._windows["reference"]
-                state["before_reference"] = [reference.x(), reference.y()]
-                x, y = reference.x()+20, reference.y()+20
-                client.coordinator.referencePointer("press",x,y)
-                client.coordinator.referencePointer("move",x+60,y+35)
-                client.coordinator.referencePointer("release",x+60,y+35)
-                check("release_keeps_reference_edit", client.coordinator.referenceEditing)
-                check("reference_pointer_moves", [reference.x(),reference.y()] != state["before_reference"])
-                client.coordinator.cancelReferenceEdit()
-                check("reference_cancel_restores", [reference.x(),reference.y()] == state["before_reference"])
-                check("reference_cancel_restores_passthrough", client.windows.snapshot["reference"]["clickThrough"])
-                client.coordinator.beginReferenceEdit()
-                client.coordinator.finishReferenceEdit()
+                # Gallery preview is a normal window, never a diagnostic path
+                # that grants the current game's reference-sheet authority.
+                client.backend.showOverlay()
             elif step == 4:
                 if client.settings.busy:
                     return
-                check("reference_finish_persists", client.settings.persistedValues["sheetPosition"] is not None)
-                client.windows._windows["reference"].grabWindow().save(str(output/"reference.png"))
+                preview = client.windows._windows["preview"]
+                check("gallery_preview_visible", preview.isVisible())
+                check("gallery_preview_does_not_show_game_reference", not client.windows._windows["reference"].isVisible())
+                preview.grabWindow().save(str(output/"preview.png"))
+                preview.close()
+                check("gallery_preview_close", not preview.isVisible() and window.isVisible())
+                client.backend.showOverlay()
+                check("gallery_preview_reopens", preview.isVisible())
+                preview.close()
                 client.windows.show("controls")
                 window.setProperty("page", "resources")
             elif step == 5:

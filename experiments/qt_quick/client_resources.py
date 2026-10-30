@@ -13,6 +13,7 @@ import re
 from pathlib import Path
 import sys
 import threading
+from uuid import uuid4
 
 from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, QUrl, Qt, Signal, Slot
 
@@ -65,6 +66,7 @@ class ResourceService(QObject):
     resourcesChanged = Signal()
     recoveryCloseRequested = Signal()
     importCloseRequested = Signal()
+    importCompleted = Signal(str, str)
 
     def __init__(self, sandbox: Path, parent=None):
         super().__init__(parent)
@@ -91,6 +93,8 @@ class ResourceService(QObject):
         self._import_receipt_notification = False
         self._import_duplicate = False
         self._import_completion_message = ""
+        self._import_package_id = ""
+        self._helper_popup_request = ""
 
     packageRows = Property("QVariantList", lambda s: s._rows, notify=changed)
     busy = Property(bool, lambda s: s._busy, notify=changed)
@@ -118,7 +122,39 @@ class ResourceService(QObject):
             "上次资源导入已完成，正在核对实际状态。") if receipt["success"] else
             "上次资源未完成导入：" + str(receipt.get("reason", "结果不可用")))
         self._import_receipt_notification = bool(receipt["success"])
+        self._import_package_id = str(receipt.get("packageId", ""))
+        request = str(receipt.get("requestId", ""))
+        if receipt["success"] and re.fullmatch(r"[A-Za-z0-9-]{1,64}", request):
+            seen = self.sandbox / "work/map-packages/qt-import-notice-seen.json"
+            try:
+                importer._no_links(seen)
+                acknowledged = json.loads(seen.read_text("utf-8")).get("requestId") if seen.is_file() else None
+            except (OSError, ValueError, TypeError, AttributeError):
+                acknowledged = None
+            self._helper_popup_request = request if acknowledged != request else ""
         self.changed.emit()
+
+    @Slot()
+    def acknowledgeImportCompletion(self):
+        """Acknowledge only the owner's validated helper receipt, never its result."""
+        request = self._helper_popup_request
+        if not request:
+            return
+        target = self.sandbox / "work/map-packages/qt-import-notice-seen.json"
+        temporary = target.with_name(target.name + "." + uuid4().hex + ".tmp")
+        try:
+            importer._no_links(target)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with temporary.open("x", encoding="utf-8") as stream:
+                json.dump({"requestId": request}, stream)
+            os.replace(temporary, target)
+            self._helper_popup_request = ""
+        except OSError:
+            # Acknowledgement failure cannot change the completed transaction.
+            pass
+        finally:
+            if temporary.exists():
+                temporary.unlink()
 
     def setRecoveryLauncher(self, launcher):
         """Inject a separate helper launcher; it must wait for normal parent exit.
@@ -471,6 +507,11 @@ class ResourceService(QObject):
                 self._import_notice = ("上次导入的资源内容已存在，实际状态已核对。" if self._import_duplicate else
                                        "上次资源导入已完成，实际状态已核对。")
                 self.resourcesChanged.emit()
+                if self._helper_popup_request:
+                    title = next((str(row.get("title") or row.get("name") or self._import_package_id)
+                                  for row in result if row.get("packageId") == self._import_package_id),
+                                 self._import_package_id or "地图资源包")
+                    self.importCompleted.emit(title, self._import_notice)
             self._message = "本地资源已核对。" if result else "尚未安装资源，可导入 ZIP 资源包。"
             if self._receipt_needs_notification:
                 self._receipt_needs_notification = False
@@ -478,6 +519,7 @@ class ResourceService(QObject):
                 self.resourcesChanged.emit()
         elif kind == "inspect":
             path, inspection = result
+            self._import_package_id = str(inspection.get("packageId", ""))
             if (inspection.get("replaceFiles") or (self._import_launcher is not None
                     and not importer.supports_live_author_import(inspection))):
                 self._kind, self._pending = "overwrite", (path, inspection)
@@ -519,6 +561,10 @@ class ResourceService(QObject):
             self._rows, self._recovery, self._kind = result, False, ""
             if self._import_completion_message:
                 self._message = self._import_completion_message
+                title = next((str(row.get("title") or row.get("name") or self._import_package_id)
+                              for row in result if row.get("packageId") == self._import_package_id),
+                             self._import_package_id or "地图资源包")
+                self.importCompleted.emit(title, self._message)
             self._import_completion_message = ""
         self._release_lease()
         self.changed.emit()

@@ -175,6 +175,29 @@ ApplicationWindow {
             AppButton { objectName: "cancelClose"; Layout.fillWidth: true; text: "取消"; onClicked: closeChoice.close() }
         }
     }
+    Dialog {
+        id: importSuccess
+        objectName: "resourceImportSuccessDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(440, root.width - 48)
+        modal: true; focus: true
+        title: "图包安装完成"
+        onClosed: resourceService.acknowledgeImportCompletion()
+        property string resultText: ""
+        contentItem: Label { text: importSuccess.resultText; wrapMode: Text.Wrap; color: "#354963"; padding: 12 }
+        footer: DialogButtonBox {
+            AppButton { text: "知道了"; primary: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
+            onAccepted: importSuccess.accept()
+        }
+    }
+    Connections {
+        target: resourceService
+        function onImportCompleted(packageName, result) {
+            importSuccess.resultText = packageName + "\n\n" + result
+            importSuccess.open()
+        }
+    }
     FileDialog { id: replayPicker; title: "选择识别回放"; nameFilters: ["星图回放 (replay.json)"]; onAccepted: clientCoordinator.loadReplay(selectedFile.toString()) }
     Popup {
         anchors.centerIn: parent; width: 310; height: 110; modal: true; closePolicy: Popup.NoAutoClose

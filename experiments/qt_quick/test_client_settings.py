@@ -17,7 +17,7 @@ from PySide6.QtQuick import QQuickView
 from PySide6.QtTest import QTest
 
 from client_settings import ACTION_ORDER, ROOT, SettingsService
-from control_layout import preset_layout
+from client_control_layout import preset_layout
 
 
 def visual_item(parent, name):
@@ -261,23 +261,23 @@ class SettingsTests(unittest.TestCase):
 
     def test_layout_order_presets_partial_save_and_independent_undo(self):
         original = preset_layout("common")
-        original["order"] = ["round", "display", "recognition", "map"]
+        original["order"] = ["round", "display", "recognition", "mode", "manual_map"]
         self.write({"gameControlLayout": original, "future": {"retained": True}})
         service = self.service()
         service.setValue("gameMode", "difficult")
         self.assertFalse(service.moveControlModule("round", -1))
         self.assertFalse(service.moveControlModule("unknown", 1))
-        self.assertFalse(service.moveControlModule("map", 2))
-        self.assertTrue(service.moveControlModule("map", -1))
+        self.assertFalse(service.moveControlModule("mode", 2))
+        self.assertTrue(service.moveControlModule("mode", -1))
         layout = service.values["gameControlLayout"]
-        self.assertEqual(layout["order"], ["round", "display", "map", "recognition"])
-        layout["enabled"] = ["map", "round"]
+        self.assertEqual(layout["order"], ["round", "display", "mode", "recognition", "manual_map"])
+        layout["enabled"] = ["mode", "round"]
         layout["display"]["referencePosition"] = True
         service.setValue("gameControlLayout", layout)
         service.saveFields(["gameControlLayout"])
         self.wait(lambda: not service.busy)
         saved = json.loads(self.path.read_text())
-        self.assertEqual(saved["gameControlLayout"]["enabled"], ["round", "map"])
+        self.assertEqual(saved["gameControlLayout"]["enabled"], ["round", "mode"])
         self.assertTrue(saved["gameControlLayout"]["display"]["referencePosition"])
         self.assertEqual(saved["future"], {"retained": True})
         self.assertNotIn("gameMode", saved)
@@ -375,7 +375,7 @@ class SettingsTests(unittest.TestCase):
             visual_item(panel, "layout_preset_common").clicked.emit()
             self.app.processEvents()
             visual_item(panel, "layout_up_round").clicked.emit()
-            self.assertEqual(service.values["gameControlLayout"]["order"], ["display", "map", "round", "recognition"])
+            self.assertEqual(service.values["gameControlLayout"]["order"], ["display", "mode", "manual_map", "round", "recognition"])
             visual_item(panel, "layout_save").clicked.emit()
             self.wait(lambda: not service.busy)
             self.assertEqual(json.loads(self.path.read_text())["gameControlLayout"], service.persistedValues["gameControlLayout"])

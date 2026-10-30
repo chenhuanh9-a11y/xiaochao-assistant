@@ -92,6 +92,49 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertTrue(result["success"], result)
         return result
 
+    def test_game_mode_locked_during_round_and_unlocked_after_end(self):
+        self.assertTrue(self.dispatch("start_round")["success"])
+        for action in ("set_game_mode", "set_context"):
+            result = self.dispatch(action, mode="difficult")
+            self.assertFalse(result["success"])
+            self.assertEqual(result["reason"], "end-round-before-changing-mode")
+        self.assertEqual(self.runtime.snapshot()["mode"], "nightmare")
+        self.assertTrue(self.runtime.snapshot()["roundActive"])
+        self.assertTrue(self.dispatch("end_round")["success"])
+        self.assertTrue(self.dispatch("set_context", mode="difficult")["success"])
+
+    def test_manual_map_choice_before_round_never_captures_or_authorizes_display(self):
+        self.assertIn("reselect_map", self.runtime.snapshot()["availableCommands"])
+        self.assertTrue(self.dispatch("reselect_map")["success"])
+        self.assertTrue(self.dispatch("select_candidate", index=0)["success"])
+        self.assertFalse(self.dispatch("confirm_route")["success"])
+        self.assertFalse(self.runtime.snapshot()["roundActive"])
+        self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
+        self.assertEqual(self.capture.count, 0)
+        self.assertFalse(self.capture.enabled)
+        self.assertTrue(self.dispatch("start_round")["success"])
+        self.assertEqual(self.runtime.snapshot()["selectedCandidate"]["mapId"], "fixture-map")
+        self.assertEqual(self.dispatch("capture_now")["reason"], "candidate-awaiting-confirmation")
+        self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
+        self.assertTrue(self.dispatch("confirm_route")["success"])
+        self.assertTrue(self.runtime.snapshot()["displayAuthorized"])
+
+    def test_confirmed_reference_survives_pose_failure_and_map_close_but_not_end(self):
+        self.fit = dict(success=False, reason="fixture-pose-unavailable")
+        self.assertTrue(self.dispatch("start_round")["success"])
+        self.assertFalse(self.dispatch("capture_now")["success"])
+        sheet = self.runtime.reference_payload()
+        self.assertIsNotNone(sheet)
+        self.assertEqual((sheet["mapId"], sheet["floor"]), ("fixture-map", "1"))
+        self.assertGreater(sheet["pixels"].size, 0)
+        self.assertFalse(sheet["referenceAuthorized"])  # Explicit synthetic evidence.
+        self.assertNotIn("matrix", sheet)
+        self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
+        self.assertTrue(self.dispatch("close_map")["success"])
+        self.assertEqual(self.runtime.reference_payload()["token"], sheet["token"])
+        self.assertTrue(self.dispatch("end_round")["success"])
+        self.assertIsNone(self.runtime.reference_payload())
+
     def unconfirmed_candidates(self):
         second = SimpleNamespace(id="second-map", name="Second map")
         self.engine.pack.maps.append(second)
@@ -306,6 +349,7 @@ class LiveRuntimeContracts(unittest.TestCase):
                 self.assertEqual((after["floor"], after["manualFloor"], after["observedFloor"]), ("1", None, "1"))
                 self.assertEqual(after["render"]["floorSource"], "automatic")
                 self.assertEqual(after["manualFloorHoldRemaining"], 0.)
+                self.assertTrue(self.dispatch("end_round")["success"])
                 self.dispatch("set_game_mode", mode="difficult" if mode == "nightmare" else "nightmare")
                 reset = self.runtime.snapshot()
                 self.assertIsNone(reset["manualFloor"])
@@ -381,6 +425,7 @@ class LiveRuntimeContracts(unittest.TestCase):
 
     def test_mode_change_or_full_client_mismatch_fails_closed(self):
         first = self.begin_and_capture()
+        self.assertTrue(self.dispatch("end_round")["success"])
         self.dispatch("set_game_mode", mode="difficult")
         self.assertIsNone(self.runtime.render_payload(first["renderToken"]))
         self.assertFalse(self.runtime.snapshot()["roundActive"])
