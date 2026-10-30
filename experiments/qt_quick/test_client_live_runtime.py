@@ -898,7 +898,63 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertEqual(events[0]["event"], "aligned-visibility-changed")
         self.assertEqual(events[-1]["event"], "aligned-visibility-changed")
 
-    def test_main_entry_reuses_original_current_frame_verifier_before_fast_solver(self):
+    def test_original_relation_recovery_runs_for_unverified_target_before_entry_or_initial(self):
+        from round_layer_group import RoundLayerGroup
+        group = RoundLayerGroup("fixture-map", "shared-structure", "1", np.eye(3), relations={"2":np.eye(3)})
+        self.assertNotIn("2", group.verified_floors)
+        host = _AlignmentHost(self.engine, group)
+        with patch("fast_structure_alignment.try_alignment", return_value=None), \
+             patch("single_map_structure.solve", return_value=copy.deepcopy(self.fit)) as recovery, \
+             patch.object(_AlignmentHost, "_reverify_entry", side_effect=AssertionError("relation must recover first")), \
+             patch("single_map_structure.solve_initial_structure", side_effect=AssertionError("must not broad search")), \
+             patch.object(_AlignmentHost, "_canonical_geometry_current_frame_residual", return_value=(self.fit["selectedRouteCurrentFrameResidual"],None)):
+            result = self.original_fit(host, self.capture.frame, "fixture-map", "2", lambda:False)
+        self.assertTrue(result["success"]); recovery.assert_called_once()
+        self.assertEqual(result["strategy"], "shared-established-group-recovery")
+        self.assertEqual(group.verified_floors, {"1"})  # proposal cannot mark target verified
+
+    def test_original_relation_recovery_only_specific_geometry_miss_falls_back_to_initial(self):
+        from round_layer_group import RoundLayerGroup
+        group = RoundLayerGroup("fixture-map", "shared-structure", "1", np.eye(3), relations={"2":np.eye(3)})
+        for failure, should_initial in [
+            (dict(success=False,reason="structure-current-geometry-failed"),True),
+            (dict(success=False,reason="structure-current-geometry-failed",sharedProjectionGeometryInsufficient=True),False),
+            (dict(success=False,reason="supported-chains-insufficient"),False)]:
+            with self.subTest(failure=failure):
+                host = _AlignmentHost(self.engine, group)
+                initial_fit = dict(copy.deepcopy(self.fit), coordinateSpace="author-render-to-client",routeProfileId="shared-structure")
+                with patch("fast_structure_alignment.try_alignment",return_value=None), \
+                     patch("single_map_structure.solve",return_value=failure), \
+                     patch("single_map_structure.solve_initial_structure",return_value=initial_fit) as initial, \
+                     patch.object(_AlignmentHost,"_canonical_geometry_current_frame_residual",return_value=(self.fit["selectedRouteCurrentFrameResidual"],None)):
+                    result=self.original_fit(host,self.capture.frame,"fixture-map","2",lambda:False)
+                self.assertEqual(initial.called,should_initial)
+                self.assertEqual(result["success"],should_initial)
+
+    def test_exit_anchored_failure_only_enabled_nonempty_pose_index_can_fallback(self):
+        candidate=dict(mapId="fixture-map",floor="1",poseId="controlled-entry")
+        seed=dict(candidate,locatorKind="side",entryPoseCandidates=[candidate],exitAnchoredEntry=True)
+        self.engine.side_entry_identity=SimpleNamespace(verify=Mock(return_value=dict(success=False,reason="unverified")))
+        for enabled, candidates, expected in [(False,[{"pose":1}],False),(True,[],False),(True,[{"pose":1}],True)]:
+            with self.subTest(enabled=enabled,candidates=candidates):
+                self.engine.pose_index_candidates=Mock(return_value=(candidates,dict(attempted=True,candidateCount=len(candidates))))
+                host=_AlignmentHost(self.engine,settings=dict(poseIndexCandidatesEnabled=enabled))
+                initial_fit=dict(copy.deepcopy(self.fit),coordinateSpace="author-render-to-client",routeProfileId="shared-structure")
+                with patch("fast_structure_alignment.try_alignment",return_value=None), \
+                     patch("single_map_structure.solve_initial_structure",return_value=initial_fit) as initial, \
+                     patch.object(_AlignmentHost,"_canonical_geometry_current_frame_residual",return_value=(self.fit["selectedRouteCurrentFrameResidual"],None)):
+                    result=self.original_fit(host,self.capture.frame,"fixture-map","1",lambda:False,seed)
+                self.assertEqual(result["success"],expected,result)
+                self.assertEqual(initial.called,expected)
+                self.assertEqual(self.engine.pose_index_candidates.called,enabled)
+                if expected:
+                    self.assertEqual(result["entryFallback"],"confirmed-map-floor-pose-index")
+                    self.assertEqual(initial.call_args.kwargs["pose_index_candidates"],candidates)
+                else:
+                    self.assertEqual(result["reason"],"difficult-entry-current-frame-rejected")
+                self.assertNotIn("entryCrossCheck",result)  # ordinary rejection never invents strong contradiction
+
+    def test_main_entry_reuses_original_current_frame_verifier_after_fast_declines(self):
         observation = {"current-frame": True}
         verification = dict(success=True, reason="entry-current-frame-validation",
                             matrixSourceToClient=self.fit["matrixSourceToClient"])
@@ -908,7 +964,7 @@ class LiveRuntimeContracts(unittest.TestCase):
         candidate = dict(mapId="fixture-map", entryKind="main", hypothesis=dict(scale=.5, translation=[40,60]))
         with patch.object(_AlignmentHost, "_canonical_geometry_current_frame_residual",
                           return_value=(self.fit["selectedRouteCurrentFrameResidual"], None)), \
-             patch("fast_structure_alignment.try_alignment", side_effect=AssertionError("entry seed must run first")):
+             patch("fast_structure_alignment.try_alignment", return_value=None):
             # Invoke the real method; setUp's worker-fit substitute is only for
             # lifecycle tests and must not hide this entry adapter contract.
             result = self.original_fit(host, self.capture.frame, "fixture-map", "1", lambda: False, candidate)
@@ -932,7 +988,7 @@ class LiveRuntimeContracts(unittest.TestCase):
                 host = _AlignmentHost(self.engine)
                 with patch.object(_AlignmentHost, "_canonical_geometry_current_frame_residual",
                                   return_value=(self.fit["selectedRouteCurrentFrameResidual"], None)), \
-                     patch("fast_structure_alignment.try_alignment", side_effect=AssertionError("anchored must not broaden")), \
+                     patch("fast_structure_alignment.try_alignment", return_value=None), \
                      patch("single_map_structure.solve_initial_structure", side_effect=AssertionError("anchored must not broaden")):
                     result = self.original_fit(host, self.capture.frame, "fixture-map", "1", lambda: False, seed)
                 self.assertEqual(verify.call_count, 2)

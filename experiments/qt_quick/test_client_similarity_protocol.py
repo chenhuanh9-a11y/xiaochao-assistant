@@ -363,7 +363,8 @@ class SimilarityProtocolTests(unittest.TestCase):
         self.engine.pose_index_candidates = Mock(return_value=(matrices, dict(attempted=True, reason="fixture-index")))
         with patch("fast_structure_alignment.try_alignment", return_value=None) as fast, \
                 patch("single_map_structure.current_geometry", return_value={}), \
-                patch("single_map_structure.solve_initial_structure", return_value=copy.deepcopy(self.fit)) as solve, \
+                patch("single_map_structure.solve_initial_structure", return_value=dict(copy.deepcopy(self.fit),
+                    coordinateSpace="author-render-to-client", routeProfileId="shared-structure")) as solve, \
                 patch.object(host, "_rendered_profile_current_frame_residual", return_value=self.fit["selectedRouteCurrentFrameResidual"]):
             self.assertTrue(self.original_fit(host, self.capture.frame, IDS[0], "1", lambda:False)["success"])
             self.assertIs(solve.call_args.kwargs["pose_index_candidates"], matrices)

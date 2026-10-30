@@ -151,7 +151,11 @@ class _AlignmentHost:
         return self._canonical_geometry_current_frame_residual(
             frame, self.map_id, self.floor, "shared-structure", matrix, route, **kwargs)[0]
 
-    def _reverify_entry(self, frame, map_id, floor, reference, candidate, cancelled):
+    def _alignment_v2_independent_member_fit(self, frame, route, map_id, floor, profile, **kwargs):
+        from alignment_structure_dispatch import independent_member_fit
+        return independent_member_fit(self, frame, route, map_id, floor, profile, **kwargs)
+
+    def _reverify_entry(self, frame, map_id, floor, reference, candidate, cancelled, context=None):
         """Adapt the legacy bounded entry set through its existing verifiers."""
         import cv2
         from alignment_observation import rendered_profile_residual_is_verified
@@ -196,12 +200,14 @@ class _AlignmentHost:
                 selectedRouteCurrentFrameResidual=residual, strategy="verified-entry-current-frame",
                 difficultEntryValidation=checked)
         if anchored:
-            # Legacy exit-anchored candidates never fall through to a broad
-            # search after failure/ambiguity. No pose-index fallback is enabled
-            # by this host, so retain the original explicit rejection.
-            return dict(success=False, reason="difficult-entry-current-frame-rejected",
-                entryReverification=dict(candidateCount=len(candidates), acceptedPoseCount=len(accepted),
-                    reason="side-entry-pose-ambiguous" if accepted else "side-entry-pose-unverified"))
+            checked = dict(success=False, reason="side-entry-pose-ambiguous" if accepted else "side-entry-pose-unverified")
+            if bool(self.settings.get("poseIndexCandidatesEnabled", self.settings.get("difficultGridEnabled", False))):
+                indexed = self._alignment_v2_independent_member_fit(frame, reference.clean_mask,
+                    map_id, floor, "shared-structure", cancelled=cancelled, pose_index_only=True, context=context)
+                if indexed.get("reason") != "pose-index-no-candidates":
+                    return dict(indexed, entryFallback="confirmed-map-floor-pose-index", difficultEntryValidation=checked)
+            return dict(success=False, reason="difficult-entry-current-frame-rejected", difficultEntryValidation=checked,
+                entryReverification=dict(candidateCount=len(candidates), acceptedPoseCount=len(accepted), reason=checked["reason"]))
         return None
 
     def fit(self, frame, map_id, floor, cancelled, entry_candidate=None):
@@ -220,41 +226,37 @@ class _AlignmentHost:
                 enabled=bool(self.settings.get("idvb0059Enabled", True)))
             if steady is not None:
                 return steady
-        # Preserve the legacy first-pose entry seam: the accepted rank row is
-        # bound to this worker's current frame. Re-run its original verifier,
-        # then the canonical residual; never accept a caller-supplied matrix.
-        seed = self._reverify_entry(frame, map_id, floor, reference, entry_candidate, cancelled)
-        if seed is not None:
-            return seed
+        # Original caller order: current fast proposal, established relation
+        # recovery (including an unverified target), bounded entry, then initial.
         context = current_geometry(frame)
         fit = try_alignment(self, frame, map_id, floor, cancelled=cancelled, entry_seed=entry_candidate, context=context)
         strategy = "shared-fast-alignment"
+        identity_profile = (self.engine.identity_profile_for_map(map_id)
+            if callable(getattr(self.engine, "identity_profile_for_map", None))
+            else getattr(self.engine, "identity_profile_id", None))
+        entry_first = (identity_profile == "shared-structure"
+            and callable(getattr(getattr(self.engine, "side_entry_identity", None), "rank_entry", None)))
+        def recover_existing_group():
+            if self.group is not None and self.group.verified_floors and str(floor) in self.group.relations:
+                recovery = solve(self, frame, map_id, floor, "shared-structure", reference.clean_mask,
+                                 cancelled=cancelled, _context=context)
+                if (recovery.get("success") or recovery.get("reason") != "structure-current-geometry-failed"
+                        or recovery.get("sharedProjectionGeometryInsufficient")):
+                    return recovery
+            return None
+        if fit is None and (not entry_first or (self.group is not None and str(floor) not in self.group.verified_floors)):
+            fit = recover_existing_group()
+            strategy = "shared-established-group-recovery"
         if fit is None:
-            if self.group is not None and floor in self.group.verified_floors:
-                # Existing same-floor recovery keeps the committed linear pose.
-                fit = solve(self, frame, map_id, floor, "shared-structure", reference.clean_mask,
-                            cancelled=cancelled, _context=context)
-                strategy = "shared-same-floor-recovery"
-            else:
-                static = (dict(source_known_boundary=reference.known_boundary, source_unknown=reference.unknown_mask)
-                          if reference.known_boundary is not None else {})
-                indexed, diagnostic = [], dict(attempted=False, reason="pose-index-disabled", candidateCount=0)
-                if bool(self.settings.get("poseIndexCandidatesEnabled", self.settings.get("difficultGridEnabled", False))):
-                    provider = getattr(self.engine, "pose_index_candidates", None)
-                    if callable(provider):
-                        import cv2
-                        try:
-                            indexed, diagnostic = provider(frame, map_id, floor, cancelled=cancelled, context=context)
-                        except (ValueError, TypeError, KeyError, OSError, cv2.error) as error:
-                            diagnostic = dict(attempted=True, reason="pose-index-error", error=str(error), candidateCount=0)
-                        if cancelled and cancelled():
-                            return dict(success=False, reason="structure-work-obsolete")
-                fit = solve_initial_structure(frame, reference.clean_mask, reference.validation_mask,
-                    reference.clean_mask, "shared-structure", cancelled=cancelled, _context=context,
-                    wall_correspondence_identity=True, pose_index_candidates=indexed,
-                    pose_index_diagnostics=diagnostic, **static)
-                fit.setdefault("diagnostics", {}).setdefault("poseIndexProvider", diagnostic)
-                strategy = "shared-initial-structure"
+            fit = self._reverify_entry(frame, map_id, floor, reference, entry_candidate, cancelled, context=context)
+            strategy = "verified-entry-current-frame"
+        if fit is None and entry_first:
+            fit = recover_existing_group()
+            strategy = "shared-established-group-recovery"
+        if fit is None:
+            fit = self._alignment_v2_independent_member_fit(frame, reference.clean_mask, map_id, floor,
+                "shared-structure", cancelled=cancelled, context=context)
+            strategy = "shared-initial-structure"
         if not fit.get("success"):
             return fit
         # Independently wrap/verify the final matrix in its actual typed canvas,
