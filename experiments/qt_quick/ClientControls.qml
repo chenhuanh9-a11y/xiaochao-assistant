@@ -30,6 +30,10 @@ Window {
         && snapshot.candidateEditMode !== true
     readonly property string groupMember: snapshot.currentGroupMemberId || snapshot.provisionalMapId
         || snapshot.durableMapId || snapshot.mapId || ""
+    readonly property string groupDesired: snapshot.desiredGroupMemberId || ""
+    readonly property string groupChoice: groupDesired || groupMember
+    readonly property string groupChoiceStatus: snapshot.groupMemberChoiceStatus || ""
+    readonly property bool groupAwaiting: groupChoiceStatus === "awaiting-geometry" || groupChoiceStatus === "awaiting-material"
     readonly property bool groupHeld: snapshot.manualGroupMemberHeld === true
     readonly property bool groupPending: snapshot.groupMemberSelectionPending === true
     readonly property string appliedMode: session.appliedMode || session.currentMode
@@ -55,10 +59,16 @@ Window {
         const row = groupChoices.find(row => row.mapId === id)
         return row ? row.name : (id || "待核对")
     }
+    function groupSelectionText() {
+        if (groupDesired && groupAwaiting)
+            return "已选" + groupName(groupDesired) + (groupChoiceStatus === "awaiting-material" ? "，正在切换；当前地图" : "，等待定位；当前地图") + groupName(groupMember)
+        if (groupDesired || groupHeld) return "本局已选：" + groupName(groupChoice)
+        return (snapshot.identityPhase === "MEMBER_VERIFIED" ? "当前地图：" : "当前暂用：") + groupName(groupMember) + " · 请选择本局地图"
+    }
     function groupReason() {
         if (snapshot.contextPending || snapshot.roundPreparing) return "正在切换环境，请稍后选择"
         if (snapshot.resourceLocked) return "正在更新资源，请稍后选择"
-        if (groupPending) return "正在核对所选地图，当前选择暂不改变"
+        if (groupPending) return "正在核对所选地图，当前显示暂不改变"
         if (session.busy && snapshot.pendingAction !== "refresh_map") return "当前操作尚未完成，请稍后选择"
         if (!snapshot.roundActive) return "请先开始本局识别"
         if (!snapshot.commands || !snapshot.commands.select_group_member || !snapshot.commands.select_group_member.available)
@@ -97,6 +107,7 @@ Window {
         if (snapshot.contextPending) return "正在切换模式或路线"
         if (session.busy && snapshot.pendingAction === "start_round") return "正在准备本局"
         if (snapshot.roundPreparing) return "已准备 · 打开游戏地图后开始"
+        if (groupDesired && groupAwaiting) return groupChoiceStatus === "awaiting-material" ? "已选地图 · 等待素材" : "已选地图 · 等待定位"
         if (snapshot.identityPhase === "MANUAL_MEMBER_CONFIRMED") return "本局已手动选择 · " + (snapshot.displayAuthorized ? outputStatus() : "位置待核对")
         if (provisionalGroup()) return snapshot.displayAuthorized ? "相似组已锁定 · " + outputStatus() : "相似组已锁定 · 位置待核对"
         if (snapshot.identityPhase === "MEMBER_VERIFIED") return snapshot.displayAuthorized ? "地图已核对 · " + outputStatus() : "地图已核对 · 位置待核对"
@@ -252,7 +263,7 @@ Window {
                     Label { text: "选择本组地图"; color: "#142b4b"; font.family: "Microsoft YaHei UI"; font.pixelSize: 13; font.bold: true; Layout.fillWidth: true }
                     Label {
                         objectName: "controlGroupMemberCurrent"
-                        text: (panel.groupHeld ? "本局已选：" : panel.snapshot.identityPhase === "MEMBER_VERIFIED" ? "当前地图：" : "当前暂用：") + panel.groupName(panel.groupMember)
+                        text: panel.groupSelectionText()
                         color: "#526785"; font.family: "Microsoft YaHei UI"; font.pixelSize: 12
                         Layout.fillWidth: true; wrapMode: Text.Wrap
                     }
@@ -262,9 +273,9 @@ Window {
                             id: memberButton
                             required property var modelData
                             objectName: "controlGroupMember_" + modelData.mapId
-                            text: modelData.name + (selected ? (panel.groupHeld ? " · 已选" : panel.snapshot.identityPhase === "MEMBER_VERIFIED" ? " · 当前" : " · 暂用") : "")
-                            selected: modelData.mapId === panel.groupMember
-                            enabled: !(selected && panel.groupHeld) && panel.groupReason() === ""
+                            text: modelData.name + (selected ? (panel.groupDesired || panel.groupHeld ? " · 已选" : panel.snapshot.identityPhase === "MEMBER_VERIFIED" ? " · 当前" : " · 暂用") : "")
+                            selected: modelData.mapId === panel.groupChoice
+                            enabled: !(selected && (panel.groupDesired || panel.groupHeld)) && panel.groupReason() === ""
                             Layout.fillWidth: true; implicitWidth: 1
                             hint: modelData.name + (panel.groupReason() ? "\n" + panel.groupReason() : "")
                             Accessible.name: text
@@ -279,8 +290,7 @@ Window {
                     }
                     Label {
                         objectName: "controlGroupMemberReason"
-                        text: panel.groupPending ? "正在核对：" + panel.groupName(panel.snapshot.pendingGroupMemberId) + "；当前仍为" + panel.groupName(panel.groupMember)
-                            : panel.groupReason() || panel.snapshot.groupMemberSelectionReason || "选定后，本局保持此地图；切换楼层仍需核对位置。"
+                        text: panel.groupReason() || (panel.groupAwaiting ? "将自动重试，也可选择本组其他地图。" : panel.snapshot.groupMemberSelectionReason || "选定后，本局保持此地图；切换楼层仍需核对位置。")
                         color: "#526785"; font.family: "Microsoft YaHei UI"; font.pixelSize: 11
                         Layout.fillWidth: true; wrapMode: Text.Wrap
                     }

@@ -24,6 +24,13 @@ def _presentation_error_details(error):
     return str(error) + ("\n" + json.dumps(details, ensure_ascii=False) if details else "")
 
 
+def _aligned_material_scope(payload):
+    """Content scope, deliberately separate from per-frame live authorization."""
+    return tuple(deepcopy(payload.get(key)) for key in
+                 ("roundId", "mode", "profileId", "mapId", "floor", "resourceIdentity",
+                  "routeWidth", "routeHeight"))
+
+
 class LiveImages(QQuickImageProvider):
     """Source, staged target and reference images, bounded without disk encoding."""
     def __init__(self):
@@ -31,14 +38,26 @@ class LiveImages(QQuickImageProvider):
         self._lock = threading.RLock()
         self._images = {}
         self._staged_key = None
+        self._material = None
+        self._staged_material = None
 
-    def publish(self, key, pixels):
+    def publish(self, key, pixels, *, material_scope=None):
         import numpy as np
         pixels = np.ascontiguousarray(pixels, dtype=np.uint8)
         if pixels.ndim != 3 or pixels.shape[2] != 4 or pixels.shape[0] * pixels.shape[1] > 20_000_000:
             raise ValueError("Invalid RGBA display payload")
         image = QImage(pixels.data, pixels.shape[1], pixels.shape[0], pixels.strides[0], QImage.Format_RGBA8888).copy()
         with self._lock:
+            # Frame grants expire independently of immutable display pixels.
+            # Reusing a *material* URL never reuses its authorization token,
+            # geometry or ACK. Compare bytes too: resource names alone cannot
+            # prove that a changed author layer contains the same image.
+            if (material_scope is not None and not str(key).startswith("pending:")
+                    and self._material is not None):
+                scope, previous_key = self._material
+                if (scope == material_scope and previous_key in self._images
+                        and self._images[previous_key] == image):
+                    return "image://live/" + previous_key
             if str(key).startswith("reference:"):
                 self._images = {name:value for name,value in self._images.items()
                                 if not name.startswith("reference:")}
@@ -46,6 +65,9 @@ class LiveImages(QQuickImageProvider):
             self._images[str(key)] = image
             if str(key).startswith("pending:"):
                 self._staged_key = str(key)
+                self._staged_material = (deepcopy(material_scope), str(key)) if material_scope is not None else None
+            elif material_scope is not None:
+                self._material = (deepcopy(material_scope), str(key))
             while len(self._images) > (3 if self._staged_key else 2):
                 self._images.pop(next(name for name in self._images if not name.startswith("reference:")))
         return "image://live/" + str(key)
@@ -58,6 +80,9 @@ class LiveImages(QQuickImageProvider):
             self._staged_key = None
             if not accepted:
                 self._images.pop(key, None)
+            elif self._staged_material is not None:
+                self._material = self._staged_material
+            self._staged_material = None
             while len(self._images) > 2:
                 self._images.pop(next(name for name in self._images if not name.startswith("reference:") and name != key))
 
@@ -72,11 +97,13 @@ class LiveImages(QQuickImageProvider):
         with self._lock:
             self._images.clear()
             self._staged_key = None
+            self._material = self._staged_material = None
 
     def clear_aligned(self):
         with self._lock:
             self._images = {key:value for key,value in self._images.items() if key.startswith("reference:")}
             self._staged_key = None
+            self._material = self._staged_material = None
 
     def clear_reference(self):
         with self._lock:
@@ -388,7 +415,8 @@ class ClientCoordinator(QObject):
             if path:
                 public["routeUrl"] = QUrl.fromLocalFile(str(path)).toString()
             elif payload.get("pixels") is not None:
-                public["routeUrl"] = self.images.publish("pending:" + str(token), payload["pixels"])
+                public["routeUrl"] = self.images.publish("pending:" + str(token), payload["pixels"],
+                                                        material_scope=_aligned_material_scope(payload))
             else:
                 raise ValueError("target-route-material-unavailable")
         except (OSError, ValueError) as error:
@@ -1308,6 +1336,26 @@ class ClientCoordinator(QObject):
             invalidate(reason)
         self._invalidate_display(reason)
 
+    def _withdraw_expired_source(self, reason):
+        """Withdraw an expired source without rejecting a current target grant.
+
+        A manual target may fit the new frame even when the old member cannot.
+        Only its runtime-validated pending grant can survive this presentation
+        update. Explicit map/floor/resource/end invalidation still cancels both.
+        """
+        token = self._pending_aligned.get("token")
+        getter = getattr(self.runtime, "pending_sibling_payload", None)
+        current = getter(token) if token and callable(getter) else None
+        if current and current.get("token") == token and current.get("liveAuthorization"):
+            self._trace("clear", payload=self._aligned, reason=reason,
+                        window=dict(name="aligned", visible=False))
+            self._aligned, self._last_render_token = {}, None
+            self.windows.hide("aligned")
+            # Keep the bounded staged image and its original acceptance timer.
+            # The source Image is cleared by alignedData, never painted stale.
+            return
+        self._invalidate_display(reason)
+
     def _session_changed(self):
         if self._closing or self._closed:
             return
@@ -1362,7 +1410,7 @@ class ClientCoordinator(QObject):
                 self._trace("retain-current", payload=retained, reason="current-grant-during-review")
             else:
                 self._trace("drop", state=state, reason="no-current-live-grant", diag=dict(trigger=trigger))
-                self._invalidate_display("runtime-grant-unavailable")
+                self._withdraw_expired_source("runtime-grant-unavailable")
                 self.changed.emit(); return
         if token == self._last_render_token:
             self.showReference()
@@ -1403,7 +1451,7 @@ class ClientCoordinator(QObject):
         payload = get_payload(token) if get_payload else None
         if not payload or not payload.get("liveAuthorization"):
             self._trace("drop", state=state, reason="payload-expired", diag=dict(trigger=trigger))
-            self._invalidate_display("runtime-payload-expired")
+            self._withdraw_expired_source("runtime-payload-expired")
             self.changed.emit(); return
         public = {key: value for key, value in payload.items() if key != "pixels"}
         try:
@@ -1420,7 +1468,8 @@ class ClientCoordinator(QObject):
         elif path:
             public["routeUrl"] = QUrl.fromLocalFile(str(path)).toString()
         elif payload.get("pixels") is not None:
-            public["routeUrl"] = self.images.publish(str(token), payload["pixels"])
+            public["routeUrl"] = self.images.publish(str(token), payload["pixels"],
+                                                    material_scope=_aligned_material_scope(payload))
         else:
             self._trace("drop", payload=payload, reason="route-material-unavailable")
             self._report_display_failure(payload, "route-material-unavailable", "Runtime returned no route path or pixels")
@@ -1698,7 +1747,7 @@ class ClientCoordinator(QObject):
         elif name == "render-revoked":
             getter = getattr(self.runtime, "render_payload", None)
             if getter is None or not self._last_render_token or getter(self._last_render_token) is None:
-                self._invalidate_display(event.get("reason") or "render-revoked")
+                self._withdraw_expired_source(event.get("reason") or "render-revoked")
                 self.changed.emit()
         elif name == "aligned-visibility-changed":
             if self.runtime.snapshot().get("alignedVisible") is False:

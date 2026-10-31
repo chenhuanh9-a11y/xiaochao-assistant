@@ -743,6 +743,27 @@ class CoordinatorTests(unittest.TestCase):
         self.assertIsNone(self.coordinator._last_render_token)
         self.windows.hide.assert_called_with("aligned")
 
+    def test_expired_source_cannot_cancel_a_current_pending_manual_target(self):
+        self.coordinator._aligned = dict(token="expired-source")
+        self.coordinator._last_render_token = "expired-source"
+        pending = dict(token="current-target", liveAuthorization=True)
+        self.coordinator._pending_aligned = pending
+        self.runtime.pending_sibling_payload = Mock(return_value=pending)
+        self.runtime.acknowledge_sibling = Mock()
+        self.coordinator._present_runtime_state({}, trigger="session-completed")
+        self.assertEqual(self.coordinator.alignedData, {})
+        self.windows.hide.assert_called_with("aligned")
+        self.assertEqual(self.coordinator.pendingAlignedData, pending)
+        self.runtime.acknowledge_sibling.assert_not_called()
+
+    def test_stale_pending_target_is_cancelled_with_expired_source(self):
+        self.coordinator._pending_aligned = dict(token="expired-target")
+        self.runtime.pending_sibling_payload = Mock(return_value=None)
+        self.runtime.acknowledge_sibling = Mock()
+        self.coordinator._present_runtime_state({}, trigger="session-completed")
+        self.assertEqual(self.coordinator.pendingAlignedData, {})
+        self.runtime.acknowledge_sibling.assert_called_once()
+
     def test_floor_click_clears_old_layer_and_queues_distinct_ordered_refresh(self):
         self.session.busy = True
         self.session.dispatchWithPayload = Mock()

@@ -19,7 +19,7 @@ from client_paths import APP_ROOT, WORK_ROOT
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 from alignment_core_v2 import AlignmentCoreV2
-from client_engine import (EngineAdapter, clone_similarity_state, stage_similarity_rank,
+from client_engine import (EngineAdapter, clone_similarity_state, stage_similarity_rank, automatic_identity_candidates, registered_logical_family,
                            INITIAL_IDENTITY_BUDGET_SECONDS)
 from floor_observation_policy import (MANUAL_FLOOR_HOLD_SECONDS,
                                       read_floor_evidence, decide_floor_transition, game_floor_control_hit)
@@ -347,6 +347,9 @@ class LiveRuntime:
         self._pending_sibling = None
         self._manual_group_choice = None
         self._group_member_preference = None
+        self._desired_group_member = None
+        self._group_member_choice_status = ""
+        self._automatic_candidate_rows = []
         self._group_intent_generation = getattr(self, "_group_intent_generation", 0) + 1
         self._group_choice_inflight = None
         self._group_choice_reason = ""
@@ -474,7 +477,9 @@ class LiveRuntime:
             manualGroupMemberHeld=held, manualGroupMemberId=self._manual_group_choice[3] if held else "",
             groupMemberSelectionPending=self._group_choice_inflight is not None,
             pendingGroupMemberId=self._group_choice_inflight[1] if self._group_choice_inflight else "",
-            groupMemberSelectionReason=self._group_choice_reason)
+            groupMemberSelectionReason=self._group_choice_reason,
+            desiredGroupMemberId=self._desired_group_member[3] if self._desired_group_member else "",
+            groupMemberChoiceStatus=self._group_member_choice_status)
 
     def _identity_context(self):
         return (self._mode, self._cycle, str(self._floor), self._frame_generation, self._epoch)
@@ -517,8 +522,9 @@ class LiveRuntime:
         self._identity_native = state
         self._identity_rank_rows = rows
         self._identity_prior = state.context_snapshot()
-        self._identity_priority = state.priority(self._mode)
-        self._identity_source = "native-similarity"
+        self._identity_priority = (None if state.condition_reason=="registered-logical-family"
+                                   else state.priority(self._mode))
+        self._identity_source = "group-default" if state.state=="GROUP_LOCKED" else "native-similarity"
         return True
 
     def _rank_identity(self, engine, frame, floor, epoch, frame_id, cancelled):
@@ -531,8 +537,30 @@ class LiveRuntime:
                 if prior and callable(review) else engine.rank(frame, floor=floor,
                     limit=len(engine.pack.maps), budget_seconds=INITIAL_IDENTITY_BUDGET_SECONDS))
         seeds = self._current_entry_seeds(rows, floor)
-        state, proposal = stage_similarity_rank(previous, rows, context, hashlib.sha256(frame.tobytes()).hexdigest(), seeds)
+        state, proposal = stage_similarity_rank(previous, rows, context, hashlib.sha256(frame.tobytes()).hexdigest(), seeds, group_only=True)
         accepted = [row for row in rows if row.get("identityHardGatePassed") is True]
+        top=rows[0] if rows else None
+        block_member_unique=False
+        unresolved_candidates=[]
+        native_group=bool(len(state.member_ids)>1 and state.state=="GROUP_LOCKED")
+        if (native_group or len(state.member_ids)<2 and len(accepted)==1
+                and top is accepted[0] and top.get("strongSuggestion") is True):
+            family=registered_logical_family(engine,state.provisional_member_id if native_group else top["mapId"],floor,
+                                             required_members=state.member_ids if native_group else ())
+            block_member_unique=family["status"]!="none"
+            if family["status"]=="group":
+                declared=family["candidates"][0]
+                state.reset()
+                state.state="GROUP_LOCKED";state.group_id=declared["groupId"]
+                state.resource_key=declared["resourceKey"];state.member_ids=tuple(declared["memberIds"])
+                state.floor=str(floor);state.provisional_member_id=sorted(state.member_ids)[0]
+                state.condition_reason="registered-logical-family"
+                proposal=dict(status="logical-group",reason=state.condition_reason)
+            elif block_member_unique:
+                state.reset()
+                proposal=dict(status="logical-group-pending",reason="registered-family-"+family["status"])
+                unresolved_candidates=[dict(key=row["groupId"],mapId="",identityKind="group",name="待确认的相似地图组",**row)
+                                       for row in family.get("candidates",())]
         with self._lock:
             if (self._cancelled(cancelled) or epoch != self._epoch or frame_id != self._frame_id
                     or intent_generation != self._group_intent_generation or self._group_choice_inflight is not None):
@@ -541,6 +569,7 @@ class LiveRuntime:
                 self.invalidate("capture-context-changed")
                 return None, None, "capture-context-changed"
             self._update_candidates(rows, floor)
+            self._automatic_candidate_rows=unresolved_candidates if block_member_unique and state.state!="GROUP_LOCKED" else automatic_identity_candidates(rows,state)
             group_key=(self._round,self._mode,frozenset(state.member_ids))
             preference=self._group_member_preference
             if (state.state == "GROUP_LOCKED" and len(state.member_ids)>1
@@ -552,6 +581,12 @@ class LiveRuntime:
                 state.verified_member_id = state.pending_identity = None
                 state.provisional_member_id = preference[3]
             grouped = state.state == "GROUP_LOCKED"
+            if grouped and len(state.member_ids)>1:
+                if preference is None or preference[:3]!=group_key:
+                    state.provisional_member_id=sorted(state.member_ids)[0]
+                if self._desired_group_member and self._desired_group_member[:3]!=group_key:
+                    self._desired_group_member=None
+                    self._group_member_choice_status=""
             self._publish_identity_stage(state, rows, context, reason="ranked-current-frame")
             if (not grouped and previous is not None and previous.state == "GROUP_LOCKED"
                     and not self._durable_map_id):
@@ -562,14 +597,14 @@ class LiveRuntime:
                 self._group = None
                 self._reference_sheet = self._reference_capture_context = None
                 self._provisional_reference_context = None
-            selected = (state.provisional_member_id if grouped and state.context_snapshot()
-                and state.provisional_member_id in state.member_ids else None)
+            selected = (state.provisional_member_id if grouped and (state.context_snapshot()
+                or state.condition_reason=="registered-logical-family") and state.provisional_member_id in state.member_ids else None)
             top = rows[0] if rows else None
             # Tk first consumes the optional native group, then independently
             # tests the final top-row auto-lock predicate. A hard unique native
             # proposal may have no established condition bindings/member list.
             from native_similarity_groups import should_auto_lock_candidate
-            if selected is None and len(accepted) == 1 and should_auto_lock_candidate(
+            if selected is None and not block_member_unique and len(state.member_ids)<2 and len(accepted) == 1 and should_auto_lock_candidate(
                     top, self._floor_required, self._gate.confirmed_id):
                 selected = top["mapId"]
                 front_provisional = bool(top.get("frontDoorGroupState") == "GROUP_LOCKED"
@@ -608,6 +643,7 @@ class LiveRuntime:
             source = self._render
             target = dict(source, token=uuid4().hex, requiresMaterialAck=True,
                 sourceToken=source["token"], sourceMapId=self._map_id)
+            self._group_member_choice_status="awaiting-material" if manual_choice is not None else self._group_member_choice_status
             self._pending_sibling = dict(scope=self._sibling_scope(), sourceCore=self._core,
                 sourceToken=source["token"], sourceMapId=self._map_id,
                 core=self._copy_pose_core(self._core), group=self._group, identity=state,
@@ -652,7 +688,8 @@ class LiveRuntime:
             from client_group_member_choice import group_member_choice_is_current
             # Pending is our own transaction, not a second external selection.
             state = self.snapshot(); state["groupMemberSelectionPending"] = False
-            return group_member_choice_is_current(plan, state)
+            return bool(self._desired_group_member and self._desired_group_member[3]==plan.map_id
+                        and group_member_choice_is_current(plan, state))
         return bool(self._render is not None and self._render["token"] == pending["sourceToken"]
             and self._gate.confirmed_id == pending["sourceMapId"] and self._display_current(self._render))
 
@@ -661,6 +698,8 @@ class LiveRuntime:
         self._pending_sibling = None
         if pending is not None and pending.get("manualChoice") is not None:
             self._group_choice_inflight = None
+            if self._desired_group_member and self._group_member_choice_status!="confirmed":
+                self._group_member_choice_status="awaiting-geometry"
         if pending is not None:
             # A rejected target's authorization must never be recycled.
             for name in ("_next_observation_id", "_next_authorization_id"):
@@ -742,6 +781,7 @@ class LiveRuntime:
                         state.generation += 1
                         self._manual_group_choice = (self._round, state.group_id, state.resource_key, target)
                         self._group_member_preference=(self._round,self._mode,frozenset(state.member_ids),target)
+                        self._group_member_choice_status="confirmed"
                         self._identity_source = "manual-group-member"
                         self._group_choice_reason = "本局保持手动选择"
                     self._core.revoke_display(reason="native-sibling-committed")
@@ -763,8 +803,9 @@ class LiveRuntime:
                     if pending.get("manualChoice") is not None:
                         self._group_choice_inflight = None
             if not committed:
-                if pending.get("manualChoice") is not None and pending["scope"] == self._sibling_scope():
-                    self._group_choice_reason = "所选地图未通过材料核对，当前选择未改变"
+                if pending.get("manualChoice") is not None and self._desired_group_member:
+                    self._group_member_choice_status="awaiting-geometry"
+                    self._group_choice_reason = "已选择地图，等待显示资源就绪；当前显示尚未切换"
                 self._discard_sibling()
             source_retained = bool(not committed and self._render is not None and self._display_current(self._render)
                 and self._capture_is_current(self._render_capture_context, self._render.get("captureGeneration")))
@@ -1092,8 +1133,23 @@ class LiveRuntime:
     def _group_member_action(self, action, payload, cancelled):
         from client_group_member_choice import plan_group_member_choice, group_member_choice_is_current
         with self._lock:
-            plan = plan_group_member_choice(self.snapshot(), action, payload)
+            if payload.get("_retryIntent") is not None and payload["_retryIntent"]!=self._group_intent_generation:
+                return self._receipt(action,payload,success=False,reason="stale-group-choice-intent",stale=True)
+            if self._cancelled(cancelled):
+                return self._receipt(action,payload,success=False,reason="cancelled",stale=True)
+            choice_state=self.snapshot()
+            cancel_waiting=bool(self._manual_group_choice and self._desired_group_member
+                                and self._desired_group_member[3]!=self._map_id and payload.get("mapId")==self._map_id)
+            if cancel_waiting:choice_state["groupMemberSelectionPending"]=False
+            plan = plan_group_member_choice(choice_state, action, payload)
             if not plan.accepted or not plan.changed:
+                if plan.accepted and cancel_waiting:
+                    self._discard_sibling()
+                    self._group_intent_generation+=1
+                    self._group_choice_inflight=None
+                    self._desired_group_member=(self._round,self._mode,frozenset(self._identity_native.member_ids),self._map_id)
+                    self._group_member_choice_status="confirmed"
+                    self._group_choice_reason="本局保持手动选择"
                 return self._receipt(action, payload, success=plan.accepted, reason=plan.reason, messageDetail=plan.message)
             if self._cancelled(cancelled):
                 return self._receipt(action, payload, success=False, reason="cancelled", stale=True)
@@ -1102,6 +1158,8 @@ class LiveRuntime:
             intent = self._group_intent_generation
             request_scope = self._sibling_scope()
             self._group_choice_inflight = (intent, plan.map_id)
+            self._desired_group_member=(self._round,self._mode,frozenset(self._identity_native.member_ids),plan.map_id)
+            self._group_member_choice_status="awaiting-geometry"
         if previous_pending is not None:
             self._notify("sibling-rolled-back", token=previous_pending["render"]["token"],
                 reason="manual-group-intent-superseded-automatic-material")
@@ -1120,7 +1178,8 @@ class LiveRuntime:
                         or self._current_frame_floor_conflicts(self._floor)
                         or not self._capture_is_current(observation["captured"].context, observation["capture_generation"])):
                     self._group_choice_inflight = None
-                    return self._receipt(action, payload, success=False, reason="group-choice-current-frame-unavailable")
+                    self._group_choice_reason="已选择地图，等待当前楼层定位；当前显示尚未切换"
+                    return self._receipt(action, payload, success=True, reason="group-member-awaiting-geometry",choiceApplied=False)
                 self._group_choice_reason = "正在核对所选地图，成功前保持当前显示"
                 if plan.map_id == self._map_id and self._render is not None and self._display_current(self._render):
                     return self._stage_current_member_material(action, payload, state, manual_choice=plan)
@@ -1130,13 +1189,39 @@ class LiveRuntime:
                 observation["captured"], observation["frame"], floor, observation["digest"],
                 observation["capture_generation"], frame_generation, frame_id, cycle, plan.map_id,
                 identity_stage=state, manual_choice=plan)
+            with self._lock:
+                if intent!=self._group_intent_generation:
+                    return self._receipt(action,payload,success=False,reason="stale-group-choice-intent",stale=True)
             if not result.get("success"):
                 with self._lock:
+                    if intent!=self._group_intent_generation:
+                        return self._receipt(action,payload,success=False,reason="stale-group-choice-intent",stale=True)
                     if self._group_choice_inflight and self._group_choice_inflight[0] == intent:
                         self._group_choice_inflight = None
                     if epoch == self._epoch:
-                        self._group_choice_reason = "所选地图未通过当前画面核对，当前选择未改变"
+                        self._group_member_choice_status="awaiting-geometry"
+                        self._group_choice_reason="已选择地图，等待定位；当前显示尚未切换"
+                if not result.get("stale") and not self._cancelled(cancelled):
+                    return self._receipt(action,payload,success=True,reason="group-member-awaiting-geometry",
+                        choiceApplied=False,poseReason=result.get("reason"))
             return result
+
+    def _retry_desired_group_member(self, action, payload, cancelled, result):
+        with self._lock:
+            desired=self._desired_group_member
+            native=self._identity_native
+            if (desired is None or self._group_member_choice_status=="confirmed" or native is None
+                    or desired[:3]!=(self._round,self._mode,frozenset(native.member_ids))
+                    or self._group_choice_inflight is not None or self._pending_sibling is not None
+                    or not self._active or not self._map_open or not self._identity_observation_current()):
+                return result
+            current=self.snapshot()
+            request={k:current[k] for k in ("groupId","groupGeneration","cycleId","floor")}
+            request["mapId"]=desired[3]
+            request["_retryIntent"]=self._group_intent_generation
+        choice=self._group_member_action("select_group_member",request,cancelled)
+        return dict(choice,action=action,choiceAction="select_group_member",
+                    requestContext=copy.deepcopy(result.get("requestContext",{})))
 
     def _manual_action(self, action, payload, cancelled):
         if action in ("set_floor", "cycle_floor"):
@@ -1157,6 +1242,9 @@ class LiveRuntime:
                         self._gate = RouteDisplayGate(engine.pack)
                         self._update_candidates([], self._floor)
                     selected = self._gate.confirmed_id or self._gate.selected_id
+                    self._desired_group_member=None
+                    self._group_member_choice_status=""
+                    self._group_member_preference=None
                     if self._manual_group_choice is not None:
                         self.invalidate("manual-group-reselection")
                         self._reset_identity()
@@ -1389,6 +1477,7 @@ class LiveRuntime:
                 roundActive=self._active, roundPreparing=self._round_preparing, mapOpen=self._map_open,
                 captureInProgress=self._capture_pending,
                 alignedVisible=self._aligned_visible,
+                automaticCandidateRows=copy.deepcopy(self._automatic_candidate_rows),
                 candidateRows=copy.deepcopy(self._candidate_rows), selectedCandidateIndex=selected,
                 selectedCandidate=copy.deepcopy(self._candidate_rows[selected]) if selected >= 0 else {},
                 **self._identity_fields(), candidateEditMode=self._candidate_edit,
@@ -2162,7 +2251,7 @@ class LiveRuntime:
             renewed = self._try_refresh_current(payload, captured, frame, floor, digest, capture_generation,
                                                  engine, epoch, obsolete, floor_read=floor_read)
             if renewed is not None:
-                return renewed
+                return self._retry_desired_group_member(action,payload,cancelled,renewed)
         with self._lock:
             if obsolete():
                 return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
@@ -2185,10 +2274,7 @@ class LiveRuntime:
             return self._receipt(action, payload, success=False, reason="candidate-awaiting-confirmation")
         ranked = []
         entry_candidate = None
-        with self._lock:
-            new_group_observation = bool(action in ("map", "capture_now") and not self._durable_map_id
-                and self._identity_native is not None and self._identity_native.state == "GROUP_LOCKED")
-        if not map_id or new_group_observation:
+        if not map_id:
             # Explicit capture still discovers the current logical group.
             # A fresh same-group observation reuses its member preference;
             # passive refresh only fits that member and never reselects it.
@@ -2201,8 +2287,9 @@ class LiveRuntime:
                     reason="similar-group-pending" if grouped else "identity-not-uniquely-verified", posePending=True)
         if group is not None and group.map_id != map_id:
             group = None
-        return self._solve_observation(action, payload, cancelled, engine, group, epoch, captured, frame,
+        result=self._solve_observation(action, payload, cancelled, engine, group, epoch, captured, frame,
             floor, digest, capture_generation, frame_generation, frame_id, cycle, map_id, entry_candidate)
+        return self._retry_desired_group_member(action,payload,cancelled,result)
 
     @staticmethod
     def _seed_group_core(core, group):
@@ -2369,8 +2456,8 @@ class LiveRuntime:
         with self._lock:
             if display_generation != getattr(self, "_display_generation", 0):
                 return self._receipt(action, payload, success=False, reason="stale-display-settings", stale=True)
-            if (manual_choice is None and (group_intent_generation != self._group_intent_generation
-                    or self._group_choice_inflight is not None)):
+            if (group_intent_generation != self._group_intent_generation
+                    or manual_choice is None and self._group_choice_inflight is not None):
                 return self._receipt(action, payload, success=False, reason="manual-group-intent-superseded-work", stale=True)
             if obsolete() or frame_id != self._frame_id or floor != self._floor:
                 return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
@@ -2439,8 +2526,8 @@ class LiveRuntime:
         with self._lock:
             if display_generation != getattr(self, "_display_generation", 0):
                 return self._receipt(action, payload, success=False, reason="stale-display-settings", stale=True)
-            if (manual_choice is None and (group_intent_generation != self._group_intent_generation
-                    or self._group_choice_inflight is not None)):
+            if (group_intent_generation != self._group_intent_generation
+                    or manual_choice is None and self._group_choice_inflight is not None):
                 return self._receipt(action, payload, success=False, reason="manual-group-intent-superseded-work", stale=True)
             if obsolete() or frame_id != self._frame_id or cycle != self._cycle or floor != self._floor:
                 return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
@@ -2498,6 +2585,7 @@ class LiveRuntime:
                 target_render.update(requiresMaterialAck=True, sourceToken=source_token, sourceMapId=self._map_id,
                     manualGroupChoice=manual_choice is not None,
                     provisionalMapId=map_id, provisional=True, identityLocked=False, durableMapId="")
+                if manual_choice is not None:self._group_member_choice_status="awaiting-material"
                 self._pending_sibling = dict(scope=self._sibling_scope(), sourceCore=self._core,
                     sourceToken=source_token, sourceMapId=self._map_id, core=core,
                     group=target_group, identity=identity_stage, render=target_render,

@@ -101,18 +101,21 @@ class GroupChoiceUiTests(ui.RecognitionTests):
         self.click("groupMember_map-b")
         self.assertEqual(self.session.calls[-1], ("select_group_member", payload(state())))
         self.assertTrue(self.item("groupMember_map-a").property("selected"))
-        self.session.state.update(groupMemberSelectionPending=True, pendingGroupMemberId="map-b")
+        self.session.state.update(groupMemberSelectionPending=True, pendingGroupMemberId="map-b",
+            desiredGroupMemberId="map-b",groupMemberChoiceStatus="awaiting-geometry")
         self.session.changed.emit(); ui.APP.processEvents()
         self.assertFalse(self.item("groupMember_map-b").isEnabled())
-        self.assertIn("当前仍为", self.item("groupMemberReason").property("text"))
+        self.assertTrue(self.item("groupMember_map-b").property("selected"))
+        self.assertIn("已选地图乙，等待定位；当前地图地图甲",self.item("groupMemberCurrent").property("text"))
         self.session.state.update(groupMemberSelectionPending=False,
             groupMemberSelectionReason="切换未生效，仍使用地图甲；请打开地图重试")
         self.session.changed.emit(); ui.APP.processEvents()
-        self.assertTrue(self.item("groupMember_map-a").property("selected"))
-        self.assertIn("切换未生效", self.item("groupMemberReason").property("text"))
+        self.assertTrue(self.item("groupMember_map-b").property("selected"))
+        self.assertTrue(self.item("groupMember_map-a").isEnabled())
+        self.assertIn("自动重试", self.item("groupMemberReason").property("text"))
         self.session.state.update(groupMemberSelectionPending=False, currentGroupMemberId="map-b",
             manualGroupMemberHeld=True, manualGroupMemberId="map-b", identityPhase="MANUAL_MEMBER_CONFIRMED",
-            groupMemberSelectionReason="")
+            groupMemberSelectionReason="",groupMemberChoiceStatus="confirmed")
         self.session.changed.emit(); ui.APP.processEvents()
         self.assertIn("本局已手动选择：地图乙", self.item("groupMemberCurrent").property("text"))
         self.assertFalse(self.item("groupMember_map-b").isEnabled())

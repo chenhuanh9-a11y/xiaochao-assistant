@@ -137,20 +137,19 @@ class SimilarityProtocolTests(unittest.TestCase):
         # Repeated pixels do not manufacture an extra temporal observation.
         self.assertEqual(len(self.runtime._identity_native.observations), 1)
 
-    def test_explicit_capture_accumulates_original_proposals_but_passive_review_does_not(self):
+    def test_established_logical_group_never_runs_internal_member_competition(self):
         self.capture_group()
-        self.assertEqual(len(self.runtime._identity_native.observations), 1)
-        self.now = 3.0; self.capture.frame[0, 0, 0] = 1
-        self.assertTrue(self.dispatch("capture_now")["success"])
-        self.assertEqual(len(self.runtime._identity_native.observations), 2)
-        self.assertTrue(any(call.kwargs["budget_seconds"] == 1.85
-                            for call in self.engine.rank_established_group.call_args_list))
-        self.now = 5.0; self.capture.frame[0, 0, 0] = 2
-        with patch.object(_AlignmentHost, "_canonical_geometry_current_frame_residual",
-                return_value=(self.fit["selectedRouteCurrentFrameResidual"], None)):
-            self.assertTrue(self.dispatch("refresh_map")["success"])
-        self.assertEqual(len(self.runtime._identity_native.observations), 2)
-        self.assertEqual(self.engine.rank_established_group.call_args.kwargs["budget_seconds"], 1.85)
+        self.engine.rank_established_group.side_effect=AssertionError("member competition forbidden")
+        self.engine.rank.side_effect=AssertionError("established group already recognized")
+        for action in ("capture_now","refresh_map"):
+            self.now+=2.;self.capture.frame[0,0,0]+=1
+            with patch.object(_AlignmentHost,"_canonical_geometry_current_frame_residual",return_value=(self.fit["selectedRouteCurrentFrameResidual"],None)):
+                self.assertTrue(self.dispatch(action)["success"])
+        state=self.runtime.snapshot();self.assertEqual(len(state["automaticCandidateRows"]),1)
+        candidate=state["automaticCandidateRows"][0]
+        self.assertEqual(candidate["identityKind"],"group");self.assertEqual(candidate["groupId"],state["groupId"])
+        self.assertEqual(set(candidate["memberIds"]),set(IDS));self.assertFalse(candidate["mapId"])
+        self.assertEqual(state["identitySource"],"group-default");self.assertFalse(state["identityLocked"])
 
     def test_sibling_material_must_commit_before_cache_receipt_and_worker_remember(self):
         token = self.pending_sibling()["pendingSiblingToken"]
@@ -279,7 +278,10 @@ class SimilarityProtocolTests(unittest.TestCase):
     def test_manual_group_failure_or_rejected_material_keeps_source_and_rejects_stale_scope(self):
         source=self.capture_group()["renderToken"]
         self.fit=dict(success=False,reason="controlled-target-pose-failure")
-        self.assertFalse(self.group_choice(IDS[1])["success"])
+        deferred=self.group_choice(IDS[1]);self.assertTrue(deferred["success"])
+        self.assertEqual(deferred["reason"],"group-member-awaiting-geometry")
+        self.assertEqual(self.runtime.snapshot()["desiredGroupMemberId"],IDS[1])
+        self.assertEqual(self.runtime.snapshot()["groupMemberChoiceStatus"],"awaiting-geometry")
         self.assertEqual(self.runtime.render_payload(source)["mapId"],IDS[0])
         self.assertFalse(self.runtime.snapshot()["manualGroupMemberHeld"])
         with patch.object(_AlignmentHost,"fit",side_effect=AssertionError("invalid choice reached fit")):
@@ -360,7 +362,9 @@ class SimilarityProtocolTests(unittest.TestCase):
             row["mapId"]=mid;row["difficultEntry"]["mapId"]=mid
         proposal=ranked[0]["nativeSimilarity"];proposal["resourceKey"]="another-logical-group"
         condition=proposal["conditionObservations"][0];condition["memberIds"]=list(new_ids);condition["poseMaps"]={"a":new_ids[0],"b":new_ids[1]}
-        self.engine.rank_established_group.return_value=ranked
+        self.runtime.invalidate("resources-changed")
+        self.engine.rank.return_value=ranked
+        self.dispatch("start_round")
         self.capture.frame[0,0,0]=5
         result=self.dispatch("capture_now");self.assertTrue(result["success"],result)
         state=self.runtime.snapshot();self.assertEqual(set(state["groupMemberIds"]),set(new_ids))
@@ -369,20 +373,73 @@ class SimilarityProtocolTests(unittest.TestCase):
         state=self.runtime.snapshot();self.assertFalse(state["roundActive"]);self.assertFalse(state["groupMemberIds"])
         self.assertIsNone(self.runtime.reference_payload())
 
-    def test_none_withdraws_authority_but_same_fresh_group_reuses_choice(self):
+    def test_established_group_does_not_rerank_none_or_alternate_winner(self):
         self.capture_group()
         self.engine.rank_established_group.return_value=[]
-        self.capture.frame[0,0,0]=5
-        self.assertFalse(self.dispatch("capture_now")["success"])
-        self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
-        self.assertEqual(self.runtime.snapshot()["identityPhase"],"UNLOCKED")
-        self.assertIsNone(self.runtime.reference_payload())
         self.engine.rank.return_value=rows(IDS[1])
-        self.capture.frame[0,0,0]=6
         result=self.dispatch("capture_now");self.assertTrue(result["success"],result)
-        state=self.runtime.snapshot();self.assertEqual(state["provisionalMapId"],IDS[0])
-        self.assertEqual(state["identityPhase"],"GROUP_LOCKED");self.assertFalse(state["manualGroupMemberHeld"])
-        self.assertEqual(self.runtime.render_payload(result["renderToken"])["mapId"],IDS[0])
+        self.engine.rank_established_group.assert_not_called()
+        self.assertEqual(self.runtime.snapshot()["provisionalMapId"],IDS[0])
+
+    def test_initial_hard_member_winner_is_only_group_evidence_not_member_confirmation(self):
+        self.prepare_group();self.engine.rank.return_value=rows(IDS[1])
+        for row in self.engine.rank.return_value:row["strongSuggestion"]=True
+        result=self.dispatch("capture_now");self.assertTrue(result["success"],result)
+        state=self.runtime.snapshot();self.assertEqual(state["identityPhase"],"GROUP_LOCKED")
+        self.assertFalse(state["identityLocked"]);self.assertFalse(state["manualGroupMemberHeld"])
+        self.assertIsNone(self.runtime._identity_native.pending_identity)
+        self.assertEqual(state["provisionalMapId"],sorted(IDS)[0])
+        self.assertEqual(len(state["automaticCandidateRows"]),1)
+
+    def test_current_confirmed_member_cancels_other_desire_and_late_material_without_fit(self):
+        self.capture_group()
+        token=self.group_choice(IDS[0])["pendingSiblingToken"]
+        self.assertTrue(self.runtime.acknowledge_sibling(token,True)["success"])
+        good=copy.deepcopy(self.fit);self.fit=dict(success=False,reason="initial-structure-ambiguous")
+        self.assertEqual(self.group_choice(IDS[1])["reason"],"group-member-awaiting-geometry")
+        with patch.object(_AlignmentHost,"fit",side_effect=AssertionError("cancel does not fit")):
+            self.assertEqual(self.group_choice(IDS[0])["reason"],"already-current")
+        self.assertEqual(self.runtime.snapshot()["desiredGroupMemberId"],IDS[0])
+        self.assertEqual(self.runtime.snapshot()["groupMemberChoiceStatus"],"confirmed")
+        self.fit=good
+        pending=self.group_choice(IDS[1])["pendingSiblingToken"]
+        with patch.object(_AlignmentHost,"fit",side_effect=AssertionError("pending cancel does not fit")):
+            self.assertTrue(self.group_choice(IDS[0])["success"])
+        self.assertFalse(self.runtime.acknowledge_sibling(pending,True)["success"])
+        self.assertEqual(self.runtime.snapshot()["mapId"],IDS[0])
+        self.assertEqual(self.runtime.reference_payload()["mapId"],IDS[0])
+
+    def test_late_failed_other_member_cannot_undo_cancel_to_current_confirmed(self):
+        self.capture_group()
+        token=self.group_choice(IDS[0])["pendingSiblingToken"]
+        self.assertTrue(self.runtime.acknowledge_sibling(token,True)["success"])
+        entered,release=threading.Event(),threading.Event();output=[]
+        def blocked(*a,**k):
+            entered.set();release.wait(2);return dict(success=False,reason="initial-structure-ambiguous")
+        with patch.object(_AlignmentHost,"fit",side_effect=blocked):
+            worker=threading.Thread(target=lambda:output.append(self.group_choice(IDS[1])))
+            worker.start();self.assertTrue(entered.wait(2))
+            self.assertTrue(self.group_choice(IDS[0])["success"])
+            release.set();worker.join(2)
+        self.assertFalse(worker.is_alive());self.assertTrue(output[0]["stale"])
+        state=self.runtime.snapshot();self.assertEqual(state["desiredGroupMemberId"],IDS[0])
+        self.assertEqual(state["groupMemberChoiceStatus"],"confirmed")
+        self.assertEqual(state["mapId"],IDS[0])
+
+    def test_cancelled_return_to_current_member_does_not_discard_desired_or_pending(self):
+        self.capture_group()
+        source=self.group_choice(IDS[0])["pendingSiblingToken"]
+        self.assertTrue(self.runtime.acknowledge_sibling(source,True)["success"])
+        pending=self.group_choice(IDS[1])["pendingSiblingToken"]
+        before=self.runtime.snapshot();intent=self.runtime._group_intent_generation
+        request={k:before[k] for k in ("groupId","groupGeneration","cycleId","floor")};request["mapId"]=IDS[0]
+        cancelled=threading.Event();cancelled.set()
+        result=self.runtime.dispatch("select_group_member",request,cancelled)
+        self.assertFalse(result["success"]);self.assertEqual(result["reason"],"cancelled")
+        after=self.runtime.snapshot();self.assertEqual(after["desiredGroupMemberId"],IDS[1])
+        self.assertEqual(after["groupMemberChoiceStatus"],before["groupMemberChoiceStatus"])
+        self.assertEqual(self.runtime._group_intent_generation,intent)
+        self.assertIsNotNone(self.runtime.pending_sibling_payload(pending))
 
     def test_round_started_event_is_once_after_capture_activation_only(self):
         events=[];self.runtime.set_event_callback(events.append)
@@ -657,11 +714,11 @@ class SimilarityProtocolTests(unittest.TestCase):
             self.assertEqual(solve.call_args.kwargs["pose_index_candidates"], [])
 
     def test_late_group_review_after_end_and_mode_change_cannot_commit(self):
-        self.capture_group()
+        self.prepare_group()
         entered, release = threading.Event(), threading.Event()
         def review(*a, **kw):
             entered.set(); self.assertTrue(release.wait(4)); return rows(IDS[0])
-        self.engine.rank_established_group.side_effect = review
+        self.engine.rank.side_effect = review
         output = []
         worker = threading.Thread(target=lambda: output.append(self.dispatch("capture_now")))
         worker.start(); self.assertTrue(entered.wait(4))
@@ -697,26 +754,11 @@ class SimilarityProtocolTests(unittest.TestCase):
                     self.assertEqual(isolated.portable_seed_path, root / "resources/.qt-no-portable-seeds.json")
                     self.assertFalse(memory.log_path.exists())
 
-    def test_explicit_none_resets_group_prior_and_provisional_choice_then_global_rank_resumes(self):
-        self.capture_group()
-        old = self.runtime._identity_native
-        self.assertIsNotNone(self.runtime._identity_prior)
-        self.engine.rank_established_group.return_value = []
-        self.capture.frame[0,0,0] = 9
-        result = self.dispatch("capture_now")
-        self.assertFalse(result["success"])
-        state = self.runtime.snapshot()
-        self.assertEqual((state["identityPhase"],state["provisionalMapId"]),("UNLOCKED",""))
-        self.assertIsNone(self.runtime._identity_prior); self.assertIsNone(self.runtime._identity_priority)
-        self.assertIsNone(self.runtime._gate.confirmed_id)
-        self.assertIsNone(self.runtime.reference_payload())
-        self.assertEqual(old.state,"GROUP_LOCKED")
-        self.dispatch("close_map")
-        self.assertIsNone(self.runtime.reference_payload())
-        self.engine.rank.return_value=[dict(mapId=IDS[1],identityHardGatePassed=True,strongSuggestion=True)]
-        self.assertTrue(self.dispatch("capture_now")["success"])
-        self.assertEqual(self.runtime.snapshot()["mapId"],IDS[1])
-        self.assertEqual(self.engine.rank.call_count,2)
+    def test_initial_none_still_cannot_authorize_a_logical_group(self):
+        self.prepare_group();self.engine.rank.return_value=[]
+        self.assertFalse(self.dispatch("capture_now")["success"])
+        self.assertEqual(self.runtime.snapshot()["identityPhase"],"UNLOCKED")
+        self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
 
     def test_passive_review_none_keeps_established_group(self):
         self.capture_group()
@@ -732,11 +774,11 @@ class SimilarityProtocolTests(unittest.TestCase):
         self.assertEqual(len(self.runtime._identity_native.observations),1)
 
     def test_late_explicit_none_cannot_reset_a_newer_context(self):
-        self.capture_group()
+        self.prepare_group()
         entered,release=threading.Event(),threading.Event()
         def blocked(*a,**k):
             entered.set(); self.assertTrue(release.wait(4)); return []
-        self.engine.rank_established_group.side_effect=blocked
+        self.engine.rank.side_effect=blocked
         result=[]
         worker=threading.Thread(target=lambda:result.append(self.dispatch("capture_now")))
         worker.start(); self.assertTrue(entered.wait(4))

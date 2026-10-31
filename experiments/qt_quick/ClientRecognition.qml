@@ -19,6 +19,10 @@ Item {
         && state.candidateEditMode !== true
     readonly property string groupMember: state.currentGroupMemberId || state.provisionalMapId
         || state.durableMapId || state.mapId || ""
+    readonly property string groupDesired: state.desiredGroupMemberId || ""
+    readonly property string groupChoice: groupDesired || groupMember
+    readonly property string groupChoiceStatus: state.groupMemberChoiceStatus || ""
+    readonly property bool groupAwaiting: groupChoiceStatus === "awaiting-geometry" || groupChoiceStatus === "awaiting-material"
     readonly property bool groupHeld: state.manualGroupMemberHeld === true
     readonly property bool groupPending: state.groupMemberSelectionPending === true
     Component.onCompleted: syncGroupChoices()
@@ -41,10 +45,16 @@ Item {
         const row = groupChoices.find(row => row.mapId === id)
         return row ? row.name : (id || "待核对")
     }
+    function groupSelectionText() {
+        if (groupDesired && groupAwaiting)
+            return "已选" + groupName(groupDesired) + (groupChoiceStatus === "awaiting-material" ? "，正在切换；当前地图" : "，等待定位；当前地图") + groupName(groupMember)
+        if (groupDesired || groupHeld) return "本局已手动选择：" + groupName(groupChoice)
+        return (state.identityPhase === "MEMBER_VERIFIED" ? "当前地图：" : "当前暂用：") + groupName(groupMember) + " · 请选择本局地图"
+    }
     function groupReason(action) {
         if (state.contextPending || state.roundPreparing) return "正在切换环境，请稍后选择"
         if (state.resourceLocked) return "正在更新资源，请稍后选择"
-        if (groupPending) return "正在核对所选地图，当前选择暂不改变"
+        if (groupPending) return "正在核对所选地图，当前显示暂不改变"
         if (session.busy && state.pendingAction !== "refresh_map") return "当前操作尚未完成，请稍后选择"
         if (!state.roundActive) return "请先开始本局识别"
         if (!state.commands || !state.commands[action] || !state.commands[action].available)
@@ -145,9 +155,7 @@ Item {
                     Label { text: "相似地图切换"; color: "#142b4b"; font.pixelSize: 18; font.bold: true }
                     Label {
                         objectName: "groupMemberCurrent"
-                        text: page.groupHeld ? "本局已手动选择：" + page.groupName(page.groupMember)
-                            : page.state.identityPhase === "MEMBER_VERIFIED" ? "当前地图：" + page.groupName(page.groupMember)
-                            : "当前暂用：" + page.groupName(page.groupMember) + " · 成员待核对"
+                        text: page.groupSelectionText()
                         color: "#17365e"; font.pixelSize: 14; font.bold: true
                         wrapMode: Text.WordWrap; Layout.fillWidth: true
                     }
@@ -158,17 +166,16 @@ Item {
                             delegate: AppButton {
                                 required property var modelData
                                 objectName: "groupMember_" + modelData.mapId
-                                text: modelData.name + (selected ? (page.groupHeld ? " · 本局选择" : " · 当前") : "")
-                                selected: modelData.mapId === page.groupMember
-                                enabled: !(selected && page.groupHeld) && page.groupReason("select_group_member") === ""
+                                text: modelData.name + (selected ? (page.groupDesired || page.groupHeld ? " · 本局选择" : " · 暂用") : "")
+                                selected: modelData.mapId === page.groupChoice
+                                enabled: !(selected && (page.groupDesired || page.groupHeld)) && page.groupReason("select_group_member") === ""
                                 onClicked: session.dispatchWithPayload("select_group_member", page.groupPayload(modelData.mapId))
                             }
                         }
                     }
                     Label {
                         objectName: "groupMemberReason"
-                        text: page.groupPending ? "正在核对“" + page.groupName(page.state.pendingGroupMemberId) + "”，通过后才会切换；当前仍为“" + page.groupName(page.groupMember) + "”。"
-                            : page.groupReason("select_group_member") || page.state.groupMemberSelectionReason || "选择需通过当前帧核对；缺少作者图时沿用现有底图规则。"
+                        text: page.groupReason("select_group_member") || (page.groupAwaiting ? "将自动重试，也可选择本组其他地图。" : page.state.groupMemberSelectionReason || "选择需通过当前帧核对；缺少作者图时沿用现有底图规则。")
                         color: "#526785"; font.pixelSize: 13; wrapMode: Text.WordWrap; Layout.fillWidth: true
                     }
                     Label { visible: page.groupHeld; text: "手动选择在本局当前组内保持；切换楼层后仍需核对该层。结束本局或重新选图会清除。"; color: "#526785"; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true }

@@ -38,7 +38,7 @@ def clone_similarity_state(previous=None):
     return NativeSimilarityState(**values)
 
 
-def stage_similarity_rank(previous, rows, context, observation_id, display_members=()):
+def stage_similarity_rank(previous, rows, context, observation_id, display_members=(), *, group_only=False):
     """Replay the legacy native state consumer without altering rank verdicts."""
     proposal = copy.deepcopy((rows or [{}])[0].get("nativeSimilarity") or {"status": "none"})
     state = clone_similarity_state(previous)
@@ -53,9 +53,94 @@ def stage_similarity_rank(previous, rows, context, observation_id, display_membe
     # calls accept even for status=none, whose existing reset revokes the group.
     # Passive group review does not call this complete-rank consumer.
     state.accept(proposal, context, observation_id)
-    if state.state == "GROUP_LOCKED" and state.context_snapshot() and context[2] == "1":
+    if group_only and len(state.member_ids)>1:
+        state.pending_identity=state.verified_member_id=state.member_reference=None
+        if state.group_id:
+            state.state="GROUP_LOCKED"
+            state.provisional_member_id=sorted(state.member_ids)[0]
+    if not group_only and state.state == "GROUP_LOCKED" and state.context_snapshot() and context[2] == "1":
         state.prefer_display_member(display_members)
     return state, proposal
+
+
+def registered_logical_family(engine, map_id, floor, *, required_members=()):
+    """Resolve exact registered cohorts on the worker, retaining original checks.
+
+    Membership is static identity metadata across supported registered floors.
+    ``floor`` carries caller context; it does not filter out a known family
+    when that family's view exists only on another supported floor. Runtime
+    independently validates the current floor's resources and pose. This grants
+    no current pose, positive condition observation or unique member identity.
+    A unique already-declared maximal cohort may contain narrower registered
+    views; incompatible overlapping cohorts remain ambiguous, never unioned.
+    """
+    index=getattr(engine,"native_similarity_index",None)
+    if index is None:return dict(status="none")
+    try:
+        if getattr(index,"error",None):raise ValueError("similarity-registration-invalid")
+        if getattr(index,"mode",None)!=engine.pack.mode:raise ValueError("similarity-registration-mode")
+        provider=engine.qt_shared_provider
+        conditions=getattr(index,"condition_index",None)
+        if conditions is None:
+            group=index.group_for(map_id)
+            if group is None:return dict(status="none")
+            if required_members and not set(required_members)<=set(group["memberIds"]):
+                raise ValueError("similarity-registration-observation-mismatch")
+            index.validate(group,provider)
+            cohorts={tuple(sorted(group["memberIds"])):(str(group["groupId"]),set())}
+        else:
+            cohorts={}
+            registered_member=False
+            supported=set(map(str,engine.identity_floors))
+            for cid,condition in conditions.conditions.items():
+                if condition["mode"]!=engine.pack.mode:continue
+                references=[conditions.references[conditions.poses[str(pid)]["target"]] for pid in condition["poseIds"]]
+                if not references:continue
+                members=tuple(sorted({str(r["mapId"]) for r in references}))
+                if map_id not in members or len(members)<2:continue
+                registered_member=True
+                if any(str(r["floor"]) not in supported for r in references):
+                    raise ValueError("similarity-registration-floor-unsupported")
+                key="registered-family:"+hashlib.sha256("\0".join(members).encode()).hexdigest()[:16]
+                if members not in cohorts:cohorts[members]=(key,set())
+                cohorts[members][1].add(condition["domainId"])
+            if not cohorts:
+                if registered_member:raise ValueError("similarity-registration-observation-mismatch")
+                return dict(status="none")
+            conditions.validate_domains(set().union(*(domains for _,domains in cohorts.values())),provider)
+        if any(len(members)<2 or not set(members)<=set(engine.pack.by_id) for members in cohorts):
+            raise ValueError("similarity-registration-members")
+        # Select a declared maximal cohort only when it already contains every
+        # compatible cohort. Never construct a union from overlapping groups.
+        maxima=[members for members in cohorts if all(set(other)<=set(members) for other in cohorts)]
+        selected={maxima[0]:cohorts[maxima[0]]} if len(maxima)==1 else cohorts
+        if len(maxima)==1 and required_members and not set(required_members)<=set(maxima[0]):
+            raise ValueError("similarity-registration-observation-mismatch")
+        choices=[dict(groupId=key,memberIds=list(members),resourceKey=index.index_digest)
+                 for members,(key,_) in sorted(selected.items())]
+        return dict(status="group" if len(choices)==1 else "ambiguous",candidates=choices)
+    except (OSError,ValueError,KeyError,TypeError,AttributeError) as error:
+        return dict(status="unavailable",reason=str(error))
+
+
+def automatic_identity_candidates(rows, state):
+    """Expose an established family once, never member-vs-member verdicts.
+
+    The unchanged engine may measure member features to discover a family.
+    These are evidence for one logical candidate, not unique member identity.
+    """
+    members=tuple(sorted(set(state.member_ids))) if state is not None else ()
+    grouped=bool(state is not None and state.state=="GROUP_LOCKED" and len(members)>1)
+    if not grouped:
+        return [dict(row,identityKind="map",key=str(row["mapId"])) for row in rows]
+    key="group:"+hashlib.sha256("\0".join(members).encode()).hexdigest()[:16]
+    evidence=[row for row in rows if row.get("mapId") in members]
+    scores=[r["score"] for r in evidence if isinstance(r.get("score"),(int,float))]
+    group=dict(key=key,mapId="",identityKind="group",groupId=state.group_id,memberIds=list(members),
+               name="相似地图组",score=max(scores) if scores else None,
+               identityHardGatePassed=False,strongSuggestion=False)
+    return [group,*[dict(row,identityKind="map",key=str(row["mapId"]))
+                   for row in rows if row.get("mapId") not in members]]
 
 
 class EngineAdapter:

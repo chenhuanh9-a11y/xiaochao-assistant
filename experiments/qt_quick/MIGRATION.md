@@ -1,6 +1,43 @@
 # Qt Quick migration map
 
-## Release-candidate delta after accepted ACC1
+## Field follow-up after 8589747
+
+8589747 is retained as an artifact but is not ready for release. Its real run
+repeatedly published new asynchronous Image URLs for unchanged route pixels.
+A bounded synthetic full-fit producer/actual QML comparison reproduced transparent
+window grabs during those reloads; the same path also exists in ACC1. Fixed pixels
+now reuse a material URL only when both the display scope and actual RGBA contents
+match. Frame UUIDs, capture geometry/currentness, live grants and material ACKs
+remain independent and are checked for every new result. Changed pixels/resources
+load separately; revocation still clears the material immediately. This repairs
+the reload mechanism, not numerical pose jitter or untested game behavior.
+
+The newer user policy is **one automatic identity per similar group**. Internal
+member features may establish a registered family, but automatic results must not
+confirm or subsequently compete for a member. The stable first member is explicitly
+a display default. A player alone chooses a member; floor observation and fitting
+of that member continue. There is no resume-auto-member action or customization
+switch for the built-in control picker.
+
+Selection intent and committed output are separate. `desiredGroupMemberId` is
+retained even if current-frame fitting fails; `groupMemberChoiceStatus` reports
+waiting for geometry/material or confirmed. `currentGroupMemberId` continues to
+name the actually committed map. The control shows the desired choice plus the
+current map while waiting. A subsequent ordinary Session capture/refresh retries
+the desired member and changes identity/author route/aligned/reference together
+only after valid geometry and material acceptance. Expired old output is never
+kept merely to conceal a failed fit. End/reselection/resources/mode changes clear
+the intent; automatic floor changes retain the desired member and validate anew.
+If the old member fails the current frame while the target fits, withdrawal of
+the expired source preserves only a runtime-validated pending target and its
+original loading deadline. Terminal invalidations still cancel both surfaces.
+
+Source/QML, controlled production-queue and frozen-artifact evidence are separate
+acceptance levels. The continuous causal comparison alone uses a direct producer
+and cannot stand in for the final Session-worker/control-click check. No real game
+input, mixed-DPI hardware run, user installation or public release is implied.
+
+## Historical 8589747 delta after accepted ACC1
 
 The user accepted ACC1 in game and then explicitly changed the group policy:
 automatic identification still discovers maps/groups, but subsequent evidence
