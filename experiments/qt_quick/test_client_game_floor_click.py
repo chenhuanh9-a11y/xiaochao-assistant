@@ -62,6 +62,29 @@ class FloorClickContracts(unittest.TestCase):
                 self.assertEqual(self.runtime.render_payload(current["renderToken"])["floor"], "2")
                 self.assertIsNone(self.runtime._game_floor_intent)
 
+    def test_passive_frame_advance_keeps_queued_floor_intent_but_not_old_pose_authority(self):
+        for mode in ("nightmare", "difficult"):
+            with self.subTest(mode=mode):
+                if self.runtime.snapshot()["roundActive"]:
+                    self.dispatch("end_round")
+                context = self.prepare(mode)
+                self.now += .1
+                self.capture.frame[0, 0, 0] += 1
+                with patch.object(_AlignmentHost, "_canonical_geometry_current_frame_residual",
+                                  return_value=(self.fit["selectedRouteCurrentFrameResidual"], None)):
+                    self.assertTrue(self.dispatch("refresh_map")["success"])
+                self.assertNotEqual(self.runtime.game_floor_click_context()["frameId"], context["frameId"])
+                accepted = self.click(2, context, mode)
+                self.assertTrue(accepted["success"], accepted)
+                self.assertEqual(accepted["expiresAt"], context["createdAt"] + 2.)
+                self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
+                self.assertFalse(self.dispatch("refresh_map")["success"])
+                self.read["selectedFloor"] = 2
+                self.assertTrue(self.dispatch("refresh_map")["success"])
+                self.assertEqual(self.runtime.snapshot()["floor"], "2")
+                self.runtime.invalidate("foreground-lost")
+                self.assertFalse(self.click(1, context, mode)["success"])
+
     def test_click_overrides_manual_hold_and_lock_only_with_matching_pixels(self):
         self.prepare()
         self.dispatch("set_floor", floor="1")

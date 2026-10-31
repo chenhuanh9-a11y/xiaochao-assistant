@@ -113,6 +113,12 @@ class FloorInputTests(unittest.TestCase):
 
     def test_busy_pose_click_runs_through_input_coordinator_and_session_lane(self):
         """Real runtime/session; only native APIs, pixels and solver are seams."""
+        self._run_busy_pose_click()
+
+    def test_queued_click_before_passive_refresh_reaches_floor_intent_and_fresh_output(self):
+        self._run_busy_pose_click(advance_observation=True)
+
+    def _run_busy_pose_click(self, advance_observation=False):
         floor = floor_seams.FloorClickContracts()
         floor.setUp()
         services = coordinator_seams.CoordinatorTests()
@@ -151,13 +157,24 @@ class FloorInputTests(unittest.TestCase):
                     if predicate(): return
                     time.sleep(.001)
                 raise AssertionError("bounded floor input/session deadline")
+            if advance_observation:
+                x, y = floor.xy(2)
+                event = self.source._pointer_event(x, y, 42, created_at=floor.now)
+                self.source.pointerReceived.emit(event)  # Waits in the actual Qt delivery queue.
+                floor.now += .1
+                floor.capture.frame[0, 0, 0] += 1
+                with patch.object(_AlignmentHost, "_canonical_geometry_current_frame_residual",
+                                  return_value=(floor.fit["selectedRouteCurrentFrameResidual"], None)):
+                    self.assertTrue(floor.dispatch("refresh_map")["success"])
+                self.assertNotEqual(floor.runtime.snapshot()["frameId"], event["context"]["frameId"])
             with patch.object(_AlignmentHost, "fit", side_effect=fit):
                 session.dispatch("capture_now")
                 self.assertTrue(entered.wait(3))
                 x, y = floor.xy(2)
-                event = self.source._pointer_event(x, y, 42, created_at=floor.now)
-                self.assertIsNotNone(event)
-                self.source.pointerReceived.emit(event)
+                if not advance_observation:
+                    event = self.source._pointer_event(x, y, 42, created_at=floor.now)
+                    self.assertIsNotNone(event)
+                    self.source.pointerReceived.emit(event)
                 until(lambda:floor.runtime._game_floor_intent is not None)
                 self.assertFalse(floor.runtime.snapshot()["displayAuthorized"])
                 self.assertEqual(floor.runtime.snapshot()["floor"], "2")

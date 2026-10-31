@@ -1068,8 +1068,21 @@ class LiveRuntime:
             span = self._floor_click_epoch_span
             own_click_epoch = bool(span is not None and span[1] == self._epoch
                 and isinstance(supplied_epoch, int) and span[0] <= supplied_epoch <= span[1])
+            observation_fields = {"frameId", "generation", "observationCreatedAt"}
+            same_observation = all(context.get(key) == current.get(key) for key in observation_fields)
+            # A floor-button press is UI intent, not a pose grant. A passive
+            # observation can finish while this press waits in Qt's queue.
+            # Keep its round/window scope and original age, but use the latest
+            # localized controls; fresh matching highlight still owns display.
+            before, after = context.get("generation"), current.get("generation")
+            old_time, new_time = context.get("observationCreatedAt"), current.get("observationCreatedAt")
+            observation_advanced = (type(before) is int and type(after) is int and 0 <= before < after
+                and type(old_time) in (int, float) and type(new_time) in (int, float)
+                and math.isfinite(old_time) and math.isfinite(new_time) and old_time <= new_time)
             if ((supplied_epoch != self._epoch and not own_click_epoch)
-                    or any(context.get(key) != value for key, value in current.items() if key != "epoch")):
+                    or any(context.get(key) != value for key, value in current.items()
+                           if key not in observation_fields | {"epoch"})
+                    or not (same_observation or observation_advanced)):
                 return dict(success=False, reason="floor-click-context-stale")
             created = context.get("createdAt")
             now = self._monotonic()
