@@ -13,6 +13,9 @@ def operation_problem(receipt, state):
     elif 'capture' in raw.casefold() or 'foreground' in raw.casefold():
         title, phase = '游戏画面暂不可用', 'capture'
         summary = '未能取得有效的游戏画面。请保持游戏窗口可见、尺寸稳定，并在游戏中重新打开地图。详情已保存在帮助页。'
+    elif raw == 'difficult-f2-entry-recognition-disabled':
+        title, phase = '困难二楼暂不支持入局识别', 'identity'
+        summary = '请先在一楼完成地图识别；已识别的地图仍可正常切换到二楼并继续贴合。'
     elif raw == 'identity-not-uniquely-verified':
         title, summary = '地图仍需确认', '当前画面还不能唯一确认地图，请完整打开地图后重试，或手动选择地图。'
         phase = 'identity'

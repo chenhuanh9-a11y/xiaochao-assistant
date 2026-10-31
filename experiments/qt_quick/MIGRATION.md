@@ -1,16 +1,32 @@
 # Qt Quick migration map
 
-## Reviewed group membership: release blocker
+## Reviewed group membership: current implementation contract
 
 Only explicitly reviewed project registrations define a similar-map group.
 Local feature compatibility, runtime condition observations, and candidate lists
 are not membership authority and must not expand the built-in member picker.
-`front_door_groups.py` documents `ambiguousGroups` as that authority and leaves
-unregistered maps as singletons. Its expected production registration file was
-not found in the known current/previous resource roots. The schema-1 generator's
-04/12/19 example and synthetic tests are not a production member list. Complete
-reviewed membership for both modes remains an external data gap; do not invent
-members or advertise the group feature as verified without it.
+The user has now confirmed the current client-resource comparison boards. The
+production factory injects `client_group_registry.ConfirmedFrontGroups` with
+exactly these **F1 front-entry** groups:
+
+- Nightmare: 04/12/19; 03/09; 07/08/20.
+- Difficult: 08/25; 03/10; 04/21; 20/26; 05/09-2.
+
+Nightmare13/17 are independent. All side-entry groups are empty, including the
+withdrawn difficult22/27 F2 side group. A main-entry group must not become a
+global alias that overrides a unique side-entry result. Group discovery requires
+current front-entry evidence, rather than map membership alone; once a group is
+established, its chosen member persists through floor changes. The default
+floating-control member list is always built in. Members are selected by the
+user, with no subsequent automatic member re-selection or restore-auto action.
+The registry validates real typed F1 bindings for every declared member and
+grants no geometric pose authority.
+
+Only difficult F2 side-entry **initial** recognition is disabled by the final
+user instruction. Already recognized rounds retain automatic floor changes and
+F2 alignment refresh; nightmare has no new F2 restriction. Side-entry exploration
+range optimization is deferred. These are implementation requirements, not a
+claim that the current source or frozen package has passed them all.
 
 A real saved full-client map18 frame demonstrates an adapter regression:
 ACC1/858 select 18 and produce a current pose. D040/e18 rank 18 with the same

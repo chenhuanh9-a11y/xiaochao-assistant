@@ -19,7 +19,7 @@ from client_paths import APP_ROOT, WORK_ROOT
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 from alignment_core_v2 import AlignmentCoreV2
-from client_engine import (EngineAdapter, clone_similarity_state, stage_similarity_rank, automatic_identity_candidates, registered_logical_family, similarity_evidence_summary, initial_group_display_member, is_registered_identity_group,
+from client_engine import (EngineAdapter, clone_similarity_state, stage_similarity_rank, automatic_identity_candidates, registered_logical_family, ranked_entrance_kind, similarity_evidence_summary, initial_group_display_member, is_registered_identity_group,
                            INITIAL_IDENTITY_BUDGET_SECONDS)
 from floor_observation_policy import (MANUAL_FLOOR_HOLD_SECONDS,
                                       read_floor_evidence, decide_floor_transition, game_floor_control_hit)
@@ -546,8 +546,10 @@ class LiveRuntime:
         unresolved_candidates=[]
         native_group=bool(len(state.member_ids)>1 and state.state=="GROUP_LOCKED")
         hard_top=bool(len(accepted)==1 and top is accepted[0] and top.get("strongSuggestion") is True)
-        if native_group or hard_top:
+        entrance_kind=ranked_entrance_kind(engine, rows, floor)
+        if entrance_kind == "front" and (native_group or hard_top):
             family=registered_logical_family(engine,top["mapId"] if hard_top else state.provisional_member_id,floor,
+                                             entrance_kind=entrance_kind,
                                              required_members=state.member_ids if native_group and not hard_top else ())
             block_member_unique=family["status"]!="none"
             if family["status"]=="group":
@@ -666,7 +668,8 @@ class LiveRuntime:
                 frontDoorProvisionalMemberId=top.get("frontDoorProvisionalMemberId") if top else None,
                 acceptedMapIds=[row.get("mapId") for row in accepted][:32],
                 nativeStatus=proposal.get("status"), nativeCandidateMemberId=proposal.get("candidateMemberId"),
-                establishedMemberIds=list(state.member_ids)[:32], selectedMapId=selected))
+                establishedMemberIds=list(state.member_ids)[:32], selectedMapId=selected,
+                entranceKind=entrance_kind))
         seed = seeds.get(selected)
         if seed is None and len(accepted) == 1 and accepted[0].get("mapId") == selected:
             seed = accepted[0].get("difficultEntry")
@@ -1444,6 +1447,9 @@ class LiveRuntime:
                 return self._capture_and_solve(action, payload, cancelled)
             entry_candidate = None
             if not selected:
+                if engine.pack.mode == "difficult" and str(floor) == "2":
+                    return self._receipt(action, payload, success=False,
+                        reason="difficult-f2-entry-recognition-disabled", posePending=True)
                 selected, entry_candidate, stale = self._rank_identity(engine, observation["frame"], floor,
                     epoch, frame_id, cancelled)
                 if stale:
@@ -2311,14 +2317,14 @@ class LiveRuntime:
             return self._receipt(action, payload, success=False, reason="candidate-awaiting-confirmation")
         ranked = []
         entry_candidate = None
-        with self._lock:
-            rediscover_group = bool(action in ("map", "capture_now") and is_registered_identity_group(self._identity_native))
-        if not map_id or rediscover_group:
-            # Explicit capture still discovers the current logical group.
-            # A fresh same-group observation reuses its member preference;
-            # passive refresh only fits that member and never reselects it.
-            map_id, entry_candidate, stale = self._rank_identity(engine, frame, floor, epoch, frame_id, cancelled,
-                                                               rediscover=rediscover_group)
+        if not map_id:
+            if not map_id and engine.pack.mode == "difficult" and str(floor) == "2":
+                return self._receipt(action, payload, success=False,
+                    reason="difficult-f2-entry-recognition-disabled", posePending=True)
+            # Opening the map again refreshes the selected member's geometry.
+            # Only an identity reset/new round starts discovery; later side
+            # views must not silently replace a front-group member selection.
+            map_id, entry_candidate, stale = self._rank_identity(engine, frame, floor, epoch, frame_id, cancelled)
             if stale:
                 return self._receipt(action, payload, success=False, reason=str(stale), stale=True)
             if not map_id:

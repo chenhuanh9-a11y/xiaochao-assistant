@@ -94,7 +94,54 @@ def is_registered_identity_group(state):
                 and state.group_id and len(state.member_ids) > 1)
 
 
-def registered_logical_family(engine, map_id, floor, *, required_members=()):
+def ranked_entrance_kind(engine, rows, floor):
+    """Current producer evidence, never an advisory label or a prior group."""
+    top = (rows or [{}])[0]
+    for position, row in enumerate(rows):
+        entry = row.get("difficultEntry") or {}
+        # Main-entry rank(frame, floor=...) omits floor. Reject a supplied
+        # mismatch; the invocation is authoritative when the field is absent.
+        if entry.get("mapId") != row.get("mapId") or str(entry.get("floor", floor)) != str(floor):
+            continue
+        kind = entry.get("entryKind")
+        front = kind in ("main", "main-entry-passport")
+        # Passport solving uses locatorKind='side' even for main passports.
+        # The producer's semantic entryKind takes precedence over that solver.
+        if position == 0 and not front and (entry.get("locatorKind") == "side" or kind in (
+                "side-entry-passport", "side-neighborhood", "local-structure")):
+            return "side"
+        checked = entry.get("verification") or {}
+        # This is the original native front-witness gate, not a new full-fit
+        # requirement: a provisional group can precede verification.success.
+        front_geometry = (checked.get("success") is True or
+            ((checked.get("regions") or {}).get("regionalEdgeVerified") is True
+             and (checked.get("residual") or {}).get("verified") is True))
+        if (front and front_geometry and not entry.get("poseAmbiguous")
+                and (entry.get("entryCrossCheck") or {}).get("contradicted") is not True):
+            return "front"
+    # A fresh native condition is also real front-entry evidence. Established
+    # conditions can be continued by side poses, so never use those as an entry.
+    proposal = top.get("nativeSimilarity") or {}
+    index = getattr(engine, "native_similarity_index", None)
+    conditions = getattr(index, "condition_index", None)
+    if (conditions is not None and proposal.get("mode") == engine.pack.mode
+            and str(proposal.get("floor")) == str(floor)
+            and proposal.get("resourceKey") == getattr(index, "index_digest", None)):
+        for observed in proposal.get("conditionObservations", ()):
+            condition = conditions.conditions.get(str(observed.get("conditionId")), {})
+            if (condition.get("kind") == "front" and condition.get("mode") == engine.pack.mode
+                    and str(condition.get("floor")) == str(floor)
+                    and observed.get("domainId") == condition.get("domainId")
+                    and observed.get("entryEstablished") is False
+                    and observed.get("completeForeignMapCompetition") is True
+                    and observed.get("currentCompetitionComplete") is True
+                    and observed.get("activeViews") and not observed.get("ambiguousViews")
+                    and not observed.get("outsideCompetitors")):
+                return "front"
+    return "unknown"
+
+
+def registered_logical_family(engine, map_id, floor, *, entrance_kind="unknown", required_members=()):
     """Only schema-1 explicit map-level registrations can define a family.
 
     Schema-2 finite local observation cohorts are not map-level registrations.
@@ -102,16 +149,16 @@ def registered_logical_family(engine, map_id, floor, *, required_members=()):
     neither expands that group nor promotes an unobserved compatibility cohort.
     Current-floor resources and pose remain independently verified by Runtime.
     """
+    if str(floor) != "1" or entrance_kind != "front":
+        return dict(status="none",reason="outside-reviewed-front-entry-scope")
     index=getattr(engine,"qt_logical_group_registry",None)
-    if index is None:
-        index=getattr(engine,"native_similarity_index",None)
     if index is None:return dict(status="none",reason="no-authoritative-map-level-registration")
     try:
         if getattr(index,"error",None):raise ValueError("similarity-registration-invalid")
         if getattr(index,"mode",None)!=engine.pack.mode:raise ValueError("similarity-registration-mode")
         if getattr(index,"condition_index",None) is not None:
             return dict(status="none",reason="no-authoritative-map-level-registration")
-        group=index.group_for(map_id)
+        group=index.group_for(map_id, floor=str(floor), entrance_kind=entrance_kind)
         if group is None:return dict(status="none")
         members=tuple(sorted(group["memberIds"]))
         if len(members)<2 or not set(members)<=set(engine.pack.by_id):

@@ -10,7 +10,7 @@ import test_client_similarity_protocol as groups
 from test_client_session import APP,until
 
 class GroupQueueTests(unittest.TestCase):
-    def test_both_modes_explicit_group_rediscovery_preserves_choice_and_expires_other_domain(self):
+    def test_both_modes_reopening_preserves_choice_and_new_round_expires_old_domain(self):
         for mode in ("nightmare", "difficult"):
             with self.subTest(mode=mode):
                 fx=fixtures.LiveRuntimeContracts();fx.setUp()
@@ -44,15 +44,13 @@ class GroupQueueTests(unittest.TestCase):
                     self.assertEqual(session.snapshot["identitySource"],"manual-group-member")
                     count=engine.rank.call_count;drive("refresh_map")
                     self.assertEqual(engine.rank.call_count,count)
-                    # A temporary lack of family evidence withdraws authority,
-                    # not the player's remembered intent.
+                    # Reopening fits the chosen member. It does not turn a
+                    # different visible entrance into an automatic re-selection.
                     engine.rank.return_value=[]
-                    self.assertFalse(drive("capture_now")["success"])
-                    self.assertFalse(session.snapshot["groupLocked"])
+                    self.assertTrue(drive("capture_now")["success"])
+                    self.assertTrue(session.snapshot["groupLocked"])
+                    self.assertEqual(engine.rank.call_count,count)
                     self.assertEqual(session.snapshot["desiredGroupMemberId"],groups.IDS[1])
-                    engine.rank.return_value=groups.rows(groups.IDS[0],mode)
-                    result=drive("capture_now");self.assertIn("pendingSiblingToken",result,session.snapshot);retry=result["pendingSiblingToken"]
-                    self.assertTrue(fx.runtime.acknowledge_sibling(retry,True)["success"]);session.refreshRuntime()
                     self.assertEqual(session.snapshot["currentGroupMemberId"],groups.IDS[1])
                     old_pending=choose(groups.IDS[0])["pendingSiblingToken"]
                     old_scope={k:session.snapshot[k] for k in ("groupId","groupGeneration","cycleId","floor")}
@@ -63,6 +61,7 @@ class GroupQueueTests(unittest.TestCase):
                     observation=native["conditionObservations"][0]
                     observation["memberIds"]=list(new_ids);observation["poseMaps"]={"a":new_ids[0],"b":new_ids[1]}
                     engine.rank.return_value=ranked
+                    drive("end_round");drive("start_round")
                     result=drive("capture_now");self.assertTrue(result["success"],result)
                     self.assertEqual(set(session.snapshot["groupMemberIds"]),set(new_ids))
                     self.assertFalse(session.snapshot["desiredGroupMemberId"])

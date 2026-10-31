@@ -307,6 +307,10 @@ class EngineFactories(dict):
             optionalSideDoorError=engine.side_entry_identity.side_door_error,
             optionalSideSearchError=engine.side_entry_identity.side_search_error)
         engine.qt_shared_provider = provider
+        # Local compatibility cohorts remain recognition evidence only. The
+        # separately confirmed list is scoped by Runtime to F1 front entries.
+        from client_group_registry import ConfirmedFrontGroups
+        engine.qt_logical_group_registry = ConfirmedFrontGroups(pack)
         engine.qt_resource_root = root
         engine.qt_adapters = adapters
         engine.qt_catalog = catalog

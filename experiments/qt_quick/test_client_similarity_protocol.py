@@ -23,7 +23,7 @@ def proposal(winner=None, mode="nightmare", floor="1"):
 
 def rows(winner=None, mode="nightmare", floor="1"):
     result = [dict(mapId=mid, identityHardGatePassed=mid == winner, strongSuggestion=False,
-        difficultEntry=dict(mapId=mid, floor=floor, verification=dict(success=True,
+        entryKind="main", difficultEntry=dict(mapId=mid, floor=floor, entryKind="main", verification=dict(success=True,
             matrixSourceToClient=np.eye(3).tolist()))) for mid in IDS]
     result[0]["nativeSimilarity"] = proposal(winner,mode,floor)
     return result
@@ -33,7 +33,8 @@ def explicit_registry(mode="nightmare", member_sets=(IDS,)):
     declarations=[dict(groupId="fixture-reviewed-"+str(i),memberIds=list(members))
                   for i,members in enumerate(member_sets)]
     return SimpleNamespace(mode=mode,error=None,index_digest="explicit-fixture-registry",condition_index=None,
-        group_for=lambda mid:next((g for g in declarations if mid in g["memberIds"]),None),validate=Mock())
+        group_for=lambda mid, *, floor, entrance_kind:next((g for g in declarations if mid in g["memberIds"]),None)
+            if str(floor)=="1" and entrance_kind=="front" else None,validate=Mock())
 
 
 class SimilarityProtocolTests(unittest.TestCase):

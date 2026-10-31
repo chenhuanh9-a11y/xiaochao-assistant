@@ -22,7 +22,7 @@ class RegisteredRuntimeTests(unittest.TestCase):
         fixtures.LiveRuntimeContracts.setUp(self)
         for mid in (B,C):
             item=SimpleNamespace(id=mid);self.engine.pack.maps.append(item);self.engine.pack.by_id[mid]=item
-        self.engine.rank=Mock(return_value=[dict(mapId=B,strongSuggestion=True,identityHardGatePassed=True,nativeSimilarity=dict(status="conditions",mode="nightmare",floor="1",resourceKey="shortcut",complete=True,memberIds=[B],candidateMemberId=B,originalIdentityHardGatePassed=True,conditionObservations=[]))])
+        self.engine.rank=Mock(return_value=[dict(mapId=B,strongSuggestion=True,identityHardGatePassed=True,entryKind="main",difficultEntry=dict(mapId=B,floor="1",entryKind="main",verification=dict(success=True,matrixSourceToClient=np.eye(3).tolist())),nativeSimilarity=dict(status="conditions",mode="nightmare",floor="1",resourceKey="shortcut",complete=True,memberIds=[B],candidateMemberId=B,originalIdentityHardGatePassed=True,conditionObservations=[]))])
     def test_v2_local_cohort_does_not_replace_verified_member_with_sorted_default(self):
         self.engine.native_similarity_index=v2_index()
         result=self.begin_and_capture();state=self.runtime.snapshot()
@@ -30,7 +30,7 @@ class RegisteredRuntimeTests(unittest.TestCase):
         self.assertEqual(state["mapId"],B)
         self.assertFalse(state["groupMemberIds"])
         self.assertEqual(self.runtime.render_payload(result["renderToken"])["mapId"],B)
-        family=registered_logical_family(self.engine,B,"1")
+        family=registered_logical_family(self.engine,B,"1",entrance_kind="front")
         self.assertEqual(family,dict(status="none",reason="no-authoritative-map-level-registration"))
         self.engine.native_similarity_index.condition_index.validate_domains.assert_not_called()
 
@@ -47,7 +47,7 @@ class RegisteredRuntimeTests(unittest.TestCase):
                 self.dispatch("end_round")
 
     def test_invalid_explicit_registry_still_does_not_become_ordinary_unique(self):
-        self.engine.native_similarity_index=SimpleNamespace(mode="nightmare",error="bad-schema")
+        self.engine.qt_logical_group_registry=SimpleNamespace(mode="nightmare",error="bad-schema")
         self.dispatch("start_round");self.assertFalse(self.dispatch("capture_now")["success"])
         self.assertFalse(self.runtime.snapshot()["identityLocked"])
 
@@ -143,8 +143,8 @@ class RegisteredRuntimeTests(unittest.TestCase):
         import test_client_similarity_protocol as groups
         group=dict(groupId="explicit-family",memberIds=[A,B,C])
         index=SimpleNamespace(mode="nightmare",error=None,index_digest="v1-index",condition_index=None,
-                              group_for=lambda mid:group,validate=Mock())
-        self.engine.native_similarity_index=index;self.engine.rank.return_value=groups.rows(B)
+                              group_for=lambda mid, **scope:group if scope==dict(floor="1",entrance_kind="front") else None,validate=Mock())
+        self.engine.qt_logical_group_registry=index;self.engine.rank.return_value=groups.rows(B)
         result=self.begin_and_capture();self.assertTrue(result["success"],result)
         self.assertEqual(self.runtime.snapshot()["provisionalMapId"],B)
         self.assertFalse(self.runtime.snapshot()["identityLocked"])
@@ -165,19 +165,21 @@ class ActualV1RegistryTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as temp:
                 original=Fixture(Path(temp));engine=owner.engine
                 engine.pack=original.pack;engine.pack.floors=("1","2");engine.native_similarity_index=original.index
+                engine.qt_logical_group_registry=SimpleNamespace(mode="nightmare",error=None,index_digest=original.index.index_digest,condition_index=None,
+                    group_for=lambda mid, **scope: original.index.group_for(mid) if scope==dict(floor="1",entrance_kind="front") else None,validate=original.index.validate)
                 def provider(profile,mid,floor):
                     ref=original.refs[(mid,str(floor))]
                     with np.load(ref.path,allow_pickle=False) as data:mask=data["shared_mask"].copy()
                     return SharedStructureReference(mask,mask,ref.metadata,ref.path)
                 engine.qt_shared_provider=provider
                 winner=engine.pack.maps[-1].id
-                engine.rank=lambda *a,**k:[dict(mapId=winner,strongSuggestion=True,identityHardGatePassed=True)]
+                engine.rank=lambda *a,**k:[dict(mapId=winner,strongSuggestion=True,identityHardGatePassed=True,entryKind="main",difficultEntry=dict(mapId=winner,floor="1",entryKind="main",verification=dict(success=True)))]
                 runtime=LiveRuntime(engine_factories={"nightmare":lambda:engine},capture_provider=owner.capture,evidence_kind="synthetic",clock=lambda:1.)
                 runtime.dispatch("start_round",{})
-                with patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=2)):
+                with patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=1)):
                     result=runtime.dispatch("capture_now",{})
                 self.assertTrue(result["success"],result);state=runtime.snapshot()
-                self.assertEqual(state["identityPhase"],"GROUP_LOCKED");self.assertEqual(state["groupId"],"three");self.assertEqual(state["floorSource"],"automatic");self.assertEqual(state["floor"],"2")
+                self.assertEqual(state["identityPhase"],"GROUP_LOCKED");self.assertEqual(state["groupId"],"three");self.assertEqual(state["floorSource"],"automatic");self.assertEqual(state["floor"],"1")
                 self.assertFalse(runtime._identity_native.condition_domains)
                 self.assertIsNone(engine.native_similarity_priority_provider())
                 self.assertIsNone(engine.native_similarity_context_provider())
