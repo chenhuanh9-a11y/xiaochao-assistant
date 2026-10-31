@@ -1014,6 +1014,28 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertEqual(result["strategy"], "shared-established-group-recovery")
         self.assertEqual(group.verified_floors, {"1"})  # proposal cannot mark target verified
 
+    def test_registered_new_floor_recovers_fixed_map_before_independent_search(self):
+        from round_layer_group import RoundLayerGroup
+        engine = fixture_engine("difficult")
+        engine.identity_profile_id = "shared-structure"
+        engine.side_entry_identity = SimpleNamespace(rank_entry=Mock(), has_registered_floor=lambda *a: True)
+        row = dict(mapId="fixture-map", floor="2", poseVerified=True,
+                   verification=dict(success=True, matrixSourceToClient=self.fit["matrixSourceToClient"],
+                                     residual=self.fit["selectedRouteCurrentFrameResidual"]))
+        engine.entry_identity = SimpleNamespace(rank=Mock(return_value=([row], dict(complete=True))))
+        group = RoundLayerGroup("fixture-map", "shared-structure", "1", np.eye(3), relations={"2": np.eye(3)})
+        host = _AlignmentHost(engine, group)
+        with patch("fast_structure_alignment.try_alignment", return_value=None), \
+             patch("single_map_structure.solve", return_value=dict(success=False, reason="structure-current-geometry-failed")), \
+             patch("single_map_structure.solve_initial_structure", side_effect=AssertionError("bounded entry must run first")), \
+             patch.object(_AlignmentHost, "_canonical_geometry_current_frame_residual", return_value=(self.fit["selectedRouteCurrentFrameResidual"], None)):
+            result = self.original_fit(host, self.capture.frame, "fixture-map", "2", lambda: False)
+        self.assertTrue(result["success"])
+        self.assertEqual(result["strategy"], "shared-registered-floor-recovery")
+        engine.entry_identity.rank.assert_called_once_with(self.capture.frame, "2", map_id="fixture-map", budget_seconds=.35)
+        self.assertEqual(group.verified_floors, {"1"})
+        self.assertEqual(group.map_id, "fixture-map")
+
     def test_confirmed_entry_first_same_floor_miss_does_not_restart_scale_search(self):
         from round_layer_group import RoundLayerGroup
         for mode in ("nightmare", "difficult"):

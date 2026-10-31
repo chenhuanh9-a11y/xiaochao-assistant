@@ -103,7 +103,7 @@ class FloorInputTests(unittest.TestCase):
         self.assertEqual(self.source._pointer_target, 0)
         self.assertIsNone(self.source._pointer_context_provider)
 
-    def test_busy_context_is_dropped_without_queueing_or_keyboard_failure(self):
+    def test_unavailable_context_is_dropped_without_queueing_or_keyboard_failure(self):
         self.provider.return_value = None
         self.assertIsNone(self.press())
         self.keys._pointer_failed("controlled-mouse-hook-failure")
@@ -118,7 +118,10 @@ class FloorInputTests(unittest.TestCase):
     def test_queued_click_before_passive_refresh_reaches_floor_intent_and_fresh_output(self):
         self._run_busy_pose_click(advance_observation=True)
 
-    def _run_busy_pose_click(self, advance_observation=False):
+    def test_runtime_lock_contention_does_not_drop_queued_floor_press(self):
+        self._run_busy_pose_click(hold_pointer_context=True)
+
+    def _run_busy_pose_click(self, advance_observation=False, hold_pointer_context=False):
         floor = floor_seams.FloorClickContracts()
         floor.setUp()
         services = coordinator_seams.CoordinatorTests()
@@ -172,7 +175,24 @@ class FloorInputTests(unittest.TestCase):
                 self.assertTrue(entered.wait(3))
                 x, y = floor.xy(2)
                 if not advance_observation:
-                    event = self.source._pointer_event(x, y, 42, created_at=floor.now)
+                    if hold_pointer_context:
+                        holding, release_context, read_done = threading.Event(), threading.Event(), threading.Event()
+                        def hold_context():
+                            with floor.runtime._lock:
+                                holding.set(); release_context.wait(3)
+                        holder = threading.Thread(target=hold_context)
+                        holder.start(); self.assertTrue(holding.wait(3))
+                        observed = []
+                        reader = threading.Thread(target=lambda:(observed.append(
+                            self.source._pointer_event(x, y, 42, created_at=floor.now)), read_done.set()))
+                        reader.start()
+                        try:
+                            self.assertTrue(read_done.wait(.5), "native observation blocked on runtime")
+                        finally:
+                            release_context.set(); holder.join(3); reader.join(3)
+                        event = observed[0]
+                    else:
+                        event = self.source._pointer_event(x, y, 42, created_at=floor.now)
                     self.assertIsNotNone(event)
                     self.source.pointerReceived.emit(event)
                 until(lambda:floor.runtime._game_floor_intent is not None)

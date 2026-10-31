@@ -261,6 +261,10 @@ class _AlignmentHost:
             fit = recover_existing_group()
             strategy = "shared-established-group-recovery"
         if fit is None:
+            from client_known_floor_recovery import recover_registered_floor
+            fit = recover_registered_floor(self, frame, map_id, floor, reference, cancelled)
+            strategy = "shared-registered-floor-recovery"
+        if fit is None:
             fit = self._alignment_v2_independent_member_fit(frame, reference.clean_mask, map_id, floor,
                 "shared-structure", cancelled=cancelled, context=context)
             strategy = "shared-initial-structure"
@@ -321,6 +325,7 @@ class LiveRuntime:
         self._manual_floor = None
         self._observed_floor = ""
         self._last_observation = None
+        self._pointer_context_snapshot = None
         from client_idvb0059_adapter import Idvb0059Adapter
         self._steady = Idvb0059Adapter()
         self._reset_identity()
@@ -345,6 +350,7 @@ class LiveRuntime:
         self._manual_floor = None
         self._observed_floor = ""
         self._last_observation = None
+        self._pointer_context_snapshot = None
         self._reset_floor_policy()
 
     def _reset_identity(self):
@@ -915,17 +921,25 @@ class LiveRuntime:
             observationCreatedAt=observation.get("created_at", 0),
             dragBoundaryNormalized=normalize_drag_boundary(self._settings.get("dragBoundaryNormalized")))
 
+    def _publish_game_pointer_context_locked(self):
+        # Publish a complete private value. Never mutate its nested values or
+        # combine a cached press scope with newer runtime fields on the reader.
+        self._pointer_context_snapshot = self._game_floor_click_context_locked()
+
     def game_floor_click_context(self):
-        """Hook-safe bounded metadata only. Contention drops this click."""
-        if not self._lock.acquire(blocking=False):
-            return None
-        try:
-            context = self._game_floor_click_context_locked()
-            if context is not None:
-                context["createdAt"] = self._monotonic()
-            return context
-        finally:
-            self._lock.release()
+        """Nonblocking metadata; the consumer still validates the whole scope."""
+        if self._lock.acquire(blocking=False):
+            try:
+                self._publish_game_pointer_context_locked()
+                published = self._pointer_context_snapshot
+            finally:
+                self._lock.release()
+        else:
+            published = self._pointer_context_snapshot
+        context = copy.deepcopy(published)
+        if context is not None:
+            context["createdAt"] = self._monotonic()
+        return context
 
     def _transient_cycle_current(self):
         row = self._transient_cycle
@@ -1620,6 +1634,7 @@ class LiveRuntime:
                 if self._capture is not None:
                     self._capture.disable()
             self._message = str(reason)
+            self._publish_game_pointer_context_locked()
         self._notify("render-revoked", reason=str(reason), token=previous_token)
 
     def set_event_callback(self, callback):
@@ -1675,6 +1690,7 @@ class LiveRuntime:
             visible = bool(settings.get("sheetVisibilityEnabled", self._aligned_visible))
             changed = visible != self._aligned_visible
             self._aligned_visible = visible
+            self._publish_game_pointer_context_locked()
         if changed:
             self._notify("aligned-visibility-changed", reason="settings-updated")
 
@@ -2000,6 +2016,7 @@ class LiveRuntime:
                     if self._capture is not None:
                         self._capture.disable()
                 self._mode, self._profile = mode, profile
+                self._publish_game_pointer_context_locked()
                 self._offline.dispatch("set_context", dict(mode=mode, profileId=profile))
             if changed_profile and not changed_mode:
                 return self._reproject_route_display(action, payload, cancelled)
@@ -2237,6 +2254,7 @@ class LiveRuntime:
             self._last_observation = dict(captured=captured, frame=frame, floor=floor, digest=digest, created_at=self._monotonic(),
                 capture_generation=capture_generation, frame_id=frame_id, observed_floor=self._observed_floor,
                 cycle_id=self._cycle, generation=self._frame_generation, floor_read=copy.deepcopy(floor_read or {}))
+            self._publish_game_pointer_context_locked()
             self._probe_misses = 0
             self._render = dict(row, authorizationId=token.authorization_id, frameId=frame_id,
                 generation=generation, observedFloor=self._observed_floor,
@@ -2325,6 +2343,7 @@ class LiveRuntime:
                 self._last_observation = dict(captured=captured, frame=frame, floor=None, digest=digest, created_at=self._monotonic(),
                     capture_generation=capture_generation, frame_id=self._frame_id, observed_floor="",
                     cycle_id=self._cycle, generation=self._frame_generation, floor_read=copy.deepcopy(floor_read))
+                self._publish_game_pointer_context_locked()
                 for row in self._candidate_rows:
                     row["floor"] = self._floor
             if effective_floor is not None:
@@ -2349,6 +2368,7 @@ class LiveRuntime:
             with self._lock:
                 self._observed_floor = ""
                 self._last_observation = None
+                self._pointer_context_snapshot = None
             if action == "refresh_map":
                 self._revoke_render("current-floor-unavailable")
                 return self._receipt(action, payload, success=False, reason="current-floor-unavailable", observation=observation)
@@ -2384,6 +2404,7 @@ class LiveRuntime:
             self._last_observation = dict(captured=captured, frame=frame, floor=floor, digest=digest, created_at=self._monotonic(),
                 capture_generation=capture_generation, frame_id=frame_id, observed_floor=self._observed_floor,
                 cycle_id=self._cycle, generation=self._frame_generation, floor_read=copy.deepcopy(floor_read or {}))
+            self._publish_game_pointer_context_locked()
             for row in self._candidate_rows:
                 row["floor"] = floor
         if pending_selection:
@@ -2450,6 +2471,7 @@ class LiveRuntime:
                 self._last_observation=dict(captured=captured,frame=frame,floor=floor,digest=digest,created_at=self._monotonic(),
                     capture_generation=capture_generation,frame_id=self._frame_id,observed_floor=self._observed_floor,
                     cycle_id=self._cycle,generation=self._frame_generation,floor_read=copy.deepcopy(floor_read or {}))
+                self._publish_game_pointer_context_locked()
             scope=self._sibling_scope()
             map_id,profile,variant=self._map_id,self._profile,self._settings.get("zhan10CoffinVariantId","variant-01")
             generation,frame_id=self._frame_generation,self._frame_id

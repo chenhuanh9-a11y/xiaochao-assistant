@@ -13,7 +13,7 @@ class FloorClickContracts(unittest.TestCase):
     setUp = fixtures.LiveRuntimeContracts.setUp
     dispatch = fixtures.LiveRuntimeContracts.dispatch
 
-    def prepare(self, mode="nightmare"):
+    def prepare(self, mode="nightmare", *, read_context=True):
         self.now = 10.
         self.runtime._monotonic = lambda: self.now
         self.capture.generation = 5
@@ -28,7 +28,7 @@ class FloorClickContracts(unittest.TestCase):
             self.assertTrue(self.dispatch("set_game_mode", mode="difficult")["success"])
         self.assertTrue(self.dispatch("start_round")["success"])
         self.assertTrue(self.dispatch("capture_now")["success"])
-        return self.runtime.game_floor_click_context()
+        return self.runtime.game_floor_click_context() if read_context else None
 
     def xy(self, floor, mode="nightmare"):
         if mode == "difficult": return (700 if floor == 1 else 820), 240
@@ -158,8 +158,8 @@ class FloorClickContracts(unittest.TestCase):
         self.assertFalse(self.click(2, context)["success"])
         self.assertIsNone(self.runtime._game_floor_intent)
 
-    def test_hook_context_is_nonblocking_metadata_and_never_calls_backend(self):
-        self.prepare()
+    def test_hook_context_uses_published_scope_without_blocking_or_backend_calls(self):
+        self.prepare(read_context=False)  # First pointer read must work during contention too.
         self.capture.is_current = Mock(side_effect=AssertionError("hook getter called backend"))
         entered, release, finished = threading.Event(), threading.Event(), threading.Event()
         def own_lock():
@@ -171,8 +171,12 @@ class FloorClickContracts(unittest.TestCase):
         reader.start()
         try: self.assertTrue(finished.wait(.5), "hook getter blocked on runtime state")
         finally: release.set(); holder.join(4); reader.join(4)
-        self.assertEqual(output, [None])
+        self.assertIsInstance(output[0], dict)
+        self.assertEqual(output[0]["frameId"], self.runtime.snapshot()["frameId"])
+        self.assertEqual(output[0]["createdAt"], self.now)
+        output[0]["clientBounds"][0] = -999
         self.assertIsNotNone(self.runtime.game_floor_click_context())
+        self.assertNotEqual(self.runtime.game_floor_click_context()["clientBounds"][0], -999)
         self.capture.is_current.assert_not_called()
 
     def test_old_scope_bounds_and_binding_generation_are_rejected(self):
@@ -191,6 +195,37 @@ class FloorClickContracts(unittest.TestCase):
         self.assertFalse(self.click(2, context)["success"])
         self.dispatch("end_round")
         self.assertIsNone(self.runtime.game_floor_click_context())
+
+    def test_busy_reader_sees_published_refresh_settings_and_closed_lifetimes(self):
+        def busy_read():
+            output = []
+            reader = threading.Thread(target=lambda: output.append(self.runtime.game_floor_click_context()))
+            with self.runtime._lock:
+                reader.start(); reader.join(.5)
+                completed = not reader.is_alive()
+            reader.join(3)
+            self.assertTrue(completed, "pointer observation must not wait for the runtime lock")
+            return output[0]
+        old = self.prepare()
+        self.now += .1
+        self.capture.frame[0, 0, 0] += 1
+        with patch.object(_AlignmentHost, "_canonical_geometry_current_frame_residual",
+                          return_value=(self.fit["selectedRouteCurrentFrameResidual"], None)):
+            self.assertTrue(self.dispatch("refresh_map")["success"])
+        refreshed = busy_read()
+        self.assertNotEqual(refreshed["frameId"], old["frameId"])
+        self.assertEqual(refreshed["frameId"], self.runtime.snapshot()["frameId"])
+        self.runtime.configure_settings(dict(dragBoundaryNormalized=[.1, .1, .9, .9]))
+        self.assertEqual(busy_read()["dragBoundaryNormalized"], (.1, .1, .9, .9))
+        self.dispatch("close_map")
+        self.assertIsNone(busy_read())
+        self.assertFalse(self.click(2, refreshed)["success"])
+        self.assertTrue(self.dispatch("capture_now")["success"])
+        reopened = busy_read()
+        self.assertGreater(reopened["cycleId"], old["cycleId"])
+        self.assertFalse(self.click(2, old)["success"])
+        self.dispatch("end_round")
+        self.assertIsNone(busy_read())
 
     def test_missing_hit_or_changed_capture_context_does_not_apply_intent(self):
         context = self.prepare()
