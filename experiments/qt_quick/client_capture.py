@@ -164,11 +164,14 @@ class ClientCaptureProvider:
             generation = self._generation
         if self._cancelled(cancelled):
             raise CaptureUnavailable("Capture request cancelled")
+        trace = dict(provider="client-capture", backend="client-region-pipeline", phase="guard",
+            foreground="unknown", captureIntent="full-client" if full_client else "roi")
         try:
             if not self._native.is_window(hwnd):
                 raise CaptureUnavailable("Bound game window is unavailable; rebind explicitly")
             foreground = self._native.foreground_window()
             if not global_key_is_allowed(hwnd, foreground):
+                trace["foreground"] = "not-bound-game"
                 error = CaptureUnavailable("Bound game must own the foreground before capture")
                 error.capture_diagnostics = dict(expectedHwnd=hwnd, foregroundHwnd=foreground)
                 process_id = getattr(self._native, "window_process_id", None)
@@ -178,8 +181,11 @@ class ClientCaptureProvider:
                     except OSError:
                         pass
                 raise error
+            trace["foreground"] = "verified-before-capture"
+            trace["phase"] = "client-context"
             from client_region_capture import capture_client_region, client_capture_context
             context = client_capture_context(hwnd, _backend=self._backend)
+            trace.update(bounds=list(context.client_screen_bounds), clientSize=list(context.full_client_size), dpi=context.dpi)
             if full_client:
                 # Rectangle and metadata come from this same worker/backend
                 # context, not from catalog pixels sampled on another thread.
@@ -187,6 +193,7 @@ class ClientCaptureProvider:
                 region = (0, 0, width, height)
             if region[2] > context.full_client_size[0] or region[3] > context.full_client_size[1]:
                 raise CaptureUnavailable("Bound client rectangle exceeds the current client; rebind explicitly")
+            trace["phase"] = "acquisition"
             frame = capture_client_region(hwnd, region, expected_context=expected or context,
                                           full_capture=self._full_capture, _backend=self._backend,
                                           reject_blank_full_client=full_client)
@@ -194,7 +201,9 @@ class ClientCaptureProvider:
                 if (generation != self._generation or not self._enabled or self._closed
                         or self._cancelled(cancelled)):
                     raise CaptureUnavailable("Captured frame was superseded or cancelled")
+            trace["phase"] = "post-capture-foreground"
             if not global_key_is_allowed(hwnd, self._native.foreground_window()):
+                trace["foreground"] = "changed-during-capture"
                 raise CaptureUnavailable("Foreground changed during capture; frame discarded")
             with self._lock:
                 if generation != self._generation or not self._enabled or self._closed:
@@ -202,6 +211,7 @@ class ClientCaptureProvider:
                 self._status, self._message = "ready", "Client frame captured."
             return frame
         except Exception as error:
+            error.capture_trace = trace
             with self._lock:
                 if generation == self._generation and self._enabled:
                     self._status, self._message = "failed", str(error)

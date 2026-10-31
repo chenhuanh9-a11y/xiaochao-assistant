@@ -40,16 +40,26 @@ class _Cancellation:
 
 class _PreparationHost:
     """Capture/observation callbacks for the original bounded preparation loop."""
-    def __init__(self, runtime, engine, obsolete):
+    def __init__(self, runtime, engine, obsolete, payload=None):
         from map_open_preparation import CAPTURE_READY_PROBE_SECONDS, CAPTURE_VISUAL_DEADLINE_SECONDS
+        from client_preparation_diagnostics import PreparationDiagnostics
         self.CAPTURE_READY_PROBE_SECONDS = CAPTURE_READY_PROBE_SECONDS
         self.CAPTURE_VISUAL_DEADLINE_SECONDS = CAPTURE_VISUAL_DEADLINE_SECONDS
         self.runtime, self.engine, self.obsolete = runtime, engine, obsolete
         self.initial_context = None
         self.last_unresolved = None
         self.events = []
+        self.diagnostics = PreparationDiagnostics(runtime, payload or {})
+        self.stop_reason = None
     def _log(self, event, **values):
         self.events.append(dict(event=event, **values))
+        del self.events[:-24]
+        if event == "map-ready-begin":
+            self.diagnostics.emit("begin", "map-open-preparation",
+                deadlineSeconds=self.CAPTURE_VISUAL_DEADLINE_SECONDS,
+                probePeriodSeconds=self.CAPTURE_READY_PROBE_SECONDS)
+        elif event == "map-ready-stopped":
+            self.stop_reason = values.get("reason")
     def _map_ready_context(self):
         return self.runtime._epoch
     def _map_ready_current(self, token, context, cancelled):
@@ -57,16 +67,38 @@ class _PreparationHost:
     def _capture_map_open_full_probe(self, hwnd, token, context, capture_context, deadline_at,
                                      cancelled, **kwargs):
         from session_state_machine import verified_map_hotkey_frame
+        from client_preparation_diagnostics import capture_metadata, exception_metadata
         if not self._map_ready_current(token, context, cancelled):
             return None, True
+        self.diagnostics.probes += 1
         capture_generation = self.runtime._capture_generation()
-        captured = self.runtime._capture_frame(cancelled)
-        frame = self.runtime._full_frame(captured)
+        started = time.perf_counter()
+        self.diagnostics.emit("capture-start", "capture-requested", captureGeneration=capture_generation)
+        try:
+            captured = self.runtime._capture_frame(cancelled)
+            frame = self.runtime._full_frame(captured)
+        except Exception as error:
+            self.diagnostics.capture_errors += 1
+            self.diagnostics.last_outcome = "capture-exception"
+            self.diagnostics.emit("capture-result", "capture-exception", capture=capture_metadata(error=error),
+                exception=exception_metadata(error), elapsedMs=round((time.perf_counter()-started)*1000, 3))
+            raise
+        self.diagnostics.emit("capture-result", "frame-captured", capture=capture_metadata(captured),
+            elapsedMs=round((time.perf_counter()-started)*1000, 3))
         if self.initial_context is None:
             self.initial_context = captured.context
         if captured.context != self.initial_context or not self._map_ready_current(token, context, cancelled):
+            self.diagnostics.last_outcome = "capture-context-changed" if captured.context != self.initial_context else "obsolete"
+            self.diagnostics.emit("observation-result", self.diagnostics.last_outcome)
             return None, True
-        observation, floor, floor_read = self.runtime._observe(self.engine, frame)
+        observed_at = time.perf_counter()
+        try:
+            observation, floor, floor_read = self.runtime._observe(self.engine, frame)
+        except Exception as error:
+            self.diagnostics.last_outcome = "observation-exception"
+            self.diagnostics.emit("observation-result", "observation-exception", exception=exception_metadata(error),
+                elapsedMs=round((time.perf_counter()-observed_at)*1000, 3))
+            raise
         map_detected = (observation.get("mapOpen") is True if self.engine.pack.mode == "difficult"
                         else observation.get("detected") is True)
         self.last_unresolved = ((captured, observation, floor, capture_generation, floor_read)
@@ -76,7 +108,14 @@ class _PreparationHost:
         # remembered floor into fresh display evidence during the fade.
         ready = (observation.get("mapOpen") is True if self.engine.pack.mode == "difficult"
                  else verified_map_hotkey_frame(observation, floor_read))
-        if ready and floor is not None and time.perf_counter() < deadline_at:
+        before_deadline = time.perf_counter() < deadline_at
+        outcome = ("prepared-current-frame" if before_deadline else "ready-after-deadline") if ready and floor is not None else (
+            "current-floor-unavailable" if map_detected and floor is None else "map-not-ready")
+        self.diagnostics.last_outcome = outcome
+        self.diagnostics.emit("observation-result", outcome,
+            observation=self.diagnostics.observation(observation, floor, floor_read, ready),
+            elapsedMs=round((time.perf_counter()-observed_at)*1000, 3), beforeDeadline=before_deadline)
+        if ready and floor is not None and before_deadline:
             return (captured, observation, floor, capture_generation, floor_read), False
         return None, False
 
@@ -2355,20 +2394,30 @@ class LiveRuntime:
         obsolete = lambda: self._cancelled(cancelled) or epoch != self._epoch
         if action == "map":
             from map_open_preparation import prepare_map_open_frame
-            preparation = _PreparationHost(self, engine, obsolete)
-            prepared = prepare_map_open_frame(preparation, None, self._cycle + 1,
-                time.perf_counter() + preparation.CAPTURE_VISUAL_DEADLINE_SECONDS,
-                _Cancellation(obsolete), silent_hint=True, round_identity_locked=bool(self._map_id),
-                capture_context_provider=lambda hwnd: None)
+            preparation = _PreparationHost(self, engine, obsolete, payload)
+            try:
+                prepared = prepare_map_open_frame(preparation, None, self._cycle + 1,
+                    time.perf_counter() + preparation.CAPTURE_VISUAL_DEADLINE_SECONDS,
+                    _Cancellation(obsolete), silent_hint=True, round_identity_locked=bool(self._map_id),
+                    capture_context_provider=lambda hwnd: None)
+            except Exception:
+                preparation.diagnostics.finish("preparation-exception")
+                raise
+            preparation.diagnostics.stop_reason = preparation.stop_reason
             if prepared is None:
                 if obsolete():
+                    preparation.diagnostics.finish("cancelled-or-stale")
                     return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
                 if preparation.last_unresolved is None:
+                    preparation.diagnostics.finish("map-open-preparation-deadline")
                     self.invalidate("map-closed", source="map-preparation-deadline")
                     return self._receipt(action, payload, success=False, reason="map-open-preparation-deadline")
                 # A recognized map with unreadable floor stays available for
                 # explicit manual correction; it grants no floor/pose authority.
                 prepared = preparation.last_unresolved
+                preparation.diagnostics.finish("current-floor-unavailable")
+            else:
+                preparation.diagnostics.finish("prepared-current-frame")
             captured, observation, floor, capture_generation, floor_read = prepared
             opened = True
         else:
