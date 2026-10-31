@@ -521,6 +521,9 @@ class ClientCoordinator(QObject):
         self._focus_loss_map_sequence = None
 
     def _reset_map_input(self, reason, *, open_intent=False):
+        cancel_recovery = getattr(self.runtime, "cancel_map_open_recovery", None)
+        if callable(cancel_recovery):
+            cancel_recovery(reason)
         if reason != "foreground-lost":
             # Only the first focus loss preserves a same-round return plan.
             self._clear_focus_return_plan()
@@ -569,6 +572,9 @@ class ClientCoordinator(QObject):
         except OSError:
             return
         self._map_input_sequence = sequence
+        cancel_recovery = getattr(self.runtime, "cancel_map_open_recovery", None)
+        if callable(cancel_recovery):
+            cancel_recovery("new-map-input")
         if self._diagnostics is not None:
             self._diagnostics.record("map-input", source=event.get("source", "map-key"),
                 inputAt=created, sequence=sequence, openIntent=opening)
@@ -1500,7 +1506,7 @@ class ClientCoordinator(QObject):
             reprojecting = (pending == "set_context" and self._pending_context
                             and self._pending_context[0] == self._applied_context[0])
             if not reprojecting and pending not in {
-                    "refresh_map", "probe_map_after_drag", "reselect_map", "previous_candidate", "next_candidate",
+                    "refresh_map", "recover_map_open", "probe_map_after_drag", "reselect_map", "previous_candidate", "next_candidate",
                     "select_candidate", "confirm_route", "set_floor", "cycle_floor",
                     "select_group_member"}:
                 self._invalidate_display()
@@ -1730,7 +1736,7 @@ class ClientCoordinator(QObject):
                 self.notificationRequested.emit("本局已结束", "本局显示与识别已停止", "info")
         receipt = state.get("lastReceipt", {})
         reason = receipt.get("reason", "")
-        if receipt.get("success") is False:
+        if receipt.get("success") is False and not (receipt.get("action") == "recover_map_open" and receipt.get("recoveryPending")):
             key = ("failure", state.get("roundId"), state.get("cycleId"), receipt.get("action"), reason)
             if key not in self._notified:
                 self._notified.add(key)
@@ -1738,7 +1744,7 @@ class ClientCoordinator(QObject):
                 self.errorReported.emit(problem)
                 pose = state.get("poseResult") or {}
                 meaningful_pose_failure = pose.get("status") == "rejected" and not state.get("displayAuthorized")
-                if receipt.get("action") not in {"refresh_map", "inspect_engine_resources"} or meaningful_pose_failure:
+                if receipt.get("action") not in {"refresh_map", "recover_map_open", "inspect_engine_resources"} or meaningful_pose_failure:
                     self.notificationRequested.emit(problem["title"], problem["summary"], problem["kind"])
     def _native_action(self, action):
         if self._closing or self._closed:
@@ -1974,7 +1980,23 @@ class ClientCoordinator(QObject):
                 or self.resources.busy or self.resources.pendingKind or self._pointer_drag is not None):
             return
         state = self.session.snapshot
-        if not state.get("roundActive") or not state.get("mapOpen") or state.get("resourceLocked"):
+        if not state.get("roundActive") or state.get("resourceLocked"):
+            return
+        if state.get("mapRecoveryPending"):
+            recovery = self.runtime.map_open_recovery_status()
+            if not recovery.get("pending"):
+                self.runtime.cancel_map_open_recovery(recovery.get("reason", "recovery-expired"))
+                self.session.refreshRuntime()
+                return
+            if not recovery.get("due"):
+                return
+            try:
+                if self._native_windows.foreground_window() == int(self._bound):
+                    self.session.dispatchWithPayload("recover_map_open", dict(recoveryId=recovery["id"]))
+            except OSError:
+                self._revoke_runtime("foreground-query-failed")
+            return
+        if not state.get("mapOpen"):
             return
         if "refresh_map" not in state.get("availableCommands", ()):
             return

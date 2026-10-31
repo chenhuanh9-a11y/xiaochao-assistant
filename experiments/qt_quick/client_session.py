@@ -384,12 +384,18 @@ class SessionService(QObject):
 
     @Slot()
     def stop(self):
+        cancel = getattr(self._runtime, "cancel_map_open_recovery", None)
+        if callable(cancel):
+            cancel("session-stopped")
         self._invalidate("cancelled")
         self._message = "Pending requests cancelled."
         self.changed.emit()
 
     def cancelPending(self, reason):
         """Cancel a frame lifetime without ending its round or closing services."""
+        cancel = getattr(self._runtime, "cancel_map_open_recovery", None)
+        if callable(cancel):
+            cancel(str(reason))
         self._invalidate(str(reason))
         self.changed.emit()
 

@@ -25,6 +25,10 @@ from client_engine import (EngineAdapter, clone_similarity_state, stage_similari
 from floor_observation_policy import (MANUAL_FLOOR_HOLD_SECONDS,
                                       read_floor_evidence, decide_floor_transition, game_floor_control_hit)
 
+MAP_RECOVERY_PROBES = 8
+MAP_RECOVERY_INTERVAL = .2
+MAP_RECOVERY_SECONDS = 2.
+
 
 class _Cancellation:
     def __init__(self, predicate):
@@ -351,6 +355,7 @@ class LiveRuntime:
         self._prepared_round_ready = False
         self._last_map_input_sequence = 0
         self._map_input_observation = None
+        self._map_recovery = None
         self._transient_drag = self._transient_cycle = None
         self._capture_pending = False
         self._probe_misses = 0
@@ -1598,6 +1603,9 @@ class LiveRuntime:
                     commands += ["capture_now", "map"]
                     if self._map_open:
                         commands.append("refresh_map")
+            recovery = self.map_open_recovery_status()
+            if recovery.get("pending"):
+                commands.append("recover_map_open")
             capture_state = getattr(self._capture, "snapshot", {}) if self._capture is not None else {}
             if callable(capture_state):
                 capture_state = capture_state()
@@ -1613,6 +1621,7 @@ class LiveRuntime:
                                        "capture-provider-unavailable" if self._capture is None else
                                        capabilities[self._mode]["reason"] if not ready else ""),
                 roundActive=self._active, roundPreparing=self._round_preparing, mapOpen=self._map_open,
+                mapRecoveryPending=recovery.get("pending", False), mapRecovery=recovery,
                 captureInProgress=self._capture_pending,
                 alignedVisible=self._aligned_visible,
                 automaticCandidateRows=self._candidate_summary(),
@@ -1652,6 +1661,7 @@ class LiveRuntime:
     def invalidate(self, reason="invalidated", *, source=""):
         """Owner-thread fast path: revoke before canceling/queueing slow work."""
         with self._lock:
+            self._map_recovery = None
             if self._diagnostics is not None:
                 self._diagnostics.record("invalidate", reason=str(reason), source=source, epoch=self._epoch,
                     mode=self._mode, mapId=self._map_id, floor=str(self._floor), frameId=self._frame_id,
@@ -2132,6 +2142,8 @@ class LiveRuntime:
             return self._receipt(action, payload, success=result["success"], reason=result["reason"], offline=result)
         try:
             with self._work:
+                if action == "recover_map_open":
+                    return self._recover_map_open(payload, cancelled)
                 if action == "probe_map_after_drag":
                     return self._probe_map_after_drag(payload, cancelled)
                 if action == "remember_render_material":
@@ -2157,6 +2169,7 @@ class LiveRuntime:
                 if action in ("capture_now", "map"):
                     if capture_request_epoch != self._epoch or self._cancelled(cancelled):
                         return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+                    self.cancel_map_open_recovery("new-capture-request")
                     activated = self._ensure_round_active(payload, cancelled)
                     if not activated["success"]:
                         return self._receipt(action, payload, success=False, reason=activated["reason"],
@@ -2242,6 +2255,115 @@ class LiveRuntime:
             self._active, self._round_preparing = True, False
         self._notify("round-started", reason="round-active")
         return dict(success=True, reason="round-active")
+
+    def _map_recovery_scope(self):
+        return (self._epoch, self._round, self._cycle, self._mode, self._profile,
+            getattr(self, "_display_generation", 0), self._capture_generation(), self._last_map_input_sequence)
+
+    def map_open_recovery_status(self):
+        """Metadata only; timer and worker share one finite, scoped observation budget."""
+        with self._lock:
+            row = self._map_recovery
+            if row is None:
+                return dict(pending=False)
+            now = self._monotonic()
+            current = self._active and row["scope"] == self._map_recovery_scope()
+            pending = current and row["remaining"] > 0 and now < row["expiresAt"]
+            return dict(id=row["id"], pending=pending, due=pending and now >= row["nextAt"],
+                remaining=row["remaining"], reason="waiting" if pending else
+                "scope-changed" if not current else "budget-exhausted")
+
+    def cancel_map_open_recovery(self, reason="cancelled"):
+        with self._lock:
+            row, self._map_recovery = self._map_recovery, None
+        if row is not None:
+            self._notify("map-recovery-ended", reason=reason, recoveryId=row["id"])
+
+    def _arm_map_open_recovery(self, cancelled, epoch):
+        with self._lock:
+            if self._cancelled(cancelled) or epoch != self._epoch:
+                return False
+            # No confirmed close has been observed. Withdraw pixels but retain
+            # the physical open intent and a bounded opportunity to observe it.
+            self.invalidate("map-preparation-unconfirmed")
+            self._map_open = False
+            now = self._monotonic()
+            self._map_recovery = dict(id=uuid4().hex, scope=self._map_recovery_scope(),
+                remaining=MAP_RECOVERY_PROBES, nextAt=now + MAP_RECOVERY_INTERVAL,
+                expiresAt=now + MAP_RECOVERY_SECONDS)
+        self._notify("map-recovery-pending", reason="map-preparation-unconfirmed")
+        return True
+
+    def _recover_map_open(self, payload, cancelled):
+        action = "recover_map_open"
+        payload.pop("_recoveryRenderOwner", None)
+        payload.pop("_recoveryResultScope", None)
+        with self._lock:
+            row = self._map_recovery
+            state = self.map_open_recovery_status()
+            if (self._cancelled(cancelled) or row is None or payload.get("recoveryId") != row["id"]):
+                return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+            if not state["pending"]:
+                self.cancel_map_open_recovery(state["reason"])
+                return self._receipt(action, payload, success=False, reason="map-open-recovery-exhausted")
+            if not state["due"]:
+                return self._receipt(action, payload, success=False, reason="map-open-recovery-waiting", recoveryPending=True)
+            row["remaining"] -= 1
+            row["nextAt"] = self._monotonic() + MAP_RECOVERY_INTERVAL
+            epoch, engine, expected = self._epoch, self._engine, row["scope"]
+            self._capture_pending = True
+        obsolete = lambda: self._cancelled(cancelled) or self._map_recovery is not row or expected != self._map_recovery_scope()
+        host = _PreparationHost(self, engine, obsolete, payload)
+        host.diagnostics.emit("begin", "map-open-recovery", recoveryId=row["id"])
+        try:
+            # Exactly one fresh probe; no second preparation loop or new input
+            # sequence. Native/frame/floor checks remain in the original path.
+            try:
+                prepared, stopped = host._capture_map_open_full_probe(None, self._cycle + 1, epoch, None,
+                    time.perf_counter() + max(0., row["expiresAt"] - self._monotonic()), _Cancellation(obsolete))
+                prepared = prepared or host.last_unresolved
+            except Exception as error:
+                if obsolete():
+                    host.diagnostics.finish("cancelled-or-stale")
+                    return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+                if not isinstance(error, OSError):
+                    raise
+                prepared, stopped = None, False
+            with self._lock:
+                if obsolete():
+                    host.diagnostics.finish("cancelled-or-stale")
+                    return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+                expired = self._monotonic() >= row["expiresAt"]
+                if prepared is not None and not expired:
+                    host.diagnostics.finish("recovery-current-frame")
+                else:
+                    pending = not expired and row["remaining"] > 0
+                    reason = "map-open-recovery-pending" if pending else "map-open-recovery-exhausted"
+                    if not pending:
+                        self.cancel_map_open_recovery("budget-exhausted")
+                    host.diagnostics.finish(reason)
+                    return self._receipt(action, payload, success=False, reason=reason, recoveryPending=pending)
+            result = self._capture_and_solve(action, payload, cancelled, prepared=prepared, recovery_scope=expected)
+            with self._lock:
+                if self._cancelled(cancelled) or payload.get("_recoveryResultScope", expected) != self._map_recovery_scope():
+                    self._retire_refresh_owner(payload.get("_recoveryRenderOwner"))
+                    return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+                if result.get("stale") and self._retire_refresh_owner(payload.get("_recoveryRenderOwner")):
+                    result = dict(result, liveAuthorization=False)
+                return result
+        except Exception as error:
+            # A recovery may already have published before its worker finishes.
+            # A later drag owns that row's new revision, even with the same token.
+            with self._lock:
+                if self._cancelled(cancelled) or payload.get("_recoveryResultScope", expected) != self._map_recovery_scope():
+                    self._retire_refresh_owner(payload.get("_recoveryRenderOwner"))
+                    return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+                self.invalidate("runtime-error")
+            return self._receipt(action, payload, success=False, reason=f"{type(error).__name__}:{error}",
+                error=True, **self._error_fields(error, action))
+        finally:
+            with self._lock:
+                self._capture_pending = False
 
     def _refresh_render_owner(self):
         # A physical drag can keep token/frame/generation but advance revision.
@@ -2418,19 +2540,26 @@ class LiveRuntime:
                              renderToken=render_token, unchanged=True,
                              diagnosticOnly=self._evidence_kind != "live-client-capture")
 
-    def _capture_and_solve(self, action, payload, cancelled):
+    def _capture_and_solve(self, action, payload, cancelled, *, prepared=None, recovery_scope=None):
         with self._lock:
+            if recovery_scope is not None:
+                if self._cancelled(cancelled) or recovery_scope != self._map_recovery_scope() or self._map_recovery is None:
+                    return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+                self.cancel_map_open_recovery("current-frame-recovered")
             if not self._active:
                 return self._receipt(action, payload, success=False, reason="round-not-active")
             epoch, engine, group = self._epoch, self._engine, self._group
             input_sequence = self._last_map_input_sequence
-        if action != "refresh_map":
+        if action != "refresh_map" and prepared is None:
             with self._lock:
                 self._game_floor_intent = None
                 self._floor_click_epoch_span = None
             self._revoke_render("new-capture")
         obsolete = lambda: self._cancelled(cancelled) or epoch != self._epoch
-        if action == "map":
+        if prepared is not None:
+            captured, observation, floor, capture_generation, floor_read = prepared
+            opened = True
+        elif action == "map":
             from map_open_preparation import prepare_map_open_frame
             preparation = _PreparationHost(self, engine, obsolete, payload)
             try:
@@ -2448,7 +2577,8 @@ class LiveRuntime:
                     return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
                 if preparation.last_unresolved is None:
                     preparation.diagnostics.finish("map-open-preparation-deadline")
-                    self.invalidate("map-closed", source="map-preparation-deadline")
+                    if not self._arm_map_open_recovery(cancelled, epoch):
+                        return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
                     return self._receipt(action, payload, success=False, reason="map-open-preparation-deadline")
                 # A recognized map with unreadable floor stays available for
                 # explicit manual correction; it grants no floor/pose authority.
@@ -2492,6 +2622,8 @@ class LiveRuntime:
                     self._cycle += 1
                 self._map_open = True
                 self._floor = effective_floor or ""
+                if action == "recover_map_open":
+                    payload["_recoveryResultScope"] = self._map_recovery_scope()
                 if effective_floor is None:
                     self._floor_required = True
                 self._frame_generation += 1
@@ -2567,6 +2699,8 @@ class LiveRuntime:
                 self._cycle += 1
             self._map_open = True
             self._probe_misses = 0
+            if action == "recover_map_open":
+                payload["_recoveryResultScope"] = self._map_recovery_scope()
             self._reset_provisional_floor(floor)
             self._floor = floor
             self._frame_generation += 1
@@ -2946,6 +3080,9 @@ class LiveRuntime:
                 self._gate.select(map_id)
                 self._gate.confirm()
                 self._group, self._render = target_group, target_render
+                if action == "recover_map_open":
+                    payload["_recoveryRenderOwner"] = self._refresh_render_owner()
+                    payload["_recoveryResultScope"] = self._map_recovery_scope()
                 self._render_capture_context = captured.context
                 self._reference_sheet = reference_sheet
                 self._reference_capture_context = captured.context
