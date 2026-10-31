@@ -3,7 +3,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, PropertyMock, patch
 
 import numpy as np
 from PySide6.QtGui import QGuiApplication
@@ -24,6 +24,13 @@ class OrderedInputTests(unittest.TestCase):
         self.source = PassThroughKeyboardSource()
         self.source.start = Mock(return_value=True)  # Never install a hook.
         self.source.stop = Mock(return_value=True)
+        # Model an installed observer separately from an accepted start request.
+        # Keep _thread absent: this suite must never install a native hook.
+        installed_thread = patch.object(PassThroughKeyboardSource, "running",
+                                        new_callable=PropertyMock, return_value=True)
+        installed_thread.start()
+        self.addCleanup(installed_thread.stop)
+        self.source.installed = True
         self.keys = NativeShortcutBackend(self.native, source=self.source)
         self.keys.configure({"map": "G"})
         self.keys.bindWindow(42)

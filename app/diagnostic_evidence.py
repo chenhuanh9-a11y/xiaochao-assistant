@@ -3,15 +3,24 @@ from datetime import datetime
 import hashlib
 import json
 from pathlib import Path, PurePosixPath
+import re
 
 
 def log_window(payload):
     times = []
     for line in payload.splitlines():
         try:
-            value = json.loads(line).get('time')
-            if value:
-                times.append(datetime.fromisoformat(value).timestamp())
+            row = json.loads(line)
+            # Qt uses timestampUTC; legacy Tk events use time. A malformed
+            # preferred field must not hide an otherwise valid timestamp.
+            for key in ('timestampUTC', 'time'):
+                try:
+                    value = row.get(key)
+                    if value:
+                        times.append(datetime.fromisoformat(value).timestamp())
+                        break
+                except (ValueError, TypeError, OverflowError, OSError):
+                    continue
         except (ValueError, TypeError, AttributeError):
             continue
     return (min(times), max(times)) if times else None
@@ -92,6 +101,14 @@ def export_failure_evidence(archive, roots, log_windows, redact, *, build_finger
                 event_path = str(diagnostic.get('eventPath') or '')
                 source_log = event_path.replace('\\', '/').rsplit('/', 1)[-1]
                 window = log_windows.get(source_log)
+                # ProblemsService rotates this exact Qt session to one named
+                # backup. Only included logs from that same session qualify.
+                if (event_path and (not window or not window[0] <= captured <= window[1])
+                        and re.fullmatch(r'events-qt-\d{8}T\d{12}Z-\d+\.jsonl', source_log)):
+                    previous = source_log.removesuffix('.jsonl') + '-previous.jsonl'
+                    previous_window = log_windows.get(previous)
+                    if previous_window and previous_window[0] <= captured <= previous_window[1]:
+                        source_log, window = previous, previous_window
                 if not window:
                     # An explicit session must not be reassigned to an overlapping log.
                     if event_path:

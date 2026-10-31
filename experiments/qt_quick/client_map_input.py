@@ -22,6 +22,13 @@ class OrderedMapInput:
         # Sequence never resets: late events cannot acquire a fresh identity.
         self.open_intent = bool(open_intent)
 
+    def reconcile(self, open_intent, input_sequence):
+        """Adopt current visual evidence without overriding a later key edge."""
+        if type(open_intent) is not bool or type(input_sequence) is not int or input_sequence != self.sequence:
+            return False
+        self.open_intent = open_intent
+        return True
+
     def press(self, *, source="hotkey", created_at=None):
         self.open_intent = not self.open_intent
         return self._event("map-key", source, created_at)

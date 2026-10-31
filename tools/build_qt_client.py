@@ -7,6 +7,7 @@ source commit plus an explicit hashed inventory of an authorized resource root.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import importlib.metadata
 import json
@@ -603,6 +604,29 @@ def write_production_files_include(stage, resources, output):
     return include, report
 
 
+def stage_release_report(stage, *, product, source, version, resource_version, resource_inventory_sha256,
+                         compiled_source_commit=None, installer_source_commit=None):
+    """Generate program-owned identity from this completed freeze, never a resource baseline."""
+    sys.path.insert(0, str(ROOT / 'app'))
+    from package_identity import selected_file_identities
+    stage = Path(stage)
+    report = dict(schema='xingtu-qt-release-report-v1',
+        sourceCommit=source['commit'], sourceDirty=not source['clean'],
+        compiledPayloadSourceCommit=compiled_source_commit or source['commit'],
+        installerSourceCommit=installer_source_commit or source['commit'],
+        builtAt=datetime.now(timezone.utc).isoformat(),
+        version=version['version'], displayVersion=version['displayVersion'],
+        numericVersion=version['numericVersion'], buildFingerprint=source['commit'][:8].upper(),
+        fingerprintScheme='source-commit-prefix', executableSha256=sha256(stage / (product + '.exe')),
+        resourceVersion=resource_version, resourceInventorySha256=resource_inventory_sha256,
+        resourceVersionMeaning='bundled-baseline; installed resources may be preserved',
+        identityFiles={name: row for name, row in selected_file_identities(stage).items()
+                       if row['status'] == 'hashed'})
+    path = stage / 'release-report.json'
+    path.write_text(json.dumps(report, indent=2), encoding='utf-8')
+    return dict(file=path.name, sha256=sha256(path), executableSha256=report['executableSha256'])
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check-environment", action="store_true")
@@ -731,6 +755,9 @@ def main(argv=None):
     shutil.copy2(profile_path, stage / "installation-profile.json")
     if source_identity(args.source_commit) != source:
         raise ValueError("Source changed during freeze; do not create a Setup")
+    plan['releaseReport'] = stage_release_report(stage, product=product, source=source,
+        version=version, resource_version=declaration['resourceVersion'],
+        resource_inventory_sha256=plan['resourceInventorySha256'])
     production_defines = []
     if args.instance == "production":
         # Relative program ownership drives the existing exact-file backup and

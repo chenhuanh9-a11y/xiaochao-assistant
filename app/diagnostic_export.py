@@ -97,6 +97,8 @@ def diagnostic_package_metadata(app_root: Path, *, app_version: str, build_finge
             "buildFingerprintConsistent": None,
         }
     try:
+        if report_path.stat().st_size > 1024 * 1024:
+            raise ValueError('release-report-too-large')
         report = json.loads(report_path.read_text(encoding="utf-8-sig"))
         if not isinstance(report, dict):
             raise ValueError('release-report-not-object')
@@ -169,9 +171,11 @@ def export_safe_diagnostic_bundle(
     process_integrity: dict | None = None,
     destination: Path | None = None,
     summary: dict | None = None,
+    resource_root: Path | None = None,
 ) -> dict:
     """Export bounded logs and explicitly requested, already saved failure evidence."""
     from diagnostic_evidence import export_failure_evidence, log_window
+    from package_identity import collect_package_identity
     moment = exported_at or datetime.now().astimezone()
     selected_destination = destination is not None
     destination_root = Path(destination).parent if selected_destination else app_root / "outputs" / "诊断日志"
@@ -228,7 +232,9 @@ def export_safe_diagnostic_bundle(
                 })
 
             version_files: list[str] = []
-            for name in ("VERSION.txt", "release-report.json", "SHA256SUMS.txt"):
+            version_names = ('version.json', 'installation-profile.json', 'release-report.json') if (
+                package_metadata or {}).get('qtSourceCommit') else ('VERSION.txt', 'release-report.json', 'SHA256SUMS.txt')
+            for name in version_names:
                 path = app_root / name
                 if path.is_file() and path.stat().st_size <= 1024 * 1024:
                     archive.write(path, f"version/{name}")
@@ -263,6 +269,7 @@ def export_safe_diagnostic_bundle(
                 },
                 "packageMetadata": package_metadata,
                 "packageMetadataSource": package_metadata_source,
+                "packageIdentity": collect_package_identity(app_root, resource_root=resource_root),
                 "runtimeContext": runtime_context or {
                     "collectionStatus": "not-provided",
                 },

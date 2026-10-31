@@ -90,6 +90,8 @@ class EventInputTests(unittest.TestCase):
 
 class CoordinatorLiveTests(unittest.TestCase):
     def setUp(self):
+        guard = patch('client_coordinator.another_assistant_running', return_value=False)
+        guard.start(); self.addCleanup(guard.stop)
         coordinator_seams.CoordinatorTests.setUpClass()
         self.f=coordinator_seams.CoordinatorTests();self.f.setUp();self.addCleanup(self.f.tearDown)
         self.c=self.f.coordinator
@@ -116,6 +118,9 @@ class CoordinatorLiveTests(unittest.TestCase):
         self.assertEqual(self.c.boundWindow,'42');self.f.windows.show.assert_not_called()
     def test_destroyed_and_reused_hwnd_cancels_then_rebinds_unique_new_process(self):
         self.c._catalog.return_value=[self.row()];self.c.startLiveServices()
+        # The catalog/handles here are fixtures. Independent identity validation
+        # must use the same fixture rather than inspecting a real Windows HWND.
+        self.c._binding_probe=Mock(return_value=dict(status='lost',reason='process-identity-changed'))
         self.c._catalog.return_value=[self.row(created=2)];self.c._discover_game()
         self.f.session.stop.assert_called_once()
         self.f.runtime.invalidate.assert_any_call('game-window-lost')

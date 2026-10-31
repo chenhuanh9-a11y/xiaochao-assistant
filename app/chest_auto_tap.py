@@ -144,6 +144,8 @@ class ChestAutoTap:
         self.status = "未开启"
         self.holding = False
         self.error = ""
+        self._configuration_error = ""
+        self._runtime_errors = []  # Input/release failures remain sticky.
         self.available = _user32 is not None
         self.settings = self._load()
 
@@ -161,7 +163,8 @@ class ChestAutoTap:
                 try:
                     return validate(settings, self._reserved())
                 except ValueError as error:
-                    self.error = self.status = f"开箱连点已停用：{error}"
+                    message = f"开箱连点已停用：{error}"
+                    self._set_status(message, configuration_error=message)
                     return dict(settings, enabled=False)
         except (OSError, ValueError):
             pass
@@ -189,7 +192,8 @@ class ChestAutoTap:
 
         Returns {success, message}. A conflict disables immediately, wakes the
         existing worker for release, and best-effort persists disabled state.
-        snapshot() carries the sticky reason, even if saving fails.
+        snapshot() carries the reason until this configuration is valid again.
+        Input/release failures and the pending-release ledger remain sticky.
         """
         with self._lock:
             current = dict(self.settings)
@@ -202,8 +206,9 @@ class ChestAutoTap:
                 self._save(disabled)
             except OSError:
                 message += " 停用状态保存失败，请检查软件目录是否可写。"
-            self._set_status(message, holding=False, error=message)
+            self._set_status(message, holding=False, configuration_error=message)
             return dict(success=False, message=message)
+        self._clear_configuration_error()
         return dict(success=True, message="开箱连点按键检查通过。")
 
     def update(self, settings: dict) -> dict:
@@ -256,6 +261,8 @@ class ChestAutoTap:
             except OSError:
                 return dict(success=False, message="连点状态已变化，未开启；当前状态保存失败，请检查软件目录。")
             return dict(success=False, message="连点状态已变化，未开启；请检查状态后重新设置。")
+        if not validation_error:
+            self._clear_configuration_error()
         self.sync()
         if not normalised["enabled"]:
             return dict(success=not validation_error, message="开箱连点已关闭。" + validation_error)
@@ -300,13 +307,24 @@ class ChestAutoTap:
         self._wake.set()
         self._set_status("未开启", holding=False)
 
-    def _set_status(self, text, *, holding=None, error=None):
+    def _clear_configuration_error(self):
+        # Successful validation permits another explicit enable; it cannot
+        # acknowledge uncertain input delivery or alter pending key releases.
+        with self._lock:
+            if self._configuration_error:
+                self._configuration_error = ""
+                self.error = " ".join(self._runtime_errors)
+                self.status = self.error or "未开启"
+
+    def _set_status(self, text, *, holding=None, error=None, configuration_error=None):
         with self._lock:
             if holding is not None:
                 self.holding = holding
-            if error is not None:
-                if error and error not in self.error:
-                    self.error = f"{self.error} {error}".strip()
+            if configuration_error is not None:
+                self._configuration_error = configuration_error
+            if error and error not in " ".join(self._runtime_errors):
+                self._runtime_errors.append(error)
+            self.error = " ".join(filter(None, [self._configuration_error, *self._runtime_errors]))
             self.status = self.error or text
 
     def _fault(self, message):

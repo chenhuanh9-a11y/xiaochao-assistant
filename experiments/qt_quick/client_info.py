@@ -224,10 +224,25 @@ class ClientInfoService(QObject):
             self.homePreviewRequested.emit(*self._home_context, str(key))
 
     def setProviders(self, **providers):
+        self._set_failure_sampling(False)
         self._providers = providers
         for provider in providers.values():
             if hasattr(provider, "changed"):
                 provider.changed.connect(self.changed)
+        runtime = getattr(providers.get('coordinator'), 'runtime', None)
+        configure = getattr(runtime, 'configure_failure_sampling', None)
+        problems = providers.get('problems')
+        if callable(configure) and problems is not None:
+            configure(event_path=str(getattr(problems, 'log_path', '') or ''),
+                build_fingerprint=self._build_fingerprint,
+                source_commit=self._package_metadata.get('qtSourceCommit') or '')
+        self._set_failure_sampling(self._include_failure_evidence)
+
+    def _set_failure_sampling(self, enabled):
+        runtime = getattr(self._providers.get('coordinator'), 'runtime', None)
+        setter = getattr(runtime, 'set_failure_sampling_enabled', None)
+        if callable(setter):
+            setter(bool(enabled))
 
     @Slot(bool, result=bool)
     def scheduleStartupCheck(self, enabled=True):
@@ -349,6 +364,7 @@ class ClientInfoService(QObject):
     def setIncludeFailureEvidence(self, include):
         if not self._closed and not self.checking:
             self._include_failure_evidence = bool(include)
+            self._set_failure_sampling(self._include_failure_evidence)
             self.changed.emit()
 
     @Slot()
@@ -409,6 +425,7 @@ class ClientInfoService(QObject):
                 self.paths.work_root / "nightmare-live", destination=destination,
                 app_version=self._app_version, build_fingerprint=self._build_fingerprint,
                 package_metadata=package_metadata, window_environment=window_environment,
+                resource_root=self.paths.resource_root,
                 runtime_context=runtime_context, failure_roots=failure_roots, summary=report,
                 process_integrity=dict(level="Unknown", rank=-1, collectionStatus="not-collected"))
             return dict(result, path=str(result["path"]), bytes=destination.stat().st_size,
@@ -418,6 +435,7 @@ class ClientInfoService(QObject):
         self._write(save, f"已导出到 {destination}", operation="正在导出本次诊断…", complete=complete)
 
     def shutdown(self):
+        self._set_failure_sampling(False)
         self._startup_timer.stop()
         self._closed = True
         self._home_preview_generation += 1

@@ -24,11 +24,11 @@ class Source(PassThroughKeyboardSource):
         return self.active
 
     def start(self):
-        self.active = True
+        self.active = self.installed = True
         return True
 
     def stop(self):
-        self.active = False
+        self.active = self.installed = False
         return True
 
 

@@ -6,6 +6,7 @@ All algorithm work is synchronous and belongs to SessionService's worker.
 from __future__ import annotations
 
 import copy
+from datetime import datetime, timezone
 import hashlib
 import math
 from pathlib import Path
@@ -291,6 +292,9 @@ class LiveRuntime:
     def __init__(self, *, engine_factories, capture_provider=None,
                  allowed_read_root=None, evidence_kind="unverified", clock=None, diagnostics=None):
         self._diagnostics = diagnostics
+        from client_failure_samples import FailureSampleRecorder
+        self._failure_samples = FailureSampleRecorder()
+        self._failure_capture_stamp = None
         if evidence_kind not in ("live-client-capture", "synthetic", "recorded", "unverified"):
             raise ValueError("unsupported capture evidence kind")
         self._offline = EngineAdapter(engine_factories=engine_factories,
@@ -307,6 +311,7 @@ class LiveRuntime:
         self._round_preparing = False
         self._prepared_round_ready = False
         self._last_map_input_sequence = 0
+        self._map_input_observation = None
         self._transient_drag = self._transient_cycle = None
         self._capture_pending = False
         self._probe_misses = 0
@@ -1034,6 +1039,7 @@ class LiveRuntime:
             cycle = dict(self._transient_cycle)
             scope = self._sibling_scope()
             engine, epoch, target = self._engine, self._epoch, self._floor
+            input_sequence = self._last_map_input_sequence
             if (payload.get("gestureId") is not None and (payload["gestureId"] != cycle["gestureId"]
                     or payload.get("pointerSequence") != cycle["pointerSequence"])):
                 return self._receipt("probe_map_after_drag", payload, success=False, reason="transient-probe-expired", stale=True)
@@ -1058,8 +1064,12 @@ class LiveRuntime:
                 self._probe_misses += 1
                 if self._probe_misses >= 2:
                     self.invalidate("map-closed", source="post-drag-probe")
+                    payload["_mapInputVisual"] = dict(open=False, epoch=self._epoch, sequence=input_sequence,
+                        captured=captured, captureGeneration=capture_generation)
                 return self._receipt("probe_map_after_drag", payload, success=False, reason="map-not-observed")
             self._probe_misses = 0
+            payload["_mapInputVisual"] = dict(open=True, epoch=epoch, sequence=input_sequence,
+                captured=captured, captureGeneration=capture_generation)
             self._observe_floor_policy(floor_read, obsolete=obsolete)
             if self._transient_cycle is not None:
                 self._transient_cycle["probePending"]=False
@@ -1125,7 +1135,10 @@ class LiveRuntime:
                 # as no hit; it must never mutate floor/pose from an exception.
                 clicked = None
             if clicked is None:
-                return dict(success=False, reason="floor-click-not-a-control")
+                from map_close_control import map_close_control_hit
+                return dict(success=False, reason="floor-click-not-a-control",
+                    closeControlHit=map_close_control_hit(observation["frame"],
+                        (screen_x, screen_y), current["clientBounds"]))
             first_epoch = span[0] if own_click_epoch else self._epoch
             self.invalidate("game-floor-control-intent")
             self._floor_click_epoch_span = (first_epoch, self._epoch)
@@ -1789,7 +1802,17 @@ class LiveRuntime:
             return dict(mode=self._mode, profileId=self._profile, mapId=self._map_id,
                         floor=str(self._floor), resourceIdentity=str(id(self._engine)))
 
+    def configure_failure_sampling(self, *, event_path, build_fingerprint, source_commit=""):
+        self._failure_samples.configure(event_path=event_path,
+            build_fingerprint=build_fingerprint, source_commit=source_commit)
+
+    def set_failure_sampling_enabled(self, enabled):
+        self._failure_samples.enabled = enabled is True
+        if not self._failure_samples.enabled:
+            self._failure_capture_stamp = None
+
     def shutdown(self):
+        self.set_failure_sampling_enabled(False)
         self.dispatch("end_round")
         if self._capture is not None:
             self._capture.shutdown()
@@ -1853,7 +1876,11 @@ class LiveRuntime:
 
     def _capture_frame(self, cancelled):
         try:
-            return self._capture.capture(cancelled)
+            captured = self._capture.capture(cancelled)
+            if self._failure_samples.enabled:
+                self._failure_capture_stamp = (captured,
+                    datetime.now(timezone.utc).isoformat(timespec="milliseconds"), time.monotonic())
+            return captured
         except Exception as error:
             error.error_phase = "capture"
             raise
@@ -1909,6 +1936,18 @@ class LiveRuntime:
                                       frame_generation=self._frame_generation)
             and row["frameId"] == self._frame_id and row["mode"] == self._mode)
 
+    def map_input_observation_is_current(self, observation):
+        """A visual receipt can synchronize intent, never revive an old epoch."""
+        with self._lock:
+            stored = self._map_input_observation
+            return bool(isinstance(observation, dict) and stored is not None
+                and observation == stored[0]
+                and observation["epoch"] == self._epoch
+                and observation["cycleId"] == self._cycle
+                and observation["context"] == self._context()
+                and observation["inputSequence"] == self._last_map_input_sequence
+                and self._capture_is_current(stored[1], stored[2]))
+
     def _receipt(self, action, payload, *, success, reason, **extra):
         with self._lock:
             if self._diagnostics is not None:
@@ -1918,6 +1957,16 @@ class LiveRuntime:
             context = self._context()
             request = {key: payload.get(key) for key in ("generation", "mode", "profileId", "roundId", "frameId")}
             self._message = reason
+            visual = payload.get("_mapInputVisual")
+            if (visual is not None and visual["epoch"] == self._epoch
+                    and visual["sequence"] == self._last_map_input_sequence
+                    and self._capture_is_current(visual["captured"].context, visual["captureGeneration"])
+                    and not extra.get("stale")):
+                evidence = dict(mapOpen=visual["open"], inputSequence=visual["sequence"],
+                    epoch=self._epoch, cycleId=self._cycle, context=context,
+                    captureGeneration=visual["captureGeneration"])
+                self._map_input_observation = (evidence, visual["captured"].context, visual["captureGeneration"])
+                extra["mapInputObservation"] = dict(evidence)
             return dict(action=action, success=success, reason=reason, message=reason,
                         requestContext=request, resultContext=context,
                         liveAuthorization=bool(self._render and self._render.get("liveAuthorization")), **extra)
@@ -1957,6 +2006,16 @@ class LiveRuntime:
             self._notify("aligned-visibility-changed", reason="visibility-toggled")
             return self._receipt(action, payload, success=True, reason="visibility-toggled")
         capture_request_epoch = self._epoch
+        if action == "capture_now" and "inputObservationSequence" in payload:
+            # A suspended binding can have accepted an edge while resources
+            # blocked its worker dispatch. Synchronize the sequence only; the
+            # captured pixels still decide open/closed and grant no key intent.
+            with self._lock:
+                sequence = payload["inputObservationSequence"]
+                if type(sequence) is not int or sequence < self._last_map_input_sequence:
+                    return self._receipt(action, payload, success=False,
+                        reason="map-input-sequence-expired", stale=True)
+                self._last_map_input_sequence = sequence
         if action == "map":
             from session_state_machine import map_hotkey_transition
             with self._lock:
@@ -1977,6 +2036,9 @@ class LiveRuntime:
             if transition == "ignore":
                 return self._receipt(action, payload, success=True, reason="map-open-verification-in-progress")
         if action in ("end_round", "stop_round", "reset_round", "cancel", "close_map"):
+            if action == "close_map" and type(payload.get("inputSequence")) is int:
+                with self._lock:
+                    self._last_map_input_sequence = max(self._last_map_input_sequence, payload["inputSequence"])
             self.invalidate("map-closed" if action == "close_map" else action,
                             source=payload.get("inputSource", "dispatch-" + action))
             with self._lock:
@@ -2284,6 +2346,7 @@ class LiveRuntime:
             if not self._active:
                 return self._receipt(action, payload, success=False, reason="round-not-active")
             epoch, engine, group = self._epoch, self._engine, self._group
+            input_sequence = self._last_map_input_sequence
         if action != "refresh_map":
             with self._lock:
                 self._game_floor_intent = None
@@ -2325,6 +2388,11 @@ class LiveRuntime:
             return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
         map_detected = (observation.get("mapOpen") is True if engine.pack.mode == "difficult"
                         else observation.get("detected") is True)
+        # Only this capture's positive visual evidence may reconcile an open
+        # intent. A single negative probe is deliberately not a confirmed close.
+        if map_detected:
+            payload["_mapInputVisual"] = dict(open=True, epoch=epoch, sequence=input_sequence,
+                captured=captured, captureGeneration=capture_generation)
         effective_floor = self._observe_floor_policy(floor_read, obsolete=obsolete) if map_detected else None
         if floor is None and map_detected:
             self._revoke_render("current-floor-unavailable")
@@ -2361,8 +2429,12 @@ class LiveRuntime:
                 self._revoke_render(reason)
                 if transition == "close":
                     self.invalidate("map-closed", source="passive-map-probe")
+                    payload["_mapInputVisual"] = dict(open=False, epoch=self._epoch, sequence=input_sequence,
+                        captured=captured, captureGeneration=capture_generation)
                 return self._receipt(action, payload, success=False, reason=reason, observation=observation)
             self.invalidate("map-closed", source="capture-map-not-observed")
+            payload["_mapInputVisual"] = dict(open=False, epoch=self._epoch, sequence=input_sequence,
+                captured=captured, captureGeneration=capture_generation)
             return self._receipt(action, payload, success=False, reason="map-not-observed", observation=observation)
         if floor is None or str(floor) not in tuple(map(str, engine.identity_floors)):
             with self._lock:
@@ -2644,6 +2716,42 @@ class LiveRuntime:
             return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
         if not fit.get("success"):
             reason = str(fit.get("reason", "pose-fit-failed"))
+            try:
+                stamp = self._failure_capture_stamp
+                if (self._failure_samples.enabled and stamp is not None and stamp[0] is captured
+                        and self._failure_samples.can_record(frame, (self._mode, map_id, self._profile, floor, reason))):
+                    def sample_current():
+                        with self._lock:
+                            return bool(not obsolete() and self._active and self._map_open
+                                and frame_id == self._frame_id and floor == self._floor
+                                and cycle == self._cycle and engine is self._engine
+                                and self._capture_is_current(captured.context, capture_generation))
+                    reference = host._shared_structure_reference("shared-structure", map_id, floor)
+                    resource = dict(metadata=reference.metadata,
+                        cleanMaskSha256=hashlib.sha256(reference.clean_mask.tobytes()).hexdigest(),
+                        validationMaskSha256=hashlib.sha256(reference.validation_mask.tobytes()).hexdigest()) if reference is not None else None
+                    diagnostic = dict(mode=self._mode, profileId=self._profile, evidenceKind=self._evidence_kind,
+                        frameId=frame_id, sourceFrameGeneration=frame_generation,
+                        captureGeneration=capture_generation, requestGeneration=payload.get("generation"),
+                        roundId=self._round, cycleId=cycle, epoch=epoch,
+                        frameCapturedAtUtc=stamp[1], frameCapturedMonotonicAt=stamp[2],
+                        timestampBasis="capture-return", fullClientSize=list(captured.context.full_client_size),
+                        clientBounds=list(captured.context.client_screen_bounds), dpi=captured.context.dpi,
+                        roiClientBounds=list(captured.roi_client_bounds), sharedResource=resource,
+                        displayResourceIdentity=display.get("resourceIdentity"),
+                        floorRead=copy.deepcopy((self._last_observation or {}).get("floor_read", {})))
+                    saved = self._failure_samples.record(getattr(engine, "memory_store", None),
+                        map_id=map_id, floor=floor, reason=reason, fit=fit, frame=frame,
+                        client_bounds=captured.context.client_screen_bounds, cycle_id=cycle,
+                        diagnostic=diagnostic, current=sample_current)
+                    self._notify("failure-sample", reason="saved" if saved else "not-saved",
+                        failureSample=dict(savedCount=self._failure_samples.saved_count,
+                            error=self._failure_samples.last_error, frameCapturedAtUtc=stamp[1]))
+            except Exception as error:
+                # Optional sample preparation must not replace the fit verdict.
+                self._failure_samples.last_error = type(error).__name__
+                self._notify("failure-sample", reason="not-saved", failureSample=dict(
+                    savedCount=self._failure_samples.saved_count, error=self._failure_samples.last_error))
             reopened = self._consume_identity_conflict(fit, engine=engine, epoch=epoch, captured=captured,
                 capture_generation=capture_generation, frame_id=frame_id, frame_generation=frame_generation,
                 cycle=cycle, map_id=map_id, floor=floor)

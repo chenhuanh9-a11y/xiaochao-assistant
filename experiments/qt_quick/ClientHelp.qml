@@ -25,7 +25,8 @@ Item {
                 AppButton { objectName: "helpSaveDiagnostics"; text: "另存 ZIP…"; enabled: !infoService.checking; onClicked: saveDiagnostics.open() }
                 AppButton { text: "自愿支持开发"; onClicked: support.open() }
             }
-            CheckBox { text: "附带已保存的失败画面（不截取新画面）"; checked: infoService.includeFailureEvidence; enabled: !infoService.checking; onToggled: infoService.setIncludeFailureEvidence(checked) }
+            CheckBox { objectName: "helpFailureSampling"; text: "保存失败画面并随诊断包导出"; checked: infoService.includeFailureEvidence; enabled: !infoService.checking; onToggled: infoService.setIncludeFailureEvidence(checked) }
+            Label { text: "开启后再复现：限量保存本次运行中已有的失败采集画面，不额外截图；重启后默认关闭。"; color: "#526785"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
             Label { text: "默认只导出限量脱敏文本、版本和当前状态，不包含原图或个人设置。"; color: "#526785"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
             ProgressBar { Layout.fillWidth: true; visible: infoService.checking; indeterminate: true; Accessible.name: infoService.operation }
             Label { text: infoService.operation || infoService.message; color: infoService.hasError ? "#b8364a" : "#526785"; Layout.fillWidth: true; wrapMode: Text.WordWrap }

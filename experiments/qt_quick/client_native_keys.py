@@ -59,6 +59,7 @@ class PassThroughKeyboardSource(QObject):
         self._pointer_failure_reported = False
         self.generation = 0
         self.installed = False
+        self.last_error = ""
 
     @property
     def running(self):
@@ -149,10 +150,13 @@ class PassThroughKeyboardSource(QObject):
 
     def start(self):
         if self.running:
-            return True
+            return not self._stop.is_set()
         if os.name != "nt":
             return False
         self._stop.clear()
+        with self._lock:
+            self.generation += 1  # Reject events queued by an earlier thread.
+        self.last_error = ""
         self._pointer_failure_reported = False
         self._thread = threading.Thread(target=self._run, name="qt-pass-through-keys", daemon=False)
         self._thread.start()
@@ -222,6 +226,7 @@ class PassThroughKeyboardSource(QObject):
             # key delivery thereafter is event-driven, never async-key polling.
             with self._lock:
                 self._held=initial_pressed_keys(self._keys, user.GetAsyncKeyState)
+                started_snapshot = dict(held=frozenset(self._held), generation=self.generation)
             @callback_type
             def callback(code, message_id, pointer):
                 try:
@@ -252,7 +257,7 @@ class PassThroughKeyboardSource(QObject):
             except Exception as error:
                 self.pointerFailed.emit(f"Raw mouse observation unavailable: {type(error).__name__}:{error}"[:512])
             self.installed=True
-            self.started.emit(self.held)
+            self.started.emit(started_snapshot)
             while not self._stop.is_set():
                 value=user.GetMessageW(ctypes.byref(message),None,0,0)
                 if value == -1:raise ctypes.WinError(ctypes.get_last_error())
@@ -270,7 +275,8 @@ class PassThroughKeyboardSource(QObject):
                 user.TranslateMessage(ctypes.byref(message))
                 user.DispatchMessageW(ctypes.byref(message))
         except Exception as error:
-            self.failed.emit(f"{type(error).__name__}:{error}")
+            self.last_error = f"{type(error).__name__}:{error}"
+            self.failed.emit(self.last_error)
         finally:
             if self._mouse_observer is not None:
                 try:
@@ -278,7 +284,8 @@ class PassThroughKeyboardSource(QObject):
                 except Exception as error:
                     self.pointerFailed.emit(f"Raw mouse observer cleanup failed: {error}"[:512])
             if handle and not self._user.UnhookWindowsHookEx(handle):
-                self.failed.emit("Native keyboard hook could not be unregistered")
+                self.last_error = "Native keyboard hook could not be unregistered"
+                self.failed.emit(self.last_error)
             self.installed=False
             self._thread_id=0
             self._callback=None

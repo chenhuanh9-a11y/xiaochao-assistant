@@ -14,6 +14,14 @@ from game_window_focus import NativeGameFocusAPI
 from hotkey_bindings import parse_chord
 from hotkey_keys import _primary_hotkey_to_vk
 
+ACTION_LABELS = {
+    "map": "游戏地图键", "escape": "关闭游戏地图", "toggle-panel": "显示/隐藏面板",
+    "candidate-prev": "上一个候选", "candidate-next": "下一个候选",
+    "confirm-round": "确认本局", "cycle-floor": "切换楼层", "end-round": "结束本局",
+    "toggle-sheet-visibility": "显示/隐藏小抄", "start-round": "开始本局",
+    "toggle-round": "开始/结束本局",
+}
+
 
 class ChestAutoTapService(QObject):
     """Loading an enabled preference never arms or starts the native worker.
@@ -58,8 +66,10 @@ class ChestAutoTapService(QObject):
         for name, text in bindings.items():
             vk = 0x1b if name == "escape" else parse_chord(text, _primary_hotkey_to_vk).vk
             if vk:
-                reserved[vk] = "星图快捷键 " + str(name)
+                reserved[vk] = "星图快捷键 " + ACTION_LABELS.get(str(name), "其他功能")
+        changed = reserved != self._reserved
         self._reserved = reserved
+        return changed
 
     def _snapshot(self):
         state = self._service.snapshot()
@@ -81,6 +91,19 @@ class ChestAutoTapService(QObject):
         if self._running:
             self._service.stop()
         self._running = False
+
+    def _reconcile_reserved(self):
+        previous_error = self._service.snapshot().get("error", "")
+        result = self._service.reconcile_reserved()
+        if not result.get("success"):
+            self._armed = False
+            self._timer.stop()
+            self._stop()
+            self._message = result.get("message", "快捷键冲突，开箱连点已暂停")
+        elif previous_error:
+            current_error = self._service.snapshot().get("error", "")
+            if current_error != previous_error:
+                self._message = current_error or "按键冲突已解除，请重新手动开启开箱连点"
 
     def _gate(self):
         owner, state = self.coordinator, self.input.snapshot
@@ -114,6 +137,10 @@ class ChestAutoTapService(QObject):
         if self.coordinator.closing:
             self.shutdown()
             return
+        # Rebind/recovery can replace compiled keys without a settings.saved
+        # signal. Validate the new reservation before any native worker resumes.
+        if self._refresh_reserved():
+            self._reconcile_reserved()
         if not self._armed:
             self._stop()
             self._publish()
@@ -180,12 +207,7 @@ class ChestAutoTapService(QObject):
         if self._closed:
             return
         self._refresh_reserved()
-        result = self._service.reconcile_reserved()
-        if not result.get("success"):
-            self._armed = False
-            self._timer.stop()
-            self._stop()
-            self._message = result.get("message", "快捷键冲突，开箱连点已暂停")
+        self._reconcile_reserved()
         self.pollOnce()
 
     @Slot()
