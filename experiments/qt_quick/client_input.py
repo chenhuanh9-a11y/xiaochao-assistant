@@ -1,6 +1,7 @@
 """Pass-through native key events; management shortcuts do not need a game.
 
-Production uses pass-through WH_KEYBOARD_LL/WH_MOUSE_LL; G and clicks stay with the game.
+Production uses pass-through WH_KEYBOARD_LL and asynchronous raw mouse observation.
+G and clicks stay with the game; Python is never in the mouse hook chain.
 The old pollOnce seam remains for injected fake-native diagnostic tests only.
 """
 from __future__ import annotations
@@ -144,6 +145,7 @@ class NativeShortcutBackend(QObject):
         hookRunning=bool(self._source and self._source.running),
         floorClickObserverInstalled=bool(self._source and getattr(self._source, "pointer_installed", False)),
         floorClickObserverError=self._pointer_error,
+        mouseEventSource="raw-input" if self._source is not None else "injected-fixture",
         eventSource="pass-through-hook" if self._source is not None else "injected-poll-fixture"), notify=changed)
 
     def _stop(self, status, message):

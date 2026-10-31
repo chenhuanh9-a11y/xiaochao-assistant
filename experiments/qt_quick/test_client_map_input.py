@@ -97,6 +97,26 @@ class OrderedInputTests(unittest.TestCase):
         self.assertEqual([r["phase"] for r in rows], ["down", "cancel"])
         self.assertIsNone(self.source._pointer_gesture)
 
+    def test_runtime_lock_busy_after_press_does_not_cancel_physical_drag(self):
+        provider = Mock(side_effect=[dict(epoch=1, clientBounds=[0, 0, 1000, 1000]), None])
+        self.source.set_pointer_context_provider(provider)
+        self.source.update_pointer_target(42)
+        for phase, x in (("down", 300), ("move", 330), ("up", 340)):
+            event = self.source._pointer_event(x, 300, 42, phase=phase)
+            self.assertIsNotNone(event)
+            self.source._queue_pointer_event(event)
+        self.assertEqual(provider.call_count, 1)
+        rows = self.source.take_pointer_events()
+        self.assertEqual([r["phase"] for r in rows], ["down", "move", "up"])
+        self.assertEqual(rows[-1]["totalDelta"], [40, 0])
+
+    def test_queued_press_cannot_acquire_a_newer_frame_context(self):
+        self.source.set_pointer_context_provider(lambda: dict(epoch=2, observationCreatedAt=20.))
+        self.source.update_pointer_target(42)
+        self.assertIsNone(self.source._pointer_event(300, 300, 42, phase="down", created_at=19.))
+        self.assertIsNone(self.source._pointer_gesture)
+        self.assertIsNotNone(self.source._pointer_event(300, 300, 42, phase="down", created_at=21.))
+
     def test_queue_overflow_cancels_instead_of_inventing_missing_edges(self):
         mailbox = PointerEventMailbox(maximum=3)
         wakes = [mailbox.post(dict(phase="down", x=i, y=0, sequence=i)) for i in range(4)]
@@ -107,7 +127,8 @@ class OrderedInputTests(unittest.TestCase):
     def test_coalesced_motion_keeps_calibrated_exit_and_reentry_without_catch_up(self):
         mailbox = PointerEventMailbox()
         for x in (350, 900, 750, 700):
-            mailbox.post(dict(phase="move", x=x, y=300, gestureId=1, context=dict(epoch=1)))
+            mailbox.post(dict(phase="move", x=x, y=300, gestureId=1,
+                context=dict(epoch=1, clientBounds=[0, 0, 1000, 1000], dragBoundaryNormalized=[.2, .2, .8, .8])))
         events = mailbox.take()
         self.assertEqual(len(events), 1)
         self.assertEqual(len(events[0]["motionSamples"]), 4)
@@ -118,14 +139,31 @@ class OrderedInputTests(unittest.TestCase):
         self.assertEqual(final["totalDelta"], [20., 0.])
         self.assertTrue(final["finished"])
 
-    def test_motion_path_overflow_cancels_and_context_changes_do_not_coalesce(self):
+    def test_boundary_transition_overflow_cancels_and_context_changes_do_not_coalesce(self):
         mailbox = PointerEventMailbox(maximum=3)
-        for x in range(4):
-            mailbox.post(dict(phase="move", x=x, y=0, gestureId=1, context=dict(epoch=1)))
+        for x in (300, 900, 300, 900):
+            mailbox.post(dict(phase="move", x=x, y=300, gestureId=1,
+                context=dict(epoch=1, clientBounds=[0, 0, 1000, 1000], dragBoundaryNormalized=[.2, .2, .8, .8])))
         self.assertEqual(mailbox.take()[0]["reason"], "pointer-motion-overflow")
         mailbox.post(dict(phase="move", x=1, y=0, gestureId=1, context=dict(epoch=1)))
         mailbox.post(dict(phase="move", x=2, y=0, gestureId=1, context=dict(epoch=2)))
         self.assertEqual(len(mailbox.take()), 2)
+
+    def test_high_rate_motion_compacts_exactly_without_cancelling_or_boundary_jump(self):
+        for boundary in (None, [.2, .2, .8, .8]):
+            with self.subTest(boundary=boundary):
+                mailbox = PointerEventMailbox()
+                direct = DragMotionAccumulator((300, 300), (0, 0, 1000, 1000), boundary)
+                context = dict(epoch=1, clientBounds=[0, 0, 1000, 1000], dragBoundaryNormalized=boundary)
+                for x in [300 + i % 450 for i in range(2000)] + [900, 850, 750, 730, 710]:
+                    event = dict(phase="move", x=x, y=300, gestureId=1, context=context)
+                    direct.consume(event)
+                    mailbox.post(event)
+                rows = mailbox.take()
+                self.assertEqual([r["phase"] for r in rows], ["move"])
+                self.assertLessEqual(len(rows[0]["motionSamples"]), 6)
+                compacted = DragMotionAccumulator((300, 300), (0, 0, 1000, 1000), boundary)
+                self.assertEqual(compacted.consume(rows[0])["totalDelta"], direct.total)
 
     def test_plain_drag_retains_release_delta_but_cancel_never_adds_motion(self):
         drag = DragMotionAccumulator((300, 300), (0, 0, 1000, 1000))

@@ -1,9 +1,8 @@
-"""Pass-through key and scoped left-click hooks on one Win32 message loop.
+"""Pass-through keys and asynchronous mouse observation on a Win32 loop.
 
 No hook is installed at import/construction. The callback never runs business
-work or consumes input; it queues subscribed key edges and bound-game left
-presses, and always returns CallNextHookEx. See Microsoft LowLevelKeyboardProc,
-LowLevelMouseProc and SetWindowsHookExW documentation.
+work or consumes input; it queues subscribed key edges and always returns
+CallNextHookEx. Mouse packets use Raw Input, never a low-level input hook.
 """
 from __future__ import annotations
 import ctypes
@@ -49,7 +48,7 @@ class PassThroughKeyboardSource(QObject):
         self._thread_id = 0
         self._user = None
         self._callback = None
-        self._mouse_callback = None
+        self._mouse_observer = None
         self._pointer_target = 0
         self._pointer_context_provider = None
         self.pointer_generation = 0
@@ -105,9 +104,15 @@ class PassThroughKeyboardSource(QObject):
         if phase != "down" and gesture is None:
             return None
         created_at = time.monotonic() if created_at is None else created_at
-        context = provider()
+        # Snapshot the press context once. A momentarily busy runtime lock must
+        # not destroy a physical drag halfway through. The GUI/runtime validate
+        # this immutable context again before accepting each display update.
+        context = provider() if phase == "down" else gesture["event"]["context"]
         if not isinstance(context, dict):
             self.cancel_pointer("pointer-context-unavailable")
+            return None
+        if phase == "down" and created_at < context.get("observationCreatedAt", 0):
+            self.cancel_pointer("pointer-press-before-current-frame")
             return None
         context = dict(context, createdAt=created_at)
         with self._lock:
@@ -179,9 +184,13 @@ class PassThroughKeyboardSource(QObject):
     def _handle_message(self, message):
         """Win32 thread-message extension seam; production has no commands."""
 
+    def _receive_pointer(self, x, y, foreground, *, phase, created_at):
+        event = self._pointer_event(x, y, foreground, phase=phase, created_at=created_at)
+        if event is not None:
+            self._queue_pointer_event(event)
+
     def _run(self):
         handle = None
-        mouse_handle = None
         try:
             user = self._user = ctypes.WinDLL("user32", use_last_error=True)
             kernel = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -189,9 +198,6 @@ class PassThroughKeyboardSource(QObject):
             callback_type = ctypes.WINFUNCTYPE(result, ctypes.c_int, W.WPARAM, W.LPARAM)
             class Key(ctypes.Structure):
                 _fields_ = [("vk",W.DWORD),("scan",W.DWORD),("flags",W.DWORD),("time",W.DWORD),("extra",ctypes.c_size_t)]
-            class Mouse(ctypes.Structure):
-                _fields_ = [("pt",W.POINT),("mouseData",W.DWORD),("flags",W.DWORD),
-                            ("time",W.DWORD),("extra",ctypes.c_size_t)]
             user.SetWindowsHookExW.argtypes=[ctypes.c_int,callback_type,W.HINSTANCE,W.DWORD]
             user.SetWindowsHookExW.restype=W.HANDLE
             user.CallNextHookEx.argtypes=[W.HANDLE,ctypes.c_int,W.WPARAM,W.LPARAM]
@@ -203,6 +209,8 @@ class PassThroughKeyboardSource(QObject):
             user.PeekMessageW.restype=W.BOOL
             user.GetMessageW.argtypes=[ctypes.POINTER(W.MSG),W.HWND,W.UINT,W.UINT]
             user.GetMessageW.restype=ctypes.c_int
+            user.TranslateMessage.argtypes=[ctypes.POINTER(W.MSG)];user.TranslateMessage.restype=W.BOOL
+            user.DispatchMessageW.argtypes=[ctypes.POINTER(W.MSG)];user.DispatchMessageW.restype=result
             user.PostThreadMessageW.argtypes=[W.DWORD,W.UINT,W.WPARAM,W.LPARAM]
             user.PostThreadMessageW.restype=W.BOOL
             kernel.GetCurrentThreadId.argtypes=[];kernel.GetCurrentThreadId.restype=W.DWORD
@@ -233,43 +241,46 @@ class PassThroughKeyboardSource(QObject):
             handle=user.SetWindowsHookExW(13,callback,kernel.GetModuleHandleW(None),0)
             if not handle:
                 raise ctypes.WinError(ctypes.get_last_error())
-            @callback_type
-            def mouse_callback(code, message_id, pointer):
-                try:
-                    if code >= 0 and message_id in (0x0200, 0x0201, 0x0202) and not self._stop.is_set():
-                        foreground = int(user.GetForegroundWindow() or 0)
-                        if foreground == self._pointer_target or self._pointer_gesture is not None:
-                            mouse = ctypes.cast(pointer,ctypes.POINTER(Mouse)).contents
-                            phase = {0x0200: "move", 0x0201: "down", 0x0202: "up"}[message_id]
-                            event = self._pointer_event(mouse.pt.x, mouse.pt.y, foreground, phase=phase)
-                            if event is not None:
-                                self._queue_pointer_event(event)
-                except Exception as error:
-                    if not self._pointer_failure_reported:
-                        self._pointer_failure_reported = True
-                        self.pointerFailed.emit(f"Floor-click observation failed: {type(error).__name__}:{error}"[:512])
-                return user.CallNextHookEx(None,code,message_id,pointer)
-            self._mouse_callback = mouse_callback
-            mouse_handle = user.SetWindowsHookExW(14,mouse_callback,kernel.GetModuleHandleW(None),0)
-            self.pointer_installed = bool(mouse_handle)
-            if not mouse_handle:
-                self.pointerFailed.emit("Native floor-click observer could not be installed")
+            try:
+                from client_native_mouse import RawMouseObserver
+                self._mouse_observer = RawMouseObserver(self._receive_pointer,
+                    lambda foreground: not self._stop.is_set() and
+                    (foreground == self._pointer_target or self._pointer_gesture is not None),
+                    user=user, cancel=self.cancel_pointer)
+                self._mouse_observer.start()
+                self.pointer_installed = True
+            except Exception as error:
+                self.pointerFailed.emit(f"Raw mouse observation unavailable: {type(error).__name__}:{error}"[:512])
             self.installed=True
             self.started.emit(self.held)
             while not self._stop.is_set():
                 value=user.GetMessageW(ctypes.byref(message),None,0,0)
                 if value == -1:raise ctypes.WinError(ctypes.get_last_error())
                 if value == 0:break
+                try:
+                    if self._mouse_observer is not None and self._mouse_observer.handle(message):
+                        continue
+                except Exception as error:
+                    if not self._pointer_failure_reported:
+                        self._pointer_failure_reported = True
+                        self.pointerFailed.emit(f"Raw mouse observation failed: {type(error).__name__}:{error}"[:512])
+                    self.cancel_pointer("raw-mouse-observation-failed")
+                    continue
                 self._handle_message(message)
+                user.TranslateMessage(ctypes.byref(message))
+                user.DispatchMessageW(ctypes.byref(message))
         except Exception as error:
             self.failed.emit(f"{type(error).__name__}:{error}")
         finally:
-            if mouse_handle and not self._user.UnhookWindowsHookEx(mouse_handle):
-                self.pointerFailed.emit("Native floor-click hook could not be unregistered")
+            if self._mouse_observer is not None:
+                try:
+                    self._mouse_observer.stop()
+                except Exception as error:
+                    self.pointerFailed.emit(f"Raw mouse observer cleanup failed: {error}"[:512])
             if handle and not self._user.UnhookWindowsHookEx(handle):
                 self.failed.emit("Native keyboard hook could not be unregistered")
             self.installed=False
             self._thread_id=0
             self._callback=None
-            self._mouse_callback=None
+            self._mouse_observer=None
             self.pointer_installed=False

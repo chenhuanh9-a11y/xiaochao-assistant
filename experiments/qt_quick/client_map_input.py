@@ -41,8 +41,9 @@ class PointerEventMailbox:
 
     Like the existing ReferencePointerMailbox, down/up edges stay ordered and
     overflowing the bounded queue cancels instead of inventing missing motion.
-    Coalesced motion keeps its final absolute position, so a consumer can derive
-    the complete displacement since its last drained sample without losing it.
+    Coalesced motion retains endpoints of each calibrated inside/outside run.
+    Within a run deltas telescope exactly; boundary transitions stay explicit.
+    High polling rates therefore do not exhaust a budget of raw mouse samples.
     """
     def __init__(self, maximum=64):
         if maximum < 3:
@@ -62,7 +63,23 @@ class PointerEventMailbox:
 
     @staticmethod
     def _sample(event):
-        return dict(x=event.get("x"), y=event.get("y"), createdAt=event.get("createdAt"))
+        from map_pointer_policy import calibrated_drag_motion_policy
+        context = event.get("context") or {}
+        _, allowed = calibrated_drag_motion_policy((event.get("x"), event.get("y")),
+            context.get("clientBounds"), context.get("dragBoundaryNormalized"), True)
+        return dict(x=event.get("x"), y=event.get("y"), createdAt=event.get("createdAt"), allowed=allowed)
+
+    @staticmethod
+    def _compact(samples):
+        result = []
+        for sample in samples:
+            # Keep both the first (re-arm) and last point of a boundary run.
+            # Never coalesce across an outside/re-entry transition.
+            if len(result) >= 2 and result[-2].get("allowed") == result[-1].get("allowed") == sample.get("allowed"):
+                result[-1] = sample
+            else:
+                result.append(sample)
+        return result
 
     def post(self, event):
         event = deepcopy(event)
@@ -73,7 +90,7 @@ class PointerEventMailbox:
                     and self._events[-1].get("phase") == "move"
                     and self._gesture(event) == self._gesture(self._events[-1])
                     and self._context(event) == self._context(self._events[-1])):
-                samples = self._events[-1]["motionSamples"] + event["motionSamples"]
+                samples = self._compact(self._events[-1]["motionSamples"] + event["motionSamples"])
                 if len(samples) > self.maximum:
                     self._events[:] = [dict(event, phase="cancel", reason="pointer-motion-overflow", motionSamples=[])]
                 else:

@@ -3,14 +3,15 @@ import json
 from copy import deepcopy
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault("QT_QUICK_BACKEND", "software")
 from pathlib import Path
 import time
 import unittest
 from unittest.mock import Mock, patch
 
 import numpy as np
-from PySide6.QtCore import QObject, Property, QUrl
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtCore import QObject, Property, QUrl, Qt
+from PySide6.QtGui import QGuiApplication, QImage
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtTest import QTest
 
@@ -41,9 +42,9 @@ class AlignedTransformProbe(unittest.TestCase):
         producer.runtime = LiveRuntime(engine_factories={"nightmare": lambda: producer.engine},
             capture_provider=producer.capture, evidence_kind="live-client-capture", clock=lambda: 1)
         producer.begin_and_capture()
-        self.run_probe(producer.runtime)
+        self.run_probe(producer.runtime, queued_pointer=True)
 
-    def run_probe(self, actual_runtime=None):
+    def run_probe(self, actual_runtime=None, queued_pointer=False):
         CoordinatorTests.setUpClass()
         fixture = CoordinatorTests("test_same_token_transform_revision_preserves_material_and_rejects_scope_change")
         fixture.setUp()
@@ -95,6 +96,17 @@ class AlignedTransformProbe(unittest.TestCase):
         while time.monotonic() < deadline and not any(r.get("materialReady") for r in surfaces()):
             APP.processEvents(); QTest.qWait(2)
         self.assertTrue(any(r.get("materialReady") for r in surfaces()), warnings)
+        def pixel_bounds():
+            window.requestUpdate()
+            QTest.qWait(35)
+            captured = window.grabWindow().convertToFormat(QImage.Format_RGBA8888)
+            self.assertFalse(captured.isNull())
+            pixels = np.frombuffer(captured.bits(), np.uint8).reshape(captured.height(), captured.bytesPerLine())
+            alpha = pixels[:, :captured.width()*4].reshape(captured.height(), captured.width(), 4)[:,:,3]
+            yy, xx = np.where(alpha > 0)
+            self.assertGreater(len(xx), 0)
+            return [int(xx.min()), int(yy.min()), int(xx.max()), int(yy.max())]
+        before_pixels = pixel_bounds()
         before = surfaces()[-1]["mappedBounds"]
         image = window.findChild(QObject, "clientAlignedRouteImage")
         url = image.property("source").toString()
@@ -123,13 +135,37 @@ class AlignedTransformProbe(unittest.TestCase):
             fixture.runtime.observe_game_drag = Mock(wraps=actual_runtime.observe_game_drag)
         down = dict(phase="down", gestureId=1, sequence=1, hwnd=123, x=300, y=300,
             context=context, createdAt=actual_runtime._monotonic() if actual_runtime is not None else 10.)
-        fixture.input.gamePointerEvent.emit(down)
+        source = None
+        if queued_pointer:
+            from client_native_keys import PassThroughKeyboardSource
+            source = PassThroughKeyboardSource()
+            source.set_pointer_context_provider(lambda: actual_runtime.game_floor_click_context())
+            source.update_pointer_target(123)
+            def drain():
+                for event in source.take_pointer_events():
+                    fixture.input.gamePointerEvent.emit(event)
+            source.pointerAvailable.connect(drain, Qt.QueuedConnection)
+        def deliver(event):
+            if source is None:
+                fixture.input.gamePointerEvent.emit(event)
+            else:
+                packet = source._pointer_event(event["x"], event["y"], 123,
+                    phase=event["phase"], created_at=event["createdAt"])
+                self.assertIsNotNone(packet)
+                source._queue_pointer_event(packet)
+        deliver(down)
+        APP.processEvents()
         for revision in range(1, 6):
-            fixture.input.gamePointerEvent.emit(dict(down, phase="move", sequence=revision+1,
-                x=300+revision*7, y=300+revision*3, createdAt=10.+revision))
+            # Delay the consumer deliberately: a high-rate burst must compact,
+            # not cancel the gesture before the real runtime/QML see it.
+            for _ in range(200 if queued_pointer else 1):
+                deliver(dict(down, phase="move", sequence=revision+1,
+                    x=300+revision*7, y=300+revision*3, createdAt=10.+revision))
             APP.processEvents(); QTest.qWait(2)
-        fixture.input.gamePointerEvent.emit(dict(down, phase="up", sequence=7, x=335, y=315, createdAt=16.))
+        deliver(dict(down, phase="up", sequence=7, x=335, y=315, createdAt=16.))
+        APP.processEvents()
         after = surfaces()[-1]["mappedBounds"]
+        after_pixels = pixel_bounds()
         self.assertEqual(image.property("source").toString(), url)
         aligned_publishes = sum(call.args[0] == source_token for call in publish.call_args_list)
         self.assertEqual(aligned_publishes, 1)
@@ -137,6 +173,7 @@ class AlignedTransformProbe(unittest.TestCase):
         self.assertFalse(any(r.get("imageStatus") == "loading" for r in surfaces()))
         self.assertAlmostEqual(after[0]-before[0], 35.)
         self.assertAlmostEqual(after[1]-before[1], 15.)
+        self.assertEqual(np.subtract(after_pixels, before_pixels).tolist(), [35, 15, 35, 15])
         self.assertEqual(warnings, [])
         if actual_runtime is not None:
             produced = actual_runtime.render_payload(source_token)
@@ -157,7 +194,8 @@ class AlignedTransformProbe(unittest.TestCase):
             self.assertEqual(actual_runtime._render["matrix"], produced["matrix"])
         print(json.dumps(dict(kind="actual-runtime-owned-qml-controlled-grant" if actual_runtime is not None else "owned-qml-synthetic-grant",
             initialBounds=before, finalBounds=after, stableUrl=url, imagePublishes=aligned_publishes,
-            moveLoadingEvents=0, newMaterialAcks=0)))
+            initialPixelBounds=before_pixels, finalPixelBounds=after_pixels,
+            queuedPointerPackets=1002 if queued_pointer else 0, moveLoadingEvents=0, newMaterialAcks=0)))
 
 
 if __name__ == "__main__":

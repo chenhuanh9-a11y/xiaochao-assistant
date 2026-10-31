@@ -471,6 +471,35 @@ The next Setup targets the original AppId/name/EXE and uses the original setting
 
 The current remaining verification is listed at the top of this document: frozen import-helper normal-exit behavior itself now passes, while the Qt internal launch handoff, real original-product adoption and native game behavior remain separate. The online index URL is not configured in this execution environment, so real server index/download acceptance is blocked by missing configuration. No substitute URL has been guessed. Two difficult map29 native bindings remain explicitly unavailable in the supplied light input. First-visible-pixel latency and long-run resource targets remain unproven.
 
+## Map dragging and passive mouse observation correction
+
+D8B6314C is withdrawn as a usable candidate after field reports of interrupted
+drag following and altered mouse feel on map open/close. A static single-frame
+render check cannot certify this user journey.
+
+The Tk baseline samples physical cursor motion and applies a temporary translation
+to the aligned sheet. Qt had the equivalent transform path, but cancelled it on
+a busy metadata lock or 64 unconsumed raw motion samples. The corrected transport
+keeps the press context (with runtime scope checks), and compacts same-boundary
+runs without losing calibrated exit/re-entry semantics. Gesture motion changes
+only this open cycle's display transform, never the persistent pose or pinned map.
+
+Mouse observation now uses [Win32 Raw Input](https://learn.microsoft.com/windows/win32/inputdev/about-raw-input)
+on an invisible message-only HWND, retaining legacy input and the queued message's
+time/location. It no longer places Python processing in WH_MOUSE_LL before the
+game receives mouse input. The existing keyboard hook remains pass-through.
+The observer queries per-monitor awareness; it does not change system or thread
+DPI, sensitivity, cursor position, clipping, capture, or foreground activation.
+
+Scoped evidence: 35 related tests; 1002 controlled pointer packets through the
+mailbox, coordinator, runtime and actual QML pixels translated by (35,15), with
+one material publish and no image reload. Solver/grant inputs are synthetic here.
+Real Windows message-only registration/cleanup and Qt worker DPI-context checks
+pass without visible windows or input injection. Independent review compared
+2000 calibrated/unbounded motion paths. These findings correct implementation
+defects and a blocking-hook risk; the user's live mouse symptom remains unverified.
+No new Setup or real installation is implied by this source update.
+
 ## Remaining acceptance order
 
 1. Isolated native installer verification is complete: one successful revised-fixture run, one deliberate copy-failure run, native rollback plus original DeinitializeSetup restoration, Chinese control text and absent fixture registry identity. An earlier initialization-hook failure changed no old files; the successful run's ANSI report was decoded offline using observed Windows ACP 936 without rerunning Setup. The disposable GUID, disabled uninstall registration/shortcuts and inert payload deliberately exclude real product adoption. Do not repeat or expand this fixture.

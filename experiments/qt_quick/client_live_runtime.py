@@ -892,6 +892,7 @@ class LiveRuntime:
         self._last_floor_policy = ""
 
     def _game_floor_click_context_locked(self):
+        from map_pointer_policy import normalize_drag_boundary
         observation = self._last_observation
         if (not self._active or not self._map_open or observation is None
                 or observation["frame_id"] != self._frame_id or "floor_read" not in observation):
@@ -901,7 +902,9 @@ class LiveRuntime:
             roundId=self._round, cycleId=self._cycle, frameId=self._frame_id,
             generation=self._frame_generation, captureGeneration=observation["capture_generation"],
             clientBounds=list(captured.client_screen_bounds), fullClientSize=list(captured.full_client_size),
-            dpi=captured.dpi)
+            dpi=captured.dpi,
+            observationCreatedAt=observation.get("created_at", 0),
+            dragBoundaryNormalized=normalize_drag_boundary(self._settings.get("dragBoundaryNormalized")))
 
     def game_floor_click_context(self):
         """Hook-safe bounded metadata only. Contention drops this click."""
@@ -2166,7 +2169,7 @@ class LiveRuntime:
                 return self._receipt("refresh_map", payload, success=False, reason=decision.reason)
             self._discard_sibling()
             self._frame_generation, self._frame_id = generation, frame_id
-            self._last_observation = dict(captured=captured, frame=frame, floor=floor, digest=digest,
+            self._last_observation = dict(captured=captured, frame=frame, floor=floor, digest=digest, created_at=self._monotonic(),
                 capture_generation=capture_generation, frame_id=frame_id, observed_floor=self._observed_floor,
                 cycle_id=self._cycle, generation=self._frame_generation, floor_read=copy.deepcopy(floor_read or {}))
             self._probe_misses = 0
@@ -2249,7 +2252,7 @@ class LiveRuntime:
                     self._floor_required = True
                 self._frame_generation += 1
                 self._frame_id = f"{self._round}:{self._frame_generation}:{digest[:16]}"
-                self._last_observation = dict(captured=captured, frame=frame, floor=None, digest=digest,
+                self._last_observation = dict(captured=captured, frame=frame, floor=None, digest=digest, created_at=self._monotonic(),
                     capture_generation=capture_generation, frame_id=self._frame_id, observed_floor="",
                     cycle_id=self._cycle, generation=self._frame_generation, floor_read=copy.deepcopy(floor_read))
                 for row in self._candidate_rows:
@@ -2308,7 +2311,7 @@ class LiveRuntime:
             self._frame_id = f"{self._round}:{self._frame_generation}:{digest[:16]}"
             frame_generation, frame_id, cycle = self._frame_generation, self._frame_id, self._cycle
             map_id = self._map_id
-            self._last_observation = dict(captured=captured, frame=frame, floor=floor, digest=digest,
+            self._last_observation = dict(captured=captured, frame=frame, floor=floor, digest=digest, created_at=self._monotonic(),
                 capture_generation=capture_generation, frame_id=frame_id, observed_floor=self._observed_floor,
                 cycle_id=self._cycle, generation=self._frame_generation, floor_read=copy.deepcopy(floor_read or {}))
             for row in self._candidate_rows:
@@ -2374,7 +2377,7 @@ class LiveRuntime:
                 digest=hashlib.sha256(frame.tobytes()).hexdigest()
                 self._frame_generation+=1
                 self._frame_id=f"{self._round}:{self._frame_generation}:{digest[:16]}"
-                self._last_observation=dict(captured=captured,frame=frame,floor=floor,digest=digest,
+                self._last_observation=dict(captured=captured,frame=frame,floor=floor,digest=digest,created_at=self._monotonic(),
                     capture_generation=capture_generation,frame_id=self._frame_id,observed_floor=self._observed_floor,
                     cycle_id=self._cycle,generation=self._frame_generation,floor_read=copy.deepcopy(floor_read or {}))
             scope=self._sibling_scope()

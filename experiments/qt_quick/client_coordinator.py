@@ -555,12 +555,6 @@ class ClientCoordinator(QObject):
     def _pointer_context_fields(context):
         return {key: value for key, value in context.items() if key != "createdAt"}
 
-    def _pointer_context_current(self, context):
-        getter = getattr(self.runtime, "game_floor_click_context", None)
-        current = getter() if callable(getter) else None
-        return bool(isinstance(context, dict) and isinstance(current, dict)
-                    and self._pointer_context_fields(context) == self._pointer_context_fields(current))
-
     def _cancel_pointer_drag(self, reason):
         drag, self._pointer_drag = self._pointer_drag, None
         if drag is None:
@@ -600,8 +594,9 @@ class ClientCoordinator(QObject):
                     return
                 if floor.get("reason") != "floor-click-not-a-control":
                     return  # Expired/native-geometry-rejected input cannot become X/drag.
-                if not self._pointer_context_current(event.get("context")):
-                    return
+                # observe_game_floor_click just validated this press. Runtime
+                # rechecks the complete scope under its lock for drag updates;
+                # a nonblocking metadata read returning None is not cancellation.
                 from map_pointer_policy import cursor_is_map_close_control
                 context = event["context"]
                 if cursor_is_map_close_control((event["x"], event["y"]), context.get("clientBounds")):
@@ -615,7 +610,7 @@ class ClientCoordinator(QObject):
                     return
                 from client_map_input import DragMotionAccumulator
                 motion = DragMotionAccumulator((event["x"], event["y"]), context["clientBounds"],
-                    self.settings.persistedValues.get("dragBoundaryNormalized"))
+                    context.get("dragBoundaryNormalized"))
                 result = observe(dict(phase="down", gestureId=gesture, context=context,
                     pointerSequence=sequence, createdAt=event.get("createdAt"), delta=[0., 0.], totalDelta=[0., 0.]))
                 if isinstance(result, dict) and result.get("success"):
@@ -624,7 +619,7 @@ class ClientCoordinator(QObject):
             drag = self._pointer_drag
             if drag is None or gesture != drag["gestureId"]:
                 return
-            if (not self._pointer_context_current(event.get("context"))
+            if (not isinstance(event.get("context"), dict)
                     or self._pointer_context_fields(event["context"]) != self._pointer_context_fields(drag["context"])):
                 self._cancel_pointer_drag("pointer-context-changed")
                 return

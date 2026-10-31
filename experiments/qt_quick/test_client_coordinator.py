@@ -330,6 +330,7 @@ class CoordinatorTests(unittest.TestCase):
         self.runtime.invalidate.assert_not_called()
         self.runtime.observe_game_drag = Mock(return_value=dict(success=True))
         self.settings.persistedValues["dragBoundaryNormalized"] = [.2, .2, .8, .8]
+        context["dragBoundaryNormalized"] = [.2, .2, .8, .8]
         self.coordinator._present_runtime_state = Mock()
         self.input.gamePointerEvent.emit(dict(down, sequence=2, gestureId=2))
         self.input.gamePointerEvent.emit(dict(down, phase="move", sequence=3, gestureId=2, x=700,
@@ -351,10 +352,26 @@ class CoordinatorTests(unittest.TestCase):
         self.coordinator._track_map()
         self.session.dispatch.assert_not_called()
         self.runtime.game_floor_click_context.return_value = dict(context, epoch=2)
+        # Runtime owns the final under-lock scope check, not a nonblocking read.
+        self.runtime.observe_game_drag.side_effect = lambda event: dict(success=event["phase"] == "cancel")
         self.input.gamePointerEvent.emit(dict(phase="move", gestureId=1, sequence=2,
             hwnd=123, x=330, y=300, context=context, createdAt=11.))
         self.assertEqual(self.runtime.observe_game_drag.call_args.args[0]["phase"], "cancel")
         self.assertIsNone(self.coordinator._pointer_drag)
+
+    def test_drag_does_not_treat_busy_context_snapshot_as_scope_invalidation(self):
+        context = self.pointer_fixture()
+        self.runtime.observe_game_drag = Mock(return_value=dict(success=True))
+        self.coordinator._present_runtime_state = Mock()
+        self.runtime.game_floor_click_context.return_value = None
+        down = dict(phase="down", gestureId=9, sequence=1, hwnd=123,
+                    x=300, y=300, context=context, createdAt=10.)
+        self.input.gamePointerEvent.emit(down)
+        self.input.gamePointerEvent.emit(dict(down, phase="move", sequence=2, x=330))
+        self.input.gamePointerEvent.emit(dict(down, phase="up", sequence=3, x=340))
+        self.assertEqual([c.args[0]["phase"] for c in self.runtime.observe_game_drag.call_args_list],
+                         ["down", "move", "up"])
+        self.assertEqual(self.runtime.observe_game_drag.call_args.args[0]["totalDelta"], [40., 0.])
 
     def test_mouseup_requests_only_scoped_observation_probe_when_runtime_requires_it(self):
         context = self.pointer_fixture()
