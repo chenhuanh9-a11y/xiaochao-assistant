@@ -18,6 +18,7 @@ if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 from reference_position_editor import ReferencePositionEdit
 from client_problem_messages import operation_problem
+from client_input_diagnostics import InputDiagnostics
 
 
 def _presentation_error_details(error):
@@ -276,6 +277,10 @@ class ClientCoordinator(QObject):
             map_signal.connect(self._map_input_requested)
             ordered_setter(True)
         pointer_signal = getattr(native_input, "gamePointerEvent" if self._ordered_map_input else "gamePointerPressed", None)
+        self._input_diagnostics = InputDiagnostics(self.traceReported.emit)
+        rejected_pointer = getattr(native_input, "gamePointerRejected", None)
+        if rejected_pointer is not None:
+            rejected_pointer.connect(self._pointer_input_rejected)
         pointer_provider = getattr(runtime, "game_floor_click_context", None)
         pointer_setter = getattr(native_input, "setGamePointerContextProvider", None)
         if pointer_signal is not None and callable(pointer_provider) and callable(pointer_setter):
@@ -590,16 +595,26 @@ class ClientCoordinator(QObject):
     def _pointer_context_fields(context):
         return {key: value for key, value in context.items() if key != "createdAt"}
 
+    def _pointer_trace(self, event, status, reason, *, receipt=None, error=None):
+        self._input_diagnostics.pointer(event, status, reason, lambda: self.session.snapshot,
+            self._aligned, receipt=receipt, error=error)
+
+    def _pointer_input_rejected(self, event):
+        if not self._closed and not self._closing and self._bound and event.get("hwnd") == int(self._bound):
+            self._pointer_trace(event, "rejected", event.get("diagnosticReason"))
+
     def _cancel_pointer_drag(self, reason):
         drag, self._pointer_drag = self._pointer_drag, None
         if drag is None:
             return
+        self._pointer_trace(dict(phase="cancel", gestureId=drag["gestureId"], context=drag["context"]),
+            "cancelled", reason)
         observe = getattr(self.runtime, "observe_game_drag", None)
         if callable(observe):
             try:
                 observe(dict(phase="cancel", gestureId=drag["gestureId"], context=drag["context"], reason=reason))
             except (OSError, ValueError, TypeError, KeyError) as error:
-                self._trace("drag-cancel-rejected", reason=reason, diag=dict(error=str(error)))
+                self._trace("drag-cancel-rejected", reason=reason, diag=dict(exceptionType=type(error).__name__))
 
     @Slot(object)
     def _game_pointer_event(self, event):
@@ -611,14 +626,18 @@ class ClientCoordinator(QObject):
                 self._cancel_pointer_drag(event.get("reason", "pointer-cancelled"))
             return
         sequence = event.get("sequence")
-        if (phase not in {"down", "move", "up"} or type(sequence) is not int
-                or sequence <= self._pointer_sequence or not self._bound
-                or event.get("hwnd") != int(self._bound) or self.resources.busy
-                or self.resources.pendingKind or self._pending_context
+        if not self._bound or event.get("hwnd") != int(self._bound):
+            return
+        if phase not in {"down", "move", "up"} or type(sequence) is not int or sequence <= self._pointer_sequence:
+            self._pointer_trace(event, "rejected", "pointer-sequence-invalid")
+            return
+        if (self.resources.busy or self.resources.pendingKind or self._pending_context
                 or self.session.snapshot.get("resourceLocked")):
+            self._pointer_trace(event, "rejected", "pointer-resources-busy")
             return
         try:
             if self._native_windows.foreground_window() != int(self._bound):
+                self._pointer_trace(event, "rejected", "foreground-lost")
                 self._cancel_pointer_drag("foreground-lost")
                 return
             self._pointer_sequence = sequence
@@ -626,8 +645,11 @@ class ClientCoordinator(QObject):
                 self._cancel_pointer_drag("new-pointer-press")
                 floor = self._game_pointer_pressed(event)
                 if not isinstance(floor, dict) or floor.get("success"):
+                    if isinstance(floor, dict):
+                        self._pointer_trace(event, "routed", "floor-control", receipt=floor)
                     return
                 if floor.get("reason") != "floor-click-not-a-control":
+                    self._pointer_trace(event, "rejected", floor.get("reason"), receipt=floor)
                     return  # Expired/native-geometry-rejected input cannot become X/drag.
                 # observe_game_floor_click just validated this press. Runtime
                 # rechecks the complete scope under its lock for drag updates;
@@ -637,12 +659,14 @@ class ClientCoordinator(QObject):
                 # full-client frame. The right HUD search band also contains
                 # navigation, so it cannot itself authorize a close.
                 if floor.get("closeControlHit") is True:
+                    self._pointer_trace(event, "routed", "map-close-control", receipt=floor)
                     self._close_map_from_input(dict(inputSequence=self._map_input_sequence,
                         pointerSequence=sequence, inputCreatedAt=event.get("createdAt"),
                         inputSource="mouse-close-control"))
                     return
                 observe = getattr(self.runtime, "observe_game_drag", None)
                 if not callable(observe):
+                    self._pointer_trace(event, "rejected", "runtime-transient-api-unavailable")
                     self._trace("drag-unavailable", reason="runtime-transient-api-unavailable")
                     return
                 from client_map_input import DragMotionAccumulator
@@ -650,14 +674,18 @@ class ClientCoordinator(QObject):
                     context.get("dragBoundaryNormalized"))
                 result = observe(dict(phase="down", gestureId=gesture, context=context,
                     pointerSequence=sequence, createdAt=event.get("createdAt"), delta=[0., 0.], totalDelta=[0., 0.]))
+                self._pointer_trace(event, "accepted" if isinstance(result, dict) and result.get("success") else "rejected",
+                    result.get("reason") if isinstance(result, dict) else "drag-receipt-invalid", receipt=result)
                 if isinstance(result, dict) and result.get("success"):
                     self._pointer_drag = dict(gestureId=gesture, context=deepcopy(context), motion=motion, moved=False)
                 return
             drag = self._pointer_drag
             if drag is None or gesture != drag["gestureId"]:
+                self._pointer_trace(event, "rejected", "drag-not-established")
                 return
             if (not isinstance(event.get("context"), dict)
                     or self._pointer_context_fields(event["context"]) != self._pointer_context_fields(drag["context"])):
+                self._pointer_trace(event, "rejected", "pointer-context-changed")
                 self._cancel_pointer_drag("pointer-context-changed")
                 return
             motion = drag["motion"].consume(event)
@@ -666,11 +694,14 @@ class ClientCoordinator(QObject):
                 drag["moved"] = True
             observe = getattr(self.runtime, "observe_game_drag", None)
             if not callable(observe):
+                self._pointer_trace(event, "rejected", "runtime-transient-api-unavailable")
                 self._cancel_pointer_drag("runtime-transient-api-unavailable")
                 return
             result = observe(dict(phase=phase, gestureId=gesture, context=drag["context"],
                 pointerSequence=sequence, createdAt=event.get("createdAt"),
                 delta=motion["delta"], totalDelta=motion["totalDelta"]))
+            self._pointer_trace(event, "accepted" if isinstance(result, dict) and result.get("success") else "rejected",
+                result.get("reason") if isinstance(result, dict) else "drag-receipt-invalid", receipt=result)
             if not isinstance(result, dict) or not result.get("success"):
                 self._cancel_pointer_drag("runtime-drag-rejected")
                 return
@@ -685,21 +716,28 @@ class ClientCoordinator(QObject):
                 self.session.dispatchWithPayload("probe_map_after_drag", dict(
                     gestureId=gesture, pointerSequence=sequence, context=deepcopy(drag["context"])))
         except (OSError, ValueError, TypeError, KeyError) as error:
+            boundary = type(error) is ValueError and str(error) == "Pointer press is outside the map drag boundary"
+            self._pointer_trace(event, "rejected" if boundary else "exception",
+                "pointer-outside-drag-boundary" if boundary else "invalid-input-context", error=error)
             self._cancel_pointer_drag("invalid-pointer-input")
-            self._trace("pointer-rejected", reason="invalid-input-context", diag=dict(error=str(error)))
+            self._trace("pointer-rejected", reason="invalid-input-context", diag=dict(exceptionType=type(error).__name__))
 
     def _game_pointer_pressed(self, event):
         if (self._closed or self._closing or not isinstance(event, dict) or not self._bound
                 or event.get("hwnd") != int(self._bound) or self.resources.busy
                 or self.resources.pendingKind or self.session.snapshot.get("resourceLocked")
                 or self._pending_context or not self.session.snapshot.get("roundActive")):
+            if isinstance(event, dict) and self._bound and event.get("hwnd") == int(self._bound):
+                self._pointer_trace(event, "rejected", "pointer-input-inactive")
             return
         try:
             if self._native_windows.foreground_window() != int(self._bound):
+                self._pointer_trace(event, "rejected", "foreground-lost")
                 return
             result = self.runtime.observe_game_floor_click(event["x"], event["y"], event.get("context"))
         except (OSError, ValueError, TypeError, KeyError) as error:
-            self._trace("floor-click-rejected", reason="invalid-input-context", diag=dict(error=str(error)))
+            self._pointer_trace(event, "exception", "invalid-input-context", error=error)
+            self._trace("floor-click-rejected", reason="invalid-input-context", diag=dict(exceptionType=type(error).__name__))
             return
         if self._diagnostics is not None and result.get("reason") != "floor-click-not-a-control":
             self._diagnostics.record("floor-input", source="floor-control", inputAt=event.get("createdAt"),
@@ -1666,6 +1704,7 @@ class ClientCoordinator(QObject):
 
     def _notify_session_transitions(self, state):
         current = self.runtime.snapshot()
+        self._input_diagnostics.action(state.get("lastReceipt", {}), state, self._aligned)
         active = bool(current.get("roundActive", state.get("roundActive")))
         receipt = state.get("lastReceipt", {})
         prepared = (current.get("mode", state.get("mode")), current.get("roundId", state.get("roundId")))

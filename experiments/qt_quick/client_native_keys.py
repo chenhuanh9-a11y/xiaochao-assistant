@@ -35,6 +35,7 @@ class PassThroughKeyboardSource(QObject):
     eventReceived = Signal(object)
     pointerReceived = Signal(object)
     pointerAvailable = Signal()
+    pointerDiagnosticAvailable = Signal()
     pointerFailed = Signal(str)
     started = Signal(object)
     failed = Signal(str)
@@ -55,6 +56,7 @@ class PassThroughKeyboardSource(QObject):
         self._pointer_sequence = 0
         self._pointer_gesture = None
         self._pointer_mailbox = PointerEventMailbox()
+        self._pointer_diagnostic = None
         self.pointer_installed = False
         self._pointer_failure_reported = False
         self.generation = 0
@@ -111,9 +113,12 @@ class PassThroughKeyboardSource(QObject):
         context = provider() if phase == "down" else gesture["event"]["context"]
         if not isinstance(context, dict):
             self.cancel_pointer("pointer-context-unavailable")
+            if phase == "down":
+                self._queue_pointer_rejection(target, foreground, generation, "pointer-context-unavailable")
             return None
         if phase == "down" and created_at < context.get("observationCreatedAt", 0):
             self.cancel_pointer("pointer-press-before-current-frame")
+            self._queue_pointer_rejection(target, foreground, generation, "pointer-press-before-current-frame")
             return None
         context = dict(context, createdAt=created_at)
         with self._lock:
@@ -133,6 +138,26 @@ class PassThroughKeyboardSource(QObject):
             gesture["last"] = (int(x), int(y))
             gesture["event"] = event
             self._pointer_gesture = None if phase == "up" else gesture
+        return event
+
+    def _queue_pointer_rejection(self, target, foreground, generation, reason):
+        # Called only after the existing target/foreground gate. No validated
+        # client geometry exists, so retain no position, text or raw context.
+        now = time.monotonic()
+        if now - getattr(self, "_last_rejected_press", -float("inf")) >= .5:
+            self._last_rejected_press = now
+            with self._lock:
+                if self._pointer_diagnostic is not None:
+                    return
+                self._pointer_diagnostic = dict(phase="down", hwnd=target, foreground=foreground,
+                    pointerGeneration=generation, diagnosticReason=reason)
+            # A single pending slot, entirely separate from gameplay edge
+            # capacity/overflow. Diagnostics must never evict a valid gesture.
+            self.pointerDiagnosticAvailable.emit()
+
+    def take_pointer_diagnostic(self):
+        with self._lock:
+            event, self._pointer_diagnostic = self._pointer_diagnostic, None
         return event
 
     def cancel_pointer(self, reason="pointer-cancelled"):

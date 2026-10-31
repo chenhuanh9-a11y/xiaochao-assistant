@@ -94,6 +94,7 @@ class NativeShortcutBackend(QObject):
     actionTriggered = Signal(str)
     gamePointerPressed = Signal(object)
     gamePointerEvent = Signal(object)
+    gamePointerRejected = Signal(object)
     mapInputRequested = Signal(object)
 
     def __init__(self, native=None, parent=None, *, source=None):
@@ -123,6 +124,9 @@ class NativeShortcutBackend(QObject):
             available = getattr(source, "pointerAvailable", None)
             if available is not None:
                 available.connect(self._drain_pointer_events, Qt.QueuedConnection)
+            diagnostic = getattr(source, "pointerDiagnosticAvailable", None)
+            if diagnostic is not None:
+                diagnostic.connect(self._drain_pointer_diagnostic, Qt.QueuedConnection)
         self._hwnd = 0
         self._bindings = {}
         self._down = {}
@@ -377,19 +381,35 @@ class NativeShortcutBackend(QObject):
             for event in take():
                 self._pointer_event(event)
 
+    def _drain_pointer_diagnostic(self):
+        event = self._source.take_pointer_diagnostic()
+        if event is not None:
+            self._pointer_event(event)
+
     def _pointer_event(self, event):
         if self._ordered_map_input and event.get("phase") == "cancel":
             if not self._closed:
                 self.gamePointerEvent.emit(event)
             return
-        if (self._closed or not self._enabled or self._text or self._editing or self._source is None
-                or event.get("pointerGeneration") != getattr(self._source, "pointer_generation", None)
+        if (self._closed or self._source is None or not self._hwnd
                 or event.get("hwnd") != self._hwnd or event.get("foreground") != self._hwnd):
+            return
+        reason = ("pointer-listener-disabled" if not self._enabled else
+            "pointer-text-entry-active" if self._text else
+            "pointer-editing-active" if self._editing else
+            "pointer-generation-expired" if event.get("pointerGeneration") != getattr(self._source, "pointer_generation", None) else None)
+        if reason:
+            self.gamePointerRejected.emit(dict(event, diagnosticReason=reason))
+            return
+        if event.get("diagnosticReason"):
+            self.gamePointerRejected.emit(event)
             return
         try:
             if not self._native.is_window(self._hwnd) or self._native.foreground_window() != self._hwnd:
+                self.gamePointerRejected.emit(dict(event, diagnosticReason="pointer-window-not-current"))
                 return
         except OSError:
+            self.gamePointerRejected.emit(dict(event, diagnosticReason="pointer-native-query-failed"))
             return
         if self._ordered_map_input:
             self.gamePointerEvent.emit(event)
