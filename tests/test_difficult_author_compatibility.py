@@ -7,6 +7,10 @@ from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+APP = Path(__file__).resolve().parents[1] / 'app'
+if str(APP) not in sys.path:
+    sys.path.insert(0, str(APP))
+
 
 @lru_cache(maxsize=1)
 def source_tree():

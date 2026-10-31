@@ -13,6 +13,7 @@ import stat
 import tempfile
 import unicodedata
 import zipfile
+from packaged_product_identity import CLOSED_EXE_NAMES
 
 
 MAX_FILES = 2000
@@ -21,6 +22,9 @@ MAX_TOTAL_BYTES = 1536 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024
 MANIFEST = "map-package.json"
 AUTHOR_PACKAGES = {
+    "nightmare-zhan10": "zhan10-nightmare",
+    "nightmare-suju-speed": "suju-speed-nightmare",
+    "difficult-suju-speed": "suju-speed-difficult",
     "difficult-aichicu": "aichicu-difficult",
     "nightmare-wang-qingxin": "wang-qingxin",
     "nightmare-nightingale": "nightingale",
@@ -28,6 +32,9 @@ AUTHOR_PACKAGES = {
 }
 AUTHOR_SIDECARS = {"catalog.json", "display-bindings.json"}
 LIVE_AUTHOR_IMAGE_ROOTS = {
+    "nightmare-zhan10": ("_internal/assets/authors/zhan10-nightmare/",),
+    "nightmare-suju-speed": ("_internal/assets/authors/suju-speed-nightmare/",),
+    "difficult-suju-speed": ("_internal/assets/authors/suju-speed-difficult/",),
     "difficult-aichicu": ("_internal/assets/authors/aichicu-difficult/",),
     "nightmare-suju": ("_internal/assets/suju/",),
     "difficult-zhan10": ("_internal/assets/zhan10-native/", "_internal/assets/zhan10-legacy-clean/"),
@@ -398,7 +405,7 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None) -
         raise ImportRejected("unsupported-client-compatibility")
     rows = _rows(metadata.get("files"))
     dependencies = _rows(metadata.get("requiresFiles"), dependencies=True)
-    required = DIFFICULT_AUTHOR_DEPENDENCIES if package_id == "difficult-aichicu" else BASE_DEPENDENCIES
+    required = DIFFICULT_AUTHOR_DEPENDENCIES if package_id in {"difficult-aichicu", "difficult-suju-speed"} else BASE_DEPENDENCIES
     if not required <= {r["path"] for r in dependencies.values()}:
         raise ImportRejected("base-dependencies-not-declared")
     version_path = _target(root, "_internal/version.json")
@@ -511,7 +518,11 @@ def inspect_package(zip_path, install_root) -> dict:
 
 
 def _check_closed(root):
-    exe = _target(root, "第五人格小抄助手.exe")
+    for name in CLOSED_EXE_NAMES:
+        _check_executable_closed(_target(root, name))
+
+
+def _check_executable_closed(exe):
     if os.name != "nt" or not exe.exists():
         return
     from ctypes import wintypes

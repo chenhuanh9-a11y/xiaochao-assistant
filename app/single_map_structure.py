@@ -72,7 +72,7 @@ def regional_observed_edges(frame,query):
 
 def current_geometry(frame):
     """One solver-owned observation; never retained across frames/cycles."""
-    from identityv_daily_assistant import structure_current_map_evidence
+    from map_observation import structure_current_map_evidence
     current=structure_current_map_evidence(frame)
     if current is None: return None
     return dict(query=current['query'],observationBounds=current['observationBounds'],visible=current.get('visible'))
@@ -777,7 +777,7 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
 
 def current_point_geometry(frame, reference, target):
     """Static-to-current patch pairs; no previous pixels or optical flow."""
-    from identityv_daily_assistant import map_translation_mask
+    from map_observation import map_translation_mask
     current = map_translation_mask(frame, maximum_width=frame.shape[1])
     if current is None:
         return {'success': False, 'reason': 'static-point-query-empty'}
@@ -1180,7 +1180,7 @@ def partial_wall_geometry(frame,reference,target, *, _context=None, source_known
 
 
 def solve(assistant, frame, map_id, floor, profile, route, *, cancelled=None, _context=None):
-    from identityv_daily_assistant import rendered_profile_residual_is_verified
+    from alignment_observation import rendered_profile_residual_is_verified
     started = time.perf_counter()
     assistant._single_map_structure_diagnostics = None
     group = assistant._active_round_layer_group(map_id)
@@ -1335,7 +1335,7 @@ def solve(assistant, frame, map_id, floor, profile, route, *, cancelled=None, _c
             # The existing phase/containment solver proposes a bounded
             # translation from verified pixels. It does not grant display;
             # the same geometry/author validators below still decide.
-            from identityv_daily_assistant import phase_relocalize_translation_masks
+            from alignment_observation import phase_relocalize_translation_masks
             source_context=displayed.setdefault('verifiedFrameContext',{})
             if 'localTranslationQuery' not in source_context:
                 previous=current_geometry(prior_frame)
