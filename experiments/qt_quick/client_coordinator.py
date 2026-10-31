@@ -8,6 +8,7 @@ import json
 import math
 from pathlib import Path
 import threading
+import time
 from PySide6.QtCore import QObject, Property, QTimer, QUrl, Qt, Signal, Slot
 from PySide6.QtGui import QGuiApplication, QImage
 from PySide6.QtQuick import QQuickImageProvider
@@ -186,6 +187,7 @@ class ClientCoordinator(QObject):
         self.backend, self.settings, self.resources = backend, settings, resources
         self.session, self.windows, self.input = session, windows, native_input
         self.capture, self.runtime, self.images = capture, runtime, images
+        self._diagnostics = getattr(runtime, "_diagnostics", None)
         self._catalog = window_catalog
         self._window_rows = []
         self._automatic_live = window_catalog is game_window_rows
@@ -319,6 +321,12 @@ class ClientCoordinator(QObject):
         if window is not None:
             row["window"] = window
         row.update(extra)
+        if self._diagnostics is not None and stage in {"clear", "drop", "publish", "surface-state", "publish-transform"}:
+            surface = window or {}
+            self._diagnostics.record("presentation-" + stage, reason=reason,
+                token=data.get("token"), frameId=data.get("frameId"), floor=data.get("floor"),
+                imageStatus=surface.get("imageStatus"), visible=surface.get("visible"),
+                materialReady=surface.get("materialReady"))
         self.traceReported.emit(row)
 
     @Slot(str, "QVariantMap")
@@ -504,6 +512,9 @@ class ClientCoordinator(QObject):
     def _close_map_from_input(self, payload):
         # Close is an urgent lifetime boundary, not an idempotent queued job.
         # Retain the independently correct static reference and this round's ID.
+        if self._diagnostics is not None:
+            self._diagnostics.record("close-input", source=payload.get("inputSource", "map-key"),
+                inputAt=payload.get("inputCreatedAt"), sequence=payload.get("inputSequence"))
         self._reset_map_input("map-closed")
         self._revoke_runtime("map-closed")
         self._cancel_session_frame("map-closed")
@@ -532,6 +543,9 @@ class ClientCoordinator(QObject):
         except OSError:
             return
         self._map_input_sequence = sequence
+        if self._diagnostics is not None:
+            self._diagnostics.record("map-input", source=event.get("source", "map-key"),
+                inputAt=created, sequence=sequence, openIntent=opening)
         # A new physical edge supersedes an older focus-return capture plan.
         self._waiting_foreground = False
         self._map_was_open = False
@@ -664,6 +678,10 @@ class ClientCoordinator(QObject):
         except (OSError, ValueError, TypeError, KeyError) as error:
             self._trace("floor-click-rejected", reason="invalid-input-context", diag=dict(error=str(error)))
             return
+        if self._diagnostics is not None and result.get("reason") != "floor-click-not-a-control":
+            self._diagnostics.record("floor-input", source="floor-control", inputAt=event.get("createdAt"),
+                sequence=event.get("sequence"), success=result.get("success"), reason=result.get("reason"),
+                floor=result.get("clickedFloorId"))
         if not result.get("success"):
             return result
         self._invalidate_display("game-floor-control-intent")
@@ -1739,6 +1757,12 @@ class ClientCoordinator(QObject):
         if self._closed or self._closing or not isinstance(event, dict):
             return
         name = event.get("event", "unknown")
+        if self._diagnostics is not None:
+            produced = event.get("producedAt")
+            self._diagnostics.record("runtime-event-received", eventName=name, reason=event.get("reason"),
+                token=event.get("token"), frameId=event.get("frameId"), floor=event.get("floor"),
+                producedAt=produced,
+                deliveryMs=(time.monotonic()-produced)*1000 if type(produced) in (int, float) else None)
         payload, decision = event, {}
         if name == "group-state":
             identity = event.get("identity") or {}

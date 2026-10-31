@@ -277,7 +277,8 @@ class LiveRuntime:
     real core transactions remain offline and never expose live authority.
     """
     def __init__(self, *, engine_factories, capture_provider=None,
-                 allowed_read_root=None, evidence_kind="unverified", clock=None):
+                 allowed_read_root=None, evidence_kind="unverified", clock=None, diagnostics=None):
+        self._diagnostics = diagnostics
         if evidence_kind not in ("live-client-capture", "synthetic", "recorded", "unverified"):
             raise ValueError("unsupported capture evidence kind")
         self._offline = EngineAdapter(engine_factories=engine_factories,
@@ -1034,7 +1035,7 @@ class LiveRuntime:
             if not detected:
                 self._probe_misses += 1
                 if self._probe_misses >= 2:
-                    self.invalidate("map-closed")
+                    self.invalidate("map-closed", source="post-drag-probe")
                 return self._receipt("probe_map_after_drag", payload, success=False, reason="map-not-observed")
             self._probe_misses = 0
             self._observe_floor_policy(floor_read, obsolete=obsolete)
@@ -1120,6 +1121,10 @@ class LiveRuntime:
                 cycle_id=self._cycle if self._map_open else self._cycle + 1,
                 game_intent=self._game_floor_intent, now=self._monotonic())
             self._last_floor_policy = policy.reason
+            if self._diagnostics is not None:
+                self._diagnostics.record("floor-decision", reason=policy.reason, mode=self._mode,
+                    floor=str(policy.target), accepted=bool(policy.apply_target),
+                    frameId=self._frame_id, roundId=self._round, cycleId=self._cycle)
             if policy.clear_game_intent:
                 self._game_floor_intent = None
             if policy.manual_hold_ended:
@@ -1541,9 +1546,13 @@ class LiveRuntime:
                 displayAuthorized=bool(metadata), liveAuthorization=bool(metadata.get("liveAuthorization")),
                 message=self._message, core=self._core.snapshot(), evidenceKind=self._evidence_kind)
 
-    def invalidate(self, reason="invalidated"):
+    def invalidate(self, reason="invalidated", *, source=""):
         """Owner-thread fast path: revoke before canceling/queueing slow work."""
         with self._lock:
+            if self._diagnostics is not None:
+                self._diagnostics.record("invalidate", reason=str(reason), source=source, epoch=self._epoch,
+                    mode=self._mode, mapId=self._map_id, floor=str(self._floor), frameId=self._frame_id,
+                    roundId=self._round, cycleId=self._cycle, probeMisses=self._probe_misses)
             previous_token = self._render.get("token", "") if self._render is not None else ""
             self._transient_drag = None
             if reason in ("map-closed","escape","foreground-lost","capture-context-changed","floor-unknown") or any(
@@ -1590,6 +1599,12 @@ class LiveRuntime:
                 **self._context(), mapId=self._map_id, floor=self._floor,
                 cycleId=self._cycle, generation=self._frame_generation,
                 alignedVisible=self._aligned_visible, **extra)
+            if self._diagnostics is not None:
+                packet["producedAt"] = time.monotonic()
+                self._diagnostics.record("runtime-event", eventName=event, reason=reason, token=token,
+                    producedAt=packet["producedAt"], mode=self._mode, mapId=self._map_id,
+                    floor=str(self._floor), frameId=self._frame_id, epoch=self._epoch,
+                    roundId=self._round, cycleId=self._cycle, generation=self._frame_generation)
         if callback is not None:
             try:
                 callback(packet)
@@ -1843,6 +1858,10 @@ class LiveRuntime:
 
     def _receipt(self, action, payload, *, success, reason, **extra):
         with self._lock:
+            if self._diagnostics is not None:
+                self._diagnostics.record("runtime-result", action=action, success=success, reason=reason,
+                    mode=self._mode, mapId=self._map_id, floor=str(self._floor), frameId=self._frame_id,
+                    epoch=self._epoch, roundId=self._round, cycleId=self._cycle, generation=self._frame_generation)
             context = self._context()
             request = {key: payload.get(key) for key in ("generation", "mode", "profileId", "roundId", "frameId")}
             self._message = reason
@@ -1900,12 +1919,13 @@ class LiveRuntime:
                 else:
                     transition = map_hotkey_transition(self._map_open, self._capture_pending)
             if transition == "close":
-                self.invalidate("map-closed")
+                self.invalidate("map-closed", source=payload.get("inputSource", "dispatch-map"))
                 return self._receipt(action, payload, success=True, reason="map-closed")
             if transition == "ignore":
                 return self._receipt(action, payload, success=True, reason="map-open-verification-in-progress")
         if action in ("end_round", "stop_round", "reset_round", "cancel", "close_map"):
-            self.invalidate("map-closed" if action == "close_map" else action)
+            self.invalidate("map-closed" if action == "close_map" else action,
+                            source=payload.get("inputSource", "dispatch-" + action))
             with self._lock:
                 if action != "close_map":
                     self._active = self._map_open = self._round_preparing = False
@@ -2226,7 +2246,7 @@ class LiveRuntime:
                 if obsolete():
                     return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
                 if preparation.last_unresolved is None:
-                    self.invalidate("map-closed")
+                    self.invalidate("map-closed", source="map-preparation-deadline")
                     return self._receipt(action, payload, success=False, reason="map-open-preparation-deadline")
                 # A recognized map with unreadable floor stays available for
                 # explicit manual correction; it grants no floor/pose authority.
@@ -2284,9 +2304,9 @@ class LiveRuntime:
                 reason = "current-floor-unavailable" if probe_open is True and floor is None else "map-not-observed"
                 self._revoke_render(reason)
                 if transition == "close":
-                    self.invalidate("map-closed")
+                    self.invalidate("map-closed", source="passive-map-probe")
                 return self._receipt(action, payload, success=False, reason=reason, observation=observation)
-            self.invalidate("map-closed")
+            self.invalidate("map-closed", source="capture-map-not-observed")
             return self._receipt(action, payload, success=False, reason="map-not-observed", observation=observation)
         if floor is None or str(floor) not in tuple(map(str, engine.identity_floors)):
             with self._lock:
@@ -2700,11 +2720,15 @@ class LiveRuntime:
             raise error
         return frame
 
-    @staticmethod
-    def _observe(engine, frame):
+    def _observe(self, engine, frame):
+        started = time.monotonic() if self._diagnostics is not None else 0
         if engine.pack.mode == "difficult":
             result = engine.qt_map_ui.observe(frame)
             floor = str(result["floor"]) if result.get("floor") is not None else None
+            if self._diagnostics is not None:
+                self._diagnostics.record("observation", mode=engine.pack.mode, floor=floor,
+                    mapDetected=result.get("mapOpen"), combinedSensor=True,
+                    elapsedMs=(time.monotonic()-started)*1000, roundId=self._round, cycleId=self._cycle)
             return result, floor, dict(result, selectedFloor=int(floor) if floor in ("1", "2") else None,
                 scores={}, margin=result.get("highlightDifference", 0.), confidence=1. if floor else 0.,
                 layout="difficult-two-buttons", layoutFamily="difficult-two-buttons", difficultObservation=result,
@@ -2713,9 +2737,14 @@ class LiveRuntime:
                                      regionHeight=44/frame.shape[0]))
         from map_interface_observation import detect_map_interface, detect_selected_floor
         floor_read = detect_selected_floor(frame)
+        floor_ms = (time.monotonic()-started)*1000 if self._diagnostics is not None else 0
         result = detect_map_interface(frame, floor_read=floor_read)
         floor = floor_read.get("selectedFloor")
         floor = "B1" if floor == -1 else str(floor) if floor in (1, 2) else None
+        if self._diagnostics is not None:
+            self._diagnostics.record("observation", mode=engine.pack.mode, floor=floor,
+                mapDetected=result.get("detected"), combinedSensor=False, floorMs=floor_ms,
+                elapsedMs=(time.monotonic()-started)*1000, roundId=self._round, cycleId=self._cycle)
         return result, floor, floor_read
 
     @staticmethod

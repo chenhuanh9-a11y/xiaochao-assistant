@@ -9,6 +9,7 @@ from __future__ import annotations
 from copy import deepcopy
 import sys
 import threading
+import time
 from uuid import uuid4
 
 from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, Qt, Signal, Slot
@@ -43,15 +44,24 @@ class _RuntimeWork(QRunnable):
         super().__init__()
         self.runtime, self.action, self.payload = runtime, action, payload
         self.context, self.cancelled = context, cancelled
+        self.diagnostics = getattr(runtime, "_diagnostics", None)
         self.signals = _ResultSignals()
 
     def run(self):
+        started = time.monotonic() if self.diagnostics is not None else 0
+        if self.diagnostics is not None:
+            self.diagnostics.record("worker-start", jobId=id(self), action=self.action,
+                cancelled=self.cancelled.is_set(), frameId=self.context.get("frameId"))
         try:
             receipt = self.runtime.dispatch(self.action, self.payload, self.cancelled)
             state = self.runtime.snapshot()
             self.signals.done.emit(id(self), self.context, (receipt, state), None)
         except Exception as error:
             self.signals.done.emit(id(self), self.context, None, f"{type(error).__name__}: {error}")
+        finally:
+            if self.diagnostics is not None:
+                self.diagnostics.record("worker-end", jobId=id(self), action=self.action,
+                    cancelled=self.cancelled.is_set(), elapsedMs=(time.monotonic()-started)*1000)
 
 
 class SessionService(QObject):
@@ -61,6 +71,7 @@ class SessionService(QObject):
     def __init__(self, runtime=None, parent=None):
         super().__init__(parent)
         self._runtime = runtime
+        self._diagnostics = getattr(runtime, "_diagnostics", None)
         self._state = {}
         self._last_receipt = {}
         self._mode, self._profile = "nightmare", ""
@@ -195,6 +206,9 @@ class SessionService(QObject):
         data.update(context)
         work = _RuntimeWork(self._runtime, action, data, context, threading.Event())
         key = id(work)
+        if self._diagnostics is not None:
+            self._diagnostics.record("enqueue", jobId=key, action=action, frameId=context.get("frameId"),
+                generation=context.get("generation"), inputAt=payload.get("inputCreatedAt", payload.get("floorClickCreatedAt")))
         self._jobs[key] = (work, decision.token)
         self._pending = key
         self._actions.mark_enqueued(decision.token)
@@ -217,6 +231,9 @@ class SessionService(QObject):
         if self._pending == key:
             self._pending = None
         if not current:
+            if self._diagnostics is not None:
+                self._diagnostics.record("result-consumed", jobId=key, action=work.action,
+                    accepted=False, reason="superseded-or-cancelled", cancelled=work.cancelled.is_set())
             self.stale_results += 1
             self.changed.emit()
             return
@@ -251,6 +268,9 @@ class SessionService(QObject):
                 state_drifted = any(name in state and state[name] != context[name]
                                     for name in context_fields)
             if request_mismatch or state_drifted:
+                if self._diagnostics is not None:
+                    self._diagnostics.record("result-consumed", jobId=key, action=work.action,
+                        accepted=False, reason="runtime-result-context-mismatch")
                 self.stale_results += 1
                 self._actions.cancel(token, reason="runtime-result-context-mismatch")
                 if state_drifted:
@@ -268,6 +288,9 @@ class SessionService(QObject):
             else:
                 self._actions.settle(token)
             self._message = str(receipt.get("message", receipt.get("reason", self._state.get("message", "Request completed."))))
+        if self._diagnostics is not None:
+            self._diagnostics.record("result-consumed", jobId=key, action=work.action,
+                accepted=not bool(error), reason="worker-error" if error else "current-result")
         self.changed.emit()
 
     def dispatchMaintenance(self, action, payload):

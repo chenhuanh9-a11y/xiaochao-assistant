@@ -106,3 +106,29 @@ Qt 的应用内键盘事件也没有被当作全局快捷键验证。
 这包含未裁剪的 Essentials 模块，既不是增量 RSS，也不是 Setup 的大小。
 完整产品仍需 Python / NumPy / OpenCV 等，后续要按实际 QML 导入裁剪和构建 Setup 测量，
 不以 Qt 空壳体积推断最终包大小。许可证和部署边界见 [THIRD_PARTY.md](THIRD_PARTY.md)。
+
+## 可选本地时序诊断
+
+默认关闭。排查开关地图、楼层延迟时，可先正常退出星图，在已获管理员权限的 PowerShell
+中仅为这次启动设置环境变量（将路径换成实际安装路径）：
+
+```powershell
+$env:XINGTU_LIFECYCLE_TRACE = '1'
+& 'D:\Program Files\XiaochaoAssistant\星图.exe'
+Remove-Item Env:\XINGTU_LIFECYCLE_TRACE
+```
+
+重复启动只唤回已有实例，不会给它启用诊断；无需修改配置或系统环境变量。
+下次正常启动即关闭。沿产品单实例入口运行；开发副本须使用独立 sandbox。
+
+文件位于既有运行日志所在的 `work/nightmare-live/` 目录：`lifecycle-detail.jsonl`
+和一份 `lifecycle-detail-previous.jsonl`，各最多约 1 MiB。仅记录映射后的地图操作来源、
+单调时钟、地图存在判定、楼层检测耗时、队列/结果接受拒绝和图片显示状态。
+困难模式的地图与楼层由同一观察器检测，标为 `combinedSensor`，不虚构单独楼层耗时。
+运行事件的 `producedAt`、界面接收的 `deliveryMs`、同 token 的展示/图片 ready 时间
+可分辨计算、排队和发布延迟；图片 ready 不等于屏幕实际呈现时间。
+
+不记录截图、录屏、原始按键、输入文字、鼠标轨迹、窗口标题或异常原文，不上传。
+队列最多 64 条（含在写批次），每 250ms 最多批量写 16 条；拥塞会丢弃并计数。
+退出立即停止接收并丢弃未写队列，不等待可选诊断 IO；最后一批可能不完整。
+此诊断及受控测试不能代替游戏实机验收。

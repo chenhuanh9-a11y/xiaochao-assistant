@@ -71,6 +71,8 @@ class QtClient:
         from client_reference_presentation import ReferencePreviewProvider
         self.app, self.sandbox = app, owned_sandbox(sandbox)
         self.paths = runtime_paths(self.sandbox)
+        from client_lifecycle_trace import create_lifecycle_trace
+        self.lifecycle_trace = create_lifecycle_trace(self.paths)
         from client_lifecycle import LifecycleJournal
         self.lifecycle = LifecycleJournal(self.paths.work_root)
         self.lifecycle.record_event(dict(stage="client-created"))
@@ -86,7 +88,8 @@ class QtClient:
         self.providers = build_engine_factories(self.paths.resource_root)
         self.providers.set_custom_display(self.custom_display.layer, base_provider=self.custom_display.base_layer)
         self.runtime = LiveRuntime(engine_factories=self.providers, capture_provider=self.capture,
-                                   allowed_read_root=WORK_ROOT, evidence_kind="live-client-capture")
+                                   allowed_read_root=WORK_ROOT, evidence_kind="live-client-capture",
+                                   diagnostics=self.lifecycle_trace)
         values = self.settings.persistedValues
         self.runtime.configure_settings(values)
         mode = values.get("gameMode", "nightmare")
@@ -150,6 +153,9 @@ class QtClient:
         self.info = ClientInfoService(self.sandbox, fetch=info_fetch)
         self.problems = ProblemsService(self.paths, build_fingerprint=self.info._build_fingerprint,
             source_commit=self.info._package_metadata.get('qtSourceCommit') or self.info._package_metadata.get('releaseReportSourceCommit') or '')
+        if self.lifecycle_trace is not None:
+            self.lifecycle_trace.record("startup", buildFingerprint=self.info._build_fingerprint,
+                sourceCommit=self.problems._source_commit)
         self.coordinator.errorReported.connect(self.problems.record)
         self.resources.errorReported.connect(self._resource_problem)
         self.online_packages.errorReported.connect(self._resource_problem)
@@ -159,6 +165,8 @@ class QtClient:
         self.coordinator.close_writers = (self.custom_galleries, self.info, self.online_packages,
                                          self.backend, self.route_choices, self.problems, self.reference_preview,
                                          self.capture_exclusion)
+        if self.lifecycle_trace is not None:
+            self.coordinator.close_writers += (self.lifecycle_trace,)
         self.custom_galleries.setUseHandler(self._use_custom_gallery)
         self.custom_galleries.galleriesChanged.connect(self._custom_gallery_changed)
         self.custom_galleries.changed.connect(self._sync_custom_gallery_active)
@@ -416,6 +424,8 @@ class QtClient:
                                          closeReady=self.coordinator.closeReady))
         self._closed = True
         self.problems.shutdown()
+        if self.lifecycle_trace is not None:
+            self.lifecycle_trace.shutdown()
         self.chest_auto_tap.shutdown()
         if self._import_handoff is not None and not self.coordinator.closeReady:
             self._import_handoff.cancel()
