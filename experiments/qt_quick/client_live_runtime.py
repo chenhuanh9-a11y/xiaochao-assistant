@@ -777,12 +777,14 @@ class LiveRuntime:
 
     def _pending_sibling_current(self, pending):
         row = pending["render"]
+        staged = pending.get("stagedObservation")
         common = bool(self._active and self._map_open and not self._selection_pending
             and not self._floor_required and pending["scope"] == self._sibling_scope()
             and self._core is pending["sourceCore"] and self._map_id == pending["sourceMapId"]
             and self._capture_is_current(pending["captureContext"], row["captureGeneration"])
             and pending["core"].can_display(cycle_id=self._cycle, map_id=row["mapId"],
-                floor=self._floor, frame_generation=self._frame_generation))
+                floor=self._floor, frame_generation=staged["generation"] if staged else self._frame_generation)
+            and (staged is None or self._transient_drag is None and self._staged_choice_current(staged)))
         if not common:
             return False
         if pending.get("projection"):
@@ -878,6 +880,12 @@ class LiveRuntime:
                 if not committed:
                     failure = "sibling-identity-commit-failed"
                 else:
+                    staged = pending.get("stagedObservation")
+                    if staged is not None:
+                        self._frame_generation, self._frame_id = staged["generation"], staged["frame_id"]
+                        self._last_observation = {key: value for key, value in staged.items()
+                            if key not in ("sourceScope", "sourceOwner", "intent")}
+                        self._transient_drag = self._transient_cycle = None
                     state.provisional_member_id = target
                     if pending.get("manualChoice") is not None:
                         state.state = "GROUP_LOCKED"
@@ -899,6 +907,10 @@ class LiveRuntime:
                     if pending.get("manualChoice") is not None:
                         self._provisional_reference_context = self._reference_owner_context(self._reference_sheet)
                     self._render_capture_context = self._reference_capture_context = pending["captureContext"]
+                    if staged is not None:
+                        self._publish_game_pointer_context_locked()
+                        self._set_pose_phase("valid", "current-frame-pose-authorized", target,
+                            self._floor, self._frame_id, self._frame_generation, materialAccepted=True)
                     proposal = self._remember_proposals.get(token)
                     if proposal is not None:
                         proposal["context"] = self._steady_context()
@@ -934,10 +946,14 @@ class LiveRuntime:
             self._reference_sheet = self._reference_capture_context = None
             self._provisional_reference_context = None
 
-    def _set_pose_phase(self, status, reason, map_id, floor, frame_id, generation, **extra):
+    def _set_pose_phase(self, status, reason, map_id, floor, frame_id, generation, *, staged_observation=None, **extra):
         with self._lock:
-            if not self._active or frame_id != self._frame_id:
+            current = (self._staged_choice_current(staged_observation) if staged_observation is not None
+                else frame_id == self._frame_id)
+            if not self._active or not current:
                 return
+            if staged_observation is not None:
+                extra.update(pendingMaterial=True, sourceFrameId=self._frame_id)
             phase = dict(status=status, reason=reason, mapId=map_id, floor=floor,
                          frameId=frame_id, generation=generation, **extra)
             if status == "pending":
@@ -1019,7 +1035,10 @@ class LiveRuntime:
                     or type(sequence) is not int or sequence < 1 or not gesture):
                 return dict(success=False, reason="drag-context-expired")
             observation = self._last_observation
-            if (self._pending_sibling is not None or self._group_choice_inflight is not None
+            staged_choice = bool(self._transient_cycle_current() and
+                (self._pending_sibling is not None and self._pending_sibling.get("stagedObservation") is not None
+                 or self._group_choice_inflight is not None))
+            if ((self._pending_sibling is not None or self._group_choice_inflight is not None) and not staged_choice
                     or self._render is None or not self._display_current(self._render)
                     or not self._capture_is_current(observation["captured"].context, observation["capture_generation"])):
                 return dict(success=False, reason="drag-current-display-unavailable")
@@ -1051,6 +1070,12 @@ class LiveRuntime:
             if np.any(delta):
                 if not drag["moved"]:
                     self._group_intent_generation += 1
+                    if staged_choice:
+                        pending = self._discard_sibling()
+                        self._group_choice_inflight = None
+                        if pending is not None:
+                            self._notify("sibling-rolled-back", token=pending["render"]["token"],
+                                reason="manual-group-pixels-moved")
                 drag["moved"] = True
                 matrix = drag["baseMatrix"].copy()
                 matrix[:2, :] += total[:,None] * matrix[2:3, :]
@@ -1325,10 +1350,18 @@ class LiveRuntime:
                     return self._stage_current_member_material(action, payload, state, manual_choice=plan)
                 engine, epoch, floor = self._engine, self._epoch, self._floor
                 frame_generation, frame_id, cycle = self._frame_generation, self._frame_id, self._cycle
-            result = self._solve_observation(action, payload, cancelled, engine, None, epoch,
-                observation["captured"], observation["frame"], floor, observation["digest"],
-                observation["capture_generation"], frame_generation, frame_id, cycle, plan.map_id,
-                identity_stage=state, manual_choice=plan)
+                fresh = self._transient_cycle_current()
+            result = None
+            if fresh:
+                observation, result = self._capture_group_choice_observation(
+                    action, payload, cancelled, engine, request_scope, intent, floor)
+                if observation is not None:
+                    frame_generation, frame_id = observation["generation"], observation["frame_id"]
+            if result is None:
+                result = self._solve_observation(action, payload, cancelled, engine, None, epoch,
+                    observation["captured"], observation["frame"], floor, observation["digest"],
+                    observation["capture_generation"], frame_generation, frame_id, cycle, plan.map_id,
+                    identity_stage=state, manual_choice=plan, staged_observation=observation if fresh else None)
             with self._lock:
                 if intent!=self._group_intent_generation:
                     return self._receipt(action,payload,success=False,reason="stale-group-choice-intent",stale=True)
@@ -1345,6 +1378,45 @@ class LiveRuntime:
                     return self._receipt(action,payload,success=True,reason="group-member-awaiting-geometry",
                         choiceApplied=False,poseReason=result.get("reason"))
             return result
+
+    def _staged_choice_current(self, observation):
+        return bool(observation["sourceScope"] == self._sibling_scope()
+            and observation["sourceOwner"] == self._refresh_render_owner()
+            and observation["intent"] == self._group_intent_generation)
+
+    def _capture_group_choice_observation(self, action, payload, cancelled, engine, scope, intent, floor):
+        """Fit a manual target on new pixels without promoting its frame yet."""
+        obsolete = lambda: (self._cancelled(cancelled) or scope != self._sibling_scope()
+            or intent != self._group_intent_generation)
+        capture_generation = self._capture_generation()
+        captured = self._capture_frame(obsolete)
+        frame = self._full_frame(captured).copy()
+        frame.setflags(write=False)
+        observation, observed_floor, floor_read = self._observe(engine, frame)
+        detected = observation.get("mapOpen") is True if self._mode == "difficult" else observation.get("detected") is True
+        with self._lock:
+            if obsolete() or not self._capture_is_current(captured.context, capture_generation):
+                return None, self._receipt(action, payload, success=False, reason="group-choice-context-expired", stale=True)
+            if not detected:
+                self._probe_misses += 1
+                self._revoke_render("map-not-observed")
+                if self._probe_misses >= 2:
+                    self.invalidate("map-closed", source="manual-group-probe")
+                return None, self._receipt(action, payload, success=False, reason="map-not-observed")
+            self._probe_misses = 0
+            effective_floor = self._observe_floor_policy(floor_read, obsolete=obsolete)
+            if (observed_floor is None or effective_floor != floor or self._floor_read_conflicts(floor_read, floor)):
+                self._revoke_render("current-frame-floor-conflict" if observed_floor else "current-floor-unavailable")
+                return None, self._receipt(action, payload, success=False, reason="current-floor-unavailable")
+            if obsolete():
+                return None, self._receipt(action, payload, success=False, reason="group-choice-context-expired", stale=True)
+            digest = hashlib.sha256(frame.tobytes()).hexdigest()
+            generation = self._frame_generation + 1
+            return dict(captured=captured, frame=frame, floor=floor, digest=digest,
+                created_at=self._monotonic(), capture_generation=capture_generation,
+                frame_id=f"{self._round}:{generation}:{digest[:16]}", observed_floor=self._observed_floor,
+                cycle_id=self._cycle, generation=generation, floor_read=copy.deepcopy(floor_read),
+                sourceScope=scope, sourceOwner=self._refresh_render_owner(), intent=intent), None
 
     def _retry_desired_group_member(self, action, payload, cancelled, result):
         with self._lock:
@@ -2398,6 +2470,8 @@ class LiveRuntime:
                 self._capture_pending = owns_capture = True
             if transient:
                 receipt = self._probe_map_after_drag(payload, cancelled)
+                if receipt.get("success"):
+                    receipt = self._retry_desired_group_member("refresh_map", payload, cancelled, receipt)
             else:
                 receipt = self._capture_and_solve("refresh_map", payload, cancelled)
             if receipt.get("stale") and self._retire_refresh_owner(owner):
@@ -2875,15 +2949,19 @@ class LiveRuntime:
 
     def _solve_observation(self, action, payload, cancelled, engine, group, epoch, captured, frame,
                            floor, digest, capture_generation, frame_generation, frame_id, cycle,
-                           map_id, entry_candidate=None, *, identity_stage=None, manual_choice=None):
+                           map_id, entry_candidate=None, *, identity_stage=None, manual_choice=None,
+                           staged_observation=None):
         import numpy as np
         from alignment_core_v2 import AlignmentCandidate
         from alignment_observation import rendered_profile_residual_is_verified
         from round_layer_group import RoundLayerGroup
-        obsolete = lambda: self._cancelled(cancelled) or epoch != self._epoch
+        obsolete = lambda: (self._cancelled(cancelled) or epoch != self._epoch
+            or staged_observation is not None and not self._staged_choice_current(staged_observation))
+        frame_current = lambda: (self._staged_choice_current(staged_observation)
+            if staged_observation is not None else frame_id == self._frame_id)
         width, height = captured.context.full_client_size
         with self._lock:
-            if obsolete() or frame_id != self._frame_id or floor != self._floor:
+            if obsolete() or not frame_current() or floor != self._floor:
                 return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
             if self._current_frame_floor_conflicts(floor, frame_id=frame_id):
                 reason = "current-frame-floor-conflict"
@@ -2891,6 +2969,7 @@ class LiveRuntime:
                 self._revoke_render(reason)
                 self._reference_sheet = self._reference_capture_context = None
                 self._set_pose_phase("rejected", reason, map_id, floor, frame_id, frame_generation,
+                    staged_observation=staged_observation,
                     observedFloor=observed_floor, targetFloor=str(floor), fitAttempted=False)
                 return self._receipt(action, payload, success=False, reason=reason,
                     observedFloor=observed_floor, targetFloor=str(floor), fitAttempted=False)
@@ -2908,7 +2987,7 @@ class LiveRuntime:
             if (group_intent_generation != self._group_intent_generation
                     or manual_choice is None and self._group_choice_inflight is not None):
                 return self._receipt(action, payload, success=False, reason="manual-group-intent-superseded-work", stale=True)
-            if obsolete() or frame_id != self._frame_id or floor != self._floor:
+            if obsolete() or not frame_current() or floor != self._floor:
                 return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
             if capture_generation != self._capture_generation():
                 return self._receipt(action, payload, success=False, reason="capture-context-changed", stale=True)
@@ -2932,17 +3011,18 @@ class LiveRuntime:
                 return self._receipt(action, payload, success=False, reason="capture-context-changed", stale=True)
         with self._lock:
             transient=self._transient_cycle_current()
-        if transient:
+        if transient and staged_observation is None:
             projected=self._try_transient_floor_projection(payload,cancelled,engine,captured,frame,floor,capture_generation)
             if projected is not None:return projected
             with self._lock:
                 if not obsolete() and frame_id==self._frame_id:
                     self._reference_sheet,self._reference_capture_context=reference_sheet,captured.context
             return self._receipt(action,payload,success=False,reason="transient-projection-unavailable",fitAttempted=False)
-        self._set_pose_phase("pending", "current-frame-fit", map_id, floor, frame_id, frame_generation)
+        self._set_pose_phase("pending", "current-frame-fit", map_id, floor, frame_id, frame_generation,
+            staged_observation=staged_observation)
         with self._lock:
             steady_context = self._steady_context()
-        host = _AlignmentHost(engine, group, self._settings, steady=(self._steady, steady_context,
+        host = _AlignmentHost(engine, group, self._settings, steady=None if staged_observation is not None else (self._steady, steady_context,
             lambda context: not obsolete() and self._steady_is_current(context, captured),
             self._steady_signature(captured)))
         fit = host.fit(frame, map_id, floor, obsolete, entry_candidate) if entry_candidate is not None else host.fit(frame, map_id, floor, obsolete)
@@ -2957,7 +3037,7 @@ class LiveRuntime:
                     def sample_current():
                         with self._lock:
                             return bool(not obsolete() and self._active and self._map_open
-                                and frame_id == self._frame_id and floor == self._floor
+                                and frame_current() and floor == self._floor
                                 and cycle == self._cycle and engine is self._engine
                                 and self._capture_is_current(captured.context, capture_generation))
                     reference = host._shared_structure_reference("shared-structure", map_id, floor)
@@ -2973,7 +3053,7 @@ class LiveRuntime:
                         clientBounds=list(captured.context.client_screen_bounds), dpi=captured.context.dpi,
                         roiClientBounds=list(captured.roi_client_bounds), sharedResource=resource,
                         displayResourceIdentity=display.get("resourceIdentity"),
-                        floorRead=copy.deepcopy((self._last_observation or {}).get("floor_read", {})))
+                        floorRead=copy.deepcopy((staged_observation or self._last_observation or {}).get("floor_read", {})))
                     saved = self._failure_samples.record(getattr(engine, "memory_store", None),
                         map_id=map_id, floor=floor, reason=reason, fit=fit, frame=frame,
                         client_bounds=captured.context.client_screen_bounds, cycle_id=cycle,
@@ -2986,10 +3066,11 @@ class LiveRuntime:
                 self._failure_samples.last_error = type(error).__name__
                 self._notify("failure-sample", reason="not-saved", failureSample=dict(
                     savedCount=self._failure_samples.saved_count, error=self._failure_samples.last_error))
-            reopened = self._consume_identity_conflict(fit, engine=engine, epoch=epoch, captured=captured,
+            reopened = False if staged_observation is not None else self._consume_identity_conflict(fit, engine=engine, epoch=epoch, captured=captured,
                 capture_generation=capture_generation, frame_id=frame_id, frame_generation=frame_generation,
                 cycle=cycle, map_id=map_id, floor=floor)
-            self._set_pose_phase("rejected", reason, map_id, floor, frame_id, frame_generation)
+            self._set_pose_phase("rejected", reason, map_id, floor, frame_id, frame_generation,
+                staged_observation=staged_observation)
             return self._receipt(action, payload, success=False, reason=reason, identityReopened=reopened)
         residual = fit.get("selectedRouteCurrentFrameResidual")
         if not rendered_profile_residual_is_verified(residual):
@@ -3006,7 +3087,8 @@ class LiveRuntime:
             render_matrix, display, frame, captured, cycle, frame_generation, residual)
         if target_group is None:
             reason = "round-group-pose-commit-rejected"
-            self._set_pose_phase("rejected", reason, map_id, floor, frame_id, frame_generation)
+            self._set_pose_phase("rejected", reason, map_id, floor, frame_id, frame_generation,
+                staged_observation=staged_observation)
             return self._receipt(action, payload, success=False, reason=reason)
         with self._lock:
             if display_generation != getattr(self, "_display_generation", 0):
@@ -3014,7 +3096,7 @@ class LiveRuntime:
             if (group_intent_generation != self._group_intent_generation
                     or manual_choice is None and self._group_choice_inflight is not None):
                 return self._receipt(action, payload, success=False, reason="manual-group-intent-superseded-work", stale=True)
-            if obsolete() or frame_id != self._frame_id or cycle != self._cycle or floor != self._floor:
+            if obsolete() or not frame_current() or cycle != self._cycle or floor != self._floor:
                 return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
             if not self._capture_is_current(captured.context, capture_generation):
                 self.invalidate("capture-context-changed")
@@ -3034,7 +3116,8 @@ class LiveRuntime:
                 metadata=dict(routeProfileId="shared-structure", independentFloorAnchor=True))
             decision = core.adjudicate(candidate)
             if not decision.accepted:
-                self._set_pose_phase("rejected", decision.reason, map_id, floor, frame_id, frame_generation)
+                self._set_pose_phase("rejected", decision.reason, map_id, floor, frame_id, frame_generation,
+                    staged_observation=staged_observation)
                 return self._receipt(action, payload, success=False, reason=decision.reason)
             token = core.authorize(decision)
             if token is None or not core.commit(token):
@@ -3074,7 +3157,8 @@ class LiveRuntime:
                 self._pending_sibling = dict(scope=self._sibling_scope(), sourceCore=self._core,
                     sourceToken=source_token, sourceMapId=self._map_id, core=core,
                     group=target_group, identity=identity_stage, render=target_render,
-                    reference=reference_sheet, captureContext=captured.context, manualChoice=manual_choice)
+                    reference=reference_sheet, captureContext=captured.context, manualChoice=manual_choice,
+                    stagedObservation=staged_observation)
             else:
                 self._map_id = map_id
                 self._gate.select(map_id)
@@ -3087,7 +3171,8 @@ class LiveRuntime:
                 self._reference_sheet = reference_sheet
                 self._reference_capture_context = captured.context
                 self._remember_provisional_reference()
-        self._set_pose_phase("valid", "current-frame-pose-authorized", map_id, floor, frame_id, frame_generation)
+        self._set_pose_phase("valid", "current-frame-pose-authorized", map_id, floor, frame_id, frame_generation,
+            staged_observation=staged_observation)
         if identity_stage is not None:
             self._notify("sibling-material-pending", reason="target-current-pose-awaiting-material", token=render_token,
                 sourceMapId=self._map_id, targetMapId=map_id)
