@@ -124,7 +124,7 @@ class RawMouseObserver:
         self.registered = True
 
     def handle(self, message):
-        if message.hwnd != self.hwnd or message.message != self.WM_INPUT:
+        if message.hWnd != self.hwnd or message.message != self.WM_INPUT:
             return False
         try:
             foreground = int(self.user.GetForegroundWindow() or 0)
@@ -161,7 +161,7 @@ class RawMouseObserver:
         finally:
             # Includes RIM_INPUT foreground cleanup, without dispatching input
             # to another window or holding the game's delivery path.
-            self.user.DefWindowProcW(message.hwnd, message.message, message.wParam, message.lParam)
+            self.user.DefWindowProcW(message.hWnd, message.message, message.wParam, message.lParam)
 
     def stop(self):
         errors = []

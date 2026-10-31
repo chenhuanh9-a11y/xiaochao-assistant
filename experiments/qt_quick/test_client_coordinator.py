@@ -810,9 +810,25 @@ class CoordinatorTests(unittest.TestCase):
             reason="game-floor-control-intent", clickedFloorId="2", captureRequired=True))
         self.coordinator._aligned = dict(token="old-floor")
         self.coordinator._reference = dict(key="old-floor-reference")
+        from ctypes import wintypes as W
+        from client_native_keys import PassThroughKeyboardSource
+        from client_native_mouse import RawMouseObserver
+        from test_client_native_mouse import Native, Function
+        source = PassThroughKeyboardSource()
+        source.update_pointer_target(123)
+        source.set_pointer_context_provider(lambda: dict(cycleId=1, observationCreatedAt=0))
+        native = Native()
+        native.GetForegroundWindow = Function(lambda: 123)
+        observer = RawMouseObserver(source._receive_pointer, lambda hwnd: hwnd == 123,
+            user=native, clock=lambda: 101., ticks=lambda: 1000)
+        observer.start()
+        self.addCleanup(observer.stop)
+        native.mouse.buttonUnion.buttons.flags = 1
         for sequence in (1, 2):
-            self.coordinator._game_pointer_pressed(dict(hwnd=123, x=42, y=43,
-                sequence=sequence, createdAt=100 + sequence, context=dict(cycleId=1)))
+            observer.handle(W.MSG(hWnd=321, message=0xff, wParam=1, lParam=999,
+                time=1000, pt=W.POINT(42, 43)))
+            for event in source.take_pointer_events():
+                self.coordinator._game_pointer_event(event)
         self.assertEqual(self.coordinator.alignedData, {})
         self.assertEqual(self.coordinator.referenceData, {})
         self.assertEqual(self.runtime.observe_game_floor_click.call_count, 2)

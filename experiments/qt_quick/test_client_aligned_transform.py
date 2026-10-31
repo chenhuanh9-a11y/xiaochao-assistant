@@ -145,14 +145,25 @@ class AlignedTransformProbe(unittest.TestCase):
                 for event in source.take_pointer_events():
                     fixture.input.gamePointerEvent.emit(event)
             source.pointerAvailable.connect(drain, Qt.QueuedConnection)
+            # Use the actual Win32 MSG contract. A namespace with `hwnd`
+            # previously hid a production hWnd mismatch before packet decoding.
+            from ctypes import wintypes as W
+            from client_native_mouse import RawMouseObserver
+            from test_client_native_mouse import Native, Function
+            raw_native = Native()
+            raw_native.GetForegroundWindow = Function(lambda: 123)
+            raw_observer = RawMouseObserver(source._receive_pointer, lambda hwnd: hwnd == 123,
+                user=raw_native, clock=actual_runtime._monotonic, ticks=lambda: 1000)
+            raw_observer.start()
+            self.addCleanup(raw_observer.stop)
         def deliver(event):
             if source is None:
                 fixture.input.gamePointerEvent.emit(event)
             else:
-                packet = source._pointer_event(event["x"], event["y"], 123,
-                    phase=event["phase"], created_at=event["createdAt"])
-                self.assertIsNotNone(packet)
-                source._queue_pointer_event(packet)
+                raw_native.mouse.buttonUnion.buttons.flags = {"down": 1, "move": 0, "up": 2}[event["phase"]]
+                raw_native.mouse.lastX = int(event["phase"] == "move")
+                self.assertTrue(raw_observer.handle(W.MSG(hWnd=321, message=0xff,
+                    wParam=1, lParam=999, time=1000, pt=W.POINT(event["x"], event["y"]))))
         deliver(down)
         APP.processEvents()
         for revision in range(1, 6):

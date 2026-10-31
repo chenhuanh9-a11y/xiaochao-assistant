@@ -1,7 +1,6 @@
 """Raw mouse ABI/lifecycle and physical sampling; no actual input registration."""
 import ctypes
 from ctypes import wintypes as W
-from types import SimpleNamespace
 import unittest
 
 from client_native_mouse import RawInputDevice, RawInputHeader, RawMouse, RawMouseObserver, mouse_phases
@@ -71,7 +70,7 @@ class RawMouseTests(unittest.TestCase):
         observer.start()
         native.mouse.lastX = 8000
         native.mouse.lastY = -5000
-        message = SimpleNamespace(hwnd=321, message=0xff, wParam=1, lParam=999, time=980, pt=W.POINT(200,150))
+        message = W.MSG(hWnd=321, message=0xff, wParam=1, lParam=999, time=980, pt=W.POINT(200,150))
         for flags in (1, 0, 2):
             native.mouse.buttonUnion.buttons.flags = flags
             self.assertTrue(observer.handle(message))
@@ -88,7 +87,7 @@ class RawMouseTests(unittest.TestCase):
             user=native, cancel=cancellations.append, clock=lambda: 10., ticks=lambda: 5000)
         observer.start()
         native.mouse.buttonUnion.buttons.flags = 1
-        observer.handle(SimpleNamespace(hwnd=321, message=0xff, wParam=1, lParam=999,
+        observer.handle(W.MSG(hWnd=321, message=0xff, wParam=1, lParam=999,
                                         time=1000, pt=W.POINT(200,150)))
         self.assertEqual(events, [])
         self.assertEqual(cancellations, ["raw-mouse-input-expired"])
@@ -105,13 +104,20 @@ class RawMouseTests(unittest.TestCase):
         self.assertEqual(create[3], 0)  # no WS_VISIBLE
         self.assertEqual(create[8].value, ctypes.c_void_p(-3).value)
         self.assertEqual([c[1] for c in native.calls if c[0] == "register"], [(1, 2, 0x100, 321)])
-        observer.handle(SimpleNamespace(hwnd=321, message=0xff, wParam=0, lParam=999))
+        observer.handle(W.MSG(hWnd=321, message=0xff, wParam=0, lParam=999))
         self.assertEqual(len([c for c in native.calls if c[0] == "default"]), 1)
         observer.stop()
         observer.stop()
         self.assertEqual([c[1] for c in native.calls if c[0] == "register"],
                          [(1, 2, 0x100, 321), (1, 2, 1, None)])
         self.assertEqual(len([c for c in native.calls if c[0] == "destroy"]), 1)
+
+    def test_real_win32_message_for_another_target_or_type_is_not_consumed(self):
+        observer = RawMouseObserver(lambda *a, **kw: None, lambda fg: True, user=Native())
+        observer.start()
+        self.assertFalse(observer.handle(W.MSG(hWnd=123, message=0xff)))
+        self.assertFalse(observer.handle(W.MSG(hWnd=321, message=0x8001)))
+        observer.stop()
 
     def test_existing_same_process_mouse_owner_is_not_overwritten(self):
         native = Native()
