@@ -2,6 +2,7 @@
 from pathlib import Path
 import copy
 import hashlib
+from io import BytesIO
 import sys
 import tempfile
 import unittest
@@ -9,6 +10,7 @@ from unittest.mock import patch
 
 import cv2
 import numpy as np
+from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'app'))
 import author_display_cleanup as cleanup
@@ -33,6 +35,38 @@ def binding(data):
         registration=dict(sourceR3ManifestSha256='a' * 64, sourceR3RegistrationId='fixture'),
         coordinateBridge=dict(authorGeometryErrorUnchanged=True,
             proof='fixture: exact R4 base dependency'))
+
+
+def paletted_fixture():
+    indices = np.zeros((100, 140), np.uint8)
+    indices[4:96, 4:136] = 1
+    indices[10:90, 10:130] = 4
+    indices[40:47, 40:47] = 1  # Enclosed black detail.
+    indices[7:11, 65:70] = 5  # Exterior coloured route.
+    indices[45:55, 4:8] = 6  # Near-black exterior annotation, never background.
+    image = Image.fromarray(indices)
+    image.putpalette([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      120, 110, 100, 255, 0, 0, 7, 7, 7])
+    target = BytesIO()
+    image.save(target, format='PNG', transparency=bytes([0, 254, 48, 110, 254, 255, 255]))
+    return target.getvalue()
+
+
+def zhan10_binding(data):
+    asset = np.array([[1., 0, 10], [0, 1., 20], [0, 0, 1]])
+    native = np.array([[1.2, .01, 17], [-.02, 1.1, 31], [0, 0, 1]])
+    canonical = (native @ asset).tolist()
+    return dict(profileId='zhan10-nightmare', assetSha256=hashlib.sha256(data).hexdigest(),
+        transformApplications=1, alreadyBaked=False, identityAuthority=False,
+        structureValidationAuthority=False, currentFrameGeometryFitRequired=True,
+        crossFloorProjectionAllowed=False, matrixAssetToCanonical=canonical,
+        matrixAssetToBase=copy.deepcopy(canonical),
+        registration=dict(status='confirmed', method='Existing affine SIFT/RANSAC author '
+                          'registration against exact current renderer image; synthetic test'),
+        coordinateBridge=dict(baseToNativeIsIdentity=True, authorGeometryErrorUnchanged=True),
+        sourceDisplay=dict(relativePath='synthetic/map.jpg', sha256='a' * 64,
+            cropBoxSource=[10, 20, 150, 120], assetToSource=asset.tolist(),
+            sourceToNative=native.tolist()))
 
 
 class AuthorDisplayCleanupTests(unittest.TestCase):
@@ -153,6 +187,115 @@ class AuthorDisplayCleanupTests(unittest.TestCase):
         row['usable'] = False
         with self.assertRaisesRegex(ValueError, 'registration is unavailable'):
             displays.pixels(self.path, 'aligned-overlay')
+
+
+    def test_zhan10_palette_exterior_keeps_near_black_and_enclosed_content(self):
+        data = paletted_fixture()
+        self.path.write_bytes(data)
+        original = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_UNCHANGED)
+        cache = cleanup.AuthorDisplayCleanupCache()
+        result = cache.pixels(self.path, zhan10_binding(data))
+        self.assertEqual(cache.report(self.path)['status'], 'cleaned')
+        self.assertEqual(result.shape, original.shape)
+        np.testing.assert_array_equal(result[:, :, :3], original[:, :, :3])
+        self.assertEqual(result[5, 5, 3], 0)
+        np.testing.assert_array_equal(result[40:47, 40:47], original[40:47, 40:47])
+        np.testing.assert_array_equal(result[43:57, 2:10], original[43:57, 2:10])
+        np.testing.assert_array_equal(result[5:13, 63:72], original[5:13, 63:72])
+        again, _ = cleanup._derive_black_exterior_alpha(result)
+        np.testing.assert_array_equal(result, again)
+        self.assertEqual(self.path.read_bytes(), data)
+
+    def test_zhan10_requires_complete_coordinate_provenance_and_matching_bytes(self):
+        data = paletted_fixture()
+        declaration = zhan10_binding(data)
+        self.assertIsNotNone(cleanup.zhan10_source_family(declaration))
+        self.assertIsNone(cleanup.r4_source_family(declaration))
+        for key, value in [('sourceDisplay', {}), ('alreadyBaked', True),
+                           ('transformApplications', 2), ('registration', {}),
+                           ('identityAuthority', True), ('coordinateBridge', {})]:
+            invalid = dict(declaration, **{key: value})
+            self.assertIsNone(cleanup.zhan10_source_family(invalid), key)
+        invalid = copy.deepcopy(declaration)
+        invalid['sourceDisplay']['assetToSource'][0][2] += .5
+        self.assertIsNone(cleanup.zhan10_source_family(invalid))
+        invalid = copy.deepcopy(declaration)
+        invalid['matrixAssetToCanonical'][0][2] += 1
+        invalid['matrixAssetToBase'] = copy.deepcopy(invalid['matrixAssetToCanonical'])
+        self.assertIsNone(cleanup.zhan10_source_family(invalid))
+        self.path.write_bytes(data)
+        cache = cleanup.AuthorDisplayCleanupCache()
+        result = cache.pixels(self.path, dict(declaration, assetSha256='b' * 64))
+        np.testing.assert_array_equal(result,
+            cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_UNCHANGED))
+        self.assertEqual(cache.report(self.path)['status'], 'unverified-asset')
+
+    def test_zhan10_rgba_or_changed_crop_cannot_reuse_verified_palette_result(self):
+        data = paletted_fixture()
+        self.path.write_bytes(data)
+        declaration = zhan10_binding(data)
+        original = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_UNCHANGED)
+        cache = cleanup.AuthorDisplayCleanupCache()
+        cache.pixels(self.path, declaration)
+        changed = copy.deepcopy(declaration)
+        asset = np.array([[2., 0, 10.5], [0, 2., 20.5], [0, 0, 1]])
+        changed['sourceDisplay']['assetToSource'] = asset.tolist()
+        canonical = np.asarray(changed['sourceDisplay']['sourceToNative']) @ asset
+        changed['matrixAssetToCanonical'] = canonical.tolist()
+        changed['matrixAssetToBase'] = canonical.tolist()
+        self.assertIsNotNone(cleanup.zhan10_source_family(changed))
+        np.testing.assert_array_equal(cache.pixels(self.path, changed), original)
+        self.assertEqual(cache.report(self.path)['status'], 'unverified-palette-crop')
+        rgba_data = cv2.imencode('.png', original)[1].tobytes()
+        self.path.write_bytes(rgba_data)
+        np.testing.assert_array_equal(cache.pixels(self.path, zhan10_binding(rgba_data)), original)
+        self.assertEqual(cache.report(self.path)['status'], 'unverified-palette-crop')
+
+    def test_malformed_source_declarations_and_unrecognised_palette_keep_pixels(self):
+        data = paletted_fixture()
+        self.path.write_bytes(data)
+        original = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_UNCHANGED)
+        declaration = zhan10_binding(data)
+        invalids = [None, [], 'unknown', dict(declaration, profileId=[]),
+                    dict(declaration, assetSha256=[])]
+        for key in ('sourceDisplay', 'registration', 'coordinateBridge'):
+            invalids.extend(dict(declaration, **{key: value}) for value in (['bad'], 'bad', 1))
+        malformed_matrix = copy.deepcopy(declaration)
+        malformed_matrix['sourceDisplay']['assetToSource'] = [[float('nan')]]
+        invalids.append(malformed_matrix)
+        for invalid in invalids:
+            with self.subTest(declaration=invalid):
+                cache = cleanup.AuthorDisplayCleanupCache()
+                np.testing.assert_array_equal(cache.pixels(self.path, invalid), original)
+        with Image.open(BytesIO(data)) as image:
+            buffer = BytesIO()
+            image.save(buffer, format='PNG', transparency=bytes([0, 255, 48, 110, 254, 255, 255]))
+        unknown = buffer.getvalue()
+        self.path.write_bytes(unknown)
+        cache = cleanup.AuthorDisplayCleanupCache()
+        np.testing.assert_array_equal(cache.pixels(self.path, zhan10_binding(unknown)),
+            cv2.imdecode(np.frombuffer(unknown, np.uint8), cv2.IMREAD_UNCHANGED))
+        self.assertEqual(cache.report(self.path)['status'], 'unverified-palette-crop')
+
+    def test_zhan10_three_roles_use_one_derivation_and_keep_binding_matrix(self):
+        data = paletted_fixture()
+        self.path.write_bytes(data)
+        declaration = zhan10_binding(data)
+        matrix = np.asarray(declaration['matrixAssetToCanonical'])
+        row = dict(path=self.path.resolve(), declaration=declaration, usable=True, matrix=matrix)
+        original = copy.deepcopy(row)
+        displays = OptionalAuthorDisplays.__new__(OptionalAuthorDisplays)
+        displays.bindings = {('zhan10-nightmare', 'map', '1'): row}
+        displays._display_cleanup = cleanup.AuthorDisplayCleanupCache()
+        with patch.object(cleanup, '_derive_black_exterior_alpha',
+                          wraps=cleanup._derive_black_exterior_alpha) as derive:
+            results = [displays.pixels(self.path, role) for role in
+                       ('minimap', 'aligned-overlay', 'full-reference')]
+            self.assertEqual(derive.call_count, 1)
+        for image in results[1:]:
+            np.testing.assert_array_equal(image, results[0])
+        np.testing.assert_array_equal(row['matrix'], original['matrix'])
+        self.assertEqual(row['declaration'], original['declaration'])
 
 
 if __name__ == '__main__':

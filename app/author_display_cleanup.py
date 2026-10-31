@@ -1,11 +1,13 @@
-"""Conservative display alpha for the confirmed R4 author source family.
+"""Conservative display alpha for two verified author source families.
 
 This is not a general dark-pixel remover. Only R4 Nightingale (爱吃醋 · 噩梦)
-bindings with matching asset bytes are eligible. Textured or unrecognised
-backgrounds retain their original alpha. RGB, canvas and all geometry stay put.
+bindings and the separate paletted Zhan10 crop contract require matching asset
+bytes. Textured or unrecognised backgrounds retain their original alpha.
+RGB, canvas and all geometry stay put.
 """
 from collections import OrderedDict
 import hashlib
+from io import BytesIO
 import os
 from pathlib import Path
 import re
@@ -13,20 +15,25 @@ from threading import RLock
 
 import cv2
 import numpy as np
+from PIL import Image
 
 
-RECIPE_VERSION = 'r4-exterior-background-v1'
+RECIPE_VERSION = 'author-exterior-background-v2'
 _PROFILES = frozenset({'nightingale'})
 _SHA256 = re.compile(r'[0-9a-f]{64}\Z')
 
 
 def r4_source_family(declaration):
     """Recognise the R4 conversion contract, not a list of sample image hashes."""
+    if not isinstance(declaration, dict):
+        return None
     profile = declaration.get('profileId')
     registration = declaration.get('registration') or {}
     bridge = declaration.get('coordinateBridge') or {}
+    if not isinstance(registration, dict) or not isinstance(bridge, dict):
+        return None
     source_hash = registration.get('sourceR3ManifestSha256', '')
-    if (profile not in _PROFILES or not isinstance(source_hash, str)
+    if (not isinstance(profile, str) or profile not in _PROFILES or not isinstance(source_hash, str)
             or not _SHA256.fullmatch(source_hash)
             or not registration.get('sourceR3RegistrationId')
             or declaration.get('transformApplications') != 1
@@ -39,6 +46,89 @@ def r4_source_family(declaration):
     return profile, source_hash
 
 
+def zhan10_source_family(declaration):
+    """Verify the independent JPG crop/resize-to-native coordinate contract."""
+    if not isinstance(declaration, dict):
+        return None
+    source = declaration.get('sourceDisplay') or {}
+    bridge = declaration.get('coordinateBridge') or {}
+    registration = declaration.get('registration') or {}
+    if not all(isinstance(value, dict) for value in (source, bridge, registration)):
+        return None
+    digest = source.get('sha256', '')
+    if (declaration.get('profileId') != 'zhan10-nightmare'
+            or not isinstance(digest, str) or not _SHA256.fullmatch(digest)
+            or not str(source.get('relativePath', '')).lower().endswith('.jpg')
+            or declaration.get('transformApplications') != 1
+            or declaration.get('alreadyBaked') is not False
+            or declaration.get('identityAuthority') is not False
+            or declaration.get('structureValidationAuthority') is not False
+            or declaration.get('currentFrameGeometryFitRequired') is not True
+            or declaration.get('crossFloorProjectionAllowed') is not False
+            or registration.get('status') != 'confirmed'
+            or not str(registration.get('method', '')).startswith(
+                'Existing affine SIFT/RANSAC author registration against exact current renderer image;')
+            or bridge.get('baseToNativeIsIdentity') is not True
+            or bridge.get('authorGeometryErrorUnchanged') is not True):
+        return None
+    try:
+        crop = np.asarray(source['cropBoxSource'], dtype=np.float64)
+        asset = np.asarray(source['assetToSource'], dtype=np.float64)
+        native = np.asarray(source['sourceToNative'], dtype=np.float64)
+        canonical = np.asarray(declaration['matrixAssetToCanonical'], dtype=np.float64)
+        base = np.asarray(declaration['matrixAssetToBase'], dtype=np.float64)
+        if (crop.shape != (4,) or not np.isfinite(crop).all()
+                or np.any(crop[:2] < 0) or np.any(crop[2:] <= crop[:2])):
+            return None
+        for matrix in (asset, native, canonical, base):
+            if (matrix.shape != (3, 3) or not np.isfinite(matrix).all()
+                    or not np.array_equal(matrix[2], [0, 0, 1])
+                    or abs(np.linalg.det(matrix[:2, :2])) <= 1e-12):
+                return None
+        sx, sy = asset[0, 0], asset[1, 1]
+        expected = np.array([[sx, 0, crop[0] + (sx - 1) / 2],
+                             [0, sy, crop[1] + (sy - 1) / 2], [0, 0, 1]])
+        if (min(sx, sy) <= 0 or not np.allclose(asset, expected, rtol=0, atol=1e-9)
+                or not np.array_equal(canonical, base)
+                or not np.allclose(native @ asset, canonical, rtol=0, atol=1e-9)):
+            return None
+    except (KeyError, TypeError, ValueError):
+        return None
+    # The cold-image size check depends on this crop/scale. Include it so a
+    # changed declaration cannot reuse an earlier verified derivation.
+    return 'zhan10-nightmare', digest, tuple(crop), tuple(asset.ravel())
+
+
+def _zhan10_paletted_crop(data, image, declaration):
+    """Require the observed indexed black backing, not arbitrary dark artwork.
+
+    The reviewed conversion stores transparent black, black alpha 254 and
+    several antialias alpha levels in its palette. Normal colours also use 254;
+    alpha alone never identifies background. The exact palette indices and
+    intermediate alpha values may differ between layers.
+    """
+    try:
+        with Image.open(BytesIO(data)) as source:
+            transparency = source.info.get('transparency')
+            if source.format != 'PNG' or source.mode != 'P' or not isinstance(transparency, bytes):
+                return False
+            palette = np.asarray(source.getpalette(), np.uint8).reshape(-1, 3)
+            if len(transparency) > len(palette):
+                return False
+            alpha = np.full(len(palette), 255, np.uint8)
+            alpha[:len(transparency)] = np.frombuffer(transparency, np.uint8)
+            levels = set(alpha[np.all(palette == 0, axis=1)].tolist())
+            if not {0, 254} <= levels or 255 in levels or len(levels) < 4:
+                return False
+        crop = declaration['sourceDisplay']['cropBoxSource']
+        matrix = np.asarray(declaration['sourceDisplay']['assetToSource'])
+        height, width = image.shape[:2]
+        return bool(np.allclose([matrix[0, 0], matrix[1, 1]],
+            [(crop[2] - crop[0]) / width, (crop[3] - crop[1]) / height], rtol=0, atol=1e-9))
+    except (OSError, KeyError, TypeError, ValueError):
+        return False
+
+
 def derive_r4_display_alpha(bgra, profile):
     """Return display pixels plus a decision; never crop, resample or edit RGB.
 
@@ -49,11 +139,17 @@ def derive_r4_display_alpha(bgra, profile):
     A nonuniform boundary is a no-op. Wang's textured/watermarked background
     and other author sources are intentionally outside the accepted scope.
     """
+    return _derive_black_exterior_alpha(bgra, supported=profile in _PROFILES, tolerance=8)
+
+
+def _derive_black_exterior_alpha(bgra, *, supported=True, tolerance=0):
+    # Zhan10 uses exact palette black. R4 retains its separately reviewed <=8
+    # backing tolerance. Neither family removes coloured or enclosed dark detail.
     if (bgra.dtype != np.uint8 or bgra.ndim != 3 or bgra.shape[2] != 4):
         raise ValueError('author display cleanup requires uint8 BGRA pixels')
     result = bgra.copy()
     report = dict(recipe=RECIPE_VERSION, status='unsupported-source', removedPixels=0)
-    if profile not in _PROFILES:
+    if not supported:
         return result, report
     rgb = bgra[:, :, 2::-1]
     visible = bgra[:, :, 3] > 0
@@ -71,13 +167,13 @@ def derive_r4_display_alpha(bgra, profile):
     # makes conversion followed by runtime loading idempotent. R4 Nightingale
     # uses a black backing. Do not extend this palette to other authors.
     background = np.zeros(3, np.int16)
-    matching_boundary = np.max(np.abs(samples.astype(np.int16) - background), axis=1) <= 8
+    matching_boundary = np.max(np.abs(samples.astype(np.int16) - background), axis=1) <= tolerance
     confidence = float(matching_boundary.mean())
     report.update(backgroundRGB=background.tolist(), matchingBoundaryFraction=confidence)
     if confidence < .75:
         report['status'] = 'ambiguous-background'
         return result, report
-    candidate = np.max(np.abs(rgb.astype(np.int16) - background), axis=2) <= 8
+    candidate = np.max(np.abs(rgb.astype(np.int16) - background), axis=2) <= tolerance
     foreground = visible & ~candidate
     protected = cv2.dilate(foreground.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
     allowed = candidate & ~protected
@@ -112,8 +208,12 @@ class AuthorDisplayCleanupCache:
 
     def pixels(self, path, declaration):
         path = Path(path).resolve()
-        family = r4_source_family(declaration)
+        if not isinstance(declaration, dict):
+            declaration = {}
+        family = r4_source_family(declaration) or zhan10_source_family(declaration)
         expected = declaration.get('assetSha256', '')
+        if not isinstance(expected, str):
+            expected = ''
         stamp = path.stat()
         signature = (stamp.st_size, stamp.st_mtime_ns, stamp.st_ctime_ns, stamp.st_ino)
         lookup = (str(path), signature, family, expected)
@@ -143,7 +243,14 @@ class AuthorDisplayCleanupCache:
                 if (image is None or image.dtype != np.uint8 or image.ndim != 3 or image.shape[2] != 4):
                     raise ValueError('optional author requires original BGRA display pixels')
                 if family is not None and digest == expected:
-                    image, report = derive_r4_display_alpha(image, family[0])
+                    if family[0] == 'zhan10-nightmare':
+                        if _zhan10_paletted_crop(data, image, declaration):
+                            image, report = _derive_black_exterior_alpha(image)
+                        else:
+                            report = dict(recipe=RECIPE_VERSION, removedPixels=0,
+                                          status='unverified-palette-crop')
+                    else:
+                        image, report = derive_r4_display_alpha(image, family[0])
                 else:
                     report = dict(recipe=RECIPE_VERSION, removedPixels=0,
                         status='unverified-asset' if family is not None else 'unsupported-source')
