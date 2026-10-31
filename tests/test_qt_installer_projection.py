@@ -64,6 +64,15 @@ class InstallerProjectionTests(unittest.TestCase):
             copied.append(relative)
         return copied
 
+    def test_production_filename_is_formal_while_private_instances_keep_fingerprint(self):
+        commit = "a" * 40
+        production = build.INSTANCES["production"]
+        self.assertEqual(production["versionSuffix"], "")
+        self.assertEqual(build.setup_basename(production, "1.0.5", commit), "星图-1.0.5-Setup")
+        private = build.INSTANCES["client"]
+        self.assertEqual(build.setup_basename(private, "1.0.5-qt-test", commit),
+                         "XingtuQtTest-Setup-1.0.5-qt-test-aaaaaaaaaaaa")
+
     def test_fresh_install_copies_complete_planes_with_one_cached_decision(self):
         destination = self.folder / "fresh"
         copied = self.apply_generated_projection(destination)

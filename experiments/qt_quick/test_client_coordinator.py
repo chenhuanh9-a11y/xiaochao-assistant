@@ -112,7 +112,7 @@ class CoordinatorTests(unittest.TestCase):
         self.windows.hide.assert_not_called()
 
     def test_group_choice_queue_keeps_source_and_cancels_older_pending_material(self):
-        for action in ("select_group_member", "resume_group_automatic"):
+        for action in ("select_group_member",):
             with self.subTest(action=action):
                 self.coordinator._aligned = dict(token="current-source", mapId="map-a")
                 self.coordinator._last_render_token = "current-source"
@@ -138,6 +138,44 @@ class CoordinatorTests(unittest.TestCase):
         self.session.changed.emit()
         self.assertFalse(self.coordinator.alignedData)
         self.windows.hide.assert_called_with("aligned")
+
+    def test_round_notifications_follow_preparation_and_activation_once_despite_stale_session(self):
+        notices = []
+        self.coordinator.notificationRequested.connect(lambda *args: notices.append(args))
+        self.runtime_state.update(mode="nightmare", roundId=1, roundPreparing=True, roundActive=False)
+        state = dict(self.runtime_state, lastReceipt=dict(action="start_round", success=True))
+        self.coordinator._notify_session_transitions(state)
+        self.coordinator._notify_session_transitions(state)
+        self.assertEqual([n[0] for n in notices], ["本局已准备"])
+        self.runtime_state.update(roundPreparing=False, roundActive=True)
+        self.session.busy = True  # First fit is still running after activation.
+        self.coordinator._on_runtime_event(dict(event="round-started"))
+        self.coordinator._on_runtime_event(dict(event="round-started"))
+        # A cancelled/stale frame receipt must not turn this into a false end.
+        self.coordinator._notify_session_transitions(state)
+        self.session.busy = False
+        self.coordinator._notify_session_transitions(dict(self.runtime_state))
+        self.assertEqual([n[0] for n in notices], ["本局已准备", "开始本局"])
+        self.runtime_state.update(roundActive=False)
+        self.coordinator._notify_session_transitions(dict(self.runtime_state))
+        self.coordinator._notify_session_transitions(dict(self.runtime_state))
+        self.assertEqual([n[0] for n in notices], ["本局已准备", "开始本局", "本局已结束"])
+        self.runtime_state.update(roundId=2, roundPreparing=False, roundActive=False)
+        self.coordinator._notify_session_transitions(dict(self.runtime_state,
+            lastReceipt=dict(action="start_round", success=False, reason="capture-enable-rejected")))
+        self.assertEqual(sum(n[0] == "开始本局" for n in notices), 1)
+
+    def test_cancel_preparation_replaces_prepared_notice_without_claiming_round_started(self):
+        notices = []
+        self.coordinator.notificationRequested.connect(lambda *args: notices.append(args))
+        self.runtime_state.update(mode="nightmare", roundId=3, roundPreparing=True, roundActive=False)
+        self.coordinator._notify_session_transitions(dict(self.runtime_state,
+            lastReceipt=dict(action="start_round", success=True)))
+        self.runtime_state.update(roundPreparing=False)
+        state = dict(self.runtime_state, lastReceipt=dict(action="end_round", success=True))
+        self.coordinator._notify_session_transitions(state)
+        self.coordinator._notify_session_transitions(state)
+        self.assertEqual([n[0] for n in notices], ["本局已准备", "已取消准备"])
 
     def map_edge(self, sequence, opening):
         self.input.mapInputRequested.emit(dict(sequence=sequence, openIntent=opening,

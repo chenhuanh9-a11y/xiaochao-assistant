@@ -103,7 +103,7 @@ def main():
     record_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
     instance = record["installerInstance"]
     display = str(record["version"]["displayVersion"]) + instance["versionSuffix"]
-    setup_name = instance["setupPrefix"] + "-" + display + "-" + source["commit"][:12]
+    setup_name = build.setup_basename(instance, display, source["commit"])
     subprocess.run([str(args.iscc.resolve()), f"/DStageDir={stage}",
         f"/DSetupOutputDir={output / 'setup'}", f"/DSetupName={setup_name}",
         f"/DDisplayVersion={display}", f"/DNumericVersion={record['version']['numericVersion']}",

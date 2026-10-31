@@ -1,5 +1,36 @@
 # Qt Quick migration map
 
+## Release-candidate delta after accepted ACC1
+
+The user accepted ACC1 in game and then explicitly changed the group policy:
+automatic identification still discovers maps/groups, but subsequent evidence
+must not choose another member inside the same group. The first legal member is
+a provisional display preference, not manual or unique identity authority. The
+round/mode/member-set preference survives an evidence gap only as a preference;
+`none` still revokes identity/display, and fresh real same-group evidence is
+required before reuse. Different groups/resources, reselection and round end
+reset it. Manual choices retain current-frame geometry/material acceptance and
+atomic identity/route/aligned/reference publication. Floor observation and fit
+refresh remain active. The old automatic-review/resume action is removed.
+
+The expanded floating control contains the current-group choices by default,
+outside user layout modules. It has no new customization/enable switch and hides
+when no multi-member group exists. Selection is published only after acceptance.
+
+Preparation and real capture activation have distinct notices. `round-started`
+is emitted only after successful activation, before the first fit completes; the
+coordinator deduplicates actual lifecycle transitions. A bounded one-slot toast
+deferral preserves the start notice for 900 ms against fast informational success;
+errors, warnings and ending/cancelling the round preempt it and clear the slot.
+
+Production output uses the plain project display version and formal filename
+`星图-<displayVersion>-Setup.exe`. Commit/build fingerprint and numeric Windows
+file version remain in internal metadata/receipts. This is preparation of a
+release candidate, not permission to install or publish externally. Existing
+ACC1 and earlier artifacts remain unchanged. Targeted final-source/frozen
+control-click and notice evidence is recorded with the next artifact.
+
+
 ## Current acceptance boundary after 9A6
 
 The retained `9a6e8d596278056df53002396f673fa16f892e81` Setup passed its own

@@ -6,7 +6,8 @@ import unittest
 
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 os.environ.setdefault('QT_QUICK_BACKEND','software')
-from PySide6.QtCore import QObject, Property, Signal, QUrl, QCoreApplication, QEvent
+from PySide6.QtCore import QObject, Property, Signal, Slot, QUrl, QCoreApplication, QEvent, QPoint, QPointF, Qt
+from PySide6.QtTest import QTest
 from PySide6.QtGui import QGuiApplication, QFontDatabase
 from PySide6.QtQml import QQmlApplicationEngine
 import shiboken6
@@ -32,6 +33,7 @@ class State(QObject):
         super().__init__()
         self._busy = False
         self._mode = self._applied = 'nightmare'
+        self.calls = []
         self.data = dict(roundActive=True, roundPreparing=False, mapOpen=True,
             mapId='', provisionalMapId='nightmare-08', observedFloor='1',
             identityPhase='GROUP_LOCKED', groupLocked=True, groupId='similar-group',
@@ -41,6 +43,9 @@ class State(QObject):
     busy = Property(bool, lambda self: self._busy, notify=changed)
     currentMode = Property(str, lambda self: self._mode, notify=changed)
     appliedMode = Property(str, lambda self: self._applied, notify=changed)
+    @Slot(str, 'QVariantMap')
+    def dispatchWithPayload(self, action, payload):
+        self.calls.append((action, dict(payload)))
     def pulse(self, busy, frame):
         self._busy = busy
         self.data.update(pendingAction='refresh_map' if busy else '', frameId='frame-'+str(frame))
@@ -184,6 +189,99 @@ class ControlStabilityTests(unittest.TestCase):
         self.assertTrue(mode.property('selected'))
         self.assertFalse(self.item('controlModeDifficult').property('selected'))
         self.assertIn('正在切换',self.item('controlStatusText').property('text'))
+        self.assertFalse(self.warnings,'\n'.join(self.warnings))
+
+    def group(self):
+        self.session.data.update(groupMemberIds=['nightmare-08','nightmare-09','nightmare-08'],
+            groupMemberRows=[dict(mapId='nightmare-08',name='地图甲'),dict(mapId='nightmare-09',name='地图乙')],
+            currentGroupMemberId='nightmare-08',groupGeneration=8,cycleId=4,floor='1')
+        self.session.data['commands']['select_group_member']={'available':True}
+        self.session.changed.emit();APP.processEvents()
+
+    def click(self, name):
+        item = self.item(name)
+        point = item.mapToScene(QPointF(item.width()/2,item.height()/2))
+        QTest.mouseClick(self.window,Qt.LeftButton,Qt.NoModifier,QPoint(round(point.x()),round(point.y())))
+        APP.processEvents()
+
+    def test_default_group_picker_real_click_pending_failure_ack_and_blocked_reasons(self):
+        self.group()
+        self.window.show();QTest.qWait(20)
+        self.assertEqual(self.window.property('activeModules').toVariant(),['mode'])
+        self.assertTrue(self.item('controlGroupMemberSection').isVisible())
+        self.click('controlGroupMember_nightmare-09')
+        self.assertEqual(self.session.calls,[('select_group_member',dict(mapId='nightmare-09',
+            groupId='similar-group',groupGeneration=8,cycleId=4,floor='1'))])
+        self.assertTrue(self.item('controlGroupMember_nightmare-08').property('selected'))
+        self.assertFalse(self.item('controlGroupMember_nightmare-09').property('selected'))
+        self.session.data.update(groupMemberSelectionPending=True,pendingGroupMemberId='nightmare-09')
+        self.session.changed.emit();APP.processEvents()
+        self.assertFalse(self.item('controlGroupMember_nightmare-09').isEnabled())
+        self.assertIn('当前仍为地图甲',self.item('controlGroupMemberReason').property('text'))
+        self.click('controlGroupMember_nightmare-09')
+        self.assertEqual(len(self.session.calls),1)
+        self.session.data.update(groupMemberSelectionPending=False,groupMemberSelectionReason='切换未生效，请打开地图重试')
+        self.session.changed.emit();APP.processEvents()
+        self.assertTrue(self.item('controlGroupMember_nightmare-08').property('selected'))
+        self.assertIn('切换未生效',self.item('controlGroupMemberReason').property('text'))
+        self.session.data.update(currentGroupMemberId='nightmare-09',manualGroupMemberHeld=True,
+            identityPhase='MANUAL_MEMBER_CONFIRMED',groupMemberSelectionReason='')
+        self.session.changed.emit();APP.processEvents()
+        self.assertTrue(self.item('controlGroupMember_nightmare-09').property('selected'))
+        self.assertFalse(self.item('controlGroupMember_nightmare-09').isEnabled())
+        self.assertIn('本局已选：地图乙',self.item('controlGroupMemberCurrent').property('text'))
+        for changes, reason in [(dict(resourceLocked=True),'正在更新资源'),
+            (dict(resourceLocked=False,contextPending=True),'正在切换环境'),
+            (dict(contextPending=False,pendingAction='select_group_member'),'当前操作尚未完成')]:
+            self.session.data.update(changes)
+            self.session._busy=changes.get('pendingAction') is not None
+            self.session.changed.emit();APP.processEvents()
+            self.assertFalse(self.item('controlGroupMember_nightmare-08').isEnabled())
+            self.assertIn(reason,self.item('controlGroupMemberReason').property('text'))
+        self.assertFalse(self.warnings,'\n'.join(self.warnings))
+
+    def test_group_picker_instances_focus_and_narrow_scroll_survive_frame_updates(self):
+        self.group()
+        self.window.show();QTest.qWait(20)
+        button=self.item('controlGroupMember_nightmare-09')
+        pointer=shiboken6.getCppPointer(button)[0]
+        button.forceActiveFocus()
+        for frame in range(20):
+            self.session.pulse(True,frame)
+            self.assertEqual(shiboken6.getCppPointer(self.item('controlGroupMember_nightmare-09'))[0],pointer)
+            self.assertTrue(button.isEnabled())
+            self.assertTrue(button.hasActiveFocus())
+        self.session._busy=False
+        self.session.data['groupMemberRows'][1]['name']='很长的相似地图名称用于检查窄控件中的省略与滚动边界' * 3
+        self.session.changed.emit();APP.processEvents()
+        self.window.setProperty('expandedHeightLimit',240)
+        self.window.setWidth(240);QTest.qWait(20)
+        scroll=self.item('controlContentScroll')
+        button=self.item('controlGroupMember_nightmare-09')
+        self.assertEqual(self.window.height(),240)
+        self.assertGreater(scroll.property('contentHeight'),scroll.height())
+        self.assertLessEqual(button.width(),scroll.width())
+        self.assertLessEqual(button.mapToScene(QPointF(button.width(),0)).x(),self.window.width())
+        self.assertTrue(button.property('contentItem').property('truncated'))
+        self.window.setProperty('collapsed',True);APP.processEvents()
+        self.assertEqual((self.window.width(),self.window.height()),(64,64))
+        self.assertFalse(self.item('controlGroupMemberSection').isVisible())
+        self.assertTrue(self.item('controlCollapsedOrb').isVisible())
+        self.assertFalse(self.warnings,'\n'.join(self.warnings))
+
+    def test_no_group_or_single_member_has_no_picker(self):
+        self.window.show();APP.processEvents()
+        self.assertFalse(self.item('controlGroupMemberSection').isVisible())
+        self.group()
+        self.session.data['identityPhase']='MEMBER_VERIFIED'
+        self.session.changed.emit();APP.processEvents()
+        self.assertEqual(self.item('controlGroupMemberCurrent').property('text'),'当前地图：地图甲')
+        self.session.data.update(groupMemberIds=['nightmare-08'])
+        self.session.changed.emit();APP.processEvents()
+        self.assertFalse(self.item('controlGroupMemberSection').isVisible())
+        self.session.data.update(groupMemberIds=['nightmare-08','nightmare-09'],groupId='')
+        self.session.changed.emit();APP.processEvents()
+        self.assertFalse(self.item('controlGroupMemberSection').isVisible())
         self.assertFalse(self.warnings,'\n'.join(self.warnings))
 
 

@@ -43,7 +43,7 @@ class ChoicePlanTests(unittest.TestCase):
                         dict(groupMemberIds=["map-a", "map-c"]), dict(resourceLocked=True)):
             self.assertFalse(group_member_choice_is_current(plan, dict(current, **changes)))
 
-    def test_current_first_hold_duplicate_and_explicit_resume_do_not_grant_geometry(self):
+    def test_current_first_hold_duplicate_and_rejected_resume_do_not_grant_geometry(self):
         current = state()
         first = plan_group_member_choice(current, "select_group_member", payload(current, "map-a"))
         self.assertTrue(first.changed and first.hold)
@@ -55,10 +55,9 @@ class ChoicePlanTests(unittest.TestCase):
         self.assertTrue(duplicate.accepted)
         self.assertFalse(duplicate.changed)
         resume = plan_group_member_choice(held, "resume_group_automatic", payload(held))
-        self.assertTrue(resume.accepted and resume.changed)
-        self.assertFalse(resume.hold)
+        self.assertFalse(resume.accepted)
+        self.assertEqual(resume.reason,"unsupported-action")
         self.assertTrue(held["manualGroupMemberHeld"])
-        self.assertFalse(plan_group_member_choice(current, "resume_group_automatic", payload(current)).changed)
         # No profile, author image or pose was required/created by the planner.
         self.assertNotIn("liveAuthorization", vars(first))
         self.assertNotIn("matrix", vars(first))
@@ -96,7 +95,7 @@ class GroupChoiceUiTests(ui.RecognitionTests):
     test_candidate_select_previous_next_confirm_reselect_and_floor_flow = None
     test_unsupported_empty_state_disables_commands_and_has_no_browser_dependency = None
 
-    def test_click_pending_ack_hold_and_resume_are_separate_from_global_candidates(self):
+    def test_click_pending_ack_hold_has_no_resume_or_global_candidate_action(self):
         self.assertTrue(self.page.property("groupVisible"))
         self.assertTrue(self.item("groupMember_map-a").isEnabled())
         self.click("groupMember_map-b")
@@ -117,8 +116,7 @@ class GroupChoiceUiTests(ui.RecognitionTests):
         self.session.changed.emit(); ui.APP.processEvents()
         self.assertIn("本局已手动选择：地图乙", self.item("groupMemberCurrent").property("text"))
         self.assertFalse(self.item("groupMember_map-b").isEnabled())
-        self.click("groupMemberResumeAutomatic")
-        self.assertEqual(self.session.calls[-1], ("resume_group_automatic", payload(state(), "map-b")))
+        self.assertNotIn("groupMemberResumeAutomatic", [item.objectName() for item in self.page.findChildren(ui.QObject)])
         self.assertTrue(self.session.state["manualGroupMemberHeld"])
         self.assertFalse(any(action == "select_candidate" for action, _ in self.session.calls))
         self.assertEqual(self.warnings, [])

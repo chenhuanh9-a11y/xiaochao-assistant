@@ -13,19 +13,19 @@ from native_similarity_groups import NativeSimilarityState
 
 IDS = ("fixture-map", "second-map")
 
-def proposal(winner=None):
-    return dict(status="conditions", mode="nightmare", floor="1", resourceKey="fixture-index",
+def proposal(winner=None, mode="nightmare", floor="1"):
+    return dict(status="conditions", mode=mode, floor=floor, resourceKey="fixture-index-"+floor,
         complete=True, candidateMemberId=winner, originalIdentityHardGatePassed=bool(winner),
         conditionObservations=[dict(domainId="entrance", conditionId="family",
             completeForeignMapCompetition=True, currentCompetitionComplete=True,
             ambiguousViews=[], outsideCompetitors=[], activeViews=["a", "b"], expectedPoseIds=["a", "b"],
             memberIds=list(IDS), poseMaps={"a": IDS[0], "b": IDS[1]}, pairs=[])])
 
-def rows(winner=None):
+def rows(winner=None, mode="nightmare", floor="1"):
     result = [dict(mapId=mid, identityHardGatePassed=mid == winner, strongSuggestion=False,
-        difficultEntry=dict(mapId=mid, floor="1", verification=dict(success=True,
+        difficultEntry=dict(mapId=mid, floor=floor, verification=dict(success=True,
             matrixSourceToClient=np.eye(3).tolist()))) for mid in IDS]
-    result[0]["nativeSimilarity"] = proposal(winner)
+    result[0]["nativeSimilarity"] = proposal(winner,mode,floor)
     return result
 
 class SimilarityProtocolTests(unittest.TestCase):
@@ -36,8 +36,8 @@ class SimilarityProtocolTests(unittest.TestCase):
         self.capture.frame.fill(0)
         second = SimpleNamespace(id=IDS[1])
         self.engine.pack.maps.append(second); self.engine.pack.by_id[second.id] = second
-        self.engine.rank = Mock(return_value=rows())
-        self.engine.rank_established_group = Mock(return_value=rows())
+        self.engine.rank = Mock(return_value=rows(mode=self.engine.pack.mode))
+        self.engine.rank_established_group = Mock(return_value=rows(mode=self.engine.pack.mode))
         self.now = 1.0
         self.runtime._monotonic = lambda: self.now
         self.assertTrue(self.dispatch("start_round")["success"])
@@ -132,7 +132,7 @@ class SimilarityProtocolTests(unittest.TestCase):
             self.assertEqual(payload["durableMapId"], "")
             self.assertFalse(payload.get("liveAuthorization", payload.get("referenceAuthorized")))
         self.assertEqual(self.engine.rank.call_args.kwargs["budget_seconds"], 1.85)
-        self.assertEqual(self.engine.rank_established_group.call_args.kwargs["budget_seconds"], .2)
+        self.engine.rank_established_group.assert_not_called()
         self.assertIsNotNone(self.engine.native_similarity_context_provider())
         # Repeated pixels do not manufacture an extra temporal observation.
         self.assertEqual(len(self.runtime._identity_native.observations), 1)
@@ -150,7 +150,7 @@ class SimilarityProtocolTests(unittest.TestCase):
                 return_value=(self.fit["selectedRouteCurrentFrameResidual"], None)):
             self.assertTrue(self.dispatch("refresh_map")["success"])
         self.assertEqual(len(self.runtime._identity_native.observations), 2)
-        self.assertEqual(self.engine.rank_established_group.call_args.kwargs["budget_seconds"], .2)
+        self.assertEqual(self.engine.rank_established_group.call_args.kwargs["budget_seconds"], 1.85)
 
     def test_sibling_material_must_commit_before_cache_receipt_and_worker_remember(self):
         token = self.pending_sibling()["pendingSiblingToken"]
@@ -172,7 +172,7 @@ class SimilarityProtocolTests(unittest.TestCase):
         payload.update(changes)
         return self.dispatch(action,**payload)
 
-    def test_manual_group_member_commits_only_after_material_and_holds_until_explicit_resume(self):
+    def test_manual_group_member_commits_only_after_material_and_holds_until_end(self):
         source=self.capture_group()["renderToken"]
         with patch.object(self.runtime,"_learn_confirmation",side_effect=AssertionError("new chooser must not train")):
             result=self.group_choice(IDS[1])
@@ -198,11 +198,9 @@ class SimilarityProtocolTests(unittest.TestCase):
         self.assertTrue(self.runtime.snapshot()["manualGroupMemberHeld"])
         self.dispatch("close_map")
         self.assertTrue(self.runtime.snapshot()["manualGroupMemberHeld"])
-        self.assertTrue(self.group_choice(action="resume_group_automatic")["success"])
-        state=self.runtime.snapshot()
-        self.assertEqual(state["identityPhase"],"GROUP_LOCKED")
-        self.assertFalse(state["manualGroupMemberHeld"]);self.assertFalse(state["identityLocked"])
-        self.assertEqual(state["provisionalMapId"],IDS[1])
+        self.assertFalse(self.group_choice(action="resume_group_automatic")["success"])
+        self.assertTrue(self.runtime.snapshot()["manualGroupMemberHeld"])
+        self.assertNotIn("resume_group_automatic", self.runtime.snapshot()["availableCommands"])
         self.dispatch("end_round")
         self.assertFalse(self.runtime.snapshot()["manualGroupMemberHeld"])
 
@@ -214,15 +212,20 @@ class SimilarityProtocolTests(unittest.TestCase):
         self.assertEqual(result["reason"],"current-frame-floor-conflict")
         self.assertTrue(self.runtime.snapshot()["manualGroupMemberHeld"])
         self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
+        self.engine.rank_established_group.return_value=rows(IDS[1],floor="2")
         with patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=2)):
-            self.assertTrue(self.dispatch("capture_now")["success"])
+            result=self.dispatch("capture_now")
+            self.assertTrue(result["success"],result)
         state=self.runtime.snapshot()
         self.assertEqual((state["mapId"],state["floor"]),(IDS[1],"2"))
         self.assertEqual(self.runtime.reference_payload()["floor"],"2")
         self.assertTrue(state["manualGroupMemberHeld"])
 
     def test_new_manual_intent_immediately_rejects_old_auto_ack_during_target_fit(self):
-        old=self.pending_sibling();old_token=old["pendingSiblingToken"]
+        self.capture_group()
+        legacy=clone_similarity_state(self.runtime._identity_native)
+        legacy.pending_identity=(IDS[0],"1",self.runtime._identity_context())
+        old=self.runtime._stage_current_member_material("legacy-test",{},legacy);old_token=old["pendingSiblingToken"]
         source=old["renderToken"];entered,release=threading.Event(),threading.Event()
         fit=copy.deepcopy(self.fit);output=[]
         def blocked(*a,**kw):entered.set();release.wait(2);return fit
@@ -243,30 +246,14 @@ class SimilarityProtocolTests(unittest.TestCase):
         self.assertTrue(self.runtime.acknowledge_sibling(target,True)["success"])
         self.assertEqual(self.runtime.snapshot()["identityPhase"],"MANUAL_MEMBER_CONFIRMED")
 
-    def test_manual_intent_blocks_already_running_automatic_review_from_publishing(self):
-        self.capture_group();self.now=3.;self.capture.frame[0,0,0]=3
-        entered,release=threading.Event(),threading.Event()
-        def review(*a,**kw):entered.set();release.wait(2);return rows(IDS[1])
-        self.engine.rank_established_group.side_effect=review
-        refresh=[];manual=[]
-        with patch.object(_AlignmentHost,"_canonical_geometry_current_frame_residual",
-                return_value=(self.fit["selectedRouteCurrentFrameResidual"],None)):
-            old=threading.Thread(target=lambda:refresh.append(self.dispatch("refresh_map")))
-            old.start();self.assertTrue(entered.wait(2))
-            chosen=threading.Thread(target=lambda:manual.append(self.group_choice(IDS[1])))
-            chosen.start()
-            for _ in range(10000):
-                if self.runtime.snapshot()["groupMemberSelectionPending"]:break
-                threading.Event().wait(.0001)
-            self.assertTrue(self.runtime.snapshot()["groupMemberSelectionPending"])
-            release.set();old.join(2);chosen.join(2)
-        self.assertFalse(old.is_alive());self.assertFalse(chosen.is_alive())
-        self.assertTrue(manual[0]["success"],manual)
-        target=manual[0]["pendingSiblingToken"]
-        self.assertIsNotNone(self.runtime.pending_sibling_payload(target))
-        self.assertFalse(self.runtime.snapshot()["identityLocked"])
-        self.assertTrue(self.runtime.acknowledge_sibling(target,True)["success"])
-        self.assertEqual(self.runtime.snapshot()["identityPhase"],"MANUAL_MEMBER_CONFIRMED")
+    def test_passive_refresh_does_not_launch_member_review(self):
+        self.capture_group()
+        self.engine.rank_established_group.side_effect=AssertionError("routine member review removed")
+        self.now=3.;self.capture.frame[0,0,0]=3
+        with patch.object(_AlignmentHost,"_canonical_geometry_current_frame_residual",return_value=(self.fit["selectedRouteCurrentFrameResidual"],None)):
+            self.assertTrue(self.dispatch("refresh_map")["success"])
+        self.assertEqual(self.runtime.snapshot()["provisionalMapId"],IDS[0])
+        self.assertFalse(self.runtime.snapshot()["manualGroupMemberHeld"])
 
     def test_reselect_acceptance_clears_manual_hold_and_old_map_authority(self):
         self.capture_group()
@@ -336,31 +323,105 @@ class SimilarityProtocolTests(unittest.TestCase):
         self.assertFalse(self.runtime.snapshot()["manualGroupMemberHeld"])
         self.assertIsNone(self.runtime._render)
 
-    def test_original_unique_review_plus_current_pose_commits_identity(self):
+    def test_shared_both_modes_sticky_group_survives_winner_author_and_floor_index(self):
+        from client_live_runtime import LiveRuntime
+        for mode in ("nightmare","difficult"):
+            with self.subTest(mode=mode):
+                self.engine=fixtures.fixture_engine(mode)
+                self.runtime=LiveRuntime(engine_factories={mode:lambda:self.engine},capture_provider=self.capture,evidence_kind="synthetic",clock=lambda:1.)
+                self.dispatch("set_context",mode=mode)
+                self.capture_group()
+                self.engine.rank_established_group.return_value=rows(IDS[1],mode)
+                self.capture.frame[0,0,0]=9
+                result=self.dispatch("capture_now");self.assertTrue(result["success"],result)
+                self.assertNotIn("pendingSiblingToken",result)
+                self.assertEqual(self.runtime.snapshot()["provisionalMapId"],IDS[0])
+                self.assertFalse(self.runtime.snapshot()["manualGroupMemberHeld"])
+                self.assertTrue(self.dispatch("set_route_profile",profileId="another-author")["success"])
+                self.assertEqual(self.runtime.snapshot()["provisionalMapId"],IDS[0])
+                self.engine.rank_established_group.return_value=rows(IDS[1],mode,"2")
+                self.engine.qt_map_ui.observe=lambda *a:dict(mapOpen=True,floor="2")
+                with patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=2)):
+                    self.assertTrue(self.dispatch("set_floor",floor="2")["success"])
+                    result=self.dispatch("capture_now");self.assertTrue(result["success"],result)
+                self.assertEqual(self.runtime.snapshot()["provisionalMapId"],IDS[0])
+                for layer in (self.runtime.render_payload(result["renderToken"]),self.runtime.reference_payload()):
+                    self.assertEqual((layer["mapId"],layer["floor"]),(IDS[0],"2"))
+                self.dispatch("end_round")
+                self.assertEqual(self.runtime.snapshot()["identityPhase"],"UNLOCKED")
+
+    def test_different_discovered_group_can_initially_select_and_resource_reset_clears_it(self):
         self.capture_group()
-        self.engine.rank_established_group.return_value = rows(IDS[0])
-        self.now = 3.0; self.capture.frame[0, 0, 0] = 1
-        events = []; self.runtime.set_event_callback(events.append)
-        result = self.dispatch("capture_now")
-        self.assertTrue(result["success"], result)
-        self.assertEqual(self.runtime.snapshot()["identityPhase"], "GROUP_LOCKED")
-        self.assertEqual(self.runtime.snapshot()["mapId"], "")
-        target = result["pendingSiblingToken"]
-        source_core = self.runtime._core
-        self.assertIsNot(self.runtime._pending_sibling["core"], source_core)
-        self.assertTrue(self.runtime.acknowledge_sibling(target, True)["success"])
-        result["renderToken"] = target
-        state = self.runtime.snapshot()
-        self.assertEqual((state["identityPhase"], state["mapId"]), ("MEMBER_VERIFIED", IDS[0]))
-        self.assertTrue(state["identityLocked"])
-        self.assertFalse(self.runtime.render_payload(result["renderToken"])["provisional"])
-        self.assertEqual(sum(e["event"] == "identity-committed" for e in events), 1)
+        new_ids=("third-map","fourth-map")
+        for mid in new_ids:
+            item=SimpleNamespace(id=mid);self.engine.pack.maps.append(item);self.engine.pack.by_id[mid]=item
+        ranked=rows()
+        for row,mid in zip(ranked,new_ids):
+            row["mapId"]=mid;row["difficultEntry"]["mapId"]=mid
+        proposal=ranked[0]["nativeSimilarity"];proposal["resourceKey"]="another-logical-group"
+        condition=proposal["conditionObservations"][0];condition["memberIds"]=list(new_ids);condition["poseMaps"]={"a":new_ids[0],"b":new_ids[1]}
+        self.engine.rank_established_group.return_value=ranked
+        self.capture.frame[0,0,0]=5
+        result=self.dispatch("capture_now");self.assertTrue(result["success"],result)
+        state=self.runtime.snapshot();self.assertEqual(set(state["groupMemberIds"]),set(new_ids))
+        self.assertIn(state["provisionalMapId"],new_ids);self.assertFalse(state["manualGroupMemberHeld"])
+        self.runtime.invalidate("resources-changed")
+        state=self.runtime.snapshot();self.assertFalse(state["roundActive"]);self.assertFalse(state["groupMemberIds"])
+        self.assertIsNone(self.runtime.reference_payload())
+
+    def test_none_withdraws_authority_but_same_fresh_group_reuses_choice(self):
+        self.capture_group()
+        self.engine.rank_established_group.return_value=[]
+        self.capture.frame[0,0,0]=5
+        self.assertFalse(self.dispatch("capture_now")["success"])
+        self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
+        self.assertEqual(self.runtime.snapshot()["identityPhase"],"UNLOCKED")
+        self.assertIsNone(self.runtime.reference_payload())
+        self.engine.rank.return_value=rows(IDS[1])
+        self.capture.frame[0,0,0]=6
+        result=self.dispatch("capture_now");self.assertTrue(result["success"],result)
+        state=self.runtime.snapshot();self.assertEqual(state["provisionalMapId"],IDS[0])
+        self.assertEqual(state["identityPhase"],"GROUP_LOCKED");self.assertFalse(state["manualGroupMemberHeld"])
+        self.assertEqual(self.runtime.render_payload(result["renderToken"])["mapId"],IDS[0])
+
+    def test_round_started_event_is_once_after_capture_activation_only(self):
+        events=[];self.runtime.set_event_callback(events.append)
+        self.dispatch("start_round")
+        self.assertFalse(any(e["event"]=="round-started" for e in events))
+        self.assertTrue(self.dispatch("capture_now")["success"])
+        self.dispatch("capture_now")
+        started=[e for e in events if e["event"]=="round-started"]
+        self.assertEqual(len(started),1)
+        self.assertEqual((started[0]["mode"],started[0]["roundId"]),("nightmare",1))
+        self.dispatch("end_round");self.dispatch("start_round")
+        with patch.object(self.capture,"enable",return_value=False):
+            self.assertFalse(self.dispatch("capture_now")["success"])
+        self.assertEqual(len([e for e in events if e["event"]=="round-started"]),1)
+
+    def test_current_group_winner_does_not_promote_or_replace_initial_member(self):
+        self.capture_group()
+        self.engine.rank_established_group.return_value=rows(IDS[1])
+        self.now=3.;self.capture.frame[0,0,0]=1
+        result=self.dispatch("capture_now")
+        self.assertTrue(result["success"],result)
+        self.assertNotIn("pendingSiblingToken", result)
+        state=self.runtime.snapshot()
+        self.assertEqual((state["identityPhase"],state["mapId"],state["provisionalMapId"]),("GROUP_LOCKED","",IDS[0]))
+        self.assertFalse(state["manualGroupMemberHeld"])
+        for payload in (self.runtime.render_payload(result["renderToken"]),self.runtime.reference_payload()):
+            self.assertEqual(payload["mapId"],IDS[0])
+        self.engine.rank_established_group.reset_mock()
+        with patch.object(_AlignmentHost,"_canonical_geometry_current_frame_residual",return_value=(self.fit["selectedRouteCurrentFrameResidual"],None)):
+            self.assertTrue(self.dispatch("refresh_map")["success"])
+        self.engine.rank_established_group.assert_not_called()
 
     def verify_group_member(self):
+        # Exercise the retained strong-conflict consumer with an explicitly
+        # staged legacy verified state, not a removed automatic producer.
         self.capture_group()
-        self.engine.rank_established_group.return_value = rows(IDS[0])
-        self.now = 3.; self.capture.frame[0, 0, 0] = 1
-        result = self.dispatch("capture_now")
+        state=clone_similarity_state(self.runtime._identity_native)
+        state.pending_identity=(IDS[0], "1", self.runtime._identity_context())
+        result=self.runtime._stage_current_member_material("legacy-test", {}, state)
         self.assertTrue(self.runtime.acknowledge_sibling(result["pendingSiblingToken"], True)["success"])
         self.assertEqual(self.runtime.snapshot()["identityPhase"], "MEMBER_VERIFIED")
 
@@ -449,13 +510,21 @@ class SimilarityProtocolTests(unittest.TestCase):
         self.dispatch("close_map")
         self.assertIsNone(self.runtime.reference_payload())
 
-    def test_group_floor_transition_does_not_carry_provisional_identity(self):
+    def test_group_floor_transition_keeps_member_but_needs_current_pose(self):
         self.capture_group()
         self.dispatch("set_floor", floor="2")
         state = self.runtime.snapshot()
         self.assertEqual(state["mapId"], "")
         self.assertFalse(state["identityLocked"])
-        self.assertNotEqual(state["provisionalMapId"], IDS[0])
+        self.assertEqual(state["provisionalMapId"], IDS[0])
+        self.assertFalse(state["displayAuthorized"])
+        self.assertIsNone(self.runtime.reference_payload())
+        self.engine.rank_established_group.return_value=rows(IDS[1],floor="2")
+        with patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=2)):
+            result=self.dispatch("capture_now")
+            self.assertTrue(result["success"],result)
+        self.assertEqual(self.runtime.snapshot()["provisionalMapId"],IDS[0])
+        self.assertEqual(self.runtime.render_payload(self.runtime.snapshot()["render"]["token"])["floor"],"2")
 
     def test_late_rank_after_end_cannot_publish_group_or_pose(self):
         self.prepare_group()
@@ -494,11 +563,7 @@ class SimilarityProtocolTests(unittest.TestCase):
 
     def pending_sibling(self):
         self.capture_group()
-        self.engine.rank_established_group.return_value = rows(IDS[1])
-        self.now = 3.0; self.capture.frame[0, 0, 0] = 3
-        with patch.object(_AlignmentHost, "_canonical_geometry_current_frame_residual",
-                return_value=(self.fit["selectedRouteCurrentFrameResidual"], None)):
-            result = self.dispatch("refresh_map")
+        result = self.group_choice(IDS[1])
         self.assertTrue(result["success"], result)
         self.assertEqual(result["reason"], "sibling-material-pending")
         return result
@@ -517,7 +582,7 @@ class SimilarityProtocolTests(unittest.TestCase):
         ack = self.runtime.acknowledge_sibling(target, True, reason="fixture-material-ready")
         self.assertTrue(ack["success"], ack)
         state = self.runtime.snapshot()
-        self.assertEqual((state["identityPhase"], state["mapId"]), ("MEMBER_VERIFIED", IDS[1]))
+        self.assertEqual((state["identityPhase"], state["mapId"]), ("MANUAL_MEMBER_CONFIRMED", IDS[1]))
         self.assertEqual(self.runtime.render_payload(target)["mapId"], IDS[1])
         self.assertFalse(self.runtime.reference_payload()["provisional"])
         self.assertFalse(state["alignedVisible"])
@@ -537,7 +602,7 @@ class SimilarityProtocolTests(unittest.TestCase):
     def test_sibling_identity_rejection_after_material_keeps_source(self):
         result = self.pending_sibling()
         source_core = self.runtime._core
-        with patch.object(NativeSimilarityState, "confirm", return_value=False):
+        with patch.object(type(self.runtime._gate), "confirm", return_value=False):
             ack = self.runtime.acknowledge_sibling(result["pendingSiblingToken"], True, reason="fixture-material-ready")
         self.assertEqual(ack["reason"], "sibling-identity-commit-failed")
         self.assertTrue(ack["sourceRetained"]); self.assertIs(self.runtime._core, source_core)
@@ -563,18 +628,14 @@ class SimilarityProtocolTests(unittest.TestCase):
                 self.assertFalse(ack["success"]); self.assertFalse(ack["sourceRetained"])
                 self.assertEqual(self.runtime.snapshot()["mapId"], "")
 
-    def test_explicit_unique_sibling_rank_cannot_bypass_material_identity_ack(self):
-        self.capture_group()
-        self.engine.rank_established_group.return_value = rows(IDS[1])
-        self.now = 3.0; self.capture.frame[0, 0, 0] = 4
-        result = self.dispatch("capture_now")
-        self.assertEqual(result["reason"], "sibling-material-pending")
-        state = self.runtime.snapshot()
-        self.assertEqual((state["identityPhase"], state["mapId"]), ("GROUP_LOCKED", ""))
-        pending = self.runtime.pending_sibling_payload(result["pendingSiblingToken"])
-        self.assertEqual(pending["mapId"], IDS[1])
-        self.assertTrue(self.runtime.acknowledge_sibling(result["pendingSiblingToken"], True)["success"])
-        self.assertEqual(self.runtime.snapshot()["mapId"], IDS[1])
+    def test_explicit_member_winner_does_not_create_automatic_material(self):
+        self.capture_group();self.engine.rank_established_group.return_value=rows(IDS[1])
+        self.now=3.;self.capture.frame[0,0,0]=4
+        result=self.dispatch("capture_now")
+        self.assertTrue(result["success"],result)
+        self.assertNotIn("pendingSiblingToken",result)
+        self.assertEqual(self.runtime.snapshot()["provisionalMapId"],IDS[0])
+        self.assertIsNone(self.runtime._pending_sibling)
 
     def test_initial_solver_receives_original_index_candidates_only_when_enabled(self):
         host = _AlignmentHost(self.engine, settings=dict(poseIndexCandidatesEnabled=True))
@@ -596,7 +657,7 @@ class SimilarityProtocolTests(unittest.TestCase):
             self.assertEqual(solve.call_args.kwargs["pose_index_candidates"], [])
 
     def test_late_group_review_after_end_and_mode_change_cannot_commit(self):
-        self.prepare_group()
+        self.capture_group()
         entered, release = threading.Event(), threading.Event()
         def review(*a, **kw):
             entered.set(); self.assertTrue(release.wait(4)); return rows(IDS[0])

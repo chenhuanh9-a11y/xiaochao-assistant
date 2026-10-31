@@ -146,7 +146,7 @@ Item {
                     Label {
                         objectName: "groupMemberCurrent"
                         text: page.groupHeld ? "本局已手动选择：" + page.groupName(page.groupMember)
-                            : page.state.identityPhase === "MEMBER_VERIFIED" ? "自动确认：" + page.groupName(page.groupMember)
+                            : page.state.identityPhase === "MEMBER_VERIFIED" ? "当前地图：" + page.groupName(page.groupMember)
                             : "当前暂用：" + page.groupName(page.groupMember) + " · 成员待核对"
                         color: "#17365e"; font.pixelSize: 14; font.bold: true
                         wrapMode: Text.WordWrap; Layout.fillWidth: true
@@ -172,8 +172,6 @@ Item {
                         color: "#526785"; font.pixelSize: 13; wrapMode: Text.WordWrap; Layout.fillWidth: true
                     }
                     Label { visible: page.groupHeld; text: "手动选择在本局当前组内保持；切换楼层后仍需核对该层。结束本局或重新选图会清除。"; color: "#526785"; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-                    AppButton { objectName: "groupMemberResumeAutomatic"; visible: page.groupHeld; text: "恢复自动复核"; enabled: page.groupReason("resume_group_automatic") === ""; onClicked: session.dispatchWithPayload("resume_group_automatic", page.groupPayload(page.groupMember)) }
-                    Label { visible: page.groupHeld && page.groupReason("resume_group_automatic") !== page.groupReason("select_group_member"); text: page.groupReason("resume_group_automatic"); color: "#526785"; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                 }
             }
         }

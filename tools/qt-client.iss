@@ -42,6 +42,8 @@ AppName={#InstallerAppName}
 AppVersion={#DisplayVersion}
 AppVerName={#InstallerAppName} {#DisplayVersion}
 VersionInfoVersion={#NumericVersion}
+VersionInfoProductVersion={#DisplayVersion}
+VersionInfoDescription={#InstallerAppName} 安装程序
 #ifdef ProductionInstaller
 DefaultDirName={localappdata}\Programs\{#InstallerFolder}
 UsePreviousAppDir=yes

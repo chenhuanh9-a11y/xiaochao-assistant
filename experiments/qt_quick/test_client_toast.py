@@ -115,6 +115,25 @@ class ToastTests(unittest.TestCase):
         self.assertFalse(self.toast.isVisible())
         self.assertFalse(self.warnings, "\n".join(self.warnings))
 
+    def test_actual_start_notice_survives_fast_success_but_error_or_end_preempts(self):
+        self.coordinator.notificationRequested.emit("开始本局", "打开游戏地图后自动识别", "info")
+        self.coordinator.notificationRequested.emit("地图已识别", "当前图", "success")
+        self.assertEqual(self.toast.property("notificationTitle"), "开始本局")
+        self.assertTrue(self.toast.isVisible())
+        self.assertEqual(self.toast.property("eventRevision"), 1)
+        until(lambda: self.toast.property("notificationTitle") == "地图已识别")
+        self.assertEqual(self.toast.property("eventRevision"), 2)
+        self.coordinator.notificationRequested.emit("开始本局", "新一局", "info")
+        self.coordinator.notificationRequested.emit("地图已识别", "不得晚于结束重现", "success")
+        self.coordinator.notificationRequested.emit("本局已结束", "已停止", "info")
+        self.assertEqual(self.toast.property("notificationTitle"), "本局已结束")
+        self.assertFalse(self.toast.findChild(QObject, "toastDeferred").property("running"))
+        self.coordinator.notificationRequested.emit("开始本局", "新一局", "info")
+        self.coordinator.notificationRequested.emit("采集失败", "明确错误", "error")
+        self.assertEqual(self.toast.property("notificationTitle"), "采集失败")
+        self.assert_status_icon("error", "cross", "#b8364a")
+        self.assertFalse(self.warnings)
+
     def test_geometry_is_clamped_to_small_work_area_with_negative_origin(self):
         self.coordinator.area = dict(x=-100, y=40, width=90, height=70)
         self.coordinator.notificationRequested.emit("通知", "一段需要换行的原始通知文字", "info")

@@ -35,8 +35,14 @@ INSTANCES = {
                            setupPrefix="XingtuQtLayout-Setup", versionSuffix="-qt-layout-test", product=PRODUCT),
     "production": dict(appId="D04394A0-DACE-4FF9-874D-3DCB43EE53D1", appName="星图",
                        installFolder="XiaochaoAssistant", startMenuGroup="星图",
-                       setupPrefix="星图-安装程序", versionSuffix="-qt", product="星图"),
+                       setupPrefix="星图", versionSuffix="", product="星图"),
 }
+def setup_basename(instance, display, source_commit):
+    if instance["appId"] == INSTANCES["production"]["appId"]:
+        return f"{instance['setupPrefix']}-{display}-Setup"
+    return f"{instance['setupPrefix']}-{display}-{source_commit[:12]}"
+
+
 QML_MODULES = ("QtQml", "QtQuick", "QtQuick/Controls", "QtQuick/Controls/Basic",
                "QtQuick/Dialogs", "QtQuick/Dialogs/quickimpl", "QtQuick/Layouts")
 REQUIRED_RESOURCES = (
@@ -742,7 +748,7 @@ def main(argv=None):
         include, projection = write_production_files_include(stage, resources, output)
         plan["fileProjection"] = projection
         production_defines = ["/DProductionInstaller", f"/DProductionFilesInclude={include}"]
-    setup_name = f"{instance['setupPrefix']}-{display}-{source['commit'][:12]}"
+    setup_name = setup_basename(instance, display, source["commit"])
     subprocess.run([str(args.iscc.resolve()), f"/DStageDir={stage}", f"/DSetupOutputDir={output / 'setup'}",
                     f"/DSetupName={setup_name}", f"/DDisplayVersion={display}", f"/DNumericVersion={numeric}",
                     "/DInstallerAppId={{" + instance["appId"] + "}",

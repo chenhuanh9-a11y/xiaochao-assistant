@@ -20,8 +20,7 @@ if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 from alignment_core_v2 import AlignmentCoreV2
 from client_engine import (EngineAdapter, clone_similarity_state, stage_similarity_rank,
-                           INITIAL_IDENTITY_BUDGET_SECONDS, GROUP_IDENTITY_REVIEW_BUDGET_SECONDS,
-                           GROUP_IDENTITY_REVIEW_INTERVAL_SECONDS)
+                           INITIAL_IDENTITY_BUDGET_SECONDS)
 from floor_observation_policy import (MANUAL_FLOOR_HOLD_SECONDS,
                                       read_floor_evidence, decide_floor_transition, game_floor_control_hit)
 
@@ -347,6 +346,7 @@ class LiveRuntime:
         self._remember_proposals = {}
         self._pending_sibling = None
         self._manual_group_choice = None
+        self._group_member_preference = None
         self._group_intent_generation = getattr(self, "_group_intent_generation", 0) + 1
         self._group_choice_inflight = None
         self._group_choice_reason = ""
@@ -541,6 +541,16 @@ class LiveRuntime:
                 self.invalidate("capture-context-changed")
                 return None, None, "capture-context-changed"
             self._update_candidates(rows, floor)
+            group_key=(self._round,self._mode,frozenset(state.member_ids))
+            preference=self._group_member_preference
+            if (state.state == "GROUP_LOCKED" and len(state.member_ids)>1
+                    and preference is not None and preference[:3]==group_key
+                    and preference[3] in state.member_ids):
+                # A remembered choice is not recognition/display authority.
+                # Only a newly observed real group with the same members can
+                # reuse it, including after none evidence or floor index churn.
+                state.verified_member_id = state.pending_identity = None
+                state.provisional_member_id = preference[3]
             grouped = state.state == "GROUP_LOCKED"
             self._publish_identity_stage(state, rows, context, reason="ranked-current-frame")
             if (not grouped and previous is not None and previous.state == "GROUP_LOCKED"
@@ -568,6 +578,10 @@ class LiveRuntime:
                     self._durable_map_id = selected
                     self._identity_source = "automatic-hard-gate"
             if selected:
+                if grouped and len(state.member_ids)>1:
+                    self._group_member_preference=(*group_key,selected)
+                elif self._group_member_preference and selected not in self._group_member_preference[2]:
+                    self._group_member_preference=None
                 self._map_id = selected
                 self._gate.select(selected)
                 self._gate.confirm()
@@ -585,62 +599,6 @@ class LiveRuntime:
         if seed is None and len(accepted) == 1 and accepted[0].get("mapId") == selected:
             seed = accepted[0].get("difficultEntry")
         return selected, seed, False
-
-    def _continue_group(self, engine, frame, floor, epoch, frame_id, digest, obsolete):
-        """Original temporal consumer, after current residual/core commit only.
-
-        Every mutation belongs to a new worker-owned state. Publication is the
-        lock-protected context check; old worker results cannot advance a round.
-        """
-        with self._lock:
-            previous, prior, context = self._identity_native, self._identity_prior, self._identity_context()
-            map_id = self._map_id
-            intent_generation = self._group_intent_generation
-            if (previous is None or previous.state != "GROUP_LOCKED" or self._durable_map_id
-                    or self._group_choice_inflight is not None):
-                return None
-        state = clone_similarity_state(previous)
-        target_seed = None
-        now = self._monotonic()
-        work_key = (self._mode, self._cycle, str(floor), epoch, digest)
-        with self._lock:
-            last = self._identity_review_last
-        review = getattr(engine, "rank_established_group", None)
-        if (prior and callable(review) and (last is None or
-                (last[0] != work_key and now - last[1] >= GROUP_IDENTITY_REVIEW_INTERVAL_SECONDS))):
-            rows = review(frame, floor, prior=prior, budget_seconds=GROUP_IDENTITY_REVIEW_BUDGET_SECONDS)
-            accepted = [row for row in rows if row.get("identityHardGatePassed") is True
-                        and row.get("mapId") in state.member_ids]
-            if len(accepted) == 1:
-                target = accepted[0]["mapId"]
-                seeds = self._current_entry_seeds(rows, floor)
-                if target == map_id or target in seeds:
-                    # Same as the Tk group-review consumer: the final original
-                    # rank verdict stages identity; only current pose confirms.
-                    state.pending_identity = (target, str(floor), context)
-                    state.member_reference = None
-                    if target != map_id:
-                        target_seed = (target, seeds[target], state)
-            with self._lock:
-                if (not obsolete() and frame_id == self._frame_id
-                        and intent_generation == self._group_intent_generation):
-                    self._identity_review_last = (work_key, now)
-        with self._lock:
-            if (obsolete() or frame_id != self._frame_id or context != self._identity_context()
-                    or intent_generation != self._group_intent_generation or self._group_choice_inflight is not None
-                    or not self._identity_observation_current()
-                    or not self._core.can_display(cycle_id=self._cycle, map_id=map_id,
-                        floor=str(floor), frame_generation=self._frame_generation)):
-                return None
-            if target_seed is None and state.pending_identity == (map_id, str(floor), context):
-                target_seed = (map_id, None, state)
-            if target_seed is not None:
-                # Keep final identity off the published state until material
-                # acceptance, including a same-member/current-pose promotion.
-                return target_seed
-            self._publish_identity_stage(state, self._identity_rank_rows, context, reason="current-pose-observation")
-        self._notify("group-state", reason="similar-group-pending", identity=self._identity_fields())
-        return None
 
     def _stage_current_member_material(self, action, payload, state, *, manual_choice=None):
         with self._lock:
@@ -783,8 +741,9 @@ class LiveRuntime:
                         state.verified_member_id = state.pending_identity = None
                         state.generation += 1
                         self._manual_group_choice = (self._round, state.group_id, state.resource_key, target)
+                        self._group_member_preference=(self._round,self._mode,frozenset(state.member_ids),target)
                         self._identity_source = "manual-group-member"
-                        self._group_choice_reason = "本局已手动选择；可恢复自动复核"
+                        self._group_choice_reason = "本局保持手动选择"
                     self._core.revoke_display(reason="native-sibling-committed")
                     self._core, self._group, self._gate = pending["core"], pending["group"], gate
                     self._map_id = self._durable_map_id = target
@@ -822,13 +781,13 @@ class LiveRuntime:
 
     def _reset_provisional_floor(self, floor):
         if self._identity_native is not None and not self._durable_map_id and str(self._floor) != str(floor):
-            prior = self._identity_prior
-            self._reset_identity()
-            self._identity_prior = prior
-            self._map_id = ""
-            self._group = None
-            self._gate.select(None)
-            self._reference_sheet = None
+            # A floor-specific index/generation is not another logical group.
+            # Retain its member; discard floor-bound work and display authority.
+            self._discard_sibling()
+            self._group_intent_generation += 1
+            self._group_choice_inflight = None
+            self._reference_sheet = self._reference_capture_context = None
+            self._provisional_reference_context = None
 
     def _set_pose_phase(self, status, reason, map_id, floor, frame_id, generation, **extra):
         with self._lock:
@@ -1155,23 +1114,6 @@ class LiveRuntime:
                         self._group_choice_inflight = None
                     return self._receipt(action, payload, success=False, reason="group-choice-context-expired", stale=True)
                 state = clone_similarity_state(self._identity_native)
-                if action == "resume_group_automatic":
-                    self._group_choice_inflight = None
-                    self._manual_group_choice = None
-                    self._durable_map_id = ""
-                    state.state, state.verified_member_id, state.pending_identity = "GROUP_LOCKED", None, None
-                    state.provisional_member_id = self._map_id
-                    state.generation += 1
-                    self._identity_native, self._identity_priority = state, state.priority(self._mode)
-                    self._identity_source = "native-similar-group"
-                    self._identity_review_last = None
-                    self._group_choice_reason = "已恢复自动复核"
-                    for row in (self._render, self._reference_sheet):
-                        if row is not None:
-                            row.update(self._identity_fields())
-                    self._remember_provisional_reference()
-                    self._notify("group-state", reason="manual-group-hold-released", identity=self._identity_fields())
-                    return self._receipt(action, payload, success=True, reason="group-automatic-resumed")
                 observation = self._last_observation
                 if (not self._map_open or self._floor_required or observation is None
                         or observation["frame_id"] != self._frame_id
@@ -1187,7 +1129,7 @@ class LiveRuntime:
             result = self._solve_observation(action, payload, cancelled, engine, None, epoch,
                 observation["captured"], observation["frame"], floor, observation["digest"],
                 observation["capture_generation"], frame_generation, frame_id, cycle, plan.map_id,
-                review_group=False, identity_stage=state, manual_choice=plan)
+                identity_stage=state, manual_choice=plan)
             if not result.get("success"):
                 with self._lock:
                     if self._group_choice_inflight and self._group_choice_inflight[0] == intent:
@@ -1416,8 +1358,6 @@ class LiveRuntime:
                     if self._gate is not None and self._gate.selected_id and self._floor:
                         commands.append("confirm_route")
             if self._active and self._identity_native is not None and len(self._identity_native.member_ids) > 1:
-                if self._manual_group_choice is not None:
-                    commands.append("resume_group_automatic")
                 if self._map_open and not self._floor_required and self._last_observation is not None:
                     commands.append("select_group_member")
             if self._transient_cycle_current() and self._transient_drag is None:
@@ -1781,7 +1721,9 @@ class LiveRuntime:
     def dispatch(self, action, payload=None, cancelled=None):
         payload = dict(payload or {})
         action = str(action)
-        if action in ("select_group_member", "resume_group_automatic"):
+        if action == "resume_group_automatic":
+            return self._receipt(action, payload, success=False, reason="unsupported-action")
+        if action == "select_group_member":
             try:
                 return self._group_member_action(action, payload, cancelled)
             except Exception as error:
@@ -1988,6 +1930,7 @@ class LiveRuntime:
                 self._capture.disable()
                 return dict(success=False, reason="cancelled-or-stale", stale=True)
             self._active, self._round_preparing = True, False
+        self._notify("round-started", reason="round-active")
         return dict(success=True, reason="round-active")
 
     def _refresh_map(self, payload, cancelled):
@@ -2107,16 +2050,6 @@ class LiveRuntime:
                 dict(success=True, selectedRouteCurrentFrameResidual=residual), captured, self._group)
         self._set_pose_phase("valid", "current-pose-refreshed", map_id, floor, frame_id, generation)
         self._notify("render-ready", reason="current-pose-refreshed", token=render_token, unchanged=True)
-        target = self._continue_group(engine, frame, floor, epoch, frame_id, digest, obsolete)
-        if target is not None:
-            target_id, seed, staged = target
-            if target_id == map_id:
-                return self._stage_current_member_material("refresh_map", payload, staged)
-            replacement = self._solve_observation("refresh_map", payload, obsolete, engine, None, epoch,
-                captured, frame, floor, digest, capture_generation, generation, frame_id, cycle,
-                target_id, seed, review_group=False, identity_stage=staged)
-            if replacement.get("success"):
-                return replacement
         if obsolete():
             return self._receipt("refresh_map", payload, success=False, reason="cancelled-or-stale", stale=True)
         return self._receipt("refresh_map", payload, success=True, reason="current-pose-refreshed",
@@ -2256,9 +2189,9 @@ class LiveRuntime:
             new_group_observation = bool(action in ("map", "capture_now") and not self._durable_map_id
                 and self._identity_native is not None and self._identity_native.state == "GROUP_LOCKED")
         if not map_id or new_group_observation:
-            # Tk _begin_capture always ranks a fresh explicit map capture and
-            # _consume_native_similarity_ranked accumulates its current proposal.
-            # Passive refresh keeps its separate .2s final-identity review.
+            # Explicit capture still discovers the current logical group.
+            # A fresh same-group observation reuses its member preference;
+            # passive refresh only fits that member and never reselects it.
             map_id, entry_candidate, stale = self._rank_identity(engine, frame, floor, epoch, frame_id, cancelled)
             if stale:
                 return self._receipt(action, payload, success=False, reason=str(stale), stale=True)
@@ -2406,7 +2339,7 @@ class LiveRuntime:
 
     def _solve_observation(self, action, payload, cancelled, engine, group, epoch, captured, frame,
                            floor, digest, capture_generation, frame_generation, frame_id, cycle,
-                           map_id, entry_candidate=None, *, review_group=True, identity_stage=None, manual_choice=None):
+                           map_id, entry_candidate=None, *, identity_stage=None, manual_choice=None):
         import numpy as np
         from alignment_core_v2 import AlignmentCandidate
         from alignment_observation import rendered_profile_residual_is_verified
@@ -2585,17 +2518,6 @@ class LiveRuntime:
             return self._receipt(action, payload, success=True, reason="sibling-material-pending",
                 renderToken=source_token, pendingSiblingToken=render_token, diagnosticOnly=not live)
         self._notify("render-ready", reason="current-frame-pose-authorized", token=render_token, unchanged=False)
-        if review_group:
-            target = self._continue_group(engine, frame, floor, epoch, frame_id, digest, obsolete)
-            if target is not None:
-                target_id, seed, staged = target
-                if target_id == map_id:
-                    return self._stage_current_member_material(action, payload, staged)
-                replacement = self._solve_observation(action, payload, cancelled, engine, None, epoch,
-                    captured, frame, floor, digest, capture_generation, frame_generation, frame_id, cycle,
-                    target_id, seed, review_group=False, identity_stage=staged)
-                if replacement.get("success"):
-                    return replacement
         if obsolete():
             return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
         return self._receipt(action, payload, success=True, reason="current-frame-pose-authorized",

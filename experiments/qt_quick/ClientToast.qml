@@ -13,6 +13,8 @@ Window {
     readonly property string statusKind: notificationKind === "success" || notificationKind === "warning" || notificationKind === "error" ? notificationKind : "info"
     readonly property color statusColor: statusKind === "success" ? "#17775a" : statusKind === "warning" ? "#b7791f" : statusKind === "error" ? "#b8364a" : "#526785"
     property int eventRevision: 0
+    property double roundStartDeadline: 0
+    property var deferredNotice: null
     property var availableArea: ({x: 0, y: 0, width: 1, height: 1})
     readonly property real inset: Math.min(14, Math.max(0, (width - 1) / 4))
     width: Math.max(1, Math.min(480, Math.max(180, Math.max(titleMetrics.width, messageMetrics.width) + 58), availableArea.width - 32))
@@ -21,6 +23,9 @@ Window {
     y: Math.round(availableArea.y + Math.max(0, Math.min(16, availableArea.height - height)))
 
     function dismiss() {
+        deferred.stop()
+        deferredNotice = null
+        roundStartDeadline = 0
         expiry.stop()
         fade.stop()
         visible = false
@@ -29,6 +34,19 @@ Window {
     function present(title, message, kind) {
         var heading = String(title || ""), detail = String(message || "")
         if (!heading.trim() && !detail.trim()) return
+        var remaining = roundStartDeadline - Date.now()
+        // One bounded informational slot keeps a fast first-fit success from
+        // replacing the start event before the player can see it. Errors,
+        // warnings and ending the round always take precedence.
+        if (visible && remaining > 0 && heading !== "开始本局" && heading !== "本局已结束" && heading !== "已取消准备"
+                && kind !== "error" && kind !== "warning") {
+            deferredNotice = {title: heading, message: detail, kind: kind}
+            deferred.interval = Math.max(1, Math.ceil(remaining))
+            deferred.restart()
+            return
+        }
+        deferred.stop()
+        deferredNotice = null
         // The coordinator provides a real QScreen.availableGeometry work area,
         // choosing the target screen or primary screen; never a virtual desktop.
         var area = clientCoordinator.notificationGeometry
@@ -40,6 +58,7 @@ Window {
         expiry.stop()
         fade.stop()
         availableArea = {x: Number(area.x), y: Number(area.y), width: Number(area.width), height: Number(area.height)}
+        roundStartDeadline = heading === "开始本局" ? Date.now() + 900 : 0
         notificationTitle = heading
         notificationMessage = detail
         notificationKind = String(kind || "info")
@@ -49,11 +68,19 @@ Window {
         expiry.restart()
     }
     onClosing: function(event) { dismiss(); event.accepted = true }
-    onVisibleChanged: if (!visible) { expiry.stop(); fade.stop(); opacity = 1 }
+    onVisibleChanged: if (!visible) { deferred.stop(); deferredNotice = null; roundStartDeadline = 0; expiry.stop(); fade.stop(); opacity = 1 }
 
     Connections {
         target: clientCoordinator
         function onNotificationRequested(title, message, kind) { toast.present(title, message, kind) }
+    }
+    Timer {
+        id: deferred; objectName: "toastDeferred"; repeat: false
+        onTriggered: {
+            var notice = toast.deferredNotice
+            toast.deferredNotice = null
+            if (notice) toast.present(notice.title, notice.message, notice.kind)
+        }
     }
     Timer { id: expiry; objectName: "toastExpiry"; interval: 3200; repeat: false; onTriggered: fade.restart() }
     NumberAnimation { id: fade; objectName: "toastFade"; target: toast; property: "opacity"; from: 1; to: 0; duration: 280; onFinished: toast.dismiss() }

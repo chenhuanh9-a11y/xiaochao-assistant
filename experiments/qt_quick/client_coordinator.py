@@ -165,6 +165,8 @@ class ClientCoordinator(QObject):
         self._binding_identity = None
         self._last_catalog_notice = None
         self._last_round_active = False
+        self._last_prepared_round = None
+        self._last_round_preparing = False
         self._notified = set()
         self._bound = ""
         self._message = "选择游戏窗口后，再按需启用实时功能"
@@ -658,7 +660,7 @@ class ClientCoordinator(QObject):
             self._clear_reference()
         self._focus_notice = ""
         self._requested_action = action
-        if action in {"select_group_member", "resume_group_automatic"}:
+        if action == "select_group_member":
             # Supersede an older candidate material, while retaining the current
             # surface until this explicit choice validates and is accepted.
             self._cancel_pending_material("group-choice-requested")
@@ -1316,7 +1318,7 @@ class ClientCoordinator(QObject):
             if not reprojecting and pending not in {
                     "refresh_map", "reselect_map", "previous_candidate", "next_candidate",
                     "select_candidate", "confirm_route", "set_floor", "cycle_floor",
-                    "select_group_member", "resume_group_automatic"}:
+                    "select_group_member"}:
                 self._invalidate_display()
             self.changed.emit(); return
         state = self.session.snapshot
@@ -1483,7 +1485,21 @@ class ClientCoordinator(QObject):
                 self.notificationRequested.emit("快捷键暂不可用", summary, "warning")
 
     def _notify_session_transitions(self, state):
-        active = bool(state.get("roundActive"))
+        current = self.runtime.snapshot()
+        active = bool(current.get("roundActive", state.get("roundActive")))
+        receipt = state.get("lastReceipt", {})
+        prepared = (current.get("mode", state.get("mode")), current.get("roundId", state.get("roundId")))
+        preparing = bool(current.get("roundPreparing", state.get("roundPreparing")))
+        if (preparing and not active
+                and prepared == (state.get("mode"), state.get("roundId"))
+                and receipt.get("action") == "start_round" and receipt.get("success")
+                and prepared != self._last_prepared_round):
+            self._last_prepared_round = prepared
+            self.notificationRequested.emit("本局已准备", "打开游戏地图后开始识别", "info")
+        if (self._last_round_preparing and not preparing and not active
+                and receipt.get("action") in {"end_round", "stop_round"} and receipt.get("success")):
+            self.notificationRequested.emit("已取消准备", "本局识别尚未启动", "info")
+        self._last_round_preparing = preparing
         if active != self._last_round_active:
             self._last_round_active = active
             if active:
@@ -1649,7 +1665,11 @@ class ClientCoordinator(QObject):
         self._trace(name, payload=event, reason=event.get("reason", ""),
                     role="runtime", status=event.get("status"),
                     diag={key: event.get(key) for key in ("poseResult", "poseAttempt", "groupMemberIds") if key in event})
-        if name == "sibling-material-pending":
+        if name == "round-started":
+            # This event is emitted only after capture activation succeeds,
+            # before the first recognition/fit worker can finish.
+            self._notify_session_transitions(self.runtime.snapshot())
+        elif name == "sibling-material-pending":
             if self._pending_context:
                 self._trace("drop-event", payload=event, reason="presentation-context-pending")
                 return

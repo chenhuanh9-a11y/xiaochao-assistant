@@ -52,7 +52,7 @@ def plan_group_member_choice(state, action, payload):
     def reject(reason, message):
         return GroupMemberChoicePlan(False, False, reason, message)
 
-    if action not in {"select_group_member", "resume_group_automatic"}:
+    if action != "select_group_member":
         return reject("unsupported-action", "当前操作不属于相似组切换")
     scope = _scope(state)
     if (not state.get("roundActive") or not scope.group_id or len(scope.members) < 2
@@ -70,9 +70,6 @@ def plan_group_member_choice(state, action, payload):
     if state.get("groupMemberSelectionPending"):
         return reject("choice-pending", "正在核对上次选择，请等待结果")
     held = bool(state.get("manualGroupMemberHeld"))
-    if action == "resume_group_automatic":
-        return GroupMemberChoicePlan(True, held, "resume-automatic" if held else "already-automatic",
-            "恢复自动组内复核" if held else "当前已由自动复核选择", scope.current_member_id, False, scope)
     target = str(payload.get("mapId") or "")
     if target not in scope.members:
         return reject("outside-current-group", "只能选择当前相似组内的地图")

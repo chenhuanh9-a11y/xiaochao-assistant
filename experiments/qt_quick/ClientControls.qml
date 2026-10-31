@@ -18,13 +18,57 @@ Window {
     property int expandedHeightLimit: 640
     readonly property bool editing: clientCoordinator.referenceEditing === true
     readonly property bool effectiveCollapsed: collapsed && !editing
-    readonly property real naturalExpandedHeight: header.height + 24 + modules.implicitHeight + (editing ? 76 : 0)
+    readonly property real naturalExpandedHeight: header.height + 24 + scrollContent.implicitHeight + (editing ? 76 : 0)
     readonly property var preferences: settingsService.values
     readonly property var layout: preferences.gameControlLayout || ({order: [], enabled: [], display: {}})
     readonly property var snapshot: session.snapshot
+    property var groupChoices: []
+    property string groupChoicesKey: ""
+    readonly property bool groupVisible: !!snapshot.groupId && groupChoices.length > 1
+        && (snapshot.identityPhase === "GROUP_LOCKED" || snapshot.identityPhase === "MEMBER_VERIFIED"
+            || snapshot.identityPhase === "MANUAL_MEMBER_CONFIRMED")
+        && snapshot.candidateEditMode !== true
+    readonly property string groupMember: snapshot.currentGroupMemberId || snapshot.provisionalMapId
+        || snapshot.durableMapId || snapshot.mapId || ""
+    readonly property bool groupHeld: snapshot.manualGroupMemberHeld === true
+    readonly property bool groupPending: snapshot.groupMemberSelectionPending === true
     readonly property string appliedMode: session.appliedMode || session.currentMode
     readonly property var activeModules: layout.order.filter(function(key) { return layout.enabled.indexOf(key) >= 0 })
     readonly property var actionOrder: ["toggle-panel", "candidate-prev", "candidate-next", "confirm-round", "cycle-floor", "end-round", "toggle-sheet-visibility", "start-round", "toggle-round"]
+    Component.onCompleted: syncGroupChoices()
+    onSnapshotChanged: syncGroupChoices()
+    function syncGroupChoices() {
+        const ids = snapshot.groupMemberIds || []
+        const named = snapshot.groupMemberRows || []
+        const candidates = snapshot.candidateRows || []
+        const rows = []
+        for (let i = 0; i < ids.length; ++i) {
+            const id = String(ids[i])
+            if (!id || rows.some(row => row.mapId === id)) continue
+            const name = named.find(row => row.mapId === id) || candidates.find(row => row.mapId === id)
+            rows.push({mapId: id, name: name && name.name ? name.name : id})
+        }
+        const key = JSON.stringify(rows)
+        if (key !== groupChoicesKey) { groupChoicesKey = key; groupChoices = rows }
+    }
+    function groupName(id) {
+        const row = groupChoices.find(row => row.mapId === id)
+        return row ? row.name : (id || "待核对")
+    }
+    function groupReason() {
+        if (snapshot.contextPending || snapshot.roundPreparing) return "正在切换环境，请稍后选择"
+        if (snapshot.resourceLocked) return "正在更新资源，请稍后选择"
+        if (groupPending) return "正在核对所选地图，当前选择暂不改变"
+        if (session.busy && snapshot.pendingAction !== "refresh_map") return "当前操作尚未完成，请稍后选择"
+        if (!snapshot.roundActive) return "请先开始本局识别"
+        if (!snapshot.commands || !snapshot.commands.select_group_member || !snapshot.commands.select_group_member.available)
+            return snapshot.groupMemberSelectionReason || "请打开游戏地图后再选择"
+        return ""
+    }
+    function groupPayload(id) {
+        return {mapId: id, groupId: snapshot.groupId, groupGeneration: snapshot.groupGeneration,
+            cycleId: snapshot.cycleId, floor: String(snapshot.floor || "")}
+    }
     function available(action) {
         return !!snapshot.commands && !!snapshot.commands[action] && snapshot.commands[action].available
                && !snapshot.resourceLocked && (!session.busy || action === "end_round")
@@ -193,19 +237,64 @@ Window {
         }
         ScrollView {
             id: scroll
+            objectName: "controlContentScroll"
             anchors.left: parent.left; anchors.right: parent.right; anchors.top: header.bottom; anchors.bottom: editBar.top
             anchors.leftMargin: 12; anchors.rightMargin: 12; anchors.bottomMargin: 8
             clip: true; contentWidth: availableWidth
             ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
             ColumnLayout {
-                id: modules
+                id: scrollContent
                 width: scroll.availableWidth; spacing: 4
-                Repeater {
-                    model: panel.activeModules
-                    delegate: Loader {
-                        required property string modelData
-                        Layout.fillWidth: true
-                        sourceComponent: modelData === "display" ? displayModule : modelData === "mode" ? modeModule : modelData === "manual_map" || modelData === "map" ? manualMapModule : modelData === "recognition" ? recognitionModule : roundModule
+                ColumnLayout {
+                    objectName: "controlGroupMemberSection"
+                    visible: panel.groupVisible
+                    Layout.fillWidth: true; Layout.bottomMargin: visible ? 8 : 0; spacing: 4
+                    Label { text: "选择本组地图"; color: "#142b4b"; font.family: "Microsoft YaHei UI"; font.pixelSize: 13; font.bold: true; Layout.fillWidth: true }
+                    Label {
+                        objectName: "controlGroupMemberCurrent"
+                        text: (panel.groupHeld ? "本局已选：" : panel.snapshot.identityPhase === "MEMBER_VERIFIED" ? "当前地图：" : "当前暂用：") + panel.groupName(panel.groupMember)
+                        color: "#526785"; font.family: "Microsoft YaHei UI"; font.pixelSize: 12
+                        Layout.fillWidth: true; wrapMode: Text.Wrap
+                    }
+                    Repeater {
+                        model: panel.groupChoices
+                        delegate: ControlButton {
+                            id: memberButton
+                            required property var modelData
+                            objectName: "controlGroupMember_" + modelData.mapId
+                            text: modelData.name + (selected ? (panel.groupHeld ? " · 已选" : panel.snapshot.identityPhase === "MEMBER_VERIFIED" ? " · 当前" : " · 暂用") : "")
+                            selected: modelData.mapId === panel.groupMember
+                            enabled: !(selected && panel.groupHeld) && panel.groupReason() === ""
+                            Layout.fillWidth: true; implicitWidth: 1
+                            hint: modelData.name + (panel.groupReason() ? "\n" + panel.groupReason() : "")
+                            Accessible.name: text
+                            contentItem: Text {
+                                text: memberButton.text; font: memberButton.font
+                                color: !memberButton.enabled ? "#8491a7" : "#1f50cc"
+                                horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                                elide: Text.ElideRight
+                            }
+                            onClicked: session.dispatchWithPayload("select_group_member", panel.groupPayload(modelData.mapId))
+                        }
+                    }
+                    Label {
+                        objectName: "controlGroupMemberReason"
+                        text: panel.groupPending ? "正在核对：" + panel.groupName(panel.snapshot.pendingGroupMemberId) + "；当前仍为" + panel.groupName(panel.groupMember)
+                            : panel.groupReason() || panel.snapshot.groupMemberSelectionReason || "选定后，本局保持此地图；切换楼层仍需核对位置。"
+                        color: "#526785"; font.family: "Microsoft YaHei UI"; font.pixelSize: 11
+                        Layout.fillWidth: true; wrapMode: Text.Wrap
+                    }
+                }
+                ColumnLayout {
+                    id: modules
+                    Layout.fillWidth: true; spacing: 4
+                    Repeater {
+                        model: panel.activeModules
+                        delegate: Loader {
+                            required property string modelData
+                            Layout.fillWidth: true
+                            sourceComponent: modelData === "display" ? displayModule : modelData === "mode" ? modeModule : modelData === "manual_map" || modelData === "map" ? manualMapModule : modelData === "recognition" ? recognitionModule : roundModule
+                        }
                     }
                 }
             }
