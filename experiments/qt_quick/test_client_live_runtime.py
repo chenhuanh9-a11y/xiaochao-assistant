@@ -1014,6 +1014,25 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertEqual(result["strategy"], "shared-established-group-recovery")
         self.assertEqual(group.verified_floors, {"1"})  # proposal cannot mark target verified
 
+    def test_confirmed_entry_first_same_floor_miss_does_not_restart_scale_search(self):
+        from round_layer_group import RoundLayerGroup
+        for mode in ("nightmare", "difficult"):
+            with self.subTest(mode=mode):
+                engine = fixture_engine(mode)
+                engine.identity_profile_id = "shared-structure"
+                engine.side_entry_identity = SimpleNamespace(rank_entry=Mock())
+                group = RoundLayerGroup("fixture-map", "shared-structure", "1", np.eye(3))
+                host = _AlignmentHost(engine, group)
+                miss = dict(success=False, reason="structure-current-geometry-failed")
+                with patch("fast_structure_alignment.try_alignment", return_value=None), \
+                     patch("single_map_structure.solve", return_value=miss) as recovery, \
+                     patch.object(_AlignmentHost, "_reverify_entry", side_effect=AssertionError("same-floor miss is terminal")), \
+                     patch("single_map_structure.solve_initial_structure", side_effect=AssertionError("must not restart scale")):
+                    result = self.original_fit(host, self.capture.frame, "fixture-map", "1", lambda: False)
+                self.assertEqual(result, miss)
+                recovery.assert_called_once()
+                self.assertEqual(group.verified_floors, {"1"})
+
     def test_original_relation_recovery_only_specific_geometry_miss_falls_back_to_initial(self):
         from round_layer_group import RoundLayerGroup
         group = RoundLayerGroup("fixture-map", "shared-structure", "1", np.eye(3), relations={"2":np.eye(3)})

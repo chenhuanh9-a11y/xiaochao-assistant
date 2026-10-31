@@ -235,6 +235,14 @@ class _AlignmentHost:
             else getattr(self.engine, "identity_profile_id", None))
         entry_first = (identity_profile == "shared-structure"
             and callable(getattr(getattr(self.engine, "side_entry_identity", None), "rank_entry", None)))
+        if (fit is None and entry_first and entry_candidate is None and self.group is not None
+                and self.group.map_id == map_id and str(floor) in self.group.verified_floors
+                and self.group.route_profile_id == "shared-structure"):
+            # Legacy confirmed same-floor recovery is translation-only, even
+            # on a miss. Do not restart unknown-scale initial estimation.
+            fit = solve(self, frame, map_id, floor, "shared-structure", reference.clean_mask,
+                        cancelled=cancelled, _context=context)
+            strategy = "shared-established-group-recovery"
         def recover_existing_group():
             if self.group is not None and self.group.verified_floors and str(floor) in self.group.relations:
                 recovery = solve(self, frame, map_id, floor, "shared-structure", reference.clean_mask,
