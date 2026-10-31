@@ -189,7 +189,7 @@ class ProblemsService(QObject):
             return False
         names = ('role', 'kind', 'stage', 'action', 'reason', 'mode', 'groupid', 'identityPhase',
                  'provisional', 'durablemap', 'floor', 'round', 'cycle', 'frame', 'generation',
-                 'token', 'window', 'phase', 'status', 'visible', 'material')
+                 'token', 'window', 'phase', 'status', 'visible', 'material', 'decision')
         row = {}
         for name in names:
             if name not in event:

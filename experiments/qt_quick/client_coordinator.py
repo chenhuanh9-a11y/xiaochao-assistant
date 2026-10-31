@@ -1658,11 +1658,14 @@ class ClientCoordinator(QObject):
             self._clear_focus_return_plan()
             return
         try:
-            if self._native_windows.foreground_window() != int(self._bound or 0):
+            foreground = self._native_windows.foreground_window()
+            if foreground != int(self._bound or 0):
                 first_loss = not self._waiting_foreground
                 self._waiting_foreground = True
                 self._map_was_open = self._map_was_open or actual.get("mapOpen", state.get("mapOpen")) or (self.session.busy and self._requested_action in {"map", "capture_now"})
                 if first_loss:
+                    self._trace("foreground-change", state=actual, reason="game-lost-foreground",
+                                window=self._foreground_details(foreground))
                     # Revoke before the worker can finish; returning to the same
                     # HWND/size does not make a pre-focus-loss frame current.
                     self._revoke_runtime("foreground-lost")
@@ -1679,6 +1682,8 @@ class ClientCoordinator(QObject):
                 if self.session.busy:
                     return
                 self._waiting_foreground = False
+                self._trace("foreground-change", state=actual, reason="game-regained-foreground",
+                            window=self._foreground_details(foreground))
                 if self._focus_loss_map_sequence == self._map_input_sequence:
                     # Restore intent only at this synchronous return boundary,
                     # never from a later snapshot/receipt after another press.
@@ -1706,14 +1711,40 @@ class ClientCoordinator(QObject):
         except OSError:
             self.windows.hide("aligned")
 
+    def _foreground_details(self, foreground):
+        """Read identifiers only; never titles, foreign paths or activation."""
+        details = dict(name="foreground", expectedHwnd=str(self._bound), observedHwnd=str(foreground),
+                       ownerRole="bound-game" if foreground == int(self._bound or 0) else "other")
+        process_id = getattr(self._native_windows, "window_process_id", None)
+        if callable(process_id) and foreground:
+            try:
+                details["observedPid"] = process_id(foreground)
+            except OSError:
+                details["observedPid"] = None
+        for name, window in self.windows._windows.items():
+            try:
+                if window.isVisible() and int(window.winId()) == foreground:
+                    details["ownerRole"] = "assistant:" + name
+                    break
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                pass
+        return details
+
     @Slot(object)
     def _on_runtime_event(self, event):
         if self._closed or self._closing or not isinstance(event, dict):
             return
         name = event.get("event", "unknown")
-        self._trace(name, payload=event, reason=event.get("reason", ""),
+        payload, decision = event, {}
+        if name == "group-state":
+            identity = event.get("identity") or {}
+            payload = dict(event, **identity)
+            decision = dict(decision=dict(rankVerdict=event.get("rankVerdict", {}),
+                                          groupEvidence=event.get("groupEvidence", {})))
+        self._trace(name, payload=payload, reason=event.get("reason", ""),
                     role="runtime", status=event.get("status"),
-                    diag={key: event.get(key) for key in ("poseResult", "poseAttempt", "groupMemberIds") if key in event})
+                    diag={key: event.get(key) for key in ("poseResult", "poseAttempt", "groupMemberIds") if key in event},
+                    **decision)
         if name == "round-started":
             # This event is emitted only after capture activation succeeds,
             # before the first recognition/fit worker can finish.

@@ -63,6 +63,19 @@ def stage_similarity_rank(previous, rows, context, observation_id, display_membe
     return state, proposal
 
 
+def similarity_evidence_summary(proposal, state):
+    """Bounded identity diagnostics; never retain frames or packed samples."""
+    observations = proposal.get("conditionObservations") or ()
+    return dict(status=str(proposal.get("status", "none"))[:64],
+        complete=proposal.get("complete") is True, observationCount=len(observations),
+        foreignCompetitionCompleteCount=sum(o.get("completeForeignMapCompetition") is True for o in observations),
+        currentCompetitionCompleteCount=sum(o.get("currentCompetitionComplete") is True for o in observations),
+        ambiguousCount=sum(bool(o.get("ambiguousViews")) for o in observations),
+        conflictCount=sum(bool(o.get("conflictingViews")) for o in observations),
+        outsideCount=sum(bool(o.get("outsideCompetitors")) for o in observations),
+        eligibleMembers=list(state.member_ids)[:16])
+
+
 def registered_logical_family(engine, map_id, floor, *, required_members=()):
     """Resolve exact registered cohorts on the worker, retaining original checks.
 

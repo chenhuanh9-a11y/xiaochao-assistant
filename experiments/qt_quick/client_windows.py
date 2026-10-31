@@ -43,8 +43,11 @@ def _native_overlay_style(window, click_through):
     style = user.GetWindowLongW(handle, -20)
     if not style and ctypes.get_last_error():
         raise ctypes.WinError(ctypes.get_last_error())
+    expected = overlay_extended_style(style, click_through)
+    if expected == style:
+        return
     ctypes.set_last_error(0)
-    previous = user.SetWindowLongW(handle, -20, overlay_extended_style(style, click_through))
+    previous = user.SetWindowLongW(handle, -20, expected)
     if not previous and ctypes.get_last_error():
         raise ctypes.WinError(ctypes.get_last_error())
 
@@ -117,7 +120,8 @@ class WindowController(QObject):
         if existing is window:
             return
         self._windows[name] = window
-        self._state[name] = dict(visible=bool(window.isVisible()), clickThrough=False,
+        click_through = bool(window.flags() & Qt.WindowTransparentForInput)
+        self._state[name] = dict(visible=bool(window.isVisible()), clickThrough=click_through,
                                  opacity=float(window.opacity()), collapsed=False)
         window.destroyed.connect(self._window_destroyed)
         if hasattr(window, "visibleChanged"):
@@ -125,7 +129,7 @@ class WindowController(QObject):
         if name not in self.FOCUSABLE:
             window.setFlags(window.flags() | Qt.Tool | Qt.FramelessWindowHint
                             | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus)
-            _native_overlay_style(window, False)
+            _native_overlay_style(window, click_through)
         self._notify(name)
 
     def _unbind(self, name):
@@ -155,11 +159,15 @@ class WindowController(QObject):
             return
         if self._before_show is not None:
             self._before_show(window)
-        window.show()
+        was_visible = window.isVisible()
+        if not was_visible:
+            window.show()
         if name not in self.FOCUSABLE:
             _native_overlay_style(window, self._state[name]["clickThrough"])
+        changed = not self._state[name]["visible"]
         self._state[name]["visible"] = True
-        self._notify(name)
+        if changed:
+            self._notify(name)
 
     @Slot(str)
     def hide(self, name):
@@ -180,13 +188,16 @@ class WindowController(QObject):
             return
         visible = window.isVisible()
         flags = window.flags()
-        flags = flags | Qt.WindowTransparentForInput if enabled else flags & ~Qt.WindowTransparentForInput
-        window.setFlags(flags)
+        updated = flags | Qt.WindowTransparentForInput if enabled else flags & ~Qt.WindowTransparentForInput
+        if updated != flags:
+            window.setFlags(updated)
         _native_overlay_style(window, enabled)
-        if visible:
+        if visible and not window.isVisible():
             window.show()
+        changed = self._state[name]["clickThrough"] != bool(enabled)
         self._state[name]["clickThrough"] = bool(enabled)
-        self._notify(name)
+        if changed:
+            self._notify(name)
 
     @Slot(str, float)
     def setOpacity(self, name, opacity):

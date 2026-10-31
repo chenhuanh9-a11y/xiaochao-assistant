@@ -19,7 +19,7 @@ from client_paths import APP_ROOT, WORK_ROOT
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 from alignment_core_v2 import AlignmentCoreV2
-from client_engine import (EngineAdapter, clone_similarity_state, stage_similarity_rank, automatic_identity_candidates, registered_logical_family,
+from client_engine import (EngineAdapter, clone_similarity_state, stage_similarity_rank, automatic_identity_candidates, registered_logical_family, similarity_evidence_summary,
                            INITIAL_IDENTITY_BUDGET_SECONDS)
 from floor_observation_policy import (MANUAL_FLOOR_HOLD_SECONDS,
                                       read_floor_evidence, decide_floor_transition, game_floor_control_hit)
@@ -527,17 +527,19 @@ class LiveRuntime:
         self._identity_source = "group-default" if state.state=="GROUP_LOCKED" else "native-similarity"
         return True
 
-    def _rank_identity(self, engine, frame, floor, epoch, frame_id, cancelled):
+    def _rank_identity(self, engine, frame, floor, epoch, frame_id, cancelled, *, rediscover=False):
         with self._lock:
             previous, prior = self._identity_native, self._identity_prior
             context = self._identity_context()
             intent_generation = self._group_intent_generation
         review = getattr(engine, "rank_established_group", None)
         rows = (review(frame, floor, prior=prior, budget_seconds=INITIAL_IDENTITY_BUDGET_SECONDS)
-                if prior and callable(review) else engine.rank(frame, floor=floor,
+                if prior and callable(review) and not rediscover else engine.rank(frame, floor=floor,
                     limit=len(engine.pack.maps), budget_seconds=INITIAL_IDENTITY_BUDGET_SECONDS))
         seeds = self._current_entry_seeds(rows, floor)
-        state, proposal = stage_similarity_rank(previous, rows, context, hashlib.sha256(frame.tobytes()).hexdigest(), seeds, group_only=True)
+        state, proposal = stage_similarity_rank(None if rediscover else previous, rows, context,
+            hashlib.sha256(frame.tobytes()).hexdigest(), seeds, group_only=True)
+        group_evidence = similarity_evidence_summary(proposal, state)
         accepted = [row for row in rows if row.get("identityHardGatePassed") is True]
         top=rows[0] if rows else None
         block_member_unique=False
@@ -572,6 +574,28 @@ class LiveRuntime:
             self._automatic_candidate_rows=unresolved_candidates if block_member_unique and state.state!="GROUP_LOCKED" else automatic_identity_candidates(rows,state)
             group_key=(self._round,self._mode,frozenset(state.member_ids))
             preference=self._group_member_preference
+            previous_members = frozenset(previous.member_ids) if previous is not None else frozenset()
+            same_group = bool(state.state == "GROUP_LOCKED" and len(state.member_ids)>1
+                              and previous_members == frozenset(state.member_ids))
+            changed_group = bool(previous_members and state.state == "GROUP_LOCKED"
+                                 and previous_members != frozenset(state.member_ids))
+            if changed_group:
+                # A fresh, validated different family invalidates every old
+                # member transaction. A mere pose failure never reaches here.
+                self._discard_sibling()
+                self._group_intent_generation += 1
+                self._group_choice_inflight = None
+                self._manual_group_choice = self._desired_group_member = None
+                self._group_member_choice_status = self._group_choice_reason = ""
+                self._group_member_preference = preference = None
+                self._group = None
+                self._core.reset_round(reason="logical-group-changed")
+                self._steady.reset()
+                self._steady_material_ready = False
+                self._remember_proposals = {}
+                self._reference_sheet = self._reference_capture_context = None
+                self._provisional_reference_context = None
+                self._durable_map_id = ""
             if (state.state == "GROUP_LOCKED" and len(state.member_ids)>1
                     and preference is not None and preference[:3]==group_key
                     and preference[3] in state.member_ids):
@@ -588,13 +612,22 @@ class LiveRuntime:
                     self._desired_group_member=None
                     self._group_member_choice_status=""
             self._publish_identity_stage(state, rows, context, reason="ranked-current-frame")
+            if same_group and self._manual_group_choice is not None:
+                self._manual_group_choice = (self._round, state.group_id, state.resource_key, state.provisional_member_id)
+                self._identity_source = "manual-group-member"
             if (not grouped and previous is not None and previous.state == "GROUP_LOCKED"
-                    and not self._durable_map_id):
+                    and (rediscover or not self._durable_map_id)):
                 # A reset state no longer owns an automatic provisional choice.
                 # Keep warm geometric cache separate from withdrawn identity.
                 self._map_id = ""
+                self._durable_map_id = ""
                 self._gate.select(None)
                 self._group = None
+                self._discard_sibling()
+                self._group_intent_generation += 1
+                self._group_choice_inflight = self._manual_group_choice = None
+                if self._desired_group_member:
+                    self._group_member_choice_status = "awaiting-geometry"
                 self._reference_sheet = self._reference_capture_context = None
                 self._provisional_reference_context = None
             selected = (state.provisional_member_id if grouped and (state.context_snapshot()
@@ -617,11 +650,13 @@ class LiveRuntime:
                     self._group_member_preference=(*group_key,selected)
                 elif self._group_member_preference and selected not in self._group_member_preference[2]:
                     self._group_member_preference=None
+                    self._desired_group_member=None
+                    self._group_member_choice_status=self._group_choice_reason=""
                 self._map_id = selected
                 self._gate.select(selected)
                 self._gate.confirm()
         self._notify("group-state", reason=proposal.get("reason", proposal.get("status", "ranked")),
-            identity=self._identity_fields(), rankVerdict=dict(
+            identity=self._identity_fields(), groupEvidence=group_evidence, rankVerdict=dict(
                 topMapId=top.get("mapId") if top else None,
                 topStrongSuggestion=top.get("strongSuggestion") if top else None,
                 topIdentityHardGatePassed=top.get("identityHardGatePassed") if top else None,
@@ -1751,7 +1786,7 @@ class LiveRuntime:
             fields["errorPhase"] = "capture"
             raw_diagnostics = getattr(error, "capture_diagnostics", {})
             allowed = {"frameShape", "frameDtype", "roiClientBounds", "requestedClientBounds",
-                       "fullClientSize", "clientBounds", "dpi"}
+                       "fullClientSize", "clientBounds", "dpi", "expectedHwnd", "foregroundHwnd", "foregroundPid"}
             diagnostics = {key:value for key,value in raw_diagnostics.items() if key in allowed} if isinstance(raw_diagnostics, dict) else {}
             try:
                 state = getattr(self._capture, "snapshot", {})
@@ -2274,17 +2309,23 @@ class LiveRuntime:
             return self._receipt(action, payload, success=False, reason="candidate-awaiting-confirmation")
         ranked = []
         entry_candidate = None
-        if not map_id:
+        with self._lock:
+            rediscover_group = bool(action in ("map", "capture_now") and self._identity_native is not None
+                                    and self._identity_native.state == "GROUP_LOCKED")
+        if not map_id or rediscover_group:
             # Explicit capture still discovers the current logical group.
             # A fresh same-group observation reuses its member preference;
             # passive refresh only fits that member and never reselects it.
-            map_id, entry_candidate, stale = self._rank_identity(engine, frame, floor, epoch, frame_id, cancelled)
+            map_id, entry_candidate, stale = self._rank_identity(engine, frame, floor, epoch, frame_id, cancelled,
+                                                               rediscover=rediscover_group)
             if stale:
                 return self._receipt(action, payload, success=False, reason=str(stale), stale=True)
             if not map_id:
                 grouped = self._identity_fields()["groupLocked"]
                 return self._receipt(action, payload, success=grouped,
                     reason="similar-group-pending" if grouped else "identity-not-uniquely-verified", posePending=True)
+            with self._lock:
+                group = self._group
         if group is not None and group.map_id != map_id:
             group = None
         result=self._solve_observation(action, payload, cancelled, engine, group, epoch, captured, frame,

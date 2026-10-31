@@ -323,6 +323,33 @@ class SessionTests(unittest.TestCase):
 
 
 class WindowTests(unittest.TestCase):
+    def test_binding_retains_declared_passthrough_and_controls_remain_interactive(self):
+        from unittest.mock import patch
+        controller = WindowController()
+        toast, controls = FakeWindow(), FakeWindow()
+        toast.setFlags(toast.flags() | Qt.WindowTransparentForInput)
+        with patch("client_windows._native_overlay_style") as native:
+            controller.bindWindow("toast", toast)
+            native.assert_called_with(toast, True)
+            controller.bindWindow("controls", controls)
+            native.assert_called_with(controls, False)
+        self.assertTrue(controller.snapshot["toast"]["clickThrough"])
+        self.assertFalse(controller.snapshot["controls"]["clickThrough"])
+
+    def test_repeated_refresh_does_not_reapply_qt_flags_or_show_visible_window(self):
+        from unittest.mock import patch
+        controller, window = WindowController(), FakeWindow()
+        controller.bindWindow("aligned", window)
+        controller.setClickThrough("aligned", True)
+        controller.show("aligned")
+        count = window.show_count
+        with patch.object(window, "setFlags", wraps=window.setFlags) as flags:
+            for _ in range(20):
+                controller.setClickThrough("aligned", True)
+                controller.show("aligned")
+            flags.assert_not_called()
+        self.assertEqual(window.show_count, count)
+
     def test_only_registered_windows_and_passive_flags(self):
         controller = WindowController()
         window = FakeWindow()

@@ -1,5 +1,22 @@
 # Qt Quick migration map
 
+## D040 field-regression checkpoint: not releasable
+
+The 01:33–01:37 UTC D040 run failed initial identity five times before later
+foreground-capture rejection. Its original frames and rank details were not
+persisted, so neither symptom has a closed field root cause. The player has
+returned to 858; do not replace or manipulate that instance. No mouse-speed,
+cursor-position or clipping write was found in the three compared input paths.
+
+Current narrow source repairs preserve declared native passthrough (including
+Toast), avoid redundant window mutations, restore explicit logical-group
+rediscovery without member competition, and retain bounded decision/foreground
+identifiers in diagnostics. Same-family or absent evidence cannot erase player
+intent; a verified different family revokes the old scope. Source checks and an
+inactive-private-desktop native policy probe passed. They do not prove physical
+mouse behavior or fix the unavailable field inputs. D040's Setup remains intact
+and withdrawn; these follow-ups are not another released or installed package.
+
 ## Field follow-up after 8589747
 
 8589747 is retained as an artifact but is not ready for release. Its real run

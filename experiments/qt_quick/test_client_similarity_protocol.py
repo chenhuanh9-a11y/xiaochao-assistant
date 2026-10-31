@@ -32,6 +32,22 @@ class SimilarityProtocolTests(unittest.TestCase):
     setUp = fixtures.LiveRuntimeContracts.setUp
     dispatch = fixtures.LiveRuntimeContracts.dispatch
 
+    def test_group_evidence_summary_preserves_failed_observation_counts_without_samples(self):
+        import json
+        from client_engine import similarity_evidence_summary
+        native=proposal();native["complete"]=False
+        observation=native["conditionObservations"][0]
+        observation.update(ambiguousViews=["a"],conflictingViews=True,outsideCompetitors=["outside"],
+                           currentCompetitionComplete=False)
+        state=NativeSimilarityState()
+        evidence=similarity_evidence_summary(native,state)
+        self.assertEqual(evidence,dict(status="conditions",complete=False,observationCount=1,
+            foreignCompetitionCompleteCount=1,currentCompetitionCompleteCount=0,
+            ambiguousCount=1,conflictCount=1,outsideCount=1,eligibleMembers=[]))
+        state.member_ids=tuple(f"map-{i:02}" for i in range(100))
+        self.assertEqual(len(similarity_evidence_summary(native,state)["eligibleMembers"]),16)
+        self.assertLess(len(json.dumps(evidence).encode()),1024)
+
     def prepare_group(self):
         self.capture.frame.fill(0)
         second = SimpleNamespace(id=IDS[1])
@@ -140,16 +156,30 @@ class SimilarityProtocolTests(unittest.TestCase):
     def test_established_logical_group_never_runs_internal_member_competition(self):
         self.capture_group()
         self.engine.rank_established_group.side_effect=AssertionError("member competition forbidden")
-        self.engine.rank.side_effect=AssertionError("established group already recognized")
+        self.engine.rank.return_value=rows(IDS[1])
+        initial_calls=self.engine.rank.call_count
         for action in ("capture_now","refresh_map"):
             self.now+=2.;self.capture.frame[0,0,0]+=1
             with patch.object(_AlignmentHost,"_canonical_geometry_current_frame_residual",return_value=(self.fit["selectedRouteCurrentFrameResidual"],None)):
                 self.assertTrue(self.dispatch(action)["success"])
+        self.assertEqual(self.engine.rank.call_count,initial_calls+1)
+        self.engine.rank_established_group.assert_not_called()
         state=self.runtime.snapshot();self.assertEqual(len(state["automaticCandidateRows"]),1)
         candidate=state["automaticCandidateRows"][0]
         self.assertEqual(candidate["identityKind"],"group");self.assertEqual(candidate["groupId"],state["groupId"])
         self.assertEqual(set(candidate["memberIds"]),set(IDS));self.assertFalse(candidate["mapId"])
         self.assertEqual(state["identitySource"],"group-default");self.assertFalse(state["identityLocked"])
+
+    def test_explicit_map_open_rediscovers_family_without_reselecting_its_member(self):
+        self.capture_group()
+        count=self.engine.rank.call_count
+        self.engine.rank.return_value=rows(IDS[1])
+        self.engine.rank_established_group.side_effect=AssertionError("no member review")
+        result=self.dispatch("map",openIntent=True)
+        self.assertTrue(result["success"],result)
+        self.assertEqual(self.engine.rank.call_count,count+1)
+        self.assertEqual(self.runtime.snapshot()["provisionalMapId"],IDS[0])
+        self.assertFalse(self.runtime.snapshot()["manualGroupMemberHeld"])
 
     def test_sibling_material_must_commit_before_cache_receipt_and_worker_remember(self):
         token = self.pending_sibling()["pendingSiblingToken"]
@@ -211,7 +241,7 @@ class SimilarityProtocolTests(unittest.TestCase):
         self.assertEqual(result["reason"],"current-frame-floor-conflict")
         self.assertTrue(self.runtime.snapshot()["manualGroupMemberHeld"])
         self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
-        self.engine.rank_established_group.return_value=rows(IDS[1],floor="2")
+        self.engine.rank.return_value=rows(IDS[1],floor="2")
         with patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=2)):
             result=self.dispatch("capture_now")
             self.assertTrue(result["success"],result)
@@ -341,7 +371,7 @@ class SimilarityProtocolTests(unittest.TestCase):
                 self.assertFalse(self.runtime.snapshot()["manualGroupMemberHeld"])
                 self.assertTrue(self.dispatch("set_route_profile",profileId="another-author")["success"])
                 self.assertEqual(self.runtime.snapshot()["provisionalMapId"],IDS[0])
-                self.engine.rank_established_group.return_value=rows(IDS[1],mode,"2")
+                self.engine.rank.return_value=rows(IDS[1],mode,"2")
                 self.engine.qt_map_ui.observe=lambda *a:dict(mapOpen=True,floor="2")
                 with patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=2)):
                     self.assertTrue(self.dispatch("set_floor",floor="2")["success"])
@@ -576,7 +606,7 @@ class SimilarityProtocolTests(unittest.TestCase):
         self.assertEqual(state["provisionalMapId"], IDS[0])
         self.assertFalse(state["displayAuthorized"])
         self.assertIsNone(self.runtime.reference_payload())
-        self.engine.rank_established_group.return_value=rows(IDS[1],floor="2")
+        self.engine.rank.return_value=rows(IDS[1],floor="2")
         with patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=2)):
             result=self.dispatch("capture_now")
             self.assertTrue(result["success"],result)

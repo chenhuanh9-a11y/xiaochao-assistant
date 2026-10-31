@@ -88,6 +88,28 @@ class CoordinatorTests(unittest.TestCase):
             timer.stop()
         self.app.processEvents()
 
+    def test_foreground_diagnostics_identify_owned_role_without_activation(self):
+        self.windows._windows["toast"] = SimpleNamespace(isVisible=lambda: True, winId=lambda: 77)
+        self.native.window_process_id = Mock(return_value=700)
+        details = self.coordinator._foreground_details(77)
+        self.assertEqual(details["ownerRole"], "assistant:toast")
+        self.assertEqual(details["observedPid"], 700)
+        self.assertEqual(details["expectedHwnd"], "123")
+        self.assertFalse(any(key in details for key in ("title", "path", "executable")))
+
+    def test_group_trace_preserves_bounded_decision_and_identity_fields(self):
+        rows = []
+        self.coordinator.traceReported.connect(rows.append)
+        with patch.object(self.coordinator, "_present_runtime_state"):
+            self.coordinator._on_runtime_event(dict(event="group-state", reason="finite-conditions-evaluated",
+                identity=dict(identityPhase="UNLOCKED", groupId="", durableMapId=""),
+                rankVerdict=dict(topMapId="fixture", topIdentityHardGatePassed=False),
+                groupEvidence=dict(observationCount=2, ambiguousCount=1)))
+        trace = rows[0]
+        self.assertEqual(trace["identityPhase"], "UNLOCKED")
+        self.assertEqual(trace["decision"]["rankVerdict"]["topMapId"], "fixture")
+        self.assertEqual(trace["decision"]["groupEvidence"]["ambiguousCount"], 1)
+
     def _configure_input(self, values):
         # Mirrors the backend's important lifecycle seam: reconfigure disables
         # observation and therefore must not run for an opacity-only save.

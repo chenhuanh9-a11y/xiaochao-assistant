@@ -33,6 +33,16 @@ class FullClientCaptureTests(unittest.TestCase):
         self.backend.current=ClientCaptureContext((width,height),(20,30,20+width,30+height),dpi)
     def full(self):
         self.capture.bindFullClient(42);self.assertTrue(self.capture.enable())
+
+    def test_foreground_rejection_keeps_handle_diagnostics_without_capturing(self):
+        self.full()
+        self.capture._native.foreground_window = lambda: 77
+        self.capture._native.window_process_id = lambda hwnd: 700
+        with self.assertRaises(CaptureUnavailable) as failure:
+            self.capture.capture()
+        self.assertEqual(failure.exception.capture_diagnostics,
+                         dict(expectedHwnd=42, foregroundHwnd=77, foregroundPid=700))
+        self.assertEqual(self.backend.captures, [])
     def assert_full(self,captured):
         width,height=captured.context.full_client_size
         self.assertEqual(captured.frame_bgr.shape,(height,width,3))

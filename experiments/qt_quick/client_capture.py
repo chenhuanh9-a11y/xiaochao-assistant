@@ -167,8 +167,17 @@ class ClientCaptureProvider:
         try:
             if not self._native.is_window(hwnd):
                 raise CaptureUnavailable("Bound game window is unavailable; rebind explicitly")
-            if not global_key_is_allowed(hwnd, self._native.foreground_window()):
-                raise CaptureUnavailable("Bound game must own the foreground before capture")
+            foreground = self._native.foreground_window()
+            if not global_key_is_allowed(hwnd, foreground):
+                error = CaptureUnavailable("Bound game must own the foreground before capture")
+                error.capture_diagnostics = dict(expectedHwnd=hwnd, foregroundHwnd=foreground)
+                process_id = getattr(self._native, "window_process_id", None)
+                if callable(process_id) and foreground:
+                    try:
+                        error.capture_diagnostics["foregroundPid"] = process_id(foreground)
+                    except OSError:
+                        pass
+                raise error
             from client_region_capture import capture_client_region, client_capture_context
             context = client_capture_context(hwnd, _backend=self._backend)
             if full_client:

@@ -143,5 +143,22 @@ class ProblemTests(unittest.TestCase):
         self.assertEqual(rows[1]['previousRepeatedCount'],101)
         self.assertEqual(self.service.pool.maxThreadCount(),1)
 
+    def test_changed_identity_decision_survives_dedup_without_per_frame_writes(self):
+        trace = dict(role='runtime', stage='group-state', reason='finite-conditions-evaluated',
+                     identityPhase='UNLOCKED', decision=dict(rankVerdict=dict(topMapId='a'),
+                     groupEvidence=dict(ambiguousCount=1)))
+        self.service.recordTrace(trace)
+        for index in range(20):
+            self.service.recordTrace(dict(trace, frame=str(index), generation=index))
+        changed = dict(trace, decision=dict(rankVerdict=dict(topMapId='b'),
+                       groupEvidence=dict(ambiguousCount=0)))
+        self.service.recordTrace(changed)
+        self.drain()
+        rows = [json.loads(line) for line in self.service.log_path.read_text('utf-8').splitlines()]
+        self.assertEqual(len(rows),2)
+        self.assertEqual(rows[0]['decision']['groupEvidence']['ambiguousCount'],1)
+        self.assertEqual(rows[1]['decision']['rankVerdict']['topMapId'],'b')
+        self.assertEqual(self.service.recent,[])
+
 
 if __name__=='__main__':unittest.main()

@@ -10,6 +10,70 @@ import test_client_similarity_protocol as groups
 from test_client_session import APP,until
 
 class GroupQueueTests(unittest.TestCase):
+    def test_both_modes_explicit_group_rediscovery_preserves_choice_and_expires_other_domain(self):
+        for mode in ("nightmare", "difficult"):
+            with self.subTest(mode=mode):
+                fx=fixtures.LiveRuntimeContracts();fx.setUp()
+                try:
+                    engine=fixtures.fixture_engine(mode)
+                    new_ids=("third-map","fourth-map")
+                    for mid in (groups.IDS[1], *new_ids):
+                        item=SimpleNamespace(id=mid);engine.pack.maps.append(item);engine.pack.by_id[mid]=item
+                    engine.rank=Mock(return_value=groups.rows(mode=mode))
+                    engine.rank_established_group=Mock(side_effect=AssertionError("no internal member review"))
+                    fx.runtime=LiveRuntime(engine_factories={mode:lambda:engine},capture_provider=fx.capture,
+                        evidence_kind="synthetic",clock=lambda:1.)
+                    fx.runtime.dispatch("set_context",dict(mode=mode));session=SessionService(fx.runtime)
+                    def drive(action, **payload):
+                        session.dispatchWithPayload(action,payload);until(lambda:not session.busy)
+                        receipt=session.snapshot["lastReceipt"];self.assertEqual(receipt.get("action"),action)
+                        return receipt
+                    def choose(mid):
+                        state=session.snapshot
+                        return drive("select_group_member",mapId=mid,
+                            **{k:state[k] for k in ("groupId","groupGeneration","cycleId","floor")})
+                    drive("start_round");self.assertTrue(drive("capture_now")["success"])
+                    token=choose(groups.IDS[1])["pendingSiblingToken"]
+                    self.assertTrue(fx.runtime.acknowledge_sibling(token,True)["success"]);session.refreshRuntime()
+                    engine.rank.return_value=groups.rows(groups.IDS[0],mode)
+                    result=drive("capture_now");self.assertTrue(result["success"],result)
+                    self.assertEqual(session.snapshot["currentGroupMemberId"],groups.IDS[1])
+                    self.assertEqual(session.snapshot["desiredGroupMemberId"],groups.IDS[1])
+                    self.assertTrue(session.snapshot["manualGroupMemberHeld"])
+                    self.assertEqual(session.snapshot["identitySource"],"manual-group-member")
+                    count=engine.rank.call_count;drive("refresh_map")
+                    self.assertEqual(engine.rank.call_count,count)
+                    # A temporary lack of family evidence withdraws authority,
+                    # not the player's remembered intent.
+                    engine.rank.return_value=[]
+                    self.assertFalse(drive("capture_now")["success"])
+                    self.assertFalse(session.snapshot["groupLocked"])
+                    self.assertEqual(session.snapshot["desiredGroupMemberId"],groups.IDS[1])
+                    engine.rank.return_value=groups.rows(groups.IDS[0],mode)
+                    result=drive("capture_now");self.assertIn("pendingSiblingToken",result,session.snapshot);retry=result["pendingSiblingToken"]
+                    self.assertTrue(fx.runtime.acknowledge_sibling(retry,True)["success"]);session.refreshRuntime()
+                    self.assertEqual(session.snapshot["currentGroupMemberId"],groups.IDS[1])
+                    old_pending=choose(groups.IDS[0])["pendingSiblingToken"]
+                    old_scope={k:session.snapshot[k] for k in ("groupId","groupGeneration","cycleId","floor")}
+                    ranked=groups.rows(mode=mode)
+                    for row,mid in zip(ranked,new_ids):
+                        row["mapId"]=mid;row["difficultEntry"]["mapId"]=mid
+                    native=ranked[0]["nativeSimilarity"];native["resourceKey"]="different-family"
+                    observation=native["conditionObservations"][0]
+                    observation["memberIds"]=list(new_ids);observation["poseMaps"]={"a":new_ids[0],"b":new_ids[1]}
+                    engine.rank.return_value=ranked
+                    result=drive("capture_now");self.assertTrue(result["success"],result)
+                    self.assertEqual(set(session.snapshot["groupMemberIds"]),set(new_ids))
+                    self.assertFalse(session.snapshot["desiredGroupMemberId"])
+                    self.assertFalse(session.snapshot["manualGroupMemberHeld"])
+                    self.assertFalse(fx.runtime.acknowledge_sibling(old_pending,True)["success"])
+                    self.assertFalse(drive("select_group_member",mapId=groups.IDS[0],**old_scope)["success"])
+                    for surface in (fx.runtime.render_payload(result["renderToken"]),fx.runtime.reference_payload()):
+                        self.assertIn(surface["mapId"],new_ids);self.assertEqual(surface["floor"],"1")
+                    engine.rank_established_group.assert_not_called()
+                    drive("end_round");session.shutdown()
+                finally:fx.doCleanups()
+
     def test_both_modes_failed_desire_delay_material_ack_and_currentness_retry(self):
         for mode in ("nightmare","difficult"):
             with self.subTest(mode=mode):
