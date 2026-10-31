@@ -1462,7 +1462,7 @@ class ClientCoordinator(QObject):
             reprojecting = (pending == "set_context" and self._pending_context
                             and self._pending_context[0] == self._applied_context[0])
             if not reprojecting and pending not in {
-                    "refresh_map", "reselect_map", "previous_candidate", "next_candidate",
+                    "refresh_map", "probe_map_after_drag", "reselect_map", "previous_candidate", "next_candidate",
                     "select_candidate", "confirm_route", "set_floor", "cycle_floor",
                     "select_group_member"}:
                 self._invalidate_display()
