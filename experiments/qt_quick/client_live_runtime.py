@@ -318,6 +318,11 @@ class LiveRuntime:
         self._reference_sheet = None
         self._reference_capture_context = None
         self._settings = {}
+        self._map_selection_mode = "auto"
+        self._manual_selection_generation = 0
+        self._manual_selected_map_id = self._desired_manual_map_id = ""
+        self._manual_selection_status = self._manual_selection_reason = ""
+        self._resource_generation = 0
         self._gate = None
         self._candidate_rows = []
         self._candidate_edit = False
@@ -340,6 +345,9 @@ class LiveRuntime:
         return dict(mode=self._mode, profileId=self._profile, roundId=self._round, frameId=self._frame_id)
 
     def _clear_candidates(self):
+        self._manual_selection_generation += 1
+        self._manual_selected_map_id = self._desired_manual_map_id = ""
+        self._manual_selection_status = self._manual_selection_reason = ""
         self._reset_identity()
         self._reference_sheet = None
         self._reference_capture_context = None
@@ -477,7 +485,8 @@ class LiveRuntime:
         native = self._identity_native
         grouped = is_registered_identity_group(native)
         held = self._manual_group_choice is not None
-        phase = ("MANUAL_MEMBER_CONFIRMED" if held else "MEMBER_VERIFIED" if self._durable_map_id
+        phase = ("MANUAL_MAP_CONFIRMED" if self._manual_selected_map_id == self._durable_map_id and self._durable_map_id
+                 else "MANUAL_MEMBER_CONFIRMED" if held else "MEMBER_VERIFIED" if self._durable_map_id
                  else "GROUP_LOCKED" if grouped else "UNLOCKED")
         return dict(identityPhase=phase, identitySource=self._identity_source,
             identityLocked=bool(self._durable_map_id), durableMapId=self._durable_map_id,
@@ -738,6 +747,12 @@ class LiveRuntime:
             return False
         if pending.get("projection"):
             return bool(self._transient_cycle_current() and pending["group"] is self._group)
+        selection = pending.get("manualSelection")
+        if selection is not None:
+            from manual_selection_model import manual_selection_is_current
+            state = self.snapshot()
+            return bool(self._desired_manual_map_id == selection.map_id
+                        and manual_selection_is_current(selection, state))
         plan = pending.get("manualChoice")
         if plan is not None:
             from client_group_member_choice import group_member_choice_is_current
@@ -751,6 +766,8 @@ class LiveRuntime:
     def _discard_sibling(self):
         pending = self._pending_sibling
         self._pending_sibling = None
+        if pending is not None and pending.get("manualSelection") is not None and self._desired_manual_map_id:
+            self._manual_selection_status = "awaiting-geometry"
         if pending is not None and pending.get("manualChoice") is not None:
             self._group_choice_inflight = None
             if self._desired_group_member and self._group_member_choice_status!="confirmed":
@@ -809,6 +826,8 @@ class LiveRuntime:
         """
         with self._lock:
             pending = self._pending_sibling
+            if pending is not None and pending.get("manualSelection") is not None and pending["render"]["token"] == token:
+                return self._acknowledge_manual_selection(token, accepted, reason)
             if pending is not None and pending.get("projection") and pending["render"]["token"]==token:
                 return self._acknowledge_projection(token,accepted,reason)
             if pending is None or pending["render"]["token"] != token:
@@ -1197,6 +1216,145 @@ class LiveRuntime:
             return []
         return list(map(str, getattr(self._engine.pack, "floors", self._engine.identity_floors)))
 
+    def _manual_resource_identity(self):
+        return f"{self._mode}:{id(self._engine)}:{self._resource_generation}" if self._engine is not None else ""
+
+    def manual_selection_catalog(self):
+        """Bounded UI handoff of the exact active pack, never a candidate cohort."""
+        with self._lock:
+            return (self._engine.pack if self._engine is not None else None, self._manual_resource_identity())
+
+    def _manual_selection_pending(self):
+        return bool(self._desired_manual_map_id and self._manual_selection_status != "confirmed")
+
+    def _set_map_selection_mode(self, selection_mode):
+        from manual_selection_model import SELECTION_MODES
+        if selection_mode not in SELECTION_MODES:
+            return False
+        with self._lock:
+            if selection_mode != self._map_selection_mode:
+                self.invalidate("map-selection-mode-changed")
+                self._manual_selection_generation += 1
+                if self._manual_selection_pending():
+                    self._desired_manual_map_id = ""
+                    self._manual_selection_status = self._manual_selection_reason = ""
+                self._map_selection_mode = selection_mode
+        return True
+
+    def _select_manual_map(self, action, payload, cancelled):
+        from manual_selection_model import plan_manual_selection
+        with self._lock:
+            if self._cancelled(cancelled):
+                return self._receipt(action, payload, success=False, reason="cancelled", stale=True)
+            state = self.snapshot()
+            # A new explicit pick may supersede an earlier uncommitted intent.
+            state["manualSelectionPending"] = False
+            pack = self._engine.pack if self._engine is not None else None
+            plan = plan_manual_selection(state, payload, getattr(pack, "by_id", {}),
+                floors=self._available_floors(), default_floor=str(getattr(pack, "default_entry_floor", "1")))
+            if not plan.accepted or not plan.changed:
+                return self._receipt(action, payload, success=plan.accepted, reason=plan.reason, messageDetail=plan.message)
+            # Retain the old identity until ACK, but its map-cycle drag offset
+            # cannot route the newly selected map into the projection fast path.
+            self._transient_cycle = None
+            self.invalidate("manual-selection-requested")
+            self._manual_selection_generation += 1
+            self._desired_manual_map_id = plan.map_id
+            self._manual_selection_status = "awaiting-geometry"
+            self._manual_selection_reason = "已选择地图，等待当前楼层定位"
+            # The old identity stays explicit until ACK; neither old static
+            # pixels nor an old aligned token may masquerade as the new pick.
+            self._reference_sheet = self._reference_capture_context = None
+            self._candidate_edit = self._selection_pending = False
+            if not self._floor:
+                self._floor = plan.floor
+            epoch = self._epoch
+            active_open = self._active and self._map_open
+        if not active_open:
+            return self._receipt(action, payload, success=True, reason="manual-map-awaiting-geometry", choiceApplied=False)
+        with self._work:
+            if self._cancelled(cancelled) or epoch != self._epoch:
+                return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+            # A fresh full-client frame is mandatory for explicit selection.
+            try:
+                return self._capture_and_solve(action, payload, cancelled)
+            except Exception:
+                if self._cancelled(cancelled) or epoch != self._epoch:
+                    return self._receipt(action, payload, success=False, reason="manual-selection-expired", stale=True)
+                raise
+
+    def _solve_manual_selection(self, action, payload, cancelled, engine, epoch, observation):
+        from manual_selection_model import manual_selection_scope, plan_manual_selection
+        with self._lock:
+            if self._cancelled(cancelled) or epoch != self._epoch:
+                return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+            state = self.snapshot()
+            state["manualSelectionPending"] = False
+            request = dict(manual_selection_scope(state).payload(), mapId=self._desired_manual_map_id)
+            plan = plan_manual_selection(state, request, engine.pack.by_id,
+                floors=self._available_floors(), default_floor=str(getattr(engine.pack, "default_entry_floor", "1")))
+            if not plan.accepted:
+                return self._receipt(action, payload, success=False, reason=plan.reason)
+            intent = self._manual_selection_generation
+            floor, cycle, frame_id, generation = self._floor, self._cycle, self._frame_id, self._frame_generation
+        result = self._solve_observation(action, payload, cancelled, engine, None, epoch,
+            observation["captured"], observation["frame"], floor, observation["digest"],
+            observation["capture_generation"], generation, frame_id, cycle, plan.map_id,
+            manual_selection=plan)
+        with self._lock:
+            if intent != self._manual_selection_generation or epoch != self._epoch or self._cancelled(cancelled):
+                return self._receipt(action, payload, success=False, reason="manual-selection-expired", stale=True)
+            if not result.get("success") and not result.get("stale"):
+                self._manual_selection_status = "awaiting-geometry"
+                self._manual_selection_reason = "已选择地图，等待当前楼层定位；地图尚未切换"
+                return self._receipt(action, payload, success=True, reason="manual-map-awaiting-geometry",
+                                     choiceApplied=False, poseReason=result.get("reason"))
+        return result
+
+    def _acknowledge_manual_selection(self, token, accepted, reason):
+        """Same current-frame material transaction, without similarity membership."""
+        pending = self._pending_sibling
+        valid = self._pending_sibling_current(pending)
+        committed = False
+        if valid and accepted is True:
+            target = pending["render"]["mapId"]
+            gate = copy.copy(self._gate)
+            gate.select(target)
+            committed = bool(gate.confirm())
+            if committed:
+                self._core.revoke_display(reason="manual-map-material-committed")
+                self._core, self._group, self._gate = pending["core"], pending["group"], gate
+                self._map_id = self._durable_map_id = self._manual_selected_map_id = target
+                self._identity_native = self._identity_prior = self._identity_priority = None
+                self._manual_group_choice = self._group_member_preference = self._desired_group_member = None
+                self._group_choice_inflight = None
+                self._group_member_choice_status = self._group_choice_reason = ""
+                self._identity_source = "manual-map-selection"
+                self._manual_selection_status = "confirmed"
+                self._manual_selection_reason = "本局已使用所选地图"
+                self._render, self._reference_sheet = pending["render"], pending["reference"]
+                metadata = self._identity_fields()
+                self._render.update(metadata, requiresMaterialAck=False)
+                self._reference_sheet.update(metadata)
+                self._render_capture_context = self._reference_capture_context = pending["captureContext"]
+                proposal = self._remember_proposals.get(token)
+                if proposal is not None:
+                    proposal["context"], proposal["group"] = self._steady_context(), self._group
+                self._pending_sibling = None
+        if not committed:
+            self._discard_sibling()
+            self._manual_selection_reason = "已选择地图，等待当前显示资源就绪"
+        result = dict(success=committed, token=token, sourceRetained=False,
+            reason="manual-map-material-and-identity-committed" if committed else
+                   "manual-selection-material-rejected" if valid else "manual-selection-context-expired")
+        self._notify("sibling-committed" if committed else "sibling-rolled-back", token=token,
+            reason=result["reason"], materialReason=str(reason)[:256], sourceRetained=False)
+        if committed:
+            self.acknowledge_render_material(token)
+            self._notify("identity-committed", reason=result["reason"], identity=self._identity_fields())
+            self._notify("render-ready", token=token, reason=result["reason"], unchanged=False)
+        return result
+
     def _update_candidates(self, ranked, floor):
         # The legacy unfiltered view keeps every map; scores reorder, never hide.
         scores = {row["mapId"]: row for row in ranked}
@@ -1216,6 +1374,8 @@ class LiveRuntime:
     def _group_member_action(self, action, payload, cancelled):
         from client_group_member_choice import plan_group_member_choice, group_member_choice_is_current
         with self._lock:
+            if self._manual_selection_pending():
+                return self._receipt(action, payload, success=False, reason="manual-selection-pending")
             if payload.get("_retryIntent") is not None and payload["_retryIntent"]!=self._group_intent_generation:
                 return self._receipt(action,payload,success=False,reason="stale-group-choice-intent",stale=True)
             if self._cancelled(cancelled):
@@ -1312,6 +1472,11 @@ class LiveRuntime:
         if action in ("reselect_map", "map_reselection"):
             with self._work:
                 with self._lock:
+                    if self._desired_manual_map_id or self._manual_selected_map_id:
+                        self._manual_selection_generation += 1
+                        self._desired_manual_map_id = self._manual_selected_map_id = ""
+                        self._manual_selection_status = self._manual_selection_reason = ""
+                        self._discard_sibling()
                     epoch, mode = self._epoch, self._mode
                     engine = self._engine
                 engine = engine or self._factories[mode]()
@@ -1488,8 +1653,12 @@ class LiveRuntime:
                 # Geometry/foreground rechecks cannot establish pixel freshness.
                 # Manual UI actions explicitly capture once in the same worker.
                 return self._capture_and_solve(action, payload, cancelled)
+            if self._manual_selection_pending():
+                return self._solve_manual_selection(action, payload, cancelled, engine, epoch, observation)
             entry_candidate = None
             if not selected:
+                if self._map_selection_mode == "manual":
+                    return self._receipt(action, payload, success=True, reason="manual-map-selection-required", posePending=True)
                 if engine.pack.mode == "difficult" and str(floor) == "2":
                     return self._receipt(action, payload, success=False,
                         reason="difficult-f2-entry-recognition-disabled", posePending=True)
@@ -1514,6 +1683,9 @@ class LiveRuntime:
             guarded = (self._evidence_kind != "live-client-capture"
                        or callable(getattr(self._capture, "is_current", None)))
             commands = list(offline["availableCommands"])
+            commands.append("set_map_selection_mode")
+            if self._engine is not None and (self._active or self._prepared_round_ready):
+                commands.append("select_manual_map")
             commands += ["end_round", "close_map", "toggle_sheet_visibility"]
             if ready:
                 commands.append("reselect_map")
@@ -1561,6 +1733,15 @@ class LiveRuntime:
                                        "capture-provider-unavailable" if self._capture is None else
                                        capabilities[self._mode]["reason"] if not ready else ""),
                 roundActive=self._active, roundPreparing=self._round_preparing, mapOpen=self._map_open,
+                roundPrepared=self._prepared_round_ready,
+                mapSelectionMode=self._map_selection_mode,
+                manualSelectionGeneration=self._manual_selection_generation,
+                resourceIdentity=self._manual_resource_identity(),
+                manualSelectedMapId=self._manual_selected_map_id,
+                desiredManualMapId=self._desired_manual_map_id,
+                manualSelectionPending=self._manual_selection_pending(),
+                manualSelectionStatus=self._manual_selection_status,
+                manualSelectionReason=self._manual_selection_reason,
                 captureInProgress=self._capture_pending,
                 alignedVisible=self._aligned_visible,
                 automaticCandidateRows=self._candidate_summary(),
@@ -1624,6 +1805,7 @@ class LiveRuntime:
             if reason in ("map-closed", "escape", "foreground-lost", "capture-context-changed", "floor-unknown"):
                 self._map_open = False
             if "resource" in str(reason):
+                self._resource_generation += 1
                 self._active = self._map_open = self._round_preparing = False
                 self._prepared_round_ready = False
                 self._core.reset_round(reason=str(reason))
@@ -1678,6 +1860,10 @@ class LiveRuntime:
 
     def configure_settings(self, settings):
         """Update explicit solver preferences; mode/profile use set_context."""
+        if ("mapSelectionMode" in settings and
+                settings["mapSelectionMode"] != self._settings.get("mapSelectionMode")):
+            from manual_selection_model import normalize_selection_mode
+            self._set_map_selection_mode(normalize_selection_mode(settings["mapSelectionMode"]))
         with self._lock:
             variant_changed = settings.get("zhan10CoffinVariantId", "variant-01") != self._settings.get("zhan10CoffinVariantId", "variant-01")
             self._settings = copy.deepcopy(dict(settings))
@@ -1928,6 +2114,20 @@ class LiveRuntime:
     def dispatch(self, action, payload=None, cancelled=None):
         payload = dict(payload or {})
         action = str(action)
+        if action == "set_map_selection_mode":
+            if self._cancelled(cancelled):
+                return self._receipt(action, payload, success=False, reason="cancelled", stale=True)
+            accepted = self._set_map_selection_mode(payload.get("selectionMode"))
+            return self._receipt(action, payload, success=accepted,
+                reason="map-selection-mode-updated" if accepted else "invalid-map-selection-mode")
+        if action == "select_manual_map":
+            try:
+                return self._select_manual_map(action, payload, cancelled)
+            except Exception as error:
+                # Keep the explicit intent available for a fresh frame retry,
+                # but never publish a partial reference/identity transaction.
+                return self._receipt(action, payload, success=False,
+                    reason=f"{type(error).__name__}:{error}", error=True, **self._error_fields(error, action))
         if action == "resume_group_automatic":
             return self._receipt(action, payload, success=False, reason="unsupported-action")
         if action == "select_group_member":
@@ -2150,7 +2350,8 @@ class LiveRuntime:
         try:
             with self._lock:
                 if (self._capture_pending or self._group_choice_inflight is not None or self._transient_drag is not None
-                        or self._pending_sibling is not None and self._pending_sibling.get("projection")):
+                        or self._pending_sibling is not None and
+                        (self._pending_sibling.get("projection") or self._pending_sibling.get("manualSelection") is not None)):
                     return self._receipt("refresh_map", payload, success=True, reason="refresh-coalesced", coalesced=True)
                 if not self._active or not self._map_open:
                     return self._receipt("refresh_map", payload, success=False, reason="map-refresh-not-active")
@@ -2383,7 +2584,7 @@ class LiveRuntime:
             pending_selection = self._selection_pending
         if pending_selection:
             self._revoke_render("candidate-awaiting-confirmation")
-        if action == "refresh_map" and not pending_selection:
+        if action == "refresh_map" and not pending_selection and not self._manual_selection_pending():
             renewed = self._try_refresh_current(payload, captured, frame, floor, digest, capture_generation,
                                                  engine, epoch, obsolete, floor_read=floor_read)
             if renewed is not None:
@@ -2409,9 +2610,13 @@ class LiveRuntime:
                 row["floor"] = floor
         if pending_selection:
             return self._receipt(action, payload, success=False, reason="candidate-awaiting-confirmation")
+        if self._manual_selection_pending():
+            return self._solve_manual_selection(action, payload, cancelled, engine, epoch, self._last_observation)
         ranked = []
         entry_candidate = None
         if not map_id:
+            if self._map_selection_mode == "manual":
+                return self._receipt(action, payload, success=True, reason="manual-map-selection-required", posePending=True)
             if not map_id and engine.pack.mode == "difficult" and str(floor) == "2":
                 return self._receipt(action, payload, success=False,
                     reason="difficult-f2-entry-recognition-disabled", posePending=True)
@@ -2569,12 +2774,14 @@ class LiveRuntime:
 
     def _solve_observation(self, action, payload, cancelled, engine, group, epoch, captured, frame,
                            floor, digest, capture_generation, frame_generation, frame_id, cycle,
-                           map_id, entry_candidate=None, *, identity_stage=None, manual_choice=None):
+                           map_id, entry_candidate=None, *, identity_stage=None, manual_choice=None,
+                           manual_selection=None):
         import numpy as np
         from alignment_core_v2 import AlignmentCandidate
         from alignment_observation import rendered_profile_residual_is_verified
         from round_layer_group import RoundLayerGroup
         obsolete = lambda: self._cancelled(cancelled) or epoch != self._epoch
+        staged_material = identity_stage is not None or manual_selection is not None
         width, height = captured.context.full_client_size
         with self._lock:
             if obsolete() or frame_id != self._frame_id or floor != self._floor:
@@ -2615,7 +2822,7 @@ class LiveRuntime:
                 displayKind=display["displayKind"], displayLabel=display["displayLabel"],
                 routeProfileId=display["routeProfileId"], authorStatus=display.get("authorStatus", "none"), fallback=display.get("fallback", False),
                 fallbackReason=display.get("fallbackReason", ""), **self._identity_fields())
-            if (identity_stage is None and not self._transient_cycle_current() and self._gate is not None
+            if (not staged_material and not self._transient_cycle_current() and self._gate is not None
                     and self._gate.confirmed_id == map_id and self._map_id == map_id):
                 # A selected static sheet is not aligned pixels or a durable
                 # identity promotion. Keep its provisional metadata explicit.
@@ -2644,7 +2851,7 @@ class LiveRuntime:
             return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
         if not fit.get("success"):
             reason = str(fit.get("reason", "pose-fit-failed"))
-            reopened = self._consume_identity_conflict(fit, engine=engine, epoch=epoch, captured=captured,
+            reopened = False if manual_selection is not None else self._consume_identity_conflict(fit, engine=engine, epoch=epoch, captured=captured,
                 capture_generation=capture_generation, frame_id=frame_id, frame_generation=frame_generation,
                 cycle=cycle, map_id=map_id, floor=floor)
             self._set_pose_phase("rejected", reason, map_id, floor, frame_id, frame_generation)
@@ -2677,7 +2884,7 @@ class LiveRuntime:
             if not self._capture_is_current(captured.context, capture_generation):
                 self.invalidate("capture-context-changed")
                 return self._receipt(action, payload, success=False, reason="capture-context-changed", stale=True)
-            core = self._copy_pose_core(self._core) if identity_stage is not None else self._core
+            core = self._copy_pose_core(self._core) if staged_material else self._core
             self._seed_group_core(core,group)
             core.begin_observation(cycle_id=cycle, map_id=map_id, floor=floor,
                                          frame_generation=frame_generation, frame_signature=(digest,))
@@ -2720,8 +2927,8 @@ class LiveRuntime:
                 liveAuthorization=live, evidenceKind=self._evidence_kind, **self._identity_fields())
             render_token = target_render["token"]
             self._register_material_proposal(target_render, frame, fit, captured, target_group)
-            if identity_stage is not None:
-                if manual_choice is None and (self._render is None or not self._display_current(self._render)):
+            if staged_material:
+                if manual_choice is None and manual_selection is None and (self._render is None or not self._display_current(self._render)):
                     return self._receipt(action, payload, success=False, reason="sibling-source-authorization-expired", stale=True)
                 self._discard_sibling()
                 source_token = self._render["token"] if self._render is not None else ""
@@ -2729,10 +2936,14 @@ class LiveRuntime:
                     manualGroupChoice=manual_choice is not None,
                     provisionalMapId=map_id, provisional=True, identityLocked=False, durableMapId="")
                 if manual_choice is not None:self._group_member_choice_status="awaiting-material"
+                if manual_selection is not None:
+                    self._manual_selection_status = "awaiting-material"
+                    self._manual_selection_reason = "地图位置已核对，正在同步定点与贴合显示"
                 self._pending_sibling = dict(scope=self._sibling_scope(), sourceCore=self._core,
                     sourceToken=source_token, sourceMapId=self._map_id, core=core,
                     group=target_group, identity=identity_stage, render=target_render,
-                    reference=reference_sheet, captureContext=captured.context, manualChoice=manual_choice)
+                    reference=reference_sheet, captureContext=captured.context, manualChoice=manual_choice,
+                    manualSelection=manual_selection)
             else:
                 self._map_id = map_id
                 self._gate.select(map_id)
@@ -2743,7 +2954,7 @@ class LiveRuntime:
                 self._reference_capture_context = captured.context
                 self._remember_provisional_reference()
         self._set_pose_phase("valid", "current-frame-pose-authorized", map_id, floor, frame_id, frame_generation)
-        if identity_stage is not None:
+        if staged_material:
             self._notify("sibling-material-pending", reason="target-current-pose-awaiting-material", token=render_token,
                 sourceMapId=self._map_id, targetMapId=map_id)
             return self._receipt(action, payload, success=True, reason="sibling-material-pending",

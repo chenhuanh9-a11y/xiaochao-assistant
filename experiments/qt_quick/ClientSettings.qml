@@ -9,8 +9,10 @@ Item {
     readonly property var preferences: settingsService.values
     property var profileOptions: []
     property string profilesMode: ""
-    readonly property var actionNames: ["显示/隐藏面板", "上一个候选", "下一个候选", "确认本局", "切换楼层", "结束本局", "显示/隐藏小抄", "开始本局", "开始/结束本局"]
-    readonly property var actionIds: ["toggle-panel", "candidate-prev", "candidate-next", "confirm-round", "cycle-floor", "end-round", "toggle-sheet-visibility", "start-round", "toggle-round"]
+    readonly property var pickerService: typeof manualSelection !== "undefined" ? manualSelection : null
+    readonly property var pickerState: pickerService ? pickerService.snapshot : ({mode: "auto", canSetMode: false})
+    readonly property var actionNames: ["显示/隐藏面板", "上一个候选", "下一个候选", "确认本局", "切换楼层", "结束本局", "显示/隐藏小抄", "开始本局", "开始/结束本局", "打开/关闭手动选图"]
+    readonly property var actionIds: ["toggle-panel", "candidate-prev", "candidate-next", "confirm-round", "cycle-floor", "end-round", "toggle-sheet-visibility", "start-round", "toggle-round", "manual-map-picker"]
     readonly property var moduleNames: ({display: "显示", mode: "游戏模式", manual_map: "选择地图与楼层", recognition: "候选与再识别", round: "本局动作"})
     property bool advancedShortcuts: false
     property bool advancedDisplay: false
@@ -190,6 +192,14 @@ Item {
                 }
             }
         }
+        RowLayout {
+            Layout.fillWidth: true
+            Label { text: "选图方式"; color: "#354f75" }
+            AppButton { objectName: "settingsAutoMapMode"; text: "自动识别"; selected: root.pickerState.mode === "auto"; enabled: root.pickerState.canSetMode; onClicked: root.pickerService.setMode("auto") }
+            AppButton { objectName: "settingsManualMapMode"; text: "手动选图"; selected: root.pickerState.mode === "manual"; enabled: root.pickerState.canSetMode; onClicked: root.pickerService.setMode("manual") }
+            Label { text: "立即应用并保存"; color: "#647793"; font.pixelSize: 12 }
+            Item { Layout.fillWidth: true }
+        }
         ScrollView {
             id: scroll
             objectName: "settingsScroll"
@@ -232,7 +242,7 @@ Item {
                                 Layout.fillWidth: true
                                 spacing: 6
                                 Repeater {
-                                    model: [1, 2, 3, 4, 5, 7]
+                                    model: [1, 2, 3, 4, 5, 7, 9]
                                     delegate: ShortcutRow {
                                         required property int modelData
                                         actionIndex: modelData

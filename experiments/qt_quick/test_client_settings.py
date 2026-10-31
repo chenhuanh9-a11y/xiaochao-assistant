@@ -151,12 +151,25 @@ class SettingsTests(unittest.TestCase):
             self.write({"actionHotkeys": keys, "hotkey": "F11"})
             service = self.service()
             expected = keys + (["F12"] if len(keys) == 6 else [])
-            expected += [""] * (9 - len(expected))
+            expected += [""] * (len(ACTION_ORDER) - len(expected))
             self.assertEqual(service.values["actionHotkeys"], expected)
             service.setValue("orbVisible", False)
             service.save()
             self.wait(lambda: not service.busy)
             self.assertEqual(json.loads(self.path.read_text())["actionHotkeys"], keys)
+
+    def test_manual_picker_extension_roundtrips_without_changing_legacy_slot_count(self):
+        service = self.service()
+        keys = list(service.values["actionHotkeys"])
+        keys[9] = "Ctrl+M"
+        self.assertTrue(service.setValue("actionHotkeys", keys))
+        self.assertTrue(service.saveFields(["actionHotkeys"]))
+        self.wait(lambda: not service.busy)
+        raw = json.loads(self.path.read_text())
+        self.assertEqual(raw["actionHotkeys"], keys[:9])
+        self.assertEqual(raw["manualMapPickerHotkey"], "Ctrl+M")
+        self.assertTrue(service.reload())
+        self.assertEqual(service.values["actionHotkeys"], keys)
 
     def test_duplicate_save_and_late_completion_preserve_new_draft(self):
         service = self.service()

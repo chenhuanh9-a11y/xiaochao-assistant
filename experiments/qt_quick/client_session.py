@@ -32,6 +32,7 @@ COMMANDS = (
     "set_game_mode", "set_route_profile", "rank_saved_frame",
     "load_saved_result", "load_saved_pose", "set_context", "cancel",
     "stop_round", "reset_round",
+    "set_map_selection_mode", "select_manual_map",
 )
 
 

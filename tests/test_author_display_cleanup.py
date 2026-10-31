@@ -1,0 +1,159 @@
+"""Display-only cleanup safety, provenance, cache and role agreement."""
+from pathlib import Path
+import copy
+import hashlib
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+import cv2
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'app'))
+import author_display_cleanup as cleanup
+from optional_author_displays import OptionalAuthorDisplays
+
+
+def fixture():
+    image = np.zeros((100, 140, 4), np.uint8)
+    image[4:96, 4:136] = (1, 1, 1, 255)
+    image[10:90, 10:130] = (100, 110, 120, 255)
+    image[40:47, 40:47, :3] = 1  # Enclosed dark symbol must stay dark.
+    image[7:11, 65:70] = (0, 0, 255, 255)  # Exterior route / marker.
+    image[70:80, 100:110] = (240, 240, 240, 255)
+    image[74:77, 103:107] = (1, 1, 1, 255)  # Text on its light label.
+    return image
+
+
+def binding(data):
+    return dict(profileId='nightingale', assetSha256=hashlib.sha256(data).hexdigest(),
+        transformApplications=1, matrixChanged=False, identityAuthority=False,
+        structureValidationAuthority=False,
+        registration=dict(sourceR3ManifestSha256='a' * 64, sourceR3RegistrationId='fixture'),
+        coordinateBridge=dict(authorGeometryErrorUnchanged=True,
+            proof='fixture: exact R4 base dependency'))
+
+
+class AuthorDisplayCleanupTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / 'map.png'
+        self.image = fixture()
+        self.data = cv2.imencode('.png', self.image)[1].tobytes()
+        self.path.write_bytes(self.data)
+        self.declaration = binding(self.data)
+
+    def test_exterior_alpha_only_preserves_dark_details_and_coloured_guard(self):
+        original = self.image.copy()
+        result, report = cleanup.derive_r4_display_alpha(self.image, 'nightingale')
+        self.assertEqual(report['status'], 'cleaned')
+        self.assertGreater(report['removedPixels'], 0)
+        np.testing.assert_array_equal(self.image, original)
+        np.testing.assert_array_equal(result[:, :, :3], original[:, :, :3])
+        self.assertEqual(result.shape, original.shape)
+        self.assertEqual(result[5, 5, 3], 0)
+        np.testing.assert_array_equal(result[40:47, 40:47], original[40:47, 40:47])
+        np.testing.assert_array_equal(result[70:80, 100:110], original[70:80, 100:110])
+        np.testing.assert_array_equal(result[5:13, 63:72], original[5:13, 63:72])
+        again, _ = cleanup.derive_r4_display_alpha(result, 'nightingale')
+        np.testing.assert_array_equal(again, result)
+
+    def test_unknown_or_opaque_source_is_unchanged(self):
+        for profile in ('wang-qingxin', 'lianghapi-single', 'aichicu-difficult', 'zhan10-nightmare', 'unknown'):
+            result, report = cleanup.derive_r4_display_alpha(self.image, profile)
+            self.assertEqual(report['status'], 'unsupported-source')
+            np.testing.assert_array_equal(result, self.image)
+        opaque = self.image.copy()
+        opaque[:, :, 3] = 255
+        result, report = cleanup.derive_r4_display_alpha(opaque, 'nightingale')
+        self.assertEqual(report['status'], 'missing-transparent-boundary')
+        np.testing.assert_array_equal(result, opaque)
+
+    def test_ambiguous_or_dominant_background_is_not_erased(self):
+        textured = self.image.copy()
+        textured[4:96:2, 4:136, :3] = (36, 28, 22)
+        result, report = cleanup.derive_r4_display_alpha(textured, 'nightingale')
+        self.assertEqual(report['status'], 'ambiguous-background')
+        np.testing.assert_array_equal(result, textured)
+        sparse = np.zeros_like(self.image)
+        sparse[4:96, 4:136] = (1, 1, 1, 255)
+        sparse[40:60, 50:90] = (100, 100, 100, 255)
+        result, report = cleanup.derive_r4_display_alpha(sparse, 'nightingale')
+        self.assertEqual(report['status'], 'ambiguous-coverage')
+        np.testing.assert_array_equal(result, sparse)
+
+    def test_family_requires_provenance_and_keeps_unverified_bytes(self):
+        self.assertIsNotNone(cleanup.r4_source_family(self.declaration))
+        for key, value in [('profileId', 'zhan10-nightmare'), ('transformApplications', 2),
+                           ('registration', {}), ('coordinateBridge', {})]:
+            declaration = dict(self.declaration, **{key: value})
+            self.assertIsNone(cleanup.r4_source_family(declaration))
+        cache = cleanup.AuthorDisplayCleanupCache()
+        declaration = dict(self.declaration, assetSha256='b' * 64)
+        np.testing.assert_array_equal(cache.pixels(self.path, declaration), self.image)
+        self.assertEqual(cache.report(self.path)['status'], 'unverified-asset')
+
+    def test_hash_cache_reuses_derivation_and_returns_independent_arrays(self):
+        cache = cleanup.AuthorDisplayCleanupCache()
+        duplicate = self.path.with_name('same.png')
+        duplicate.write_bytes(self.data)
+        with patch.object(cleanup, 'derive_r4_display_alpha', wraps=cleanup.derive_r4_display_alpha) as derive:
+            first = cache.pixels(self.path, self.declaration)
+            expected = first.copy()
+            first[:, :, :] = 0
+            second = cache.pixels(self.path, self.declaration)
+            third = cache.pixels(duplicate, self.declaration)
+            self.assertEqual(derive.call_count, 1)
+        np.testing.assert_array_equal(second, expected)
+        np.testing.assert_array_equal(third, expected)
+        self.assertEqual(cache.report(self.path)['assetSha256'], self.declaration['assetSha256'])
+        self.assertEqual(self.path.read_bytes(), self.data)
+
+    def test_replacement_cannot_reuse_old_hash_or_derivation(self):
+        cache = cleanup.AuthorDisplayCleanupCache()
+        cache.pixels(self.path, self.declaration)
+        replacement = self.image.copy()
+        replacement[20:30, 20:30] = (222, 111, 99, 255)
+        self.path.write_bytes(cv2.imencode('.png', replacement)[1].tobytes())
+        result = cache.pixels(self.path, self.declaration)
+        np.testing.assert_array_equal(result, replacement)
+        self.assertEqual(cache.report(self.path)['status'], 'unverified-asset')
+
+    def test_cache_memory_is_bounded(self):
+        cache = cleanup.AuthorDisplayCleanupCache(max_bytes=self.image.nbytes)
+        cache.pixels(self.path, self.declaration)
+        second = self.path.with_name('different.png')
+        different = self.image.copy()
+        different[50, 50, 0] += 1
+        data = cv2.imencode('.png', different)[1].tobytes()
+        second.write_bytes(data)
+        cache.pixels(second, binding(data))
+        self.assertLessEqual(cache._bytes, self.image.nbytes)
+        self.assertEqual(len(cache._images), 1)
+        small = cleanup.AuthorDisplayCleanupCache(max_bytes=1)
+        small.pixels(self.path, self.declaration)
+        self.assertFalse(small._images)
+
+    def test_all_optional_roles_share_source_without_touching_matrix(self):
+        matrix = np.array([[1.2, .01, 17], [-.02, 1.1, 31], [0, 0, 1]])
+        row = dict(path=self.path.resolve(), declaration=self.declaration, usable=True, matrix=matrix)
+        displays = OptionalAuthorDisplays.__new__(OptionalAuthorDisplays)
+        displays.bindings = {('nightingale', 'map', '1'): row}
+        displays._display_cleanup = cleanup.AuthorDisplayCleanupCache()
+        before = copy.deepcopy(row)
+        results = [displays.pixels(self.path, role) for role in
+                   ('minimap', 'aligned-overlay', 'full-reference')]
+        for image in results[1:]:
+            np.testing.assert_array_equal(image, results[0])
+        np.testing.assert_array_equal(row['matrix'], before['matrix'])
+        self.assertEqual(row['declaration'], before['declaration'])
+        self.assertEqual(displays.cleanup_report(self.path)['status'], 'cleaned')
+        row['usable'] = False
+        with self.assertRaisesRegex(ValueError, 'registration is unavailable'):
+            displays.pixels(self.path, 'aligned-overlay')
+
+
+if __name__ == '__main__':
+    unittest.main()

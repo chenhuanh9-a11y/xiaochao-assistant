@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'app'))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import author_package_management as manager
 import star_map_import as importer
+import map_package_upgrade as transaction
 from test_live_author_import import LiveAuthorImportTests, CORE, SUJU, NATIVE, LEGACY, WANG, NIGHTINGALE
 
 
@@ -47,19 +48,17 @@ class ManagedAuthorTests(unittest.TestCase):
                 with patch.object(importer, '_check_closed', side_effect=AssertionError('live deletion checked EXE')):
                     removed = self.remove(package)
                 self.assertFalse(removed['restartRequired'])
-                backup = Path(removed['backupPath'])
-                self.assertTrue((backup/'installed-receipt.json').is_file())
+                self.assertNotIn('backupPath', removed)
                 for path, data in payload.items():
                     if importer._live_author_path(package,path):
                         self.assertFalse((self.f.root/path).exists())
-                        self.assertEqual((backup/path).read_bytes(),data)
                     else:
                         self.assertEqual((self.f.root/path).read_bytes(),data)
                 self.assertEqual(importer.verified_installed_package(self.f.root,package)['status'],'not-installed')
                 self.assertEqual(self.f.live(archive)['status'],'author-installed-live')
                 self.f.assert_base_preserved()
 
-    def test_unknown_files_are_not_claimed_and_modified_owned_bytes_are_backed_up(self):
+    def test_unknown_and_modified_owned_bytes_are_preserved(self):
         self.f.write(SUJU,b'unmanaged')
         with self.assertRaisesRegex(importer.ImportRejected,'not-managed'):
             self.plan()
@@ -71,26 +70,29 @@ class ManagedAuthorTests(unittest.TestCase):
         self.f.write(SUJU,b'user-modified')
         plan = self.plan()
         self.assertEqual(plan['modifiedFiles'], [SUJU])
-        self.assertEqual(plan['files'][0]['sha256'], importer._sha(self.f.root/SUJU))
+        self.assertNotIn(SUJU, {row['path'] for row in plan['files']})
         state={r['packageId']:r for r in manager.managed_author_packages_snapshot(self.f.root)}
         self.assertEqual(state['nightmare-suju']['status'], 'incomplete')
+        self.assertEqual(state['nightmare-suju']['modifiedFiles'], 1)
+        self.assertEqual(state['nightmare-suju']['fileCount'], 0)
         self.assertTrue(state['nightmare-suju']['canRemove'])
         removed = self.remove()
-        self.assertEqual((Path(removed['backupPath'])/SUJU).read_bytes(), b'user-modified')
-        self.assertEqual(self.f.live(archive)['status'], 'author-installed-live')
-        self.assertEqual((self.f.root/SUJU).read_bytes(), b'unmanaged')
+        self.assertNotIn('backupPath', removed)
+        with self.assertRaisesRegex(importer.ImportRejected, 'existing-data-conflict'):
+            self.f.live(archive)
+        self.assertEqual((self.f.root/SUJU).read_bytes(), b'user-modified')
         self.f.assert_base_preserved()
 
-    def test_modified_file_backup_rolls_back_on_cancel(self):
+    def test_modified_file_is_untouched_while_receipt_removal_cancels(self):
         self.f.live(self.f.package('nightmare-suju', {SUJU: b'original'}))
         self.f.write(SUJU, b'modified')
         original_receipt = self.f.receipt().read_bytes()
-        real = manager.os.replace
+        real = transaction._move_owned
         moved = []
-        def move(source, target):
-            real(source, target)
+        def move(source, target, *args):
+            real(source, target, *args)
             moved.append(str(source))
-        with patch.object(manager.os, 'replace', side_effect=move):
+        with patch.object(transaction, '_move_owned', side_effect=move):
             with self.assertRaisesRegex(importer.ImportRejected, 'import-cancelled'):
                 self.remove(cancelled=lambda: bool(moved))
         self.assertEqual((self.f.root/SUJU).read_bytes(), b'modified')
@@ -101,8 +103,9 @@ class ManagedAuthorTests(unittest.TestCase):
         target = self.f.root/SUJU
         target.unlink()
         target.mkdir()
-        with self.assertRaisesRegex(importer.ImportRejected, 'non-file-author-path'):
-            self.plan()
+        plan = self.plan()
+        self.assertNotIn(SUJU, {row['path'] for row in plan['files']})
+        self.assertTrue(target.is_dir())
 
     def test_confirmation_rejects_new_or_changed_bytes_without_moving_them(self):
         self.f.live(self.f.package('nightmare-suju', {SUJU: b'original'}))
@@ -119,7 +122,7 @@ class ManagedAuthorTests(unittest.TestCase):
                 self.assertEqual(target.read_bytes(), b'new-after-confirmation')
                 self.assertTrue(self.f.receipt().is_file())
 
-    def test_changed_images_in_all_four_roles_can_be_backed_up_and_reimported(self):
+    def test_changed_images_in_all_four_roles_are_preserved_on_uninstall(self):
         images = {'nightmare-suju': SUJU, 'difficult-zhan10': NATIVE,
                   'nightmare-wang-qingxin': WANG, 'nightmare-nightingale': NIGHTINGALE}
         for package_id, image in images.items():
@@ -135,9 +138,10 @@ class ManagedAuthorTests(unittest.TestCase):
                 self.f.live(archive)
                 self.f.write(image, b'locally-changed-image')
                 removed = self.remove(package_id)
-                self.assertEqual((Path(removed['backupPath'])/image).read_bytes(), b'locally-changed-image')
-                self.assertEqual(self.f.live(archive)['status'], 'author-installed-live')
-                self.assertEqual((self.f.root/image).read_bytes(), b'original-image')
+                self.assertNotIn('backupPath', removed)
+                with self.assertRaisesRegex(importer.ImportRejected, 'existing-data-conflict'):
+                    self.f.live(archive)
+                self.assertEqual((self.f.root/image).read_bytes(), b'locally-changed-image')
                 self.f.assert_base_preserved()
 
     def test_delete_ignores_unlisted_neighbours_and_missing_owned_file(self):
@@ -154,11 +158,11 @@ class ManagedAuthorTests(unittest.TestCase):
         second='_internal/assets/suju/second.png'
         package=self.f.package('nightmare-suju',{SUJU:b'first',second:b'second'})
         self.f.live(package); original=self.f.receipt().read_bytes()
-        real=manager.os.replace
+        real=transaction._move_owned
         calls=[]
-        def move(source,target):
-            real(source,target); calls.append(str(source))
-        with patch.object(manager.os,'replace',side_effect=move):
+        def move(source,target,*args):
+            real(source,target,*args); calls.append(str(source))
+        with patch.object(transaction,'_move_owned',side_effect=move):
             with self.assertRaisesRegex(importer.ImportRejected,'import-cancelled'):
                 self.remove(cancelled=lambda: bool(calls))
         self.assertEqual((self.f.root/SUJU).read_bytes(),b'first')
@@ -168,11 +172,11 @@ class ManagedAuthorTests(unittest.TestCase):
     def test_io_failure_rolls_back_and_no_recursive_delete(self):
         second='_internal/assets/suju/second.png'
         self.f.live(self.f.package('nightmare-suju',{SUJU:b'first',second:b'second'}))
-        real=manager.os.replace
-        def move(source,target):
+        real=transaction._move_owned
+        def move(source,target,*args):
             if str(source).endswith('second.png'):raise OSError('fixture-locked')
-            return real(source,target)
-        with patch.object(manager.os,'replace',side_effect=move):
+            return real(source,target,*args)
+        with patch.object(transaction,'_move_owned',side_effect=move):
             with self.assertRaisesRegex(OSError,'fixture-locked'):self.remove()
         self.assertEqual((self.f.root/SUJU).read_bytes(),b'first')
         self.assertTrue(self.f.receipt().is_file())

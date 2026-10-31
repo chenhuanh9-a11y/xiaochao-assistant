@@ -74,7 +74,7 @@ Item {
                         AppButton { text: "新建"; Layout.fillWidth: true; implicitWidth: 74; enabled: !root.state.busy && !root.state.dataError; onClicked: root.askName("create", "我的路线") }
                         AppButton { text: "复制"; Layout.fillWidth: true; implicitWidth: 74; enabled: !root.state.busy && !root.state.dataError; onClicked: root.askName("copy", (root.state.galleryName || "我的路线") + "副本") }
                         AppButton { text: "改名"; Layout.fillWidth: true; implicitWidth: 74; enabled: !root.state.busy && !root.state.readonly; onClicked: root.askName("rename", root.state.galleryName) }
-                        AppButton { text: "删除"; Layout.fillWidth: true; implicitWidth: 74; enabled: !root.state.busy && !root.state.readonly; onClicked: customGalleryService.requestDeleteGallery() }
+                        AppButton { objectName: "customDeleteGallery"; text: "删除"; Layout.fillWidth: true; implicitWidth: 74; enabled: !root.state.busy && !!root.state.canDelete; onClicked: customGalleryService.requestDeleteGallery() }
                         AppButton { text: "导入"; Layout.fillWidth: true; implicitWidth: 74; enabled: !root.state.busy; onClicked: importPicker.open() }
                         AppButton { objectName: "customExportGallery"; text: "导出"; Layout.fillWidth: true; implicitWidth: 74; enabled: !root.state.busy && !root.state.pendingKind; onClicked: exportPicker.open() }
                     }

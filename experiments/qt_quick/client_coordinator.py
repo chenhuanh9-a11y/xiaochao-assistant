@@ -720,7 +720,7 @@ class ClientCoordinator(QObject):
 
     @Slot(str)
     def navigate(self, name):
-        if name in {"home", "recognition", "gallery", "resources", "downloads", "custom", "settings", "replay", "help"}:
+        if name in {"home", "recognition", "gallery", "resources", "downloads", "custom", "settings", "replay", "help", "plaza", "account"}:
             self.pageRequested.emit(name)
             self.windows.show("main")
             window = self.windows._windows.get("main")
@@ -733,8 +733,10 @@ class ClientCoordinator(QObject):
     def requestManualMapSelection(self):
         if self._closing or self._closed:
             return
-        self.session.dispatch("reselect_map")
-        self.navigate("recognition")
+        picker = getattr(self, "manual_selection", None)
+        if picker is not None:
+            if not picker.open():
+                self.notificationRequested.emit("暂不能选图", picker.snapshot.get("reason") or "请稍后重试", "info")
 
     def _notification_geometry(self):
         from client_screen_geometry import project_client_geometry, ScreenGeometryError
@@ -1277,7 +1279,12 @@ class ClientCoordinator(QObject):
                     enable_management()
         configure = getattr(self.runtime, "configure_settings", None)
         if configure:
-            configure(values)
+            # Selection mode is initialized at startup and changed through the
+            # Session command. An older async preference write must not undo a
+            # newer accepted choice while its own save is still queued.
+            live_values = dict(values)
+            live_values.pop("mapSelectionMode", None)
+            configure(live_values)
         mode = values.get("gameMode", "nightmare")
         profile = values.get("modeRouteProfiles", {}).get(mode) or values.get("routeProfileId", "")
         # Mode and author reconfiguration is serialized by SessionService; don't
@@ -1595,6 +1602,11 @@ class ClientCoordinator(QObject):
                     self.notificationRequested.emit(problem["title"], problem["summary"], problem["kind"])
     def _native_action(self, action):
         if self._closing or self._closed:
+            return
+        if action == "manual-map-picker":
+            picker = getattr(self, "manual_selection", None)
+            if picker is not None:
+                picker.command(action)
             return
         if action == "toggle-panel":
             self.toggleControlsKeyboard()

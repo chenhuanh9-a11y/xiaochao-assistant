@@ -69,6 +69,9 @@ class QtClient:
         from client_control_snap import ControlSnap
         from client_problems import ProblemsService
         from client_reference_presentation import ReferencePreviewProvider
+        from client_account import ClientAccountService
+        from client_plaza import PlazaService
+        from client_manual_selection import ManualSelectionService
         self.app, self.sandbox = app, owned_sandbox(sandbox)
         self.paths = runtime_paths(self.sandbox)
         from client_lifecycle_trace import create_lifecycle_trace
@@ -80,6 +83,11 @@ class QtClient:
         self.settings = SettingsService(self.sandbox)
         self.custom_galleries = CustomGalleryService(self.sandbox)
         self.custom_display = CustomGalleryDisplay(self.custom_galleries)
+        self.account = ClientAccountService(self.sandbox)
+        self.plaza = PlazaService(self.account)
+        self.plaza.downloadReady.connect(lambda batch: self.custom_galleries.acceptPlazaDownload(
+            batch, self.plaza.isCurrentDownload, self.plaza.beginImport))
+        self.custom_galleries.plazaImportFinished.connect(self.plaza.finishImport)
         from client_capture_exclusion import QtCaptureExclusion
         self.capture_exclusion = QtCaptureExclusion(parent=app,
             is_closing=lambda: self._closed or bool(getattr(getattr(self, "coordinator", None), "closing", False)))
@@ -103,6 +111,8 @@ class QtClient:
         # preparation/recognition starts later on SessionService's worker.
         self.runtime.dispatch("set_context", {"mode": mode, "profileId": profile})
         self.session = SessionService(self.runtime)
+        self.manual_selection = ManualSelectionService(self.session)
+        self._pending_manual_mode = None
         self.resources = ResourceService(self.sandbox)
         self.resources.setLeaseProvider(self.session)
         self.online_packages = OnlinePackagesService(self.sandbox, self.resources,
@@ -123,6 +133,12 @@ class QtClient:
             resources=self.resources, session=self.session, windows=self.windows,
             native_input=self.input, capture=self.capture, runtime=self.runtime, images=self.images,
             **({"window_catalog": lambda: []} if probe_output else {}))
+        self.coordinator.manual_selection = self.manual_selection
+        self.plaza.loginRequested.connect(lambda: self.coordinator.navigate("account"))
+        self.plaza.openGalleryRequested.connect(lambda: self.coordinator.navigate("custom"))
+        self.session.changed.connect(self._sync_manual_selection)
+        self.settings.saved.connect(self._sync_manual_selection)
+        self.manual_selection.visibleChanged.connect(self._show_manual_selection)
         self.reference_preview = ReferencePreviewProvider(self.providers, parent=self.coordinator)
         self.coordinator.setReferencePreviewProvider(self.reference_preview)
         self._reference_screens = set()
@@ -164,7 +180,7 @@ class QtClient:
                                coordinator=self.coordinator, problems=self.problems)
         self.coordinator.close_writers = (self.custom_galleries, self.info, self.online_packages,
                                          self.backend, self.route_choices, self.problems, self.reference_preview,
-                                         self.capture_exclusion)
+                                         self.capture_exclusion, self.plaza, self.account)
         if self.lifecycle_trace is not None:
             self.coordinator.close_writers += (self.lifecycle_trace,)
         self.custom_galleries.setUseHandler(self._use_custom_gallery)
@@ -196,12 +212,13 @@ class QtClient:
             windows=self.windows, clientCoordinator=self.coordinator, infoService=self.info,
             customGalleryService=self.custom_galleries, onlinePackageService=self.online_packages,
             onboardingService=self.onboarding, chestAutoTapService=self.chest_auto_tap,
-            previewService=self.preview, problemService=self.problems).items():
+            previewService=self.preview, problemService=self.problems,
+            accountService=self.account, plazaService=self.plaza, manualSelection=self.manual_selection).items():
             context.setContextProperty(key, value)
         for name, file in (("main", "Client.qml"), ("controls", "ClientControls.qml"),
                            ("reference", "ClientReference.qml"), ("aligned", "ClientAligned.qml"),
                            ("replay", "Overlay.qml"), ("preview", "ClientPreview.qml"),
-                           ("toast", "ClientToast.qml")):
+                            ("toast", "ClientToast.qml"), ("manual", "ClientManualWindow.qml")):
             before = len(self.engine.rootObjects())
             self.engine.load(QUrl.fromLocalFile(str(HERE / file)))
             if len(self.engine.rootObjects()) != before + 1:
@@ -221,6 +238,44 @@ class QtClient:
         self._initialize_timer.timeout.connect(self._initialize_resources)
         self._initialize_timer.start()
         self.info.scheduleStartupCheck(bool(self.paths.production and not probe_output))
+        if not probe_output:
+            QTimer.singleShot(0, self.account.restoreSession)
+
+    def _sync_manual_selection(self):
+        if self._closed:
+            return
+        catalog = getattr(self.runtime, "manual_selection_catalog", None)
+        if callable(catalog) and not self.session.busy:
+            self.manual_selection.refresh_catalog(*catalog())
+        from client_settings import ACTION_ORDER
+        keys = dict(zip(ACTION_ORDER, self.settings.persistedValues.get("actionHotkeys", ())))
+        self.manual_selection.set_key_labels(keys)
+        state = self.session.snapshot
+        receipt = state.get("lastReceipt", {})
+        if (not self.session.busy and receipt.get("success")
+                and receipt.get("action") == "set_map_selection_mode"):
+            self._pending_manual_mode = state.get("mapSelectionMode", "auto")
+        mode = self._pending_manual_mode
+        if mode is not None and not self.settings.busy:
+            if mode == self.settings.persistedValues.get("mapSelectionMode"):
+                self._pending_manual_mode = None
+            elif self.settings.setValue("mapSelectionMode", mode):
+                # Keep accepted intent across unrelated session receipts while
+                # another setting write drains. A failed save remains visible.
+                self.settings.saveFields(["mapSelectionMode"])
+
+    def _show_manual_selection(self):
+        window = self.windows._windows.get("manual")
+        if window is None:
+            return
+        if self.manual_selection.snapshot.get("visible"):
+            # This signal follows an explicit player action; background refreshes
+            # never activate the game overlay or any other surface.
+            self.windows.show("manual")
+            window.raise_()
+            window.requestActivate()
+        else:
+            self.windows.hide("manual")
 
     def _reference_screen_added(self, screen):
         if screen not in self._reference_screens:
@@ -423,6 +478,9 @@ class QtClient:
         self.lifecycle.record_event(dict(stage="shutdown-entered", closing=self.coordinator.closing,
                                          closeReady=self.coordinator.closeReady))
         self._closed = True
+        self.manual_selection.shutdown()
+        self.plaza.shutdown()
+        self.account.shutdown()
         self.problems.shutdown()
         if self.lifecycle_trace is not None:
             self.lifecycle_trace.shutdown()
@@ -447,6 +505,8 @@ class QtClient:
         self.info.shutdown()
         self.custom_galleries.shutdown()
         self.online_packages.shutdown()
+        self.plaza.pool.waitForDone()
+        self.account.pool.waitForDone()
         self.windows.shutdown()
         self.lifecycle.record_event(dict(stage="shutdown-completed", closing=self.coordinator.closing,
                                          closeReady=self.coordinator.closeReady))

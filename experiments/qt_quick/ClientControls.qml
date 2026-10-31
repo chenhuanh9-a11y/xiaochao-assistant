@@ -34,6 +34,7 @@ Window {
     readonly property string groupChoice: groupDesired || groupMember
     readonly property string groupChoiceStatus: snapshot.groupMemberChoiceStatus || ""
     readonly property bool groupAwaiting: groupChoiceStatus === "awaiting-geometry" || groupChoiceStatus === "awaiting-material"
+    readonly property var pickerState: typeof manualSelection !== "undefined" ? manualSelection.snapshot : ({canOpen: false, reason: "正在准备地图资源"})
     readonly property bool groupHeld: snapshot.manualGroupMemberHeld === true
     readonly property bool groupPending: snapshot.groupMemberSelectionPending === true
     readonly property string appliedMode: session.appliedMode || session.currentMode
@@ -239,7 +240,7 @@ Window {
                         MenuItem { text: "自定义控件"; onTriggered: clientCoordinator.navigate("settings") }
                         MenuItem { text: "隐藏控件"; onTriggered: windows.hide("controls") }
                         MenuSeparator {}
-                        MenuItem { text: "选择地图"; enabled: panel.available("reselect_map"); onTriggered: clientCoordinator.requestManualMapSelection() }
+                        MenuItem { text: "选择本局地图"; enabled: panel.pickerState.canOpen; onTriggered: clientCoordinator.requestManualMapSelection() }
                         MenuItem { text: "重新识别"; enabled: panel.available("capture_now"); onTriggered: session.dispatch("capture_now") }
                         MenuItem { text: "候选与识别"; onTriggered: clientCoordinator.navigate("recognition") }
                     }
@@ -369,7 +370,7 @@ Window {
         id: manualMapModule
         ColumnLayout {
             spacing: 4
-            ControlButton { objectName: "controlReselectMap"; text: "选择地图"; icon.source: "icons/map.png"; Layout.fillWidth: true; enabled: panel.available("reselect_map"); hint: panel.available("reselect_map") ? "手动选择待确认地图，不改变作者路线" : "正在准备地图资源"; onClicked: clientCoordinator.requestManualMapSelection() }
+            ControlButton { objectName: "controlReselectMap"; text: "选择本局地图"; icon.source: "icons/map.png"; Layout.fillWidth: true; enabled: panel.pickerState.canOpen; hint: panel.pickerState.reason || "指定本局地图，楼层与贴合继续自动处理"; onClicked: clientCoordinator.requestManualMapSelection() }
             KeyHint { visible: !panel.available("reselect_map"); text: panel.snapshot.resourceLocked ? "等待资源操作完成" : "正在准备地图资源" }
             RowLayout {
                 visible: (panel.snapshot.availableFloors || []).length > 0

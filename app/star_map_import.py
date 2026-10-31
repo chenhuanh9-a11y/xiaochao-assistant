@@ -358,9 +358,15 @@ def _owned_inventory(root: Path, package_id: str):
         raise ImportRejected("invalid-installed-package-receipt")
     raw = path.read_bytes()
     receipt = _json(raw)
+    from package_lifecycle import scope
+    expected_scope = scope(package_id)
     if (receipt.get("packageId") != package_id or receipt.get("revision") != 1
             or not isinstance(receipt.get("archiveSha256"), str)
             or not re.fullmatch(r"[0-9a-f]{64}", receipt["archiveSha256"])):
+        raise ImportRejected("invalid-installed-package-receipt")
+    if (any(key in receipt and receipt[key] != expected_scope[key] for key in ("mode", "profileId"))
+            or (receipt.get("contentVersion") is not None and
+                (type(receipt["contentVersion"]) is not int or receipt["contentVersion"] < 1))):
         raise ImportRejected("invalid-installed-package-receipt")
     rows = _rows(receipt.get("files"))
     if any(not _allowed(package_id, row["path"]) for row in rows.values()):
@@ -369,6 +375,8 @@ def _owned_inventory(root: Path, package_id: str):
 
 
 def _pending_upgrade(root: Path):
+    from package_lifecycle import assert_no_pending
+    assert_no_pending(root)
     if _target(root, "work/map-packages/pending-upgrade.json").exists():
         raise ImportRejected("upgrade-recovery-required; run recover with application closed")
 
@@ -398,6 +406,13 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None) -
             or metadata.get("packageId") not in PACKAGE_IDS):
         raise ImportRejected("unsupported-package-version")
     package_id = metadata["packageId"]
+    from package_lifecycle import scope, display_owned
+    package_scope = scope(package_id)
+    if any(key in metadata and metadata[key] != package_scope[key] for key in ("mode", "profileId")):
+        raise ImportRejected("package-scope-mismatch")
+    content_version = metadata.get("contentVersion")
+    if content_version is not None and (type(content_version) is not int or content_version < 1):
+        raise ImportRejected("invalid-package-content-version")
     compatibility = metadata.get("clientCompatibility")
     if (not isinstance(compatibility, dict) or compatibility != CLIENT_COMPATIBILITY
             or type(compatibility.get("minimumBuild")) is not int
@@ -433,7 +448,16 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None) -
         raise ImportRejected("archive-expanded-size-limit")
     existing = 0
     replacements, missing = [], []
-    owned, receipt_digest = None, None
+    owned, receipt_digest = _owned_inventory(root, package_id)
+    previous = _json(_target(root, f"work/map-packages/{package_id}.json").read_bytes()) if receipt_digest else {}
+    old_content_version = previous.get("contentVersion")
+    if type(old_content_version) is int and content_version is None:
+        raise ImportRejected("package-content-version-required")
+    if (content_version is not None and type(old_content_version) is int
+            and content_version < old_content_version):
+        raise ImportRejected("package-content-downgrade")
+    if content_version is not None and content_version == old_content_version and owned != rows:
+        raise ImportRejected("package-content-version-conflict")
     for row in rows.values():
         path = row["path"]
         if not _allowed(package_id, path):
@@ -444,8 +468,6 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None) -
         target = _target(root, path)
         if target.exists():
             if not target.is_file() or target.stat().st_size != row["bytes"] or _sha(target) != row["sha256"]:
-                if owned is None:
-                    owned, receipt_digest = _owned_inventory(root, package_id)
                 old = owned.get(path.casefold())
                 if (old is None or not target.is_file() or target.stat().st_size != old["bytes"]
                         or _sha(target) != old["sha256"]):
@@ -481,9 +503,23 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None) -
         # Reading through EOF also performs zipfile's CRC check.
         if count != row["bytes"] or digest.hexdigest() != row["sha256"]:
             raise ImportRejected(f"file-integrity-mismatch: {path}")
-    return {"packageId": package_id, "revision": 1, "files": list(rows.values()),
+    removals = []
+    for key, old in owned.items():
+        if key in rows or not display_owned(package_id, old):
+            continue
+        target = _target(root, old["path"])
+        if not target.exists():
+            continue
+        if not target.is_file() or target.stat().st_size != old["bytes"] or _sha(target) != old["sha256"]:
+            raise ImportRejected(f"existing-data-conflict: {old['path']}")
+        for other in PACKAGE_IDS - {package_id}:
+            other_rows, _ = _owned_inventory(root, other)
+            if key in other_rows:
+                raise ImportRejected(f"shared-package-ownership-conflict: {old['path']}")
+        removals.append(old)
+    return {**package_scope, "revision": 1, "contentVersion": content_version, "files": list(rows.values()),
             "fileCount": len(rows), "bytes": total, "alreadyPresent": existing,
-            "replaceFiles": replacements, "missingFiles": missing,
+            "replaceFiles": replacements, "missingFiles": missing, "removeFiles": removals,
             "previousReceiptSha256": receipt_digest,
             "restartRequired": True, "authentication": "not-signed; SHA256 integrity only"}
 
@@ -669,7 +705,7 @@ def supports_live_author_import(result) -> bool:
             or not isinstance(missing, list)):
         return False
     return all(isinstance(row, dict) and isinstance(row.get('path'), str)
-               and _live_author_path(package_id, row['path']) for row in replacements + missing)
+                and _live_author_path(package_id, row['path']) for row in replacements + missing + result.get('removeFiles', []))
 
 
 def _check_cancelled(cancelled):
@@ -719,7 +755,8 @@ def _commit_additions(root, result, stage, *, live=False, cancelled=None):
         receipt = _target(root, f"work/map-packages/{result['packageId']}.json")
         if not created and receipt.exists():
             owned, _ = _owned_inventory(root, result['packageId'])
-            if owned == _rows(result['files']):
+            if (owned == _rows(result['files']) and
+                    _json(receipt.read_bytes()).get('contentVersion') == result.get('contentVersion')):
                 # A no-op must retain the receipt inode/transaction witness
                 # so an earlier owned upgrade can still be rolled back.
                 previous = _json(receipt.read_bytes())
@@ -754,6 +791,10 @@ def _install_staged(zip_path, root, state, *, expected_archive_sha256=None, live
         if live and not supports_live_author_import(result):
             raise ImportRejected("live-import-requires-restart")
         _check_cancelled(cancelled)
+        if (result["previousReceiptSha256"] and supports_live_author_import(result)
+                and (result["replaceFiles"] or result["missingFiles"] or result.get("removeFiles"))):
+            from package_lifecycle import replace_author_locked
+            return replace_author_locked(root, result, stage, cancelled=cancelled)
         if result["replaceFiles"]:
             from map_package_upgrade import commit_upgrade
             return commit_upgrade(root, result, stage, live=live, cancelled=cancelled)

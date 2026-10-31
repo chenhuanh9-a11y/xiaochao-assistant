@@ -137,11 +137,12 @@ Item {
                                 id: operationImage
                                 objectName: "helpOperationImage-" + topicCard.modelData.id
                                 visible: topicCard.showOperationImage
-                                Layout.fillWidth: true; Layout.preferredHeight: visible ? Math.min(520, width * (sourceSize.height > 0 && sourceSize.width > 0 ? sourceSize.height / sourceSize.width : .75)) : 0
+                                Layout.fillWidth: true; Layout.preferredHeight: visible ? width * (sourceSize.height > 0 && sourceSize.width > 0 ? sourceSize.height / sourceSize.width : .75) : 0
                                 source: topicCard.opened && visible ? infoService.helpImages[topicCard.modelData.id] : ""
                                 asynchronous: true; fillMode: Image.PreserveAspectFit
                                 sourceSize.width: 1200
                             }
+                            Label { visible: topicCard.showOperationImage; text: "操作图使用演示状态；示例键位以当前设置为准。"; color: "#526785"; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                             Label { visible: topicCard.showOperationImage && operationImage.status === Image.Error; text: "操作图暂不可用，仍可按上方步骤操作。"; color: "#b8364a"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                         }
                     }

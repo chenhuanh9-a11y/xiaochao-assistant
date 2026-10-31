@@ -61,6 +61,40 @@ class CompositionTests(unittest.TestCase):
         self.client._refresh_route_preferences(force=True)
         self.assertEqual(self.client.settings.refreshRoutePreferences.call_count, 3)
 
+    def test_manual_mode_waits_for_existing_write_across_later_session_receipts(self):
+        self.client._pending_manual_mode = None
+        self.client.manual_selection = SimpleNamespace(set_key_labels=Mock())
+        self.client.session.snapshot = dict(mapSelectionMode="manual", lastReceipt={
+            "action": "set_map_selection_mode", "success": True})
+        self.client.settings.persistedValues["mapSelectionMode"] = "auto"
+        self.client.settings.busy = True
+        self.client._sync_manual_selection()
+        self.assertEqual(self.client._pending_manual_mode, "manual")
+        self.client.session.snapshot["lastReceipt"] = dict(action="refresh_map", success=True)
+        self.client.settings.busy = False
+        self.client._sync_manual_selection()
+        self.assertEqual(self.client.settings.saved_keys, ["mapSelectionMode"])
+        self.assertEqual(self.client.settings.values["mapSelectionMode"], "manual")
+        self.client.settings.persistedValues["mapSelectionMode"] = "manual"
+        self.client._sync_manual_selection()
+        self.assertIsNone(self.client._pending_manual_mode)
+
+    def test_reverse_manual_mode_keeps_intent_while_old_write_will_change_baseline(self):
+        self.client._pending_manual_mode = "manual"
+        self.client.manual_selection = SimpleNamespace(set_key_labels=Mock())
+        self.client.settings.persistedValues["mapSelectionMode"] = "auto"
+        self.client.settings.busy = True  # The earlier manual preference is being written.
+        self.client.session.snapshot = dict(mapSelectionMode="auto", lastReceipt={
+            "action": "set_map_selection_mode", "success": True})
+        self.client._sync_manual_selection()
+        self.assertEqual(self.client._pending_manual_mode, "auto")
+        self.client.session.snapshot["lastReceipt"] = dict(action="refresh_map", success=True)
+        self.client.settings.persistedValues["mapSelectionMode"] = "manual"
+        self.client.settings.busy = False
+        self.client._sync_manual_selection()
+        self.assertEqual(self.client.settings.values["mapSelectionMode"], "auto")
+        self.assertEqual(self.client.settings.saved_keys, ["mapSelectionMode"])
+
     def test_recovery_launch_binds_pending_receipt_and_leaves_close_to_service(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

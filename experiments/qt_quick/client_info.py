@@ -122,7 +122,7 @@ class ClientInfoService(QObject):
 
     homePreviews = Property("QVariantList", lambda s: s._home_previews, notify=changed)
     helpImages = Property("QVariantMap", lambda s: {
-        topic: QUrl.fromLocalFile(str(s.paths.resource_root / "assets/help" / name)).toString()
+        topic: QUrl.fromLocalFile(str(Path(__file__).resolve().parent / "help-images" / name)).toString()
         for topic, name in (("quick-start", "home.png"), ("shortcuts-visibility", "settings.png"),
                             ("resources-opacity", "resources.png"), ("check-feedback", "help.png"))}, constant=True)
 

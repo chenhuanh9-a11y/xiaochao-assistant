@@ -542,6 +542,8 @@ def commit_upgrade(root: Path, result: dict, stage: Path, *, live=False, cancell
 def recover_pending_upgrade(root: Path) -> dict:
     """Explicit process-loss recovery; caller owns import lock and app closure."""
     root = Path(os.path.abspath(root))
+    from package_lifecycle import assert_no_pending
+    assert_no_pending(root)
     transaction_id = _pending_id(root)
     if transaction_id is None:
         return {"status": "no-pending-upgrade"}
@@ -552,6 +554,8 @@ def recover_pending_upgrade(root: Path) -> dict:
 def rollback_upgrade(root: Path, transaction_id: str) -> dict:
     """Undo a completed transaction without deleting a changed/current object."""
     root = Path(os.path.abspath(root))
+    from package_lifecycle import assert_no_pending
+    assert_no_pending(root)
     transaction_id = _transaction_id(transaction_id)
     pending = _pending_id(root)
     if pending is not None and pending != transaction_id:

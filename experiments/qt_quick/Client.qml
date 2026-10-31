@@ -13,11 +13,11 @@ ApplicationWindow {
     color: "#f3f5fa"; font.family: "Microsoft YaHei UI"; font.pixelSize: 13
     property string page: "home"
     property real replayAlpha: 0.55
-    property var pages: ["home", "gallery", "resources", "settings", "replay", "help", "recognition", "custom", "downloads"]
+    property var pages: ["home", "gallery", "resources", "settings", "replay", "help", "recognition", "custom", "downloads", "plaza", "account"]
     readonly property bool compactRail: width < 800 || height < 660
     readonly property int workspaceMargin: width >= 1200 ? 48 : 28
     function section(name) { return name === "resources" || name === "downloads" ? "gallery" : name === "recognition" ? "home" : name === "replay" ? "help" : name }
-    function heading(name) { return ({home:"主页面",gallery:"地图资源",resources:"图包管理",downloads:"在线图包",settings:"设置",replay:"识别回放",help:"帮助与公告",recognition:"地图识别",custom:"自定义路线"})[name] || "星图" }
+    function heading(name) { return ({home:"主页面",gallery:"地图资源",resources:"图包管理",downloads:"在线图包",settings:"设置",replay:"识别回放",help:"帮助与公告",recognition:"地图识别",custom:"自定义路线",plaza:"路线广场",account:"账号"})[name] || "星图" }
     readonly property var routeOptions: {
         var options = routeChoices.profiles.slice()
         var custom = customGalleryService.snapshot
@@ -65,7 +65,7 @@ ApplicationWindow {
                 }
                 Repeater {
                     model: [{key:"home",label:"主页面",icon:"home"},{key:"gallery",label:"地图资源",icon:"map"},
-                            {key:"custom",label:"自定义",icon:"route"},{key:"settings",label:"设置",icon:"settings"},{key:"help",label:"帮助",icon:"help"}]
+                            {key:"custom",label:"自定义",icon:"route"},{key:"plaza",label:"路线广场",icon:"map"},{key:"settings",label:"设置",icon:"settings"},{key:"help",label:"帮助",icon:"help"}]
                     AppButton {
                         id: navigation
                         required property var modelData
@@ -113,6 +113,7 @@ ApplicationWindow {
             AppButton { visible: root.page === "resources" || root.page === "downloads" || root.page === "recognition" || root.page === "replay"; text: "返回"; implicitWidth: 62; onClicked: root.page = root.section(root.page) }
             Label { text: root.heading(root.page); color: "#17365e"; font.pixelSize: 14; font.bold: true }
             Item { Layout.fillWidth: true }
+            AppButton { objectName: "nav_account"; text: accountService.loggedIn ? accountService.username : "登录账号"; implicitWidth: 96; onClicked: root.page = "account" }
             Label { visible: root.width >= 800; text: clientCoordinator.boundWindow ? "已连接游戏" : "等待连接游戏"; color: "#5b7294"; font.pixelSize: 12 }
             AppButton { text: "最小化到任务栏"; onClicked: root.showMinimized() }
         }
@@ -150,6 +151,8 @@ ApplicationWindow {
             ClientRecognition {}
             ClientCustomGallery {}
             ClientOnlinePackages {}
+            ClientPlaza {}
+            ClientAccount {}
         }
         }
     }

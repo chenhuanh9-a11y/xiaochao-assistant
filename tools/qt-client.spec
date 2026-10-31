@@ -31,6 +31,8 @@ for name in ("version.json", "THIRD_PARTY_NOTICES.md", "THIRD_PARTY_LUCIDE_LICEN
     datas.append((str(root / name), "."))
 datas.append((str(qt_root / "THIRD_PARTY.md"), "qt-notices"))
 datas.append((str(qt_root / "help-topics.json"), "."))
+for path in (qt_root / "help-images").glob("*.png"):
+    datas.append((str(path), "help-images"))
 datas.append((str(root / "app" / "custom_default_gallery.json"), "."))
 datas.append((str(Path(inputs["profilePath"])), "."))
 for distribution in ("PySide6-Essentials", "shiboken6", "numpy", "opencv-python-headless", "Pillow", "psutil"):

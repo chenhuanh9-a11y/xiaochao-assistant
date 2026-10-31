@@ -10,12 +10,12 @@ Item {
 
     function stateLabel(status) {
         const labels = {"installed": "已安装并校验", "not-installed": "未安装", "incomplete": "文件缺失或有改动",
-            "unmanaged": "已有文件，尚未登记", "unverified": "尚未完成校验", "recovery-required": "需要恢复事务"}
+            "unmanaged": "已有文件，尚未登记", "unverified": "尚未完成校验", "recovery-required": "需要恢复事务", "cleanup-pending": "需要完成临时清理"}
         return labels[status] || status
     }
     function stateDetail(row) {
         if (row.status === "unmanaged") return "现有文件没有可验证的登记记录，将保留原文件。"
-        if (row.status === "incomplete") return "请核对本地改动；移除时会备份实际文件。"
+        if (row.status === "incomplete") return "本地改图会保留；卸载仅删除已核实的图包文件。"
         if (row.status === "unverified") return "暂时无法完成核对，请重新检查状态。"
         if (row.status === "recovery-required") return "请先核对保留的事务备份与日志。"
         return ""
@@ -29,13 +29,15 @@ Item {
             Label { text: "管理本地资源"; color: "#142b4b"; font.pixelSize: 18; font.bold: true }
             Item { Layout.fillWidth: true }
             AppButton { text: "恢复记录"; enabled: !resourceService.busy && resourceService.pendingKind === ""; onClicked: resourceService.inspectRecovery() }
+            AppButton { text: "完成临时清理"; visible: resourceService.cleanupPending; enabled: !resourceService.busy && resourceService.pendingKind === ""; onClicked: resourceService.requestFinishCleanup() }
             AppButton { text: "在线图包"; onClicked: clientCoordinator.navigate("downloads") }
             AppButton { text: "核对状态"; enabled: !resourceService.busy && resourceService.pendingKind === ""; onClicked: resourceService.refresh() }
+            AppButton { text: "清理全部图包"; objectName: "cleanupAllPackagesButton"; enabled: !resourceService.busy && resourceService.pendingKind === ""; onClicked: resourceService.requestCleanupAll() }
             AppButton { text: "导入 ZIP"; primary: true; enabled: !resourceService.busy && resourceService.pendingKind === "" && !resourceService.recoveryRequired; onClicked: archiveDialog.open() }
         }
         Label {
             Layout.fillWidth: true
-            text: "查看作者资源的实际文件状态；导入、更新和备份移除仅作用于当前资源目录。"
+            text: "同作者、同模式的已登记图包可安全更新；卸载成功后不保留备份。"
             wrapMode: Text.Wrap; color: "#526785"; font.pixelSize: 12
         }
         ColumnLayout {
@@ -88,8 +90,8 @@ Item {
                         }
                     }
                     AppButton {
-                        text: "备份并移除"; enabled: !!modelData.canRemove && !resourceService.busy && resourceService.pendingKind === "" && !resourceService.recoveryRequired
-                        Accessible.name: "备份并移除 " + modelData.title
+                        text: "卸载图包"; enabled: !!modelData.canRemove && !resourceService.busy && resourceService.pendingKind === ""
+                        Accessible.name: "卸载图包 " + modelData.title
                         onClicked: resourceService.requestRemove(modelData.packageId)
                     }
                 }
@@ -110,6 +112,17 @@ Item {
                 Accessible.role: Accessible.StaticText
             }
             AppButton { text: "取消操作"; visible: resourceService.canCancel; onClicked: resourceService.cancel() }
+        }
+        ListView {
+            Layout.fillWidth: true; Layout.preferredHeight: Math.min(contentHeight, 100)
+            visible: count > 0; clip: true
+            model: resourceService.cleanupResidues
+            ScrollBar.vertical: ScrollBar {}
+            delegate: Label {
+                required property var modelData
+                width: ListView.view.width; wrapMode: Text.Wrap; color: "#526785"; font.pixelSize: 11
+                text: "已保留：" + modelData.path
+            }
         }
     }
 

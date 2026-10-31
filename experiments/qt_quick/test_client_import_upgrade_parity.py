@@ -30,30 +30,30 @@ class ImportUpgradeParityTests(TestCase):
             archive.writestr("data/" + core, data)
         return path, core
 
-    def test_author_replacement_uses_real_live_journal_and_retains_lease(self):
+    def test_author_replacement_uses_temporary_live_journal_and_releases_lease(self):
         self.install(self.package("old.zip", b"old"))
         launch = Mock(side_effect=AssertionError("author upgrade must remain live"))
         self.service.setImportLauncher(launch)
         self.install(self.package("new.zip", b"new"))
-        self.assertEqual(self.service.pendingKind, "overwrite")
-        self.assertTrue(self.lease.active)
-        self.service.confirmOperation(True)
-        self.settle()
+        self.assertEqual(self.service.pendingKind, "")
+        self.assertFalse(self.confirmations)
         self.assertEqual((self.root / IMAGE).read_bytes(), b"new")
         receipt = json.loads((self.root / "work/map-packages/nightmare-suju.json").read_text())
         self.assertTrue(receipt["liveImport"])
-        self.assertTrue(receipt["upgradeTransactionId"])
+        self.assertFalse(list((self.root / "work/map-packages/lifecycle").iterdir()))
         self.assertFalse(self.lease.active)
         launch.assert_not_called()
 
     def test_author_replacement_changed_receipt_rejects_original_consent(self):
         self.install(self.package("old.zip", b"old"))
-        self.install(self.package("new.zip", b"new"))
         receipt = self.root / "work/map-packages/nightmare-suju.json"
-        value = json.loads(receipt.read_text()); value["syntheticChange"] = True
-        receipt.write_text(json.dumps(value))
-        self.service.confirmOperation(True)
-        self.settle()
+        original_install = self.service._install
+        def changed_before_worker(path, inspection):
+            value = json.loads(receipt.read_text()); value["syntheticChange"] = True
+            receipt.write_text(json.dumps(value))
+            original_install(path, inspection)
+        with patch.object(self.service, "_install", side_effect=changed_before_worker):
+            self.install(self.package("new.zip", b"new"))
         self.assertIn("reinspect", self.problems[-1]["raw"])
         self.assertEqual((self.root / IMAGE).read_bytes(), b"old")
 
@@ -97,15 +97,13 @@ class ImportUpgradeParityTests(TestCase):
 
     def test_live_upgrade_cancel_rolls_back_before_receipt_commit(self):
         self.install(self.package("old.zip", b"old"))
-        self.install(self.package("new.zip", b"new"))
         import map_package_upgrade as upgrade
         original = upgrade.os.link
         def link_then_cancel(source, target, *args, **kwargs):
             original(source, target, *args, **kwargs)
             self.service._cancel.set()
         with patch.object(upgrade.os, "link", side_effect=link_then_cancel):
-            self.service.confirmOperation(True)
-            self.settle()
+            self.install(self.package("new.zip", b"new"))
         self.assertEqual((self.root / IMAGE).read_bytes(), b"old")
         self.assertFalse(self.lease.active)
 

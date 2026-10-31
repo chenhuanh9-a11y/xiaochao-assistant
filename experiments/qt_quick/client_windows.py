@@ -79,7 +79,7 @@ class WindowController(QObject):
 
     # Management and browsing surfaces accept focus; every other surface is
     # a passive assistant tool and never explicitly activates the foreground.
-    FOCUSABLE = frozenset({"main", "settings", "resources", "support", "preview"})
+    FOCUSABLE = frozenset({"main", "settings", "resources", "support", "preview", "manual"})
 
     def __init__(self, parent=None):
         super().__init__(parent)

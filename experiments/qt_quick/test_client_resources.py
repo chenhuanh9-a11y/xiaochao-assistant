@@ -107,11 +107,16 @@ class ResourceServiceTests(unittest.TestCase):
         self.settle()
 
     def upgrade(self, *, interrupted=False):
-        """Synthetic receipts and real unchanged transaction; no installed EXE."""
+        """Create an old-format retained transaction to test existing installation recovery."""
         self.install(self.package("old.zip", b"old"))
         receipt = self.root / "work/map-packages/nightmare-suju.json"
         self.old_receipt = receipt.read_bytes()
         archive = self.package("new.zip", b"new")
+        def legacy_install():
+            # New display-only updates discard rollback bytes. Exercise the retained
+            # legacy engine explicitly for migration/recovery fixtures only.
+            with patch.object(importer, "supports_live_author_import", return_value=False):
+                return importer.install_package(archive, self.root, application_stopped=True)
         if interrupted:
             actual_link = recovery.upgrade.os.link
             def interrupt(source, target, *args, **kwargs):
@@ -120,10 +125,10 @@ class ResourceServiceTests(unittest.TestCase):
                 return actual_link(source, target, *args, **kwargs)
             with patch.object(recovery.upgrade.os, "link", side_effect=interrupt):
                 with self.assertRaises(KeyboardInterrupt):
-                    importer.install_package(archive, self.root, application_stopped=True)
+                    legacy_install()
             transaction_id = recovery.upgrade._pending_id(self.root)
         else:
-            result = importer.install_package(archive, self.root, application_stopped=True)
+            result = legacy_install()
             transaction_id = result["upgradeTransactionId"]
         self.service.setRecoveryAllowedProvider(lambda: True)
         self.changes.clear()
@@ -418,7 +423,7 @@ class ResourceServiceTests(unittest.TestCase):
         self.assertFalse((self.root / IMAGE).exists())
         self.assertEqual((self.root / "player-custom-route.json").read_bytes(), b"keep")
         backups = list((self.root / "work/map-package-removals").glob("*/installed-receipt.json"))
-        self.assertEqual(len(backups), 1)
+        self.assertEqual(len(backups), 0)
         self.assertFalse(self.lease.active)
         self.install()
         self.assertEqual((self.root / IMAGE).read_bytes(), b"route")
@@ -574,19 +579,16 @@ class ResourceServiceTests(unittest.TestCase):
         self.service.recordImportReceipt(dict(result, success=True, replaced=1, replaceFiles=[{}]))
         self.assertNotIn("内容已存在", self.service.message)
 
-    def test_owned_upgrade_confirmation_cancel_then_commit(self):
+    def test_owned_upgrade_is_default_without_retained_backup(self):
         self.install(self.package("old.zip", b"old"))
         archive = self.package("new.zip", b"new")
         self.install(archive)
-        self.assertEqual(self.service.pendingKind, "overwrite")
-        self.assertEqual((self.root / IMAGE).read_bytes(), b"old")
-        self.service.confirmOperation(False)
-        self.assertFalse(self.lease.active)
-        self.install(archive)
-        self.service.confirmOperation(True)
-        self.settle()
+        self.assertEqual(self.service.pendingKind, "")
+        self.assertFalse(self.confirmations)
         self.assertEqual((self.root / IMAGE).read_bytes(), b"new")
-        self.assertTrue(list((self.root / "work/map-packages/upgrades").glob("*/journal.json")))
+        self.assertFalse(list((self.root / "work/map-packages/upgrades").glob("*/journal.json")))
+        self.assertFalse(list((self.root / "work/map-packages/lifecycle").glob("*/journal.json")))
+        self.assertFalse(self.lease.active)
 
     def test_removal_rejects_changed_confirmation_inventory(self):
         self.install()
@@ -601,10 +603,12 @@ class ResourceServiceTests(unittest.TestCase):
     def test_upgrade_rejects_changed_archive(self):
         self.install(self.package("old.zip", b"old"))
         archive = self.package("new.zip", b"new")
-        self.install(archive)
-        archive.write_bytes(b"replaced archive")
-        self.service.confirmOperation(True)
-        self.settle()
+        original_install = self.service._install
+        def changed_before_worker(path, inspection):
+            archive.write_bytes(b"replaced archive")
+            original_install(path, inspection)
+        with patch.object(self.service, "_install", side_effect=changed_before_worker):
+            self.install(archive)
         self.assertEqual((self.root / IMAGE).read_bytes(), b"old")
         self.assertEqual(self.problems[-1]["kind"], "error")
         self.assertFalse(self.lease.active)
@@ -622,11 +626,11 @@ class ResourceServiceTests(unittest.TestCase):
         self.assertNotIn("已取消", self.service.message)
         self.service.requestRemove("nightmare-suju")
         self.settle()
-        real_replace = manager.os.replace
-        def move_then_cancel(source, target):
-            real_replace(source, target)
+        real_move = recovery.upgrade._move_owned
+        def move_then_cancel(*args):
+            real_move(*args)
             self.service._cancel.set()
-        with patch.object(manager.os, "replace", side_effect=move_then_cancel):
+        with patch.object(recovery.upgrade, "_move_owned", side_effect=move_then_cancel):
             self.service.confirmOperation(True)
             self.settle()
         self.assertEqual((self.root / IMAGE).read_bytes(), b"route")
@@ -639,6 +643,34 @@ class ResourceServiceTests(unittest.TestCase):
         self.install()
         self.assertIn("existing-data-conflict", self.problems[-1]["raw"])
         self.assertEqual((self.root / IMAGE).read_bytes(), b"unknown")
+
+    def test_clear_all_one_confirmation_and_refresh_preserve_unknown(self):
+        self.install()
+        self.write("_internal/assets/suju/user-painted.png", b"keep-user-art")
+        self.service.requestCleanupAll()
+        self.settle()
+        self.assertEqual(self.service.pendingKind, "cleanup")
+        self.assertEqual(len(self.confirmations), 1)
+        self.assertIn("无法撤销", self.confirmations[-1][1])
+        self.assertIn("MiB", self.confirmations[-1][1])
+        self.assertTrue((self.root / IMAGE).exists())
+        self.service.confirmOperation(True)
+        self.settle()
+        self.assertFalse((self.root / IMAGE).exists())
+        self.assertEqual((self.root / "_internal/assets/suju/user-painted.png").read_bytes(), b"keep-user-art")
+        self.assertTrue(self.service.cleanupResidues)
+        self.assertEqual(len(self.changes), 2)
+        self.assertFalse(self.lease.active)
+        self.assertFalse(self.service.cleanupPending)
+
+    def test_clear_all_cancel_keeps_files_and_releases_lease(self):
+        self.install()
+        self.service.requestCleanupAll()
+        self.settle()
+        self.service.confirmOperation(False)
+        self.assertEqual((self.root / IMAGE).read_bytes(), b"route")
+        self.assertFalse(self.lease.active)
+        self.assertEqual(len(self.changes), 1)
 
     def test_pending_upgrade_explicitly_blocks_writes_and_retains_pointer(self):
         self.write("work/map-packages/pending-upgrade.json", b'{"transactionId":"interrupted"}')

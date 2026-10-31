@@ -16,7 +16,7 @@ from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, QTimer, Qt
 from client_paths import APP_ROOT, runtime_paths, editor_library_usable, _no_links
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
-from custom_maps import (COLORS, DEFAULT_COLOR, DEFAULT_GALLERY_FILE, FLOORS, FLOOR_LABELS,
+from custom_maps import (COLORS, DEFAULT_COLOR, DEFAULT_GALLERY_FILE, DEFAULT_GALLERY_ID, FLOORS, FLOOR_LABELS,
                          GALLERY_SCHEMA, MAX_POINTS, CustomMapLibrary, GalleryStore,
                          RouteError, insertion_index, marker_groups)
 
@@ -47,6 +47,7 @@ class CustomGalleryService(QObject):
     changed = Signal()
     galleriesChanged = Signal()
     confirmationRequested = Signal(str, str)
+    plazaImportFinished = Signal(int, bool, str)
 
     def __init__(self, sandbox, *, library=None, default_path=DEFAULT_GALLERY_FILE):
         super().__init__()
@@ -81,7 +82,7 @@ class CustomGalleryService(QObject):
         self._editing = False
         self._map_metadata = []
         self._state = dict(galleries=[], maps=[], floors=[], points=[], lines=[], markers=[],
-                           selectedGallery="default", selectedMap="", selectedFloor="1", readonly=True,
+                           selectedGallery="default", selectedMap="", selectedFloor="1", readonly=True, canDelete=False,
                            imageUrl="", imageWidth=0, imageHeight=0, planError="", canUndo=False,
                            canRedo=False, available=False, libraryMessage="正在读取自定义图集")
         self._message = ""
@@ -190,7 +191,7 @@ class CustomGalleryService(QObject):
                 raise OSError("图集保存失败")
             data = json.loads(self.path.read_text(encoding="utf-8"))
             expected = [{k: v for k, v in self._store.export(gid).items() if k != "schema"}
-                        for gid, _name, readonly in self._store.galleries() if not readonly]
+                        for gid, _name, readonly in self._store.galleries() if gid != DEFAULT_GALLERY_ID]
             if data.get("schema") != GALLERY_SCHEMA or data.get("galleries") != expected:
                 raise OSError("图集保存未完成，已恢复已保存内容")
             self._digest = _file_digest(self.path)
@@ -214,7 +215,7 @@ class CustomGalleryService(QObject):
             self._map = maps[0]["id"] if maps else ""
         state = dict(galleries=galleries, maps=maps, selectedGallery=self._gallery, selectedMap=self._map,
             galleryName=store.name(self._gallery), mapName=self.library.name(self._map),
-            drawnCount=len(drawn), mapCount=len(maps),
+            drawnCount=len(drawn), mapCount=len(maps), canDelete=not self._data_error and store.deletable(self._gallery),
             selectedFloor=self._floor, floors=[], points=[], lines=[], markers=[], readonly=bool(self._data_error) or store.readonly(self._gallery),
             imageUrl="", imageWidth=0, imageHeight=0, planError="", available=self.library.available,
             libraryMessage=self.library.error, dataError=self._data_error, canUndo=bool(self._past), canRedo=bool(self._future))
@@ -247,7 +248,7 @@ class CustomGalleryService(QObject):
             imageHeight=int(asset.image_size[1]), points=points, lines=lines, markers=markers)
         return state
 
-    def _run(self, function, message="", *, galleries_changed=False):
+    def _run(self, function, message="", *, galleries_changed=False, completed=None):
         if self._closed or self._busy or self._pending:
             return False
         self._busy = True
@@ -262,16 +263,54 @@ class CustomGalleryService(QObject):
             self._job = None
             self._busy = False
             if self._closed:
+                if completed is not None:
+                    completed(False, "程序正在退出")
                 return
             if state is not None:
                 self._state = state
-            self._message = str(error) if error else (self._data_error or message)
+            self._message = str(error) if error else (self._data_error or (message() if callable(message) else message))
             self.changed.emit()
             if galleries_changed and not error:
                 self.galleriesChanged.emit()
+            if completed is not None:
+                completed(not bool(error or self._data_error), self._message)
         job.signals.done.connect(done, Qt.QueuedConnection)
         self.pool.start(job)
         return True
+
+    def acceptPlazaDownload(self, batch, guard, begin_import):
+        """Convert and persist only on the existing gallery writer queue."""
+        batch = deepcopy(batch)
+        request_id = batch.get("requestId")
+        if type(request_id) is not int:
+            self.plazaImportFinished.emit(-1, False, "下载请求标识无效，请重新下载")
+            return
+        revision = batch.get("accountRevision")
+        result_message = ["路线已下载到图库，可使用或复制后编辑"]
+        def current():
+            return not self._closed and guard(request_id, revision)
+        def install():
+            from route_plaza import prepare_gallery
+            if not current():
+                raise ValueError("下载已取消或账号已改变，请重新下载")
+            prepared = prepare_gallery(self.library, batch)
+            if not current():
+                raise ValueError("下载已取消或账号已改变，请重新下载")
+            if not begin_import(request_id, revision):
+                raise ValueError("下载已取消或账号已改变，请重新下载")
+            self._gallery = self._write(lambda: self._store.install_plaza(
+                prepared["name"], prepared["maps"], prepared["source"]))
+            report = prepared["report"]
+            result_message[0] = f"已保存 {report['maps']} 张地图的路线，可使用或复制后编辑"
+            if report["missingMaps"] or report["droppedPoints"]:
+                result_message[0] += (f"；跳过 {report['missingMaps']} 张未安装地图、"
+                                      f"{report['droppedPoints']} 个无效目标")
+            self._editing = False
+            self._past, self._future = [], []
+        accepted = self._run(install, lambda: result_message[0], galleries_changed=True,
+            completed=lambda ok, message: self.plazaImportFinished.emit(request_id, ok, message))
+        if not accepted:
+            self.plazaImportFinished.emit(request_id, False, "图库正在处理其他操作，请稍后重试")
 
     @Slot()
     def refresh(self):
@@ -338,7 +377,7 @@ class CustomGalleryService(QObject):
 
     @Slot()
     def requestDeleteGallery(self):
-        if self._busy or self._pending or self._state.get("readonly"):
+        if self._busy or self._pending or not self._state.get("canDelete"):
             return
         self._pending = dict(kind="delete", gallery=self._gallery, digest=self._digest)
         self.changed.emit()

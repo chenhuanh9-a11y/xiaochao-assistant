@@ -24,9 +24,9 @@ from client_map_input import OrderedMapInput
 
 
 ACTION_ORDER = ("toggle-panel", "candidate-prev", "candidate-next", "confirm-round",
-                "cycle-floor", "end-round", "toggle-sheet-visibility", "start-round", "toggle-round")
+                "cycle-floor", "end-round", "toggle-sheet-visibility", "start-round", "toggle-round", "manual-map-picker")
 MANAGEMENT_ACTIONS = frozenset({"toggle-panel", "toggle-sheet-visibility", "start-round",
-                                "toggle-round", "end-round"})
+                                "toggle-round", "end-round", "manual-map-picker"})
 KNOWN_ACTIONS = frozenset(("map", "escape", *ACTION_ORDER))
 
 
@@ -228,6 +228,8 @@ class NativeShortcutBackend(QObject):
     @Slot("QVariantMap", result=bool)
     def configureSettings(self, settings):
         actions = settings.get("actionHotkeys", [])
+        if isinstance(actions, list) and len(actions) == len(ACTION_ORDER) - 1:
+            actions = [*actions, ""]
         if len(actions) != len(ACTION_ORDER):
             self._bindings, self._down = {}, {}
             self._stop("conflict", "Shortcut action count does not match the product contract.")

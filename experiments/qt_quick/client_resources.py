@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT / "app"))
 import star_map_import as importer
 import author_package_management as manager
 import client_resource_recovery as recovery
+import package_lifecycle as lifecycle
 
 
 def _error_text(value):
@@ -44,6 +45,8 @@ def package_problem(error, action, *, online=False, recovery_required=False):
                "资源操作未完成，请点击“核对状态”检查实际结果后重试。")
     if raw == "non-local-archive":
         summary = "请选择保存在本机的 ZIP 图包文件，不能直接导入网页地址。"
+    elif "package-cleanup-pending" in reason or "cleanup-rollback" in reason:
+        summary = "图包事务尚未完成，请点击“完成临时清理”核对后重试。已提交的卸载不会恢复旧图包；未提交的事务先恢复原状。"
     elif recovery_required:
         title, summary = "资源事务需要恢复", "资源事务尚未完成。备份和日志已保留；请点击“恢复记录”，核对后恢复旧资源。"
     elif action == "refresh-after-write":
@@ -83,10 +86,11 @@ class _Signals(QObject):
 
 
 class _Work(QRunnable):
-    def __init__(self, token, function, recovery_probe):
+    def __init__(self, token, function, recovery_probe, cleanup_probe=lambda: False):
         super().__init__()
         self.token, self.function = token, function
         self.recovery_probe = recovery_probe
+        self.cleanup_probe = cleanup_probe
         self.signals = _Signals()
 
     def run(self):
@@ -97,14 +101,18 @@ class _Work(QRunnable):
                 recovery = self.recovery_probe()
             except OSError:
                 recovery = False
-            self.signals.done.emit(self.token, None, dict(reason=_error_text(error), recovery=recovery,
+            try:
+                cleanup_pending = self.cleanup_probe()
+            except OSError:
+                cleanup_pending = True
+            self.signals.done.emit(self.token, None, dict(reason=_error_text(error), recovery=recovery, cleanupPending=cleanup_pending,
                                                         errorType=type(error).__name__))
 
 
 def _confirmation_fingerprint(result):
     return json.dumps({key: result.get(key) for key in (
         "packageId", "archiveSha256", "previousReceiptSha256", "files",
-        "replaceFiles", "missingFiles")}, sort_keys=True, separators=(",", ":"))
+        "replaceFiles", "missingFiles", "removeFiles", "mode", "profileId", "contentVersion")}, sort_keys=True, separators=(",", ":"))
 
 
 def _duplicate_import(result):
@@ -112,7 +120,7 @@ def _duplicate_import(result):
     return (isinstance(result, dict) and type(result.get("added")) is int
             and result["added"] == 0 and type(result.get("alreadyPresent")) is int
             and result["alreadyPresent"] > 0 and not result.get("replaceFiles")
-            and not result.get("replaced"))
+            and not result.get("replaced") and not result.get("removeFiles") and not result.get("removed"))
 
 
 class ResourceService(QObject):
@@ -151,8 +159,12 @@ class ResourceService(QObject):
         self._import_completion_message = ""
         self._import_package_id = ""
         self._helper_popup_request = ""
+        self._cleanup_residues = []
+        self._cleanup_pending = False
 
     packageRows = Property("QVariantList", lambda s: s._rows, notify=changed)
+    cleanupResidues = Property("QVariantList", lambda s: s._cleanup_residues, notify=changed)
+    cleanupPending = Property(bool, lambda s: s._cleanup_pending, notify=changed)
     busy = Property(bool, lambda s: s._busy, notify=changed)
     message = Property(str, lambda s: "\n".join(filter(None, (s._import_notice, s._recovery_notice, s._message))), notify=changed)
     pendingKind = Property(str, lambda s: s._kind if s._pending else "", notify=changed)
@@ -339,7 +351,8 @@ class ResourceService(QObject):
             importer._check_cancelled(cancel.is_set)
             return function(cancel)
         job = _Work(self._token, guarded,
-                    lambda: (self.sandbox / "work/map-packages/pending-upgrade.json").exists())
+                    lambda: (self.sandbox / "work/map-packages/pending-upgrade.json").exists(),
+                    lambda: (self.sandbox / lifecycle.STATE).exists() and any((self.sandbox / lifecycle.STATE).iterdir()))
         self._jobs[self._token] = job
         job.signals.done.connect(self._completed, Qt.ConnectionType.QueuedConnection)
         self.changed.emit()
@@ -369,9 +382,21 @@ class ResourceService(QObject):
 
     @Slot(str)
     def requestRemove(self, package_id):
-        if self._available() and not self._recovery:
+        if self._available():
             self._start("inspect-remove", lambda cancel: manager.inspect_author_package_removal(
-                self.sandbox, package_id), "正在核对备份与移除范围…")
+                self.sandbox, package_id), "正在核对图包和历史副本…")
+
+    @Slot()
+    def requestCleanupAll(self):
+        if self._available():
+            self._start("inspect-cleanup", lambda cancel: lifecycle.inspect_cleanup(
+                self.sandbox, cancelled=cancel.is_set), "正在核对全部图包和历史副本…")
+
+    @Slot()
+    def requestFinishCleanup(self):
+        if self._available():
+            self._start("inspect-cleanup", lambda cancel: lifecycle.inspect_cleanup(
+                self.sandbox, cancelled=cancel.is_set, pending_only=True), "正在核对未完成的临时清理…")
 
     def importVerifiedArchive(self, file_url, expected, expected_generation):
         """Bind an online selection before reusing the original local import."""
@@ -494,7 +519,12 @@ class ResourceService(QObject):
             self._start("remove", lambda cancel: manager.remove_author_package_live(
                 self.sandbox, plan["packageId"], application_idle=True,
                 expected_receipt_sha256=plan["receiptSha256"],
-                expected_plan_sha256=plan["planSha256"], cancelled=cancel.is_set), "正在备份并移除资源…")
+                expected_plan_sha256=plan["planSha256"], cancelled=cancel.is_set), "正在卸载图包…")
+        elif kind == "cleanup":
+            plan = pending
+            self._start("cleanup", lambda cancel: lifecycle.cleanup_live(
+                self.sandbox, application_idle=True, expected_plan_sha256=plan["planSha256"],
+                cancelled=cancel.is_set, pending_only=plan.get("pendingOnly", False)), "正在清理已确认的图包…")
 
     @Slot()
     def cancel(self):
@@ -521,8 +551,16 @@ class ResourceService(QObject):
                 self._import_completion_message = ""
             recovery = error.get("recovery", False) if isinstance(error, dict) else False
             raw = error.get("reason", "") if isinstance(error, dict) else str(error)
+            self._cleanup_pending = bool(error.get("cleanupPending")) if isinstance(error, dict) else self._cleanup_pending
+            self._cleanup_pending = "package-cleanup-pending" in raw or self._cleanup_pending
             self._recovery = "upgrade-recovery-required" in raw or "pending-upgrade" in raw or recovery
-            if self._recovery:
+            if self._cleanup_pending:
+                self._recovery = False
+                self._rows = [dict(row, canRemove=False, status="cleanup-pending") for row in self._rows]
+                self._message = self._report_problem(error, kind)
+                if kind in ("install", "remove", "cleanup"):
+                    self.resourcesChanged.emit()
+            elif self._recovery:
                 self._rows = [dict(row, canRemove=False, status="recovery-required") for row in self._rows]
                 self._message = self._report_problem(error, kind, recovery_required=True)
             elif package_cancelled(error):
@@ -534,7 +572,7 @@ class ResourceService(QObject):
             self._release_lease()
             self.changed.emit()
             return
-        if kind in ("refresh", "inspect", "inspect-remove", "refresh-after-write", "recovery-history", "inspect-recovery") and self._cancel.is_set():
+        if kind in ("refresh", "inspect", "inspect-remove", "inspect-cleanup", "refresh-after-write", "recovery-history", "inspect-recovery") and self._cancel.is_set():
             self._message, self._kind = "操作已取消。", ""
             if kind == "refresh-after-write":
                 self._import_completion_message = ""
@@ -590,8 +628,7 @@ class ResourceService(QObject):
         elif kind == "inspect":
             path, inspection = result
             self._import_package_id = str(inspection.get("packageId", ""))
-            if (inspection.get("replaceFiles") or (self._import_launcher is not None
-                    and not importer.supports_live_author_import(inspection))):
+            if self._import_launcher is not None and not importer.supports_live_author_import(inspection):
                 self._kind, self._pending = "overwrite", (path, inspection)
                 self._message = "等待确认资源更新。"
                 self.changed.emit()
@@ -601,15 +638,18 @@ class ResourceService(QObject):
                 return
             self._install(path, inspection)
             return
-        elif kind == "inspect-remove":
-            self._kind, self._pending = "remove", result
-            self._message = "等待确认备份并移除。"
+        elif kind in ("inspect-remove", "inspect-cleanup"):
+            self._kind, self._pending = ("remove" if kind == "inspect-remove" else "cleanup"), result
+            self._cleanup_residues = result["residuals"]
+            self._message = "等待确认卸载范围。"
             self.changed.emit()
-            self.confirmationRequested.emit("备份并移除资源", "%s\n将备份并移除 %s 个作者显示文件（%s 字节），其中 %s 个有本地改动、%s 个已缺失。保留 %s 个核心文件，以及未登记文件和自定义路线。\n\n备份保留在当前资源目录 work/map-package-removals；此操作不提供自动恢复。" % (
-                result["title"], result["fileCount"], result["bytes"], len(result["modifiedFiles"]),
-                len(result["missingFiles"]), result["preservedCoreFiles"]))
+            self.confirmationRequested.emit("完成临时清理" if result.get("pendingOnly") else "卸载图包" if kind == "inspect-remove" else "清理全部图包",
+                "%s\n将删除 %s 个已核实文件，约 %.2f MiB，包含相应历史副本和缓存。\n\n成功后不保留备份，无法撤销。账号、设置、自定义路线和共享识别资源保留；%s 项改动或归属不明的残留不会删除，可在页面查看。" % (
+                    "仅处理未完成事务；已提交的更新保持当前版本，中断且未提交的事务先恢复原状。" if result.get("pendingOnly") else result.get("title", "全部作者和模式"), result["fileCount"], result["bytes"] / 1048576,
+                    len(result["residuals"])))
             return
-        elif kind in ("install", "remove", "recover"):
+        elif kind in ("install", "remove", "cleanup", "recover"):
+            self._cleanup_pending = bool(result.get("cleanupPending"))
             # A successful return is the commit result even if Cancel arrived
             # just after the helper's commit point. Never label that cancelled.
             self._kind = ""
@@ -617,10 +657,21 @@ class ResourceService(QObject):
             # Keep the final feedback pending until the actual-state scan succeeds.
             self._import_completion_message = (("资源内容已存在，登记与状态已核对。" if duplicate else
                 "资源安装完成，登记与状态已核对。") if kind == "install" else "")
-            self._message = ("资源已备份并移除。备份：" + result["backupPath"] if kind == "remove" else
+            self._message = ("图包清理已完成，正在核对状态…" if kind in ("remove", "cleanup") else
                              "资源内容已存在，正在核对登记与状态…" if duplicate else
                              "资源安装完成，正在核对状态…")
             self.resourcesChanged.emit()
+            if kind in ("remove", "cleanup"):
+                self._cleanup_residues = result.get("residuals", [])
+                self._recovery_rows = []
+                self._message = ("临时清理已完成，当前图包保持不变。" if result["status"] == "cleanup-finished" else "已恢复取消前的图包，请重新核对清理范围。" if result["status"] == "cleanup-restored-reinspect-required"
+                                 else "图包已卸载，未核实的残留已列出。" if self._cleanup_residues else "图包已卸载，未保留备份。")
+            if result.get("cleanupPending"):
+                self._rows, self._recovery_rows = [], []
+                self._message = "资源改动已提交；临时文件尚未清理完。点击“完成临时清理”重试，不会恢复已卸载的图包。"
+                self._release_lease()
+                self.changed.emit()
+                return
             if kind == "recover":
                 self._recovery_rows = []
                 self._message = "旧资源已恢复，正在核对状态…"

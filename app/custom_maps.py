@@ -23,6 +23,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import sys
 import threading
 import uuid
@@ -89,6 +90,8 @@ class FloorAsset:
     native_shape: tuple[int, int]
     topology_path: Path
     entrances: tuple[tuple[str, float, float], ...]  # label, image x, image y
+    template_size: tuple[int, int] | None = None
+    template_to_native: np.ndarray | None = None
 
     @property
     def to_image(self) -> np.ndarray:
@@ -107,12 +110,16 @@ class CustomMapLibrary:
         self._graphs: dict[str, MapGraph] = {}
         self._verified: set[Path] = set()
         self._images: dict[tuple, Image.Image] = {}
+        self._legacy_template_art = False
         self._lock = threading.RLock()
         try:
             manifest = json.loads((self.root / "manifest.json").read_text("utf-8"))
             if manifest.get("schema") != SCHEMA:
                 raise ValueError("自定义地图资源版本不受支持")
             self.version = str(manifest.get("version") or "")
+            legacy_sha = (manifest.get("sources") or {}).get("legacyCatalogSha256", "")
+            self._legacy_template_art = bool(isinstance(legacy_sha, str)
+                and re.fullmatch(r"[0-9a-fA-F]{64}", legacy_sha))
             for row in manifest["maps"]:
                 self._maps[row["mapId"]] = row
             self._order = [row["mapId"] for row in sorted(manifest["maps"], key=lambda r: r.get("templateNumber", 0))]
@@ -127,6 +134,10 @@ class CustomMapLibrary:
 
     def maps(self) -> list[tuple[str, str]]:
         return [(map_id, self._maps[map_id]["name"]) for map_id in self._order]
+
+    def templates(self) -> dict[str, str]:
+        return {mid: row["templateId"] for mid, row in self._maps.items()
+                if isinstance(row.get("templateId"), str)}
 
     def has(self, map_id) -> bool:
         return str(map_id) in self._maps
@@ -146,13 +157,21 @@ class CustomMapLibrary:
 
     def floor(self, map_id, floor) -> FloorAsset:
         row = self._maps[str(map_id)]["floors"][str(floor)]
+        template_size = row.get("templateImageSize")
+        template_matrix = row.get("matrixTemplateToNative")
+        if template_size is None and template_matrix is None and self._legacy_template_art:
+            template_id = self._maps[str(map_id)].get("templateId", "")
+            if re.fullmatch(r"nightmare-layout-(0[1-9]|[12]\d)", str(template_id)):
+                template_size, template_matrix = row["imageSize"], row["matrixImageToNative"]
         return FloorAsset(
             map_id=str(map_id), floor=str(floor),
             image_path=self._checked(row["image"], row["imageSha256"]),
             image_size=tuple(row["imageSize"]), to_native=np.asarray(row["matrixImageToNative"], np.float64),
             native_shape=tuple(row["nativeShape"]),
             topology_path=self._checked(row["topology"], row["topologySha256"]),
-            entrances=tuple((e["label"], float(e["x"]), float(e["y"])) for e in row.get("entrances", ())))
+            entrances=tuple((e["label"], float(e["x"]), float(e["y"])) for e in row.get("entrances", ())),
+            template_size=tuple(template_size) if template_size is not None else None,
+            template_to_native=np.asarray(template_matrix, np.float64) if template_matrix is not None else None)
 
     def image(self, map_id, floor) -> Image.Image:
         key = (str(map_id), str(floor))
@@ -478,7 +497,15 @@ def _clean_gallery(raw) -> dict | None:
         points = _clean_points(route.get("points") if isinstance(route, dict) else None)
         if points:
             maps[str(map_id)] = dict(points=points)
-    return dict(id=raw["id"], name=str(raw.get("name") or "未命名图库")[:24], maps=maps)
+    gallery = dict(id=raw["id"], name=str(raw.get("name") or "未命名图库")[:24], maps=maps)
+    source = raw.get("source")
+    if isinstance(source, dict) and all(isinstance(source.get(key), str) and source[key]
+                                        for key in ("workId", "versionId")):
+        gallery["source"] = {key: source[key][:128] for key in
+            ("workId", "versionId", "author", "title") if isinstance(source.get(key), str)}
+        if type(source.get("revision")) is int and source["revision"] >= 0:
+            gallery["source"]["revision"] = source["revision"]
+    return gallery
 
 
 class GalleryStore:
@@ -586,7 +613,7 @@ class GalleryStore:
 
     def galleries(self) -> list[tuple[str, str, bool]]:
         with self._lock:
-            return [(self.default["id"], self.default["name"], True)] + [(g["id"], g["name"], False) for g in self._galleries]
+            return [(self.default["id"], self.default["name"], True)] + [(g["id"], g["name"], "source" in g) for g in self._galleries]
 
     def _find(self, gallery_id) -> dict | None:
         if gallery_id == DEFAULT_GALLERY_ID:
@@ -599,7 +626,40 @@ class GalleryStore:
             return gallery["name"] if gallery else None
 
     def readonly(self, gallery_id) -> bool:
-        return gallery_id == DEFAULT_GALLERY_ID
+        with self._lock:
+            return gallery_id == DEFAULT_GALLERY_ID or "source" in (self._find(gallery_id) or {})
+
+    def deletable(self, gallery_id) -> bool:
+        with self._lock:
+            return gallery_id != DEFAULT_GALLERY_ID and self._find(gallery_id) is not None
+
+    def plaza_versions(self) -> dict[str, str]:
+        with self._lock:
+            return {g["source"]["workId"]: g["source"]["versionId"]
+                    for g in self._galleries if "source" in g}
+
+    def install_plaza(self, name, maps, source) -> str:
+        """Persist a verified download; retain its id when updating that work."""
+        gallery = _clean_gallery(dict(id=uuid.uuid4().hex[:12], name=name, maps=maps, source=source))
+        if gallery is None or not gallery["maps"] or "source" not in gallery:
+            raise ValueError("路线内容无效")
+        with self._lock:
+            previous = list(self._galleries)
+            earlier = next((g for g in self._galleries
+                if g.get("source", {}).get("workId") == gallery["source"]["workId"]), None)
+            if earlier is None:
+                self._galleries.append(gallery)
+            else:
+                old_revision = earlier["source"].get("revision", 0)
+                if gallery["source"].get("revision", 0) < old_revision:
+                    raise ValueError("本地已有更新的路线，请刷新广场")
+                gallery["id"] = earlier["id"]
+                self._galleries[self._galleries.index(earlier)] = gallery
+            if not self._save():
+                self._galleries = previous
+                raise OSError("图库保存失败")
+            self.revision += 1
+            return gallery["id"]
 
     def route(self, gallery_id, map_id) -> list[dict]:
         with self._lock:
@@ -665,6 +725,8 @@ class GalleryStore:
         gallery = _clean_gallery(dict(payload, id=uuid.uuid4().hex[:12]))
         if gallery is None:
             raise ValueError("图库内容无效")
+        # A file import is a user's editable copy, not authenticated plaza provenance.
+        gallery.pop("source", None)
         with self._lock:
             self._galleries.append(gallery)
             self.revision += 1

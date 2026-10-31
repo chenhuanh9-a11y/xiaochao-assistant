@@ -25,9 +25,9 @@ from hotkey_keys import _primary_hotkey_to_vk
 from opacity_controls import load_opacities
 
 ACTION_ORDER = ("toggle-panel", "candidate-prev", "candidate-next", "confirm-round",
-                "cycle-floor", "end-round", "toggle-sheet-visibility", "start-round", "toggle-round")
-LEGACY_ACTIONS = ["F5", "F6", "F7", "F8", "F9", "F10", "F11", "", ""]
-FRESH_ACTIONS = ["F9", "F6", "F7", "F8", "", "", "F11", "", "F10"]
+                "cycle-floor", "end-round", "toggle-sheet-visibility", "start-round", "toggle-round", "manual-map-picker")
+LEGACY_ACTIONS = ["F5", "F6", "F7", "F8", "F9", "F10", "F11", "", "", ""]
+FRESH_ACTIONS = ["F9", "F6", "F7", "F8", "", "", "F11", "", "F10", ""]
 BOOL_DEFAULTS = {"referenceSheetVisible": True, "sheetVisibilityEnabled": True,
                  "orbVisible": True, "reduceMotion": False, "uiSoundEnabled": False,
                  "difficultGridEnabled": False, "onboardingCompleted": False}
@@ -35,7 +35,7 @@ RANGES = {"sheetOpacity": (0., 1.), "referenceOpacity": (0., 1.),
           "interfaceOpacity": (.65, .95), "sheetScale": (.5, 1.5)}
 DEFAULTS = {**BOOL_DEFAULTS, "sheetOpacity": .55, "referenceOpacity": .55,
             "interfaceOpacity": .82, "sheetScale": 1., "gameMode": "nightmare",
-            "routeProfileId": "wang-qingxin", "modeRouteProfiles": {},
+            "routeProfileId": "wang-qingxin", "modeRouteProfiles": {}, "mapSelectionMode": "auto",
             "zhan10CoffinVariantId": "variant-01", "hotkey": "G",
             "actionHotkeys": FRESH_ACTIONS, "gameControlLayout": preset_layout(),
             "sheetPosition": None, "sheetPositionSpace": "unknown", "compactPosition": None}
@@ -55,6 +55,9 @@ def _validate(key, value):
     elif key == "gameMode":
         if value not in ("nightmare", "difficult"):
             raise ValueError("模式只能为 nightmare 或 difficult")
+    elif key == "mapSelectionMode":
+        if value not in ("auto", "manual"):
+            raise ValueError("请选择自动识别或手动选图")
     elif key in ("routeProfileId", "zhan10CoffinVariantId"):
         if not isinstance(value, str) or not value or len(value) > 128 or any(ord(c) < 32 for c in value):
             raise ValueError("请输入有效的配置 ID（1–128 个字符）")
@@ -91,7 +94,7 @@ def _validate_hotkeys(values):
 
 def _legacy_actions(value, map_name):
     """Read legacy 6/7/8-slot arrays; preserve them on disk until edited."""
-    if not isinstance(value, list) or len(value) not in (6, 7, 8, 9):
+    if not isinstance(value, list) or len(value) not in (6, 7, 8, 9, 10):
         return _validate("actionHotkeys", value)
     if not all(isinstance(item, str) for item in value):
         raise ValueError("功能快捷键需要文本")
@@ -453,6 +456,14 @@ class SettingsService(QObject):
                                    if key == "actionHotkeys" else _validate(key, raw[key]))
                 except (TypeError, ValueError) as error:
                     invalid[key] = str(error)
+        if "manualMapPickerHotkey" in raw:
+            try:
+                value = raw["manualMapPickerHotkey"]
+                if not isinstance(value, str):
+                    raise ValueError("手动选图快捷键需要文本")
+                values["actionHotkeys"][9] = parse_chord(value, _primary_hotkey_to_vk).name
+            except (TypeError, ValueError) as error:
+                invalid["actionHotkeys"] = str(error)
         try:
             _validate_hotkeys(values)
         except ValueError as error:
@@ -555,6 +566,11 @@ class SettingsService(QObject):
                 self.changed.emit()
                 return False
         payload = {**deepcopy(self._raw), **edits}
+        if "actionHotkeys" in edits:
+            # Preserve the released nine-slot contract for safe application
+            # rollback. The new reader composes the independent extension.
+            payload["actionHotkeys"] = edits["actionHotkeys"][:9]
+            payload["manualMapPickerHotkey"] = edits["actionHotkeys"][9]
         expected = self._disk_bytes
         self._busy = True
         self._message = "正在保存设置…"

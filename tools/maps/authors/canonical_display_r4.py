@@ -11,6 +11,8 @@ import cv2
 cv2.setNumThreads(1)
 cv2.ocl.setUseOpenCL(False)
 from map_paths import AUTHOR_WORK as PREVIOUS, CANONICAL_WORK as OUT, font
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'app'))
+from author_display_cleanup import derive_r4_display_alpha
 AUTHORS=['wang-qingxin','nightingale']
 PAD=12
 
@@ -105,6 +107,10 @@ def build():
    projected_alpha=cv2.warpPerspective(clip,C,(x1-x0,y1-y0),flags=cv2.WARP_INVERSE_MAP|cv2.INTER_LINEAR,borderMode=cv2.BORDER_CONSTANT,borderValue=0)
    crop[:,:,3]=((projected_alpha.astype('uint16')*crop[:,:,3].astype('uint16')+127)//255).astype('uint8')
    crop[:,:,:3][crop[:,:,3]==0]=0
+   # Keep the R4 crop and its one-time M @ T transform. Only the display
+   # alpha changes; uncertain/textured backgrounds retain the original alpha.
+   cleaned,cleanup=derive_r4_display_alpha(crop[:,:,[2,1,0,3]],author)
+   crop[:,:,3]=cleaned[:,:,3]
    name=f'{e["structureSnapshot"]}-{e["layout"]}-{e["floor"]}.png';asset=pack/'assets'/name
    Image.fromarray(crop).save(asset,compress_level=6)
    B=np.array([[128/60,0,b['bounds']['minX']],[0,128/60,b['bounds']['minY']],[0,0,1]],float)
@@ -116,6 +122,7 @@ def build():
     if'globalGeometryCertificate'in proof:precision['globalGeometryCertificate']=proof['globalGeometryCertificate']
    source=dict(originalPath=r['sourceOriginalPath'],originalSha256=r['sourceSha256'],originalSizeWH=[W,H],selectedRepresentation=r['representation'],authorGroup=r['authorGroup'],selectionReason=e['selectionReason'],cropRectOriginalSourceXYXY=[x0,y0,x1,y1],originalSourceToBase=M.tolist())
    entry=dict(id=f'{author}:{e["baseId"]}',layout=e['layout'],stableCatalogGuid=e['stableCatalogGuid'],floor=e['floor'],worldFloor=e['worldFloor'],structureSnapshot=e['structureSnapshot'],structureRole='retained'if e['retainedOldStructure']else'current',baseId=e['baseId'],baseKey=key,baseStructureHash=b['metadataSha256'],baseDisplayHash=b['sha256'],baseSizeWH=b['size'],asset=dict(path='assets/'+name,format='PNG RGBA',sizeWH=[x1-x0,y1-y0],sha256=sha(asset),bytes=asset.stat().st_size),coordinateSystem='original native crop pixels; x right, y down; column vectors',matrixAssetToBase=C.tolist(),matrixBaseToAsset=np.linalg.inv(C).tolist(),matrixAssetToWorld=(B@C).tolist(),matrixAssetToOriginalSource=T.tolist(),alignmentBaked=False,transformApplications=1,source=source,alignment=precision,display=dict(mode='overlay_on_shared_base',alphaApplied=True,alphaRecipe='shared rendered footprint alpha; dilate12 base px for author wall/route padding; linearly project into native crop; multiply original alpha',paddingBasePixels=PAD,alphaIsDisplayClipping=True,fullBaseMaskBBoxXYXY=base_box,unboundedSourceCropXYXY=unbounded,newCropDoesNotDiscardProjectedDisplaySupport=True),sourceContentCoverage=dict(sampledOriginalDomainCoverage=e['selected']['sampledCompleteness'],sourceEdgeTruncated=e['selected']['sampledCompleteness']<.9995,handling='Original missing pixels remain transparent and show the shared base; no author pixels invented.'),generationSeconds=time.perf_counter()-started)
+   entry['display']['backgroundCleanup']=cleanup
    entries.append(entry)
    dependencies.append(dict(id=b['id'],baseKey=key,layout=b['layout'],stableCatalogGuid=b['guid'],floor=b['floor'],worldFloor=b['worldFloor'],structureSnapshot=b['snapshot'],structureHash=b['metadataSha256'],structureHashScope='Exact source.json bytes: placements, graph/door records, bounds and coordinate semantics; not author image pixels.',metadataPath=b['metadataPath'],metadataSha256=b['metadataSha256'],renderedBasePath=b['path'],renderedBaseSha256=b['sha256'],sizeWH=b['size'],bounds=b['bounds'],cellPixels=60,worldUnitsPerCell=128))
    print(author,e['baseId'],r['representation'],entry['asset']['sizeWH'],entry['asset']['bytes'],flush=True)
@@ -134,6 +141,8 @@ def build():
 选源：{manifest['selectedSourceCounts']}。清晰度、完整性、已有对齐等级相近时优先单层；原采样显著更高或更完整时裁取合图。所有矩阵复用R3，不重跑识别或配准。
 
 assets/中的PNG保持所选原图的原始像素采样，没有烘焙仿射、没有再次缩放RGB。透明区域仅用于显示裁切：使用精确版本共享底图的alpha外形＋12 base px的墙线/路线边缘留白，映射至原始裁片坐标；不是放宽4px精度门槛。来源原先截掉的边缘保持透明，由共享底图显示，不补造作者像素。
+
+随后仅对已复核的nightingale（爱吃醋·噩梦）R4黑底来源且边界足够一致的外侧背景派生透明度，保留不同色内容及其2个原生像素邻域；不裁画布或改矩阵。王清心水印/纹理背景及其他作者保持原alpha，逐层结果见display.backgroundCleanup，不代表所有作者背景已清理。
 
 加载时只对PNG应用matrixAssetToBase一次：M_asset_to_base=M_original_to_base*T_cropOrigin。PNG本身已带alpha，alignmentBaked=false，transformApplications=1。不要再使用原图矩阵或原裁切偏移重复套用。世界坐标、逆矩阵、base尺寸/结构版本/结构hash/显示hash均在manifest和base-dependencies。
 

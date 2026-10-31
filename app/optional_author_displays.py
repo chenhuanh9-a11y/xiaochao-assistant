@@ -3,13 +3,12 @@ from pathlib import Path
 import copy
 import json
 
-import cv2
 import numpy as np
 
 from author_route_catalog import AuthorRouteCatalog
 from star_map_import import author_profiles_for_mode
 from nightmare_author_coordinate_adapter import AuthorCoordinateAdapters
-from nightmare_candidate import imread_unicode
+from author_display_cleanup import AuthorDisplayCleanupCache
 
 
 class OptionalAuthorDisplayAdapters(AuthorCoordinateAdapters):
@@ -36,6 +35,7 @@ class OptionalAuthorDisplays:
         self.bindings = {}
         self.profiles = set()
         self.errors = {}
+        self._display_cleanup = AuthorDisplayCleanupCache()
         self.catalog = copy.copy(catalog) if catalog is not None else None
         if self.catalog is not None:
             self.catalog.profiles = dict(catalog.profiles)
@@ -126,7 +126,12 @@ class OptionalAuthorDisplays:
             raise ValueError('optional author display resource role mismatch')
         if role == 'aligned-overlay' and not any(row['usable'] for row in rows):
             raise ValueError('author registration is unavailable for aligned display')
-        pixels = imread_unicode(path,cv2.IMREAD_UNCHANGED)
-        if pixels is None or pixels.dtype != np.uint8 or pixels.ndim != 3 or pixels.shape[2] != 4:
-            raise ValueError('optional author requires original BGRA display pixels')
-        return pixels
+        # Every display role receives the same canvas and alpha derivation. The
+        # binding and its matrices continue to describe the original asset.
+        declaration = rows[0]['declaration']
+        if any(row['declaration'] != declaration for row in rows[1:]):
+            declaration = {}  # Ambiguous provenance must keep original pixels.
+        return self._display_cleanup.pixels(path, declaration)
+
+    def cleanup_report(self, path):
+        return self._display_cleanup.report(path)
