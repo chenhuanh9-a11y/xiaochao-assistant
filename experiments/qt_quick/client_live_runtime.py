@@ -1528,7 +1528,7 @@ class LiveRuntime:
                 roundActive=self._active, roundPreparing=self._round_preparing, mapOpen=self._map_open,
                 captureInProgress=self._capture_pending,
                 alignedVisible=self._aligned_visible,
-                automaticCandidateRows=copy.deepcopy(self._automatic_candidate_rows),
+                automaticCandidateRows=self._candidate_summary(),
                 candidateRows=copy.deepcopy(self._candidate_rows), selectedCandidateIndex=selected,
                 selectedCandidate=copy.deepcopy(self._candidate_rows[selected]) if selected >= 0 else {},
                 **self._identity_fields(), candidateEditMode=self._candidate_edit,
@@ -1545,6 +1545,22 @@ class LiveRuntime:
                 capture=copy.deepcopy(capture_state), render=metadata,
                 displayAuthorized=bool(metadata), liveAuthorization=bool(metadata.get("liveAuthorization")),
                 message=self._message, core=self._core.snapshot(), evidenceKind=self._evidence_kind)
+
+    def _candidate_summary(self):
+        """UI identity rows, without repeated solver evidence trees.
+
+        Ranking retains its full evidence internally. The Qt state transport is
+        read repeatedly by controls/status bindings; copying every candidate's
+        nested fit diagnostics here used to stall both presentation and floor
+        events even after the worker had finished. Keep order, identities and
+        verdicts unchanged, and never feed this UI projection back to ranking.
+        """
+        fields = ("key", "mapId", "identityKind", "groupId", "memberIds", "name",
+                  "score", "identityHardGatePassed", "strongSuggestion", "reason",
+                  "mode", "entryKind", "direction", "inliers", "identityElapsedMs",
+                  "identityBudgetExceeded")
+        return [{key: copy.deepcopy(row[key]) for key in fields if key in row}
+                for row in self._automatic_candidate_rows]
 
     def invalidate(self, reason="invalidated", *, source=""):
         """Owner-thread fast path: revoke before canceling/queueing slow work."""

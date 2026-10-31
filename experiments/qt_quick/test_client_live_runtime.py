@@ -95,6 +95,29 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertTrue(result["success"], result)
         return result
 
+    def test_ui_snapshot_does_not_copy_solver_evidence_or_change_candidate_identity(self):
+        class WorkerEvidence:
+            def __deepcopy__(self, memo):
+                raise AssertionError("solver evidence copied by UI snapshot")
+        evidence = WorkerEvidence()
+        rows = [dict(key="group:confirmed", mapId="", identityKind="group", groupId="confirmed",
+                     memberIds=["a", "b"], score=12., identityHardGatePassed=False,
+                     difficultRecognition=evidence),
+                dict(key="c", mapId="c", identityKind="map", score=9.,
+                     identityHardGatePassed=True, identityEvidence=evidence)]
+        self.runtime._automatic_candidate_rows = rows
+        for mode in ("nightmare", "difficult"):
+            with self.subTest(mode=mode):
+                self.runtime._mode = mode
+                summary = self.runtime.snapshot()["automaticCandidateRows"]
+                self.assertEqual([row["key"] for row in summary], ["group:confirmed", "c"])
+                self.assertEqual(summary[0]["memberIds"], ["a", "b"])
+                self.assertEqual(summary[1]["identityHardGatePassed"], True)
+                self.assertNotIn("identityEvidence", summary[1])
+                summary[0]["memberIds"].append("foreign")
+                self.assertEqual(rows[0]["memberIds"], ["a", "b"])
+                self.assertIs(rows[1]["identityEvidence"], evidence)
+
     def test_v2_commit_primes_real_floor_relation_and_adopts_one_root_with_validation_pools(self):
         relation = np.array([[1., 0, 7.], [0, 1., -5.], [0, 0, 1.]])
         def seed(mid, source, target, matrix, **kw):

@@ -1426,7 +1426,8 @@ class ClientCoordinator(QObject):
                 self._withdraw_expired_source("runtime-grant-unavailable")
                 self.changed.emit(); return
         if token == self._last_render_token:
-            self.showReference()
+            if not callable(reference_getter):
+                self.showReference()
             current = get_payload(token) if get_payload else None
             if current and current.get("liveAuthorization"):
                 scope = ("epoch", "mode", "profileId", "mapId", "floor", "roundId", "cycleId",

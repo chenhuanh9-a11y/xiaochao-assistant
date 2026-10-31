@@ -88,6 +88,18 @@ class CoordinatorTests(unittest.TestCase):
             timer.stop()
         self.app.processEvents()
 
+    def test_same_token_presentation_syncs_reference_once_and_rechecks_live_grant(self):
+        row = dict(token="current", liveAuthorization=True)
+        self.coordinator._aligned = dict(row)
+        self.coordinator._last_render_token = "current"
+        self.runtime.render_payload.return_value = row
+        self.runtime.reference_payload = Mock(return_value=None)
+        with patch.object(self.coordinator, "_sync_reference_payload") as sync:
+            self.coordinator._present_runtime_state(dict(render=row), trigger="render-ready")
+        self.runtime.reference_payload.assert_called_once_with()
+        sync.assert_called_once_with(None)
+        self.runtime.render_payload.assert_called_once_with("current")
+
     def test_foreground_diagnostics_identify_owned_role_without_activation(self):
         self.windows._windows["toast"] = SimpleNamespace(isVisible=lambda: True, winId=lambda: 77)
         self.native.window_process_id = Mock(return_value=700)
