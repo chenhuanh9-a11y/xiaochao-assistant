@@ -379,11 +379,11 @@ class LiveRuntime:
         context = captured.context
         return (tuple(context.full_client_size), tuple(context.client_screen_bounds), context.dpi)
 
-    def _register_material_proposal(self, render, frame, fit, captured, group):
+    def _register_material_proposal(self, render, frame, fit, captured, group, *, accepted=False):
         # Worker only. Capture frames are already owned immutable BGR arrays.
         token = render["token"]
         self._remember_proposals[token] = dict(context=self._steady_context(), frame=frame,
-            fit=fit, captured=captured, group=group, mapId=render["mapId"], floor=render["floor"], accepted=False)
+            fit=fit, captured=captured, group=group, mapId=render["mapId"], floor=render["floor"], accepted=accepted)
         while len(self._remember_proposals) > 3:
             self._remember_proposals.pop(next(iter(self._remember_proposals)))
 
@@ -2153,6 +2153,14 @@ class LiveRuntime:
             if not self._capture_is_current(captured.context, capture_generation):
                 self.invalidate("capture-context-changed")
                 return self._receipt("refresh_map", payload, success=False, reason="capture-context-changed", stale=True)
+            # Image.Ready can acknowledge this unchanged material while the
+            # residual calculation runs. Preserve only that receipt, after all
+            # old-scope checks and before advancing frame authority. The queued
+            # remember worker must consume the fresh frame/fit/context below.
+            previous = self._remember_proposals.get(row["token"])
+            material_accepted = bool(previous and previous["accepted"]
+                and previous["context"] == self._steady_context()
+                and previous["group"] is self._group)
             generation = self._frame_generation + 1
             frame_id = f"{self._round}:{generation}:{digest[:16]}"
             self._core.begin_observation(cycle_id=cycle, map_id=map_id, floor=floor,
@@ -2182,9 +2190,14 @@ class LiveRuntime:
             self._remember_provisional_reference()
             render_token = self._render["token"]
             self._register_material_proposal(self._render, frame,
-                dict(success=True, selectedRouteCurrentFrameResidual=residual), captured, self._group)
+                dict(success=True, selectedRouteCurrentFrameResidual=residual), captured, self._group,
+                accepted=material_accepted)
         self._set_pose_phase("valid", "current-pose-refreshed", map_id, floor, frame_id, generation)
         self._notify("render-ready", reason="current-pose-refreshed", token=render_token, unchanged=True)
+        if material_accepted:
+            # A refresh may have superseded a running remember job. Re-offer
+            # its fresh proposal; Session deduplicates an already queued token.
+            self._notify("render-material-accepted", token=render_token, reason="current-material-revalidated")
         if obsolete():
             return self._receipt("refresh_map", payload, success=False, reason="cancelled-or-stale", stale=True)
         return self._receipt("refresh_map", payload, success=True, reason="current-pose-refreshed",

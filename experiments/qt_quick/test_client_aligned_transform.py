@@ -111,6 +111,23 @@ class AlignedTransformProbe(unittest.TestCase):
         image = window.findChild(QObject, "clientAlignedRouteImage")
         url = image.property("source").toString()
         initial_ack = fixture.runtime.acknowledge_render_material.call_count
+        if actual_runtime is not None:
+            # A passive refresh renews frame authority without reloading this
+            # material. The next raw-input gesture must use that new authority.
+            old_frame = row["frameId"]
+            residual = dict(verified=True, poseVerifiedAgainstCanonicalGeometry=True,
+                profileRenderDerivedFromCanonical=True, coordinatePackId="fixture-pack",
+                validationBasis="shared-canonical-geometry-current-frame")
+            with patch.object(runtime_fixtures._AlignmentHost, "_canonical_geometry_current_frame_residual",
+                              return_value=(residual, None)):
+                refreshed = actual_runtime.dispatch("refresh_map", {})
+            self.assertEqual(refreshed["reason"], "current-pose-refreshed")
+            APP.processEvents()
+            row = actual_runtime.render_payload(source_token)
+            self.assertNotEqual(row["frameId"], old_frame)
+            self.assertEqual(coordinator.alignedData["frameId"], row["frameId"])
+            self.assertEqual(coordinator.alignedData["generation"], row["generation"])
+            self.assertEqual(image.property("source").toString(), url)
         poses_before = deepcopy(actual_runtime._core.snapshot()["poses"]) if actual_runtime is not None else None
         root_before = actual_runtime._group.root_pose.copy() if actual_runtime is not None else None
         logs.clear()

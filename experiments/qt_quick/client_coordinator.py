@@ -1411,15 +1411,24 @@ class ClientCoordinator(QObject):
             self.showReference()
             current = get_payload(token) if get_payload else None
             if current and current.get("liveAuthorization"):
+                scope = ("epoch", "mode", "profileId", "mapId", "floor", "roundId", "cycleId",
+                         "captureGeneration", "displayGeneration", "variantId",
+                         "resourceIdentity", "routeWidth", "routeHeight", "clientWidth", "clientHeight")
+                if any(current.get(key) != self._aligned.get(key) for key in scope):
+                    self._invalidate_display("render-transform-scope-changed")
+                    self.changed.emit()
+                    return
                 changed = False
+                # A verified unchanged-pose refresh retains the material token,
+                # but renews frame authority. Consume that current grant before
+                # a subsequent pointer transform; never reload its pixels.
+                frame_metadata = {key: current.get(key) for key in
+                                  ("authorizationId", "frameId", "generation", "observedFloor", "floorSource")}
+                if any(self._aligned.get(key) != value for key, value in frame_metadata.items()):
+                    self._aligned.update(frame_metadata)
+                    changed = True
                 revision = current.get("transformRevision", 0)
                 if (type(revision) is int and revision > self._aligned.get("transformRevision", 0)):
-                    scope = ("mode", "profileId", "mapId", "floor", "roundId", "cycleId", "frameId",
-                             "generation", "resourceIdentity", "routeWidth", "routeHeight", "clientWidth", "clientHeight")
-                    if any(current.get(key) != self._aligned.get(key) for key in scope):
-                        self._invalidate_display("render-transform-scope-changed")
-                        self.changed.emit()
-                        return
                     # The runtime owns this current-frame transient transform.
                     # Keep material/URL and capture-to-DIP projection unchanged.
                     for key in ("matrix", "transformRevision", "transient", "transientOffset", "persistentPoseUpdated"):

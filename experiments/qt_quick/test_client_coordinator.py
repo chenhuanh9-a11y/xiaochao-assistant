@@ -397,15 +397,23 @@ class CoordinatorTests(unittest.TestCase):
         self.coordinator._last_render_token = row["token"]
         self.images.publish = Mock(side_effect=AssertionError("Transform reloaded material"))
         self.runtime.render_payload.return_value = dict(row, matrix=[[1,0,35],[0,1,12],[0,0,1]],
+            frameId="1:3", generation=3, authorizationId="renewed-frame-authority",
             transformRevision=1, transient=True, transientOffset=[35,12], pixels=object())
         self.coordinator._present_runtime_state(dict(render=row), trigger="pointer-drag-move")
         self.assertEqual(self.coordinator.alignedData["matrix"][0][2], 35)
+        self.assertEqual(self.coordinator.alignedData["frameId"], "1:3")
+        self.assertEqual(self.coordinator.alignedData["authorizationId"], "renewed-frame-authority")
         self.assertEqual(self.coordinator.alignedData["routeUrl"], row["routeUrl"])
         self.images.publish.assert_not_called()
-        self.runtime.render_payload.return_value = dict(self.runtime.render_payload.return_value,
-            transformRevision=2, mapId="other-map")
-        self.coordinator._present_runtime_state(dict(render=row), trigger="pointer-drag-move")
-        self.assertFalse(self.coordinator.alignedData)
+        valid = deepcopy(self.coordinator.alignedData)
+        for change in (dict(mapId="other-map"), dict(floor="2"), dict(epoch=99),
+                       dict(captureGeneration=99), dict(resourceIdentity="new-resource")):
+            with self.subTest(change=change):
+                self.coordinator._aligned = deepcopy(valid)
+                self.coordinator._last_render_token = row["token"]
+                self.runtime.render_payload.return_value = dict(valid, **change)
+                self.coordinator._present_runtime_state(dict(render=row), trigger="same-token-refresh")
+                self.assertFalse(self.coordinator.alignedData)
 
     def test_material_ack_and_missing_route_notice_require_current_loaded_token(self):
         payload = dict(token="material-1", mode="nightmare", mapId="map-1", floor="F1",
