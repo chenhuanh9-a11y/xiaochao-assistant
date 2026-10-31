@@ -28,6 +28,14 @@ def rows(winner=None, mode="nightmare", floor="1"):
     result[0]["nativeSimilarity"] = proposal(winner,mode,floor)
     return result
 
+def explicit_registry(mode="nightmare", member_sets=(IDS,)):
+    """Test-only schema1 registrations; never a production membership table."""
+    declarations=[dict(groupId="fixture-reviewed-"+str(i),memberIds=list(members))
+                  for i,members in enumerate(member_sets)]
+    return SimpleNamespace(mode=mode,error=None,index_digest="explicit-fixture-registry",condition_index=None,
+        group_for=lambda mid:next((g for g in declarations if mid in g["memberIds"]),None),validate=Mock())
+
+
 class SimilarityProtocolTests(unittest.TestCase):
     setUp = fixtures.LiveRuntimeContracts.setUp
     dispatch = fixtures.LiveRuntimeContracts.dispatch
@@ -52,6 +60,7 @@ class SimilarityProtocolTests(unittest.TestCase):
         self.capture.frame.fill(0)
         second = SimpleNamespace(id=IDS[1])
         self.engine.pack.maps.append(second); self.engine.pack.by_id[second.id] = second
+        self.engine.qt_logical_group_registry=explicit_registry(self.engine.pack.mode)
         self.engine.rank = Mock(return_value=rows(mode=self.engine.pack.mode))
         self.engine.rank_established_group = Mock(return_value=rows(mode=self.engine.pack.mode))
         self.now = 1.0
@@ -149,9 +158,9 @@ class SimilarityProtocolTests(unittest.TestCase):
             self.assertFalse(payload.get("liveAuthorization", payload.get("referenceAuthorized")))
         self.assertEqual(self.engine.rank.call_args.kwargs["budget_seconds"], 1.85)
         self.engine.rank_established_group.assert_not_called()
-        self.assertIsNotNone(self.engine.native_similarity_context_provider())
+        self.assertIsNone(self.engine.native_similarity_context_provider())
         # Repeated pixels do not manufacture an extra temporal observation.
-        self.assertEqual(len(self.runtime._identity_native.observations), 1)
+        self.assertEqual(len(self.runtime._identity_native.observations), 0)
 
     def test_established_logical_group_never_runs_internal_member_competition(self):
         self.capture_group()
@@ -385,6 +394,7 @@ class SimilarityProtocolTests(unittest.TestCase):
     def test_different_discovered_group_can_initially_select_and_resource_reset_clears_it(self):
         self.capture_group()
         new_ids=("third-map","fourth-map")
+        self.engine.qt_logical_group_registry=explicit_registry(member_sets=(IDS,new_ids))
         for mid in new_ids:
             item=SimpleNamespace(id=mid);self.engine.pack.maps.append(item);self.engine.pack.by_id[mid]=item
         ranked=rows()
@@ -418,8 +428,44 @@ class SimilarityProtocolTests(unittest.TestCase):
         state=self.runtime.snapshot();self.assertEqual(state["identityPhase"],"GROUP_LOCKED")
         self.assertFalse(state["identityLocked"]);self.assertFalse(state["manualGroupMemberHeld"])
         self.assertIsNone(self.runtime._identity_native.pending_identity)
-        self.assertEqual(state["provisionalMapId"],sorted(IDS)[0])
+        self.assertEqual(state["provisionalMapId"],IDS[1])
         self.assertEqual(len(state["automaticCandidateRows"]),1)
+
+    def test_both_modes_initial_verified_witness_is_provisional_then_choice_stays_sticky(self):
+        from client_live_runtime import LiveRuntime
+        for mode in ("nightmare","difficult"):
+            with self.subTest(mode=mode):
+                self.engine=fixtures.fixture_engine(mode)
+                self.runtime=LiveRuntime(engine_factories={mode:lambda:self.engine},capture_provider=self.capture,
+                    evidence_kind="synthetic",clock=lambda:1.)
+                self.dispatch("set_context",mode=mode);self.prepare_group()
+                initial=rows(IDS[1],mode)
+                initial[0]["difficultEntry"]["verification"]["success"]=False
+                self.engine.rank.return_value=initial
+                result=self.dispatch("capture_now");self.assertTrue(result["success"],result)
+                state=self.runtime.snapshot()
+                self.assertEqual(state["provisionalMapId"],IDS[1])
+                self.assertFalse(state["identityLocked"]);self.assertFalse(state["manualGroupMemberHeld"])
+                self.assertIsNone(self.runtime._identity_native.pending_identity)
+                self.assertEqual(self.runtime.render_payload(result["renderToken"])["mapId"],IDS[1])
+                # A subsequent automatic witness is not permission to change
+                # the initial display member, even before a player confirms it.
+                self.engine.rank.return_value=rows(IDS[0],mode)
+                result=self.dispatch("capture_now");self.assertTrue(result["success"],result)
+                self.assertEqual(self.runtime.snapshot()["currentGroupMemberId"],IDS[1])
+                target=self.group_choice(IDS[0])["pendingSiblingToken"]
+                self.assertTrue(self.runtime.acknowledge_sibling(target,True)["success"])
+                self.engine.rank.return_value=rows(IDS[1],mode,"2")
+                self.engine.qt_map_ui.observe=lambda *a:dict(mapOpen=True,floor="2")
+                with patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=2)):
+                    self.dispatch("set_floor",floor="2")
+                    result=self.dispatch("capture_now");self.assertTrue(result["success"],result)
+                self.assertEqual(self.runtime.snapshot()["currentGroupMemberId"],IDS[0])
+                self.assertTrue(self.runtime.snapshot()["manualGroupMemberHeld"])
+                self.assertFalse(self.runtime.acknowledge_sibling(target,True)["success"])
+                for surface in (self.runtime.render_payload(result["renderToken"]),self.runtime.reference_payload()):
+                    self.assertEqual((surface["mapId"],surface["floor"]),(IDS[0],"2"))
+                self.dispatch("end_round")
 
     def test_current_confirmed_member_cancels_other_desire_and_late_material_without_fit(self):
         self.capture_group()
@@ -801,7 +847,7 @@ class SimilarityProtocolTests(unittest.TestCase):
         self.assertTrue(result["success"],result)
         self.assertEqual(self.runtime.snapshot()["identityPhase"],"GROUP_LOCKED")
         self.assertEqual(self.runtime._identity_prior,prior)
-        self.assertEqual(len(self.runtime._identity_native.observations),1)
+        self.assertEqual(len(self.runtime._identity_native.observations),0)
 
     def test_late_explicit_none_cannot_reset_a_newer_context(self):
         self.prepare_group()

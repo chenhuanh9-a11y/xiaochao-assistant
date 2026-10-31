@@ -19,7 +19,7 @@ from client_paths import APP_ROOT, WORK_ROOT
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 from alignment_core_v2 import AlignmentCoreV2
-from client_engine import (EngineAdapter, clone_similarity_state, stage_similarity_rank, automatic_identity_candidates, registered_logical_family, similarity_evidence_summary,
+from client_engine import (EngineAdapter, clone_similarity_state, stage_similarity_rank, automatic_identity_candidates, registered_logical_family, similarity_evidence_summary, initial_group_display_member, is_registered_identity_group,
                            INITIAL_IDENTITY_BUDGET_SECONDS)
 from floor_observation_policy import (MANUAL_FLOOR_HOLD_SECONDS,
                                       read_floor_evidence, decide_floor_transition, game_floor_control_hit)
@@ -460,7 +460,7 @@ class LiveRuntime:
 
     def _identity_fields(self):
         native = self._identity_native
-        grouped = bool(native is not None and native.state == "GROUP_LOCKED")
+        grouped = is_registered_identity_group(native)
         held = self._manual_group_choice is not None
         phase = ("MANUAL_MEMBER_CONFIRMED" if held else "MEMBER_VERIFIED" if self._durable_map_id
                  else "GROUP_LOCKED" if grouped else "UNLOCKED")
@@ -468,12 +468,12 @@ class LiveRuntime:
             identityLocked=bool(self._durable_map_id), durableMapId=self._durable_map_id,
             provisionalMapId=(native.provisional_member_id or self._map_id) if grouped else "",
             provisional=grouped and not bool(self._durable_map_id), groupLocked=grouped,
-            groupId=native.group_id if native is not None else None,
-            groupMemberIds=list(native.member_ids) if native is not None else [],
-            groupGeneration=native.generation if native is not None else 0,
+            groupId=native.group_id if grouped else None,
+            groupMemberIds=list(native.member_ids) if grouped else [],
+            groupGeneration=native.generation if grouped else 0,
             currentGroupMemberId=self._map_id,
             groupMemberRows=[dict(mapId=mid, name=str(getattr(self._engine.pack.by_id.get(mid), "name", mid)))
-                for mid in native.member_ids] if native is not None and self._engine is not None else [],
+                for mid in native.member_ids] if grouped and self._engine is not None else [],
             manualGroupMemberHeld=held, manualGroupMemberId=self._manual_group_choice[3] if held else "",
             groupMemberSelectionPending=self._group_choice_inflight is not None,
             pendingGroupMemberId=self._group_choice_inflight[1] if self._group_choice_inflight else "",
@@ -524,7 +524,7 @@ class LiveRuntime:
         self._identity_prior = state.context_snapshot()
         self._identity_priority = (None if state.condition_reason=="registered-logical-family"
                                    else state.priority(self._mode))
-        self._identity_source = "group-default" if state.state=="GROUP_LOCKED" else "native-similarity"
+        self._identity_source = "group-default" if is_registered_identity_group(state) else "native-similarity"
         return True
 
     def _rank_identity(self, engine, frame, floor, epoch, frame_id, cancelled, *, rediscover=False):
@@ -545,17 +545,19 @@ class LiveRuntime:
         block_member_unique=False
         unresolved_candidates=[]
         native_group=bool(len(state.member_ids)>1 and state.state=="GROUP_LOCKED")
-        if (native_group or len(state.member_ids)<2 and len(accepted)==1
-                and top is accepted[0] and top.get("strongSuggestion") is True):
-            family=registered_logical_family(engine,state.provisional_member_id if native_group else top["mapId"],floor,
-                                             required_members=state.member_ids if native_group else ())
+        hard_top=bool(len(accepted)==1 and top is accepted[0] and top.get("strongSuggestion") is True)
+        if native_group or hard_top:
+            family=registered_logical_family(engine,top["mapId"] if hard_top else state.provisional_member_id,floor,
+                                             required_members=state.member_ids if native_group and not hard_top else ())
             block_member_unique=family["status"]!="none"
             if family["status"]=="group":
                 declared=family["candidates"][0]
+                provisional=state.provisional_member_id
                 state.reset()
                 state.state="GROUP_LOCKED";state.group_id=declared["groupId"]
                 state.resource_key=declared["resourceKey"];state.member_ids=tuple(declared["memberIds"])
-                state.floor=str(floor);state.provisional_member_id=sorted(state.member_ids)[0]
+                state.provisional_member_id=provisional
+                state.floor=str(floor);state.provisional_member_id=initial_group_display_member(state,seeds)
                 state.condition_reason="registered-logical-family"
                 proposal=dict(status="logical-group",reason=state.condition_reason)
             elif block_member_unique:
@@ -571,13 +573,15 @@ class LiveRuntime:
                 self.invalidate("capture-context-changed")
                 return None, None, "capture-context-changed"
             self._update_candidates(rows, floor)
-            self._automatic_candidate_rows=unresolved_candidates if block_member_unique and state.state!="GROUP_LOCKED" else automatic_identity_candidates(rows,state)
+            registered_group=is_registered_identity_group(state)
+            self._automatic_candidate_rows=(unresolved_candidates if block_member_unique and not registered_group
+                                            else automatic_identity_candidates(rows,state if registered_group else None))
             group_key=(self._round,self._mode,frozenset(state.member_ids))
             preference=self._group_member_preference
-            previous_members = frozenset(previous.member_ids) if previous is not None else frozenset()
-            same_group = bool(state.state == "GROUP_LOCKED" and len(state.member_ids)>1
+            previous_members = frozenset(previous.member_ids) if is_registered_identity_group(previous) else frozenset()
+            same_group = bool(registered_group
                               and previous_members == frozenset(state.member_ids))
-            changed_group = bool(previous_members and state.state == "GROUP_LOCKED"
+            changed_group = bool(previous_members and registered_group
                                  and previous_members != frozenset(state.member_ids))
             if changed_group:
                 # A fresh, validated different family invalidates every old
@@ -596,7 +600,7 @@ class LiveRuntime:
                 self._reference_sheet = self._reference_capture_context = None
                 self._provisional_reference_context = None
                 self._durable_map_id = ""
-            if (state.state == "GROUP_LOCKED" and len(state.member_ids)>1
+            if (registered_group
                     and preference is not None and preference[:3]==group_key
                     and preference[3] in state.member_ids):
                 # A remembered choice is not recognition/display authority.
@@ -604,10 +608,8 @@ class LiveRuntime:
                 # reuse it, including after none evidence or floor index churn.
                 state.verified_member_id = state.pending_identity = None
                 state.provisional_member_id = preference[3]
-            grouped = state.state == "GROUP_LOCKED"
+            grouped = registered_group
             if grouped and len(state.member_ids)>1:
-                if preference is None or preference[:3]!=group_key:
-                    state.provisional_member_id=sorted(state.member_ids)[0]
                 if self._desired_group_member and self._desired_group_member[:3]!=group_key:
                     self._desired_group_member=None
                     self._group_member_choice_status=""
@@ -615,7 +617,7 @@ class LiveRuntime:
             if same_group and self._manual_group_choice is not None:
                 self._manual_group_choice = (self._round, state.group_id, state.resource_key, state.provisional_member_id)
                 self._identity_source = "manual-group-member"
-            if (not grouped and previous is not None and previous.state == "GROUP_LOCKED"
+            if (not grouped and is_registered_identity_group(previous)
                     and (rediscover or not self._durable_map_id)):
                 # A reset state no longer owns an automatic provisional choice.
                 # Keep warm geometric cache separate from withdrawn identity.
@@ -637,7 +639,7 @@ class LiveRuntime:
             # tests the final top-row auto-lock predicate. A hard unique native
             # proposal may have no established condition bindings/member list.
             from native_similarity_groups import should_auto_lock_candidate
-            if selected is None and not block_member_unique and len(state.member_ids)<2 and len(accepted) == 1 and should_auto_lock_candidate(
+            if selected is None and not block_member_unique and not grouped and len(accepted) == 1 and should_auto_lock_candidate(
                     top, self._floor_required, self._gate.confirmed_id):
                 selected = top["mapId"]
                 front_provisional = bool(top.get("frontDoorGroupState") == "GROUP_LOCKED"
@@ -1480,7 +1482,7 @@ class LiveRuntime:
                         commands += ["previous_candidate", "next_candidate"]
                     if self._gate is not None and self._gate.selected_id and self._floor:
                         commands.append("confirm_route")
-            if self._active and self._identity_native is not None and len(self._identity_native.member_ids) > 1:
+            if self._active and is_registered_identity_group(self._identity_native):
                 if self._map_open and not self._floor_required and self._last_observation is not None:
                     commands.append("select_group_member")
             if self._transient_cycle_current() and self._transient_drag is None:
@@ -2310,8 +2312,7 @@ class LiveRuntime:
         ranked = []
         entry_candidate = None
         with self._lock:
-            rediscover_group = bool(action in ("map", "capture_now") and self._identity_native is not None
-                                    and self._identity_native.state == "GROUP_LOCKED")
+            rediscover_group = bool(action in ("map", "capture_now") and is_registered_identity_group(self._identity_native))
         if not map_id or rediscover_group:
             # Explicit capture still discovers the current logical group.
             # A fresh same-group observation reuses its member preference;

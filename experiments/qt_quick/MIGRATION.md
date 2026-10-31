@@ -1,5 +1,36 @@
 # Qt Quick migration map
 
+## Reviewed group membership: release blocker
+
+Only explicitly reviewed project registrations define a similar-map group.
+Local feature compatibility, runtime condition observations, and candidate lists
+are not membership authority and must not expand the built-in member picker.
+`front_door_groups.py` documents `ambiguousGroups` as that authority and leaves
+unregistered maps as singletons. Its expected production registration file was
+not found in the known current/previous resource roots. The schema-1 generator's
+04/12/19 example and synthetic tests are not a production member list. Complete
+reviewed membership for both modes remains an external data gap; do not invent
+members or advertise the group feature as verified without it.
+
+A real saved full-client map18 frame demonstrates an adapter regression:
+ACC1/858 select 18 and produce a current pose. D040/e18 rank 18 with the same
+hard/strong verdict but incorrectly expand a schema-2 compatibility cohort to
+04/12/18/19, select 04 and fail its current-frame fit. The schema-2 resource itself
+states that it is finite static observation compatibility, not real initial
+identity ambiguity. Removing this expansion restores the independent-map path;
+it does not establish the missing reviewed group membership or explain the
+unavailable D040 mouse episode. Recorded inputs remain diagnostic-only and cannot
+authorize the production live overlay.
+
+The source correction was checked through the original Session worker and
+diagnostic QML on three existing full-client still frames: nightmare18,
+nightmare03 and difficult05. All produced a current pose and visible diagnostic
+pixels with empty user-group membership. Map18's matrix matches ACC1 exactly;
+the other two match their previous valid matrices exactly. This is not a genuine
+registered-group, continuous-game-input, frozen-program or mouse-mode acceptance.
+The independent final source review and synthetic explicit-registry checks pass;
+production membership and the mouse field cause still block a release candidate.
+
 ## D040 field-regression checkpoint: not releasable
 
 The 01:33–01:37 UTC D040 run failed initial identity five times before later

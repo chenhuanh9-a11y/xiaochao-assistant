@@ -19,6 +19,7 @@ class GroupQueueTests(unittest.TestCase):
                     new_ids=("third-map","fourth-map")
                     for mid in (groups.IDS[1], *new_ids):
                         item=SimpleNamespace(id=mid);engine.pack.maps.append(item);engine.pack.by_id[mid]=item
+                    engine.qt_logical_group_registry=groups.explicit_registry(mode,(groups.IDS,new_ids))
                     engine.rank=Mock(return_value=groups.rows(mode=mode))
                     engine.rank_established_group=Mock(side_effect=AssertionError("no internal member review"))
                     fx.runtime=LiveRuntime(engine_factories={mode:lambda:engine},capture_provider=fx.capture,
@@ -80,6 +81,7 @@ class GroupQueueTests(unittest.TestCase):
                 fx=fixtures.LiveRuntimeContracts();fx.setUp()
                 try:
                     engine=fixtures.fixture_engine(mode);item=SimpleNamespace(id=groups.IDS[1]);engine.pack.maps.append(item);engine.pack.by_id[item.id]=item
+                    engine.qt_logical_group_registry=groups.explicit_registry(mode)
                     engine.rank=Mock(return_value=groups.rows(mode=mode));engine.rank_established_group=Mock(side_effect=AssertionError("no member competition"))
                     fx.runtime=LiveRuntime(engine_factories={mode:lambda:engine},capture_provider=fx.capture,evidence_kind="synthetic",clock=lambda:1.)
                     fx.runtime.dispatch("set_context",dict(mode=mode));session=SessionService(fx.runtime)

@@ -23,30 +23,35 @@ class RegisteredRuntimeTests(unittest.TestCase):
         for mid in (B,C):
             item=SimpleNamespace(id=mid);self.engine.pack.maps.append(item);self.engine.pack.by_id[mid]=item
         self.engine.rank=Mock(return_value=[dict(mapId=B,strongSuggestion=True,identityHardGatePassed=True,nativeSimilarity=dict(status="conditions",mode="nightmare",floor="1",resourceKey="shortcut",complete=True,memberIds=[B],candidateMemberId=B,originalIdentityHardGatePassed=True,conditionObservations=[]))])
-    def test_v2_single_member_shortcut_becomes_one_validated_family_not_unique_member(self):
+    def test_v2_local_cohort_does_not_replace_verified_member_with_sorted_default(self):
         self.engine.native_similarity_index=v2_index()
         result=self.begin_and_capture();state=self.runtime.snapshot()
-        self.assertEqual(state["identityPhase"],"GROUP_LOCKED");self.assertEqual(state["provisionalMapId"],A)
-        self.assertEqual(set(state["groupMemberIds"]),{A,B});self.assertFalse(state["identityLocked"])
-        self.assertFalse(self.runtime._identity_native.condition_complete);self.assertFalse(self.runtime._identity_native.condition_domains)
-        self.assertIsNone(self.runtime._identity_native.pending_identity)
-        self.assertIsNone(self.engine.native_similarity_priority_provider())
-        self.assertIsNone(self.engine.native_similarity_context_provider())
-        self.assertEqual(self.runtime.render_payload(result["renderToken"])["mapId"],A)
-        self.engine.native_similarity_index.condition_index.validate_domains.assert_called_once()
-    def test_overlap_is_not_unioned_or_member_unique_fallback(self):
-        self.engine.native_similarity_index=v2_index(extra=True)
-        self.dispatch("start_round");result=self.dispatch("capture_now");state=self.runtime.snapshot()
-        self.assertFalse(result["success"]);self.assertFalse(state["identityLocked"])
-        self.assertEqual(len(state["automaticCandidateRows"]),2)
-        self.assertEqual({tuple(r["memberIds"]) for r in state["automaticCandidateRows"]},{(A,B),(B,C)})
-        self.assertFalse(state["displayAuthorized"])
-    def test_invalid_registration_does_not_become_ordinary_unique(self):
-        for index in (v2_index(bad=True),SimpleNamespace(mode="nightmare",error="bad-schema")):
-            self.engine.native_similarity_index=index
-            self.dispatch("start_round");self.assertFalse(self.dispatch("capture_now")["success"])
-            self.assertFalse(self.runtime.snapshot()["identityLocked"]);self.dispatch("end_round")
-    def test_both_modes_shortcut_family_and_invalid_registry_use_same_runtime_branch(self):
+        self.assertEqual(state["identityPhase"],"MEMBER_VERIFIED")
+        self.assertEqual(state["mapId"],B)
+        self.assertFalse(state["groupMemberIds"])
+        self.assertEqual(self.runtime.render_payload(result["renderToken"])["mapId"],B)
+        family=registered_logical_family(self.engine,B,"1")
+        self.assertEqual(family,dict(status="none",reason="no-authoritative-map-level-registration"))
+        self.engine.native_similarity_index.condition_index.validate_domains.assert_not_called()
+
+    def test_v2_unobserved_overlap_and_metadata_do_not_form_or_block_global_family(self):
+        for index in (v2_index(extra=True),v2_index(bad=True)):
+            with self.subTest(index=index):
+                self.engine.native_similarity_index=index
+                self.dispatch("start_round");result=self.dispatch("capture_now")
+                self.assertTrue(result["success"],result)
+                self.assertEqual(self.runtime.snapshot()["mapId"],B)
+                self.assertEqual(self.runtime.snapshot()["identityPhase"],"MEMBER_VERIFIED")
+                self.assertFalse(self.runtime.snapshot()["groupMemberIds"])
+                index.condition_index.validate_domains.assert_not_called()
+                self.dispatch("end_round")
+
+    def test_invalid_explicit_registry_still_does_not_become_ordinary_unique(self):
+        self.engine.native_similarity_index=SimpleNamespace(mode="nightmare",error="bad-schema")
+        self.dispatch("start_round");self.assertFalse(self.dispatch("capture_now")["success"])
+        self.assertFalse(self.runtime.snapshot()["identityLocked"])
+
+    def test_both_modes_v2_hard_shortcut_keeps_original_unique_path(self):
         from client_live_runtime import LiveRuntime
         for mode in ("nightmare","difficult"):
             with self.subTest(mode=mode):
@@ -57,54 +62,95 @@ class RegisteredRuntimeTests(unittest.TestCase):
                 self.runtime=LiveRuntime(engine_factories={mode:lambda:engine},capture_provider=self.capture,evidence_kind="synthetic",clock=lambda:1.)
                 self.dispatch("set_context",mode=mode);self.dispatch("start_round")
                 result=self.dispatch("capture_now");self.assertTrue(result["success"],result)
-                self.assertEqual(self.runtime.snapshot()["identityPhase"],"GROUP_LOCKED")
-                self.assertEqual(self.runtime.snapshot()["provisionalMapId"],A)
-                self.dispatch("end_round");engine.native_similarity_index=v2_index(bad=True,mode=mode)
-                self.dispatch("start_round");self.assertFalse(self.dispatch("capture_now")["success"])
-                self.assertFalse(self.runtime.snapshot()["identityLocked"])
+                self.assertEqual(self.runtime.snapshot()["identityPhase"],"MEMBER_VERIFIED")
+                self.assertEqual(self.runtime.snapshot()["mapId"],B)
+                self.assertEqual(self.runtime.render_payload(result["renderToken"])["mapId"],B)
+                self.dispatch("end_round")
 
-    def test_registered_winner_with_unsupported_floor_cannot_fall_back_unique(self):
-        index=v2_index();index.condition_index.references["b"]["floor"]="99"
-        self.engine.native_similarity_index=index
-        self.dispatch("start_round");result=self.dispatch("capture_now")
-        self.assertFalse(result["success"])
-        self.assertFalse(self.runtime.snapshot()["identityLocked"])
-        self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
-
-    def test_nested_views_use_existing_declared_maximal_without_constructing_union(self):
-        index=v2_index()
-        index.condition_index.conditions["abc"]=dict(mode="nightmare",domainId="d-abc",poseIds=["a","b","c"])
-        self.engine.native_similarity_index=index
-        result=self.begin_and_capture();state=self.runtime.snapshot()
-        self.assertEqual(set(state["groupMemberIds"]),{A,B,C})
-        self.assertEqual(state["identityPhase"],"GROUP_LOCKED")
-        self.assertFalse(state["identityLocked"])
-        self.assertEqual(len(state["automaticCandidateRows"]),1)
-
-    def test_observed_native_subset_is_expanded_only_to_registered_maximal(self):
+    def test_both_modes_dynamic_native_subset_is_evidence_not_manual_group(self):
         import test_client_similarity_protocol as groups
-        index=v2_index();index.condition_index.conditions["abc"]=dict(mode="nightmare",domainId="d-abc",poseIds=["a","b","c"])
-        self.engine.native_similarity_index=index
-        self.engine.rank.return_value=groups.rows()
-        result=self.begin_and_capture();self.assertEqual(set(self.runtime.snapshot()["groupMemberIds"]),{A,B,C})
-        self.assertEqual(self.runtime.render_payload(result["renderToken"])["mapId"],A)
+        from client_live_runtime import LiveRuntime
+        for mode in ("nightmare","difficult"):
+            with self.subTest(mode=mode):
+                engine=fixtures.fixture_engine(mode)
+                for mid in (B,C):
+                    item=SimpleNamespace(id=mid);engine.pack.maps.append(item);engine.pack.by_id[mid]=item
+                index=v2_index(mode=mode)
+                index.condition_index.conditions["abc"]=dict(mode=mode,domainId="d-abc",poseIds=["a","b","c"])
+                engine.native_similarity_index=index;engine.rank=Mock(return_value=groups.rows(mode=mode))
+                self.runtime=LiveRuntime(engine_factories={mode:lambda:engine},capture_provider=self.capture,evidence_kind="synthetic",clock=lambda:1.)
+                self.dispatch("set_context",mode=mode);self.dispatch("start_round");result=self.dispatch("capture_now")
+                self.assertFalse(result["success"])
+                state=self.runtime.snapshot()
+                self.assertFalse(state["groupMemberIds"]);self.assertFalse(state["groupMemberRows"])
+                self.assertFalse(state["groupLocked"]);self.assertIsNone(state["groupId"])
+                self.assertNotIn("select_group_member",state["availableCommands"])
+                self.assertEqual(set(self.runtime._identity_native.member_ids),{A,B})
+                self.assertIsNotNone(engine.native_similarity_context_provider())
+                self.assertFalse(self.dispatch("select_group_member",mapId=B)["success"])
+                index.condition_index.validate_domains.assert_not_called()
+                self.dispatch("end_round")
 
-    def test_native_subset_cannot_filter_away_incompatible_registered_overlap(self):
+    def test_independent_explicit_registry_coexists_with_native_structure_conditions(self):
+        import test_client_similarity_protocol as groups
+        structural_index=v2_index()
+        self.engine.native_similarity_index=structural_index
+        self.engine.qt_logical_group_registry=groups.explicit_registry()
+        ranked=groups.rows(B);original=copy.deepcopy(ranked)
+        self.engine.rank.return_value=ranked
+        result=self.begin_and_capture();self.assertTrue(result["success"],result)
+        self.assertIs(self.engine.native_similarity_index,structural_index)
+        self.assertEqual(set(self.runtime.snapshot()["groupMemberIds"]),{A,B})
+        self.assertEqual(self.runtime.snapshot()["provisionalMapId"],B)
+        self.assertEqual(ranked,original)
+        structural_index.condition_index.validate_domains.assert_not_called()
+        self.engine.qt_logical_group_registry.validate.assert_called_once()
+
+    def test_overlapping_dynamic_native_candidates_never_become_manual_group(self):
         import test_client_similarity_protocol as groups
         index=v2_index();index.condition_index.conditions["ac"]=dict(mode="nightmare",domainId="d-ac",poseIds=["a","c"])
-        ranked=groups.rows()
-        ranked[1]["mapId"]=C;ranked[1]["difficultEntry"]["mapId"]=C
+        ranked=groups.rows();ranked[1]["mapId"]=C;ranked[1]["difficultEntry"]["mapId"]=C
         observation=ranked[0]["nativeSimilarity"]["conditionObservations"][0]
         observation["memberIds"]=[A,C];observation["poseMaps"]={"a":A,"b":C}
         self.engine.native_similarity_index=index;self.engine.rank.return_value=ranked
         self.dispatch("start_round");result=self.dispatch("capture_now")
-        self.assertFalse(result["success"]);state=self.runtime.snapshot()
-        self.assertFalse(state["identityLocked"]);self.assertFalse(state["displayAuthorized"])
-        self.assertEqual({tuple(r["memberIds"]) for r in state["automaticCandidateRows"]},{(A,B),(A,C)})
+        self.assertFalse(result["success"])
+        self.assertFalse(self.runtime.snapshot()["groupMemberIds"])
+        self.assertEqual(set(self.runtime._identity_native.member_ids),{A,C})
+        self.assertFalse(self.runtime.snapshot()["identityLocked"])
+
+    def test_recorded_18_rank_verdict_is_not_replaced_by_local_04_default(self):
+        # Exact neutral rank flags from the recorded18 regression; fit remains
+        # controlled here. The private saved-frame numerical replay is separate.
+        winner="nightmare-18";members=["nightmare-04","nightmare-12",winner,"nightmare-19"]
+        for mid in members:
+            self.engine.pack.maps.append(SimpleNamespace(id=mid));self.engine.pack.by_id[mid]=self.engine.pack.maps[-1]
+        self.engine.native_similarity_index=v2_index()
+        native=dict(status="conditions",mode="nightmare",floor="1",resourceKey="recorded-index",
+                    complete=True,memberIds=[winner],candidateMemberId=winner,
+                    originalIdentityHardGatePassed=True,conditionObservations=[])
+        self.engine.rank.return_value=[dict(mapId=winner,score=1211.,strongSuggestion=True,
+                                           identityHardGatePassed=True,nativeSimilarity=native)]
+        result=self.begin_and_capture();self.assertTrue(result["success"],result)
+        self.assertEqual(self.runtime.snapshot()["mapId"],winner)
+        self.assertEqual(self.runtime.render_payload(result["renderToken"])["mapId"],winner)
 
     def test_unregistered_single_map_still_has_original_unique_path(self):
         self.engine.native_similarity_index=SimpleNamespace(mode="nightmare",error=None,index_digest="empty",condition_index=None,group_for=lambda mid:None)
         self.assertTrue(self.begin_and_capture()["success"]);self.assertEqual(self.runtime.snapshot()["mapId"],B)
+
+    def test_explicit_v1_family_preserves_current_verified_provisional_witness(self):
+        import test_client_similarity_protocol as groups
+        group=dict(groupId="explicit-family",memberIds=[A,B,C])
+        index=SimpleNamespace(mode="nightmare",error=None,index_digest="v1-index",condition_index=None,
+                              group_for=lambda mid:group,validate=Mock())
+        self.engine.native_similarity_index=index;self.engine.rank.return_value=groups.rows(B)
+        result=self.begin_and_capture();self.assertTrue(result["success"],result)
+        self.assertEqual(self.runtime.snapshot()["provisionalMapId"],B)
+        self.assertFalse(self.runtime.snapshot()["identityLocked"])
+        self.assertFalse(self.runtime.snapshot()["manualGroupMemberHeld"])
+        self.assertEqual(self.runtime.render_payload(result["renderToken"])["mapId"],B)
+        index.validate.assert_called_once()
 
 class ActualV1RegistryTests(unittest.TestCase):
     def test_real_registered_hash_binding_checks_and_runtime_without_condition_domains(self):

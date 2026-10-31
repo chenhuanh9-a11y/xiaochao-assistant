@@ -57,7 +57,7 @@ def stage_similarity_rank(previous, rows, context, observation_id, display_membe
         state.pending_identity=state.verified_member_id=state.member_reference=None
         if state.group_id:
             state.state="GROUP_LOCKED"
-            state.provisional_member_id=sorted(state.member_ids)[0]
+            state.provisional_member_id=initial_group_display_member(state, display_members)
     if not group_only and state.state == "GROUP_LOCKED" and state.context_snapshot() and context[2] == "1":
         state.prefer_display_member(display_members)
     return state, proposal
@@ -76,62 +76,51 @@ def similarity_evidence_summary(proposal, state):
         eligibleMembers=list(state.member_ids)[:16])
 
 
-def registered_logical_family(engine, map_id, floor, *, required_members=()):
-    """Resolve exact registered cohorts on the worker, retaining original checks.
+def initial_group_display_member(state, verified_members=()):
+    """Choose an initial geometry witness, never a unique member verdict."""
+    members=set(state.member_ids)
+    seeded=members.intersection(verified_members)
+    current=state.provisional_member_id
+    if current in seeded:
+        return current
+    if seeded:
+        return min(seeded)
+    return current if current in members else min(members) if members else None
 
-    Membership is static identity metadata across supported registered floors.
-    ``floor`` carries caller context; it does not filter out a known family
-    when that family's view exists only on another supported floor. Runtime
-    independently validates the current floor's resources and pose. This grants
-    no current pose, positive condition observation or unique member identity.
-    A unique already-declared maximal cohort may contain narrower registered
-    views; incompatible overlapping cohorts remain ambiguous, never unioned.
+
+def is_registered_identity_group(state):
+    return bool(state is not None and state.state == "GROUP_LOCKED"
+                and state.condition_reason == "registered-logical-family"
+                and state.group_id and len(state.member_ids) > 1)
+
+
+def registered_logical_family(engine, map_id, floor, *, required_members=()):
+    """Only schema-1 explicit map-level registrations can define a family.
+
+    Schema-2 finite local observation cohorts are not map-level registrations.
+    Their original current-frame consumer may establish a group; this adapter
+    neither expands that group nor promotes an unobserved compatibility cohort.
+    Current-floor resources and pose remain independently verified by Runtime.
     """
-    index=getattr(engine,"native_similarity_index",None)
-    if index is None:return dict(status="none")
+    index=getattr(engine,"qt_logical_group_registry",None)
+    if index is None:
+        index=getattr(engine,"native_similarity_index",None)
+    if index is None:return dict(status="none",reason="no-authoritative-map-level-registration")
     try:
         if getattr(index,"error",None):raise ValueError("similarity-registration-invalid")
         if getattr(index,"mode",None)!=engine.pack.mode:raise ValueError("similarity-registration-mode")
-        provider=engine.qt_shared_provider
-        conditions=getattr(index,"condition_index",None)
-        if conditions is None:
-            group=index.group_for(map_id)
-            if group is None:return dict(status="none")
-            if required_members and not set(required_members)<=set(group["memberIds"]):
-                raise ValueError("similarity-registration-observation-mismatch")
-            index.validate(group,provider)
-            cohorts={tuple(sorted(group["memberIds"])):(str(group["groupId"]),set())}
-        else:
-            cohorts={}
-            registered_member=False
-            supported=set(map(str,engine.identity_floors))
-            for cid,condition in conditions.conditions.items():
-                if condition["mode"]!=engine.pack.mode:continue
-                references=[conditions.references[conditions.poses[str(pid)]["target"]] for pid in condition["poseIds"]]
-                if not references:continue
-                members=tuple(sorted({str(r["mapId"]) for r in references}))
-                if map_id not in members or len(members)<2:continue
-                registered_member=True
-                if any(str(r["floor"]) not in supported for r in references):
-                    raise ValueError("similarity-registration-floor-unsupported")
-                key="registered-family:"+hashlib.sha256("\0".join(members).encode()).hexdigest()[:16]
-                if members not in cohorts:cohorts[members]=(key,set())
-                cohorts[members][1].add(condition["domainId"])
-            if not cohorts:
-                if registered_member:raise ValueError("similarity-registration-observation-mismatch")
-                return dict(status="none")
-            conditions.validate_domains(set().union(*(domains for _,domains in cohorts.values())),provider)
-        if any(len(members)<2 or not set(members)<=set(engine.pack.by_id) for members in cohorts):
+        if getattr(index,"condition_index",None) is not None:
+            return dict(status="none",reason="no-authoritative-map-level-registration")
+        group=index.group_for(map_id)
+        if group is None:return dict(status="none")
+        members=tuple(sorted(group["memberIds"]))
+        if len(members)<2 or not set(members)<=set(engine.pack.by_id):
             raise ValueError("similarity-registration-members")
-        # Select a declared maximal cohort only when it already contains every
-        # compatible cohort. Never construct a union from overlapping groups.
-        maxima=[members for members in cohorts if all(set(other)<=set(members) for other in cohorts)]
-        selected={maxima[0]:cohorts[maxima[0]]} if len(maxima)==1 else cohorts
-        if len(maxima)==1 and required_members and not set(required_members)<=set(maxima[0]):
+        if required_members and not set(required_members)<=set(members):
             raise ValueError("similarity-registration-observation-mismatch")
-        choices=[dict(groupId=key,memberIds=list(members),resourceKey=index.index_digest)
-                 for members,(key,_) in sorted(selected.items())]
-        return dict(status="group" if len(choices)==1 else "ambiguous",candidates=choices)
+        index.validate(group,engine.qt_shared_provider)
+        return dict(status="group",candidates=[dict(groupId=str(group["groupId"]),
+                    memberIds=list(members),resourceKey=index.index_digest)])
     except (OSError,ValueError,KeyError,TypeError,AttributeError) as error:
         return dict(status="unavailable",reason=str(error))
 
