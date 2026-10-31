@@ -2243,11 +2243,27 @@ class LiveRuntime:
         self._notify("round-started", reason="round-active")
         return dict(success=True, reason="round-active")
 
+    def _refresh_render_owner(self):
+        # A physical drag can keep token/frame/generation but advance revision.
+        # Material acknowledgements alone do not transfer observation ownership.
+        row = self._render
+        return tuple(row.get(key) for key in ("epoch", "cycleId", "frameId", "generation",
+            "token", "authorizationId", "transformRevision")) if row is not None else None
+
+    def _retire_refresh_owner(self, owner):
+        with self._lock:
+            if owner is None or owner != self._refresh_render_owner():
+                return False
+            self._revoke_render("refresh-cancelled-or-stale")
+            return True
+
     def _refresh_map(self, payload, cancelled):
         # Passive timer requests never build an unbounded worker backlog.
         if not self._work.acquire(blocking=False):
             return self._receipt("refresh_map", payload, success=True, reason="refresh-coalesced", coalesced=True)
         owns_capture = False
+        epoch = self._epoch
+        owner = None
         try:
             with self._lock:
                 if (self._capture_pending or self._group_choice_inflight is not None or self._transient_drag is not None
@@ -2256,12 +2272,26 @@ class LiveRuntime:
                 if not self._active or not self._map_open:
                     return self._receipt("refresh_map", payload, success=False, reason="map-refresh-not-active")
                 transient = self._transient_cycle_current()
+                owner = self._refresh_render_owner()
                 self._capture_pending = owns_capture = True
             if transient:
-                return self._probe_map_after_drag(payload, cancelled)
-            return self._capture_and_solve("refresh_map", payload, cancelled)
+                receipt = self._probe_map_after_drag(payload, cancelled)
+            else:
+                receipt = self._capture_and_solve("refresh_map", payload, cancelled)
+            if receipt.get("stale") and self._retire_refresh_owner(owner):
+                receipt = dict(receipt, liveAuthorization=False)
+            return receipt
         except Exception as error:
-            self.invalidate("runtime-error")
+            # Cancellation belongs to this worker. In-flight capture may raise
+            # after the UI has already published a newer transient transform
+            # (often with the same render token). It cannot invalidate that
+            # current owner. Live failures from the current worker still revoke.
+            with self._lock:
+                if self._cancelled(cancelled) or epoch != self._epoch:
+                    self._retire_refresh_owner(owner)
+                    return self._receipt("refresh_map", payload, success=False,
+                        reason="cancelled-or-stale", stale=True)
+                self.invalidate("runtime-error")
             return self._receipt("refresh_map", payload, success=False,
                                  reason=f"{type(error).__name__}:{error}", error=True,
                     **self._error_fields(error, "refresh_map"))
@@ -2285,6 +2315,8 @@ class LiveRuntime:
         if self._steady_material_ready and bool(self._settings.get("idvb0059Enabled", True)):
             return None
         with self._lock:
+            if obsolete():
+                return self._receipt("refresh_map", payload, success=False, reason="cancelled-or-stale", stale=True)
             row = self._render
             eligible = bool(row is not None and self._display_current(row)
                 and row["floor"] == floor and row["profileId"] == self._profile
@@ -2299,32 +2331,38 @@ class LiveRuntime:
                 cycle = self._cycle
                 group = self._group
         if not eligible:
-            self._revoke_render(reason)
+            with self._lock:
+                if obsolete():
+                    return self._receipt("refresh_map", payload, success=False, reason="cancelled-or-stale", stale=True)
+                self._revoke_render(reason)
             return None
         self._set_pose_phase("pending", "current-frame-refresh", map_id, floor, current_frame, self._frame_generation)
         host = _AlignmentHost(engine, group, self._settings)
         basis = engine.qt_adapters.matrix_profile_to_canonical("shared-structure", map_id, floor)
         if basis is None:
-            self._revoke_render("refresh-reference-basis-unavailable")
+            with self._lock:
+                if obsolete():
+                    return self._receipt("refresh_map", payload, success=False, reason="cancelled-or-stale", stale=True)
+                self._revoke_render("refresh-reference-basis-unavailable")
             return None
         canonical = np.asarray(row["canonicalMatrix"], np.float64)
         source_matrix = canonical @ np.asarray(basis, np.float64)
         residual, _ = host._canonical_geometry_current_frame_residual(
             frame, map_id, floor, "shared-structure", source_matrix, None)
-        if obsolete():
-            self._revoke_render("refresh-cancelled-or-stale")
-            return self._receipt("refresh_map", payload, success=False, reason="cancelled-or-stale", stale=True)
-        if not rendered_profile_residual_is_verified(residual):
-            self._revoke_render("current-frame-residual-failed")
-            return None
         with self._lock:
+            # The cancellation check and any rejection below are one owner
+            # transaction. A first drag delta must not land between them.
+            if obsolete():
+                return self._receipt("refresh_map", payload, success=False, reason="cancelled-or-stale", stale=True)
             if self._transient_drag is not None or self._transient_cycle_current():
                 return self._receipt("refresh_map", payload, success=True, reason="refresh-coalesced", coalesced=True)
             if (obsolete() or self._render is None or self._render["token"] != row["token"]
                     or current_frame != self._frame_id or epoch != self._epoch
                     or cycle != self._cycle or self._floor != floor):
-                self._revoke_render("refresh-cancelled-or-stale")
                 return self._receipt("refresh_map", payload, success=False, reason="cancelled-or-stale", stale=True)
+            if not rendered_profile_residual_is_verified(residual):
+                self._revoke_render("current-frame-residual-failed")
+                return None
             if not self._capture_is_current(captured.context, capture_generation):
                 self.invalidate("capture-context-changed")
                 return self._receipt("refresh_map", payload, success=False, reason="capture-context-changed", stale=True)
@@ -2432,8 +2470,6 @@ class LiveRuntime:
         frame = frame.copy()
         frame.setflags(write=False)
         if obsolete():
-            if action == "refresh_map":
-                self._revoke_render("refresh-cancelled-or-stale")
             return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
         map_detected = (observation.get("mapOpen") is True if engine.pack.mode == "difficult"
                         else observation.get("detected") is True)
@@ -2444,7 +2480,10 @@ class LiveRuntime:
                 captured=captured, captureGeneration=capture_generation)
         effective_floor = self._observe_floor_policy(floor_read, obsolete=obsolete) if map_detected else None
         if floor is None and map_detected:
-            self._revoke_render("current-floor-unavailable")
+            with self._lock:
+                if obsolete():
+                    return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+                self._revoke_render("current-floor-unavailable")
             digest = hashlib.sha256(frame.tobytes()).hexdigest()
             with self._lock:
                 if obsolete():
@@ -2472,38 +2511,50 @@ class LiveRuntime:
                 probe_open = (observation.get("mapOpen") if engine.pack.mode == "difficult"
                               else bool(observation.get("detected")))
                 with self._lock:
+                    if obsolete():
+                        return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
                     self._probe_misses, transition = map_probe_transition(
                         self._map_open, self._probe_misses, probe_open)
-                reason = "current-floor-unavailable" if probe_open is True and floor is None else "map-not-observed"
-                self._revoke_render(reason)
-                if transition == "close":
-                    self.invalidate("map-closed", source="passive-map-probe")
-                    payload["_mapInputVisual"] = dict(open=False, epoch=self._epoch, sequence=input_sequence,
-                        captured=captured, captureGeneration=capture_generation)
-                return self._receipt(action, payload, success=False, reason=reason, observation=observation)
-            self.invalidate("map-closed", source="capture-map-not-observed")
-            payload["_mapInputVisual"] = dict(open=False, epoch=self._epoch, sequence=input_sequence,
-                captured=captured, captureGeneration=capture_generation)
-            return self._receipt(action, payload, success=False, reason="map-not-observed", observation=observation)
+                    reason = "current-floor-unavailable" if probe_open is True and floor is None else "map-not-observed"
+                    self._revoke_render(reason)
+                    if transition == "close":
+                        self.invalidate("map-closed", source="passive-map-probe")
+                        payload["_mapInputVisual"] = dict(open=False, epoch=self._epoch, sequence=input_sequence,
+                            captured=captured, captureGeneration=capture_generation)
+                    return self._receipt(action, payload, success=False, reason=reason, observation=observation)
+            with self._lock:
+                if obsolete():
+                    return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+                self.invalidate("map-closed", source="capture-map-not-observed")
+                payload["_mapInputVisual"] = dict(open=False, epoch=self._epoch, sequence=input_sequence,
+                    captured=captured, captureGeneration=capture_generation)
+                return self._receipt(action, payload, success=False, reason="map-not-observed", observation=observation)
         if floor is None or str(floor) not in tuple(map(str, engine.identity_floors)):
             with self._lock:
+                if obsolete():
+                    return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
                 self._observed_floor = ""
                 self._last_observation = None
                 self._pointer_context_snapshot = None
-            if action == "refresh_map":
-                self._revoke_render("current-floor-unavailable")
+                if action == "refresh_map":
+                    self._revoke_render("current-floor-unavailable")
+                    return self._receipt(action, payload, success=False, reason="current-floor-unavailable", observation=observation)
+                self.invalidate("floor-unknown")
                 return self._receipt(action, payload, success=False, reason="current-floor-unavailable", observation=observation)
-            self.invalidate("floor-unknown")
-            return self._receipt(action, payload, success=False, reason="current-floor-unavailable", observation=observation)
         if effective_floor is None:
-            self._revoke_render("floor-policy-deferred")
-            return self._receipt(action, payload, success=False, reason="floor-policy-deferred")
+            with self._lock:
+                if obsolete():
+                    return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+                self._revoke_render("floor-policy-deferred")
+                return self._receipt(action, payload, success=False, reason="floor-policy-deferred")
         floor = effective_floor
         digest = hashlib.sha256(frame.tobytes()).hexdigest()
         with self._lock:
+            if obsolete():
+                return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
             pending_selection = self._selection_pending
-        if pending_selection:
-            self._revoke_render("candidate-awaiting-confirmation")
+            if pending_selection:
+                self._revoke_render("candidate-awaiting-confirmation")
         if action == "refresh_map" and not pending_selection:
             renewed = self._try_refresh_current(payload, captured, frame, floor, digest, capture_generation,
                                                  engine, epoch, obsolete, floor_read=floor_read)
