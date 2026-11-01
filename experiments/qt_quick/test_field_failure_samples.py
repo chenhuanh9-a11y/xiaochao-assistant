@@ -30,6 +30,7 @@ class FailureSamplingContracts(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.f = fixtures.LiveRuntimeContracts()
         self.f.setUp()
+        self.f.runtime.set_automatic_failure_sampling_enabled(True)
         self.addCleanup(self.f.doCleanups)
         self.f.engine.pack.by_id["fixture-map"].name = "Fixture"
         self.store = NightmareMemoryStore(self.f.engine.pack, self.root / "memory",
@@ -79,6 +80,18 @@ class FailureSamplingContracts(unittest.TestCase):
         import cv2
         pixels = cv2.imread(str(self.store.root/row['samplePath']))
         np.testing.assert_array_equal(pixels, self.f.capture.frame[250:400,350:650])
+        deadline = time.monotonic() + 3
+        while self.problems._job is not None or self.problems._queue:
+            self.app.processEvents()
+            if time.monotonic() > deadline:
+                self.fail('automatic evidence trace did not drain')
+            time.sleep(.001)
+        self.problems.shutdown()
+        receipt = export_safe_diagnostic_bundle(self.root, self.root/'nightmare-live',
+            destination=self.root/'automatic-evidence.zip', app_version='fixture', build_fingerprint='AAAAAAAA',
+            failure_roots=(self.store.root,), automatic_failure_only=True,
+            include_automatic_failure_evidence=True)
+        self.assertEqual(receipt['includedFailureImageCount'], 1)
         self.f.runtime.set_automatic_failure_sampling_enabled(False)
         self.capture_failure()
         self.assertEqual(len(list(journal.parent.glob('auto-*.png'))), 1)

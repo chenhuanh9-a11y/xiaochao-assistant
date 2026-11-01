@@ -24,7 +24,200 @@ from failure_sampling import cleanup_automatic_failure_samples
 import failure_sampling
 
 
+def _enabled_recorder():
+    recorder = FailureSampleRecorder()
+    recorder.automatic_enabled = True
+    return recorder
+
+
 class AutomaticFailureSamplesTests(unittest.TestCase):
+    def test_process_exit_before_journal_replace_preserves_auxiliary_files_without_blocking(self):
+        with tempfile.TemporaryDirectory() as directory:
+            code = r'''
+import sys, os, json
+sys.path[:0] = [sys.argv[1], sys.argv[2]]
+from client_failure_samples import FailureSampleRecorder
+import numpy as np
+original = os.replace
+def interrupt(source, target):
+    if str(target).endswith('automatic-failures.jsonl'):
+        with open(source, 'rb') as stream:
+            rows = [json.loads(line) for line in stream.read().splitlines()]
+        if any(row.get('event') == 'automatic-failure-sample' and row.get('samplePath') for row in rows):
+            os._exit(74)
+    return original(source, target)
+os.replace = interrupt
+recorder = FailureSampleRecorder()
+recorder.automatic_enabled = True
+recorder.record_automatic(root=sys.argv[3], reason='structure-current-geometry-failed',
+    frame=np.zeros((20,20,3), np.uint8), diagnostic={'evidenceKind':'live-client-capture'},
+    current=lambda:True, crop_bounds=(2,3,10,11), crop_provenance='validated-map-region')
+'''
+            child = subprocess.run([sys.executable, '-c', code, str(ROOT/'app'),
+                str(ROOT/'experiments/qt_quick'), directory], capture_output=True, text=True, timeout=10)
+            self.assertEqual(child.returncode, 74, child.stderr)
+            owned = Path(directory)/'failures/automatic'
+            leftovers = list(owned.glob('.automatic-journal-*.tmp'))
+            self.assertEqual(len(leftovers), 1)
+            original_bytes = leftovers[0].read_bytes()
+            sentinel = owned/'.automatic-journal-sentinel.tmp'
+            sentinel.write_bytes(b'unknown auxiliary user sentinel')
+            original_open = Path.open
+            def reject_auxiliary_read(path, *args, **kwargs):
+                if path in leftovers or path == sentinel:
+                    raise AssertionError('auxiliary contents must never be read')
+                return original_open(path, *args, **kwargs)
+            with patch.object(Path, 'open', new=reject_auxiliary_read):
+                report = cleanup_automatic_failure_samples(directory)
+            self.assertTrue(report['complete'], report)
+            self.assertEqual(report['retainedAuxiliaryCount'], 2)
+            self.assertEqual(leftovers[0].read_bytes(), original_bytes)
+            self.assertEqual(sentinel.read_bytes(), b'unknown auxiliary user sentinel')
+            result = _enabled_recorder().record_automatic(root=directory, reason='map-open-preparation-deadline',
+                frame=None, diagnostic={}, current=lambda:True)
+            self.assertEqual(result['missingReason'], 'legal-captured-frame-unavailable')
+
+    def test_retained_auxiliary_count_and_bytes_have_explicit_limits(self):
+        for excessive_bytes in (False, True):
+            with self.subTest(excessive_bytes=excessive_bytes), tempfile.TemporaryDirectory() as directory:
+                owned = Path(directory)/'failures/automatic'
+                owned.mkdir(parents=True)
+                count = 1 if excessive_bytes else 5
+                paths = [owned/f'.automatic-journal-{index:08d}.tmp' for index in range(count)]
+                payload = b'x'*(256*1024+1) if excessive_bytes else b'unknown sentinel'
+                for path in paths:
+                    path.write_bytes(payload)
+                report = cleanup_automatic_failure_samples(directory)
+                self.assertFalse(report['complete'])
+                self.assertEqual(report['status'], 'automatic-auxiliary-byte-limit' if excessive_bytes
+                                 else 'automatic-auxiliary-count-limit')
+                for path in paths:
+                    self.assertEqual(path.read_bytes(), payload)
+
+    def test_recorder_default_disables_automatic_capture_without_touching_storage(self):
+        recorder = FailureSampleRecorder()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)/'not-created'
+            result = recorder.record_automatic(root=root, reason='structure-current-geometry-failed',
+                frame=np.zeros((20,20,3), np.uint8), diagnostic={'evidenceKind':'live-client-capture'}, current=lambda:True)
+            self.assertEqual(result['missingReason'], 'automatic-sampling-disabled')
+            self.assertFalse(root.exists())
+
+    def test_process_exit_after_png_is_recovered_from_durable_intent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            code = r'''
+import sys, os, json
+sys.path[:0] = [sys.argv[1], sys.argv[2]]
+import failure_sampling
+from client_failure_samples import FailureSampleRecorder
+import numpy as np
+original = failure_sampling.replace_automatic_journal
+def interrupt(directory, data):
+    rows = [json.loads(line) for line in data.splitlines()]
+    if any(row.get('event') == 'automatic-failure-sample' and row.get('samplePath') for row in rows):
+        os._exit(73)
+    return original(directory, data)
+failure_sampling.replace_automatic_journal = interrupt
+recorder = FailureSampleRecorder()
+recorder.automatic_enabled = True
+recorder.record_automatic(root=sys.argv[3], reason='structure-current-geometry-failed',
+    frame=np.zeros((20,20,3), np.uint8), diagnostic={'evidenceKind':'live-client-capture'},
+    current=lambda:True, crop_bounds=(2,3,10,11), crop_provenance='validated-map-region')
+'''
+            child = subprocess.run([sys.executable, '-c', code, str(ROOT/'app'),
+                str(ROOT/'experiments/qt_quick'), directory], capture_output=True, text=True, timeout=10)
+            self.assertEqual(child.returncode, 73, child.stderr)
+            owned = Path(directory)/'failures/automatic'
+            before = json.loads((owned/'automatic-failures.jsonl').read_text())
+            self.assertEqual(before['event'], 'automatic-failure-image-intent')
+            image = owned/before['samplePath'].rsplit('/',1)[-1]
+            pixels = image.read_bytes()
+            self.assertTrue(cleanup_automatic_failure_samples(directory)['complete'])
+            after = json.loads((owned/'automatic-failures.jsonl').read_text())
+            self.assertEqual(after['event'], 'automatic-failure-sample')
+            self.assertEqual(image.read_bytes(), pixels)
+            self.assertEqual(hashlib.sha256(pixels).hexdigest(), after['sampleSha256'])
+            self.assertEqual(failure_sampling.automatic_storage_inventory(directory)['status'], 'ready')
+
+    def test_recovery_preserves_changed_png_and_cancels_missing_png_intent(self):
+        class InterruptedProcess(BaseException):
+            pass
+        for changed in (False, True):
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                original = Path.open
+                def interrupt_image(path, *args, **kwargs):
+                    if path.name.startswith('auto-') and args and args[0] == 'xb':
+                        raise InterruptedProcess()
+                    return original(path, *args, **kwargs)
+                recorder = _enabled_recorder()
+                with patch.object(Path, 'open', new=interrupt_image):
+                    with self.assertRaises(InterruptedProcess):
+                        recorder.record_automatic(root=root, reason='structure-current-geometry-failed',
+                            frame=np.zeros((20,20,3), np.uint8), diagnostic={'evidenceKind':'live-client-capture'},
+                            current=lambda:True, crop_bounds=(2,3,10,11), crop_provenance='validated-map-region')
+                journal = root/'failures/automatic/automatic-failures.jsonl'
+                row = json.loads(journal.read_text())
+                path = root/row['samplePath']
+                if changed:
+                    path.write_bytes(b'unknown user content')
+                report = cleanup_automatic_failure_samples(root)
+                if changed:
+                    self.assertEqual(report['status'], 'automatic-image-recovery-mismatch')
+                    self.assertEqual(path.read_bytes(), b'unknown user content')
+                    self.assertEqual(json.loads(journal.read_text())['event'], 'automatic-failure-image-intent')
+                else:
+                    self.assertTrue(report['complete'], report)
+                    self.assertEqual(journal.read_bytes(), b'')
+
+    def test_recovery_preserves_hardlinked_png_even_when_expected_hash_matches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)/'root'
+            owned = root/'failures/automatic'
+            owned.mkdir(parents=True)
+            external = Path(directory)/'external.png'
+            cv2.imwrite(str(external), np.zeros((10,10,3), np.uint8))
+            pixels = external.read_bytes()
+            target = owned/('auto-'+'c'*32+'.png')
+            os.link(external, target)
+            journal = owned/'automatic-failures.jsonl'
+            journal.write_text(json.dumps(dict(event='automatic-failure-image-intent',
+                imageTransactionSchema='automatic-image-intent-v1',
+                samplePath=target.relative_to(root).as_posix(), sampleBytes=len(pixels),
+                sampleSha256=hashlib.sha256(pixels).hexdigest()))+'\n')
+            report = cleanup_automatic_failure_samples(root)
+            self.assertEqual(report['status'], 'automatic-image-recovery-link-unavailable')
+            self.assertTrue(target.exists())
+            self.assertEqual(external.read_bytes(), pixels)
+            self.assertEqual(external.stat().st_nlink, 2)
+            self.assertEqual(json.loads(journal.read_text())['event'], 'automatic-failure-image-intent')
+
+    def test_production_record_recovers_interruption_after_png_before_commit(self):
+        class InterruptedProcess(BaseException):
+            pass
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            arguments = dict(root=root, reason='structure-current-geometry-failed',
+                frame=np.zeros((20,20,3), np.uint8), diagnostic={'evidenceKind':'live-client-capture'},
+                current=lambda:True, crop_bounds=(2,3,10,11), crop_provenance='validated-map-region')
+            original = failure_sampling.replace_automatic_journal
+            def interrupt_commit(directory, data):
+                rows = [json.loads(line) for line in data.splitlines()]
+                if any(row.get('event') == 'automatic-failure-sample' and row.get('samplePath') for row in rows):
+                    raise InterruptedProcess()
+                return original(directory, data)
+            recorder = _enabled_recorder()
+            recorder.automatic_enabled = True
+            with patch.object(failure_sampling, 'replace_automatic_journal', side_effect=interrupt_commit):
+                with self.assertRaises(InterruptedProcess):
+                    recorder.record_automatic(**arguments)
+            self.assertEqual(len(list((root/'failures/automatic').glob('auto-*.png'))), 1)
+            restarted = _enabled_recorder()
+            restarted.automatic_enabled = True
+            result = restarted.record_automatic(**arguments)
+            self.assertTrue(result['saved'], result)
+            self.assertEqual(failure_sampling.automatic_storage_inventory(root)['status'], 'ready')
+
     def test_storage_transaction_is_nonblocking_across_processes(self):
         with tempfile.TemporaryDirectory() as directory:
             with failure_sampling.automatic_storage_transaction(directory, create=True) as status:
@@ -40,7 +233,7 @@ class AutomaticFailureSamplesTests(unittest.TestCase):
                 self.assertEqual(status, 'ready')
 
     def test_cleanup_and_writer_share_nonblocking_root_transaction(self):
-        recorder = FailureSampleRecorder()
+        recorder = _enabled_recorder()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root/'failures/automatic').mkdir(parents=True)
@@ -94,7 +287,7 @@ class AutomaticFailureSamplesTests(unittest.TestCase):
         captured = SimpleNamespace(context=object())
         now = datetime.now(timezone.utc)
         with tempfile.TemporaryDirectory() as directory:
-            runtime._failure_samples = FailureSampleRecorder()
+            runtime._failure_samples = _enabled_recorder()
             runtime._failure_samples.configure(event_path='events.jsonl', build_fingerprint='test', source_commit='a'*40)
             runtime._failure_capture_stamp = (captured, now.isoformat(), 1, 7)
             runtime._active = True
@@ -127,7 +320,7 @@ class AutomaticFailureSamplesTests(unittest.TestCase):
             self.assertEqual(runtime._automatic_failure_sample('map-open-preparation-deadline')['missingReason'], 'capture-not-current')
 
     def test_unproven_crop_is_metadata_only_and_disable_is_explicit(self):
-        recorder = FailureSampleRecorder()
+        recorder = _enabled_recorder()
         with tempfile.TemporaryDirectory() as directory:
             result = recorder.record_automatic(root=Path(directory), reason='structure-current-geometry-failed',
                 frame=np.zeros((20, 20, 3), dtype=np.uint8), current=lambda: True,
@@ -140,7 +333,7 @@ class AutomaticFailureSamplesTests(unittest.TestCase):
             self.assertEqual(result['missingReason'], 'automatic-sampling-disabled')
 
     def test_crop_bytes_count_retention_and_stale_gate(self):
-        recorder = FailureSampleRecorder()
+        recorder = _enabled_recorder()
         recorder.policy.interval_seconds = 0
         with tempfile.TemporaryDirectory() as directory:
             args = dict(root=Path(directory), reason='structure-current-geometry-failed',
@@ -190,7 +383,7 @@ class AutomaticFailureSamplesTests(unittest.TestCase):
             os.link(sentinel, owned/'automatic-failures.jsonl')
             report = cleanup_automatic_failure_samples(root)
             self.assertEqual(report['status'], 'journal-link-unavailable')
-            recorder = FailureSampleRecorder()
+            recorder = _enabled_recorder()
             result = recorder.record_automatic(root=root, reason='map-open-preparation-deadline',
                 frame=None, current=lambda: True, diagnostic={})
             self.assertEqual(result['missingReason'], 'journal-link-unavailable')

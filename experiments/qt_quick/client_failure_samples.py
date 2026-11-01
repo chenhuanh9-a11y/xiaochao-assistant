@@ -51,7 +51,7 @@ class FailureSampleRecorder:
     """
     def __init__(self):
         self.enabled = False
-        self.automatic_enabled = True
+        self.automatic_enabled = False
         self.metadata = {}
         self.policy = FailureSampling()
         self.lock = threading.Lock()
@@ -175,11 +175,29 @@ class FailureSampleRecorder:
                 while images and (len(images) >= 6 or sum(p.stat().st_size for p in images)+len(pixels) > 12*1024*1024):
                     images.pop(0).unlink()
                 path = directory / ('auto-' + uuid.uuid4().hex + '.png')
-                with path.open('xb') as image_stream:
-                    image_stream.write(pixels)
                 row.update(samplePath=path.relative_to(base).as_posix(),
                            sampleSha256=hashlib.sha256(pixels).hexdigest(),
+                           sampleBytes=len(pixels),
                            cropBounds=list(crop_bounds), cropProvenance=crop_provenance)
+                # Durable prepare/commit: recovery can prove which complete PNG
+                # belongs to this interrupted write without trusting its name.
+                intent = dict(row, event='automatic-failure-image-intent',
+                              imageTransactionSchema='automatic-image-intent-v1')
+                intent_line = json.dumps(intent, ensure_ascii=False).encode('utf-8')
+                prepared = [line for line, _ in inventory['rows']]
+                retained = {p.relative_to(base).as_posix() for p in images if p.exists()}
+                while len(prepared) >= 24 or sum(map(len, prepared))+len(intent_line)+len(prepared)+1 > 256*1024:
+                    removable = next((i for i, line in enumerate(prepared)
+                        if json.loads(line).get('samplePath') not in retained), None)
+                    if removable is None:
+                        return dict(result, missingReason='automatic-image-intent-budget')
+                    prepared.pop(removable)
+                replace_automatic_journal(directory, b'\n'.join(prepared+[intent_line])+b'\n')
+                with path.open('xb') as image_stream:
+                    image_stream.write(pixels)
+                    image_stream.flush()
+                    import os
+                    os.fsync(image_stream.fileno())
                 result['saved'] = True
                 self.automatic_saved_count += 1
             elif not missing:
@@ -190,7 +208,7 @@ class FailureSampleRecorder:
                 return dict(result, saved=False, missingReason='capture-not-current')
             journal = directory / 'automatic-failures.jsonl'
             # Rewrite a bounded recent tail; metadata contains no raw frame.
-            rows = [line for line, _ in inventory['rows']]
+            rows = list(prepared) if result['saved'] else [line for line, _ in inventory['rows']]
             rows.append(json.dumps(row, ensure_ascii=False).encode('utf-8'))
             # Keep ownership evidence while its image remains retained, even
             # when subsequent metadata-only failures fill the recent tail.
@@ -207,7 +225,7 @@ class FailureSampleRecorder:
             return result
         except Exception as error:
             self.last_error = type(error).__name__
-            return dict(result, missingReason='sample-write-error', error=self.last_error)
+            return dict(result, saved=False, missingReason='sample-write-error', error=self.last_error)
         finally:
             if admitted:
                 self.policy.completed(key, time.monotonic(), True)
