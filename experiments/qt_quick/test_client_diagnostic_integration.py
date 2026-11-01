@@ -71,8 +71,8 @@ ClientHelp { anchors.fill: parent } }
         self.assertIsNotNone(window, str(component.errors()))
         try:
             switch = window.findChild(QQuickItem, 'helpAutomaticFailureSampling')
-            self.assertTrue(switch.property('checked'))
-            self.assertTrue(self.runtime.automatic)
+            self.assertFalse(switch.property('checked'))
+            self.assertFalse(self.runtime.automatic)
             window.show()
             parents, item = [], switch
             while item is not None:
@@ -86,15 +86,21 @@ ClientHelp { anchors.fill: parent } }
             QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier,
                 switch.mapToScene(switch.boundingRect().center()).toPoint())
             self.fixture.wait(lambda: not self.info.checking and not self.settings.busy)
-            self.assertFalse(self.info.automaticFailureSampling)
-            self.assertFalse(self.runtime.automatic)
+            self.assertTrue(self.info.automaticFailureSampling)
+            self.assertTrue(self.runtime.automatic)
             disk = json.loads(self.settings.path.read_text('utf-8'))
-            self.assertFalse(disk['automaticFailureEvidence'])
+            self.assertTrue(disk['automaticFailureEvidence'])
             self.assertNotIn('interfaceOpacity', disk)
             self.assertEqual(self.settings.values['interfaceOpacity'], .7)
+            export_choice = window.findChild(QQuickItem, 'helpExportAutomaticFailureEvidence')
+            self.assertFalse(export_choice.property('checked'))
+            self.assertFalse(self.info.includeAutomaticFailureEvidence)
+            QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier,
+                export_choice.mapToScene(export_choice.boundingRect().center()).toPoint())
+            self.fixture.wait(lambda: self.info.includeAutomaticFailureEvidence)
             restarted = SettingsService(self.fixture.root)
             try:
-                self.assertFalse(restarted.persistedValues['automaticFailureEvidence'])
+                self.assertTrue(restarted.persistedValues['automaticFailureEvidence'])
             finally:
                 restarted.shutdown()
         finally:
@@ -124,6 +130,8 @@ ClientHelp { anchors.fill: parent } }
         self.assertEqual(environment['capture']['lastCaptureObservation']['durationMs'], 3.5)
         self.assertEqual(environment['gameProcessIntegrity']['status'], 'unavailable')
         self.assertEqual(manifest['runtimeProcessIntegrity'], environment['qtProcessIntegrity'])
+        self.assertEqual(manifest['requestedExecutionLevel'], 'unavailable')
+        self.assertIn('runtime token', manifest['requestedExecutionLevelReason'])
         self.assertIn('nightmare', summary['automaticFailureCleanup'])
         self.assertEqual(manifest['failureEvidence']['imageCount'], 0)
 
@@ -138,13 +146,61 @@ ClientHelp { anchors.fill: parent } }
 
     def test_failed_sampling_save_keeps_effective_choice(self):
         with patch.object(self.settings, '_write', side_effect=OSError('fixture denied')):
-            self.assertTrue(self.info.setAutomaticFailureSampling(False))
+            self.assertTrue(self.info.setAutomaticFailureSampling(True))
             self.fixture.wait(lambda: not self.info.checking and not self.settings.busy)
-        self.assertTrue(self.info.automaticFailureSampling)
-        self.assertTrue(self.runtime.automatic)
+        self.assertFalse(self.info.automaticFailureSampling)
+        self.assertFalse(self.runtime.automatic)
         self.assertIn('fixture denied', self.info.message)
-        self.assertFalse(self.settings.values['automaticFailureEvidence'])
-        self.assertTrue(self.settings.persistedValues['automaticFailureEvidence'])
+        self.assertTrue(self.settings.values['automaticFailureEvidence'])
+        self.assertFalse(self.settings.persistedValues['automaticFailureEvidence'])
+
+    def test_sampling_and_export_require_separate_choices(self):
+        import client_info
+        exporter = client_info.export_safe_diagnostic_bundle
+        self.assertFalse(self.info.automaticFailureSampling)
+        self.assertFalse(self.info.includeAutomaticFailureEvidence)
+        self.assertTrue(self.info.setAutomaticFailureSampling(True))
+        self.fixture.wait(lambda: not self.info.checking)
+        for manual, automatic in ((False, False), (False, True), (True, False), (True, True)):
+            with self.subTest(manual=manual, automatic=automatic):
+                self.info.setIncludeFailureEvidence(manual)
+                self.info.setIncludeAutomaticFailureEvidence(automatic)
+                destination = self.fixture.root / ('choices-%s-%s.zip' % (manual, automatic))
+                with patch.object(client_info, 'export_safe_diagnostic_bundle', wraps=exporter) as export:
+                    self.info.exportDiagnosticsTo(QUrl.fromLocalFile(str(destination)).toString())
+                    self.fixture.wait(lambda: not self.info.checking)
+                self.assertTrue(self.info.diagnosticsReceipt['success'])
+                arguments = export.call_args.kwargs
+                self.assertEqual(bool(arguments['failure_roots']), manual or automatic)
+                self.assertEqual(arguments['automatic_failure_only'], not manual)
+                self.assertEqual(arguments['include_automatic_failure_evidence'], automatic)
+        restarted = fixtures.InfoTests.service(self.fixture)
+        self.assertFalse(restarted.includeAutomaticFailureEvidence)
+
+    def test_saved_automatic_image_is_only_exported_after_explicit_export_choice(self):
+        import numpy as np
+        from client_failure_samples import FailureSampleRecorder
+        self.problems.record(dict(title='sample failure', summary='fixture', kind='error'))
+        self.fixture.wait(lambda: not self.problems.pendingWrites)
+        stamp = self.problems.recent[0]['timestampUTC']
+        recorder = FailureSampleRecorder()
+        recorder.automatic_enabled = True
+        sample = recorder.record_automatic(root=self.info.paths.memory_root('nightmare'),
+            reason='current-geometry-failed', frame=np.zeros((8, 8, 3), dtype=np.uint8),
+            diagnostic=dict(evidenceKind='live-client-capture', mode='nightmare',
+                eventPath=str(self.problems.log_path), frameCapturedAtUtc=stamp,
+                buildFingerprint='FIXTURE'), current=lambda: True,
+            crop_bounds=(0, 0, 8, 8), crop_provenance='validated-map-region')
+        self.assertTrue(sample['saved'], sample)
+        for index, include in enumerate((False, True, False)):
+            self.info.setIncludeAutomaticFailureEvidence(include)
+            destination = self.fixture.root / ('picture-%s-%s.zip' % (index, include))
+            self.info.exportDiagnosticsTo(QUrl.fromLocalFile(str(destination)).toString())
+            self.fixture.wait(lambda: not self.info.checking)
+            self.assertTrue(self.info.diagnosticsReceipt['success'], self.info.diagnosticsReceipt)
+            with zipfile.ZipFile(destination) as archive:
+                evidence = json.loads(archive.read('diagnostic-manifest.json'))['failureEvidence']
+            self.assertEqual(evidence['imageCount'], int(include), evidence)
 
     def test_worker_snapshot_exception_survives_problem_and_export(self):
         from test_client_session import Runtime

@@ -226,6 +226,7 @@ def export_safe_diagnostic_bundle(
     destination: Path | None = None,
     summary: dict | None = None,
     automatic_failure_only: bool = False,
+    include_automatic_failure_evidence: bool = False,
     resource_root: Path | None = None,
 ) -> dict:
     """Export bounded logs and explicitly requested, already saved failure evidence."""
@@ -300,6 +301,7 @@ def export_safe_diagnostic_bundle(
             failure_evidence = export_failure_evidence(
                 archive, failure_roots, log_windows, _redact_local_paths,
                 automatic_only=automatic_failure_only,
+                include_automatic=include_automatic_failure_evidence,
                 build_fingerprint=build_fingerprint,
             )
             manifest = {
@@ -308,13 +310,16 @@ def export_safe_diagnostic_bundle(
                 "appVersion": app_version,
                 "buildFingerprint": build_fingerprint,
                 "runtimeProcessIntegrity": process_integrity or {"level": "Unknown", "rank": -1},
-                "requestedExecutionLevel": "requireAdministrator",
+                "requestedExecutionLevel": "unavailable",
+                "requestedExecutionLevelReason": "Executable manifest not inspected; runtime token is reported separately.",
                 "textOnly": failure_evidence['imageCount'] == 0,
                 "privacy": (
                     "Recent text logs, package version files and Identity V window metadata; "
                     "when requested, bounded saved failure game frames and measured evidence "
-                    "from the included log sessions. No new screenshots are captured. "
-                    "Full local paths, confirmations, settings and unrelated memory are excluded."
+                    "from the included log sessions. The export operation takes no new screenshots; "
+                    "requested images were saved earlier by separately enabled sampling. "
+                    "Full local paths, full settings files and unrelated memory are excluded; "
+                    "relevant shortcut binding state may be included."
                 ),
                 "failureEvidence": failure_evidence,
                 "windowEnvironment": window_environment or {

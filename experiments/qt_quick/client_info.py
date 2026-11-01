@@ -50,6 +50,7 @@ class ClientInfoService(QObject):
         self._package_metadata = dict(diagnostic_package_metadata(self.paths.installation_root,
             app_version=self._app_version, build_fingerprint=self._build_fingerprint), **self._package_metadata)
         self._include_failure_evidence = False
+        self._include_automatic_failure_evidence = False
         self._automatic_sampling_pending = None
         self._automatic_sampling_applied = None
         self._service = UpdateService(self._version, self.paths.update_state_path,
@@ -93,6 +94,7 @@ class ClientInfoService(QObject):
     skippedVersion = Property(str, lambda s: s._service.skipped_version, notify=changed)
     historyMessage = Property(str, lambda s: s._history_message, notify=changed)
     includeFailureEvidence = Property(bool, lambda s: s._include_failure_evidence, notify=changed)
+    includeAutomaticFailureEvidence = Property(bool, lambda s: s._include_automatic_failure_evidence, notify=changed)
     automaticFailureSampling = Property(bool, lambda s: s._automatic_sampling_enabled(), notify=changed)
     diagnosticsReceipt = Property("QVariantMap", lambda s: dict(s._diagnostics), notify=changed)
     release = Property("QVariantMap", lambda s: s._release_row(s._service.latest) if s._service.latest else {}, notify=changed)
@@ -258,7 +260,7 @@ class ClientInfoService(QObject):
     def _automatic_sampling_enabled(self):
         settings = self._providers.get('settings')
         return (settings is not None and not getattr(settings, 'loadFailed', False)
-                and settings.persistedValues.get('automaticFailureEvidence', True) is True)
+                and settings.persistedValues.get('automaticFailureEvidence', False) is True)
 
     def _set_automatic_failure_sampling(self, enabled):
         runtime = getattr(self._providers.get('coordinator'), 'runtime', None)
@@ -432,6 +434,12 @@ class ClientInfoService(QObject):
             self._set_failure_sampling(self._include_failure_evidence)
             self.changed.emit()
 
+    @Slot(bool)
+    def setIncludeAutomaticFailureEvidence(self, include):
+        if not self._closed and not self.checking:
+            self._include_automatic_failure_evidence = bool(include)
+            self.changed.emit()
+
     @Slot()
     def exportDiagnostics(self):
         destination = self.paths.installation_root / "outputs" / "诊断日志" / ("qt-client-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".zip")
@@ -492,8 +500,9 @@ class ClientInfoService(QObject):
             gameWindowBound=window_environment["gameWindowBound"], mapOpen=bool(state.get("mapOpen")),
             gameForeground=state.get("gameForeground", "unknown"))
         failure_roots = tuple(self.paths.memory_root(mode) for mode in ("nightmare", "difficult")) if (
-            self._include_failure_evidence or self.automaticFailureSampling) else ()
+            self._include_failure_evidence or self._include_automatic_failure_evidence) else ()
         automatic_only = not self._include_failure_evidence
+        include_automatic = self._include_automatic_failure_evidence
         from runtime_environment_diagnostics import freeze_runtime_inputs, collect_runtime_environment
         screens = []
         for screen in QGuiApplication.screens():
@@ -532,6 +541,7 @@ class ClientInfoService(QObject):
                 resource_root=self.paths.resource_root,
                 runtime_context=runtime_context, failure_roots=failure_roots, summary=report,
                 automatic_failure_only=automatic_only,
+                include_automatic_failure_evidence=include_automatic,
                 process_integrity=environment['qtProcessIntegrity'])
             return dict(result, path=str(result["path"]), bytes=destination.stat().st_size,
                         exportedAt=report["exportedAt"])

@@ -30,7 +30,7 @@ ACTION_ORDER = ("toggle-panel", "candidate-prev", "candidate-next", "confirm-rou
 LEGACY_ACTIONS = ["F5", "F6", "F7", "F8", "F9", "F10", "F11", "", ""]
 FRESH_ACTIONS = ["F9", "F6", "F7", "F8", "", "", "F11", "", "F10"]
 BOOL_DEFAULTS = {"referenceSheetVisible": True, "sheetVisibilityEnabled": True,
-                 "automaticFailureEvidence": True,
+                 "automaticFailureEvidence": False,
                  "orbVisible": True, "reduceMotion": False, "uiSoundEnabled": False,
                  "difficultGridEnabled": False, "onboardingCompleted": False}
 RANGES = {"sheetOpacity": (0., 1.), "referenceOpacity": (0., 1.),

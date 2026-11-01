@@ -91,7 +91,8 @@ def _automatic_image(root, relative, limit, expected):
 
 def export_failure_evidence(archive, roots, log_windows, redact, *, build_fingerprint,
                             max_samples=12, max_bytes=24 * 1024 * 1024,
-                            journal_bytes=8 * 1024 * 1024, automatic_only=False):
+                            journal_bytes=8 * 1024 * 1024, automatic_only=False,
+                            include_automatic=True):
     """Copy recent journal records and their exact saved frames, with omissions explicit."""
     report = dict(requested=bool(roots), cases=[], journals=[], imageCount=0,
                   imageBytes=0, matchingCases=0, omittedBySampleLimit=0,
@@ -121,7 +122,7 @@ def export_failure_evidence(archive, roots, log_windows, redact, *, build_finger
             from failure_sampling import automatic_storage_transaction, automatic_storage_inventory
             with automatic_storage_transaction(root) as status:
                 journal['automaticStatus'] = status
-                if status == 'ready':
+                if include_automatic and status == 'ready':
                     inventory = automatic_storage_inventory(root)
                     journal['automaticStatus'] = inventory['status']
                     if inventory['status'] == 'ready':
@@ -139,6 +140,8 @@ def export_failure_evidence(archive, roots, log_windows, redact, *, build_finger
                 if row.get('event') not in ('alignment-failure-sample-written', 'automatic-failure-sample'):
                     continue
                 if automatic_only and row.get('event') != 'automatic-failure-sample':
+                    continue
+                if not include_automatic and row.get('event') == 'automatic-failure-sample':
                     continue
                 stamp = datetime.fromisoformat(row['recordedAt']).timestamp()
                 captured = datetime.fromisoformat(row.get('capturedAt') or row['recordedAt']).timestamp()
