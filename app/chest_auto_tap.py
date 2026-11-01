@@ -24,6 +24,9 @@ MIN_INTERVAL_MS = 20
 MAX_INTERVAL_MS = 500
 PRESS_MS = 90  # Maximum hold; shorter periods use a 50% duty cycle.
 POLL_SECONDS = .005
+# Waiting for the hold key or for the game: 20 ms still starts tapping within
+# one frame, without waking 200 times a second for the whole session.
+IDLE_POLL_SECONDS = .02
 RELEASE_RETRIES = 3  # In addition to the first key-up attempt.
 RELEASE_RETRY_SECONDS = .05
 
@@ -375,12 +378,12 @@ class ChestAutoTap:
                 if not key_down(hold_vk):
                     self._set_status(f"等待按住 {settings['holdKey']}", holding=False)
                     next_tap = 0.0
-                    self._wake.wait(POLL_SECONDS)
+                    self._wake.wait(IDLE_POLL_SECONDS)
                     continue
                 if not self._in_game():
                     self._set_status("游戏窗口不在前台，暂不连发", holding=False)
                     next_tap = 0.0
-                    self._wake.wait(POLL_SECONDS)
+                    self._wake.wait(IDLE_POLL_SECONDS)
                     continue
                 now = time.perf_counter()
                 if now < next_tap:

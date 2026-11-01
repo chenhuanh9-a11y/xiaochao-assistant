@@ -5825,7 +5825,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         self.startup_resource_error = None
         self.route_profile_var.set(self._route_profile_label(self._shown_route_profile()))
         self.current_floor = str(self.pack.default_entry_floor)
-        self._update_floor_buttons(); self._refresh_candidates(); self._sync_route_settings_ui(); self._sync_active_mode_ui()
+        self._update_floor_buttons(); self._refresh_candidates(defer_thumbnails=True); self._sync_route_settings_ui(); self._sync_active_mode_ui()
         for name in ('route_profile_box', 'onboarding_route_box'):
             box = getattr(self, name, None)
             if tk_widget_exists(box):
@@ -6273,7 +6273,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             if tk_widget_exists(box):box.configure(values=list(allowed.values()))
         self.current_floor=str(self.pack.default_entry_floor)
         self.auto_scores={};self.recognition_rank_history=[]
-        self._update_floor_buttons();self._refresh_candidates();self._sync_route_settings_ui()
+        self._update_floor_buttons();self._refresh_candidates(defer_thumbnails=True);self._sync_route_settings_ui()
         self._save_settings()
         self._sync_active_mode_ui()
         self._log('game-mode-changed',previousMode=previous,gameMode=mode,sourceRoot=str(self.pack.source_root))
@@ -6308,6 +6308,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
     PROGRESSIVE_ALIGNMENT_RETRY_SECONDS = 1.5
     INTERFACE_OPACITY = 0.82
     EVENT_POLL_MS = 16
+    # Out of game with the map closed nothing time-critical is pending; queued
+    # worker results still shorten the next delay to 1 ms.
+    IDLE_EVENT_POLL_MS = 100
     EVENT_POLL_BUDGET_MS = 6.0
     CAPTURE_START_DELAY_MS = 8
     # A G-triggered visual check is a short current-frame gate, not a long
@@ -6871,7 +6874,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         self._place_window(False)
         if not self.onboarding_active:
             self.root.after(0, self.desktop_main_ui.show)
-        self._refresh_candidates()
+        # Thumbnails decode when the candidate surface is first shown, not
+        # during startup before the main window can paint.
+        self._refresh_candidates(defer_thumbnails=True)
         if self.mode_resource_error:
             self._log('mode-resource-load-failed',requestedMode='difficult',retainedMode=self.game_mode,
                 resourceRoot=str(RESOURCE_ROOT),assetOverride=os.environ.get('IDENTITYV_DIFFICULT_MAPS'),
@@ -19826,6 +19831,8 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             raise
 
         def probe() -> None:
+            floor_read = None
+            probe_mode = getattr(self, 'game_mode', 'nightmare')
             probe_open: bool | None = None
             frame_captured_at = None
             probe_frame = probe_bounds = None
@@ -19878,6 +19885,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 "frame": probe_frame, "bounds": probe_bounds,
                 "frameCapturedAtUtc": frame_captured_at,
                 "probeError": probe_error, "probeEvidence": probe_evidence,
+                # The worker already read the floor of this exact frame.
+                "floorRead": floor_read if probe_frame is not None else None,
+                "floorReadMode": probe_mode,
                 "displayEpoch": probe_display_epoch,
                 "capturedAt": probe_captured_at,
             })
@@ -29562,6 +29572,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         cycle_id: int | None,
         *,
         explicit_floor: int | None = None,
+        floor_read: dict | None = None,
     ) -> None:
         if (
             frame is None
@@ -29570,7 +29581,8 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         ):
             return
         floor_started = time.perf_counter()
-        floor_read = self._mode_selected_floor(frame)
+        if not isinstance(floor_read, dict):
+            floor_read = self._mode_selected_floor(frame)
         observed = floor_read.get("selectedFloor")
         if (observed not in (-1, 1, 2) and getattr(self, 'floor_required', False)
                 and frame is getattr(self, 'current_frame', None)):
@@ -30668,11 +30680,22 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         except tk.TclError:
             pass
 
+    SHEET_SCALE_PREVIEW_MS = 50
+
     def change_sheet_scale(self, value: str) -> None:
         percent = max(50, min(150, round(float(value))))
         self.sheet_scale = percent / 100.0
         self.size_label.configure(text=f"小抄大小 {percent}%")
-        self._refresh_visible_sheet_after_route_setting()
+        # A drag emits one value per pixel; redraw the sheet at most once per
+        # preview period with the latest size instead of once per step.
+        if getattr(self, '_sheet_scale_preview_job', None) is None:
+            self._sheet_scale_preview_job = self.root.after(
+                self.SHEET_SCALE_PREVIEW_MS, self._flush_sheet_scale_preview)
+
+    def _flush_sheet_scale_preview(self) -> None:
+        self._sheet_scale_preview_job = None
+        if not self.closed:
+            self._refresh_visible_sheet_after_route_setting()
 
     def clear_filters(self) -> None:
         self.direction_var.set("全部")
@@ -37627,6 +37650,8 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 cycleId=self.active_map_cycle_id, sourceFrameGeneration=self.current_frame_generation)
             self._consider_floor_observation(
                 event.get("frame"), event.get("bounds"), event.get("token"),
+                floor_read=(event.get("floorRead")
+                            if event.get("floorReadMode") == getattr(self, 'game_mode', 'nightmare') else None),
             )
             if self._retry_unconfirmed_changed_frame():
                 return
@@ -37714,6 +37739,12 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             if not self.closed:
                 self._event_poll_due_at = time.perf_counter() + delay / 1000.0
                 self.root.after(delay, self._poll_events)
+
+    def _event_poll_busy(self) -> bool:
+        return bool(getattr(self, 'game_foreground', False) or getattr(self, 'map_is_open', False)
+                    or getattr(self, 'capture_in_progress', False) or getattr(self, 'alignment_in_progress', False)
+                    or getattr(self, 'sheet_move_mode', False) or getattr(self, 'diagnostic_export_in_progress', False)
+                    or getattr(self, '_map_package_live_request', None) is not None)
 
     def _poll_events_once(self) -> int | None:
         if self.closed:
@@ -37923,7 +37954,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                         0x10,
                     )
                 elif kind == "waiting-game":
-                    self._set_status("等待第五人格启动；不抓屏", "#94a3b8")
+                    # The listener retries every 1.5 s; repaint only on a change.
+                    if self.status.cget("text") != "等待第五人格启动；不抓屏":
+                        self._set_status("等待第五人格启动；不抓屏", "#94a3b8")
                 elif kind == "game-bound":
                     environment = event.get("displayEnvironment") or {}
                     self._apply_display_environment(environment, announce=False)
@@ -40539,7 +40572,8 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             urgent_depth = self.urgent_events.qsize()
             # Keep FIFO and urgent-input ordering. If a budget-limited batch
             # left work pending, yield to Tk without adding a full idle period.
-            delay = 1 if ordinary_depth or urgent_depth else self.EVENT_POLL_MS
+            delay = (1 if ordinary_depth or urgent_depth else
+                     self.EVENT_POLL_MS if self._event_poll_busy() else self.IDLE_EVENT_POLL_MS)
             late_ms = max(0.0,(callback_started-scheduled_at)*1000.0)
             elapsed_ms = (finished_at-callback_started)*1000.0
             if (getattr(self, 'runtime_timeline_enabled', True)
