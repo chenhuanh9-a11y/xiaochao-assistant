@@ -47,6 +47,12 @@ class EventInputTests(unittest.TestCase):
         self.assertEqual(self.events,['toggle-panel'])
         self.assertFalse(self.keys._timer.isActive())
         self.assertEqual(self.native.reads,[])
+    def test_mouse_side_button_shortcut_fires_like_a_key(self):
+        self.keys.configure({'toggle-panel':'MOUSE4','map':'G'})
+        self.assertIn(0x05,self.source.keys)
+        self.assertTrue(self.keys.enableManagement());self.flush()
+        self.source.send(0x05);self.source.send(0x05,False);self.flush()
+        self.assertEqual(self.events,['toggle-panel'])
     def test_management_survives_bind_start_reconfigure_and_game_disable(self):
         self.keys.enableManagement();self.flush()
         self.keys.bindWindow(42);self.keys.configure({'toggle-panel':'F24','map':'G'})
@@ -121,6 +127,21 @@ class CoordinatorLiveTests(unittest.TestCase):
         self.f.runtime.invalidate.assert_any_call('game-window-lost')
         self.assertEqual(self.f.session.dispatchWithPayload.call_count,2)
         self.assertEqual(self.c._binding_identity[2],2)
+    def test_minimized_game_keeps_its_binding_and_round(self):
+        self.c._catalog.return_value=[self.row()];self.c.startLiveServices()
+        minimized=dict(self.row(),minimized=True,width=0,height=0)
+        self.c._catalog.return_value=[minimized];self.c._discover_game()
+        self.f.session.stop.assert_not_called();self.f.session.dispatch.assert_not_called()
+        self.assertEqual(self.c.boundWindow,'42')
+        self.c._catalog.return_value=[self.row()];self.c._discover_game()
+        self.assertEqual(self.f.session.dispatchWithPayload.call_count,1)
+    def test_minimized_game_is_not_bound_until_restored(self):
+        self.c._catalog.return_value=[dict(self.row(),minimized=True,width=0,height=0)]
+        self.c.startLiveServices()
+        self.f.session.dispatchWithPayload.assert_not_called();self.assertEqual(self.c.boundWindow,'')
+        self.c.bindGameWindow('42');self.f.session.dispatchWithPayload.assert_not_called()
+        self.c._catalog.return_value=[self.row()];self.c._discover_game()
+        self.f.session.dispatchWithPayload.assert_called_once_with('bind_capture',dict(hwnd=42,region=[0,0,100,80]))
     def test_mode_is_guarded_during_round_but_resource_browsing_is_independent(self):
         self.f.session.snapshot['roundActive']=True
         self.c.setMode('difficult');self.f.settings.setValue.assert_not_called()

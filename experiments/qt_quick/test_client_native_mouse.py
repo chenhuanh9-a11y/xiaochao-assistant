@@ -3,7 +3,8 @@ import ctypes
 from ctypes import wintypes as W
 import unittest
 
-from client_native_mouse import RawInputDevice, RawInputHeader, RawMouse, RawMouseObserver, mouse_phases
+from client_native_mouse import (RawInputDevice, RawInputHeader, RawMouse, RawMouseObserver, mouse_phases,
+                                 mouse_button_transitions)
 
 
 class Function:
@@ -78,6 +79,31 @@ class RawMouseTests(unittest.TestCase):
         self.assertTrue(all(e[:3] == (200, 150, 42) for e in events))
         self.assertTrue(all(e[3]["created_at"] == 9.98 for e in events))
         self.assertEqual(len([c for c in native.calls if c[0] == "default"]), 3)
+        observer.stop()
+
+    def test_shortcut_buttons_are_reported_globally_but_only_parsed_when_bound(self):
+        native = Native()
+        pointer, buttons, wanted = [], [], [True]
+        observer = RawMouseObserver(lambda *a, **kw: pointer.append(a), lambda foreground: False,
+            user=native, clock=lambda: 10., ticks=lambda: 1000,
+            buttons=lambda transitions, foreground: buttons.append((transitions, foreground)),
+            wants_buttons=lambda: wanted[0])
+        observer.start()
+        message = W.MSG(hWnd=321, message=0xff, wParam=1, lParam=999, time=990, pt=W.POINT(5, 5))
+        for flags in (0x0040, 0x0080, 0x0100 | 0x0008, 0x0001):
+            native.mouse.buttonUnion.buttons.flags = flags
+            self.assertTrue(observer.handle(message))
+        # Side/right buttons reach shortcuts even off the map target; left never does,
+        # and no map pointer event is produced for a non-target foreground.
+        self.assertEqual(buttons, [([(0x05, True)], 42), ([(0x05, False)], 42),
+                                   ([(0x02, False), (0x06, True)], 42)])
+        self.assertEqual(pointer, [])
+        wanted[0] = False
+        native.mouse.buttonUnion.buttons.flags = 0x0040
+        reads = len(native.calls)
+        observer.handle(message)
+        self.assertEqual(len(buttons), 3)
+        self.assertEqual(mouse_button_transitions(native.mouse), [(0x05, True)])
         observer.stop()
 
     def test_old_queued_press_is_not_restamped_as_new_input(self):

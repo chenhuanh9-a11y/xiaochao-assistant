@@ -121,6 +121,8 @@ def game_window_rows():
     user = ctypes.WinDLL("user32", use_last_error=True)
     user.IsWindowVisible.argtypes = [wintypes.HWND]
     user.IsWindowVisible.restype = wintypes.BOOL
+    user.IsIconic.argtypes = [wintypes.HWND]
+    user.IsIconic.restype = wintypes.BOOL
     user.GetWindowTextLengthW.argtypes = [wintypes.HWND]
     user.GetWindowTextLengthW.restype = ctypes.c_int
     user.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
@@ -144,9 +146,16 @@ def game_window_rows():
                 return True
             if not identityv_window_identity_is_allowed(buffer.value, process.exe()):
                 return True
+            row = dict(hwnd=str(int(hwnd)), title=buffer.value, pid=int(pid.value),
+                       processCreateTime=process.create_time(), executable=process.exe())
+            if user.IsIconic(hwnd):
+                # A minimized game is still the same game: keep it listed so an
+                # existing binding and round survive; geometry is read once it is
+                # restored (a minimized window has no client area to read).
+                rows.append(dict(row, minimized=True, width=0, height=0, dpi=0, clientBounds=None))
+                return True
             context = client_capture_context(int(hwnd))
-            rows.append(dict(hwnd=str(int(hwnd)), title=buffer.value, pid=int(pid.value),
-                             processCreateTime=process.create_time(), executable=process.exe(),
+            rows.append(dict(row, minimized=False,
                              width=context.full_client_size[0], height=context.full_client_size[1],
                              dpi=context.dpi, clientBounds=list(context.client_screen_bounds)))
         except (OSError, ValueError, psutil.Error):
@@ -843,8 +852,11 @@ class ClientCoordinator(QObject):
         if self._bound and self._binding_identity is not None and self._binding_identity not in identities:
             self._drop_binding("game-window-lost")
         if not self._bound:
-            if len(rows) == 1 and not self.session.busy and not self.resources.busy and not self.resources.pendingKind:
+            if (len(rows) == 1 and not rows[0].get("minimized") and not self.session.busy
+                    and not self.resources.busy and not self.resources.pendingKind):
                 self.bindGameWindow(rows[0]["hwnd"])
+            elif len(rows) == 1:
+                self._message = "游戏窗口已最小化，恢复后自动连接"
             elif len(rows) > 1:
                 self._message = "发现多个游戏窗口，请明确选择要连接的窗口"
             elif not rows:
@@ -871,6 +883,9 @@ class ClientCoordinator(QObject):
         row = next((row for row in self._window_rows if row["hwnd"] == str(hwnd)), None)
         if not row:
             self._message = "请刷新并选择一个有效的游戏窗口"
+            self.changed.emit(); return
+        if row.get("minimized"):
+            self._message = "游戏窗口已最小化，请先恢复游戏窗口再连接"
             self.changed.emit(); return
         self._reset_map_input("binding-changed")
         self.input.disable()

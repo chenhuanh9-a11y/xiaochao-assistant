@@ -44,4 +44,27 @@ class CaptureStartTests(unittest.TestCase):
     def test_stale_delayed_callback(self):self.run_case(False,stale=True)
     def test_after_registration_failure(self):self.run_case(False,after_failure=True)
 
+class SilentCaptureErrorTests(unittest.TestCase):
+    """A failed map-key wake check keeps the UI still but reports the failure."""
+    def silent_branch(self):
+        path=Path(__file__).parents[1]/'app/identityv_daily_assistant.py'
+        tree=ast.parse(path.read_text('utf-8-sig'))
+        branch=next(n for n in ast.walk(tree) if isinstance(n,ast.If) and isinstance(n.test,ast.Call)
+                    and ast.unparse(n.test)=="event.get('silentHint')"
+                    and any(isinstance(m,ast.Expr) and 'map-key-visual-check-error' in ast.unparse(m) for m in n.body))
+        loop=ast.For(target=ast.Name('_',ast.Store()),iter=ast.List([ast.Constant(0)],ast.Load()),body=branch.body,orelse=[])
+        args=ast.arguments(posonlyargs=[],args=[ast.arg('self'),ast.arg('event')],kwonlyargs=[],kw_defaults=[],defaults=[])
+        func=ast.FunctionDef('silent',args,[loop],[],None,type_params=[])
+        ns={};exec(compile(ast.fix_missing_locations(ast.Module([func],[])),str(path),'exec'),ns)
+        return ns['silent']
+
+    def test_failure_is_recorded_and_shown_without_touching_the_route(self):
+        s=SimpleNamespace(active_map_cycle_id=5,_log=Mock(),_record_route_issue=Mock(),_set_status=Mock(),
+                          hide_route=Mock(),set_expanded=Mock())
+        self.silent_branch()(s,dict(kind='capture-error',message='截图失败',silentHint=True))
+        self.assertIsNone(s.active_map_cycle_id)
+        s._record_route_issue.assert_called_once_with('recognition','capture-failed','识别失败：截图失败')
+        s._set_status.assert_called_once_with('识别失败：截图失败','#ff8a65')
+        s.hide_route.assert_not_called();s.set_expanded.assert_not_called()
+
 if __name__=='__main__':unittest.main()
