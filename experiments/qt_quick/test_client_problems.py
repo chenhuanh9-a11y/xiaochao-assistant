@@ -114,7 +114,11 @@ class ProblemTests(unittest.TestCase):
             self.wait(lambda:not self.service.pendingWrites)
         self.assertTrue(all(thread!=threading.get_ident() for thread in threads))
         rows=[json.loads(line) for line in self.service.log_path.read_text('utf-8').splitlines()]
-        self.assertEqual(len(rows),1+sum(accepted))
+        originals = [row for row in rows if row.get('event') == 'qt-runtime-problem']
+        summaries = [row for row in rows if row.get('event') == 'qt-runtime-problem-summary']
+        self.assertEqual(len(originals),1+sum(accepted))
+        self.assertEqual(len(summaries), 1)
+        self.assertEqual(summaries[0]['count'], 101)
 
     def test_trace_deduplicates_frame_refresh_without_recent_and_drains(self):
         original=list(self.service.recent)

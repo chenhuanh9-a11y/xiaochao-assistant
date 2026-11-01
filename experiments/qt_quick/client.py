@@ -176,7 +176,8 @@ class QtClient:
         self.online_packages.errorReported.connect(self._resource_problem)
         self.coordinator.traceReported.connect(self.problems.recordTrace)
         self.info.setProviders(session=self.session, resources=self.resources, input=self.input,
-                               coordinator=self.coordinator, problems=self.problems)
+                               coordinator=self.coordinator, problems=self.problems,
+                               settings=self.settings, capture=self.capture)
         self.coordinator.close_writers = (self.custom_galleries, self.info, self.online_packages,
                                          self.backend, self.route_choices, self.problems, self.reference_preview,
                                          self.capture_exclusion, self.package_manager)

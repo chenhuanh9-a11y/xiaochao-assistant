@@ -10,6 +10,7 @@ from copy import deepcopy
 import sys
 import threading
 import time
+import traceback
 from uuid import uuid4
 
 from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, Qt, Signal, Slot
@@ -52,12 +53,17 @@ class _RuntimeWork(QRunnable):
         if self.diagnostics is not None:
             self.diagnostics.record("worker-start", jobId=id(self), action=self.action,
                 cancelled=self.cancelled.is_set(), frameId=self.context.get("frameId"))
+        operation = 'runtime-dispatch'
         try:
             receipt = self.runtime.dispatch(self.action, self.payload, self.cancelled)
+            operation = 'runtime-snapshot'
             state = self.runtime.snapshot()
             self.signals.done.emit(id(self), self.context, (receipt, state), None)
         except Exception as error:
-            self.signals.done.emit(id(self), self.context, None, f"{type(error).__name__}: {error}")
+            self.signals.done.emit(id(self), self.context, None, dict(
+                message=f"{type(error).__name__}: {error}", exceptionType=type(error).__name__,
+                exceptionOrigin='session-worker:' + operation, exceptionAction=self.action,
+                traceback="".join(traceback.format_exception(type(error), error, error.__traceback__))[-8192:]))
         finally:
             if self.diagnostics is not None:
                 self.diagnostics.record("worker-end", jobId=id(self), action=self.action,
@@ -238,10 +244,16 @@ class SessionService(QObject):
             self.changed.emit()
             return
         if error:
+            failure = error if isinstance(error, dict) else {"message": str(error)}
+            error = str(failure.get("message", "Runtime operation failed."))
             self._actions.fail(token, fallback_state="failed", reason=error)
             self._message = error
             self._last_receipt = dict(action=work.action, success=False, reason=error,
-                                      message=error, error=True, errorPhase="operation")
+                                      message=error, error=True, errorPhase="operation",
+                                      exceptionType=failure.get("exceptionType", ""),
+                                      exceptionOrigin=failure.get("exceptionOrigin", ""),
+                                      exceptionAction=failure.get("exceptionAction", ""),
+                                      traceback=failure.get("traceback", ""))
         else:
             receipt, state = value
             receipt = receipt if isinstance(receipt, dict) else {}

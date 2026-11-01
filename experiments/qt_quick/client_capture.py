@@ -4,6 +4,7 @@ from __future__ import annotations
 import operator
 import sys
 import threading
+import time
 
 from client_paths import APP_ROOT
 APP = APP_ROOT
@@ -41,6 +42,7 @@ class ClientCaptureProvider:
         self._enabled, self._closed = False, False
         self._generation = 0
         self._status, self._message = "disabled", "Client capture is disabled."
+        self._last_capture_observation = None
         self._capture_capability = dict(clientDc="not-probed",
             safeFallback="not-probed" if full_capture is not None else "not-configured",
             fallbackRequired=False)
@@ -52,6 +54,7 @@ class ClientCaptureProvider:
                         hwnd=str(self._hwnd), region=list(self._region or ()),
                         generation=self._generation, closed=self._closed,
                         captureCapability=dict(self._capture_capability),
+                        lastCaptureObservation=dict(self._last_capture_observation) if self._last_capture_observation else None,
                         captureIntent="full-client" if self._full_client else "roi")
 
     @property
@@ -170,6 +173,7 @@ class ClientCaptureProvider:
             generation = self._generation
         if self._cancelled(cancelled):
             raise CaptureUnavailable("Capture request cancelled")
+        observation_started = time.perf_counter()
         trace = dict(provider="client-capture", backend="client-region-pipeline", phase="guard",
             foreground="unknown", captureIntent="full-client" if full_client else "roi")
         try:
@@ -214,6 +218,8 @@ class ClientCaptureProvider:
             with self._lock:
                 if generation != self._generation or not self._enabled or self._closed:
                     raise CaptureUnavailable("Captured frame was superseded")
+                self._last_capture_observation = dict(status="captured", generation=generation, backend=frame.acquisition,
+                    durationMs=(time.perf_counter() - observation_started) * 1000)
                 self._status, self._message = "ready", "Client frame captured."
                 fallback = frame.acquisition == "full-frame-fallback-crop"
                 self._capture_capability.update(clientDc="failed" if fallback else "captured",
@@ -239,9 +245,12 @@ class ClientCaptureProvider:
                     error.capture_diagnostics.update(clientBounds=trace["bounds"],
                         fullClientSize=trace["clientSize"], dpi=trace["dpi"])
                 trace.update(captureCapability=capability, fallbackTrigger=trigger)
+            trace["durationMs"] = (time.perf_counter() - observation_started) * 1000
             error.capture_trace = trace
             with self._lock:
                 if generation == self._generation and self._enabled:
+                    self._last_capture_observation = dict(status="failed", generation=generation, backend=trace["backend"],
+                        durationMs=trace["durationMs"], phase=trace["phase"])
                     self._status, self._message = "failed", str(error)
                     if getattr(error, "code", None) == "capture-safe-fallback-unsupported":
                         self._capture_capability = dict(error.capture_capability)

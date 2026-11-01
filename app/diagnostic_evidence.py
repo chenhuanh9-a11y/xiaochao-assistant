@@ -36,19 +36,26 @@ def _tail(path, limit):
     return data, size > limit
 
 
-def _image(root, relative, limit, expected=None):
+def _image(root, relative, limit, expected=None, *, single_link=False):
     name = PurePosixPath(str(relative).replace('\\', '/'))
     if (name.is_absolute() or '..' in name.parts or not name.parts
             or name.parts[0] != 'failures' or name.suffix.lower() not in {'.png', '.jpg'}):
         return None, 'invalid-sample-path'
     try:
         base = root.resolve()
-        path = (base / name).resolve()
+        original = base / name
+        if single_link and (original.is_symlink() or original.resolve() != original):
+            return None, 'automatic-image-link-unavailable'
+        path = original.resolve()
         if not path.is_relative_to(base) or ':' in str(name):
             return None, 'sample-outside-memory-root'
         if path.stat().st_size > limit:
             return None, 'image-byte-limit'
         with path.open('rb') as stream:
+            if single_link:
+                import os
+                if os.fstat(stream.fileno()).st_nlink != 1:
+                    return None, 'automatic-image-link-unavailable'
             data = stream.read(limit + 1)
         if len(data) > limit:
             return None, 'image-byte-limit'
@@ -63,9 +70,28 @@ def _image(root, relative, limit, expected=None):
     return data, 'included'
 
 
+def _automatic_image(root, relative, limit, expected):
+    from failure_sampling import automatic_storage_transaction, automatic_storage_inventory
+    if not expected or not re.fullmatch(r'[0-9a-fA-F]{64}', str(expected)):
+        return None, 'automatic-image-hash-missing'
+    try:
+        with automatic_storage_transaction(root) as status:
+            if status != 'ready':
+                return None, status
+            inventory = automatic_storage_inventory(root)
+            if inventory['status'] != 'ready':
+                return None, inventory['status']
+            if not any(row.get('samplePath') == relative and row.get('sampleSha256') == expected
+                       for _, row in inventory['rows']):
+                return None, 'automatic-image-ownership-unavailable'
+            return _image(root, relative, limit, expected, single_link=True)
+    except OSError as error:
+        return None, type(error).__name__
+
+
 def export_failure_evidence(archive, roots, log_windows, redact, *, build_fingerprint,
                             max_samples=12, max_bytes=24 * 1024 * 1024,
-                            journal_bytes=8 * 1024 * 1024):
+                            journal_bytes=8 * 1024 * 1024, automatic_only=False):
     """Copy recent journal records and their exact saved frames, with omissions explicit."""
     report = dict(requested=bool(roots), cases=[], journals=[], imageCount=0,
                   imageBytes=0, matchingCases=0, omittedBySampleLimit=0,
@@ -80,12 +106,28 @@ def export_failure_evidence(archive, roots, log_windows, redact, *, build_finger
         seen_roots.add(root)
         journal = dict(rootIndex=len(seen_roots), invalidLines=0)
         report['journals'].append(journal)
+        from failure_sampling import cleanup_automatic_failure_samples
         try:
-            data, truncated = _tail(root / 'alignment-failures.jsonl', journal_bytes)
+            journal['automaticCleanup'] = cleanup_automatic_failure_samples(root)
+        except OSError as error:
+            journal['cleanupStatus'] = type(error).__name__
+        try:
+            data, truncated = (b'', False) if automatic_only else _tail(root / 'alignment-failures.jsonl', journal_bytes)
             journal.update(status='read', truncatedToRecentLines=truncated)
         except OSError as error:
             journal['status'] = 'journal-missing' if isinstance(error, FileNotFoundError) else type(error).__name__
-            continue
+            data = b''
+        try:
+            from failure_sampling import automatic_storage_transaction, automatic_storage_inventory
+            with automatic_storage_transaction(root) as status:
+                journal['automaticStatus'] = status
+                if status == 'ready':
+                    inventory = automatic_storage_inventory(root)
+                    journal['automaticStatus'] = inventory['status']
+                    if inventory['status'] == 'ready':
+                        data += b'\n' + b'\n'.join(line for line, _ in inventory['rows'])
+        except OSError as error:
+            journal['automaticStatus'] = type(error).__name__
         for line in data.splitlines():
             try:
                 row = json.loads(line)
@@ -94,7 +136,9 @@ def export_failure_evidence(archive, roots, log_windows, redact, *, build_finger
                 diagnostic = row.get('diagnostic') or {}
                 if not isinstance(diagnostic, dict):
                     raise ValueError('invalid-diagnostic')
-                if row.get('event') != 'alignment-failure-sample-written':
+                if row.get('event') not in ('alignment-failure-sample-written', 'automatic-failure-sample'):
+                    continue
+                if automatic_only and row.get('event') != 'automatic-failure-sample':
                     continue
                 stamp = datetime.fromisoformat(row['recordedAt']).timestamp()
                 captured = datetime.fromisoformat(row.get('capturedAt') or row['recordedAt']).timestamp()
@@ -132,14 +176,20 @@ def export_failure_evidence(archive, roots, log_windows, redact, *, build_finger
                     mapId=row.get('mapId'), recordedAt=row.get('recordedAt'), files=[])
         images = [('frame', row.get('samplePath'), row.get('sampleSha256'))]
         observations = row.get('observationPaths') or {}
-        if isinstance(observations, dict):
+        if isinstance(observations, dict) and row.get('event') != 'automatic-failure-sample':
             images.extend((str(name), path, None) for name, path in list(observations.items())[:8])
         for number, (role, relative, expected) in enumerate(images):
             remaining = max_bytes - report['imageBytes']
-            if remaining <= 0:
+            if not relative:
+                pixels, status = None, row.get('missingReason') or 'sample-file-missing'
+            elif (row.get('event') == 'automatic-failure-sample' and not re.fullmatch(
+                    r'failures/automatic/auto-[0-9a-f]{32}\.png', str(relative))):
+                pixels, status = None, 'invalid-automatic-sample-path'
+            elif remaining <= 0:
                 pixels, status = None, 'export-image-budget-exhausted'
             else:
-                pixels, status = _image(root, relative, min(12 * 1024 * 1024, remaining), expected)
+                reader = _automatic_image if row.get('event') == 'automatic-failure-sample' else _image
+                pixels, status = reader(root, relative, min(12 * 1024 * 1024, remaining), expected)
             item = dict(role=role, status=status)
             if pixels is not None:
                 extension = '.png' if pixels.startswith(b'\x89PNG') else '.jpg'

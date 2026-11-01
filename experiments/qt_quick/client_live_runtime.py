@@ -1769,7 +1769,8 @@ class LiveRuntime:
                     self._capture.disable()
             self._message = str(reason)
             self._publish_game_pointer_context_locked()
-        self._notify("render-revoked", reason=str(reason), token=previous_token)
+        self._notify("render-revoked", reason=str(reason), token=previous_token,
+                     **({'invalidationOrigin': source} if source else {}))
 
     def set_event_callback(self, callback):
         """Install a thread-safe emitter only; it must queue work to Qt's owner."""
@@ -1932,7 +1933,42 @@ class LiveRuntime:
         if not self._failure_samples.enabled:
             self._failure_capture_stamp = None
 
+    def set_automatic_failure_sampling_enabled(self, enabled):
+        self._failure_samples.automatic_enabled = enabled is True
+
+    def _automatic_failure_sample(self, reason, *, captured=None, current=None, diagnostic=None):
+        """Diagnostic-only reuse of the existing guarded capture; never recapture."""
+        try:
+            return self._record_automatic_failure_sample(reason, captured=captured, current=current, diagnostic=diagnostic)
+        except Exception as error:
+            result = dict(saved=False, sampling='automatic', missingReason='sample-preparation-error', error=type(error).__name__)
+            self._notify('automatic-failure-sample', reason='metadata-only', failureSample=result)
+            return result
+
+    def _record_automatic_failure_sample(self, reason, *, captured=None, current=None, diagnostic=None):
+        stamp = self._failure_capture_stamp
+        if captured is None and stamp is not None:
+            captured = stamp[0]
+        generation = stamp[3] if stamp is not None and len(stamp) > 3 else None
+        def valid():
+            return bool(self._active and (current is None or current()) and captured is not None
+                        and stamp is not None and stamp[0] is captured
+                        and self._capture_is_current(captured.context, generation))
+        # A missing legal frame is represented explicitly; no new capture is requested.
+        frame = self._full_frame(captured) if valid() else None
+        data = dict(diagnostic or {}, evidenceKind=self._evidence_kind, mode=self._mode,
+                    frameCapturedAtUtc=stamp[1] if stamp is not None else None,
+                    **self._failure_samples.metadata)
+        root = getattr(getattr(self._engine, 'memory_store', None), 'root', None)
+        result = self._failure_samples.record_automatic(root=root, reason=reason, frame=frame,
+            diagnostic=data, current=valid if captured is not None else lambda: bool(
+                self._active and (current is None or current())))
+        self._notify('automatic-failure-sample', reason='saved' if result['saved'] else 'metadata-only',
+                     failureSample=result)
+        return result
+
     def shutdown(self):
+        self.set_automatic_failure_sampling_enabled(False)
         self.set_failure_sampling_enabled(False)
         self.dispatch("end_round")
         if self._capture is not None:
@@ -1997,10 +2033,11 @@ class LiveRuntime:
 
     def _capture_frame(self, cancelled):
         try:
+            sample_generation = self._capture_generation()
             captured = self._capture.capture(cancelled)
-            if self._failure_samples.enabled:
+            if self._failure_samples.enabled or self._failure_samples.automatic_enabled:
                 self._failure_capture_stamp = (captured,
-                    datetime.now(timezone.utc).isoformat(timespec="milliseconds"), time.monotonic())
+                    datetime.now(timezone.utc).isoformat(timespec="milliseconds"), time.monotonic(), sample_generation)
             return captured
         except Exception as error:
             error.error_phase = "capture"
@@ -2008,7 +2045,8 @@ class LiveRuntime:
 
     def _error_fields(self, error, action):
         fields = dict(traceback="".join(traceback.format_exception(
-            type(error), error, error.__traceback__, limit=-12, chain=False))[-8192:])
+            type(error), error, error.__traceback__, limit=-12, chain=False))[-8192:],
+            exceptionType=type(error).__name__, exceptionOrigin='client-live-runtime', exceptionAction=str(action))
         if getattr(error, "error_phase", None) == "capture" or action == "bind_capture":
             fields["errorPhase"] = "capture"
             raw_diagnostics = getattr(error, "capture_diagnostics", {})
@@ -2256,7 +2294,7 @@ class LiveRuntime:
                             self._capture_pending = False
             return self._receipt(action, payload, success=False, reason="unsupported-action", unavailable=True)
         except Exception as error:
-            self.invalidate("runtime-error")
+            self.invalidate("runtime-error", source=f'execute:{action}:{type(error).__name__}')
             return self._receipt(action, payload, success=False, reason=f"{type(error).__name__}:{error}", error=True,
                     **self._error_fields(error, action))
 
@@ -2431,7 +2469,7 @@ class LiveRuntime:
                 if self._cancelled(cancelled) or payload.get("_recoveryResultScope", expected) != self._map_recovery_scope():
                     self._retire_refresh_owner(payload.get("_recoveryRenderOwner"))
                     return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
-                self.invalidate("runtime-error")
+                self.invalidate("runtime-error", source=f'map-recovery:{action}:{type(error).__name__}')
             return self._receipt(action, payload, success=False, reason=f"{type(error).__name__}:{error}",
                 error=True, **self._error_fields(error, action))
         finally:
@@ -2488,7 +2526,7 @@ class LiveRuntime:
                     self._retire_refresh_owner(owner)
                     return self._receipt("refresh_map", payload, success=False,
                         reason="cancelled-or-stale", stale=True)
-                self.invalidate("runtime-error")
+                self.invalidate("runtime-error", source=f'refresh-map:{type(error).__name__}')
             return self._receipt("refresh_map", payload, success=False,
                                  reason=f"{type(error).__name__}:{error}", error=True,
                     **self._error_fields(error, "refresh_map"))
@@ -2652,6 +2690,7 @@ class LiveRuntime:
                     return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
                 if preparation.last_unresolved is None:
                     preparation.diagnostics.finish("map-open-preparation-deadline")
+                    self._automatic_failure_sample('map-open-preparation-deadline', current=lambda: not obsolete())
                     if not self._arm_map_open_recovery(cancelled, epoch):
                         return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
                     return self._receipt(action, payload, success=False, reason="map-open-preparation-deadline")
@@ -3031,6 +3070,11 @@ class LiveRuntime:
             return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
         if not fit.get("success"):
             reason = str(fit.get("reason", "pose-fit-failed"))
+            if reason in ('structure-current-geometry-failed', 'initial-structure-current-geometry-failed', 'current-geometry-failed'):
+                self._automatic_failure_sample(reason, captured=captured,
+                    current=lambda: not obsolete() and frame_current(),
+                    diagnostic=dict(mapId=map_id, floor=floor, cycleId=cycle, frameId=frame_id,
+                                    captureGeneration=capture_generation, sourceFrameGeneration=frame_generation))
             try:
                 stamp = self._failure_capture_stamp
                 if (self._failure_samples.enabled and stamp is not None and stamp[0] is captured

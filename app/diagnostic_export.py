@@ -225,6 +225,7 @@ def export_safe_diagnostic_bundle(
     process_integrity: dict | None = None,
     destination: Path | None = None,
     summary: dict | None = None,
+    automatic_failure_only: bool = False,
     resource_root: Path | None = None,
 ) -> dict:
     """Export bounded logs and explicitly requested, already saved failure evidence."""
@@ -298,6 +299,7 @@ def export_safe_diagnostic_bundle(
             package_metadata = package_metadata if package_metadata is not None else diagnostic_package_metadata(app_root, app_version=app_version, build_fingerprint=build_fingerprint)
             failure_evidence = export_failure_evidence(
                 archive, failure_roots, log_windows, _redact_local_paths,
+                automatic_only=automatic_failure_only,
                 build_fingerprint=build_fingerprint,
             )
             manifest = {

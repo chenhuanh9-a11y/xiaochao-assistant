@@ -115,7 +115,12 @@ def operation_problem(receipt, state):
     elif code in {'current-floor-unavailable', 'floor-policy-deferred', 'candidate-or-floor-missing'}:
         title, summary = '暂未读到楼层', '请完整打开游戏地图，等待楼层高亮稳定后再试。'
         phase = 'floor'
-    return dict(title=title, summary=summary, raw=raw, action=action, phase=phase, kind=kind,
+    problem = dict(title=title, summary=summary, raw=raw, action=action, phase=phase, kind=kind,
                 mode=state.get('mode', ''), mapId=state.get('mapId', ''), floor=state.get('floor', ''),
                 captureDiagnostics=receipt.get('captureDiagnostics') or {},
-                traceback=str(receipt.get('traceback') or '')[:8192])
+                traceback=str(receipt.get('traceback') or '')[:8192] if receipt.get('error') else '')
+    if receipt.get('error'):
+        for key in ('exceptionType', 'exceptionOrigin', 'exceptionAction'):
+            if isinstance(receipt.get(key), str):
+                problem[key] = receipt[key][:128]
+    return problem

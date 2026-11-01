@@ -51,6 +51,38 @@ class FailureSamplingContracts(unittest.TestCase):
             self.f.dispatch("start_round")
         return self.f.dispatch("capture_now")
 
+    def test_configure_toggle_and_shutdown_do_not_run_disk_cleanup(self):
+        with patch('failure_sampling.cleanup_automatic_failure_samples', side_effect=AssertionError('UI cleanup')) as cleanup:
+            self.f.runtime.configure_failure_sampling(event_path=self.problems.log_path,
+                build_fingerprint='AAAAAAAA', source_commit='a'*40)
+            self.f.runtime.set_automatic_failure_sampling_enabled(False)
+            self.f.runtime.set_automatic_failure_sampling_enabled(True)
+            self.f.runtime.shutdown()
+        cleanup.assert_not_called()
+
+    def test_automatic_dispatch_uses_only_existing_guarded_frame_and_map_crop(self):
+        # Synthetic pixels exercise the production dispatch/guard/recorder path;
+        # this is not a real-game capture or privacy validation claim.
+        self.f.capture.frame[250:400, 350:650] = 150
+        self.f.capture.generation = 5
+        self.f.capture.is_current = lambda context, generation=None: generation == 5
+        self.f.runtime._evidence_kind = 'live-client-capture'
+        self.f.runtime._failure_samples.enabled = False
+        before = self.f.capture.count
+        result = self.capture_failure()
+        self.assertEqual(result['reason'], self.f.fit['reason'])
+        self.assertEqual(self.f.capture.count, before+1)
+        journal = self.root/'memory/failures/automatic/automatic-failures.jsonl'
+        row = json.loads(journal.read_text().splitlines()[-1])
+        self.assertEqual(row['cropBounds'], [350, 250, 300, 150])
+        self.assertFalse(self.store.alignment_failure_path.exists())
+        import cv2
+        pixels = cv2.imread(str(self.store.root/row['samplePath']))
+        np.testing.assert_array_equal(pixels, self.f.capture.frame[250:400,350:650])
+        self.f.runtime.set_automatic_failure_sampling_enabled(False)
+        self.capture_failure()
+        self.assertEqual(len(list(journal.parent.glob('auto-*.png'))), 1)
+
     def test_default_off_then_same_frame_opt_in_export_and_cooldown(self):
         self.assertFalse(self.capture_failure()["success"])
         self.assertFalse(self.store.alignment_failure_path.exists())

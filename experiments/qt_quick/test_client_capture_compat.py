@@ -223,7 +223,10 @@ measurements. The Qt queue, runtime, preparation and diagnostic consumers run.
                 texts = "\n".join(archive.read(name).decode("utf-8") for name in archive.namelist()
                     if name.startswith("logs/events-"))
                 self.assertIn(CODE, texts)
-                self.assertIn('"windowsBuild": 17763', texts)
+                exported_rows = [json.loads(line) for line in texts.splitlines() if line.strip()]
+                exported_problems = [row for row in exported_rows if row.get('captureDiagnostics')]
+                self.assertTrue(exported_problems)
+                self.assertEqual(exported_problems[0]['captureDiagnostics']['captureCapability']['windowsBuild'], 17763)
                 self.assertNotIn("PRIVATE-DC-DETAIL", texts)
                 self.assertNotIn("map-open-preparation-deadline", texts)
             # The failed opening retains the user's map intent. Close/reopen

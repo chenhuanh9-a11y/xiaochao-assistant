@@ -137,13 +137,38 @@ class ProblemsService(QObject):
         self._build_fingerprint = _text(build_fingerprint, 64)
         self._source_commit = _text(source_commit, 40)
         self._trace_states = OrderedDict()
+        self._summary_dirty = False
 
     recent = Property('QVariantList', lambda self: [{key: deepcopy(value) for key,value in row.items()
-                       if key != '_signature'} for row in self._recent], notify=recentChanged)
+                       if not key.startswith('_')} for row in self._recent], notify=recentChanged)
     pendingWrites = Property(bool, lambda self: bool(self._job is not None or self._queue), notify=changed)
     writeError = Property(str, lambda self: self._write_error, notify=changed)
     writeErrorDetails = Property(str, lambda self: self._write_error_raw, notify=changed)
     droppedWrites = Property(int, lambda self: self._dropped, notify=changed)
+
+    def diagnosticSnapshot(self):
+        """Copy export inputs on the UI owner thread without waiting for disk.
+
+        Queue plus active batch is bounded by PENDING_LIMIT. Keep those rows
+        even when their occurrence has left recent; the history merger takes
+        max(count) across originals, checkpoints, recent, and persisted copies.
+        """
+        rows = []
+        sources = (self._recent, self._queue,
+                   self._job.rows if self._job is not None else ())
+        snapshot_limit = RECENT_LIMIT + PENDING_LIMIT
+        for source in sources:
+            for row in source:
+                if len(rows) >= snapshot_limit:
+                    break
+                if row.get('event', 'qt-runtime-problem') not in {
+                        'qt-runtime-problem', 'qt-runtime-problem-summary'}:
+                    continue
+                rows.append({key: deepcopy(value) for key, value in row.items()
+                             if not key.startswith('_')})
+        return dict(recentProblems=rows, droppedWrites=self._dropped,
+                    pendingWrites=bool(self._job is not None or self._queue),
+                    snapshotLimit=snapshot_limit)
 
     @Slot(str, result=str)
     def detailText(self, problem_id):
@@ -157,9 +182,10 @@ class ProblemsService(QObject):
         now = datetime.now(timezone.utc)
         utc = now.isoformat(timespec='milliseconds').replace('+00:00', 'Z')
         limits = dict(title=256, summary=1024, raw=4096, traceback=8192, action=128, phase=64,
-                      kind=16, mode=48, mapId=96, floor=32)
+                       kind=16, mode=48, mapId=96, floor=32, exceptionType=128,
+                       exceptionOrigin=128, exceptionAction=128)
         row = {name: _text(event.get(name, ''), limits[name])
-               for name in ('title', 'summary', 'raw', 'traceback', 'action', 'phase', 'kind', 'mode', 'mapId', 'floor')}
+                for name in ('title', 'summary', 'raw', 'traceback', 'action', 'phase', 'kind', 'mode', 'mapId', 'floor', 'exceptionType', 'exceptionOrigin', 'exceptionAction')}
         row['title'] = row['title'] or '运行出现问题'
         row['summary'] = row['summary'] or '本次操作未完成，可复制下方原始原因进行排查。'
         row['phaseLabel'] = PHASE_LABELS.get(row['phase'], '任务执行')
@@ -172,21 +198,37 @@ class ProblemsService(QObject):
         encoded = json.dumps(diagnostics, ensure_ascii=False)
         row['captureDiagnostics'] = diagnostics if len(encoded.encode('utf-8')) <= 1024 else dict(summary=_text(encoded, 900), truncated=True)
         signature = tuple(row[name] for name in ('title', 'summary', 'raw', 'action', 'phase', 'kind', 'mode', 'mapId', 'floor'))
-        signature += (row.get('errorCode', ''), json.dumps(row.get('errorDetails', {}), sort_keys=True))
+        signature += (row.get('exceptionType', ''), row.get('exceptionOrigin', ''), row.get('exceptionAction', ''),
+                      row.get('errorCode', ''), json.dumps(row.get('errorDetails', {}), sort_keys=True))
         existing = next((item for item in self._recent if item['_signature'] == signature), None)
         if existing is not None:
             existing.update(count=existing['count']+1, lastTimestampUTC=utc)
+            self._summary_dirty = True
             self._recent.remove(existing); self._recent.insert(0, existing)
             self.recentChanged.emit()
             self.changed.emit()
             return True  # Coalesced in memory; no per-refresh append or write.
         self._sequence += 1
-        row.update(id=str(self._sequence), timestampUTC=utc, lastTimestampUTC=utc,
-                   localTime=now.astimezone().strftime('%Y-%m-%d %H:%M:%S %Z'), count=1, _signature=signature)
-        self._recent.insert(0, row); del self._recent[RECENT_LIMIT:]
+        row.update(id=str(self._sequence), occurrenceId=self.log_path.stem + ':' + str(self._sequence),
+                   timestampUTC=utc, lastTimestampUTC=utc,
+                   localTime=now.astimezone().strftime('%Y-%m-%d %H:%M:%S %Z'), count=1,
+                   _signature=signature, _checkpoint_count=1)
+        self._recent.insert(0, row)
+        for evicted in self._recent[RECENT_LIMIT:]:
+            if evicted['count'] > evicted['_checkpoint_count']:
+                if len(self._queue) + self._inflight_rows < PENDING_LIMIT:
+                    self._checkpoint(evicted)
+                else:
+                    # This count is about to leave bounded memory and cannot be
+                    # retried. Expose the loss instead of silently claiming it
+                    # was saved, or retaining an unbounded pending-count map.
+                    self._dropped += 1
+                    self._write_error = '问题重复计数队列已满；被淘汰问题的最新次数未保存。'
+                    self._write_error_raw = 'problem-repeat-count-checkpoint-dropped'
+        del self._recent[RECENT_LIMIT:]
         accepted = len(self._queue) + self._inflight_rows < PENDING_LIMIT
         if accepted:
-            self._queue.append({key: deepcopy(value) for key,value in row.items() if key not in {'_signature', 'details'}})
+            self._queue.append({key: deepcopy(value) for key,value in row.items() if not key.startswith('_') and key != 'details'})
             self._start_next()
         else:
             self._dropped += 1
@@ -257,11 +299,39 @@ class ProblemsService(QObject):
         if error is not None:
             self._write_error_raw = str(error)
             self._write_error = '问题日志暂时无法保存，本次运行的列表仍可查看。请先复制问题的技术详情，避免关闭软件后丢失记录。'
+        if not self._accepting:
+            self.flushSummary()
         self._start_next()
         self.changed.emit()
 
+    def _checkpoint(self, row):
+        checkpoint = {key: deepcopy(value) for key, value in row.items() if not key.startswith('_')}
+        checkpoint['event'] = 'qt-runtime-problem-summary'
+        self._queue.append(checkpoint)
+        row['_checkpoint_count'] = row['count']
+
+    @Slot(result=bool)
+    def flushSummary(self):
+        """Checkpoint coalesced counts on explicit export/close, never per frame.
+
+        Rows share occurrence identity with originals; readers take max(count).
+        A full queue keeps dirty state so a later flush can retry.
+        """
+        if not self._summary_dirty:
+            return True
+        repeated = [row for row in self._recent if row["count"] > row["_checkpoint_count"]]
+        if len(self._queue) + self._inflight_rows + len(repeated) > PENDING_LIMIT:
+            return False
+        for row in repeated:
+            self._checkpoint(row)
+        self._summary_dirty = False
+        self._start_next()
+        self.changed.emit()
+        return True
+
     @Slot()
     def shutdown(self):
+        self.flushSummary()
         self._accepting = False
         self._start_next()  # Accepted rows still drain, including queued callbacks.
         self.changed.emit()
