@@ -7,13 +7,15 @@ from types import SimpleNamespace
 import unittest
 
 APP = Path(__file__).resolve().parents[1] / 'app'
+if str(APP) not in sys.path:
+    sys.path.insert(0, str(APP))
 
 
 @lru_cache(maxsize=1)
 def subject():
     tree = ast.parse((APP / 'identityv_daily_assistant.py').read_text(encoding='utf-8'))
     owner = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'DailyAssistant')
-    names = {'_shared_display_profile_id', '_effective_route_profile'}
+    names = {'_shared_display_profile_id', '_effective_route_profile', '_legacy_difficult_display_profile'}
     methods = [n for n in owner.body if isinstance(n, ast.FunctionDef) and n.name in names]
     cls = ast.ClassDef(name='Subject', bases=[], keywords=[], body=methods, decorator_list=[])
     ns = dict(Path=Path, DEFAULT_ROUTE_PROFILE_ID='wang-qingxin',

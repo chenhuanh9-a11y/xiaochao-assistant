@@ -11,7 +11,7 @@ def entry_geometry(frame):
     Keep this observation local to entry retrieval; nightmare extraction and
     all final display validators retain their existing behavior.
     """
-    from identityv_daily_assistant import map_reuse_evidence
+    from map_observation import map_reuse_evidence
     h,w=frame.shape[:2];gray=cv2.cvtColor(frame[:,:,:3],cv2.COLOR_BGR2GRAY)
     search=np.zeros((h,w),np.uint8)
     y0,y1=int(h*.14),int(h*.90);x0,x1=int(w*.16),int(w*.86)
