@@ -76,6 +76,18 @@ ApplicationWindow {
                         Accessible.name: modelData.label
                         ToolTip.visible: hovered && root.compactRail; ToolTip.text: modelData.label
                         onClicked: root.page = modelData.key
+                        // Navigation reads as a list, not a stack of buttons: only the
+                        // current page is filled and marked; hover is a light tint.
+                        background: Rectangle {
+                            radius: 12
+                            color: navigation.selected ? "#e3ecff" : navigation.down ? "#e3ecff" : navigation.hovered ? "#f1f5fd" : "transparent"
+                            border.width: navigation.activeFocus ? 2 : 0; border.color: "#2f66eb"
+                            Behavior on color { ColorAnimation { duration: 110 } }
+                            Rectangle {
+                                visible: navigation.selected; width: 4; height: 24; radius: 2; color: "#2f66eb"
+                                anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
+                            }
+                        }
                         contentItem: Column {
                             spacing: 5
                             Image { anchors.horizontalCenter: parent.horizontalCenter; width: 23; height: 23; source: "icons/"+navigation.modelData.icon+".png"; sourceSize.width: 46; sourceSize.height: 46; opacity: root.section(root.page) === navigation.modelData.key ? 1 : .65 }
@@ -98,6 +110,10 @@ ApplicationWindow {
                 AppButton { id: exitNavigation; objectName: "nav_exit"; implicitWidth: 0; Layout.minimumWidth: 0
                     Layout.fillWidth: true; Layout.preferredHeight: root.compactRail ? 42 : 64
                     Accessible.name: "退出星图"; enabled: !clientCoordinator.closing; onClicked: closeChoice.open()
+                    background: Rectangle {
+                        radius: 12; color: exitNavigation.down ? "#fbe7ea" : exitNavigation.hovered ? "#fdf1f3" : "transparent"
+                        border.width: exitNavigation.activeFocus ? 2 : 0; border.color: "#2f66eb"
+                    }
                     contentItem: Column { spacing: 5
                         Image { anchors.horizontalCenter: parent.horizontalCenter; width: 22; height: 22; source: "icons/exit.png"; opacity: .65 }
                         Label { anchors.horizontalCenter: parent.horizontalCenter; visible: !root.compactRail; text: "退出"; color: "#4c6282"; font.pixelSize: 12 }

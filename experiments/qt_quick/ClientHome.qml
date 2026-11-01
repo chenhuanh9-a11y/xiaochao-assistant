@@ -51,6 +51,39 @@ Item {
                     objectName: "homeHero"
                     Layout.fillWidth: true; implicitHeight: Math.max(279, heroContents.implicitHeight + 48)
                     radius: 12; color: "#e9effd"
+                    // A faint star chart on the right, echoing the Tk hero: decoration only.
+                    Canvas {
+                        objectName: "homeHeroStars"
+                        visible: hero.width >= 560
+                        anchors.right: parent.right; anchors.top: parent.top; anchors.bottom: parent.bottom
+                        width: Math.min(260, hero.width * .38)
+                        onWidthChanged: requestPaint(); onHeightChanged: requestPaint()
+                        onPaint: {
+                            var ctx = getContext("2d"); ctx.reset()
+                            var w = width, h = height
+                            var pts = [[.12,.70],[.32,.52],[.50,.60],[.70,.34],[.86,.22]]
+                            ctx.strokeStyle = "rgba(47,102,235,0.28)"; ctx.lineWidth = 2
+                            ctx.beginPath(); ctx.moveTo(pts[0][0]*w, pts[0][1]*h)
+                            for (var i = 1; i < pts.length; ++i) ctx.lineTo(pts[i][0]*w, pts[i][1]*h)
+                            ctx.stroke()
+                            ctx.strokeStyle = "rgba(47,102,235,0.12)"; ctx.lineWidth = 1
+                            ctx.beginPath(); ctx.arc(.55*w, .55*h, .42*Math.min(w, h), 0, Math.PI*2); ctx.stroke()
+                            ctx.beginPath(); ctx.arc(.55*w, .55*h, .26*Math.min(w, h), 0, Math.PI*2); ctx.stroke()
+                            for (var j = 0; j < pts.length - 1; ++j) {
+                                ctx.beginPath(); ctx.arc(pts[j][0]*w, pts[j][1]*h, 5, 0, Math.PI*2)
+                                ctx.fillStyle = "white"; ctx.fill()
+                                ctx.strokeStyle = "rgba(47,102,235,0.55)"; ctx.lineWidth = 2; ctx.stroke()
+                            }
+                            var sx = pts[4][0]*w, sy = pts[4][1]*h, r = 14
+                            ctx.fillStyle = "#f2b544"; ctx.beginPath()
+                            ctx.moveTo(sx, sy - r); ctx.quadraticCurveTo(sx, sy, sx + r, sy)
+                            ctx.quadraticCurveTo(sx, sy, sx, sy + r); ctx.quadraticCurveTo(sx, sy, sx - r, sy)
+                            ctx.quadraticCurveTo(sx, sy, sx, sy - r); ctx.fill()
+                            var dots = [[.20,.20],[.42,.14],[.62,.82],[.82,.66],[.28,.88],[.92,.48]]
+                            ctx.fillStyle = "rgba(47,102,235,0.35)"
+                            for (var k = 0; k < dots.length; ++k) { ctx.beginPath(); ctx.arc(dots[k][0]*w, dots[k][1]*h, 1.6, 0, Math.PI*2); ctx.fill() }
+                        }
+                    }
                     ColumnLayout {
                         id: heroContents
                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
@@ -60,7 +93,7 @@ Item {
                         Label { text: "先打开游戏控件，再回到游戏按地图键查看小抄。"; color: "#5c677d"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                         RowLayout {
                             Layout.topMargin: 10; spacing: 10
-                            AppButton { text: "打开游戏控件"; icon.source: "icons/panel.png"; icon.color: "transparent"; primary: false; implicitHeight: 44; onClicked: windows.show("controls") }
+                            AppButton { text: "打开游戏控件"; icon.source: "icons/panel-white.png"; icon.color: "transparent"; primary: true; implicitHeight: 44; onClicked: windows.show("controls") }
                             AppButton { text: "返回游戏"; implicitHeight: 44; enabled: clientCoordinator.boundWindow !== ""; onClicked: clientCoordinator.returnToGame() }
                         }
                     }
@@ -247,7 +280,7 @@ Item {
                 AppButton { text: "连接窗口"; enabled: gameWindow.currentIndex >= 0 && !session.busy; onClicked: clientCoordinator.bindGameWindow(gameWindow.currentValue) }
                 Item { Layout.fillWidth: true }
             }
-            CheckBox { text: "启用游戏内操作快捷键"; checked: clientCoordinator.inputEnabled; onClicked: clientCoordinator.setInputEnabled(checked) }
+            AppCheckBox { text: "启用游戏内操作快捷键"; checked: clientCoordinator.inputEnabled; onClicked: clientCoordinator.setInputEnabled(checked) }
             Label { text: clientCoordinator.message; color: "#567096"; wrapMode: Text.WordWrap; Layout.fillWidth: true; font.pixelSize: 12 }
         }
     }

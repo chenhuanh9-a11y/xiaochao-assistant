@@ -28,10 +28,14 @@ Button {
             }
         }
     }
+    // Soft fills instead of hard outlines: secondary buttons read as tinted
+    // chips; the outline appears only for keyboard focus and selection.
     background: Rectangle {
-        radius: 8
-        color: !control.enabled ? "#edf1f6" : control.primary ? (control.down || control.hovered ? "#1f50cc" : "#2f66eb") : control.down ? "#dce6fc" : control.selected ? "#dce8ff" : control.hovered ? "#dce6fc" : "#e9effd"
-        border.width: control.activeFocus || control.down ? 2 : 1
-        border.color: !control.enabled ? "#d6e0ef" : control.activeFocus || control.down || control.selected ? "#2f66eb" : control.hovered ? "#8da4c4" : "#cad8ee"
+        radius: 10
+        color: !control.enabled ? "#eef1f6" : control.primary ? (control.down ? "#1a46b8" : control.hovered ? "#1f50cc" : "#2f66eb")
+            : control.down ? "#d3e0fb" : control.selected ? "#dce8ff" : control.hovered ? "#e0e9fd" : "#eaf0fd"
+        border.width: control.activeFocus ? 2 : control.selected ? 1 : 0
+        border.color: control.activeFocus ? "#2f66eb" : "#8eaaf0"
+        Behavior on color { ColorAnimation { duration: 110 } }
     }
 }
