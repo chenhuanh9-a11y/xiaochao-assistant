@@ -53,14 +53,31 @@ def mouse_phases(mouse):
     return phases
 
 
+def shortcut_button_edges(mouse):
+    """RAWMOUSE button flags, not usButtonData (which is wheel data).
+
+    Keep left-button gestures on their existing path. These transitions map
+    RI_MOUSE_BUTTON_4/5 to VK_XBUTTON1/2 without consuming legacy mouse input.
+    """
+    flags = mouse.buttonUnion.buttons.flags
+    return [(vk, down) for mask, vk, down in (
+        (0x0004, 0x02, True), (0x0008, 0x02, False),
+        (0x0010, 0x04, True), (0x0020, 0x04, False),
+        (0x0040, 0x05, True), (0x0080, 0x05, False),
+        (0x0100, 0x06, True), (0x0200, 0x06, False)) if flags & mask]
+
+
 class RawMouseObserver:
     WM_INPUT = 0x00ff
     INPUTSINK = 0x00000100
     REMOVE = 0x00000001
 
-    def __init__(self, receive, relevant, *, user=None, cancel=None, clock=time.monotonic, ticks=None):
+    def __init__(self, receive, relevant, *, user=None, cancel=None, clock=time.monotonic, ticks=None,
+                 receive_button=None, buttons_relevant=None):
         self.user = user or ctypes.WinDLL("user32", use_last_error=True)
         self.receive, self.relevant = receive, relevant
+        self.receive_button = receive_button
+        self.buttons_relevant = buttons_relevant or (lambda foreground: False)
         self.cancel, self.clock = cancel or (lambda reason: None), clock
         if ticks is None:
             kernel = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -128,14 +145,16 @@ class RawMouseObserver:
             return False
         try:
             foreground = int(self.user.GetForegroundWindow() or 0)
-            if not self.relevant(foreground):
+            pointer_relevant = self.relevant(foreground)
+            buttons_relevant = self.receive_button is not None and self.buttons_relevant(foreground)
+            if not pointer_relevant and not buttons_relevant:
                 return True
             # MSG.time/pt describe enqueue time/location, not the later point
             # after Python resumes. Retain the existing input freshness budget.
             age = ((int(self.ticks()) & 0xffffffff) - int(message.time)) & 0xffffffff
-            if age > MANUAL_FLOOR_HOLD_SECONDS * 1000:
+            expired = age > MANUAL_FLOOR_HOLD_SECONDS * 1000
+            if expired:
                 self.cancel("raw-mouse-input-expired")
-                return True
             created_at = self.clock() - age / 1000.
             size, header_size = W.UINT(), ctypes.sizeof(RawInputHeader)
             if self.user.GetRawInputData(message.lParam, 0x10000003, None,
@@ -154,9 +173,16 @@ class RawMouseObserver:
             if header.kind != 0 or header.size != read:
                 return True
             mouse = RawMouse.from_buffer(buffer, header_size)
-            point = W.POINT(message.pt.x, message.pt.y)
-            for phase in mouse_phases(mouse):
-                self.receive(point.x, point.y, foreground, phase=phase, created_at=created_at)
+            if buttons_relevant:
+                for vk, down in shortcut_button_edges(mouse):
+                    # A delayed release still clears held-state. An old press
+                    # must never become a fresh action after the GUI resumes.
+                    if not expired or not down:
+                        self.receive_button(vk, down, foreground, created_at=created_at)
+            if pointer_relevant and not expired:
+                point = W.POINT(message.pt.x, message.pt.y)
+                for phase in mouse_phases(mouse):
+                    self.receive(point.x, point.y, foreground, phase=phase, created_at=created_at)
             return True
         finally:
             # Includes RIM_INPUT foreground cleanup, without dispatching input

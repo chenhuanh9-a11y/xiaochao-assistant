@@ -19,6 +19,7 @@ class Settings(QObject):
                 enabled=["display", "manual_map", "round"], display=dict(referencePosition=True)))
         self.saved = []
     values = Property("QVariantMap", lambda s: s.data, notify=changed)
+    persistedValues = Property("QVariantMap", lambda s: s.data, notify=changed)
     busy = Property(bool, lambda s: False, constant=True)
     @Slot(str, "QVariant")
     def setValue(self, key, value):

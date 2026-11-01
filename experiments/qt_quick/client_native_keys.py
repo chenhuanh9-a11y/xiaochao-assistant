@@ -14,6 +14,7 @@ from PySide6.QtCore import QObject, Signal
 from client_map_input import PointerEventMailbox
 
 MODIFIER_KEYS = frozenset((0x10,0x11,0x12,0x5b,0x5c,0xa0,0xa1,0xa2,0xa3,0xa4,0xa5))
+MOUSE_KEYS = frozenset((0x02, 0x04, 0x05, 0x06))
 
 
 def initial_pressed_keys(keys, read):
@@ -30,6 +31,11 @@ def physical_key(vk, scan, flags):
     if vk == 0x12:
         return 0xa5 if flags & 1 else 0xa4
     return vk
+
+class NativeKey(ctypes.Structure):
+    _fields_ = [("vk", W.DWORD), ("scan", W.DWORD), ("flags", W.DWORD),
+                ("time", W.DWORD), ("extra", ctypes.c_size_t)]
+
 
 class PassThroughKeyboardSource(QObject):
     eventReceived = Signal(object)
@@ -218,6 +224,34 @@ class PassThroughKeyboardSource(QObject):
         if event is not None:
             self._queue_pointer_event(event)
 
+    def _receive_key_message(self, message_id, pointer, foreground):
+        if self._stop.is_set() or message_id not in (0x100, 0x101, 0x104, 0x105):
+            return
+        key = ctypes.cast(pointer, ctypes.POINTER(NativeKey)).contents
+        event = self._transition_event(int(key.vk), int(key.scan), int(key.flags),
+                                       message_id in (0x100, 0x104), foreground)
+        if event is not None:
+            self.eventReceived.emit(event)
+
+    def _receive_button(self, vk, down, foreground, *, created_at):
+        if self._stop.is_set():
+            return
+        event = self._transition_event(vk, 0, 0, down, foreground)
+        if event is not None:
+            event["createdAt"] = created_at
+            self.eventReceived.emit(event)
+
+    def _make_mouse_observer(self, user, **kwargs):
+        from client_native_mouse import RawMouseObserver
+        return RawMouseObserver(self._receive_pointer,
+            lambda foreground: not self._stop.is_set() and
+                (foreground == self._pointer_target or self._pointer_gesture is not None),
+            receive_button=self._receive_button,
+            # Management shortcuts work without a game and while the assistant
+            # is foreground. Backend action gates retain game-only scope.
+            buttons_relevant=lambda foreground: not self._stop.is_set() and bool(self._keys & MOUSE_KEYS),
+            user=user, cancel=self.cancel_pointer, **kwargs)
+
     def _run(self):
         handle = None
         try:
@@ -225,8 +259,6 @@ class PassThroughKeyboardSource(QObject):
             kernel = ctypes.WinDLL("kernel32", use_last_error=True)
             result = ctypes.c_ssize_t
             callback_type = ctypes.WINFUNCTYPE(result, ctypes.c_int, W.WPARAM, W.LPARAM)
-            class Key(ctypes.Structure):
-                _fields_ = [("vk",W.DWORD),("scan",W.DWORD),("flags",W.DWORD),("time",W.DWORD),("extra",ctypes.c_size_t)]
             user.SetWindowsHookExW.argtypes=[ctypes.c_int,callback_type,W.HINSTANCE,W.DWORD]
             user.SetWindowsHookExW.restype=W.HANDLE
             user.CallNextHookEx.argtypes=[W.HANDLE,ctypes.c_int,W.WPARAM,W.LPARAM]
@@ -256,13 +288,7 @@ class PassThroughKeyboardSource(QObject):
             def callback(code, message_id, pointer):
                 try:
                     if code >= 0 and not self._stop.is_set() and message_id in (0x100,0x101,0x104,0x105):
-                        key=ctypes.cast(pointer,ctypes.POINTER(Key)).contents
-                        down=message_id in (0x100,0x104)
-                        if key.vk in self._keys:
-                            event=self._transition_event(int(key.vk), int(key.scan), int(key.flags), down,
-                                int(user.GetForegroundWindow() or 0))
-                            if event is not None:
-                                self.eventReceived.emit(event)
+                        self._receive_key_message(message_id, pointer, int(user.GetForegroundWindow() or 0))
                 except Exception:
                     # Input remains pass-through even if a consumer is gone.
                     pass
@@ -272,11 +298,7 @@ class PassThroughKeyboardSource(QObject):
             if not handle:
                 raise ctypes.WinError(ctypes.get_last_error())
             try:
-                from client_native_mouse import RawMouseObserver
-                self._mouse_observer = RawMouseObserver(self._receive_pointer,
-                    lambda foreground: not self._stop.is_set() and
-                    (foreground == self._pointer_target or self._pointer_gesture is not None),
-                    user=user, cancel=self.cancel_pointer)
+                self._mouse_observer = self._make_mouse_observer(user)
                 self._mouse_observer.start()
                 self.pointer_installed = True
             except Exception as error:

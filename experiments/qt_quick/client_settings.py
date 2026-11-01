@@ -14,14 +14,15 @@ from pathlib import Path
 import sys
 import tempfile
 
-from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, Qt, Signal, Slot
+from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, QEvent, Qt, Signal, Slot
+from PySide6.QtGui import QGuiApplication, QKeyEvent
 
 from client_paths import RESOURCE_ROOT as ROOT, WORK_ROOT, runtime_paths
 if str(ROOT / "app") not in sys.path:
     sys.path.insert(0, str(ROOT / "app"))
 from client_control_layout import load_layout, preset_layout, validate_layout
 from hotkey_bindings import parse_chord, validate_unique
-from hotkey_keys import _primary_hotkey_to_vk
+from hotkey_keys import _primary_hotkey_to_vk, recorded_native_primary, NATIVE_ONLY_SHORTCUT_KEYS
 from opacity_controls import load_opacities
 
 ACTION_ORDER = ("toggle-panel", "candidate-prev", "candidate-next", "confirm-round",
@@ -145,6 +146,7 @@ class SettingsService(QObject):
         self._disk_bytes = None
         self._baseline = deepcopy(DEFAULTS)
         self._draft = deepcopy(DEFAULTS)
+        self._shortcut_native_event = None
         self._shortcut_target = ""
         self._shortcut_candidate = ""
         self._shortcut_ready = False
@@ -157,6 +159,15 @@ class SettingsService(QObject):
         self._route_runtime = None
         self._mode_change_guard = lambda: True
         self.reload()
+
+    def _application_panel_shortcut(self):
+        try:
+            chord = parse_chord(self._baseline["actionHotkeys"][0], _primary_hotkey_to_vk)
+            return "" if chord.vk in NATIVE_ONLY_SHORTCUT_KEYS else chord.name
+        except (ValueError, IndexError):
+            return ""
+
+    applicationPanelShortcut = Property(str, _application_panel_shortcut, notify=changed)
 
     values = Property("QVariantMap", lambda s: deepcopy(s._draft), notify=changed)
     persistedValues = Property("QVariantMap", lambda s: deepcopy(s._baseline), notify=changed)
@@ -261,6 +272,10 @@ class SettingsService(QObject):
         self._shortcut_ready = False
         self._shortcut_primary_seen = False
         self._shortcut_message = "请按一个主键，可同时按 Ctrl、Alt、Shift；Esc 取消"
+        self._shortcut_native_event = None
+        app = QGuiApplication.instance()
+        if app is not None and not was_recording:
+            app.installEventFilter(self)
         if not was_recording:
             self.shortcutRecordingChanged.emit(True)
         self.changed.emit()
@@ -289,11 +304,25 @@ class SettingsService(QObject):
             self.changed.emit()
             return False
 
+    def eventFilter(self, watched, event):
+        # Only the focused, owned recorder's Qt events. No global hook, polling
+        # or saved text. QML KeyEvent omits nativeVirtualKey, so bridge it once
+        # to the synchronous capture slot without interpreting the typed glyph.
+        if self.shortcutRecording and isinstance(event, QKeyEvent) and event.type() in (QEvent.KeyPress, QEvent.KeyRelease):
+            app = QGuiApplication.instance()
+            focus = app.focusObject() if app is not None else None
+            if focus is not None and focus.objectName() in ("shortcutCaptureArea", "onboardingRecorder"):
+                self._shortcut_native_event = (event.key(), event.modifiers().value, event.text(),
+                    event.type() == QEvent.KeyRelease, event.nativeVirtualKey())
+        return False
+
     @Slot(int, int, str, bool, result=bool)
     def captureShortcutKey(self, key, modifiers, text, released):
         """Consume an owned Qt key event only; no global polling or registration."""
         if not self.shortcutRecording:
             return False
+        native_event, self._shortcut_native_event = self._shortcut_native_event, None
+        native_vk = native_event[4] if native_event and native_event[:4] == (key, modifiers, text, released) else 0
         if key == Qt.Key_Escape:
             self.cancelShortcutCapture()
             return False
@@ -323,13 +352,16 @@ class SettingsService(QObject):
                  Qt.Key_VolumeUp: "VOLUME_UP", Qt.Key_MediaNext: "MEDIA_NEXT",
                  Qt.Key_MediaPrevious: "MEDIA_PREV", Qt.Key_MediaStop: "MEDIA_STOP",
                  Qt.Key_MediaPlay: "MEDIA_PLAY_PAUSE", Qt.Key_MediaTogglePlayPause: "MEDIA_PLAY_PAUSE"}
-        if Qt.Key_F1 <= key <= Qt.Key_F24:
+        native_primary = recorded_native_primary(native_vk)
+        if native_primary:
+            primary = native_primary
+        elif Qt.Key_F1 <= key <= Qt.Key_F24:
             primary = f"F{key - Qt.Key_F1 + 1}"
         elif Qt.Key_A <= key <= Qt.Key_Z or Qt.Key_0 <= key <= Qt.Key_9:
             primary = chr(key)
         else:
-            primary = named.get(key, text)
-        if modifiers & Qt.KeypadModifier.value:
+            primary = named.get(key, text if modifiers & Qt.KeypadModifier.value else "")
+        if modifiers & Qt.KeypadModifier.value and not native_primary:
             primary = ("NUMPAD" + primary if primary.isdigit() and len(primary) == 1
                        else {"*": "NUM*", "+": "NUM+", "-": "NUM-", ".": "NUM.", "/": "NUM/"}.get(primary, primary))
         return self._offer_shortcut(primary, modifiers)
@@ -375,6 +407,10 @@ class SettingsService(QObject):
     def cancelShortcutCapture(self):
         if not self.shortcutRecording:
             return
+        self._shortcut_native_event = None
+        app = QGuiApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
         self._shortcut_target = ""
         self._shortcut_candidate = ""
         self._shortcut_ready = False
@@ -555,6 +591,10 @@ class SettingsService(QObject):
                 self.changed.emit()
                 return False
         payload = {**deepcopy(self._raw), **edits}
+        if self._disk_bytes is None:
+            # A new file otherwise looks like a legacy install on restart and
+            # replaces untouched fresh shortcuts with LEGACY_ACTIONS.
+            payload.setdefault("actionHotkeys", deepcopy(snapshot["actionHotkeys"]))
         expected = self._disk_bytes
         self._busy = True
         self._message = "正在保存设置…"
@@ -588,4 +628,5 @@ class SettingsService(QObject):
 
     def shutdown(self):
         """Finish an already accepted write before application teardown."""
+        self.cancelShortcutCapture()
         self.pool.waitForDone()

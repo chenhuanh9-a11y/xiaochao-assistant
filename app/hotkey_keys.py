@@ -27,6 +27,7 @@ NAMED_HOTKEYS = {
     "DELETE": 0x2E,
     "NUM*": 0x6A,
     "NUM+": 0x6B,
+    "NUM_SEPARATOR": 0x6C,
     "NUM-": 0x6D,
     "NUM.": 0x6E,
     "NUM/": 0x6F,
@@ -89,3 +90,25 @@ def _primary_hotkey_to_vk(value: str) -> tuple[str, int]:
         "没识别到这个键。Fn 和滚轮滚动无法单独录入；"
         "其他键请点“重新录入”后再按一下。"
     )
+
+# Explicit Win32 identities for recorded layout-dependent OEM keys. Old symbol
+# spellings retain their legacy VK meaning; new captures never guess from text.
+OEM_KEY_NAMES = {0xBA: "OEM_1", 0xBB: "OEM_PLUS", 0xBC: "OEM_COMMA",
+    0xBD: "OEM_MINUS", 0xBE: "OEM_PERIOD", 0xBF: "OEM_2", 0xC0: "OEM_3",
+    0xDB: "OEM_4", 0xDC: "OEM_5", 0xDD: "OEM_6", 0xDE: "OEM_7", 0xE2: "OEM_102"}
+NAMED_HOTKEYS.update({name: vk for vk, name in OEM_KEY_NAMES.items()})
+# These Win32 identities need not equal Qt's layout-dependent logical key. A
+# French ';' can be VK_M, and '&' VK_1; numpad punctuation also varies by layout.
+# One native owner avoids a foreground QML shortcut waiting for another symbol.
+NATIVE_ONLY_SHORTCUT_KEYS = frozenset((0x02, 0x04, 0x05, 0x06, *OEM_KEY_NAMES,
+    *range(0x30, 0x3A), *range(0x41, 0x5B), *range(0x60, 0x70)))
+
+
+def recorded_native_primary(vk):
+    if vk in OEM_KEY_NAMES:
+        return OEM_KEY_NAMES[vk]
+    if 0x30 <= vk <= 0x39 or 0x41 <= vk <= 0x5A:
+        return chr(vk)
+    if 0x60 <= vk <= 0x6F:
+        return next((name for name, value in NAMED_HOTKEYS.items() if value == vk), None)
+    return None

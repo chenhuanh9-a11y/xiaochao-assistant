@@ -75,7 +75,7 @@ class SettingsTests(unittest.TestCase):
         service.saved.connect(lambda: emitted.append(True))
         self.assertTrue(service.save())
         self.wait(lambda: not service.busy)
-        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8")), {"sheetOpacity": .73, "hotkey": "Ctrl+G"})
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8")), {"sheetOpacity": .73, "hotkey": "Ctrl+G", "actionHotkeys": service.persistedValues["actionHotkeys"]})
         self.assertEqual(emitted, [True])
         self.assertFalse(service.dirty)
         self.assertTrue(service.reload())

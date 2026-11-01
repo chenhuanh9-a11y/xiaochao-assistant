@@ -35,7 +35,7 @@ ApplicationWindow {
     onActiveFocusItemChanged: updateInputGuard()
     onActiveChanged: updateInputGuard()
     Shortcut {
-        sequence: settingsService.persistedValues.actionHotkeys[0] || ""
+        sequence: settingsService.applicationPanelShortcut
         context: Qt.ApplicationShortcut; autoRepeat: false
         enabled: !clientCoordinator.textEntryActive
         onActivated: clientCoordinator.toggleControlsKeyboard()

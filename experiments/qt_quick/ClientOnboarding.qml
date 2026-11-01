@@ -35,7 +35,7 @@ Popup {
             RowLayout {
                 Layout.fillWidth: true
                 Label { Layout.fillWidth: true; text: onboardingService.step === 1 ? (settingsService.values.hotkey || "未绑定") : (settingsService.values.actionHotkeys[0] || "未绑定"); font.pixelSize: 20; color: "#183a73" }
-                AppButton { text: "修改"; enabled: !settingsService.busy; onClicked: root.record(onboardingService.step === 1 ? "hotkey" : "toggle-panel") }
+                AppButton { objectName: "onboardingRecord"; text: "修改"; enabled: !settingsService.busy; onClicked: root.record(onboardingService.step === 1 ? "hotkey" : "toggle-panel") }
             }
             ColumnLayout {
                 visible: settingsService.shortcutRecording; Layout.fillWidth: true; spacing: 10
@@ -65,7 +65,7 @@ Popup {
                 }
                 Note { text: settingsService.shortcutMessage }
                 RowLayout {
-                    AppButton { text: "确认到草稿"; enabled: settingsService.shortcutCandidateReady; onClicked: settingsService.confirmShortcutCapture() }
+                    AppButton { objectName: "onboardingCaptureConfirm"; text: "确认到草稿"; enabled: settingsService.shortcutCandidateReady; onClicked: settingsService.confirmShortcutCapture() }
                     AppButton { text: "取消修改"; onClicked: settingsService.cancelShortcutCapture() }
                 }
             }
