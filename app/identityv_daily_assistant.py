@@ -1952,7 +1952,7 @@ def sheet_visibility_status_text(text: str, enabled: bool) -> str:
     if enabled or not any(fragment in value for fragment in SHEET_VISIBLE_STATUS_FRAGMENTS):
         return value
     for fragment in SHEET_VISIBLE_STATUS_FRAGMENTS:
-        value = value.replace(fragment, "定点地图按设置隐藏")
+        value = value.replace(fragment, "贴合小抄按设置隐藏")
     return value
 
 
@@ -7895,7 +7895,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         shortcut_grid = tk.Frame(shortcuts_section, bg=floating_theme.SURFACE)
         shortcut_grid.pack(fill="x")
         shortcut_labels = {
-            "toggle-panel": "打开/收起候选",
+            "toggle-panel": "呼出/收起游戏控件",
             "candidate-prev": "上一个候选",
             "candidate-next": "下一个候选",
             "confirm-round": "确认当前地图",
@@ -9350,7 +9350,8 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         if mode not in {"quick", "recognition", "settings"}:
             return
         if mode == "recognition" and not bool(getattr(self, "game_foreground", False)):
-            self.quick_connection_var.set("请先打开第五人格")
+            self.quick_connection_var.set("第五人格在后台 · 先切回游戏" if getattr(self, "game_hwnd", None)
+                                          else "请先打开第五人格")
             mode = "quick"
         if mode == 'recognition':
             self._ensure_candidate_thumbnails()
@@ -10280,7 +10281,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
     def _open_recognition_details(self) -> None:
         if not getattr(self, "game_foreground", False):
             self.quick_connection_var.set(
-                "请先打开第五人格",
+                "第五人格在后台 · 先切回游戏" if getattr(self, "game_hwnd", None) else "请先打开第五人格",
             )
             return
         self._sync_recognition_ui()
@@ -36284,7 +36285,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             phase, severity, title, message = 'hidden', 'normal', '路线按设置隐藏', '路线按设置隐藏，识别和后台贴合继续'
         elif not foreground or (not opened and not (getattr(self, 'capture_in_progress', False)
                                                      and getattr(self, 'active_map_cycle_id', None) is not None)):
-            phase, severity, title, message = 'waiting', 'normal', '路线状态', ('静态定点地图保留 · 等待开图核验当前楼层' if reference_visible else '等待打开地图')
+            phase, severity, title, message = 'waiting', 'normal', '等待打开地图', ('定点地图保持显示 · 打开游戏地图后自动核对楼层' if reference_visible else '等待打开地图')
         elif getattr(self, 'floor_required', False):
             if pending:
                 phase, severity, title, message = 'working', 'normal', '正在确认楼层', '正在自动确认当前楼层，路线暂时隐藏'

@@ -22,6 +22,7 @@ from desktop_display import WindowDisplay
 from star_brand import BrandImages
 from game_control_view import display_summary, identity_summary
 from desktop_rounded import RoundedButton, RoundedFrame, RoundedEntry, RoundedCombobox, set_rounded_scale
+from desktop_controls import PillSlider, ToggleSwitch
 try:
     from desktop_lucide import LucideIcons as DesktopIcons
 except ImportError:
@@ -821,8 +822,8 @@ class DesktopMainUI:
         self.rail_status = status
         status._display_manual_geometry = True
         status.pack(side="bottom", fill="x", padx=8, pady=(0, 8))
-        self.header_caption = tk.Label(status, text="○  等待连接游戏", bg=SIDEBAR_HOVER, fg=SIDEBAR_MUTED,
-                                       font=(FONT, 9, "bold"), anchor="center", justify="center", bd=0, wraplength=64)
+        self.header_caption = tk.Label(status, text="○ 等待游戏", bg=SIDEBAR_HOVER, fg=SIDEBAR_MUTED,
+                                       font=(FONT, 8, "bold"), anchor="center", justify="center", bd=0, wraplength=64)
         self.header_caption.pack(fill="x")
         self.home_setup_summary = tk.Label(status, bg=SIDEBAR_HOVER, fg=SIDEBAR_MUTED, font=(FONT, 8),
                                            anchor="center", justify="center", bd=0, wraplength=64)
@@ -962,7 +963,7 @@ class DesktopMainUI:
         self.home_actions.pack(fill="x", pady=(16, 0))
         self.start_round_button = _button(self.home_actions, "开始本局", self._start_round, primary=True)
         self.end_round_button = _button(self.home_actions, "结束本局", self._end_round)
-        self.visibility_button = _button(self.home_actions, "小抄显隐", self._toggle_visibility)
+        self.visibility_button = _button(self.home_actions, "贴合小抄", self._toggle_visibility)
         self.visibility_button.pack(side="left", padx=(8, 0))
         self.recognition_button = _button(self.home_actions, "查看识别与路线", self._open_recognition)
         self.recognition_button.pack(side="left", padx=(8, 0))
@@ -971,7 +972,9 @@ class DesktopMainUI:
         self.home_status = self._label(self.home_details, "等待运行状态", size=10, color=MUTED, anchor="w", wraplength=500)
         self.home_status.pack(fill="x")
         self.home_message = self._label(self.home_state, size=10, color=MUTED, anchor="w", justify="left", wraplength=500)
+        # The next step reads as a tinted notice strip, not a stray line of text.
         self.recognition_hint = self._label(self.home_state, size=9, color=GOLD, anchor="w", justify="left", wraplength=500)
+        self.recognition_hint.configure(bg=WARNING_BG, padx=12, pady=8)
 
         # Resources: a quick look at what the current route will show.
         self.home_resources = self._card(self.home_main)
@@ -1297,7 +1300,14 @@ class DesktopMainUI:
         content = self._scroll_page("preferences")
         content.configure(bg=BG)
         self._scroll_pages["preferences"][0].configure(bg=BG)
-        self._heading(content, "设置", "快捷键、小抄显示，以及游戏模式与作者路线。")
+        self._heading(content, "设置", "游戏模式与作者路线、快捷键，以及小抄显示。")
+        # The two choices every player needs come first and stay expanded.
+        self.preferences_game = self._card(content, padx=24, pady=20)
+        self.preferences_game.pack(fill="x", pady=(0, 16))
+        heading, _ = self._card_heading(self.preferences_game, "游戏与路线",
+                                        "先选这局的难度，再选要贴到地图上的作者路线。", "map")
+        heading.pack(fill="x", pady=(0, 14))
+        self._build_game_route_rows(self.preferences_game)
         self.preferences_surface = tk.Frame(content, bg=BG)
         self.preferences_surface.pack(fill="x")
         self.preferences_keys = self._card(self.preferences_surface, padx=24, pady=22)
@@ -1323,9 +1333,9 @@ class DesktopMainUI:
             lambda: self.assistant.open_control_layout_settings(owner=self.window))
         self.control_layout_button.pack(side="right")
         tk.Frame(display, bg=LINE, height=1).pack(fill="x", pady=(0, 14))
-        visibility = self._setting_row(display, "贴合显隐", "只控制贴合小抄，定点地图独立设置。")
-        self.preferences_visibility_button = _button(visibility, "未知", self._toggle_visibility)
-        self.preferences_visibility_button.configure(padx=18)
+        visibility = self._setting_row(display, "贴合小抄", "打开地图时把路线贴在游戏地图上；定点地图单独设置。")
+        self.preferences_visibility_button = ToggleSwitch(visibility, command=lambda _value: self._toggle_visibility(),
+                                                          state="disabled")
         self.preferences_visibility_button.pack(side="right")
         tk.Frame(display, bg=LINE, height=1).pack(fill="x", pady=(0, 14))
         reference = tk.Frame(display, bg=SURFACE)
@@ -1348,48 +1358,23 @@ class DesktopMainUI:
         tk.Frame(display, bg=LINE, height=1).pack(fill="x", pady=(0, 14))
         self._build_display_sliders(display)
 
-        self._build_chest_auto_tap(content)
+        # Chest auto-tap sits under the shortcuts so both columns end level.
+        self.preferences_chest = self._build_chest_auto_tap(self.preferences_surface)
 
-        # Collapsible "more": game mode, route, controls and the floating settings.
+        # Collapsible "more": floating ball and the floating settings window.
         self.preferences_more = self._card(content, padx=24, pady=18)
         self.preferences_more.pack(fill="x", pady=(0, 16))
         header, self._preferences_chevron = self._card_heading(
-            self.preferences_more, "游戏与路线 · 更多设置", "游戏难度、作者路线、悬浮球与悬浮设置。", "map", chevron=True)
+            self.preferences_more, "更多设置", "悬浮球、游戏控件窗口与悬浮设置。", "settings", chevron=True)
         header.pack(fill="x")
         self._clickable(header, self._toggle_preferences_extra)
         self.preferences_extra = tk.Frame(self.preferences_more, bg=SURFACE)
         inner = self.preferences_extra
         tk.Frame(inner, bg=LINE, height=1).pack(fill="x", pady=(16, 16))
-        row = self._setting_row(inner, "游戏难度")
-        self.mode_switch = self._segmented(row, self._mode_choice, ("噩梦", "困难"), self._change_mode)
-        self.mode_switch.pack(side="right")
-        row = self._setting_row(inner, "作者路线")
-        self.route_box = RoundedCombobox(
-            row, textvariable=self.assistant.route_profile_var,
-            state="readonly", width=22)
-        self.route_box.pack(side="right")
-        self.route_box.bind("<<ComboboxSelected>>", self._change_route)
-        self._refresh_route_choices()
-        self.variant_row = self._setting_row(inner, "全棺路线版本")
-        variant_var = getattr(self.assistant, "coffin_variant_var", tk.StringVar(self.root))
-        existing = getattr(self.assistant, "coffin_variant_box", None)
-        self.variant_box = RoundedCombobox(self.variant_row, textvariable=variant_var,
-            values=tuple(existing.cget("values")) if existing is not None else (), state="readonly", width=22)
-        self.variant_box.pack(side="right")
-        self.variant_box.bind("<<ComboboxSelected>>", self._change_variant)
-        self.variant_row.pack_forget()
-        self._variant_anchor = row
-        self._label(inner, textvariable=self._action_feedback, size=9, color=GOLD,
-                    anchor="w", justify="left", wraplength=500).pack(fill="x")
-        tk.Frame(inner, bg=LINE, height=1).pack(fill="x", pady=(6, 16))
         row = self._setting_row(inner, "显示悬浮球", "关闭后仍可用快捷键呼出游戏控件。")
-        self.orb_visibility_check = tk.Checkbutton(
-            row, text="", variable=self.assistant.orb_visibility_var,
-            command=lambda: self.assistant.set_orb_visible(self.assistant.orb_visibility_var.get()),
-            bg=SURFACE, fg=TEXT, activebackground=SURFACE, activeforeground=TEXT,
-            selectcolor=INPUT_BG, disabledforeground=MUTED, anchor="e",
-            highlightcolor=PRIMARY, highlightthickness=0, bd=0,
-            font=(FONT, 10), cursor="hand2")
+        self.orb_visibility_check = ToggleSwitch(
+            row, variable=self.assistant.orb_visibility_var,
+            command=lambda value: self.assistant.set_orb_visible(value))
         self.orb_visibility_check.pack(side="right")
         row = self._setting_row(inner, "游戏控件", "在游戏旁打开快捷面板。")
         self.control_window_button = _button(row, "打开游戏控件", self._open_control)
@@ -1398,6 +1383,30 @@ class DesktopMainUI:
         _button(row, "打开悬浮设置", self._open_advanced).pack(side="right")
         self.preferences_surface.bind("<Configure>", lambda _e: self._layout_preferences(), add="+")
         self._finish_scroll_page("preferences")
+
+    def _build_game_route_rows(self, card):
+        row = self._setting_row(card, "游戏难度", "噩梦和困难分别记住各自的作者路线。")
+        self.mode_switch = self._segmented(row, self._mode_choice, ("噩梦", "困难"), self._change_mode)
+        self.mode_switch.pack(side="right")
+        tk.Frame(card, bg=LINE, height=1).pack(fill="x", pady=(0, 14))
+        row = self._setting_row(card, "作者路线", "贴到游戏地图和定点地图上的路线来源。")
+        self.route_box = RoundedCombobox(
+            row, textvariable=self.assistant.route_profile_var,
+            state="readonly", width=22)
+        self.route_box.pack(side="right")
+        self.route_box.bind("<<ComboboxSelected>>", self._change_route)
+        self._refresh_route_choices()
+        self.variant_row = self._setting_row(card, "全棺路线版本")
+        variant_var = getattr(self.assistant, "coffin_variant_var", tk.StringVar(self.root))
+        existing = getattr(self.assistant, "coffin_variant_box", None)
+        self.variant_box = RoundedCombobox(self.variant_row, textvariable=variant_var,
+            values=tuple(existing.cget("values")) if existing is not None else (), state="readonly", width=22)
+        self.variant_box.pack(side="right")
+        self.variant_box.bind("<<ComboboxSelected>>", self._change_variant)
+        self.variant_row.pack_forget()
+        self._variant_anchor = row
+        self._label(card, textvariable=self._action_feedback, size=9, color=GOLD,
+                    anchor="w", justify="left", wraplength=500).pack(fill="x")
 
     def _build_display_sliders(self, display):
         """Bind controller variables; coalesce preview work and settings writes."""
@@ -1426,11 +1435,8 @@ class DesktopMainUI:
                 target.configure(text=f"{round(float(variable.get()))}%")
             self._preference_traces.append((var, var.trace_add("write", update_value)))
             update_value()
-            # Flat slider: thin track, solid blue thumb; native keyboard handling kept.
-            scale = tk.Scale(block, from_=low, to=high, variable=var, command=callback,
-                             orient="horizontal", showvalue=False, resolution=1, width=8, sliderlength=18,
-                             sliderrelief="flat", bg=PRIMARY, fg=TEXT, troughcolor=LINE,
-                             activebackground=PRIMARY_HOVER, highlightthickness=0, bd=0, cursor="hand2")
+            # Pill slider: filled progress and a round thumb; arrows/PgUp/PgDn/Home/End adjust.
+            scale = PillSlider(block, from_=low, to=high, variable=var, command=callback, height=22)
             scale.pack(fill="x")
             self.display_scales[title] = scale
             self.display_scale_values[title] = value
@@ -1448,7 +1454,6 @@ class DesktopMainUI:
 
     def _build_chest_auto_tap(self, content):
         card = self._card(content, padx=24, pady=22)
-        card.pack(fill="x", pady=(0, 2))
         heading, _ = self._card_heading(card, "开箱连点", "在游戏里按住触发键，自动连发开箱按键；松开立即停止。", "play")
         heading.pack(fill="x", pady=(0, 16))
         state = self.assistant.chest_auto_tap_snapshot()
@@ -1485,6 +1490,7 @@ class DesktopMainUI:
         self._label(card, "只在游戏窗口位于前台时发送按键。触发键不能与星图快捷键相同。", size=8, color=SUBTLE,
                     anchor="w", justify="left", wraplength=500).pack(fill="x", pady=(6, 0))
         self._chest_signature = None
+        return card
 
     def _save_chest_auto_tap(self, *, quiet=False):
         current = self.assistant.chest_auto_tap_snapshot()
@@ -1532,14 +1538,21 @@ class DesktopMainUI:
         if self._preferences_layout == signature:
             return
         self._preferences_layout = signature
-        for frame in (self.preferences_keys, self.preferences_display):
+        chest = self.preferences_chest
+        for frame in (self.preferences_keys, chest, self.preferences_display):
             frame.grid_forget()
         self.preferences_surface.columnconfigure(0, weight=1, uniform="settings")
         self.preferences_surface.columnconfigure(1, weight=1 if wide else 0, uniform="settings" if wide else "")
+        gap = self._px(16)
         self.preferences_keys.grid(row=0, column=0, sticky="nsew", padx=(0, self._px(4) if wide else 0),
-                                   pady=(0, self._px(2)))
-        self.preferences_display.grid(row=0 if wide else 1, column=1 if wide else 0,
-                                      sticky="nsew", pady=(0, self._px(2)))
+                                   pady=(0, gap))
+        if wide:
+            # Left: shortcuts over chest auto-tap; right: the taller display card.
+            chest.grid(row=1, column=0, sticky="nsew", padx=(0, self._px(4)), pady=(0, gap))
+            self.preferences_display.grid(row=0, column=1, rowspan=2, sticky="nsew", pady=(0, gap))
+        else:
+            self.preferences_display.grid(row=1, column=0, sticky="nsew", pady=(0, gap))
+            chest.grid(row=2, column=0, sticky="nsew", pady=(0, gap))
 
     def _reveal(self, page, widget):
         """After an expand, scroll just enough to show the opened card."""
@@ -1607,7 +1620,7 @@ class DesktopMainUI:
                 ("使用当前“呼出/收起控件”绑定，显示或隐藏整个游戏控件。", ("toggle-panel",), None),
                 ("“收成球”仅折叠控件，球上的“展开”恢复面板；这与整个控件隐藏不同。录入地图键时收成球，会取消本次录入，已保存的地图键不变。", (), None),
                 ("使用当前“显示/隐藏小抄”绑定改变贴图显隐；隐藏后识别、锁图和后台贴合继续。", ("toggle-sheet-visibility",), None),
-                ("定点地图可在设置中单独显示或隐藏；总显影仍同时控制定点地图和贴合显示。点击“编辑位置”开始编辑，移动后仍保持编辑状态，点击“完成”恢复鼠标穿透。", (), None),
+                ("定点地图在设置中单独显示或隐藏，不受“显示/隐藏小抄”影响。点击“编辑位置”开始编辑，移动后仍保持编辑状态，点击“完成”恢复鼠标穿透。", (), None),
             )),
             ("resources-opacity", "资源与透明度", "先看当前模式的资源状态；不透明度越高，小抄越实。", "map", (
                 ("噩梦作者路线未安装时，结构底图仍可独立浏览；资源未就绪时先查看当前模式的缺失提示。", (), "maps"),
@@ -2003,10 +2016,12 @@ class DesktopMainUI:
         snapshot = getter() if callable(getter) else {}
         update = self._configure_changed
         connected = bool(getattr(self.assistant, "game_hwnd", None))
-        update(self.header_caption, text="●  已连接游戏" if connected else "○  等待连接游戏",
+        update(self.header_caption, text="● 游戏已连接" if connected else "○ 等待游戏",
                fg=SIDEBAR_SUCCESS if connected else SIDEBAR_MUTED)
         mode, route = self.assistant.active_mode_var.get(), self.assistant.route_profile_var.get()
-        update(self.home_setup_summary, text=f"{mode.removeprefix('当前模式：')} · {route}")
+        # The narrow rail shows mode and author on separate lines, without the default tag.
+        update(self.home_setup_summary,
+               text=f"{mode.removeprefix('当前模式：')}\n{route.replace('（默认）', '')}")
         today = time.localtime()
         update(self.header_greeting, text=f"{today.tm_mon}月{today.tm_mday}日 · 星期{'一二三四五六日'[today.tm_wday]}")
         key_snapshot = {}
@@ -2044,7 +2059,7 @@ class DesktopMainUI:
         bindings = key_snapshot.get("bindings") or {}
         for target, label in self.home_keycaps.items():
             update(label, text=str((bindings.get(target) or {}).get("text") or "未设置"))
-        update(self.home_session, text=snapshot.get("roundStateText") or "本局状态未知")
+        update(self.home_session, text=(snapshot.get("roundStateText") or "本局状态未知").removeprefix("本局工作："))
         update(self.home_dot, fg=color)
         item = getattr(self.assistant.pack, "by_id", {}).get(snapshot.get("mapId"))
         locked = snapshot.get("locked") is True
@@ -2055,7 +2070,7 @@ class DesktopMainUI:
             self.home_session.cget("text"), self.home_round.cget("text"), self.home_display.cget("text")}
         visible = snapshot.get("userVisible")
         update(self.visibility_button,
-            text="关闭显影" if visible is True else "允许显影" if visible is False else "显影状态未知",
+            text="隐藏贴合小抄" if visible is True else "显示贴合小抄" if visible is False else "贴合状态未知",
             state="normal" if isinstance(visible, bool) and callable(getattr(self.assistant, "toggle_sheet_visibility", None)) else "disabled",
             bg=WARNING_BG if visible is False else BUTTON_BG, fg=GOLD if visible is False else BUTTON_TEXT)
         active = snapshot.get("roundActive") is True
@@ -2103,10 +2118,11 @@ class DesktopMainUI:
         mode = self.assistant.game_mode_var.get()
         if self._mode_choice.get() != mode: self._mode_choice.set(mode)
         visible = snapshot.get("userVisible")
-        self._configure_changed(self.preferences_visibility_button,
-            text="开启" if visible is True else "关闭" if visible is False else "未知",
-            state="normal" if isinstance(visible, bool) else "disabled",
-            bg=PRIMARY if visible is True else BUTTON_BG, fg="white" if visible is True else BUTTON_TEXT)
+        switch = self.preferences_visibility_button
+        switch.set(visible is True)
+        state = "normal" if isinstance(visible, bool) else "disabled"
+        if switch.cget("state") != state:
+            switch.configure(state=state)
         self._sync_chest_auto_tap()
         self._sync_reference_controls()
         preferred = getattr(self.assistant, "preferred_route_profile_id", None)
