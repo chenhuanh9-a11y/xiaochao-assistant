@@ -14,6 +14,3 @@ It is the brand image, not a Lucide UI icon; no new artwork is introduced.
 
 `route.png` rasterizes the existing `_route_mask` in `app/desktop_main_ui.py`
 (the shipped custom-page glyph), using the existing light navigation ink.
-
-`panel-white.png` is `panel.png` with every visible pixel set to white (alpha
-unchanged), for the icon on the blue primary button.
