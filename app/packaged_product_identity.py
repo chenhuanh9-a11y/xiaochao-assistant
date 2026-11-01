@@ -2,6 +2,7 @@
 
 The caller's installation root, arguments and environment never select an EXE.
 Source/legacy helpers without a baked profile retain the original Tk contract.
+Qt entry points explicitly require their own internal profile before any seeding.
 """
 import json
 from pathlib import Path
@@ -19,10 +20,19 @@ _ISOLATED = {
 }
 
 
-def baked_identity():
+class InstallationProfileError(ValueError):
+    """The frozen Qt installation cannot safely select its data root."""
+
+
+def baked_identity(*, require_qt=False):
     if not getattr(sys, "frozen", False):
         return "legacy-tk"
-    runtime = Path(sys._MEIPASS)
+    runtime_value = getattr(sys, "_MEIPASS", None)
+    if not runtime_value:
+        if require_qt:
+            raise InstallationProfileError("Missing baked installation profile runtime")
+        return "legacy-tk"
+    runtime = Path(runtime_value)
     path = runtime / "installation-profile.json"
     for item in (path, *path.parents):
         try:
@@ -30,11 +40,13 @@ def baked_identity():
         except FileNotFoundError:
             continue
         if (stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400):
-            raise ValueError("Baked installation profile cannot use links")
+            raise InstallationProfileError("Baked installation profile cannot use links")
     if not path.exists():
+        if require_qt:
+            raise InstallationProfileError("Missing baked installation profile; repair the installation")
         return "legacy-tk"
     if not path.is_file() or path.stat().st_size > 128 * 1024:
-        raise ValueError("Invalid baked installation profile")
+        raise InstallationProfileError("Invalid baked installation profile")
     try:
         profile = json.loads(path.read_text(encoding="utf-8"))
         instance = profile["installerInstance"]
@@ -47,7 +59,7 @@ def baked_identity():
             return "qt-isolated"
     except (OSError, ValueError, KeyError, TypeError):
         pass
-    raise ValueError("Invalid baked installation profile")
+    raise InstallationProfileError("Invalid baked installation profile")
 
 
 def expected_application_executable():

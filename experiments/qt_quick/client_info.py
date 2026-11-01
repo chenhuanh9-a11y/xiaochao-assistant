@@ -203,7 +203,13 @@ class ClientInfoService(QObject):
             return
         context = self._home_context
         generation = self._home_preview_generation
-        job = self._home_preview_job = Work(lambda: self._home_rows(self.paths.resource_root, *context))
+        def read_home():
+            from resource_transaction import assert_resources_ready, resource_read_lock
+            cancelled = lambda: self._closed or generation != self._home_preview_generation
+            with resource_read_lock(self.sandbox, wait=True, cancelled=cancelled):
+                assert_resources_ready(self.sandbox)
+                return self._home_rows(self.paths.resource_root, *context)
+        job = self._home_preview_job = Work(read_home)
         self._jobs.add(job)
         def done(value, error):
             self._jobs.discard(job)

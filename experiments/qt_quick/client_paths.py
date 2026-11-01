@@ -19,7 +19,9 @@ from packaged_product_identity import PRODUCTION_APP_ID, PRODUCTION_PRODUCT, bak
 def _production_profile():
     # Only the build-baked profile counts; an adjacent file or CLI root cannot
     # turn a source/test executable into the original product.
-    return FROZEN and baked_identity() == "qt-production"
+    # This module belongs to the Qt entry only. Missing metadata must not select
+    # the legacy fallback and seed a second data root under work/qt-client-runtime.
+    return FROZEN and baked_identity(require_qt=True) == "qt-production"
 
 
 PRODUCTION = _production_profile()
