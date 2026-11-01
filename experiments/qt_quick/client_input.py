@@ -21,6 +21,7 @@ if str(APP) not in sys.path:
 from hotkey_bindings import Chord, modifiers_match, parse_chord, primary_state, validate_unique
 from hotkey_keys import _primary_hotkey_to_vk, NATIVE_ONLY_SHORTCUT_KEYS
 from session_state_machine import global_key_is_allowed
+from floor_observation_policy import MANUAL_FLOOR_HOLD_SECONDS
 from client_map_input import OrderedMapInput
 from client_problem_messages import input_message
 
@@ -440,6 +441,17 @@ class NativeShortcutBackend(QObject):
         else:self._event_down.discard(vk)
         if not down or previous or self._text or self._editing:
             return
+        # Native enqueue time survives the Qt queue. Always process releases
+        # above, but never turn a delayed/invalid press into a fresh action.
+        created = event.get("createdAt")
+        if type(created) not in (int, float):
+            return
+        try:
+            age = time.monotonic() - created
+        except OverflowError:
+            return
+        if not 0 <= age <= MANUAL_FLOOR_HOLD_SECONDS:
+            return  # Also rejects future timestamps and NaN/infinities.
         held = event["held"]
         def read(key):
             pairs={0x10:(0x10,0xa0,0xa1),0x11:(0x11,0xa2,0xa3),0x12:(0x12,0xa4,0xa5)}

@@ -5,8 +5,10 @@ import json
 import tempfile
 from types import SimpleNamespace
 import unittest
+import sys
 from unittest.mock import Mock, patch
 
+import client
 from client import QtClient
 from client_providers import EngineFactories
 
@@ -154,6 +156,30 @@ class CompositionTests(unittest.TestCase):
         self.assertEqual(reports, factories.capabilities())
         factories.set_custom_display(None)
         self.assertTrue(all(engine.qt_custom_display is None for engine in engines.values()))
+
+
+class StartupFailureTests(unittest.TestCase):
+    def test_canonical_reporter_persists_and_notifies(self):
+        import qt_startup_diagnostics as diagnostics
+        with tempfile.TemporaryDirectory() as folder:
+            work = Path(folder) / "work"
+            with patch.object(diagnostics, "_candidate_directories", return_value=[work]), \
+                    patch.object(diagnostics, "_show_native_error") as notify, \
+                    patch.object(sys, "frozen", True, create=True):
+                record = diagnostics.report_startup_failure(RuntimeError("fixture boom"), stage="create-client")
+            self.assertEqual(record, work / diagnostics.LOG_NAME)
+            details = record.read_text("utf-8")
+            self.assertIn("exception=RuntimeError", details)
+            self.assertIn("stage=create-client", details)
+            notify.assert_called_once()
+
+    def test_unwritable_report_still_notifies(self):
+        import qt_startup_diagnostics as diagnostics
+        with patch.object(diagnostics, "_persist", side_effect=OSError("fixture denied")), \
+                patch.object(diagnostics, "_show_native_error") as notify, \
+                patch.object(sys, "frozen", True, create=True):
+            self.assertIsNone(diagnostics.report_startup_failure(RuntimeError("fixture boom")))
+        notify.assert_called_once()
 
 
 if __name__ == "__main__":
