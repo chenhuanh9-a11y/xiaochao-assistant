@@ -169,19 +169,22 @@ class RawMouseObserver:
             if header.kind != 0 or header.size != read:
                 return True
             mouse = RawMouse.from_buffer(buffer, header_size)
-            if buttons:
-                transitions = mouse_button_transitions(mouse)
-                if transitions:
-                    self.buttons(transitions, foreground)
-            if not relevant:
-                return True
             # MSG.time/pt describe enqueue time/location, not the later point
             # after Python resumes. Retain the existing input freshness budget.
             age = ((int(self.ticks()) & 0xffffffff) - int(message.time)) & 0xffffffff
-            if age > MANUAL_FLOOR_HOLD_SECONDS * 1000:
-                self.cancel("raw-mouse-input-expired")
-                return True
+            expired = age > MANUAL_FLOOR_HOLD_SECONDS * 1000
             created_at = self.clock() - age / 1000.
+            if expired:
+                self.cancel("raw-mouse-input-expired")
+            if buttons:
+                # Releases still clear native/GUI held state after a stall;
+                # stale presses must not trigger a shortcut on focus return.
+                transitions = [(vk, down) for vk, down in mouse_button_transitions(mouse)
+                               if not expired or not down]
+                if transitions:
+                    self.buttons(transitions, foreground, created_at=created_at)
+            if not relevant or expired:
+                return True
             point = W.POINT(message.pt.x, message.pt.y)
             for phase in mouse_phases(mouse):
                 self.receive(point.x, point.y, foreground, phase=phase, created_at=created_at)

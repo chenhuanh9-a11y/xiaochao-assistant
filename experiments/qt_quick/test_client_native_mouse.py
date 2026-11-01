@@ -60,6 +60,24 @@ class Native:
         return total
 
 class RawMouseTests(unittest.TestCase):
+    def test_expired_shortcut_press_is_dropped_but_release_keeps_original_age(self):
+        native = Native()
+        events, cancelled = [], []
+        observer = RawMouseObserver(lambda *a, **kw: None, lambda fg: False,
+            user=native, clock=lambda: 10., ticks=lambda: 5000,
+            cancel=cancelled.append, buttons=lambda *a, **kw: events.append((a, kw)))
+        observer.start()
+        message = W.MSG(hWnd=321, message=0xff, wParam=1, lParam=999,
+                        time=1000, pt=W.POINT(5, 5))
+        native.mouse.buttonUnion.buttons.flags = 0x0040
+        observer.handle(message)
+        self.assertEqual(events, [])
+        native.mouse.buttonUnion.buttons.flags = 0x0080
+        observer.handle(message)
+        self.assertEqual(events, [(([(0x05, False)], 42), dict(created_at=6.))])
+        self.assertEqual(len([c for c in native.calls if c[0] == "default"]), 2)
+        observer.stop()
+
     def test_abi_and_button_edges_do_not_use_device_delta_as_pixels(self):
         self.assertEqual(ctypes.sizeof(RawMouse), 24)
         self.assertEqual(RawMouse.buttonUnion.offset, 4)
@@ -86,7 +104,7 @@ class RawMouseTests(unittest.TestCase):
         pointer, buttons, wanted = [], [], [True]
         observer = RawMouseObserver(lambda *a, **kw: pointer.append(a), lambda foreground: False,
             user=native, clock=lambda: 10., ticks=lambda: 1000,
-            buttons=lambda transitions, foreground: buttons.append((transitions, foreground)),
+            buttons=lambda transitions, foreground, **kw: buttons.append((transitions, foreground)),
             wants_buttons=lambda: wanted[0])
         observer.start()
         message = W.MSG(hWnd=321, message=0xff, wParam=1, lParam=999, time=990, pt=W.POINT(5, 5))

@@ -855,7 +855,7 @@ class ClientCoordinator(QObject):
             if (len(rows) == 1 and not rows[0].get("minimized") and not self.session.busy
                     and not self.resources.busy and not self.resources.pendingKind):
                 self.bindGameWindow(rows[0]["hwnd"])
-            elif len(rows) == 1:
+            elif len(rows) == 1 and rows[0].get("minimized"):
                 self._message = "游戏窗口已最小化，恢复后自动连接"
             elif len(rows) > 1:
                 self._message = "发现多个游戏窗口，请明确选择要连接的窗口"
