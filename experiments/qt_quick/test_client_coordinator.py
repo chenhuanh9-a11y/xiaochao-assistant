@@ -321,6 +321,8 @@ class CoordinatorTests(unittest.TestCase):
 
     def test_mouse_x_uses_urgent_close_but_rejected_native_context_cannot_close(self):
         context = self.pointer_fixture()
+        self.runtime.observe_game_floor_click.return_value = dict(
+            success=False, reason="floor-click-not-a-control", closeControlHit=True)
         self.coordinator._reference = dict(key="correct-static-map")
         event = dict(phase="down", gestureId=1, sequence=1, hwnd=123, x=950, y=50,
             createdAt=10., context=context)
@@ -331,6 +333,14 @@ class CoordinatorTests(unittest.TestCase):
         self.session.dispatchWithPayload.reset_mock()
         self.runtime.observe_game_floor_click.return_value = dict(success=False, reason="capture-context-changed")
         self.input.gamePointerEvent.emit(dict(event, sequence=2, gestureId=2))
+        self.session.dispatchWithPayload.assert_not_called()
+
+    def test_navigation_in_right_hud_band_cannot_close_without_verified_control(self):
+        context = self.pointer_fixture()
+        self.input.gamePointerEvent.emit(dict(phase="down", gestureId=1, sequence=1,
+            hwnd=123, x=950, y=50, createdAt=10., context=context))
+        self.runtime.observe_game_floor_click.assert_called_once()
+        self.runtime.invalidate.assert_not_called()
         self.session.dispatchWithPayload.assert_not_called()
 
     def test_drag_fails_closed_without_runtime_api_and_uses_approved_calibrated_path_when_available(self):

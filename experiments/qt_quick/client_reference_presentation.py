@@ -12,6 +12,10 @@ import threading
 from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, Qt, Signal, Slot
 
 from client_screen_geometry import project_client_geometry, ScreenGeometryError
+# Use the same source/frozen app dependency bootstrap as the Qt entry, including
+# when this provider is imported independently rather than through client.py.
+import client_paths
+from resource_transaction import assert_resources_ready, resource_read_lock
 
 
 QT_LOGICAL = "qt-logical-v1"
@@ -187,7 +191,6 @@ class ReferencePreviewProvider(QObject):
                 if cancelled.is_set():
                     return
                 from contextlib import nullcontext
-                from resource_transaction import assert_resources_ready, resource_read_lock
                 lease = (resource_read_lock(self._installation_root, wait=True, cancelled=cancelled.is_set)
                          if self._installation_root is not None else nullcontext())
                 with lease:
