@@ -431,7 +431,8 @@ def prune_installed_downloads(download_root: Path, install_root: Path) -> list[s
         _no_links(download_root)
         # A pending upgrade, queued main-process import or running helper may
         # still need the archive; leave every download for the next start.
-        busy = ("pending-upgrade.json", "main-import-request.json", "import.lock")
+        busy = ("pending-upgrade.json", "main-import-request.json", "import.lock",
+                "qt-import-pending.json", "qt-recovery-pending.json")
         if any((state / name).exists() for name in busy) or not download_root.is_dir():
             return removed
         archives = sorted(download_root.glob("*.zip"))

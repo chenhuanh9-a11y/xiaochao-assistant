@@ -82,10 +82,12 @@ Qt 迁移的默认启动链单独验收：单实例占锁须早于引擎/监听/
 
 | 位置 | 内容 | 上限 |
 | --- | --- | --- |
-| `work/nightmare-live/events-*.jsonl`、`startup-error-*.log` | 每次启动的事件日志、启动错误 | 各保留最近 8 份（与诊断导出读取的数量一致），启动时清理 |
+| `work/nightmare-live/events-*.jsonl`、`startup-error-*.log` | 每次启动的事件日志（含 Qt 的 `events-qt-*`）、启动错误 | 各保留最近 8 份（与诊断导出读取的数量一致），启动时清理 |
 | `work/nightmare-memory/failures/` | 识别失败截图 | 连同失败记录共 64 MB（`FailureSampling.max_disk_bytes`） |
 | `work/nightmare-memory/runtime-successes/<地图>/<楼层>/` | 跨楼层成功截图（仅诊断） | 每层最近 6 张 |
 | `work/nightmare-memory/samples/<地图>/<楼层>/` | 确认地图时的裁剪样本 | 识别实际使用的样本（每层最近 6 张可用的）加最近 12 张，识别结果不变 |
 | `work/map-packages/downloads/` | 在线下载的地图包 | 启动时删除已安装（安装记录的压缩包 SHA-256 与文件名一致）的压缩包；有待恢复的升级、排队中的导入请求或导入锁时不删 |
 
 用户主动接受、拒绝的贴合记录及其截图不做清理。地图包升级备份仍按原设计保留。
+
+Tk 和 Qt 客户端启动时都做同样的清理（`diagnostic_export.prune_diagnostic_logs` 与 `star_map_download.prune_installed_downloads`），Qt 的 `events-qt-*` 日志也在同一个上限内；Qt 有 `qt-import-pending.json` 或 `qt-recovery-pending.json` 时同样不删下载包。

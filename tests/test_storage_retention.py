@@ -1,5 +1,4 @@
 """Bounded on-disk diagnostics, samples and download caches."""
-import ast
 import json
 import os
 from pathlib import Path
@@ -14,14 +13,7 @@ APP = Path(__file__).resolve().parents[1] / 'app'
 sys.path.insert(0, str(APP))
 import nightmare_candidate as candidate  # noqa: E402
 from star_map_download import prune_installed_downloads  # noqa: E402
-
-
-def function(filename, name, namespace):
-    """Load one top-level function without importing the Windows/Tk runtime."""
-    tree = ast.parse((APP / filename).read_text(encoding='utf-8-sig'))
-    node = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == name)
-    exec(compile(ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[])), filename, 'exec'), namespace)
-    return namespace[name]
+from diagnostic_export import prune_diagnostic_logs  # noqa: E402
 
 
 def touch(path: Path, age: int, size: int = 10) -> Path:
@@ -50,8 +42,8 @@ class RetentionTests(unittest.TestCase):
         self.folder.cleanup()
 
     def test_event_and_startup_logs_keep_newest_per_kind(self):
-        prune = function('identityv_daily_assistant.py', 'prune_diagnostic_logs',
-                         dict(Path=Path, DIAGNOSTIC_LOG_LIMIT=8))
+        # Shared by Tk and Qt; Qt names its logs events-qt-* inside the same glob.
+        prune = prune_diagnostic_logs
         live = self.root / 'live'
         for age in range(12):
             touch(live / f'events-{age:02d}.jsonl', age)
@@ -113,13 +105,24 @@ class RetentionTests(unittest.TestCase):
         state = self.root / 'work' / 'map-packages'
         archive = touch(state / 'downloads' / f'pack-{"a" * 64}.zip', 0)
         (state / 'pack.json').write_text(json.dumps(dict(packageId='pack', archiveSha256='a' * 64)), 'utf-8')
-        for marker in ('pending-upgrade.json', 'main-import-request.json', 'import.lock'):
+        for marker in ('pending-upgrade.json', 'main-import-request.json', 'import.lock',
+                       'qt-import-pending.json', 'qt-recovery-pending.json'):
             with self.subTest(marker=marker):
                 (state / marker).write_text('{}', 'utf-8')
                 self.assertEqual(prune_installed_downloads(state / 'downloads', self.root), [])
                 self.assertTrue(archive.is_file())
                 (state / marker).unlink()
         self.assertEqual(prune_installed_downloads(state / 'downloads', self.root), [archive.name])
+
+
+class StartupWiringTests(unittest.TestCase):
+    def test_both_clients_prune_before_opening_their_logs(self):
+        root = Path(__file__).resolve().parents[1]
+        tk = (root / 'app' / 'identityv_daily_assistant.py').read_text('utf-8')
+        qt = (root / 'experiments' / 'qt_quick' / 'client.py').read_text('utf-8')
+        self.assertLess(tk.index('prune_diagnostic_logs(LIVE_ROOT'), tk.index('self.event_path = LIVE_ROOT'))
+        self.assertLess(qt.index('prune_diagnostic_logs(self.paths.work_root'), qt.index('ProblemsService(self.paths'))
+        self.assertLess(qt.index('prune_installed_downloads(self.sandbox'), qt.index('LifecycleJournal(self.paths.work_root)'))
 
 
 if __name__ == '__main__':

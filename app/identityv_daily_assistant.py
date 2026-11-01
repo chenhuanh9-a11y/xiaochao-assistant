@@ -967,25 +967,6 @@ def process_integrity_level(process_id: int | None = None) -> dict:
         kernel32.CloseHandle(process_handle)
 
 
-def prune_diagnostic_logs(live_root: Path, keep: int = DIAGNOSTIC_LOG_LIMIT) -> None:
-    """Keep the newest ``keep`` logs of each kind; export reads no more than that."""
-    if keep <= 0 or not live_root.is_dir():
-        return
-    for pattern in ("events-*.jsonl", "startup-error-*.log"):
-        logs = []
-        for path in live_root.glob(pattern):
-            try:
-                if path.is_file():
-                    logs.append((path.stat().st_mtime_ns, path.name, path))
-            except OSError:
-                continue
-        for _mtime, _name, path in sorted(logs)[:-keep]:
-            try:
-                path.unlink()
-            except OSError:
-                pass
-
-
 def safe_diagnostic_log_files(live_root: Path, limit: int = DIAGNOSTIC_LOG_LIMIT) -> list[Path]:
     """Return only recent text event/error logs from the dedicated live folder."""
     if limit <= 0 or not live_root.is_dir():
@@ -5855,6 +5836,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         self.optimistic_sheet_floor: str | None = None
         # Startup housekeeping: earlier sessions' logs beyond the export window
         # and download caches of packages already installed from them.
+        from diagnostic_export import prune_diagnostic_logs
         prune_diagnostic_logs(LIVE_ROOT, DIAGNOSTIC_LOG_LIMIT - 1)
         try:
             from star_map_download import prune_installed_downloads

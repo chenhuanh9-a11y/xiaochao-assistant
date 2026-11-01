@@ -71,6 +71,16 @@ class QtClient:
         from client_reference_presentation import ReferencePreviewProvider
         self.app, self.sandbox = app, owned_sandbox(sandbox)
         self.paths = runtime_paths(self.sandbox)
+        # Startup housekeeping shared with the Tk client, before this session
+        # opens its own logs: earlier logs beyond the diagnostic export window,
+        # and download archives whose exact package is already installed.
+        try:
+            from diagnostic_export import DIAGNOSTIC_LOG_LIMIT, prune_diagnostic_logs
+            from star_map_download import prune_installed_downloads
+            prune_diagnostic_logs(self.paths.work_root / "nightmare-live", DIAGNOSTIC_LOG_LIMIT - 1)
+            prune_installed_downloads(self.sandbox / "work/map-packages/downloads", self.sandbox)
+        except Exception:
+            pass  # Housekeeping never blocks startup; the files simply remain.
         from client_lifecycle_trace import create_lifecycle_trace
         self.lifecycle_trace = create_lifecycle_trace(self.paths)
         from client_lifecycle import LifecycleJournal
