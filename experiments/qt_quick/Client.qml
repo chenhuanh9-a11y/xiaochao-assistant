@@ -55,12 +55,13 @@ ApplicationWindow {
         Rectangle {
             objectName: "clientNavigationRail"
             Layout.preferredWidth: root.compactRail ? 80 : 96; Layout.fillHeight: true; color: "white"
+            Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: "#e3e9f3" }
             ColumnLayout {
                 anchors.fill: parent; anchors.margins: 8; spacing: 4
                 Item { Layout.fillWidth: true; Layout.preferredHeight: root.compactRail ? 84 : 122
                     Column { anchors.centerIn: parent; spacing: 7
-                        Image { anchors.horizontalCenter: parent.horizontalCenter; width: root.compactRail ? 36 : 40; height: width; source: "icons/xingtu-round.png"; sourceSize.width: 104; sourceSize.height: 104 }
-                        Label { anchors.horizontalCenter: parent.horizontalCenter; visible: !root.compactRail; text: "星图"; color: "#17365e"; font.bold: true; font.pixelSize: 13 }
+                        Image { anchors.horizontalCenter: parent.horizontalCenter; width: root.compactRail ? 38 : 46; height: width; source: "icons/xingtu-round.png"; sourceSize.width: 104; sourceSize.height: 104 }
+                        Label { anchors.horizontalCenter: parent.horizontalCenter; visible: !root.compactRail; text: "星图"; color: "#17365e"; font.bold: true; font.pixelSize: 15; font.letterSpacing: 2 }
                     }
                 }
                 Repeater {
@@ -127,7 +128,8 @@ ApplicationWindow {
             Layout.fillWidth: true; Layout.preferredHeight: 60
             Layout.leftMargin: root.workspaceMargin; Layout.rightMargin: root.workspaceMargin
             AppButton { visible: root.page === "resources" || root.page === "downloads" || root.page === "recognition" || root.page === "replay"; text: "返回"; implicitWidth: 62; onClicked: root.page = root.section(root.page) }
-            Label { text: root.heading(root.page); color: "#17365e"; font.pixelSize: 14; font.bold: true }
+            // Pages with their own large title skip the duplicate small one.
+            Label { visible: root.page !== "settings" && root.page !== "gallery"; text: root.heading(root.page); color: "#17365e"; font.pixelSize: 14; font.bold: true }
             Item { Layout.fillWidth: true }
             Label { visible: root.width >= 800; text: clientCoordinator.boundWindow ? "已连接游戏" : "等待连接游戏"; color: "#5b7294"; font.pixelSize: 12 }
             AppButton { text: "最小化到任务栏"; onClicked: root.showMinimized() }

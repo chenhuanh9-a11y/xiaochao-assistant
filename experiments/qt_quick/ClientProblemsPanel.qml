@@ -8,7 +8,7 @@ Rectangle {
     property bool expanded: false
     property string openedId: ""
     implicitHeight: contents.implicitHeight + 36
-    radius: 12; color: "white"
+    radius: 16; color: "white"; border.width: 1; border.color: "#e3e9f3"
     ColumnLayout {
         id: contents
         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top

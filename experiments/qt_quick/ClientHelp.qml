@@ -33,7 +33,7 @@ Item {
             ClientProblemsPanel { Layout.fillWidth: true }
             Rectangle {
                 visible: !!infoService.release.version
-                Layout.fillWidth: true; implicitHeight: notes.implicitHeight+36; color: "white"; radius: 12
+                Layout.fillWidth: true; implicitHeight: notes.implicitHeight+36; color: "white"; radius: 16; border.width: 1; border.color: "#e3e9f3"
                 ColumnLayout {
                     id: notes; anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 18; spacing: 12
                     Label { text: "更新公告 · "+(infoService.release.version || "") + (infoService.hasUnread ? " · 未读" : ""); font.bold: true; color: "#183a73" }
@@ -64,7 +64,7 @@ Item {
             }
             Rectangle {
                 Layout.fillWidth: true; implicitHeight: currentFacts.implicitHeight + 40
-                radius: 12; color: "white"
+                radius: 16; color: "white"; border.width: 1; border.color: "#e3e9f3"
                 ColumnLayout {
                     id: currentFacts
                     anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
@@ -89,7 +89,7 @@ Item {
                     readonly property bool opened: root.openedTopic === modelData.id
                     property bool showOperationImage: false
                     Layout.fillWidth: true; implicitHeight: topicContents.implicitHeight + 36
-                    radius: 12; color: "white"
+                    radius: 16; color: "white"; border.width: 1; border.color: "#e3e9f3"
                     ColumnLayout {
                         id: topicContents
                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
@@ -148,7 +148,7 @@ Item {
                 }
             }
             Rectangle {
-                Layout.fillWidth: true; implicitHeight: supportFooter.implicitHeight + 36; radius: 12; color: "white"
+                Layout.fillWidth: true; implicitHeight: supportFooter.implicitHeight + 36; radius: 16; color: "white"; border.width: 1; border.color: "#e3e9f3"
                 ColumnLayout {
                     id: supportFooter; anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 18; spacing: 10
                     Label { text: "支持开发"; font.pixelSize: 18; font.bold: true; color: "#142b4b" }

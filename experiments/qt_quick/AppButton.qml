@@ -5,6 +5,10 @@ Button {
     id: control
     property bool primary: false
     property bool selected: false
+    // On a blue surface: white chip with blue text (inverse) or a translucent
+    // white chip with white text (onColor).
+    property bool inverse: false
+    property bool onColor: false
     implicitHeight: 38
     implicitWidth: Math.max(74, label.implicitWidth + 28 + (iconImage.visible ? 24 : 0))
     font.family: "Microsoft YaHei UI"
@@ -23,7 +27,7 @@ Button {
             Text {
                 id: label
                 text: control.text; font: control.font
-                color: !control.enabled ? "#8491a7" : control.primary ? "white" : "#1f50cc"
+                color: control.onColor ? (control.enabled ? "white" : "#c9d8ff") : !control.enabled ? "#8491a7" : control.primary ? "white" : "#1f50cc"
                 horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
             }
         }
@@ -32,7 +36,9 @@ Button {
     // chips; the outline appears only for keyboard focus and selection.
     background: Rectangle {
         radius: 10
-        color: !control.enabled ? "#eef1f6" : control.primary ? (control.down ? "#1a46b8" : control.hovered ? "#1f50cc" : "#2f66eb")
+        color: control.onColor ? (control.down ? "#40ffffff" : control.hovered ? "#33ffffff" : "#24ffffff")
+            : control.inverse && control.enabled ? (control.down ? "#dfe8ff" : control.hovered ? "#f1f5ff" : "white")
+            : !control.enabled ? "#eef1f6" : control.primary ? (control.down ? "#1a46b8" : control.hovered ? "#1f50cc" : "#2f66eb")
             : control.down ? "#d3e0fb" : control.selected ? "#dce8ff" : control.hovered ? "#e0e9fd" : "#eaf0fd"
         border.width: control.activeFocus ? 2 : control.selected ? 1 : 0
         border.color: control.activeFocus ? "#2f66eb" : "#8eaaf0"
