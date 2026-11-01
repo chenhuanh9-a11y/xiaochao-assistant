@@ -53,14 +53,34 @@ def mouse_phases(mouse):
     return phases
 
 
+# RAWMOUSE usButtonFlags edges for the buttons shortcuts may use (MOUSE2-5),
+# reported with the Win32 virtual-key codes the shortcut bindings store.
+SHORTCUT_BUTTON_FLAGS = ((0x0004, 0x02, True), (0x0008, 0x02, False),     # right
+                         (0x0010, 0x04, True), (0x0020, 0x04, False),     # middle
+                         (0x0040, 0x05, True), (0x0080, 0x05, False),     # side (X1)
+                         (0x0100, 0x06, True), (0x0200, 0x06, False))     # side (X2)
+
+
+def mouse_button_transitions(mouse):
+    """(vk, down) shortcut-button edges in this packet; the left button is never one."""
+    flags = mouse.buttonUnion.buttons.flags
+    return [(vk, down) for bit, vk, down in SHORTCUT_BUTTON_FLAGS if flags & bit]
+
+
 class RawMouseObserver:
     WM_INPUT = 0x00ff
     INPUTSINK = 0x00000100
     REMOVE = 0x00000001
 
-    def __init__(self, receive, relevant, *, user=None, cancel=None, clock=time.monotonic, ticks=None):
+    def __init__(self, receive, relevant, *, user=None, cancel=None, clock=time.monotonic, ticks=None,
+                 buttons=None, wants_buttons=None):
         self.user = user or ctypes.WinDLL("user32", use_last_error=True)
         self.receive, self.relevant = receive, relevant
+        # Optional (transitions, foreground) receiver for shortcut buttons: they
+        # are global like keyboard shortcuts, so they skip the map-target filter.
+        # Packets are only parsed for it while a binding uses a mouse button.
+        self.buttons = buttons
+        self.wants_buttons = wants_buttons or (lambda: buttons is not None)
         self.cancel, self.clock = cancel or (lambda reason: None), clock
         if ticks is None:
             kernel = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -128,15 +148,10 @@ class RawMouseObserver:
             return False
         try:
             foreground = int(self.user.GetForegroundWindow() or 0)
-            if not self.relevant(foreground):
+            relevant = self.relevant(foreground)
+            buttons = self.buttons is not None and self.wants_buttons()
+            if not relevant and not buttons:
                 return True
-            # MSG.time/pt describe enqueue time/location, not the later point
-            # after Python resumes. Retain the existing input freshness budget.
-            age = ((int(self.ticks()) & 0xffffffff) - int(message.time)) & 0xffffffff
-            if age > MANUAL_FLOOR_HOLD_SECONDS * 1000:
-                self.cancel("raw-mouse-input-expired")
-                return True
-            created_at = self.clock() - age / 1000.
             size, header_size = W.UINT(), ctypes.sizeof(RawInputHeader)
             if self.user.GetRawInputData(message.lParam, 0x10000003, None,
                                         ctypes.byref(size), header_size) == 0xffffffff:
@@ -154,6 +169,22 @@ class RawMouseObserver:
             if header.kind != 0 or header.size != read:
                 return True
             mouse = RawMouse.from_buffer(buffer, header_size)
+            # MSG.time/pt describe enqueue time/location, not the later point
+            # after Python resumes. Retain the existing input freshness budget.
+            age = ((int(self.ticks()) & 0xffffffff) - int(message.time)) & 0xffffffff
+            expired = age > MANUAL_FLOOR_HOLD_SECONDS * 1000
+            created_at = self.clock() - age / 1000.
+            if expired:
+                self.cancel("raw-mouse-input-expired")
+            if buttons:
+                # Releases still clear native/GUI held state after a stall;
+                # stale presses must not trigger a shortcut on focus return.
+                transitions = [(vk, down) for vk, down in mouse_button_transitions(mouse)
+                               if not expired or not down]
+                if transitions:
+                    self.buttons(transitions, foreground, created_at=created_at)
+            if not relevant or expired:
+                return True
             point = W.POINT(message.pt.x, message.pt.y)
             for phase in mouse_phases(mouse):
                 self.receive(point.x, point.y, foreground, phase=phase, created_at=created_at)

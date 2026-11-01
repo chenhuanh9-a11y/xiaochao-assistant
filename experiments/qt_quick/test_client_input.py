@@ -162,6 +162,14 @@ class InputTests(unittest.TestCase):
         self.native.states[0x78] = self.native.states[0x79] = 0x8001
         self.assertEqual(self.keys.pollOnce(), ["end-round"])
 
+    def test_mouse_toggle_panel_keeps_native_owner_in_assistant_poll_seam(self):
+        self.arm({"toggle-panel": "MOUSE4"})
+        self.native.foreground = 77
+        self.native.process = os.getpid()
+        self.native.states[0x05] = 0x8001
+        self.assertEqual(self.keys.pollOnce(), ["toggle-panel"])
+        self.assertEqual(self.keys.pollOnce(), [])
+
     def test_shared_primary_sample_extra_modifiers_and_released_latch(self):
         self.arm({"map": "G", "end-round": "Ctrl+G"})
         self.native.reads.clear()

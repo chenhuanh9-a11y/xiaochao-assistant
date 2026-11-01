@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import sys
+import traceback
 from uuid import uuid4
 from PySide6.QtCore import QTimer, QUrl, QThreadPool, Qt
 from PySide6.QtGui import QFont, QFontDatabase, QGuiApplication, QIcon, QWindow
@@ -452,6 +453,24 @@ class QtClient:
                                          closeReady=self.coordinator.closeReady))
 
 
+def report_startup_failure(details: str) -> Path | None:
+    """Keep the traceback beside the windowed entry's own startup record."""
+    path = WORK_ROOT / "qt-client-startup-error.txt"
+    try:
+        WORK_ROOT.mkdir(parents=True, exist_ok=True)
+        path.write_text(details, encoding="utf-8")
+    except OSError:
+        return None
+    return path
+
+
+def show_startup_failure(message: str) -> None:
+    """The windowed build has no console; a failed start must not look like nothing happened."""
+    if os.name == "nt":
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, message, "星图启动提示", 0x10)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sandbox", type=Path, default=DEFAULT_SANDBOX)
@@ -553,9 +572,11 @@ def main():
                 run_client_probe(client, args.probe_output)
         except Exception as error:
             print(f"Qt client startup failed: {type(error).__name__}: {error}", file=sys.stderr)
+            record = report_startup_failure(traceback.format_exc())
             if "boot" in holder:
                 holder["boot"].rootObjects()[0].setProperty("statusText", f"准备失败：{error}")
             else:
+                show_startup_failure(f"星图启动失败：{error}" + (f"\n\n详细信息已保存到：\n{record}" if record else ""))
                 app.exit(1)
     if args.sandbox.exists():
         QTimer.singleShot(0, lambda: open_client(owned_sandbox(args.sandbox)))

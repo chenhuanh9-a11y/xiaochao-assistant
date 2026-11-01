@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
+import client
 from client import QtClient
 from client_providers import EngineFactories
 
@@ -154,6 +155,26 @@ class CompositionTests(unittest.TestCase):
         self.assertEqual(reports, factories.capabilities())
         factories.set_custom_display(None)
         self.assertTrue(all(engine.qt_custom_display is None for engine in engines.values()))
+
+
+class StartupFailureTests(unittest.TestCase):
+    def test_failure_details_are_saved_and_shown_in_the_windowed_build(self):
+        with tempfile.TemporaryDirectory() as folder:
+            work = Path(folder) / "work"
+            with patch.object(client, "WORK_ROOT", work):
+                record = client.report_startup_failure("Traceback: boom")
+            self.assertEqual(record, work / "qt-client-startup-error.txt")
+            self.assertEqual(record.read_text("utf-8"), "Traceback: boom")
+        user32 = Mock()
+        with patch.object(client.os, "name", "nt"), \
+                patch("ctypes.windll", SimpleNamespace(user32=user32), create=True):
+            client.show_startup_failure("星图启动失败：boom")
+        user32.MessageBoxW.assert_called_once_with(None, "星图启动失败：boom", "星图启动提示", 0x10)
+
+    def test_unwritable_work_folder_still_reports(self):
+        with tempfile.NamedTemporaryFile() as blocker:
+            with patch.object(client, "WORK_ROOT", Path(blocker.name) / "work"):
+                self.assertIsNone(client.report_startup_failure("x"))
 
 
 if __name__ == "__main__":

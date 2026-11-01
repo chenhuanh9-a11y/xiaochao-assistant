@@ -38695,8 +38695,12 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                         self._log("capture-error-stale-ignored", token=event.get("token"), currentToken=self.capture_generation)
                         continue
                     if event.get("silentHint"):
+                        # A map-key wake check still leaves the UI untouched,
+                        # but the player must see why nothing appeared.
                         self.active_map_cycle_id = None
                         self._log("map-key-visual-check-error", message=event.get("message"))
+                        self._record_route_issue('recognition', 'capture-failed', f"识别失败：{event['message']}")
+                        self._set_status(f"识别失败：{event['message']}", "#ff8a65")
                         continue
                     self.map_is_open = False
                     self.alignment_in_progress = False

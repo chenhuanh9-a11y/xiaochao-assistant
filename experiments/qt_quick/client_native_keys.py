@@ -16,6 +16,9 @@ from client_map_input import PointerEventMailbox
 MODIFIER_KEYS = frozenset((0x10,0x11,0x12,0x5b,0x5c,0xa0,0xa1,0xa2,0xa3,0xa4,0xa5))
 
 
+MOUSE_SHORTCUT_VKS = frozenset((0x02, 0x04, 0x05, 0x06))  # MOUSE2-5
+
+
 def initial_pressed_keys(keys, read):
     # Generic modifier state is the OR of its two physical sides. Seeding both
     # representations would leave one stuck after a single physical key-up.
@@ -184,6 +187,25 @@ class PassThroughKeyboardSource(QObject):
     def _handle_message(self, message):
         """Win32 thread-message extension seam; production has no commands."""
 
+    def _receive_buttons(self, transitions, foreground, *, created_at):
+        """Mouse shortcut buttons (MOUSE2-5) join the keyboard event stream."""
+        if self._stop.is_set():
+            return
+        for vk, down in transitions:
+            event = self._transition_event(vk, 0, 0, down, foreground)
+            if event is not None:
+                event["createdAt"] = created_at
+                self.eventReceived.emit(event)
+
+    def _make_mouse_observer(self, user, **kwargs):
+        from client_native_mouse import RawMouseObserver
+        return RawMouseObserver(self._receive_pointer,
+            lambda foreground: not self._stop.is_set() and
+                (foreground == self._pointer_target or self._pointer_gesture is not None),
+            user=user, cancel=self.cancel_pointer, buttons=self._receive_buttons,
+            wants_buttons=lambda: not self._stop.is_set() and bool(self._keys & MOUSE_SHORTCUT_VKS),
+            **kwargs)
+
     def _receive_pointer(self, x, y, foreground, *, phase, created_at):
         event = self._pointer_event(x, y, foreground, phase=phase, created_at=created_at)
         if event is not None:
@@ -242,11 +264,7 @@ class PassThroughKeyboardSource(QObject):
             if not handle:
                 raise ctypes.WinError(ctypes.get_last_error())
             try:
-                from client_native_mouse import RawMouseObserver
-                self._mouse_observer = RawMouseObserver(self._receive_pointer,
-                    lambda foreground: not self._stop.is_set() and
-                    (foreground == self._pointer_target or self._pointer_gesture is not None),
-                    user=user, cancel=self.cancel_pointer)
+                self._mouse_observer = self._make_mouse_observer(user)
                 self._mouse_observer.start()
                 self.pointer_installed = True
             except Exception as error:
