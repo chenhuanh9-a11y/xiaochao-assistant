@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
-// 楼层识别方式：固定（默认，自动找按钮）或框选（只在玩家框出的范围里读楼层）。
+// 楼层识别方式：自动（默认）、框选（只在玩家框出的范围里读楼层）或固定（旧方式）。
 // Choices go into the settings draft; the page's 保存更改 commits them.
 ColumnLayout {
     id: root
@@ -29,12 +29,17 @@ ColumnLayout {
 
     Label { text: "楼层识别"; font.pixelSize: 18; font.bold: true; color: "#142b4b" }
     Label {
-        text: "固定：按游戏默认位置自动找楼层按钮，和之前一样。框选：自己框出楼层按钮那一排的范围，只在框里读楼层；框里读不到时仍按固定方式识别。"
+        text: {
+            if (root.regionMode) return "框选：只在你框出的范围里读楼层；框里读不到时按自动方式识别。"
+            if (root.preferences.floorControlMode === "fixed") return "固定：只按游戏默认位置找楼层按钮，和旧版一样，不做自动查找。"
+            return "自动：先按默认位置读；读不到时在画面右上角自动找楼层按钮。窗口大小、比例变了也不用重新设置。"
+        }
         color: "#526785"; wrapMode: Text.WordWrap; Layout.fillWidth: true
     }
     RowLayout {
-        AppButton { objectName: "floorMode_fixed"; text: "固定（默认）"; selected: !root.regionMode; onClicked: settingsService.setValue("floorControlMode", "fixed") }
+        AppButton { objectName: "floorMode_auto"; text: "自动（推荐）"; selected: root.preferences.floorControlMode !== "fixed" && !root.regionMode; onClicked: settingsService.setValue("floorControlMode", "auto") }
         AppButton { objectName: "floorMode_region"; text: "框选"; selected: root.regionMode; onClicked: settingsService.setValue("floorControlMode", "region") }
+        AppButton { objectName: "floorMode_fixed"; text: "固定"; selected: root.preferences.floorControlMode === "fixed"; onClicked: settingsService.setValue("floorControlMode", "fixed") }
         Item { Layout.fillWidth: true }
     }
     ColumnLayout {

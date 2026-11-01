@@ -40,8 +40,8 @@ DEFAULTS = {**BOOL_DEFAULTS, "sheetOpacity": .55, "referenceOpacity": .55,
             "zhan10CoffinVariantId": "variant-01", "hotkey": "G",
             "actionHotkeys": FRESH_ACTIONS, "gameControlLayout": preset_layout(),
             "sheetPosition": None, "sheetPositionSpace": "unknown", "compactPosition": None,
-            "floorControlMode": "fixed", "floorControlRegion": None}
-FLOOR_CONTROL_MODES = ("fixed", "region")
+            "floorControlMode": "auto", "floorControlRegion": None}
+FLOOR_CONTROL_MODES = ("auto", "region", "fixed")
 
 
 def _validate(key, value):
@@ -77,7 +77,7 @@ def _validate(key, value):
             raise ValueError("位置坐标类型无效")
     elif key == "floorControlMode":
         if value not in FLOOR_CONTROL_MODES:
-            raise ValueError("楼层识别方式只能为固定或框选")
+            raise ValueError("楼层识别方式只能为自动、框选或固定")
     elif key == "floorControlRegion":
         value = _validate_floor_region(value)
     elif key == "hotkey":

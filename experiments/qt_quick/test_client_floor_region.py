@@ -14,7 +14,7 @@ from PySide6.QtQml import QQmlComponent, QQmlEngine
 from client_settings import ROOT, SettingsService
 from client_floor_region import FloorRegionImages, FloorRegionService, suggested_rect
 from client_live_runtime import LiveRuntime
-from floor_control_region import apply_floor_region, read_floor_in_region, region_for_client
+from floor_control_region import apply_floor_region, locate_floor_row, read_floor_in_region, region_for_client
 
 SIZE = (1920, 1080)
 ANCHOR, TILE, TOP = 1500, 64, 40     # the selected button stays at ANCHOR
@@ -74,26 +74,61 @@ class RegionReaderTests(unittest.TestCase):
         self.assertIsNone(region_for_client(dict(rect=REGION, clientSize="1920x1080"), (1920, 1080)))
 
 
+class AutoLocateTests(unittest.TestCase):
+    def test_row_is_found_anywhere_in_the_top_right_corner(self):
+        global ANCHOR, TOP
+        saved = ANCHOR, TOP
+        try:
+            for ANCHOR, TOP in ((1500, 40), (1100, 120), (1750, 300)):
+                for mode, floors in (("nightmare", (-1, 1, 2)), ("difficult", (1, 2))):
+                    for selected in floors:
+                        with self.subTest(anchor=ANCHOR, top=TOP, mode=mode, selected=selected):
+                            read = locate_floor_row(hud(floors, selected, seed=ANCHOR + selected), mode)
+                            self.assertEqual(read["selectedFloor"], selected, read)
+        finally:
+            ANCHOR, TOP = saved
+
+    def test_other_bright_items_or_light_ui_are_not_buttons(self):
+        frame = np.full((1080, 1920, 3), 33, np.uint8)
+        frame[60:110, 1700:1760] = 150                       # a lone filled block
+        frame[200:240, 1300:1360] = 120; frame[205:235, 1325:1331] = 230
+        self.assertIsNone(locate_floor_row(frame, "nightmare")["selectedFloor"])
+        light = hud((-1, 1, 2), 1)
+        light[:, 960:] = np.clip(light[:, 960:].astype(int) + 170, 0, 255).astype(np.uint8)
+        self.assertIsNone(locate_floor_row(light, "nightmare")["selectedFloor"])
+        # The row outside the top-right corner is not searched.
+        low = np.full((1080, 1920, 3), 33, np.uint8)
+        low[700:744] = hud((-1, 1, 2), 1)[TOP:TOP + 44]
+        self.assertIsNone(locate_floor_row(low, "nightmare")["selectedFloor"])
+
+
 class ModeSwitchTests(unittest.TestCase):
     fixed = dict(selectedFloor=None, layout="unlocalized", centers=None)
 
-    def test_fixed_is_the_default_and_leaves_the_reading_alone(self):
+    def test_auto_is_the_default_and_only_searches_when_fixed_reads_nothing(self):
         frame = hud((-1, 1, 2), 2)
-        for settings in ({}, dict(floorControlMode="fixed", floorControlRegion=dict(rect=REGION, clientSize=[1920, 1080]))):
-            out = apply_floor_region(settings, "nightmare", frame, self.fixed)
-            self.assertIsNone(out["selectedFloor"])
-            self.assertEqual(out["floorSource"], "fixed")
-
-    def test_region_mode_reads_the_box_and_falls_back_to_fixed(self):
-        settings = dict(floorControlMode="region", floorControlRegion=dict(rect=REGION, clientSize=[1920, 1080]))
-        out = apply_floor_region(settings, "nightmare", hud((-1, 1, 2), -1), self.fixed)
-        self.assertEqual((out["selectedFloor"], out["floorSource"]), (-1, "region"))
+        out = apply_floor_region({}, "nightmare", frame, self.fixed)
+        self.assertEqual((out["selectedFloor"], out["floorSource"]), (2, "auto-located"))
         self.assertEqual(out["layout"], "unlocalized")   # click geometry stays with the fixed reading
-        fixed = dict(self.fixed, selectedFloor=2)
-        out = apply_floor_region(settings, "nightmare", np.full((1080, 1920, 3), 33, np.uint8), fixed)
+        out = apply_floor_region(dict(floorControlMode="auto"), "nightmare", frame, dict(self.fixed, selectedFloor=1))
+        self.assertEqual((out["selectedFloor"], out["floorSource"]), (1, "fixed"))
+        out = apply_floor_region({}, "nightmare", np.full((1080, 1920, 3), 33, np.uint8), self.fixed)
+        self.assertEqual((out["selectedFloor"], out["floorSource"]), (None, "fixed-auto-unread"))
+
+    def test_fixed_mode_leaves_the_reading_alone(self):
+        settings = dict(floorControlMode="fixed", floorControlRegion=dict(rect=REGION, clientSize=[1920, 1080]))
+        out = apply_floor_region(settings, "nightmare", hud((-1, 1, 2), 2), self.fixed)
+        self.assertEqual((out["selectedFloor"], out["floorSource"]), (None, "fixed"))
+
+    def test_region_mode_reads_the_box_and_falls_back_to_auto(self):
+        settings = dict(floorControlMode="region", floorControlRegion=dict(rect=REGION, clientSize=[1920, 1080]))
+        out = apply_floor_region(settings, "nightmare", hud((-1, 1, 2), -1), dict(self.fixed, selectedFloor=1))
+        self.assertEqual((out["selectedFloor"], out["floorSource"]), (-1, "region"))
+        out = apply_floor_region(settings, "nightmare", np.full((1080, 1920, 3), 33, np.uint8),
+                                 dict(self.fixed, selectedFloor=2))
         self.assertEqual((out["selectedFloor"], out["floorSource"]), (2, "fixed-region-unread"))
-        out = apply_floor_region(dict(floorControlMode="region"), "nightmare", hud((-1, 1, 2), 1), fixed)
-        self.assertEqual((out["selectedFloor"], out["floorSource"]), (2, "fixed-region-unavailable"))
+        out = apply_floor_region(dict(floorControlMode="region"), "nightmare", hud((-1, 1, 2), 1), self.fixed)
+        self.assertEqual((out["selectedFloor"], out["floorSource"]), (1, "auto-located"))
 
     def test_runtime_uses_the_region_only_while_the_map_is_open(self):
         runtime = LiveRuntime.__new__(LiveRuntime)
@@ -107,6 +142,9 @@ class ModeSwitchTests(unittest.TestCase):
         result, floor, floor_read = runtime._observe(engine, frame)
         self.assertEqual((floor, floor_read["selectedFloor"], floor_read["floorSource"]), ("2", 2, "region"))
         self.assertIs(runtime.latest_map_frame()[0], frame)
+        runtime._settings = {}    # 自动 by default
+        result, floor, floor_read = runtime._observe(engine, hud((1, 2), 1))
+        self.assertEqual((floor, floor_read["floorSource"]), ("1", "auto-located"))
         observed["mapOpen"] = False
         runtime._latest_map_frame = None
         _result, floor, floor_read = runtime._observe(engine, frame)
@@ -144,9 +182,9 @@ class FloorRegionServiceTests(unittest.TestCase):
         self.assertTrue(predicate(), "worker completion timeout")
 
     def test_defaults_and_validation(self):
-        self.assertEqual(self.settings.values["floorControlMode"], "fixed")
+        self.assertEqual(self.settings.values["floorControlMode"], "auto")
         self.assertIsNone(self.settings.values["floorControlRegion"])
-        self.assertFalse(self.settings.setValue("floorControlMode", "auto"))
+        self.assertFalse(self.settings.setValue("floorControlMode", "manual"))
         self.assertFalse(self.settings.setValue("floorControlRegion", dict(rect=[.9, 0, .2, .1], clientSize=[1920, 1080])))
         self.assertFalse(self.settings.setValue("floorControlRegion", dict(rect=REGION)))
 
@@ -210,6 +248,9 @@ class FloorRegionServiceTests(unittest.TestCase):
                 self.app.processEvents()
                 self.assertTrue(panel.property("regionMode"))
                 self.settings.setValue("floorControlMode", "fixed")
+                self.app.processEvents()
+                self.assertFalse(panel.property("regionMode"))
+                self.settings.setValue("floorControlMode", "auto")
                 self.app.processEvents()
                 self.assertEqual(warnings, [])
                 panel.deleteLater()

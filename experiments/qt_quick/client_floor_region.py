@@ -14,7 +14,8 @@ from PySide6.QtCore import QObject, Property, Signal, Slot
 from PySide6.QtGui import QImage
 from PySide6.QtQuick import QQuickImageProvider
 
-from floor_control_region import MODE_FLOORS, normalized_region, read_floor_in_region, region_for_client
+from floor_control_region import (MODE_FLOORS, locate_floor_row, normalized_region, read_floor_in_region,
+                                  region_for_client)
 
 # Client part shown in the editor. Every supported layout keeps the floor
 # buttons inside the top-right corner, including 4:3 safe-area insets.
@@ -127,6 +128,14 @@ class FloorRegionService(QObject):
         self._serial += 1
         self._image_url = f"image://floorregion/{self._serial}"
         saved = region_for_client(self._settings.values.get("floorControlRegion"), (w, h))
+        centers = (floor_read or {}).get("centers")
+        if not isinstance(centers, (list, tuple)) or len(centers) != len(MODE_FLOORS.get(mode, ())):
+            # The fixed detector missed the row; start from the automatic search.
+            located = locate_floor_row(frame, mode)
+            if located["selectedFloor"] is not None:
+                bounds = located["tileBounds"]
+                floor_read = dict(selectedFloor=located["selectedFloor"], centers=located["centers"],
+                                  regionTop=bounds[1], regionHeight=bounds[3])
         self._message = ""
         self._set_draft(saved or suggested_rect(mode, floor_read, (w, h)))
         return True
@@ -186,6 +195,6 @@ def region_summary(values) -> str:
     """One line for the settings page describing the saved range."""
     region = (values or {}).get("floorControlRegion")
     if not isinstance(region, dict) or normalized_region(region.get("rect")) is None:
-        return "还没有框选范围；未框选时按固定方式识别。"
+        return "还没有框选范围；未框选时按自动方式识别。"
     size = region.get("clientSize") or ["?", "?"]
-    return f"已框选（按 {size[0]}×{size[1]} 窗口框的；窗口比例变了会先按固定方式识别，需要重新框选）"
+    return f"已框选（按 {size[0]}×{size[1]} 窗口框的；窗口比例变了会先按自动方式识别，需要重新框选）"
