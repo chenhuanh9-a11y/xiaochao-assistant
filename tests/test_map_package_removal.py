@@ -121,9 +121,22 @@ class PackageRemovalTests(unittest.TestCase):
         self.install({SUJU: b"old"}, name="old.zip")
         result = self.install({SUJU: b"new"}, name="new.zip")
         history = self.root / "work/map-packages/upgrades" / result["upgradeTransactionId"]
-        self.assertTrue((history / "backup" / SUJU).exists())
+        self.assertFalse((history / "backup" / SUJU).exists())
         self.remove()
         self.assertFalse(history.exists())
+        self.assertFalse((self.root / SUJU).exists())
+
+    def test_upgrade_then_clear_all_leaves_no_receipt_bound_old_or_new_download_cache(self):
+        old = self.f.package('nightmare-suju', {SUJU: b'old'}, 'old.zip')
+        new = self.f.package('nightmare-suju', {SUJU: b'new'}, 'new.zip')
+        for archive in (old, new):
+            data = archive.read_bytes()
+            self.f.write(f"work/map-packages/downloads/nightmare-suju-{hashlib.sha256(data).hexdigest()}.zip", data)
+        self.f.live(old)
+        self.f.live(new)
+        self.remove(None)
+        self.assertEqual(list((self.root / 'work/map-packages/downloads').glob('*.zip')), [])
+        self.assertTrue(old.exists() and new.exists())
         self.assertFalse((self.root / SUJU).exists())
 
     def test_all_packages_includes_hidden_registry_and_is_idempotent(self):
@@ -172,9 +185,10 @@ class PackageRemovalTests(unittest.TestCase):
         self.install({SUJU: b"old"}, name="old.zip")
         result = self.install({SUJU: b"new"}, name="new.zip")
         retained = self.root / "work/map-packages/upgrades" / result["upgradeTransactionId"] / "new" / SUJU
+        retained.parent.mkdir(parents=True)
         retained.write_bytes(b"tampered-history")
         before = self.snapshot()
-        with self.assertRaisesRegex(ValueError, "retained-new-object-changed"):
+        with self.assertRaisesRegex(ValueError, "cleanup-unknown-object"):
             self.remove()
         self.assertEqual(self.snapshot(), before)
 
@@ -275,10 +289,11 @@ r.remove_packages(root,'nightmare-suju',application_idle=True,expected_plan_sha2
         self.assertEqual((self.root / SUJU).read_bytes(), b"unknown-new-object")
         self.assertTrue((self.root / removal.PENDING).exists())
 
-    def test_failure_restores_upgrade_inode_contract_and_future_rollback(self):
+    def test_failure_restores_upgrade_inode_contract_and_allows_future_delete(self):
         self.install({SUJU: b"old"}, name="old.zip")
         upgraded = self.install({SUJU: b"new"}, name="new.zip")
         transaction = upgraded["upgradeTransactionId"]
+        identity = upgrade._identity((self.root / SUJU).stat())
         before = self.snapshot()
         write = upgrade._write_journal
         def fail_commit(directory, journal):
@@ -291,9 +306,9 @@ r.remove_packages(root,'nightmare-suju',application_idle=True,expected_plan_sha2
         self.assertEqual(self.snapshot(), before)
         upgrade._load_journal(self.root, transaction)
         self.assertTrue(removal.inspect_package_removal(self.root, "nightmare-suju")["entries"])
-        result = importer.rollback_package_upgrade(self.root, transaction, application_stopped=True)
-        self.assertEqual(result["status"], "rolled-back")
-        self.assertEqual((self.root / SUJU).read_bytes(), b"old")
+        self.assertEqual(upgrade._identity((self.root / SUJU).stat()), identity)
+        self.remove()
+        self.assertFalse((self.root / SUJU).exists())
 
     def test_committed_partial_pin_cleanup_is_not_success_and_helper_finishes_it(self):
         self.install()

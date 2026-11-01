@@ -182,6 +182,15 @@ def _plan_locked(root, package_id=None, cancelled=None):
         if header.get("packageId") not in selected:
             continue
         directory, journal = upgrade._load_journal(root, directory.name)
+        if journal["status"] in upgrade.RETIRED_STATES:
+            # Retired summaries prove no payload ownership. Verify that claim
+            # before allowing deletion of only the bounded metadata files.
+            rows, directories = upgrade._retired_plan(directory, journal)
+            if directories:
+                _reject("removal-retired-upgrade-changed")
+            histories.append((journal["packageId"], directory, [], [row[0] for row in rows]))
+            witnesses[source.relative_to(root).as_posix()] = _stamp(source)
+            continue
         if journal["status"] not in {"committed", "rolled-back"}:
             _reject("removal-upgrade-recovery-required")
         package = journal["packageId"]

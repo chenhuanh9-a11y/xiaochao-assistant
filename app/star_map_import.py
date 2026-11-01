@@ -743,7 +743,7 @@ def _commit_additions(root, result, stage, *, live=False, cancelled=None):
             owned, _ = _owned_inventory(root, result['packageId'])
             if owned == _rows(result['files']):
                 # A no-op must retain the receipt inode/transaction witness
-                # so an earlier owned upgrade can still be rolled back.
+                # so retirement history keeps its exact receipt binding.
                 previous = _json(receipt.read_bytes())
                 if previous.get('upgradeTransactionId'):
                     result['upgradeTransactionId'] = previous['upgradeTransactionId']
@@ -794,9 +794,11 @@ def _install_staged(zip_path, root, state, *, expected_archive_sha256=None, live
             recover_pending_additions(root)  # Verifies committed receipt/data before clearing marker.
         return output
     finally:
-        # Process loss or incomplete rollback keeps witnesses for explicit
+        # Process loss, incomplete rollback, or cleanup keeps witnesses for explicit
         # recovery; startup refuses resources while that marker is present.
-        if not prepared and not _target(root, 'work/map-packages/pending-additions.json').exists():
+        if (not prepared and stage.exists()
+                and not _target(root, 'work/map-packages/pending-additions.json').exists()
+                and not _target(root, 'work/map-packages/pending-upgrade.json').exists()):
             shutil.rmtree(stage)
 
 

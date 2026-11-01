@@ -38,12 +38,14 @@ class RecoveryHelperTests(unittest.TestCase):
                     importer.install_package(self.fixture.new, self.root, application_stopped=True)
             transaction_id = None
         else:
-            transaction_id = importer.install_package(self.fixture.new, self.root,
-                application_stopped=True)["upgradeTransactionId"]
+            with patch.object(upgrade, '_cleanup_upgrade', side_effect=OSError('synthetic cleanup denial')):
+                with self.assertRaisesRegex(importer.ImportRejected, 'upgrade-cleanup-incomplete'):
+                    importer.install_package(self.fixture.new, self.root, application_stopped=True)
+            transaction_id = upgrade._pending_id(self.root)
         with importer._writer_locked_installation(self.root, require_closed=False):
             return inspect_locked(self.root, transaction_id)
 
-    def request(self, plan, action="rollback", request_id="synthetic-request"):
+    def request(self, plan, action="recover", request_id="synthetic-request"):
         with patch.object(process, "_launch_parent_bound_helper", return_value=Mock()) as launch:
             helper.launch_recovery_helper(self.root / "star-map-recovery-helper.exe",
                 self.root, plan, action, request_id)
@@ -56,12 +58,15 @@ class RecoveryHelperTests(unittest.TestCase):
                           return_value="exited-matching-process-handle"):
             return helper.run_helper(**request)
 
-    def test_completed_upgrade_rollback_and_distinct_atomic_receipt(self):
+    def test_committed_upgrade_cleanup_and_distinct_atomic_receipt(self):
         plan = self.plan()
         request = self.request(plan)
         code, result = self.run_request(request)
         self.assertEqual(code, 0, result)
-        self.fixture.assert_old()
+        self.assertEqual((self.root / OLD_PATH).read_bytes(), b'q90-route')
+        self.assertEqual(result['operationResult']['status'], 'upgrade-committed')
+        self.assertEqual(result['operationResult']['temporaryCopiesRemaining'], 0)
+        self.assertTrue(result['operationResult']['cleanupOnly'])
         self.assertEqual(result["planSha256"], plan["planSha256"])
         self.assertEqual(result["transactionId"], plan["transactionId"])
         self.assertEqual(json.loads(helper.receipt_path(self.root).read_text("utf-8")), result)
@@ -177,7 +182,7 @@ class RecoveryHelperTests(unittest.TestCase):
         self.assertEqual((self.root / OLD_PATH).read_bytes(), b"q90-route")
 
     def test_changed_target_rejects_stale_consent_and_preserves_user_edit(self):
-        request = self.request(self.plan())
+        request = self.request(self.plan(pending=True))
         replacement = self.fixture.folder / "player-route"
         replacement.write_bytes(b"player-edited")
         replacement.replace(self.root / OLD_PATH)
@@ -190,7 +195,7 @@ class RecoveryHelperTests(unittest.TestCase):
         request = self.request(self.plan())
         path = Path(request["request_file"])
         payload = json.loads(path.read_text("utf-8"))
-        payload["action"] = "recover"
+        payload["action"] = "rollback"
         path.write_text(json.dumps(payload), encoding="utf-8")
         with patch.object(process, "wait_for_application_exit") as wait:
             code, result = helper.run_helper(**request)
