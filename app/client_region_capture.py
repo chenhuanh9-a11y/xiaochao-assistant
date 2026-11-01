@@ -196,6 +196,7 @@ def capture_client_region(
     *,
     full_capture: Callable[[int], tuple[np.ndarray, Rect]] | None = None,
     expected_context: ClientCaptureContext | None = None,
+    reject_blank_full_client: bool = False,
     _backend=None,
 ) -> RegionCapture:
     """Capture one ROI; native errors may use the caller's existing fallback.
@@ -215,6 +216,12 @@ def capture_client_region(
     roi = clip_client_rectangle(requested, context.full_client_size)
     try:
         pixels = backend.capture(hwnd, roi)
+        if reject_blank_full_client and roi == (0, 0, *context.full_client_size):
+            # Preserve the production full-client DC failure criterion. An
+            # arbitrary uniform ROI remains legitimate and is never tested.
+            from identityv_live_mvp import client_frame_is_blank
+            if client_frame_is_blank(pixels):
+                raise OSError('game-client-dc-returned-blank-frame')
     except OSError as error:
         if full_capture is None:
             raise
