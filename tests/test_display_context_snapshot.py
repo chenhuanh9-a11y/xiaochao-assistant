@@ -60,10 +60,15 @@ class SnapshotTests(unittest.TestCase):
         from desktop_display import window_context
         ns=dict(window_context=window_context, RectPx=RectPx,
             clamp_rect_to_work_area=clamp_rect_to_work_area, format_tk_geometry=format_tk_geometry)
-        cls=extract(APP/'desktop_display.py', {'refresh'}, ns)
+        cls=extract(APP/'desktop_display.py', {'refresh', '_schedule_bounds', '_settle_bounds'}, ns)
         obj=cls()
         obj._closed=obj._updating=False
         obj._job=None
+        obj._bounds_job=None
+        obj._fit_context=None
+        obj.root=Mock()
+        obj.idle_callbacks=[]
+        obj.root.after_idle.side_effect=lambda callback:(obj.idle_callbacks.append(callback) or 'bounds-job')
         obj.window=self.window
         obj.assistant=self.assistant
         obj._signature=None
@@ -80,18 +85,25 @@ class SnapshotTests(unittest.TestCase):
         self.assistant._native_window_handle.assert_not_called()
         self.window.update_idletasks.assert_not_called()
 
-    def test_refresh_flushes_only_after_real_dpi_change(self):
+    def test_refresh_coalesces_deferred_fit_without_recursive_idle_drain(self):
         obj=self.display()
         order=[]
         obj.apply_widgets.side_effect=lambda:order.append('apply')
         self.window.update_idletasks.side_effect=lambda:order.append('flush')
         obj.refresh()
-        self.assertEqual(order,['apply','flush'])
+        self.assertEqual(order,['apply'])
+        self.assertEqual(len(obj.idle_callbacks),1)
         for _ in range(1000):obj.refresh()
-        self.assertEqual(order,['apply','flush'])
+        self.assertEqual(order,['apply'])
+        self.assertEqual(len(obj.idle_callbacks),1)
+        obj.idle_callbacks.pop(0)()
+        self.assertIsNone(obj._fit_context)
+        self.window.minsize.assert_called_once()
         self.dpi=144
         obj.refresh()
-        self.assertEqual(order,['apply','flush','apply','flush'])
+        self.assertEqual(order,['apply','apply'])
+        self.assertEqual(len(obj.idle_callbacks),1)
         self.assertEqual(obj.scale,1.5)
+        self.window.update_idletasks.assert_not_called()
 
 if __name__=='__main__':unittest.main()

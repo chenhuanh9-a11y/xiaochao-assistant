@@ -43,6 +43,8 @@ class WindowDisplay:
         self._signature = None
         self._widgets = {}
         self._job = None
+        self._bounds_job = None
+        self._fit_context = None
         self._updating = False
         self._closed = False
         window._desktop_display = self
@@ -61,7 +63,7 @@ class WindowDisplay:
         getter = getattr(self.assistant, "_native_window_handle", None)
         if callable(getter):
             rect = wintypes.RECT()
-            if ctypes.windll.user32.GetWindowRect(getter(self.window), ctypes.byref(rect)):
+            if ctypes.windll.user32.GetWindowRect(getter(self.window, sync_layout=False), ctypes.byref(rect)):
                 return RectPx(rect.left, rect.top, rect.right, rect.bottom)
         return RectPx(self.window.winfo_x(), self.window.winfo_y(),
                       self.window.winfo_x() + self.window.winfo_width(),
@@ -171,6 +173,8 @@ class WindowDisplay:
             context = window_context(self.assistant, self.window, sync_layout=False)
             signature = context.monitor.monitor_id, context.dpi, context.monitor.work_area_px
             if signature == self._signature:
+                if self._fit_context is not None:
+                    self._schedule_bounds()
                 return
             self.context = context
             self._signature = signature
@@ -178,29 +182,46 @@ class WindowDisplay:
             self.apply_widgets()
             if self.on_scale:
                 self.on_scale(self.scale)
-            self.window.update_idletasks()
-            area = context.monitor.work_area_px
-            outer = self._frame()
-            border_w = max(0, outer.width - self.window.winfo_width())
-            border_h = max(0, outer.height - self.window.winfo_height())
-            margin = min(round(8 * self.scale), area.width // 8, area.height // 8)
-            available_w = max(1, area.width - border_w - 2 * margin)
-            available_h = max(1, area.height - border_h - 2 * margin)
-            self.window.minsize(min(round(self.minimum[0] * self.scale), available_w),
-                                min(round(self.minimum[1] * self.scale), available_h))
-            if self.window.state() in {"normal", "withdrawn"}:
-                width = min(self.window.winfo_width(), available_w)
-                height = min(self.window.winfo_height(), available_h)
-                target = RectPx(outer.left, outer.top, outer.left + width + border_w,
-                                outer.top + height + border_h)
-                fit = clamp_rect_to_work_area(target, area, margin_px=margin)
-                x = fit.left + self.window.winfo_x() - outer.left
-                y = fit.top + self.window.winfo_y() - outer.top
-                geometry = format_tk_geometry(RectPx(x, y, x + width, y + height))
-                if self.window.geometry() != geometry:
-                    self.window.geometry(geometry)
+            # Let Tk finish its pending geometry in the normal event loop.
+            # Draining idle work here also ran unrelated startup/hidden-page
+            # callbacks recursively, holding one user action for over a second.
+            self._fit_context = context
+            self._schedule_bounds()
         finally:
             self._updating = False
+
+    def _schedule_bounds(self):
+        if self._bounds_job is None and not self._closed:
+            self._bounds_job = self.root.after_idle(self._settle_bounds)
+
+    def _settle_bounds(self):
+        self._bounds_job = None
+        context = self._fit_context
+        if self._closed or context is None or context is not self.context:
+            return
+        if self.window.state() == "withdrawn":
+            return  # The next Map/refresh resumes this same pending fit.
+        self._fit_context = None
+        area = context.monitor.work_area_px
+        outer = self._frame()
+        border_w = max(0, outer.width - self.window.winfo_width())
+        border_h = max(0, outer.height - self.window.winfo_height())
+        margin = min(round(8 * self.scale), area.width // 8, area.height // 8)
+        available_w = max(1, area.width - border_w - 2 * margin)
+        available_h = max(1, area.height - border_h - 2 * margin)
+        self.window.minsize(min(round(self.minimum[0] * self.scale), available_w),
+                            min(round(self.minimum[1] * self.scale), available_h))
+        if self.window.state() == "normal":
+            width = min(self.window.winfo_width(), available_w)
+            height = min(self.window.winfo_height(), available_h)
+            target = RectPx(outer.left, outer.top, outer.left + width + border_w,
+                            outer.top + height + border_h)
+            fit = clamp_rect_to_work_area(target, area, margin_px=margin)
+            x = fit.left + self.window.winfo_x() - outer.left
+            y = fit.top + self.window.winfo_y() - outer.top
+            geometry = format_tk_geometry(RectPx(x, y, x + width, y + height))
+            if self.window.geometry() != geometry:
+                self.window.geometry(geometry)
 
     def _destroy(self, event):
         if event.widget is self.window:
@@ -209,3 +230,7 @@ class WindowDisplay:
             if self._job is not None:
                 self.root.after_cancel(self._job)
                 self._job = None
+            if self._bounds_job is not None:
+                self.root.after_cancel(self._bounds_job)
+                self._bounds_job = None
+            self._fit_context = None

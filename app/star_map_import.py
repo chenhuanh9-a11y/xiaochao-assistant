@@ -13,6 +13,7 @@ import stat
 import tempfile
 import unicodedata
 import zipfile
+from packaged_product_identity import CLOSED_EXE_NAMES
 
 
 MAX_FILES = 2000
@@ -21,12 +22,20 @@ MAX_TOTAL_BYTES = 1536 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024
 MANIFEST = "map-package.json"
 AUTHOR_PACKAGES = {
+    "nightmare-zhan10": "zhan10-nightmare",
+    "nightmare-suju-speed": "suju-speed-nightmare",
+    "difficult-suju-speed": "suju-speed-difficult",
+    "difficult-aichicu": "aichicu-difficult",
     "nightmare-wang-qingxin": "wang-qingxin",
     "nightmare-nightingale": "nightingale",
     "nightmare-lianghapi": "lianghapi-single",
 }
 AUTHOR_SIDECARS = {"catalog.json", "display-bindings.json"}
 LIVE_AUTHOR_IMAGE_ROOTS = {
+    "nightmare-zhan10": ("_internal/assets/authors/zhan10-nightmare/",),
+    "nightmare-suju-speed": ("_internal/assets/authors/suju-speed-nightmare/",),
+    "difficult-suju-speed": ("_internal/assets/authors/suju-speed-difficult/",),
+    "difficult-aichicu": ("_internal/assets/authors/aichicu-difficult/",),
     "nightmare-suju": ("_internal/assets/suju/",),
     "difficult-zhan10": ("_internal/assets/zhan10-native/", "_internal/assets/zhan10-legacy-clean/"),
     "nightmare-wang-qingxin": ("_internal/assets/authors/wang-qingxin/",),
@@ -34,7 +43,7 @@ LIVE_AUTHOR_IMAGE_ROOTS = {
     "nightmare-lianghapi": ("_internal/assets/authors/lianghapi-single/",),
 }
 PACKAGE_IDS = {"nightmare-suju", "difficult-zhan10"} | set(AUTHOR_PACKAGES)
-SUPPORTED_DISPLAY_VERSIONS = {"1.0", "1.0.1", "1.0.2", "1.0.3", "1.0.4"}
+SUPPORTED_DISPLAY_VERSIONS = {"1.0", "1.0.1", "1.0.2", "1.0.3", "1.0.4", "1.0.5"}
 CLIENT_COMPATIBILITY = {"displayVersion": "1.0", "numericLine": "1.0.0.N",
                         "minimumBuild": 1, "maximumBuild": 65535}
 BASE_DEPENDENCIES = {
@@ -43,6 +52,19 @@ BASE_DEPENDENCIES = {
     "_internal/references/nightmare-shared-structure-index.json",
     "_internal/references/nightmare-structure-version-bindings.json",
 }
+DIFFICULT_AUTHOR_DEPENDENCIES = {
+    "_internal/references/difficult-shared-structure-index.json",
+    "_internal/references/difficult-native-coordinate-pack.json",
+    "_internal/references/difficult-native-source-manifest.json",
+    "_internal/references/difficult-native-version-bindings.json",
+}
+
+
+def author_profiles_for_mode(mode):
+    return tuple(profile for package, profile in AUTHOR_PACKAGES.items()
+                 if package.startswith(str(mode) + "-"))
+
+
 # Exact canonical r6 runtime closure: 58 native floors and two legacy-clean floors.
 # Keep the older difficult package rules below for existing package compatibility.
 DIFFICULT_R6_PATHS = frozenset({
@@ -383,7 +405,8 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None) -
         raise ImportRejected("unsupported-client-compatibility")
     rows = _rows(metadata.get("files"))
     dependencies = _rows(metadata.get("requiresFiles"), dependencies=True)
-    if not BASE_DEPENDENCIES <= {r["path"] for r in dependencies.values()}:
+    required = DIFFICULT_AUTHOR_DEPENDENCIES if package_id in {"difficult-aichicu", "difficult-suju-speed"} else BASE_DEPENDENCIES
+    if not required <= {r["path"] for r in dependencies.values()}:
         raise ImportRejected("base-dependencies-not-declared")
     version_path = _target(root, "_internal/version.json")
     if not version_path.is_file() or version_path.stat().st_size > 1024 * 1024:
@@ -495,7 +518,11 @@ def inspect_package(zip_path, install_root) -> dict:
 
 
 def _check_closed(root):
-    exe = _target(root, "第五人格小抄助手.exe")
+    for name in CLOSED_EXE_NAMES:
+        _check_executable_closed(_target(root, name))
+
+
+def _check_executable_closed(exe):
     if os.name != "nt" or not exe.exists():
         return
     from ctypes import wintypes
@@ -638,11 +665,11 @@ def supports_live_author_import(result) -> bool:
     package_id = result.get('packageId')
     replacements, missing = result.get('replaceFiles'), result.get('missingFiles')
     if (not isinstance(package_id, str) or package_id not in LIVE_AUTHOR_IMAGE_ROOTS
-            or not isinstance(replacements, list) or replacements
+            or not isinstance(replacements, list)
             or not isinstance(missing, list)):
         return False
     return all(isinstance(row, dict) and isinstance(row.get('path'), str)
-               and _live_author_path(package_id, row['path']) for row in missing)
+               and _live_author_path(package_id, row['path']) for row in replacements + missing)
 
 
 def _check_cancelled(cancelled):
@@ -729,7 +756,7 @@ def _install_staged(zip_path, root, state, *, expected_archive_sha256=None, live
         _check_cancelled(cancelled)
         if result["replaceFiles"]:
             from map_package_upgrade import commit_upgrade
-            return commit_upgrade(root, result, stage)
+            return commit_upgrade(root, result, stage, live=live, cancelled=cancelled)
         return _commit_additions(root, result, stage, live=live, cancelled=cancelled)
 
 
@@ -746,12 +773,13 @@ def install_package(zip_path, install_root, *, application_stopped=False, expect
 
 def install_author_package_live(zip_path, install_root, *, application_idle=False,
                                 expected_archive_sha256=None, cancelled=None) -> dict:
-    """Append optional author art while the caller owns an idle application.
+    """Install optional author art while the caller owns an idle application.
 
     The caller must keep its idle/generation token valid until completion and
     expose invalidation through ``cancelled``. No EXE-exclusive-open test is
-    used here; the same OS writer lock, archive checks and additive transaction
-    still apply. Core repair and every owned replacement require closed import.
+    used here; the same OS writer lock and archive checks still apply. Owned,
+    unchanged author pixels/sidecars may use the journaled upgrade transaction;
+    core repair/replacement and interrupted-transaction recovery remain closed-only.
     """
     if application_idle is not True:
         raise ImportRejected("live-import-requires-idle")

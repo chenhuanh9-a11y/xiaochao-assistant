@@ -1,6 +1,7 @@
 """Persistent, receipt-owned map upgrades. Call only under the import lock.
 
-The application must be closed. Windows moves each old object using the same
+Core upgrades require a closed application. Display-only upgrades may run under
+the caller's idle resource lease. Windows moves each old object using the same
 READ|DELETE, share-READ handle that verifies its identity and contents. POSIX
 uses an exclusive backup link followed by a guarded unlink; it cannot exclude
 hostile concurrent pathname/in-place writes as Windows does. Journal/file data
@@ -411,9 +412,12 @@ def _rollback(root, directory, journal):
             "upgradeTransactionId": journal["transactionId"], "restartRequired": True}
 
 
-def commit_upgrade(root: Path, result: dict, stage: Path) -> dict:
-    """Commit validated same-pack replacements; caller owns lock/app-closed check."""
+def commit_upgrade(root: Path, result: dict, stage: Path, *, live=False, cancelled=None) -> dict:
+    """Commit same-pack replacements under the caller's writer/idle-or-closed lease."""
     adapter = _adapter()
+    if live and not adapter.supports_live_author_import(result):
+        _reject("live-import-requires-restart")
+    adapter._check_cancelled(cancelled)
     root, stage = Path(os.path.abspath(root)), Path(os.path.abspath(stage))
     adapter._no_links(root)
     adapter._no_links(stage)
@@ -444,23 +448,33 @@ def commit_upgrade(root: Path, result: dict, stage: Path) -> dict:
     # Recheck the entire selected closure immediately before preparing mutation.
     identities = {}
     for key, row in inventory.items():
+        adapter._check_cancelled(cancelled)
         target = adapter._target(root, row["path"])
         if key in missing:
             if target.exists():
                 _reject("upgrade-missing-target-now-exists")
         else:
             identities[key] = _capture(target, replacements.get(key, row))
+    adapter._check_cancelled(cancelled)
     transaction_id = str(uuid.uuid4())
     directory = adapter._target(root, f"{STATE}/upgrades/{transaction_id}")
     directory.mkdir(parents=True, exist_ok=False)
     adapter._no_links(directory)
     output = dict(result, upgradeTransactionId=transaction_id, added=len(missing),
                   replaced=len(replacements), status="upgraded-restart-required")
+    if live:
+        output.update(restartRequired=False, liveImport=True, status="author-upgraded-live",
+            authorFilesAdded=len(missing), authorFilesReplaced=len(replacements),
+            authorFilesAlreadyPresent=sum(adapter._live_author_path(package_id, row['path'])
+                for row in inventory.values()) - len(missing) - len(replacements))
     old_receipt_row = _receipt_row(package_id, previous_data)
     old_receipt_identity = _capture(receipt, old_receipt_row)
     new_receipt_data = _encoded(output)
     new_receipt_row = _receipt_row(package_id, new_receipt_data)
     entries = []
+    # Finish the bounded preparation into a journal before observing another
+    # cancellation. No target changes here; once the pointer exists the normal
+    # rollback path can account for every retained object.
     for key in sorted(set(replacements) | set(missing)):
         row = inventory[key]
         source = adapter._target(stage, row["path"])
@@ -488,12 +502,17 @@ def commit_upgrade(root: Path, result: dict, stage: Path) -> dict:
     _pointer(root, transaction_id, directory)
     try:
         for entry in entries:
+            # Receipt publication is the commit point. Before it, cancellation
+            # restores the entire old inventory/receipt using the same journal.
+            adapter._check_cancelled(cancelled)
             row = entry["new"]
             target = adapter._target(root, row["path"])
             if row["path"] == new_receipt_row["path"]:
                 for current in inventory.values():
+                    adapter._check_cancelled(cancelled)
                     if not _matches(adapter._target(root, current["path"]), current):
                         _reject("upgrade-data-changed-before-receipt-publication")
+            adapter._check_cancelled(cancelled)
             if entry["old"] is not None:
                 backup = adapter._target(directory, "backup/" + row["path"])
                 _move_owned(target, backup, entry["old"], entry["oldIdentity"])
@@ -502,6 +521,7 @@ def commit_upgrade(root: Path, result: dict, stage: Path) -> dict:
             retained = adapter._target(directory, "new/" + row["path"])
             if not _matches(retained, row, entry["newIdentity"]):
                 _reject("upgrade-retained-new-object-changed")
+            adapter._check_cancelled(cancelled)
             os.link(retained, target)
             if not _matches(target, row, entry["newIdentity"]):
                 _reject("upgrade-published-object-changed")

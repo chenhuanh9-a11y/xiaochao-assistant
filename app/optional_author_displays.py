@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 
 from author_route_catalog import AuthorRouteCatalog
+from star_map_import import author_profiles_for_mode
 from nightmare_author_coordinate_adapter import AuthorCoordinateAdapters
 from nightmare_candidate import imread_unicode
 
@@ -30,7 +31,7 @@ class OptionalAuthorDisplayAdapters(AuthorCoordinateAdapters):
 
 
 class OptionalAuthorDisplays:
-    def __init__(self, root, pack, catalog, adapters, versions):
+    def __init__(self, root, pack, catalog, adapters, versions, *, mode="nightmare"):
         self.root = Path(root).resolve()
         self.bindings = {}
         self.profiles = set()
@@ -39,7 +40,7 @@ class OptionalAuthorDisplays:
         if self.catalog is not None:
             self.catalog.profiles = dict(catalog.profiles)
             self.catalog._raw = copy.deepcopy(catalog._raw)
-        for profile in ('wang-qingxin','nightingale','lianghapi-single'):
+        for profile in author_profiles_for_mode(mode):
             folder = self.root/'references/author-packs'/profile
             sidecar = folder/'catalog.json'
             if not sidecar.is_file():
