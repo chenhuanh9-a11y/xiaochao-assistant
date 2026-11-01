@@ -294,7 +294,7 @@ class SettingsService(QObject):
         try:
             self._shortcut_candidate = self._candidate_from_primary(primary, modifiers)
             self._shortcut_ready = True
-            self._shortcut_message = "请确认录入；确认后仍需保存快捷键"
+            self._shortcut_message = "点击保存并生效即可保存此快捷键"
             self.changed.emit()
             return True
         except ValueError as error:
@@ -382,22 +382,27 @@ class SettingsService(QObject):
         if not self.shortcutRecording:
             return False
         self._shortcut_candidate, self._shortcut_ready = "", True
-        self._shortcut_message = "确认后将解绑此快捷键；仍需保存快捷键"
+        self._shortcut_message = "点击保存并生效即可解绑此快捷键"
         self.changed.emit()
         return True
 
     @Slot(result=bool)
     def confirmShortcutCapture(self):
-        if not self.shortcutRecording or not self._shortcut_ready:
+        if self._busy or not self.shortcutRecording or not self._shortcut_ready:
             return False
-        if self._shortcut_target == "hotkey":
-            accepted = self.setValue("hotkey", self._shortcut_candidate)
+        target = self._shortcut_target
+        candidate = self._shortcut_candidate
+        key = "hotkey" if target == "hotkey" else "actionHotkeys"
+        value = deepcopy(self._baseline[key])
+        index = None if target == "hotkey" else ACTION_ORDER.index(target)
+        if index is None:
+            value = candidate
         else:
-            keys = deepcopy(self._draft["actionHotkeys"])
-            keys[ACTION_ORDER.index(self._shortcut_target)] = self._shortcut_candidate
-            accepted = self.setValue("actionHotkeys", keys)
+            value[index] = candidate
+        original_draft = deepcopy(self._draft[key] if index is None else self._draft[key][index])
+        accepted = self._save_fields([key], {key: value})
         if accepted:
-            self.cancelShortcutCapture()
+            self._capture_commit = (key, index, candidate, original_draft)
         else:
             self._shortcut_message = self._message
             self.changed.emit()
@@ -567,7 +572,7 @@ class SettingsService(QObject):
             return False
         return self._save_fields(keys)
 
-    def _save_fields(self, keys):
+    def _save_fields(self, keys, explicit_edits=None):
         if self._busy:
             return False
         if self._read_error:
@@ -576,6 +581,8 @@ class SettingsService(QObject):
             return False
         edits = {k: deepcopy(self._draft[k]) for k in keys
                  if self._draft[k] != self._baseline[k] or k in self._repairs}
+        if explicit_edits is not None:
+            edits = deepcopy(explicit_edits)
         if not edits:
             self._message = "没有需要保存的更改"
             self.changed.emit()
@@ -612,12 +619,24 @@ class SettingsService(QObject):
         snapshot, payload, saved_keys = self._saving
         self._busy = False
         self._job = None
+        capture_commit = getattr(self, "_capture_commit", None)
+        self._capture_commit = None
         if error:
             self._write_error = f"保存失败：{error}；草稿已保留。"
             self._message = self._write_error
+            if capture_commit and self.shortcutRecording:
+                self._shortcut_message = self._write_error
         else:
             self._raw, self._disk_bytes = payload, data
             self._baseline = snapshot
+            if capture_commit:
+                key, index, candidate, original_draft = capture_commit
+                if index is None:
+                    if self._draft[key] == original_draft:
+                        self._draft[key] = candidate
+                elif self._draft[key][index] == original_draft:
+                    self._draft[key][index] = candidate
+                self.cancelShortcutCapture()
             self._invalid = {k: v for k, v in self._invalid.items() if k not in saved_keys}
             self._repairs.difference_update(saved_keys)
             self._write_error = ""

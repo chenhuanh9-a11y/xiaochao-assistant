@@ -241,7 +241,6 @@ class ShortcutDeliveryTests(unittest.TestCase):
             self.assertTrue(recorder.hasActiveFocus())
             QTest.keyClick(window,Qt.Key_J);self.app.processEvents()
             self.assertEqual(self.settings.shortcutCandidate,'J')
-            popup.findChild(QObject,'onboardingCaptureConfirm').clicked.emit()
             popup.findChild(QObject,'onboardingAdvance').clicked.emit()
             self.storage.wait(lambda:not self.settings.busy)
             self.assertEqual(onboarding.step,2)
@@ -255,6 +254,9 @@ class ShortcutDeliveryTests(unittest.TestCase):
             QTest.mouseClick(window,Qt.ForwardButton,Qt.NoModifier,pos)
             self.assertEqual(self.settings.shortcutCandidate,'MOUSE5')
             popup.findChild(QObject,'onboardingCaptureConfirm').clicked.emit()
+            self.assertTrue(self.settings.busy)
+            self.assertFalse(popup.findChild(QObject,'onboardingCaptureCancel').property('enabled'))
+            self.storage.wait(lambda:not self.settings.busy)
             popup.findChild(QObject,'onboardingAdvance').clicked.emit()
             self.storage.wait(lambda:not self.settings.busy)
             self.foreground=77;self.mouse(0x100);self.mouse(0x200)
@@ -319,7 +321,6 @@ class ShortcutDeliveryTests(unittest.TestCase):
                 QCoreApplication.sendEvent(view, QKeyEvent(QEvent.KeyPress, qtkey, mods, 0, vk, 0, text))
                 self.assertEqual(self.settings.shortcutCandidate, expected)
                 visual_item(panel, 'shortcutCaptureConfirm').clicked.emit()
-                visual_item(panel, 'settingsSave').clicked.emit()
                 self.storage.wait(lambda: not self.settings.busy)
                 self.assertEqual(self.storage.service().persistedValues['actionHotkeys'][0], expected)
                 # Client.qml uses this property directly. Qt's logical ';'/'&'
@@ -356,7 +357,6 @@ class ShortcutDeliveryTests(unittest.TestCase):
                 self.app.processEvents()
                 self.assertEqual(self.settings.shortcutCandidate, expected)
                 visual_item(panel, 'shortcutCaptureConfirm').clicked.emit()
-                visual_item(panel, 'settingsSave').clicked.emit()
                 self.storage.wait(lambda: not self.settings.busy)
                 self.app.processEvents()
                 action = 'map' if target == 'hotkey' else target

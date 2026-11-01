@@ -53,6 +53,17 @@ class OnboardingTests(unittest.TestCase):
         row["visible"] = not row["visible"]
         self.coordinator.controlVisibilityChanged.emit(row["visible"], source)
 
+    def test_step_one_recorded_empty_map_cannot_advance_or_save(self):
+        before = self.settings.persistedValues
+        self.settings.beginShortcutCapture("hotkey")
+        self.settings.clearShortcutCandidate()
+        self.service.advance()
+        self.assertEqual(self.service.step, 1)
+        self.assertFalse(self.settings.busy)
+        self.assertEqual(self.settings.persistedValues, before)
+        self.assertTrue(self.settings.shortcutRecording)
+        self.assertFalse((self.path / "ui-settings.json").exists())
+
     def test_skip_replay_and_real_trial_completion(self):
         self.assertTrue(self.service.active)
         self.assertFalse((self.path / "ui-settings.json").exists())
