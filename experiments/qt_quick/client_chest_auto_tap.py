@@ -76,9 +76,10 @@ class ChestAutoTapService(QObject):
 
     def _snapshot(self):
         state = self._service.snapshot()
+        display_state = dict(state, error=state.get("runtimeError", state.get("error", "")))
         return dict(state, savedEnabled=bool(state.get("enabled")), enabled=self._armed,
-                    running=self._running, message=chest_message(state, self._message),
-                    status=chest_message(state, state.get("status", "")),
+                    running=self._running, message=chest_message(display_state, self._message),
+                    status=chest_message(display_state, state.get("status", "")),
                     rawMessage=self._message, rawStatus=state.get("status", ""), rawError=state.get("error", ""),
                     tapKeys=list(TAP_KEYS), triggerKeys=list(TRIGGER_KEYS))
 
@@ -242,6 +243,7 @@ class ChestAutoTapService(QObject):
         self._armed = False
         self._timer.stop()
         self._stop()
-        self._service.stop()
+        shutdown = getattr(self._service, "shutdown", self._service.stop)
+        shutdown()
         self._message = "开箱连点已停止"
         self._publish()

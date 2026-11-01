@@ -48,8 +48,10 @@ class OfflineTests(unittest.TestCase):
         self.held = False
         for tapper in self.tappers:
             tapper._disable()
-            tapper.stop()
-        time.sleep(.03)  # Let the suspended daemons finish their mocked releases.
+            tapper.shutdown()
+            if tapper._thread is not None:
+                tapper._thread.join(1)
+                self.assertFalse(tapper._thread.is_alive(), "fixture must drain before native mocks stop")
 
     def send(self, vk, up):
         self.events.append((vk, up, time.perf_counter()))
@@ -277,6 +279,52 @@ class WorkerTests(OfflineTests):
             self.held = False
             self.assertTrue(tapper.update(BASE)["success"])
             self.assertIs(tapper._thread, worker)
+
+    def test_shutdown_is_terminal_nonblocking_and_drains_blocked_press(self):
+        self.held = True
+        entered, release = threading.Event(), threading.Event()
+        def send(vk, up):
+            self.send(vk, up)
+            if not up:
+                entered.set()
+                release.wait(1)
+            return 0
+        with mock.patch.object(chest_auto_tap, "_send_key", send):
+            tapper = self.tapper()
+            tapper.update(BASE)
+            self.assertTrue(entered.wait(1))
+            worker = tapper._thread
+            try:
+                with mock.patch.object(worker, "join", side_effect=AssertionError("shutdown must not join")):
+                    started = time.perf_counter()
+                    tapper.shutdown()
+                    tapper.shutdown()
+                    self.assertLess(time.perf_counter() - started, .1)
+                self.assertFalse(tapper.update(BASE)["success"])
+                self.assertFalse(tapper.resume()["success"])
+            finally:
+                release.set()
+            worker.join(1)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual([(vk, up) for vk, up, _ in self.events], [(ord("F"), False), (ord("F"), True)])
+            self.assertEqual(tapper.snapshot()["pendingReleaseVks"], [])
+
+    def test_shutdown_exits_after_release_budget_and_preserves_ledger(self):
+        self.held = True
+        def send(vk, up):
+            self.send(vk, up)
+            return 5 if up else 0
+        with mock.patch.object(chest_auto_tap, "_send_key", send):
+            tapper = self.tapper()
+            tapper.update(BASE)
+            wait_for(lambda: len(self.events) >= 2)
+            tapper.shutdown()
+            tapper._thread.join(1)
+            self.assertFalse(tapper._thread.is_alive())
+            self.assertEqual(tapper.snapshot()["pendingReleaseVks"], [ord("F")])
+            self.assertTrue(tapper.snapshot()["releaseRetriesExhausted"])
+            self.assertEqual(sum(up for _, up, _ in self.events), 1 + chest_auto_tap.RELEASE_RETRIES)
+            self.assertFalse(tapper.update(BASE)["success"])
 
     def test_worker_exception_releases_uncertain_down(self):
         self.held = True

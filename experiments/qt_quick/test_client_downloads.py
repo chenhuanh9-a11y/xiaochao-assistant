@@ -162,7 +162,7 @@ class OnlineTests(unittest.TestCase):
             generation = self.service._generation
             until(lambda: not self.service.busy)
         self.assertEqual(len(self.problems), 1)
-        self.assertIn("网络连接失败", self.service.snapshot["message"])
+        self.assertIn("暂时连接不上图包下载服务", self.service.snapshot["message"])
         self.assertNotIn("private failure", self.service.snapshot["message"])
         self.assertTrue(self.problems[0]["raw"].startswith("private failure detail"))
         self.assertLessEqual(len(self.problems[0]["raw"].encode("utf-8")), 4096)

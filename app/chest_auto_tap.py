@@ -139,6 +139,7 @@ class ChestAutoTap:
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._thread = None
+        self._closed = False
         self._generation = 0
         self._trigger_rearm_required = False
         self._pending_releases = {}  # VK -> number of key-up attempts.
@@ -219,6 +220,9 @@ class ChestAutoTap:
         success=False on a disable request means some settings were not saved;
         runtime enabled is still False. Read snapshot() to refresh the UI.
         """
+        with self._lock:
+            if self._closed:
+                return dict(success=False, message="开箱连点已关闭，不能重新启用")
         disabling = settings.get("enabled") is False
         if disabling:
             current = self._disable()
@@ -277,7 +281,9 @@ class ChestAutoTap:
     def snapshot(self) -> dict:
         with self._lock:
             return dict(self.settings, available=self.available, status=self.status,
-                        holding=self.holding, error=self.error,
+                        holding=self.holding, error=self.error, closed=self._closed,
+                        configurationError=self._configuration_error,
+                        runtimeError=" ".join(self._runtime_errors),
                         triggerReady=not self._trigger_rearm_required,
                         pendingReleaseVks=sorted(self._pending_releases),
                         releaseRetriesExhausted=any(attempts > RELEASE_RETRIES
@@ -302,14 +308,14 @@ class ChestAutoTap:
     def sync(self) -> None:
         """Wake the single worker; never join it or replace a live thread."""
         with self._lock:
-            enabled = (self.settings["enabled"] and self.available
+            enabled = (not self._closed and self.settings["enabled"] and self.available
                        and not any(self._pending_releases.values()))
             if enabled:
                 self._stop.clear()
             else:
                 self._stop.set()
             running = self._thread is not None and self._thread.is_alive()
-            if (enabled or self._pending_releases) and not running:
+            if not self._closed and (enabled or self._pending_releases) and not running:
                 self._thread = threading.Thread(target=self._run, name="chest-auto-tap", daemon=True)
                 self._thread.start()
         self._wake.set()
@@ -328,6 +334,19 @@ class ChestAutoTap:
             self._trigger_rearm_required = True
         self._wake.set()
         self._set_status("未开启", holding=False)
+
+    def shutdown(self) -> None:
+        """Permanently stop without joining native calls on the caller thread.
+
+        The worker owns outstanding releases through their bounded retry budget,
+        then exits. An exhausted release ledger remains available in snapshot().
+        """
+        with self._lock:
+            self._closed = True
+            self._generation += 1
+            self._stop.set()
+            self._trigger_rearm_required = True
+        self._wake.set()
 
     def _clear_configuration_error(self):
         # Successful validation permits another explicit enable; it cannot
@@ -355,7 +374,7 @@ class ChestAutoTap:
 
     def _active(self, generation):
         with self._lock:
-            return (not self._stop.is_set() and self.settings["enabled"]
+            return (not self._closed and not self._stop.is_set() and self.settings["enabled"]
                     and self._generation == generation)
 
     def _in_game(self):
@@ -389,6 +408,10 @@ class ChestAutoTap:
                 settings = dict(self.settings)
                 generation = self._generation
                 pending = bool(self._pending_releases)
+                closed = self._closed
+            if closed and not pending:
+                self._set_status("已停止", holding=False)
+                return
             if pending:
                 with self._lock:
                     retrying = any(0 < count <= RELEASE_RETRIES
@@ -403,6 +426,9 @@ class ChestAutoTap:
                     exhausted = bool(self._pending_releases) and not retryable
                 if exhausted:
                     self._set_status("", error="释放重试已耗尽；待释放账本已保留，请手动检查游戏按键状态。")
+                    with self._lock:
+                        if self._closed:
+                            return
                     self._wake.wait()
                 continue
             if not self._active(generation):

@@ -36,6 +36,9 @@ class ChestFocusRecoveryTests(unittest.TestCase):
         self.held=False;self.release.set()
         self.adapter.shutdown();self.service._disable()
         self.wait(lambda:not self.service.snapshot()['pendingReleaseVks'])
+        if self.service._thread is not None:
+            self.service._thread.join(1)
+            self.assertFalse(self.service._thread.is_alive(), "fixture worker must exit before restoring native input")
         for item in reversed(self.patches):item.stop()
 
     def wait(self,predicate):
