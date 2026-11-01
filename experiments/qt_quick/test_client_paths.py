@@ -42,6 +42,7 @@ class RuntimePathTests(unittest.TestCase):
         self.assertEqual(paths.settings_path, legacy)
         self.assertEqual(paths.custom_galleries_path, state / "custom-galleries.json")
         self.assertEqual(paths.update_state_path, state / "update-state.json")
+        self.assertEqual(paths.tutorial_state_path, state / "tutorial-state.json")
         self.assertEqual(paths.memory_root("difficult"), self.root / "work/difficult-memory")
         self.assertEqual(paths.resource_root, self.internal)
         self.assertEqual(legacy.read_text(encoding="utf-8"), '{"unknown":42}')
@@ -71,6 +72,7 @@ class RuntimePathTests(unittest.TestCase):
         paths = module.runtime_paths()
         self.assertEqual(paths.settings_path, sandbox / "ui-settings.json")
         self.assertEqual(paths.update_state_path, sandbox / "qt-update-state.json")
+        self.assertEqual(paths.tutorial_state_path, sandbox / "qt-tutorial-state.json")
         self.assertEqual(paths.resource_root, sandbox / "_internal")
 
     def test_editor_path_lookup_defers_validation_to_worker(self):

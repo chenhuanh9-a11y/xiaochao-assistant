@@ -18,6 +18,49 @@ Item {
             width: helpScroll.availableWidth; spacing: 12
             Label { text: "排查与帮助"; font.pixelSize: 26; font.bold: true; color: "#142b4b" }
             Label { text: "先看当前状态，再按需要展开步骤或导出排查信息。"; color: "#526785"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+            Rectangle {
+                objectName: "helpTutorialCard"
+                Layout.fillWidth: true; implicitHeight: tutorialCard.implicitHeight + 36; radius: 12; color: "white"
+                ColumnLayout {
+                    id: tutorialCard; anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 18; spacing: 12
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 12
+                        Image { source: "icons/help.png"; sourceSize: Qt.size(48, 48); Layout.preferredWidth: 24; Layout.preferredHeight: 24 }
+                        ColumnLayout {
+                            Layout.fillWidth: true; spacing: 4
+                            Label { text: "使用教程"; font.pixelSize: 18; font.bold: true; color: "#142b4b" }
+                            Label { text: "按实际流程讲：选路线、开局贴合、游戏控件到排查。"; color: "#526785"; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                        }
+                        AppButton { objectName: "helpTutorialStart"; text: "开始学习"; primary: true; onClicked: tutorialService.open("start") }
+                    }
+                    GridLayout {
+                        id: tutorialGrid
+                        Layout.fillWidth: true; columns: tutorialGrid.width >= 520 ? 2 : 1; columnSpacing: 10; rowSpacing: 10
+                        Repeater {
+                            model: tutorialService.chapters
+                            delegate: ToolButton {
+                                id: tutorialEntry
+                                required property var modelData
+                                objectName: "helpTutorial-" + modelData.id
+                                Layout.fillWidth: true; implicitHeight: 58
+                                Accessible.name: modelData.title
+                                onClicked: tutorialService.open(modelData.id)
+                                contentItem: RowLayout {
+                                    spacing: 8
+                                    ColumnLayout {
+                                        Layout.fillWidth: true; spacing: 3
+                                        Label { text: tutorialEntry.modelData.title; font.bold: true; color: "#17365e"; font.pixelSize: 13 }
+                                        Label { text: tutorialEntry.modelData.summary + " · " + tutorialEntry.modelData.steps.length + " 步"; color: "#8a95a8"; font.pixelSize: 11; Layout.fillWidth: true; elide: Text.ElideRight }
+                                    }
+                                    Label { visible: tutorialEntry.modelData.done; text: "已看完"; color: "#17775a"; font.bold: true; font.pixelSize: 11 }
+                                    Label { text: "›"; color: "#8a95a8"; font.pixelSize: 16 }
+                                }
+                                background: Rectangle { radius: 10; color: tutorialEntry.hovered ? "#e9effd" : "#f5f7fb"; border.width: tutorialEntry.activeFocus ? 2 : 0; border.color: "#2f66eb" }
+                            }
+                        }
+                    }
+                }
+            }
             Label { text: infoService.version; color: "#526785" }
             RowLayout {
                 AppButton { objectName: "helpCheckUpdates"; text: infoService.updatePhase === "checking" ? "正在检查…" : infoService.updatePhase === "error" ? "重新检查" : "检查更新"; enabled: !infoService.checking; onClicked: infoService.checkUpdates() }
