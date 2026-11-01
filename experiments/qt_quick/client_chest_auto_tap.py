@@ -11,6 +11,7 @@ if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 from chest_auto_tap import ChestAutoTap, TAP_KEYS, TRIGGER_KEYS
 from game_window_focus import NativeGameFocusAPI
+from client_problem_messages import chest_message
 from hotkey_bindings import parse_chord
 from hotkey_keys import _primary_hotkey_to_vk
 
@@ -30,6 +31,7 @@ class ChestAutoTapService(QObject):
     an immutable, lock-protected target, and retains ownership of key releases.
     """
     changed = Signal()
+    errorReported = Signal(object)
 
     def __init__(self, paths, coordinator, native_input, settings, *,
                  service_factory=ChestAutoTap, native=None, parent=None):
@@ -43,6 +45,7 @@ class ChestAutoTapService(QObject):
         self._bound = ""
         self._message = "请连接游戏并启用快捷键，再手动开启开箱连点"
         self._last = None
+        self._reported_error = ""
         path = Path(paths.settings_path).with_name("chest-auto-tap.json")
         _no_links(path)
         self._refresh_reserved()
@@ -74,13 +77,22 @@ class ChestAutoTapService(QObject):
     def _snapshot(self):
         state = self._service.snapshot()
         return dict(state, savedEnabled=bool(state.get("enabled")), enabled=self._armed,
-                    running=self._running, message=self._message,
+                    running=self._running, message=chest_message(state, self._message),
+                    status=chest_message(state, state.get("status", "")),
+                    rawMessage=self._message, rawStatus=state.get("status", ""), rawError=state.get("error", ""),
                     tapKeys=list(TAP_KEYS), triggerKeys=list(TRIGGER_KEYS))
 
     snapshot = Property("QVariantMap", _snapshot, notify=changed)
 
     def _publish(self):
         state = self._snapshot()
+        raw_error = state.get("rawError", "")
+        if not raw_error:
+            self._reported_error = ""
+        if raw_error and raw_error != self._reported_error:
+            self._reported_error = raw_error
+            self.errorReported.emit(dict(title="开箱连点已停止", summary=state["message"],
+                raw=raw_error, action="chest-auto-tap", phase="input", kind="error"))
         if state != self._last:
             self._last = state
             self.changed.emit()

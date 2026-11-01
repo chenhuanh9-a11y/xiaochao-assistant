@@ -33,7 +33,7 @@ class AdditionsRecoveryTests(unittest.TestCase):
         self.assertTrue(self.service.recoveryRequired)
         self.service.setRecoveryAllowedProvider(lambda: True)
         self.fixture.request_recovery()
-        self.assertIn('中断新增导入将撤回本次新增', self.fixture.confirmations[-1][1])
+        self.assertIn('尚未完成的导入会撤销', self.fixture.confirmations[-1][1])
         self.assertNotIn('保留备份', self.fixture.confirmations[-1][1])
         self.service.confirmOperation(True)
         self.fixture.settle()
@@ -43,8 +43,8 @@ class AdditionsRecoveryTests(unittest.TestCase):
         self.assertEqual(len(self.fixture.changes), 1)
 
     def test_additions_receipt_preserves_commit_or_rollback_meaning_after_scan(self):
-        for status, phrase in [('additions-committed', '核验完整提交'), ('additions-rolled-back', '撤回中断导入'),
-                              ('removal-committed', '完成图包删除记录清理'), ('removal-rolled-back', '还原中断删除')]:
+        for status, phrase in [('additions-committed', '上次导入已完成'), ('additions-rolled-back', '未完成的导入已撤销'),
+                              ('removal-committed', '上次删除和清理已完成'), ('removal-rolled-back', '未完成的删除已撤销，图包已恢复')]:
             identity_key = 'removalTransactionId' if status.startswith('removal-') else 'additionTransactionId'
             receipt = dict(success=True, requestId='bound-request', planSha256='a' * 64,
                 action='recover', transactionId='transaction',

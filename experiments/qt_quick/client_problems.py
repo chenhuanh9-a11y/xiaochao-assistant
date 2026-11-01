@@ -18,7 +18,8 @@ from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, Qt, Signal
 from client_resource_errors import error_text, safe_code, safe_error_details
 
 PHASE_LABELS = dict(capture="画面采集", input="快捷键", identity="地图识别", floor="楼层识别",
-                    **{"recognition-alignment": "识别与贴合", "operation": "任务执行"})
+                    **{"recognition-alignment": "识别与贴合", "operation": "任务执行",
+                       "presentation": "地图显示", "resource": "地图资源", "resources": "地图资源"})
 RECENT_LIMIT = 32
 PENDING_LIMIT = 64
 LOG_MAX_BYTES = 1024 * 1024
@@ -131,6 +132,7 @@ class ProblemsService(QObject):
         self._recent, self._queue = [], deque()
         self._accepting, self._job, self._sequence = True, None, 0
         self._write_error = ''
+        self._write_error_raw = ''
         self._inflight_rows, self._dropped = 0, 0
         self._build_fingerprint = _text(build_fingerprint, 64)
         self._source_commit = _text(source_commit, 40)
@@ -140,6 +142,7 @@ class ProblemsService(QObject):
                        if key != '_signature'} for row in self._recent], notify=recentChanged)
     pendingWrites = Property(bool, lambda self: bool(self._job is not None or self._queue), notify=changed)
     writeError = Property(str, lambda self: self._write_error, notify=changed)
+    writeErrorDetails = Property(str, lambda self: self._write_error_raw, notify=changed)
     droppedWrites = Property(int, lambda self: self._dropped, notify=changed)
 
     @Slot(str, result=str)
@@ -252,7 +255,8 @@ class ProblemsService(QObject):
         self._job = None
         self._inflight_rows = 0
         if error is not None:
-            self._write_error = '问题日志暂时无法写入：' + str(error)
+            self._write_error_raw = str(error)
+            self._write_error = '问题日志暂时无法保存，本次运行的列表仍可查看。请先复制问题的技术详情，避免关闭软件后丢失记录。'
         self._start_next()
         self.changed.emit()
 

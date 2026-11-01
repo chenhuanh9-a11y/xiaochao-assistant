@@ -22,7 +22,7 @@ Rectangle {
         }
         Label {
             Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#526785"
-            text: problemService.recent.length ? "保留本次运行最近32项。展开可查看原因并选中复制原始信息。" : "本次运行尚未记录错误或警告。"
+            text: problemService.recent.length ? "保留本次运行最近32项。先查看原因和建议；需要排查时，点开问题复制技术详情。" : "本次运行尚未记录错误或警告。"
         }
         Label { visible: !!problemService.writeError; text: problemService.writeError; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#b8364a" }
         ColumnLayout {
@@ -38,7 +38,7 @@ Rectangle {
                         Layout.fillWidth: true
                         text: modelData.localTime + " · " + modelData.phaseLabel + " · " + modelData.title + (modelData.count > 1 ? "（" + modelData.count + "次）" : "")
                         onClicked: panel.openedId = panel.openedId === modelData.id ? "" : modelData.id
-                        contentItem: Text { text: parent.text; wrapMode: Text.WordWrap; color: "#183a73"; font.bold: true }
+                        contentItem: Text { text: parent.text; textFormat: Text.PlainText; wrapMode: Text.WordWrap; color: "#183a73"; font.bold: true }
                         background: Rectangle { radius: 8; color: parent.hovered ? "#e7effc" : "transparent"; border.width: parent.activeFocus ? 2 : 0; border.color: "#2f66eb" }
                     }
                     Label { text: modelData.summary; textFormat: Text.PlainText; color: "#354f75"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
@@ -48,11 +48,11 @@ Rectangle {
                         contentWidth: availableWidth; clip: true
                         TextArea {
                             objectName: "problemDetails-" + modelData.id
-                            text: problemService.detailText(modelData.id)
+                            text: problemService.detailText(modelData.id) + (problemService.writeErrorDetails ? "\n\n问题日志写入失败的原始原因：\n" + problemService.writeErrorDetails : "")
                             readOnly: true; selectByMouse: true; persistentSelection: true; activeFocusOnTab: true
                             wrapMode: TextEdit.WrapAnywhere; textFormat: TextEdit.PlainText
                             color: "#354f75"; selectionColor: "#dce8ff"; selectedTextColor: "#142b4b"
-                            Accessible.name: "问题详情，可选中复制"
+                            Accessible.name: "技术详情，可选中复制原始错误"
                             background: Rectangle { color: "#f3f6fc"; radius: 6 }
                         }
                     }

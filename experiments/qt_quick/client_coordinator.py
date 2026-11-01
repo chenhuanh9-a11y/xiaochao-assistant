@@ -1688,17 +1688,18 @@ class ClientCoordinator(QObject):
         pointer_key = ("floor-click-observer", pointer_error)
         if pointer_error and pointer_key not in self._notified:
             self._notified.add(pointer_key)
-            summary = "游戏内楼层按钮的点击监听暂不可用，自动楼层检测和快捷键仍独立运行；详情可在最近问题查看。"
-            self.errorReported.emit(dict(title="楼层点击监听暂不可用", summary=summary,
+            summary = "鼠标快捷键、游戏内拖动和楼层按钮点击暂不可用。键盘快捷键和画面楼层识别仍独立运行；请先用键盘操作，并在帮助页查看技术详情。"
+            self.errorReported.emit(dict(title="鼠标操作暂不可用", summary=summary,
                 raw=pointer_error, action="game-floor-control", phase="input", kind="warning"))
-            self.notificationRequested.emit("楼层点击监听暂不可用", summary, "warning")
+            self.notificationRequested.emit("鼠标操作暂不可用", summary, "warning")
         if state.get("status") in {"failed", "conflict", "unknown"}:
-            key = ("input-failure", state.get("message"))
+            raw_message = state.get("rawMessage", state.get("message", ""))
+            key = ("input-failure", raw_message)
             if key not in self._notified:
                 self._notified.add(key)
-                summary = "全局快捷键暂不可用，原始原因已保存在帮助页的“最近问题”。"
+                summary = state.get("message") or "快捷键暂不可用，请在帮助页查看“最近问题”。"
                 self.errorReported.emit(dict(title="快捷键暂不可用", summary=summary,
-                    raw=state.get("message", ""), action="native-input", phase="input", kind="warning"))
+                    raw=raw_message, action="native-input", phase="input", kind="warning"))
                 self.notificationRequested.emit("快捷键暂不可用", summary, "warning")
 
     def _notify_session_transitions(self, state):

@@ -16,10 +16,11 @@ from uuid import UUID, uuid4
 _PENDING_KINDS = {
     "upgrade-recovery-required": "upgrade",
     "author-upgrade-recovery-required": "upgrade",
+    "upgrade-cleanup-incomplete": "upgrade",
     "additions-recovery-required": "additions",
     "removal-recovery-required": "removal",
 }
-_UPGRADE_STATES = {"prepared", "committed", "rolling-back", "rollback-incomplete", "rolled-back"}
+_UPGRADE_STATES = {"preparing", "prepared", "committed", "rolling-back", "rollback-incomplete", "rolled-back", "upgrade-cleanup-pending"}
 _PLAN_FIELDS = {"transactionId", "packageId", "status", "pending", "fileCount", "blockedPaths", "planSha256"}
 
 
@@ -68,19 +69,20 @@ def _validate_plan(plan, kind):
 
 
 def _confirmation_message(plan, kind):
+    from author_package_management import PACKAGE_NAMES
     operations = {
-        "upgrade": "回退中断的图包升级，恢复到本次升级前的资源。",
+        "upgrade": ("清理临时副本，不回退或重写已提交的当前资源。"
+                    if plan["status"] in {"committed", "rolled-back", "upgrade-cleanup-pending"}
+                    else "处理中断的图包升级：未提交则恢复旧资源，已提交则只完成临时副本清理。"),
         "additions": "恢复中断的图包导入：未提交则撤回本次新增，已提交则完成记录清理。",
         "removal": "恢复中断的图包删除：未提交则还原本次删除，已提交则完成记录清理。",
     }
-    return ("检测到尚未完成的资源事务，当前不能继续启动。\n\n"
-            + operations[kind] + "\n图包：" + plan["packageId"]
+    return ("上次图包操作还没处理完，星图暂时无法启动。\n\n"
+            + operations[kind] + "\n图包：" + PACKAGE_NAMES.get(plan["packageId"], "本地图包")
             + "\n文件数：" + str(plan["fileCount"])
-            + "\n事务：" + plan["transactionId"]
-            + "\n计划指纹：" + plan["planSha256"][:16]
-            + "\n\n确认后本程序将正常退出，由独立恢复工具重新核对记录并执行恢复。"
-            + "遇到新增、被改动或归属不明的文件时将停止，不强制覆盖或删除。"
-            + "恢复工具不会自动重启程序；请稍后重新启动查看结果。"
+            + "\n\n确认后星图会退出，由恢复工具检查并处理上述文件。"
+            + "无法确认的文件不会被强制覆盖或删除。"
+            + "处理后请重新打开星图查看结果。"
             + "\n\n选择“是”启动此恢复计划；选择“否”取消恢复并退出，保留现有文件。")
 
 

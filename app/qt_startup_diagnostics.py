@@ -16,29 +16,31 @@ LOG_NAME = "qt-client-startup-error.txt"
 MAX_REPORT_BYTES = 16 * 1024
 _STAGES = {"validate-profile", "import-client", "run-client", "create-client"}
 _RESOURCE_ACTIONS = {
+    "upgrade-cleanup-incomplete": "图包更新已结束，但临时文件还没清理完。请按提示继续清理，已经更新的图包不会被还原。",
+    "base-cleanup-incomplete": "上次修复留下的临时文件还没清理完。请关闭可能占用文件的程序后重开星图；仍出现此提示时，请附上诊断记录反馈。",
     "resource-busy": "其他资源操作正在进行，请稍后重试。",
-    "resource-runtime-already-active": "另一个程序实例正在使用资源，请先关闭该实例后重试。",
-    "upgrade-recovery-required": "资源升级尚待恢复，不能继续资源初始化。请完成资源恢复后重试。",
-    "base-recovery-required": "基础资源修复尚待恢复，不能继续资源初始化。请完成资源恢复后重试。",
-    "additions-recovery-required": "资源导入尚待恢复，不能继续资源初始化。请完成资源恢复后重试。",
-    "removal-recovery-required": "图包删除尚未完成，请完成资源恢复或临时文件清理后重试。",
-    "startup-recovery-plan-invalid": "资源恢复计划无效。原资源已保留，请保留诊断记录。",
-    "startup-recovery-plan-blocked": "待恢复资源与记录不一致，不能安全覆盖或删除。请保留诊断记录。",
-    "startup-recovery-confirmation-unavailable": "无法显示资源恢复确认，未授权恢复。请保留诊断记录。",
-    "startup-recovery-cancel-unconfirmed": "资源恢复交接失败，取消记录未能写入。本次启动失败退出，请保留诊断记录。",
-    "recovery-plan-changed-reinspect-required": "确认期间资源恢复计划已变化，请重新启动并核对。",
-    "recovery-helper-launch-not-confirmed": "资源恢复工具未确认启动，请保留诊断记录后重试。",
-    "resource-linked-target": "资源目录含链接，无法安全初始化。请检查安装目录。",
-    "installation-root-missing": "安装目录不存在，请使用安装器修复安装。",
-    "resource-hardlinks-unavailable": "安装位置无法完成硬链接资源事务，请检查文件系统支持和目录权限。",
-    "resource-cross-volume-target": "资源目录跨越多个卷，无法安全初始化。请检查安装目录。",
-    "resource-unsafe-target": "资源目录不符合安全访问要求，请检查安装目录。",
-    "base-candidate-manifest-missing": "安装器提供的基础资源清单缺失，请使用安装器修复安装。",
-    "base-repair-preflight-blocked": "基础资源核对发现冲突或损坏，不能继续资源初始化。请保留诊断记录并完成资源修复。",
-    "base-repair-failed-and-rollback-incomplete": "基础资源修复失败且恢复未完成，不能继续资源初始化。请保留诊断记录并完成资源恢复。",
-    "base-rollback-incomplete": "基础资源恢复尚未完成，不能继续资源初始化。请保留诊断记录并完成资源恢复。",
-    "author-upgrade-recovery-required": "作者资源升级尚待恢复，不能继续资源初始化。请完成资源恢复后重试。",
-    "resource-initialization-failed": "基础资源初始化失败，请保留诊断记录并完成资源修复。",
+    "resource-runtime-already-active": "另一个星图窗口正在使用地图文件，请先退出它再试。",
+    "upgrade-recovery-required": "上次图包更新还没处理完，暂时无法启动。请先按恢复提示完成处理。",
+    "base-recovery-required": "上次地图文件修复还没处理完，暂时无法启动。请保留诊断记录并反馈。",
+    "additions-recovery-required": "上次图包导入还没处理完，暂时无法启动。请先按恢复提示完成处理。",
+    "removal-recovery-required": "上次图包删除还没处理完，暂时无法启动。请先按恢复提示完成处理。",
+    "startup-recovery-plan-invalid": "无法核对上次图包操作的记录，本次没有继续恢复。请保留现有文件，附上诊断记录反馈。",
+    "startup-recovery-plan-blocked": "需要恢复的文件与原记录不同，本次没有继续覆盖或删除。请保留现有文件，附上诊断记录反馈。",
+    "startup-recovery-confirmation-unavailable": "无法显示恢复确认窗口，本次没有开始恢复。请附上诊断记录反馈。",
+    "startup-recovery-cancel-unconfirmed": "未能确认上次恢复操作是否已取消，星图暂时无法启动。请保留现有文件，附上诊断记录反馈。",
+    "recovery-plan-changed-reinspect-required": "确认期间图包文件发生了变化。请重新打开星图，核对新的恢复提示后再决定。",
+    "recovery-helper-launch-not-confirmed": "未能确认恢复工具是否已打开。请保留现有文件，附上诊断记录反馈。",
+    "resource-linked-target": "部分地图文件的位置无法安全核对，星图暂时无法处理。请保留现有文件，附上诊断记录反馈。",
+    "installation-root-missing": "找不到星图的安装目录。请确认程序没有被移动，并附上诊断记录反馈。",
+    "resource-hardlinks-unavailable": "当前安装位置不支持图包更新所需的文件操作。请附上诊断记录反馈，先不要反复导入或删除图包。",
+    "resource-cross-volume-target": "地图文件分布在不同磁盘，暂时无法完成更新。请保留现有文件，附上诊断记录反馈。",
+    "resource-unsafe-target": "星图无法安全访问部分地图文件，暂时停止启动。请保留现有文件，附上诊断记录反馈。",
+    "base-candidate-manifest-missing": "安装文件缺少地图资源清单，暂时无法启动。请附上诊断记录反馈，不要手动删除图包。",
+    "base-repair-preflight-blocked": "启动所需的地图文件与安装记录不一致，暂时无法启动。请保留现有图包，附上诊断记录反馈。",
+    "base-repair-failed-and-rollback-incomplete": "地图文件修复失败，还没恢复到可用状态。请保留现有文件，附上诊断记录反馈。",
+    "base-rollback-incomplete": "地图文件还没恢复到可用状态，暂时无法启动。请保留现有文件，附上诊断记录反馈。",
+    "author-upgrade-recovery-required": "上次作者图包更新还没处理完，暂时无法启动。请先按恢复提示完成处理。",
+    "resource-initialization-failed": "星图未能准备好启动所需的地图文件，具体原因尚未确定。请保留现有文件，附上诊断记录反馈。",
 }
 for _code in (
     "invalid-base-inventory", "invalid-base-path", "invalid-base-manifest-schema",
@@ -52,6 +54,9 @@ for _code in (
     _RESOURCE_ACTIONS[_code] = _RESOURCE_ACTIONS["resource-initialization-failed"]
 
 _ISSUE_REASONS = {
+    "cleanup-object-changed": "临时对象已变化",
+    "cleanup-object-unknown": "存在归属未知的临时对象",
+    "cleanup-object-unwritable": "临时对象无法清理",
     "base-ownership-unknown": "基础资源归属未知",
     "candidate-integrity-mismatch": "安装候选资源校验失败",
     "installed-package-owned-conflict": "与已安装资源的归属冲突",
@@ -100,9 +105,11 @@ def _safe_issues(error):
             row = {"reason": reason if isinstance(reason, str) and reason in _ISSUE_REASONS else "unknown"}
             path = issue.get("path")
             if (isinstance(path, str) and len(path) <= 240
-                    and (path == "_internal/difficult-native-manifest.json"
+                    and (path in {"_internal/difficult-native-manifest.json",
+                                  "work/map-packages/pending-base-repair.json", "work/map-packages/pending-upgrade.json"}
                          or path.startswith(("_internal/references/", "_internal/recognition/", "_internal/assets/",
-                                             "references/", "recognition/", "assets/")))
+                                              "references/", "recognition/", "assets/",
+                                              "work/map-packages/base-repairs/", "work/map-packages/upgrades/")))
                     and re.fullmatch(r"[\w./ -]+", path)
                     and all(part and part not in {".", ".."} for part in path.split("/"))):
                 row["path"] = path
@@ -231,6 +238,24 @@ def _show_native_error(message):
     box(None, message, "星图启动失败", 0x10 | 0x10000)  # MB_ICONERROR | MB_SETFOREGROUND
 
 
+def _record_location(path):
+    """Locate the report without printing an account-specific absolute path."""
+    path = Path(path)
+    base = (Path(sys.executable).absolute().parent if getattr(sys, "frozen", False)
+            else Path(__file__).resolve().parents[1])
+    locations = [(base / "work", "安装目录下的 work 文件夹")]
+    local = os.environ.get("LOCALAPPDATA")
+    if local and Path(local).is_absolute():
+        locations.append((Path(local) / "Xingtu/diagnostics", "%LOCALAPPDATA%/Xingtu/diagnostics"))
+    try:
+        locations.append((Path(tempfile.gettempdir()) / "Xingtu/diagnostics", "%TEMP%/Xingtu/diagnostics"))
+    except OSError:
+        pass
+    label = next((label for directory, label in locations if path.parent == directory), None)
+    return ("详细记录已保存：" + (label + "中的 " if label else "") + LOG_NAME
+            + "。反馈时请附上此文件。")
+
+
 def report_startup_failure(error, *, stage="run-client"):
     """Return the saved path if any; report failures must not mask the cause."""
     code, report = _details(error, stage)
@@ -239,21 +264,15 @@ def report_startup_failure(error, *, stage="run-client"):
     except Exception:
         path = None
     action = (_RESOURCE_ACTIONS[_resource_code(error)] if code == "QT-STARTUP-RESOURCE"
-              else "安装身份文件缺失或损坏，请使用安装器修复安装。" if code == "QT-STARTUP-PROFILE"
-              else "启动所需组件未能加载，请使用安装器修复安装。" if code == "QT-STARTUP-DEPENDENCY"
-              else "无法访问启动所需目录，请检查目录的写入权限。" if code == "QT-STARTUP-STORAGE"
-              else "程序无法完成启动，请保留诊断记录并联系支持。")
-    location = "诊断记录：" + str(path) if path else "未能写入诊断记录：安装目录、LocalAppData 和临时目录均不可用。"
-    message = "星图未能启动。\n" + action + "\n错误码：" + code + "\n" + location
-    if code == "QT-STARTUP-RESOURCE":
-        message += "\n资源原因：" + _resource_code(error)
-        issues, count = _safe_issues(error)
-        for issue in issues[:3]:
-            message += "\n" + _ISSUE_REASONS.get(issue["reason"], "资源核对失败")
-            if "path" in issue:
-                message += "：" + issue["path"]
-        if count > 3:
-            message += "\n更多问题请查看诊断记录。"
+              else "无法核对当前安装的版本信息。请保留诊断记录并反馈，不要手动移动或删除安装文件。" if code == "QT-STARTUP-PROFILE"
+              else "启动所需的组件未能打开。请附上诊断记录反馈，便于确认缺少哪个组件。" if code == "QT-STARTUP-DEPENDENCY"
+              else "星图无法读写启动所需的文件夹。请确认文件夹可访问；仍失败时请附上诊断记录反馈。" if code == "QT-STARTUP-STORAGE"
+              else "程序无法完成启动，具体原因尚未确定。请附上诊断记录反馈。")
+    location = (_record_location(path) if path else
+                "未能写入诊断记录。反馈时请提供此提示的截图。")
+    # Raw reason codes, resource paths, hashes and stack frames remain in the
+    # bounded report. The native dialog has no technical-details expander.
+    message = "星图未能启动。\n" + action + "\n\n" + location
     try:
         if sys.stderr is not None:
             sys.stderr.write(report + message + "\n")

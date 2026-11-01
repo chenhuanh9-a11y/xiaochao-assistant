@@ -140,7 +140,9 @@ class QtEntryFailureTests(StartupFixture):
         self.assertNotIn("config-value", text)
         self.assertLess(log.stat().st_size, 16384)
         diagnostics._show_native_error.assert_called_once()
-        self.assertIn(str(log), diagnostics._show_native_error.call_args.args[0])
+        message = diagnostics._show_native_error.call_args.args[0]
+        self.assertIn(log.name, message)
+        self.assertNotIn(str(self.root), message)
 
     def test_temp_fallback_and_all_denied_still_report_once(self):
         self.bake()
@@ -229,9 +231,10 @@ class QtEntryFailureTests(StartupFixture):
                 self.assertNotIn("private config value", text)
                 diagnostics._show_native_error.assert_called_once()
                 message = diagnostics._show_native_error.call_args.args[0]
-                self.assertIn(code, message)
+                self.assertNotIn(code, message)
+                self.assertIn("qt-client-startup-error.txt", message)
                 if code.endswith("recovery-required"):
-                    self.assertIn("不能继续资源初始化", message)
+                    self.assertIn("暂时无法启动", message)
 
     def test_native_boundary_makes_one_messagebox_call_without_qt(self):
         import ctypes
@@ -264,7 +267,9 @@ class QtEntryFailureTests(StartupFixture):
         self.assertIn("issue.0.actual.status=missing", text)
         self.assertNotIn("secret-user-config", text)
         self.assertNotIn("C:/Users", text)
-        self.assertIn("安装候选资源校验失败", diagnostics._show_native_error.call_args.args[0])
+        message = diagnostics._show_native_error.call_args.args[0]
+        self.assertIn("地图文件与安装记录不一致", message)
+        self.assertNotIn("_internal/", message)
 
     def test_unknown_resource_code_is_not_serialized_as_arbitrary_text(self):
         from managed_base_resources import ManagedBaseResourceError

@@ -66,14 +66,17 @@ class StartupRecoveryTests(unittest.TestCase):
         self.launch.assert_called_once_with(self.root, self.plan, result.request_id)
         self.cancel.assert_not_called()
         message = self.confirm.call_args.args[0]
-        for value in ("恢复到本次升级前", self.plan["transactionId"], self.plan["packageId"], "文件数：3", "计划指纹："):
+        for value in ("未提交则恢复旧资源", "已提交则只完成临时副本清理", "文件数：3"):
             self.assertIn(value, message)
+        self.assertNotIn(self.plan["transactionId"], message)
+        self.assertNotIn(self.plan["planSha256"][:16], message)
 
     def test_additions_removal_and_base_upgrade_alias_have_exact_plan_kinds(self):
         for code, status, message in (
             ("additions-recovery-required", "additions-pending", "撤回本次新增"),
             ("removal-recovery-required", "removal-pending", "还原本次删除"),
-            ("author-upgrade-recovery-required", "committed", "恢复到本次升级前"),
+            ("author-upgrade-recovery-required", "committed", "清理临时副本"),
+            ("upgrade-cleanup-incomplete", "upgrade-cleanup-pending", "清理临时副本"),
         ):
             with self.subTest(code=code):
                 self.error.code = code
@@ -81,6 +84,8 @@ class StartupRecoveryTests(unittest.TestCase):
                 self.plan["packageId"] = "all-managed" if status == "removal-pending" else "nightmare-suju"
                 self.assertEqual(self.run_offer().status, "helper-started")
                 self.assertIn(message, self.confirm.call_args.args[0])
+                if status in {"committed", "upgrade-cleanup-pending"}:
+                    self.assertNotIn("恢复到本次升级前", self.confirm.call_args.args[0])
 
     def test_wrong_pending_kind_or_invalid_plan_never_gets_consent(self):
         invalid = [dict(self.plan, pending=False), dict(self.plan, status="additions-pending"),

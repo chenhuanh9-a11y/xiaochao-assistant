@@ -2,7 +2,7 @@
 from contextlib import contextmanager
 
 from managed_base_resources import repair_managed_base_resources
-from resource_transaction import assert_resources_ready, resource_read_lock, resource_runtime_lease
+from resource_transaction import assert_resources_ready, resource_read_lock, resource_runtime_lease, resource_write_lock
 
 
 @contextmanager
@@ -16,6 +16,9 @@ def production_resources(root, *, production, on_failure=None):
         # and installers until all resource consumers have drained at shutdown.
         try:
             repair_managed_base_resources(root)
+            from map_package_upgrade import retire_completed_upgrades
+            with resource_write_lock(root):
+                retire_completed_upgrades(root)
             assert_resources_ready(root)
         except Exception as error:
             outcome = on_failure(error) if on_failure is not None else None

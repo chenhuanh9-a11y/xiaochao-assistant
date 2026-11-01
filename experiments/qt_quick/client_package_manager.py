@@ -97,7 +97,7 @@ class PackageManagerService(QObject):
     def _drain_refresh(self):
         if self._refresh_requested and self._available():
             if self._start("refresh", lambda cancel: removal.managed_packages_snapshot(self.sandbox, cancelled=cancel.is_set),
-                           "正在核对受管图包和遗留记录…"):
+                           "正在查看已导入图包和上次操作记录…"):
                 self._refresh_requested = False
 
     @Slot(str)
@@ -127,7 +127,7 @@ class PackageManagerService(QObject):
             return
         self._start("remove", lambda cancel: removal.remove_packages(self.sandbox, plan["packageId"],
             application_idle=True, expected_plan_sha256=plan["planSha256"], cancelled=cancel.is_set),
-            "正在删除受管图包并清理本次临时副本…")
+            "正在删除图包并清理本次临时文件…")
 
     @Slot()
     def cancel(self):
@@ -135,7 +135,7 @@ class PackageManagerService(QObject):
             self.confirmOperation(False)
         elif self._busy:
             self._cancel.set()
-            self._message = "正在请求取消，等待事务核对最终状态…"
+            self._message = "正在取消，请等待本次操作确认结果…"
             self.changed.emit()
 
     @Slot(int, object, object)
@@ -156,9 +156,9 @@ class PackageManagerService(QObject):
             else:
                 problem = package_problem(error, "package-" + kind)
                 if code == "removal-committed-cleanup-required":
-                    problem["summary"] = "图包删除已提交，临时回滚副本尚未清理完毕。本次未报告完成；请正常退出并重启，按恢复提示继续清理。"
+                    problem["summary"] = "图包已删除，但本次临时文件还没清理完。请正常退出并重启，按提示继续清理；清理结束后才会提示完成。"
                 elif self._recovery:
-                    problem["summary"] = "图包删除未完成，恢复记录已保留。请正常退出并重启后恢复；未知文件不会被覆盖。"
+                    problem["summary"] = "图包删除还没完成。请正常退出并重启，按提示恢复图包；无法确认来源的文件会保留。"
                 elif kind == "remove":
                     problem["summary"] = "图包删除未完成；本次文件改动已撤回。详细原因可在帮助页的“最近问题”查看。"
                 elif kind == "refresh-after-remove":
@@ -181,11 +181,11 @@ class PackageManagerService(QObject):
         elif kind == "inspect":
             self._pending = result
             self._message = "请确认删除范围。"
-            title = "清理全部受管图包" if result["packageId"] is None else "删除图包"
-            text = (f"将删除 {len(result['packageIds'])} 个图包的 {result['fileCount']} 个受管文件，"
-                    f"共 {result['bytes']} 字节，包含已核对的同包历史副本。\n\n"
-                    "成功后不保留这些图包的备份副本。官方基础资源、共享引用、自定义路线及未知或改动过的文件会保留。"
-                    f"\n本次明确保留 {len(result['preserved'])} 个文件记录。")
+            title = "清理全部已导入图包" if result["packageId"] is None else "删除图包"
+            text = (f"将删除 {len(result['packageIds'])} 个图包的 {result['fileCount']} 个图包文件，"
+                    f"共 {result['bytes']} 字节，包含已确认属于这些图包的旧副本。\n\n"
+                    "成功后不保留这些图包的备份副本。软件必需的地图文件、其他图包仍需使用的文件、自定义路线，以及来源不明或改动过的文件会保留。点击取消可返回，不会开始删除。"
+                    f"\n本次明确保留 {len(result['preserved'])} 个文件。")
             self.changed.emit()
             self.confirmationRequested.emit(title, text)
             return
@@ -196,17 +196,17 @@ class PackageManagerService(QObject):
             return
         elif kind in {"refresh", "refresh-after-remove"}:
             self._rows = result
-            self._message = "受管图包状态已核对。" if result else "没有可删除的受管图包。"
+            self._message = "图包状态已核对。" if result else "没有可删除的已导入图包。"
             self._release()
             if kind == "refresh-after-remove":
                 self.resourcesChanged.emit()
             if self._completion is not None:
                 done, self._completion = self._completion, None
-                self._message = (f"图包删除完成，已清理 {done['removedFiles']} 个受管文件，本次临时副本剩余 0 个。"
-                    if done["removedFiles"] else "没有需要删除的受管文件；保留项目未改动。")
+                self._message = (f"图包删除完成，已清理 {done['removedFiles']} 个图包文件，本次临时文件已清理完。"
+                    if done["removedFiles"] else "没有需要删除的图包文件；保留项目未改动。")
                 if done["unverifiedPreservedCount"]:
-                    self._message = (f"已清理 {done['removedFiles']} 个可核对文件，本次临时副本剩余 0 个；"
-                        f"仍保留 {done['unverifiedPreservedCount']} 个未知或改动项目，本次未完整删除。")
+                    self._message = (f"已清理 {done['removedFiles']} 个已确认属于图包的文件，本次临时文件已清理完；"
+                        f"仍保留 {done['unverifiedPreservedCount']} 个来源不明或改动过的项目，未能全部删除。")
                     problem = package_problem("removal-preserved-items", "package-remove")
                     problem.update(summary=self._message, kind="warning")
                     self.errorReported.emit(problem)

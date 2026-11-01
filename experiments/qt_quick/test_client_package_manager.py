@@ -54,7 +54,7 @@ class PackageManagerTests(unittest.TestCase):
         self.confirm()
         self.assertEqual(self.changes, [True])
         self.assertEqual(len(self.completions), 1)
-        self.assertIn("临时副本剩余 0 个", self.completions[0][1])
+        self.assertIn("临时文件已清理完", self.completions[0][1])
         self.assertEqual(self.service.packageRows, [])
         self.assertFalse((self.fixture.root / fixtures.IMAGE).exists())
         self.assertFalse(self.fixture.lease.active)
@@ -74,7 +74,7 @@ class PackageManagerTests(unittest.TestCase):
         self.assertTrue((self.fixture.root / "work/map-packages/nightmare-suju.json").exists())
         self.assertEqual((self.fixture.root / fixtures.IMAGE).read_bytes(), b"modified-by-user")
         self.assertEqual(self.completions, [])
-        self.assertIn("未完整删除", self.service.message)
+        self.assertIn("未能全部删除", self.service.message)
         self.assertEqual(self.problems[-1]["kind"], "warning")
 
     def test_committed_cleanup_error_keeps_lease_and_never_announces_success(self):
@@ -86,8 +86,8 @@ class PackageManagerTests(unittest.TestCase):
         with patch.object(removal.files, "_rollback_published", side_effect=fail_cleanup):
             self.confirm()
         self.assertEqual(self.completions, [])
-        self.assertIn("已提交", self.service.message)
-        self.assertIn("未报告完成", self.service.message)
+        self.assertIn("已删除", self.service.message)
+        self.assertIn("清理结束后才会提示完成", self.service.message)
         self.assertTrue(self.service.recoveryRequired)
         self.assertTrue(self.fixture.lease.active)
         self.assertFalse((self.fixture.root / fixtures.IMAGE).exists())

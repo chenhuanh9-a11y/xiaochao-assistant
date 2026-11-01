@@ -19,16 +19,16 @@ Item {
     }
 
     function stateLabel(status) {
-        const labels = {"installed": "已安装并校验", "not-installed": "未安装", "incomplete": "文件缺失或有改动",
-            "unmanaged": "已有文件，尚未登记", "unverified": "尚未完成校验", "recovery-required": "需要恢复事务", "managed-remnants": "受管历史副本"}
-        return labels[status] || status
+        const labels = {"installed": "已安装，可以使用", "not-installed": "未安装", "incomplete": "文件缺失或有改动",
+            "unmanaged": "已有文件，暂时无法确认来源", "unverified": "还没确认是否可用", "recovery-required": "上次操作还没完成", "managed-remnants": "有旧图包文件可清理"}
+        return labels[status] || "需要重新核对"
     }
     function stateDetail(row) {
-        if (row.status === "unmanaged") return "现有文件没有可验证的登记记录，将保留原文件。"
-        if (row.status === "incomplete") return "存在本地改动；不能验证归属的文件与登记会保留，不会报告完整删除。"
-        if (row.status === "managed-remnants") return "包含同包旧备份或已结束事务中的受管副本。"
+        if (row.status === "unmanaged") return "暂时无法确认这些文件是否属于图包，会保留原文件。"
+        if (row.status === "incomplete") return "部分文件有改动或无法确认来源，会保留这些文件，删除可能无法全部完成。"
+        if (row.status === "managed-remnants") return "包含这个图包的旧备份，或上次操作留下的临时文件。"
         if (row.status === "unverified") return "暂时无法完成核对，请重新检查状态。"
-        if (row.status === "recovery-required") return "请先核对保留的事务备份与日志。"
+        if (row.status === "recovery-required") return "请点击“恢复记录”，按提示完成上次操作。"
         return ""
     }
 
@@ -53,9 +53,9 @@ Item {
         ColumnLayout {
             Layout.fillWidth: true
             visible: resourceService.recoveryRequired || resourceService.recoveryTransactions.length > 0
-            Label { text: "升级恢复与回滚"; color: "#17365e"; font.bold: true }
-            Label { text: resourceService.recoveryUsesHelper ? "确认后正常关闭客户端，由恢复工具还原旧资源；重新打开后核对结果。" : resourceService.recoveryExecutionAllowed ? "已停止资源读取，可核对后恢复旧资源。" : "恢复需要单独的启动恢复阶段，识别和资源读取必须全部停止。"; color: "#526785"; wrapMode: Text.Wrap; Layout.fillWidth: true }
-            AppButton { text: "恢复中断的升级"; visible: resourceService.recoveryRequired; enabled: resourceService.recoveryExecutionAllowed && !resourceService.busy && resourceService.pendingKind === ""; onClicked: resourceService.requestRecovery() }
+            Label { text: "完成上次操作与清理"; color: "#17365e"; font.bold: true }
+            Label { text: resourceService.recoveryUsesHelper ? "确认后软件会正常退出，继续处理上次未完成的更改，或清理已完成操作留下的临时文件。完成后请重新打开查看结果。" : resourceService.recoveryExecutionAllowed ? "软件已准备好，可以确认后恢复图包或清理临时文件。" : "请先结束本局并正常退出，重新打开后按提示恢复图包。"; color: "#526785"; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            AppButton { text: "处理上次未完成的操作"; visible: resourceService.recoveryRequired; enabled: resourceService.recoveryExecutionAllowed && !resourceService.busy && resourceService.pendingKind === ""; onClicked: resourceService.requestRecovery() }
             ListView {
                 id: transactions
                 Layout.fillWidth: true
@@ -66,8 +66,14 @@ Item {
                 delegate: RowLayout {
                     required property var modelData
                     width: transactions.width
-                    Label { Layout.fillWidth: true; text: modelData.packageId + " · " + modelData.transactionId.slice(0,8) + " · " + modelData.status; color: "#526785"; elide: Text.ElideRight }
-                    AppButton { text: "回滚"; enabled: resourceService.recoveryExecutionAllowed && !resourceService.busy && resourceService.pendingKind === ""; onClicked: resourceService.requestRollback(modelData.transactionId) }
+                    Label { Layout.fillWidth: true; text: resourceService.packageTitle(modelData.packageId) + " · " + resourceService.recoveryStatusLabel(modelData.status); color: "#526785"; elide: Text.ElideRight }
+                    AppButton {
+                        objectName: "resourceTransactionAction-" + modelData.transactionId
+                        readonly property bool cleanup: modelData.status === "upgrade-cleanup-available" || modelData.status === "upgrade-cleanup-pending"
+                        text: cleanup ? "清理临时副本" : "恢复图包"
+                        enabled: (cleanup || modelData.pending) && resourceService.recoveryExecutionAllowed && !resourceService.busy && resourceService.pendingKind === ""
+                        onClicked: resourceService.requestCleanup(modelData.transactionId)
+                    }
                 }
             }
         }
@@ -91,7 +97,7 @@ Item {
                         Label { Layout.fillWidth: true; text: modelData.title; elide: Text.ElideRight; font.pixelSize: 14; color: "#142b4b"; font.bold: true }
                         Label {
                             Layout.fillWidth: true
-                            text: panel.stateLabel(modelData.status) + (modelData.fileCount !== undefined ? " · " + modelData.fileCount + " 个受管文件（含历史副本）" : "")
+                            text: panel.stateLabel(modelData.status) + (modelData.fileCount !== undefined ? " · " + modelData.fileCount + " 个图包文件（含旧副本）" : "")
                             color: modelData.status === "installed" ? "#17775a" : "#526785"; font.pixelSize: 12; wrapMode: Text.Wrap
                         }
                         Label {
@@ -111,7 +117,7 @@ Item {
             Label {
                 anchors.centerIn: parent; width: Math.min(parent.width, 440); horizontalAlignment: Text.AlignHCenter
                 visible: packages.count === 0
-                text: panel.operationPending ? "正在核对本地资源…" : panel.recoveryPending ? "资源事务需要恢复，请正常退出并重启后按提示处理。" : "尚无受管图包。可核对状态，或导入本地 ZIP 资源包。"
+                text: panel.operationPending ? "正在核对本地资源…" : panel.recoveryPending ? "上次图包操作还没完成，请正常退出并重启后按提示处理。" : "还没有可管理的图包。可点击“核对状态”，或导入本地 ZIP 图包。"
                 wrapMode: Text.Wrap; color: "#526785"; font.pixelSize: 13
             }
         }

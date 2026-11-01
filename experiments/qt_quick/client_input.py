@@ -22,6 +22,7 @@ from hotkey_bindings import Chord, modifiers_match, parse_chord, primary_state, 
 from hotkey_keys import _primary_hotkey_to_vk, NATIVE_ONLY_SHORTCUT_KEYS
 from session_state_machine import global_key_is_allowed
 from client_map_input import OrderedMapInput
+from client_problem_messages import input_message
 
 
 ACTION_ORDER = ("toggle-panel", "candidate-prev", "candidate-next", "confirm-round",
@@ -144,9 +145,13 @@ class NativeShortcutBackend(QObject):
         self._timer.timeout.connect(self.pollOnce)
 
     enabled = Property(bool, lambda self: self._enabled, notify=changed)
-    message = Property(str, lambda self: self._message, notify=changed)
+    def _public_message(self):
+        return input_message(self._status, self._message,
+                             management=self._management_enabled, game=self._enabled)
+
+    message = Property(str, _public_message, notify=changed)
     snapshot = Property("QVariantMap", lambda self: dict(
-        enabled=self._enabled, status=self._status, message=self._message,
+        enabled=self._enabled, status=self._status, message=self._public_message(), rawMessage=self._message,
         hwnd=str(self._hwnd), bindings={name: chord.name for name, chord in self._bindings.items()},
         textEntryActive=self._text, editingBindings=self._editing,
         readPermission="unknown", passThrough=True, globalRegistration=False,

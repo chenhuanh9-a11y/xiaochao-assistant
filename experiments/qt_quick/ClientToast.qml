@@ -127,8 +127,8 @@ Window {
             y: Math.max(0, (parent.height - height) / 2)
             width: Math.max(1, parent.width - x - toast.inset)
             spacing: titleLabel.visible && messageLabel.visible ? 3 : 0
-            Label { id: titleLabel; objectName: "toastTitle"; width: parent.width; visible: text !== ""; text: toast.notificationTitle; color: "#142b4b"; font.family: "Microsoft YaHei UI"; font.pixelSize: 13; font.bold: true; wrapMode: Text.WordWrap }
-            Label { id: messageLabel; objectName: "toastMessage"; width: parent.width; visible: text !== ""; text: toast.notificationMessage; color: "#142b4b"; font.family: "Microsoft YaHei UI"; font.pixelSize: 13; wrapMode: Text.WordWrap }
+            Label { id: titleLabel; objectName: "toastTitle"; width: parent.width; visible: text !== ""; text: toast.notificationTitle; textFormat: Text.PlainText; color: "#142b4b"; font.family: "Microsoft YaHei UI"; font.pixelSize: 13; font.bold: true; wrapMode: Text.WordWrap }
+            Label { id: messageLabel; objectName: "toastMessage"; width: parent.width; visible: text !== ""; text: toast.notificationMessage; textFormat: Text.PlainText; color: "#142b4b"; font.family: "Microsoft YaHei UI"; font.pixelSize: 13; wrapMode: Text.WordWrap }
         }
     }
 }

@@ -41,8 +41,8 @@ class ResourceErrorTests(unittest.TestCase):
         self.fixture.install()
         self.assertEqual(len(self.fixture.problems), 1)
         problem = self.fixture.problems[0]
-        self.assertIn("基础资源不匹配", problem["summary"])
-        self.assertNotIn("图包内容不完整", problem["summary"])
+        self.assertIn("地图文件有缺失，或版本与当前软件不匹配", problem["summary"])
+        self.assertNotIn("文件与包内说明不一致", problem["summary"])
         self.assertEqual(problem["errorCode"], "missing-or-incompatible-dependency")
         self.assertEqual(problem["errorDetails"], dict(path=DEPENDENCY,
             expectedBytes=len(CONTENT), actualBytes=None if actual is None else len(actual),
@@ -77,7 +77,7 @@ class ResourceErrorTests(unittest.TestCase):
         archive = self.fixture.folder / "malformed-shared.zip"
         archive.write_bytes(b"not a ZIP")
         self.fixture.install(archive)
-        self.assertIn("当前版本支持的完整图包", self.fixture.problems[-1]["summary"])
+        self.assertIn("适用于当前软件版本的 ZIP 文件", self.fixture.problems[-1]["summary"])
         self.assertEqual(self.fixture.problems[-1]["errorCode"], "package-unreadable")
         self.assertEqual(self.fixture.changes, [])
 
@@ -92,7 +92,7 @@ class ResourceErrorTests(unittest.TestCase):
             for name, content in records.items():
                 target.writestr(name, content)
         self.fixture.install(archive)
-        self.assertIn("当前版本支持的完整图包", self.fixture.problems[-1]["summary"])
+        self.assertIn("适用于当前软件版本的 ZIP 文件", self.fixture.problems[-1]["summary"])
         self.assertEqual(self.fixture.problems[-1]["errorCode"], "unsupported-package-version")
         self.assertEqual(self.fixture.changes, [])
 
@@ -107,20 +107,32 @@ class ResourceErrorTests(unittest.TestCase):
         self.fixture.install(archive)
         problem = self.fixture.problems[-1]
         self.assertEqual(problem["errorCode"], "file-integrity-mismatch")
-        self.assertIn("图包内容不完整", problem["summary"])
-        self.assertNotIn("基础资源不匹配", problem["summary"])
+        self.assertIn("文件与包内说明不一致", problem["summary"])
+        self.assertNotIn("地图文件有缺失，或版本与当前软件不匹配", problem["summary"])
         self.assertEqual(self.fixture.changes, [])
 
     def test_code_wins_over_conflicting_sha_deadline_and_cancel_words(self):
         problem = package_problem(dict(code="missing-or-incompatible-dependency",
             reason="sha-integrity deadline cancelled: shared.npz"), "inspect")
-        self.assertIn("基础资源不匹配", problem["summary"])
+        self.assertIn("地图文件有缺失，或版本与当前软件不匹配", problem["summary"])
         unknown = package_problem(dict(code="future-resource-error",
             reason="missing-or-incompatible-dependency: shared.npz"), "inspect")
-        self.assertNotIn("基础资源不匹配", unknown["summary"])
+        self.assertNotIn("地图文件有缺失，或版本与当前软件不匹配", unknown["summary"])
         self.assertEqual(unknown["errorCode"], "future-resource-error")
         self.assertFalse(package_cancelled(dict(code="future-resource-error", reason="cancelled")))
         self.assertTrue(package_cancelled(dict(code="import-cancelled", reason="sha deadline")))
+
+    def test_player_labels_keep_unknown_tokens_out_of_default_text(self):
+        from client_resources import package_title, recovery_status_label
+        self.assertEqual(package_title("future-private-package"), "待确认的图包")
+        self.assertEqual(recovery_status_label("future-private-status"), "需要重新核对")
+        self.assertIn("临时文件", recovery_status_label("upgrade-cleanup-available"))
+        problem = package_problem(dict(code="missing-or-incompatible-dependency",
+            reason="sha mismatch", details=dict(path=DEPENDENCY, missing=True)), "inspect")
+        self.assertEqual(problem["errorCode"], "missing-or-incompatible-dependency")
+        self.assertEqual(problem["raw"], "sha mismatch")
+        self.assertEqual(problem["errorDetails"], dict(path=DEPENDENCY, missing=True))
+        self.assertNotIn("sha", problem["summary"])
 
     def test_details_are_bounded_and_reject_noncanonical_paths(self):
         for path in ("_internal/references/../private", "_internal/references//private",
@@ -133,9 +145,9 @@ class ResourceErrorTests(unittest.TestCase):
 
     def test_legacy_prefix_is_exact_and_absolute_paths_are_redacted(self):
         problem = package_problem("missing-or-incompatible-dependency: " + DEPENDENCY, "inspect")
-        self.assertIn("基础资源不匹配", problem["summary"])
+        self.assertIn("地图文件有缺失，或版本与当前软件不匹配", problem["summary"])
         unrelated = package_problem("message mentions missing-or-incompatible-dependency: shared.npz", "inspect")
-        self.assertNotIn("基础资源不匹配", unrelated["summary"])
+        self.assertNotIn("地图文件有缺失，或版本与当前软件不匹配", unrelated["summary"])
         for private in ("C:/Users/Private Player/package.zip", r"C:\Users\Private Player\package.zip",
                         "/home/private-player/package.zip", "//server/private-player/package.zip"):
             problem = package_problem(dict(code="package-unreadable", reason="package-unreadable: " + private,
@@ -156,7 +168,7 @@ class ResourceErrorTests(unittest.TestCase):
         self.service.recordImportReceipt(dict(success=False, reason="sha checksum detail",
             errorCode="missing-or-incompatible-dependency", errorDetails=details))
         fixtures.APP.processEvents()
-        self.assertIn("基础资源不匹配", self.fixture.problems[-1]["summary"])
+        self.assertIn("地图文件有缺失，或版本与当前软件不匹配", self.fixture.problems[-1]["summary"])
         self.assertEqual(self.fixture.problems[-1]["errorDetails"], details)
         self.assertEqual(self.fixture.completions, [])
 
@@ -183,7 +195,7 @@ class ResourceErrorTests(unittest.TestCase):
         original = self.assert_rejected_dependency(b"x" * len(CONTENT))
         drain()
         self.assertEqual(len(notices), 1)
-        self.assertIn("基础资源不匹配", notices[0][1])
+        self.assertIn("地图文件有缺失，或版本与当前软件不匹配", notices[0][1])
         row = problems.recent[0]
         self.assertEqual(row["errorCode"], original["errorCode"])
         self.assertEqual(row["errorDetails"], original["errorDetails"])
