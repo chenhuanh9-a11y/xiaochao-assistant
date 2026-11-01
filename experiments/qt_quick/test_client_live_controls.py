@@ -4,6 +4,7 @@ os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
+import time
 import unittest
 from unittest.mock import Mock, patch
 import numpy as np
@@ -31,6 +32,7 @@ class EventSource(QObject):
     def send(self,vk,down=True,foreground=77,held=None,generation=None):
         self.eventReceived.emit(dict(vk=vk,down=down,foreground=foreground,
             held=frozenset(held if held is not None else ([vk] if down else [])),
+            createdAt=time.monotonic(),
             generation=self.generation if generation is None else generation))
 
 class EventInputTests(unittest.TestCase):
@@ -54,7 +56,8 @@ class EventInputTests(unittest.TestCase):
             def packet(flags, stamp=980):
                 raw.mouse.buttonUnion.buttons.flags = flags
                 observer.handle(W.MSG(hWnd=321,message=0xff,wParam=1,lParam=999,time=stamp))
-                APP.processEvents()
+                with patch('time.monotonic',return_value=clock[0]):
+                    APP.processEvents()
             try:
                 native.foreground=77
                 packet(0x0040); packet(0x0080)
