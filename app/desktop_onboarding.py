@@ -78,7 +78,7 @@ def build_onboarding(assistant):
     hero = tk.Frame(shell, bg=SURFACE)
     hero.pack(fill="x", padx=26, pady=(22, 10))
     _label(hero, "准备快捷键", size=18, bold=True, anchor="w").pack(fill="x")
-    _label(hero, "先核对地图键，再试用游戏控件显隐。完成后进入主页面。",
+    _label(hero, "先核对地图键，再试用游戏控件显隐。完成后进入主页面，帮助页里有完整的使用教程。",
            size=9, color=MUTED, anchor="w", justify="left", wraplength=490).pack(fill="x", pady=(7, 0))
 
     key = RoundedFrame(shell, bg=CARD, highlightthickness=1, highlightbackground=LINE)

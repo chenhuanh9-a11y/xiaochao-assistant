@@ -53,6 +53,7 @@ class RuntimeExclusionTests(unittest.TestCase):
         self.assertIn((str(root / "assets/support"), "assets/support"), calls["datas"])
         self.assertTrue((root / "assets/support/wechat.png").is_file())
         self.assertTrue((root / "assets/support/alipay.png").is_file())
+        self.assertIn((str(root / "assets/tutorial"), "assets/tutorial"), calls["datas"])
 
     def test_maintained_spec_stops_collection_when_manifest_verification_fails(self):
         root = Path(__file__).resolve().parents[1]

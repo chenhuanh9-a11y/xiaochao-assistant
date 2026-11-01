@@ -210,9 +210,10 @@ class FixedMapPositionUITests(unittest.TestCase):
             compile(source, name, "exec")
         namespace = load_methods("game_control_view.py", "GameControlView", GCV_NAMES, ("_fact", "display_summary"))
         self.assertIn("定点地图：条件满足", namespace["display_summary"](dict(referenceVisible=True)))
-        source = (ROOT / "app/desktop_main_ui.py").read_text(encoding="utf-8-sig")
+        # The step-by-step explanation moved from the help page into the tutorial.
+        source = (ROOT / "app/desktop_tutorial.py").read_text(encoding="utf-8-sig")
         self.assertIn("移动后仍保持编辑状态", source)
-        self.assertIn("点击“完成”恢复鼠标穿透", source)
+        self.assertIn("“完成”，定点地图恢复鼠标穿透", source)
 
 if __name__ == "__main__":
     unittest.main()
