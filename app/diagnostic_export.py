@@ -45,15 +45,69 @@ def _bounded_log_tail(path: Path, byte_limit: int) -> tuple[bytes, bool]:
     return payload, True
 
 
+def _redact_path_text(text: str) -> str:
+    # Work on decoded strings, never JSON escape syntax. Preserve quoted frame
+    # boundaries (including single quotes) and avoid treating https:/ as a drive.
+    text = re.sub(r'''(?im)(["'])(?:[A-Z]:[\\/]|\\\\)[^\r\n]*?\1(?=,[ \t]*line[ \t]+\d+(?:,[ \t]*in[ \t]+[^/\\\r\n]*)?\r?$)''',
+                  lambda match: match[1] + "<local-path>" + match[1], text)
+    text = re.sub(r'(?i)"(?:[A-Z]:[\\/]|\\\\)[^"\r\n]*"', '"<local-path>"', text)
+    # Apostrophes are legal path characters. Outside a recognized frame line,
+    # choose the last quote conservatively instead of leaking a path suffix.
+    text = re.sub(r"(?i)'(?:[A-Z]:[\\/]|\\\\)[^\r\n]*'", "'<local-path>'", text)
+    return re.sub(r'(?i)(?:\b[A-Z]:[\\/]|\\\\)[^"\r\n]*', "<local-path>", text)
+
+
+def _redact_json_paths(value):
+    # Iterative traversal avoids adding Python recursion for nested metadata.
+    result = [None]
+    pending = [(result, 0, value)]
+    while pending:
+        parent, slot, item = pending.pop()
+        if isinstance(item, dict):
+            output = {}
+            parent[slot] = output
+            reserved = {key for key in item if _redact_path_text(key) == key}
+            for key, child in item.items():
+                base = name = _redact_path_text(key)
+                serial = 2
+                while name in output or (name != key and name in reserved):
+                    name = base + "#" + str(serial)
+                    serial += 1
+                output[name] = None
+                pending.append((output, name, child))
+        elif isinstance(item, list):
+            output = [None] * len(item)
+            parent[slot] = output
+            pending.extend((output, index, child) for index, child in enumerate(item))
+        else:
+            parent[slot] = _redact_path_text(item) if isinstance(item, str) else item
+    return result[0]
+
+
 def _redact_local_paths(payload: bytes) -> bytes:
-    """Remove local Windows paths while preserving surrounding diagnostic text."""
+    """Redact JSON values before serialization; handle JSONL and plain text too."""
     text = payload.decode("utf-8", errors="replace")
-    redacted = re.sub(
-        r'(?i)(?:[A-Z]:[\\/]|\\\\)[^"\r\n]*',
-        "<local-path>",
-        text,
-    )
-    return redacted.encode("utf-8")
+
+    def structured(value):
+        return json.dumps(_redact_json_paths(value), ensure_ascii=False, separators=(",", ":"))
+
+    try:
+        redacted = structured(json.loads(text))
+    except json.JSONDecodeError:
+        rows = []
+        # JSONL records end at LF, not at Unicode separators legal in strings.
+        for line in text.split("\n"):
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                rows.append(_redact_path_text(line))
+            else:
+                # Only normalize a valid record; malformed/truncated text is
+                # still text and must not invalidate adjacent JSONL records.
+                ending = "\r" if line.endswith("\r") else ""
+                rows.append(structured(value) + ending)
+        redacted = "\n".join(rows)
+    return redacted.encode("utf-8", errors="backslashreplace")
 
 
 def _event_log_session_id(path: Path) -> str | None:

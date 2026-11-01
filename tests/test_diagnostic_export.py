@@ -26,10 +26,12 @@ class DiagnosticExportTests(unittest.TestCase):
             app_version="synthetic", build_fingerprint="TEST1234",
             process_integrity=dict(level="fixture"), package_metadata=dict(status="fixture"), **kwargs)
 
-    def test_moved_pure_log_rules_are_ast_identical_to_original_entry(self):
+    def test_unchanged_log_rules_are_ast_identical_to_original_entry(self):
         original = ast.parse((APP / "identityv_daily_assistant.py").read_text("utf-8-sig"))
         shared = ast.parse((APP / "diagnostic_export.py").read_text("utf-8"))
-        names = {"safe_diagnostic_log_files", "_bounded_log_tail", "_redact_local_paths", "_event_log_session_id"}
+        # Redaction intentionally diverged to fix JSON escaping; its actual ZIP
+        # behavior is covered in test_diagnostic_redaction, not legacy parity.
+        names = {"safe_diagnostic_log_files", "_bounded_log_tail", "_event_log_session_id"}
         functions = lambda tree: {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
         for name in names:
             self.assertEqual(ast.dump(functions(original)[name]), ast.dump(functions(shared)[name]), name)
