@@ -14,7 +14,7 @@ from logging.handlers import RotatingFileHandler
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, Qt, Signal, Slot
+from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, QTimer, Qt, Signal, Slot
 from client_resource_errors import error_text, safe_code, safe_error_details
 
 PHASE_LABELS = dict(capture="画面采集", input="快捷键", identity="地图识别", floor="楼层识别",
@@ -23,6 +23,8 @@ PHASE_LABELS = dict(capture="画面采集", input="快捷键", identity="地图�
 RECENT_LIMIT = 32
 PENDING_LIMIT = 64
 LOG_MAX_BYTES = 1024 * 1024
+SUMMARY_CHECKPOINT_MS = 60_000
+TRACE_ORIGIN_FIELDS = ('invalidationOrigin', 'exceptionOrigin', 'exceptionAction')
 
 
 def _text(value, limit=8192):
@@ -138,6 +140,10 @@ class ProblemsService(QObject):
         self._source_commit = _text(source_commit, 40)
         self._trace_states = OrderedDict()
         self._summary_dirty = False
+        self._summary_timer = QTimer(self)
+        self._summary_timer.setSingleShot(True)
+        self._summary_timer.setInterval(SUMMARY_CHECKPOINT_MS)
+        self._summary_timer.timeout.connect(self._periodic_checkpoint)
 
     recent = Property('QVariantList', lambda self: [{key: deepcopy(value) for key,value in row.items()
                        if not key.startswith('_')} for row in self._recent], notify=recentChanged)
@@ -204,6 +210,8 @@ class ProblemsService(QObject):
         if existing is not None:
             existing.update(count=existing['count']+1, lastTimestampUTC=utc)
             self._summary_dirty = True
+            if not self._summary_timer.isActive():
+                self._summary_timer.start()
             self._recent.remove(existing); self._recent.insert(0, existing)
             self.recentChanged.emit()
             self.changed.emit()
@@ -251,12 +259,21 @@ class ProblemsService(QObject):
             value = _metadata(event[name])
             encoded_value = json.dumps(value, ensure_ascii=False)
             row[name] = value if len(encoded_value.encode('utf-8')) <= 2048 else dict(summary=_text(encoded_value, 1900), truncated=True)
-        diagnostics = _metadata(event.get('diag', event.get('diagnostics', {})))
+        raw_diagnostics = event.get('diag', event.get('diagnostics', {}))
+        # Only stable origin fields affect dedup, never arbitrary per-frame
+        # diagnostics. Keep independent origin lanes inside the existing 64-key
+        # LRU so interleaved failures do not erase or repeatedly re-log each other.
+        origin = {name: _text(raw_diagnostics[name], 128) for name in TRACE_ORIGIN_FIELDS
+                  if isinstance(raw_diagnostics, dict) and isinstance(raw_diagnostics.get(name), str)
+                  and raw_diagnostics[name]}
+        if origin:
+            row['origin'] = origin
+        diagnostics = _metadata(raw_diagnostics)
         encoded = json.dumps(diagnostics, ensure_ascii=False)
         row['diag'] = diagnostics if len(encoded.encode('utf-8')) <= 2048 else dict(summary=_text(encoded, 1900), truncated=True)
         window = row.get('window')
         window_id = window.get('name', window.get('role', '')) if isinstance(window, dict) else window
-        key = json.dumps([row.get('role'), row.get('stage'), window_id], sort_keys=True)
+        key = json.dumps([row.get('role'), row.get('stage'), window_id, origin], sort_keys=True)
         signature = json.dumps(_trace_state({name: value for name,value in row.items()
                                if name not in {'diag', 'frame', 'generation', 'token'}}), sort_keys=True)
         previous = self._trace_states.get(key)
@@ -304,6 +321,14 @@ class ProblemsService(QObject):
         self._start_next()
         self.changed.emit()
 
+    @Slot()
+    def _periodic_checkpoint(self):
+        if not self._accepting:
+            return
+        self.flushSummary()
+        if self._summary_dirty:
+            self._summary_timer.start()  # Full queue: retry once next interval.
+
     def _checkpoint(self, row):
         checkpoint = {key: deepcopy(value) for key, value in row.items() if not key.startswith('_')}
         checkpoint['event'] = 'qt-runtime-problem-summary'
@@ -312,7 +337,7 @@ class ProblemsService(QObject):
 
     @Slot(result=bool)
     def flushSummary(self):
-        """Checkpoint coalesced counts on explicit export/close, never per frame.
+        """Checkpoint coalesced counts periodically/on export/close, never per frame.
 
         Rows share occurrence identity with originals; readers take max(count).
         A full queue keeps dirty state so a later flush can retry.
@@ -331,6 +356,7 @@ class ProblemsService(QObject):
 
     @Slot()
     def shutdown(self):
+        self._summary_timer.stop()
         self.flushSummary()
         self._accepting = False
         self._start_next()  # Accepted rows still drain, including queued callbacks.

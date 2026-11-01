@@ -147,6 +147,99 @@ class ProblemTests(unittest.TestCase):
         self.assertEqual(rows[1]['previousRepeatedCount'],101)
         self.assertEqual(self.service.pool.maxThreadCount(),1)
 
+    def test_real_coordinator_trace_keeps_runtime_error_origins_separate(self):
+        from client_coordinator import ClientCoordinator
+        class TraceEmitter(QObject):
+            traceReported = Signal(object)
+            _diagnostics = None
+        emitter = TraceEmitter()
+        emitter.traceReported.connect(self.service.recordTrace)
+        origins = ('execute:capture_now:ValueError', 'refresh-map:ValueError')
+        for index in range(100):
+            ClientCoordinator._trace(emitter, 'render-revoked', role='runtime',
+                payload=dict(frameId=index, generation=index, token=str(index)),
+                reason='runtime-error', diag=dict(invalidationOrigin=origins[index % 2],
+                                                 perFrameNoise=index))
+        self.drain()
+        rows = [json.loads(line) for line in self.service.log_path.read_text('utf-8').splitlines()]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({item['diag']['invalidationOrigin'] for item in rows}, set(origins))
+        self.assertEqual({item['origin']['invalidationOrigin'] for item in rows}, set(origins))
+        self.assertTrue(all(set(item['origin']) == {'invalidationOrigin'} for item in rows))
+        self.assertLessEqual(len(self.service._trace_states), 64)
+
+    def test_long_session_repeated_counts_checkpoint_without_export_or_close(self):
+        with patch.object(problems, 'SUMMARY_CHECKPOINT_MS', 40, create=True):
+            service = problems.ProblemsService(SimpleNamespace(work_root=self.root/'periodic'))
+        try:
+            for _ in range(50):
+                service.record(event())
+            end = time.monotonic() + 3
+            while (service._summary_dirty or service.pendingWrites) and time.monotonic() < end:
+                QTest.qWait(10)
+                time.sleep(.005)  # Let the real Python QRunnable acquire the GIL.
+            self.assertFalse(service._summary_dirty)
+            self.assertFalse(service.pendingWrites)
+            rows = [json.loads(line) for line in service.log_path.read_text('utf-8').splitlines()]
+            self.assertEqual(max(item['count'] for item in rows), 50)
+            self.assertLessEqual(len(rows), 2)  # Unchanged timers do not append.
+        finally:
+            service.shutdown()
+            self.wait(lambda: not service.pendingWrites)
+
+    def test_trace_origin_whitelist_and_byte_bound_do_not_log_frame_noise(self):
+        origin = 'execute:' + 'x'*120
+        for index in range(100):
+            self.service.recordTrace(dict(role='runtime', stage='render-revoked',
+                reason='runtime-error', frame=index, diag=dict(
+                    invalidationOrigin=origin + str(index), exceptionOrigin='client-live-runtime',
+                    ignoredSource=str(index), frameGeneration=index)))
+        self.drain()
+        rows = [json.loads(line) for line in self.service.log_path.read_text('utf-8').splitlines()]
+        self.assertEqual(len(rows), 1)
+        self.assertLessEqual(len(rows[0]['origin']['invalidationOrigin'].encode('utf-8')), 128)
+        self.assertEqual(set(rows[0]['origin']), {'invalidationOrigin', 'exceptionOrigin'})
+
+    def test_trace_origin_lanes_retain_only_64_groups(self):
+        self.service._start_next = lambda: None
+        for index in range(130):
+            self.assertTrue(self.service.recordTrace(dict(role='runtime', stage='render-revoked',
+                reason='runtime-error', diag=dict(invalidationOrigin=f'execute:action-{index}:ValueError'))))
+            self.service._queue.clear()  # Simulate writer drain, leaving dedup state in place.
+            self.assertLessEqual(len(self.service._trace_states), 64)
+        self.assertEqual(len(self.service._trace_states), 64)
+        self.assertTrue(self.service.recordTrace(dict(role='runtime', stage='render-revoked',
+            reason='runtime-error', diag=dict(invalidationOrigin='execute:action-0:ValueError'))))
+        self.assertEqual(len(self.service._queue), 1)  # Evicted origin can be observed again.
+        self.service._queue.clear()
+
+    def test_periodic_checkpoint_backpressure_retries_without_exceeding_queue(self):
+        self.assertEqual(self.service._summary_timer.interval(), 60_000)
+        self.assertFalse(self.service._summary_timer.isActive())
+        self.service._summary_timer.setInterval(30)  # Exercise actual Qt timeout without a minute wait.
+        self.service._start_next = lambda: None
+        for _ in range(50):
+            self.service.record(event())
+        for index in range(problems.PENDING_LIMIT - len(self.service._queue)):
+            self.service.recordTrace(dict(role='fixture', stage=f'queued-{index}'))
+        QTest.qWait(100)
+        self.assertTrue(self.service._summary_dirty)
+        self.assertTrue(self.service._summary_timer.isActive())
+        self.assertEqual(len(self.service._queue), problems.PENDING_LIMIT)
+        self.assertFalse(any(item.get('event') == 'qt-runtime-problem-summary'
+                             for item in self.service._queue))
+        self.service._queue.clear()  # Simulate completion of the blocked writer.
+        QTest.qWait(100)
+        self.assertEqual(len(self.service._queue), 1)
+        self.assertEqual(self.service._queue[0]['count'], 50)
+        self.assertFalse(self.service._summary_dirty)
+        self.assertFalse(self.service._summary_timer.isActive())
+        self.service.record(event())
+        self.assertTrue(self.service._summary_timer.isActive())
+        self.service.shutdown()
+        self.assertFalse(self.service._summary_timer.isActive())
+        self.service._queue.clear()
+
     def test_changed_identity_decision_survives_dedup_without_per_frame_writes(self):
         trace = dict(role='runtime', stage='group-state', reason='finite-conditions-evaluated',
                      identityPhase='UNLOCKED', decision=dict(rankVerdict=dict(topMapId='a'),
