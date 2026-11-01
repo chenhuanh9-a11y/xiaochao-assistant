@@ -186,8 +186,12 @@ class QtClient:
         self.session.changed.connect(self._refresh_home_context)
         self.resources.resourcesChanged.connect(lambda: self._refresh_home_context(force=True))
         self._refresh_home_context()
+        from client_floor_region import FloorRegionImages, FloorRegionService
+        self.floor_region_images = FloorRegionImages()
+        self.floor_region = FloorRegionService(self.runtime, self.settings, self.floor_region_images)
         self.engine = QQmlApplicationEngine()
         self.engine.addImageProvider("live", self.images)
+        self.engine.addImageProvider("floorregion", self.floor_region_images)
         self.warnings = []
         self.engine.warnings.connect(lambda rows: self.warnings.extend(str(row) for row in rows))
         context = self.engine.rootContext()
@@ -197,7 +201,8 @@ class QtClient:
             windows=self.windows, clientCoordinator=self.coordinator, infoService=self.info,
             customGalleryService=self.custom_galleries, onlinePackageService=self.online_packages,
             onboardingService=self.onboarding, chestAutoTapService=self.chest_auto_tap,
-            previewService=self.preview, problemService=self.problems).items():
+            previewService=self.preview, problemService=self.problems,
+            floorRegionService=self.floor_region).items():
             context.setContextProperty(key, value)
         for name, file in (("main", "Client.qml"), ("controls", "ClientControls.qml"),
                            ("reference", "ClientReference.qml"), ("aligned", "ClientAligned.qml"),

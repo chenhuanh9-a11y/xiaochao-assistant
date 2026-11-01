@@ -20,6 +20,7 @@ from client_paths import RESOURCE_ROOT as ROOT, WORK_ROOT, runtime_paths
 if str(ROOT / "app") not in sys.path:
     sys.path.insert(0, str(ROOT / "app"))
 from client_control_layout import load_layout, preset_layout, validate_layout
+from floor_control_region import normalized_region
 from hotkey_bindings import parse_chord, validate_unique
 from hotkey_keys import _primary_hotkey_to_vk
 from opacity_controls import load_opacities
@@ -38,7 +39,9 @@ DEFAULTS = {**BOOL_DEFAULTS, "sheetOpacity": .55, "referenceOpacity": .55,
             "routeProfileId": "wang-qingxin", "modeRouteProfiles": {},
             "zhan10CoffinVariantId": "variant-01", "hotkey": "G",
             "actionHotkeys": FRESH_ACTIONS, "gameControlLayout": preset_layout(),
-            "sheetPosition": None, "sheetPositionSpace": "unknown", "compactPosition": None}
+            "sheetPosition": None, "sheetPositionSpace": "unknown", "compactPosition": None,
+            "floorControlMode": "fixed", "floorControlRegion": None}
+FLOOR_CONTROL_MODES = ("fixed", "region")
 
 
 def _validate(key, value):
@@ -72,6 +75,11 @@ def _validate(key, value):
     elif key == "sheetPositionSpace":
         if value not in ("unknown", "qt-logical-v1", "legacy-physical-v1"):
             raise ValueError("位置坐标类型无效")
+    elif key == "floorControlMode":
+        if value not in FLOOR_CONTROL_MODES:
+            raise ValueError("楼层识别方式只能为固定或框选")
+    elif key == "floorControlRegion":
+        value = _validate_floor_region(value)
     elif key == "hotkey":
         if not isinstance(value, str):
             raise ValueError("快捷键需要文本")
@@ -81,6 +89,22 @@ def _validate(key, value):
             raise ValueError(f"功能快捷键必须包含 {len(ACTION_ORDER)} 项，留空表示解绑")
         value = [parse_chord(v, _primary_hotkey_to_vk).name for v in value]
     return deepcopy(value)
+
+
+def _validate_floor_region(value):
+    """None, or the framed floor-button range normalized to the client it was drawn on."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {"rect", "clientSize"}:
+        raise ValueError("楼层框选范围需要 rect 和 clientSize")
+    rect = normalized_region(value["rect"])
+    size = value["clientSize"]
+    if rect is None:
+        raise ValueError("楼层框选范围需要在游戏窗口内")
+    if (not isinstance(size, list) or len(size) != 2
+            or any(type(v) is not int or not 100 <= v <= 32768 for v in size)):
+        raise ValueError("楼层框选的窗口尺寸无效")
+    return dict(rect=list(rect), clientSize=list(size))
 
 
 def _validate_hotkeys(values):
