@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, Qt, Signal, Slot
+from client_resource_errors import error_text, safe_code, safe_error_details
 
 PHASE_LABELS = dict(capture="画面采集", input="快捷键", identity="地图识别", floor="楼层识别",
                     **{"recognition-alignment": "识别与贴合", "operation": "任务执行"})
@@ -68,7 +69,10 @@ def _details(row):
             f"阶段：{row['phaseLabel']}\n操作：{row['action'] or '未提供'}\n"
             f"地图 / 楼层：{row['mapId'] or '未识别'} / {row['floor'] or '未识别'}\n"
             f"模式：{row['mode'] or '未提供'}\n\n原始原因：\n{row['raw'] or '未提供'}\n"
-            f"\n原始阶段：{row['phase']}\n采集诊断：\n"
+            + (f"\n资源错误代码：{row['errorCode']}\n资源依赖核对：\n"
+               + json.dumps(row['errorDetails'], ensure_ascii=False, indent=2)
+               if row.get('errorCode') else "")
+            + f"\n原始阶段：{row['phase']}\n采集诊断：\n"
             + json.dumps(row['captureDiagnostics'], ensure_ascii=False, indent=2)
             + ("\n\n原始调用栈：\n" + row['traceback'] if row['traceback'] else ""))
 
@@ -157,10 +161,15 @@ class ProblemsService(QObject):
         row['summary'] = row['summary'] or '本次操作未完成，可复制下方原始原因进行排查。'
         row['phaseLabel'] = PHASE_LABELS.get(row['phase'], '任务执行')
         row.update(buildFingerprint=self._build_fingerprint, sourceCommit=self._source_commit)
+        if 'errorCode' in event or 'errorDetails' in event:
+            row['errorCode'] = safe_code(event.get('errorCode', '')) or 'resource-operation-failed'
+            row['errorDetails'] = safe_error_details(event.get('errorDetails', {}))
+            row['raw'] = error_text(row['raw'])
         diagnostics = _metadata(event.get('captureDiagnostics', {}))
         encoded = json.dumps(diagnostics, ensure_ascii=False)
         row['captureDiagnostics'] = diagnostics if len(encoded.encode('utf-8')) <= 1024 else dict(summary=_text(encoded, 900), truncated=True)
         signature = tuple(row[name] for name in ('title', 'summary', 'raw', 'action', 'phase', 'kind', 'mode', 'mapId', 'floor'))
+        signature += (row.get('errorCode', ''), json.dumps(row.get('errorDetails', {}), sort_keys=True))
         existing = next((item for item in self._recent if item['_signature'] == signature), None)
         if existing is not None:
             existing.update(count=existing['count']+1, lastTimestampUTC=utc)

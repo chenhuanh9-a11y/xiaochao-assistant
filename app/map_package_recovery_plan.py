@@ -24,6 +24,23 @@ def _stamp(path):
 
 def inspect_locked(root, transaction_id=None):
     """Caller holds the OS resource writer lock; no files are changed."""
+    if importer._target(root, 'work/map-packages/pending-removal.json').exists():
+        from map_package_removal import inspect_pending_removal_locked
+        removal = inspect_pending_removal_locked(root)
+        if transaction_id is None or removal['transactionId'] == transaction_id:
+            return removal
+    additions = upgrade._addition_journal(root)
+    if additions is not None and (transaction_id is None or additions[2]['transactionId'] == transaction_id):
+        stage, retained, journal = additions
+        paths = {upgrade.ADDITIONS_PENDING, retained.relative_to(root).as_posix(),
+                 f"{upgrade.STATE}/{journal['packageId']}.json"}
+        paths.update(row['path'] for row in journal['files'])
+        paths.update((stage / entry['new']['path']).relative_to(root).as_posix() for entry in journal['entries'])
+        fingerprints = {name: _stamp(importer._target(root, name)) for name in sorted(paths)}
+        encoded = json.dumps(fingerprints, sort_keys=True, separators=(',', ':')).encode()
+        return dict(transactionId=journal['transactionId'], packageId=journal['packageId'],
+                    status='additions-pending', pending=True, fileCount=len(journal['files']),
+                    blockedPaths=[], planSha256=hashlib.sha256(encoded).hexdigest())
     pending = upgrade._pending_id(root)
     if transaction_id is None:
         transaction_id = pending
@@ -47,13 +64,19 @@ def inspect_locked(root, transaction_id=None):
 
 def history_locked(root):
     pending = upgrade._pending_id(root)
+    result = []
+    if importer._target(root, 'work/map-packages/pending-removal.json').exists():
+        from map_package_removal import inspect_pending_removal_locked
+        result.append(inspect_pending_removal_locked(root))
+    additions = upgrade._addition_journal(root)
+    if additions is not None:
+        result.append(inspect_locked(root, additions[2]['transactionId']))
     parent = importer._target(root, upgrade.STATE + "/upgrades")
     if not parent.exists():
         if pending is not None:
             raise importer.ImportRejected("pending-upgrade-journal-missing")
-        return []
+        return result
     importer._no_links(parent)
-    result = []
     directories = sorted(parent.iterdir(), key=lambda path: path.name)
     if len(directories) > 128:
         raise importer.ImportRejected("too-many-upgrade-journals; inspect-with-closed-tool")
@@ -74,6 +97,15 @@ def execute_locked(root, plan, action):
     current = inspect_locked(root, plan["transactionId"])
     if current != plan:
         raise importer.ImportRejected("recovery-plan-changed-reinspect-required")
+    if current['status'] == 'removal-pending':
+        if action != 'recover':
+            raise importer.ImportRejected('recovery-operation-no-longer-valid')
+        from map_package_removal import recover_pending_removal_locked
+        return recover_pending_removal_locked(root)
+    if current['status'] == 'additions-pending':
+        if action != 'recover':
+            raise importer.ImportRejected('recovery-operation-no-longer-valid')
+        return upgrade.recover_pending_additions(root)
     if action == "recover" and current["pending"]:
         return upgrade.recover_pending_upgrade(root)
     if action == "rollback":

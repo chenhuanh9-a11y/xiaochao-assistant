@@ -10,6 +10,7 @@ import test_map_package_upgrade as fixture_module
 OLD_PATH, ADDED_PATH = fixture_module.OLD_PATH, fixture_module.ADDED_PATH
 import map_package_upgrade as upgrade
 from map_package_recovery_plan import inspect_locked
+from map_package_recovery_plan import history_locked
 import star_map_import as importer
 import star_map_import_helper as process
 import star_map_recovery_helper as helper
@@ -72,6 +73,83 @@ class RecoveryHelperTests(unittest.TestCase):
         self.assertEqual(code, 0, result)
         self.fixture.assert_old()
         self.assertFalse((self.root / upgrade.PENDING).exists())
+
+    def addition_plan(self):
+        # Existing receipt/resources are preserved; only the new entry is partial.
+        archive = self.fixture.package('additive.zip', {OLD_PATH: b'old-route', ADDED_PATH: b'{}'})
+        original = upgrade.os.link
+        def interrupt(source, target, *args, **kwargs):
+            original(source, target, *args, **kwargs)
+            if Path(target) == self.root / ADDED_PATH:
+                raise KeyboardInterrupt('synthetic loss after additive publication')
+        with patch.object(upgrade.os, 'link', side_effect=interrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                importer.install_package(archive, self.root, application_stopped=True)
+        with importer._writer_locked_installation(self.root, require_closed=False):
+            plan = inspect_locked(self.root)
+            self.assertIn(plan, history_locked(self.root))
+        return plan
+
+    def test_default_packaged_helper_recovers_pending_additions_with_bound_plan(self):
+        plan = self.addition_plan()
+        self.assertEqual(plan['status'], 'additions-pending')
+        stage = upgrade._addition_journal(self.root)[0]
+        request = self.request(plan, 'recover')
+        code, result = self.run_request(request)
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result['operationResult']['status'], 'additions-rolled-back')
+        self.assertEqual(result['operationResult']['additionTransactionId'], plan['transactionId'])
+        self.fixture.assert_old()
+        self.assertFalse((self.root / upgrade.ADDITIONS_PENDING).exists())
+        self.assertFalse(stage.exists(), 'standalone helper recovery must remove its owned stage')
+
+    def test_additions_recovery_preserves_unknown_stage_content_and_reports_cleanup_failure(self):
+        plan = self.addition_plan()
+        stage = upgrade._addition_journal(self.root)[0]
+        unknown = stage / 'user-note.txt'
+        unknown.write_bytes(b'preserve user content')
+        request = self.request(plan, 'recover')
+        code, result = self.run_request(request)
+        self.assertEqual(code, 2, result)
+        self.assertEqual(result['errorCode'], 'additions-stage-cleanup-conflict')
+        self.assertEqual(unknown.read_bytes(), b'preserve user content')
+        self.assertTrue((self.root / upgrade.ADDITIONS_PENDING).exists())
+        unknown.unlink()
+        # A new explicit recovery uses a newly verified plan, not stale consent.
+        with importer._writer_locked_installation(self.root, require_closed=False):
+            new_plan = inspect_locked(self.root)
+        code, result = self.run_request(self.request(new_plan, 'recover', 'second-request'))
+        self.assertEqual(code, 0, result)
+        self.assertFalse(stage.exists())
+
+    def test_additions_cleanup_io_failure_is_not_reported_as_success(self):
+        plan = self.addition_plan()
+        stage = upgrade._addition_journal(self.root)[0]
+        request = self.request(plan, 'recover')
+        actual = importer._rollback_published
+        def busy(path, *args, **kwargs):
+            if Path(path) == stage / OLD_PATH:
+                return False
+            return actual(path, *args, **kwargs)
+        with patch.object(importer, '_rollback_published', side_effect=busy):
+            code, result = self.run_request(request)
+        self.assertEqual(code, 2, result)
+        self.assertEqual(result['errorCode'], 'additions-stage-cleanup-incomplete')
+        self.assertTrue((stage / OLD_PATH).exists())
+        self.assertTrue((stage / 'addition-journal.json').exists())
+        self.fixture.assert_old()
+
+    def test_additions_helper_rejects_changed_plan_without_touching_user_replacement(self):
+        plan = self.addition_plan()
+        request = self.request(plan, 'recover')
+        replacement = self.fixture.folder / 'user-edit'
+        replacement.write_bytes(b'user-new-data')
+        replacement.replace(self.root / ADDED_PATH)
+        code, result = self.run_request(request)
+        self.assertEqual(code, 2, result)
+        self.assertEqual(result['errorCode'], 'recovery-plan-changed-reinspect-required')
+        self.assertEqual((self.root / ADDED_PATH).read_bytes(), b'user-new-data')
+        self.assertTrue((self.root / upgrade.ADDITIONS_PENDING).exists())
 
     def test_non_normal_parent_exit_never_mutates_resources(self):
         request = self.request(self.plan())

@@ -194,7 +194,7 @@ class ResourceServiceTests(unittest.TestCase):
                 self.assertIn("reinspect", self.problems[-1]["raw"])
                 self.assertEqual((self.root / IMAGE).read_bytes(), b"new")
                 self.assertTrue((self.root / recovery.upgrade.PENDING).exists())
-                self.assertFalse(self.lease.active)
+                self.assertTrue(self.lease.active)  # Pending recovery still gates runtime readers.
         self.assertEqual(self.changes, [])
 
     def test_recovery_conflict_retains_edits_backup_and_pending_journal(self):
@@ -212,7 +212,7 @@ class ResourceServiceTests(unittest.TestCase):
         self.assertEqual((directory / "backup" / IMAGE).read_bytes(), b"old")
         self.assertEqual(json.loads((directory / "journal.json").read_bytes())["status"], "rollback-incomplete")
         self.assertEqual(self.changes, [])
-        self.assertFalse(self.lease.active)
+        self.assertTrue(self.lease.active)
 
     def test_recovery_closed_phase_and_original_exe_guard_are_required(self):
         self.upgrade(interrupted=True)
@@ -226,7 +226,7 @@ class ResourceServiceTests(unittest.TestCase):
         allowed[0] = False
         self.service.confirmOperation(True)
         self.assertFalse(self.service.busy)
-        self.assertFalse(self.lease.active)
+        self.assertTrue(self.lease.active)
         allowed[0] = True
         self.request_recovery()
         with patch.object(importer, "_check_closed", side_effect=importer.ImportRejected("application-running-or-not-writable")):
@@ -317,7 +317,7 @@ class ResourceServiceTests(unittest.TestCase):
         self.settle()
         self.assertIn("fixture helper missing", self.problems[-1]["raw"])
         self.assertFalse(self.service.recoveryHandoffPending)
-        self.assertFalse(self.lease.active)
+        self.assertTrue(self.lease.active)
         self.assertEqual(close_requests, [])
         self.assertEqual(self.changes, [])
         self.assertTrue((self.root / recovery.upgrade.PENDING).exists())
@@ -376,7 +376,7 @@ class ResourceServiceTests(unittest.TestCase):
         self.settle()
         self.assertEqual(self.service.pendingKind, "")
         self.assertIn("invalid-upgrade-transaction-id", self.problems[-1]["raw"])
-        self.assertFalse(self.lease.active)
+        self.assertTrue(self.lease.active)
         self.assertTrue((self.root / recovery.upgrade.PENDING).exists())
 
     def test_real_import_repeat_remove_and_reimport_preserve_unknown(self):

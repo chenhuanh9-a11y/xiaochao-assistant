@@ -376,7 +376,8 @@ class LiveAuthorImportTests(unittest.TestCase):
                 state = {'published': 0}
                 def publish(source, target, *args, **kwargs):
                     real_link(source, target, *args, **kwargs)
-                    state['published'] += 1
+                    if Path(target) in {self.root / SUJU, self.root / second}:
+                        state['published'] += 1
                 with patch.object(importer.os, 'link', side_effect=publish):
                     with self.assertRaisesRegex(importer.ImportRejected, 'import-cancelled'):
                         self.live(package, cancelled=lambda: state['published'] >= stop_after)
