@@ -78,7 +78,7 @@ class EventInputTests(unittest.TestCase):
                 self.assertEqual(events.count('map'),2)
                 native.foreground=77; native.process=os.getpid()
                 packet(0x0040,4980); packet(0x0080,4980)
-                self.assertEqual(events.count('toggle-panel'),1)  # QML owns assistant panel toggle.
+                self.assertEqual(events.count('toggle-panel'),2)  # Mouse chords have one native owner; QML cannot handle them.
                 packet(0x0100,4980); packet(0x0200,4980)
                 self.assertEqual(events[-1],'toggle-sheet-visibility')
             finally:

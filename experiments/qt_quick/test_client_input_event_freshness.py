@@ -76,5 +76,16 @@ class InputFreshnessTests(unittest.TestCase):
         self.emit(0x06,True,created=99.,foreground=77)
         self.assertEqual(self.events,['toggle-sheet-visibility']*2)
 
+    def test_assistant_panel_toggle_has_one_native_mouse_owner_and_qml_keyboard_owner(self):
+        self.native.foreground=77; self.native.process=os.getpid()
+        for chord,vk in (('MOUSE2',0x02),('MOUSE3',0x04),('MOUSE4',0x05),('MOUSE5',0x06),('F9',0x78)):
+            with self.subTest(chord=chord):
+                self.configure('toggle-panel',chord)
+                self.emit(vk,True,created=99.,foreground=77)
+                self.emit(vk,True,created=99.,foreground=77)  # Held repeat cannot toggle twice.
+                self.emit(vk,False,foreground=77)
+                self.assertEqual(self.events,[] if chord=='F9' else ['toggle-panel'])
+                self.events.clear()
+
 
 if __name__=='__main__':unittest.main()

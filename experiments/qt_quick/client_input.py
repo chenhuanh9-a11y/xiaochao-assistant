@@ -23,6 +23,7 @@ from hotkey_keys import _primary_hotkey_to_vk
 from session_state_machine import global_key_is_allowed
 from floor_observation_policy import MANUAL_FLOOR_HOLD_SECONDS
 from client_map_input import OrderedMapInput
+from client_native_keys import MOUSE_SHORTCUT_VKS
 
 
 ACTION_ORDER = ("toggle-panel", "candidate-prev", "candidate-next", "confirm-round",
@@ -362,9 +363,9 @@ class NativeShortcutBackend(QObject):
                     allowed=self._management_enabled
                 else:
                     allowed=self._enabled and game
-                # The existing app-local QML shortcut owns F9 when this app is
-                # foreground. The hook owns it globally when hidden/background.
-                if action == "toggle-panel" and assistant:allowed=False
+                # QML owns keyboard panel toggles in the assistant, but cannot
+                # consume mouse chords; those retain their one native owner.
+                if action == "toggle-panel" and assistant and vk not in MOUSE_SHORTCUT_VKS:allowed=False
                 if allowed:self._dispatch_action(action, event)
         except Exception as error:
             self._hook_failed(str(error))
@@ -415,7 +416,7 @@ class NativeShortcutBackend(QObject):
                 edge = not previous and bool(state & 0x8001)
                 self._down[action] = down
                 allowed = action in MANAGEMENT_ACTIONS or game_focus
-                if action == "toggle-panel" and assistant_focus:
+                if action == "toggle-panel" and assistant_focus and chord.vk not in MOUSE_SHORTCUT_VKS:
                     allowed = False  # Application-local shortcut owns this edge.
                 if action not in MANAGEMENT_ACTIONS and game_rearm:
                     allowed = False  # Held keys cannot fire on game focus return.
