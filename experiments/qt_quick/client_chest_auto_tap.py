@@ -157,15 +157,27 @@ class ChestAutoTapService(QObject):
             self._stop()
             self._message = reason
         elif not self._running:
-            with self._lock:
-                self._target = handle
-            result = self._service.update(dict(enabled=True))
-            self._running = bool(result.get("success") and self._service.snapshot().get("enabled"))
-            self._message = result.get("message", "")
-            if not self._running:
+            current = self._service.snapshot()
+            if current.get("error"):
                 self._armed = False
                 self._timer.stop()
                 self._stop()
+                self._message = current["error"]
+            elif current.get("pendingReleaseVks"):
+                # A normal key-up may still be returning on the worker. Keep
+                # user intent, but never overlap a new press with that release.
+                self._message = "已准备；等待上次按键释放后恢复"
+            else:
+                with self._lock:
+                    self._target = handle
+                result = (self._service.resume() if current.get("enabled")
+                          else self._service.update(dict(enabled=True)))
+                self._running = bool(result.get("success") and self._service.snapshot().get("enabled"))
+                self._message = result.get("message", "")
+                if not self._running and not result.get("pending"):
+                    self._armed = False
+                    self._timer.stop()
+                    self._stop()
         else:
             current = self._service.snapshot()
             if not current.get("enabled") or current.get("error"):

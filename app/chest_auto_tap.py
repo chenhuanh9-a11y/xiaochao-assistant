@@ -140,6 +140,7 @@ class ChestAutoTap:
         self._wake = threading.Event()
         self._thread = None
         self._generation = 0
+        self._trigger_rearm_required = False
         self._pending_releases = {}  # VK -> number of key-up attempts.
         self.status = "未开启"
         self.holding = False
@@ -182,6 +183,7 @@ class ChestAutoTap:
             self.settings = dict(self.settings, enabled=False)
             self._generation += 1
             self._stop.set()
+            self._trigger_rearm_required = True
             self.holding = False
             settings = dict(self.settings)
         self._wake.set()
@@ -252,6 +254,8 @@ class ChestAutoTap:
             if interrupted:
                 current = dict(self.settings)
             else:
+                if self.settings["enabled"] and self.settings != normalised:
+                    self._trigger_rearm_required = True
                 self.settings = normalised
                 self._generation += 1
         if interrupted:
@@ -274,9 +278,26 @@ class ChestAutoTap:
         with self._lock:
             return dict(self.settings, available=self.available, status=self.status,
                         holding=self.holding, error=self.error,
+                        triggerReady=not self._trigger_rearm_required,
                         pendingReleaseVks=sorted(self._pending_releases),
                         releaseRetriesExhausted=any(attempts > RELEASE_RETRIES
                                                    for attempts in self._pending_releases.values()))
+
+    def resume(self) -> dict:
+        """Resume an already enabled runtime after a temporary gate closes.
+
+        This is not a settings change: no persistence, no renewed user intent,
+        and no bypass of the single worker's release ledger or sticky errors.
+        """
+        with self._lock:
+            if not self.settings["enabled"] or self.error:
+                return dict(success=False, message=self.error or "开箱连点未开启")
+            if self._pending_releases:
+                return dict(success=False, pending=True, message="已准备；等待上次按键释放后恢复")
+        self.sync()
+        with self._lock:
+            return dict(success=bool(self.settings["enabled"] and not self._stop.is_set()),
+                        message=self.error or "已准备；松开触发键后重新按住开始连点")
 
     def sync(self) -> None:
         """Wake the single worker; never join it or replace a live thread."""
@@ -304,6 +325,7 @@ class ChestAutoTap:
         with self._lock:
             self._generation += 1
             self._stop.set()
+            self._trigger_rearm_required = True
         self._wake.set()
         self._set_status("未开启", holding=False)
 
@@ -390,13 +412,25 @@ class ChestAutoTap:
                 continue
             try:
                 hold_vk, tap_vk = TRIGGER_VKS[settings["holdKey"]], KEY_NAMES[settings["tapKey"]]
+                if not self._in_game():
+                    with self._lock:
+                        self._trigger_rearm_required = True
+                    self._set_status("游戏窗口不在前台，暂不连发", holding=False)
+                    next_tap = 0.0
+                    self._wake.wait(POLL_SECONDS)
+                    continue
                 if not key_down(hold_vk):
+                    with self._lock:
+                        if self._generation == generation and not self._stop.is_set():
+                            self._trigger_rearm_required = False
                     self._set_status(f"等待按住 {settings['holdKey']}", holding=False)
                     next_tap = 0.0
                     self._wake.wait(POLL_SECONDS)
                     continue
-                if not self._in_game():
-                    self._set_status("游戏窗口不在前台，暂不连发", holding=False)
+                with self._lock:
+                    rearm = self._trigger_rearm_required
+                if rearm:
+                    self._set_status(f"请松开 {settings['holdKey']} 后重新按住", holding=False)
                     next_tap = 0.0
                     self._wake.wait(POLL_SECONDS)
                     continue
@@ -418,8 +452,13 @@ class ChestAutoTap:
                     continue
                 try:
                     deadline = now + min(PRESS_MS, settings["intervalMs"] / 2) / 1000
-                    while (time.perf_counter() < deadline and self._active(generation)
-                           and key_down(hold_vk) and self._in_game()):
+                    while time.perf_counter() < deadline and self._active(generation):
+                        if not self._in_game():
+                            with self._lock:
+                                self._trigger_rearm_required = True
+                            break
+                        if not key_down(hold_vk):
+                            break
                         self._wake.wait(min(POLL_SECONDS, max(0, deadline - time.perf_counter())))
                         self._wake.clear()
                 finally:

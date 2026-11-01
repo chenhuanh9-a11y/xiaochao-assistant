@@ -43,6 +43,11 @@ class FakeService:
             self.calls.append(("sync",))
         return dict(success=True, message="saved")
 
+    def resume(self):
+        self.calls.append(("resume",))
+        self.calls.append(("sync",))
+        return dict(success=bool(self.state["enabled"]))
+
     def stop(self):
         self.calls.append(("stop",))
 
