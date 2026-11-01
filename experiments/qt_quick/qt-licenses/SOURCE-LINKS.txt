@@ -1,0 +1,47 @@
+Versioned upstream source for the selected Qt/PySide runtime
+==========================================================
+
+Qt version: 6.11.1. PySide6-Essentials/shiboken6 version: 6.11.1.
+Source notices were collected without altering their bytes from the official
+Qt project mirrors below, at tag v6.11.1, on 2026-10-30.
+
+QtBase (Qt Core, GUI, Network, Widgets, OpenGL and related base libraries):
+  https://code.qt.io/cgit/qt/qtbase.git/tree/?h=v6.11.1
+  https://github.com/qt/qtbase/tree/v6.11.1
+  https://codeload.github.com/qt/qtbase/tar.gz/refs/tags/v6.11.1
+
+QtDeclarative (Qt Qml, Quick, Quick Controls, Basic, Dialogs, Layouts):
+  https://code.qt.io/cgit/qt/qtdeclarative.git/tree/?h=v6.11.1
+  https://github.com/qt/qtdeclarative/tree/v6.11.1
+  https://codeload.github.com/qt/qtdeclarative/tar.gz/refs/tags/v6.11.1
+
+QtImageFormats (including the WebP and TIFF plugins):
+  https://code.qt.io/cgit/qt/qtimageformats.git/tree/?h=v6.11.1
+  https://github.com/qt/qtimageformats/tree/v6.11.1
+  https://codeload.github.com/qt/qtimageformats/tar.gz/refs/tags/v6.11.1
+
+QtSvg (SVG library and image plugin):
+  https://code.qt.io/cgit/qt/qtsvg.git/tree/?h=v6.11.1
+  https://github.com/qt/qtsvg/tree/v6.11.1
+  https://codeload.github.com/qt/qtsvg/tar.gz/refs/tags/v6.11.1
+
+Qt for Python (PySide6 and shiboken6 runtime):
+  https://code.qt.io/cgit/pyside/pyside-setup.git/tree/?h=v6.11.1
+  https://github.com/pyside/pyside-setup/tree/v6.11.1
+  https://codeload.github.com/pyside/pyside-setup/tar.gz/refs/tags/v6.11.1
+
+Exact individual source URLs and hashes for the included notices are in
+UPSTREAM-SOURCES.json. The upstream qt_attribution.json files preserve their
+own third-party download locations, versions, copyrights and license choices.
+Their referenced license files are included alongside them.
+
+Official licensing and attribution reference pages:
+  https://doc.qt.io/qt-6.11/licensing.html
+  https://doc.qt.io/qt-6.11/licenses-used-in-qt.html
+  https://doc.qt.io/qtforpython-6.11/licenses.html
+  https://www.qt.io/licensing/open-source-lgpl-obligations
+
+The documentation pages may move to later 6.11 patch revisions; the vendored
+notice bytes and source links above remain pinned to v6.11.1. These source
+links are not an offer of an unspecified application's source and are not a
+substitute for verifying the actual license obligations of the final artifact.
