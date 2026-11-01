@@ -41,6 +41,9 @@ class ClientCaptureProvider:
         self._enabled, self._closed = False, False
         self._generation = 0
         self._status, self._message = "disabled", "Client capture is disabled."
+        self._capture_capability = dict(clientDc="not-probed",
+            safeFallback="not-probed" if full_capture is not None else "not-configured",
+            fallbackRequired=False)
 
     @property
     def snapshot(self):
@@ -48,6 +51,7 @@ class ClientCaptureProvider:
             return dict(enabled=self._enabled, status=self._status, message=self._message,
                         hwnd=str(self._hwnd), region=list(self._region or ()),
                         generation=self._generation, closed=self._closed,
+                        captureCapability=dict(self._capture_capability),
                         captureIntent="full-client" if self._full_client else "roi")
 
     @property
@@ -131,6 +135,7 @@ class ClientCaptureProvider:
                 return False
             self._enabled = False
             self._generation += 1
+            self._capture_capability.update(clientDc="not-probed", fallbackRequired=False)
             try:
                 if (not self._hwnd or (not self._full_client and self._region is None)
                         or not self._native.is_window(self._hwnd)):
@@ -148,6 +153,7 @@ class ClientCaptureProvider:
             self._enabled = False
             self._generation += 1
             self._status, self._message = "disabled", "Client capture is disabled."
+            self._capture_capability.update(clientDc="not-probed", fallbackRequired=False)
 
     @staticmethod
     def _cancelled(cancelled):
@@ -209,12 +215,36 @@ class ClientCaptureProvider:
                 if generation != self._generation or not self._enabled or self._closed:
                     raise CaptureUnavailable("Captured frame was superseded")
                 self._status, self._message = "ready", "Client frame captured."
+                fallback = frame.acquisition == "full-frame-fallback-crop"
+                self._capture_capability.update(clientDc="failed" if fallback else "captured",
+                    fallbackRequired=fallback)
+                if fallback:
+                    self._capture_capability["safeFallback"] = "verified-for-capture"
             return frame
         except Exception as error:
+            if getattr(error, "code", None) == "capture-safe-fallback-unsupported":
+                capability = dict(error.capture_capability, clientDc="failed", fallbackRequired=True)
+                # capture_client_region invokes fallback while handling the DC
+                # OSError. Keep that original exception chain, but expose only
+                # bounded codes in diagnostics (never its arbitrary message).
+                cause = error.__context__
+                trigger = dict(type=type(cause).__name__[:64],
+                    reason="game-client-dc-returned-blank-frame" if str(cause) ==
+                        "game-client-dc-returned-blank-frame" else "client-dc-native-error",
+                    **{key: value if type(value := getattr(cause, key, None)) is int else None
+                       for key in ("errno", "winerror")})
+                error.capture_capability = capability
+                error.capture_diagnostics.update(captureCapability=capability, fallbackTrigger=trigger)
+                if "bounds" in trace:
+                    error.capture_diagnostics.update(clientBounds=trace["bounds"],
+                        fullClientSize=trace["clientSize"], dpi=trace["dpi"])
+                trace.update(captureCapability=capability, fallbackTrigger=trigger)
             error.capture_trace = trace
             with self._lock:
                 if generation == self._generation and self._enabled:
                     self._status, self._message = "failed", str(error)
+                    if getattr(error, "code", None) == "capture-safe-fallback-unsupported":
+                        self._capture_capability = dict(error.capture_capability)
             raise
 
     def shutdown(self):

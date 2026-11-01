@@ -7,7 +7,13 @@ def operation_problem(receipt, state):
     phase = str(receipt.get('errorPhase') or 'recognition-alignment')
     kind = 'error' if receipt.get('error') else 'warning'
     title, summary = '操作未完成', '本次操作未完成，原因已保存在帮助页的“最近问题”。'
-    if 'live-runtime-requires-full-client-capture' in raw:
+    if 'capture-safe-fallback-unsupported' in raw:
+        title, phase, kind = '当前系统不支持安全画面回退', 'capture', 'error'
+        summary = ('本次游戏客户区采集失败，当前系统不支持安全的屏幕采集回退；'
+                   '该回退需要 Windows 10 2004（内部版本 19041）或更高版本。'
+                   '普通客户区采集仍可使用，请保持游戏窗口可见并重新打开地图重试。'
+                   '若持续出现，需在支持此回退能力的系统上使用；具体能力与原始触发原因已保存在帮助页。')
+    elif 'live-runtime-requires-full-client-capture' in raw:
         title, phase, kind = '采集画面尺寸不一致', 'capture', 'error'
         summary = '采集画面未覆盖当前游戏客户区，本次识别已停止。请重新打开地图；详细尺寸可在帮助页的“最近问题”查看。'
     elif 'capture' in raw.casefold() or 'foreground' in raw.casefold():

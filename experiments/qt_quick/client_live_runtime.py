@@ -2013,7 +2013,8 @@ class LiveRuntime:
             fields["errorPhase"] = "capture"
             raw_diagnostics = getattr(error, "capture_diagnostics", {})
             allowed = {"frameShape", "frameDtype", "roiClientBounds", "requestedClientBounds",
-                       "fullClientSize", "clientBounds", "dpi", "expectedHwnd", "foregroundHwnd", "foregroundPid"}
+                       "fullClientSize", "clientBounds", "dpi", "expectedHwnd", "foregroundHwnd", "foregroundPid",
+                       "captureCapability", "fallbackTrigger"}
             diagnostics = {key:value for key,value in raw_diagnostics.items() if key in allowed} if isinstance(raw_diagnostics, dict) else {}
             try:
                 state = getattr(self._capture, "snapshot", {})

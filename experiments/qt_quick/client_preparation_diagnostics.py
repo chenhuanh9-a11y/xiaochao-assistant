@@ -6,6 +6,7 @@ from client_input_diagnostics import code, number, scope
 
 
 ERROR_REASONS = {
+    "capture-safe-fallback-unsupported": "capture-safe-fallback-unsupported",
     "game-client-dc-returned-blank-frame": "game-client-dc-returned-blank-frame",
     "game window is minimized; not restored by capture": "game-window-minimized",
     "client size or DPI unavailable": "client-geometry-unavailable",
@@ -39,7 +40,8 @@ def exception_metadata(error):
 def capture_metadata(captured=None, error=None):
     # Provider attaches only metadata already observed by this transaction.
     info = getattr(error, "capture_trace", {}) if error is not None else {}
-    row = {key: info[key] for key in ("provider", "backend", "phase", "foreground", "captureIntent") if key in info}
+    row = {key: info[key] for key in ("provider", "backend", "phase", "foreground", "captureIntent",
+                                   "captureCapability", "fallbackTrigger") if key in info}
     if captured is not None:
         context = captured.context
         row.update(provider="client-capture", backend=code(getattr(captured, "acquisition", None), "unknown-backend"),
