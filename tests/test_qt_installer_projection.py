@@ -78,6 +78,9 @@ class InstallerProjectionTests(unittest.TestCase):
         from managed_base_resources import repair_managed_base_resources
         self.assertEqual(repair_managed_base_resources(destination)["changed"], len(self.report["families"]["base"]))
         for name in self.resources:
+            if "/author-packs/" in name:
+                self.assertFalse((destination / "_internal" / name).exists())
+                continue
             self.assertEqual((destination / "_internal" / name).read_bytes(),
                              (self.stage / "_internal" / name).read_bytes())
 
@@ -127,7 +130,7 @@ class InstallerProjectionTests(unittest.TestCase):
 
     def test_inventory_exactness_and_identity_separation_gate(self):
         families = self.report["families"]
-        self.assertEqual(len(families["base"]), 82)
+        self.assertEqual(len(families["base"]), 80)
         members = sum(families.values(), [])
         self.assertEqual(len(members), len(set(members)))
         self.assertIn("_internal/references/build-fingerprint.txt", families["program"])
@@ -135,6 +138,29 @@ class InstallerProjectionTests(unittest.TestCase):
         self.write(self.stage / "_internal/references/undeclared.json", b"stray")
         with self.assertRaisesRegex(ValueError, "exact inventory"):
             build.production_file_projection(self.stage, self.resources)
+
+    def test_optional_author_sidecars_are_reported_but_never_installed_as_base_or_program(self):
+        import json
+        sidecars = {"_internal/references/author-packs/nightingale/" + name
+                    for name in ("catalog.json", "display-bindings.json")}
+        self.assertEqual(set(self.report["families"]["optional-author"]), sidecars)
+        manifest = json.loads((self.stage / self.report["managedBaseManifest"]).read_bytes())
+        self.assertFalse(sidecars & {row["path"] for row in manifest["files"]})
+        self.assertEqual(set(self.report["omittedOptionalAuthorFiles"]), sidecars)
+        self.assertTrue(all(not any(path.endswith(name) for name in sidecars)
+                            for path in self.report["installedFiles"]))
+        destination = self.folder / "existing-optional-author"
+        for name in sidecars:
+            self.write(destination / name, b"local author bytes")
+        self.apply_generated_projection(destination)
+        for name in sidecars:
+            self.assertEqual((destination / name).read_bytes(), b"local author bytes")
+        # Classification is exact; unfamiliar authors or extra sidecars do not
+        # gain an exemption from base integrity or declared inventory checks.
+        for name in ("_internal/references/author-packs/unknown/catalog.json",
+                     "_internal/references/author-packs/nightingale/other.json",
+                     "_internal/references/nightmare-canonical-coordinate-pack.json"):
+            self.assertEqual(build.resource_file_family(name), "base")
 
 
 if __name__ == "__main__":

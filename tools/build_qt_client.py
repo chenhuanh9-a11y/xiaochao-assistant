@@ -22,6 +22,8 @@ from xml.dom import minidom
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS = ROOT / "tools"
 sys.path.insert(0, str(TOOLS))
+sys.path.insert(0, str(ROOT / "app"))
+from managed_base_resources import optional_author_sidecar
 from package_profiles import LIGHT_PROFILE, partition_resources
 from packaged_resource_contract import check_package
 from verify_admin_manifest import verify_administrator_manifest, verify_manifest_xml
@@ -520,6 +522,8 @@ def resource_file_family(relative):
         return "program"
     if relative.startswith("_internal/assets/custom-maps/"):
         return "editor"
+    if optional_author_sidecar(relative):
+        return "optional-author"
     if (relative.startswith(("_internal/assets/", "_internal/references/", "_internal/recognition/"))
             or relative == "_internal/difficult-native-manifest.json"):
         return "base"
@@ -529,7 +533,7 @@ def resource_file_family(relative):
 def production_file_projection(stage, resources):
     """Read a clean assembled stage; every resource belongs to exactly one plane."""
     stage = Path(stage).resolve()
-    families = dict(program=[], base=[], editor=[])
+    families = dict(program=[], base=[], editor=[], **{"optional-author": []})
     seen = set()
     for path in sorted(stage.rglob("*")):
         if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
@@ -545,7 +549,7 @@ def production_file_projection(stage, resources):
         families[resource_file_family(name)].append(name)
     expected = {"_internal/" + name for name in resources
                 if resource_file_family("_internal/" + name) != "program"}
-    actual = set(families["base"]) | set(families["editor"])
+    actual = set(families["base"]) | set(families["editor"]) | set(families["optional-author"])
     if actual != expected:
         raise ValueError(f"Resource projection differs from exact inventory: missing={sorted(expected-actual)}, extra={sorted(actual-expected)}")
     return families
@@ -614,6 +618,11 @@ def write_production_files_include(stage, resources, output, *, resource_version
     lines = ["; Generated exact production projection; no directory wildcard copies."]
     installed_files = []
     for family, names in families.items():
+        if family == "optional-author":
+            # These belong to separately imported author displays. Shipping an
+            # older copy as base or program data would overwrite the author or
+            # resurrect it after the user removes its package.
+            continue
         for name in names:
             source = name.replace("/", "\\")
             installed = CANDIDATE + "/payload/" + name if family == "base" else name
@@ -626,6 +635,7 @@ def write_production_files_include(stage, resources, output, *, resource_version
     include.write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
     report = dict(schema="xingtu-qt-installer-projection-v1", families=families,
                   policy=RESOURCE_INSTALLATION_POLICY, installedFiles=installed_files,
+                  omittedOptionalAuthorFiles=families["optional-author"],
                   managedBaseManifest=manifest_name, managedBaseBundleId=manifest["bundleId"] if manifest else None,
                   managedBaseManifestSha256=sha256(Path(stage) / manifest_name) if manifest else None,
                   includeSha256=sha256(include))

@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import uuid
 
 import map_package_upgrade as transaction
@@ -21,6 +22,13 @@ CANDIDATE = "_internal/managed-base-resources"
 STATE = "work/map-packages/managed-base-state.json"
 PENDING = "work/map-packages/pending-base-repair.json"
 JOURNAL_SCHEMA = "xingtu-base-repair-v1"
+HISTORY = "work/map-packages/base-repairs"
+RETIRED_SCHEMA = "xingtu-base-repair-retired-v1"
+MAX_RETIRED_RECORDS = 16
+MAX_RETIRED_BYTES = 1024
+OPTIONAL_AUTHOR_SIDECARS = frozenset(
+    f"_internal/references/author-packs/{author}/{name}"
+    for author in files.AUTHOR_PACKAGES.values() for name in files.AUTHOR_SIDECARS)
 
 
 class ManagedBaseResourceError(ValueError):
@@ -33,7 +41,15 @@ class ManagedBaseResourceError(ValueError):
         super().__init__(reason + (": " + detail if detail else ""))
 
 
+def optional_author_sidecar(path):
+    """Exact optional display metadata; never a mandatory shared dependency."""
+    return files._relative(path).casefold() in OPTIONAL_AUTHOR_SIDECARS
+
+
 def _base_path(path):
+    # Keep A066 manifests and recovery journals parseable, including their
+    # mistaken optional-author entries. Planning separates ownership below;
+    # historical rollback/retirement must still verify the original records.
     path = files._relative(path)
     return (path == "_internal/difficult-native-manifest.json" or
             path.startswith(("_internal/assets/", "_internal/references/", "_internal/recognition/"))) and not (
@@ -87,7 +103,8 @@ def managed_base_inventory(install_root):
         path = files._target(root, name)
         if path.exists():
             for row in _manifest(path)["files"]:
-                protected.setdefault(row["path"].casefold(), []).append(row)
+                if not optional_author_sidecar(row["path"]):
+                    protected.setdefault(row["path"].casefold(), []).append(row)
     return protected
 
 
@@ -154,7 +171,13 @@ def plan_managed_base_resources(install_root):
                 if isinstance(policy, dict) and policy.get("existingBasePlane") == "manifest-owned-transaction-before-runtime":
                     raise ManagedBaseResourceError("base-candidate-manifest-missing", [dict(path=CANDIDATE + "/manifest.json", reason="missing")])
         return dict(status="not-managed", files=[], changes=[], issues=[])
-    manifest = _manifest(candidate)
+    original = _manifest(candidate)
+    # A066 included optional author metadata in its baseline. Validate that
+    # complete legacy document, then relinquish only these registered display
+    # paths. Never adopt, hash-repair, resurrect or claim their active bytes;
+    # the optional provider and author package operations own their validation.
+    manifest = manifest_for_rows([row for row in original["files"]
+                                  if not optional_author_sidecar(row["path"])], original["resourceVersion"])
     inventory = _rows(manifest["files"])
     state = files._target(root, STATE)
     previous = _rows(_manifest(state)["files"]) if state.exists() else {}
@@ -198,8 +221,188 @@ def _clear_pending(root, transaction_id):
     pointer = files._target(root, PENDING)
     if transaction._read_json(pointer) != dict(schema=JOURNAL_SCHEMA, transactionId=transaction_id):
         raise ManagedBaseResourceError("base-pending-pointer-changed")
-    pointer.unlink()
+    row = dict(path=PENDING, bytes=pointer.stat().st_size, sha256=files._sha(pointer))
+    identity = transaction._capture(pointer, row)
+    if not files._rollback_published(pointer, tuple(identity), row["sha256"]):
+        raise ManagedBaseResourceError("base-pending-pointer-changed")
     transaction._directory_sync(pointer.parent)
+
+
+def _cleanup_error(path, reason):
+    if any(word in reason for word in ("unknown", "unrecognized", "unwitnessed", "invalid", "missing", "not-terminal")):
+        public_reason = "cleanup-object-unknown"
+    elif any(word in reason for word in ("changed", "linked", "different")):
+        public_reason = "cleanup-object-changed"
+    else:
+        public_reason = "cleanup-object-unwritable"
+    error = ManagedBaseResourceError("base-cleanup-incomplete", [dict(path=path, reason=public_reason)])
+    error.cleanup_reason = reason
+    error.details["pendingCleanup"] = True
+    return error
+
+
+def _ensure_pending(root, transaction_id):
+    try:
+        pointer = files._target(root, PENDING)
+        value = dict(schema=JOURNAL_SCHEMA, transactionId=transaction_id)
+        if pointer.exists():
+            if transaction._read_json(pointer) != value:
+                raise _cleanup_error(PENDING, "different-pending-transaction")
+        else:
+            transaction._write_new(pointer, _encoded(value))
+    except ManagedBaseResourceError:
+        raise
+    except OSError as error:
+        raise _cleanup_error(PENDING, "pending-marker-unwritable") from error
+    except ValueError as error:
+        raise _cleanup_error(PENDING, "pending-marker-invalid") from error
+
+
+def _is_transaction_id(value):
+    return isinstance(value, str) and bool(re.fullmatch(r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}", value))
+
+
+def _history_directories(root):
+    directory = files._target(root, HISTORY)
+    if not directory.exists():
+        return []
+    found = []
+    for path in sorted(directory.iterdir()):
+        try:
+            files._no_links(path)
+        except (OSError, ValueError) as error:
+            raise _cleanup_error(HISTORY + "/" + path.name, "linked-history-object") from error
+        if not _is_transaction_id(path.name) or not path.is_dir():
+            raise _cleanup_error(HISTORY + "/" + path.name, "unrecognized-history-object")
+        found.append(path)
+    return found
+
+
+def _cleanup_inventory(directory, journal):
+    """Validate the complete private tree before deleting even one known pin.
+
+    Terminal cleanup tolerates already absent pins, never an unexpected object.
+    Preparing journals can record absent/unwitnessed files; existing unwitnessed
+    bytes remain blocked instead of guessing ownership after process loss.
+    """
+    expected = {}
+    if journal["schema"] == JOURNAL_SCHEMA:
+        for entry in journal["entries"]:
+            expected["new/" + entry["new"]["path"]] = (entry["new"], entry["newIdentity"])
+            if entry["old"] is not None:
+                expected["backup/" + entry["old"]["path"]] = (entry["old"], entry["oldIdentity"])
+    allowed_dirs = set()
+    for name in expected:
+        parent = Path(name).parent
+        while parent.as_posix() != ".":
+            allowed_dirs.add(parent.as_posix())
+            parent = parent.parent
+    pending, payloads, directories = [directory], [], []
+    count = 0
+    while pending:
+        parent = pending.pop()
+        files._no_links(parent)
+        for path in parent.iterdir():
+            relative = path.relative_to(directory).as_posix()
+            count += 1
+            if count > 200000:
+                raise _cleanup_error(HISTORY + "/" + directory.name, "history-object-limit")
+            try:
+                files._no_links(path)
+            except (OSError, ValueError) as error:
+                raise _cleanup_error(HISTORY + "/" + directory.name + "/" + relative, "linked-history-object") from error
+            info = path.lstat()
+            if stat.S_ISDIR(info.st_mode):
+                if relative not in allowed_dirs:
+                    raise _cleanup_error(HISTORY + "/" + directory.name + "/" + relative, "unknown-directory")
+                directories.append((path, transaction._identity(info)))
+                pending.append(path)
+            elif relative == "journal.json":
+                if not stat.S_ISREG(info.st_mode) or transaction._read_json(path) != journal:
+                    raise _cleanup_error(HISTORY + "/" + directory.name + "/journal.json", "journal-changed")
+            elif relative in expected:
+                row, identity = expected[relative]
+                if identity is None:
+                    raise _cleanup_error(HISTORY + "/" + directory.name + "/" + relative, "retained-object-unwitnessed")
+                if not transaction._matches(path, row, identity):
+                    raise _cleanup_error(HISTORY + "/" + directory.name + "/" + relative, "retained-object-changed")
+                payloads.append((path, row, identity))
+            else:
+                raise _cleanup_error(HISTORY + "/" + directory.name + "/" + relative, "unknown-object")
+    return payloads, sorted(directories, key=lambda value: len(value[0].parts), reverse=True)
+
+
+def _remove_empty_directory(path, identity):
+    files._no_links(path)
+    if transaction._identity(path.stat()) != identity:
+        raise _cleanup_error(HISTORY + "/" + path.name, "directory-identity-changed")
+    path.rmdir()  # Empty only; never recursively remove a path or follow a link.
+    transaction._directory_sync(path.parent)
+
+
+def _prune_retired(root, protected):
+    records = []
+    for directory in _history_directories(root):
+        path = files._target(directory, "journal.json")
+        if not path.exists():
+            # A crash after removing an old tiny audit record may leave its
+            # empty directory. rmdir cannot delete any unknown contents.
+            if not any(directory.iterdir()):
+                _remove_empty_directory(directory, transaction._identity(directory.stat()))
+                continue
+            raise _cleanup_error(HISTORY + "/" + directory.name, "history-journal-missing")
+        value = transaction._read_json(path)
+        if value.get("schema") != RETIRED_SCHEMA:
+            continue
+        _, value = _load_history(root, directory.name)
+        _cleanup_inventory(directory, value)
+        records.append((path.stat().st_mtime_ns, directory.name, directory))
+    candidates = [record for record in sorted(records) if record[1] != protected]
+    for _, transaction_id, directory in candidates[:max(0, len(records) - MAX_RETIRED_RECORDS)]:
+        path = files._target(directory, "journal.json")
+        row = dict(path="journal.json", bytes=path.stat().st_size, sha256=files._sha(path))
+        identity = transaction._capture(path, row)
+        directory_identity = transaction._identity(directory.stat())
+        if not files._rollback_published(path, tuple(identity), row["sha256"]):
+            raise _cleanup_error(HISTORY + "/" + transaction_id + "/journal.json", "audit-record-changed")
+        transaction._directory_sync(directory)
+        _remove_empty_directory(directory, directory_identity)
+
+
+def _finish_cleanup(root, directory, journal, *, prune=True):
+    """Irreversible terminal phase. No branch here restores an active resource."""
+    transaction_id = journal["transactionId"]
+    _ensure_pending(root, transaction_id)
+    try:
+        payloads, directories = _cleanup_inventory(directory, journal)
+        if journal["schema"] == JOURNAL_SCHEMA:
+            if journal["status"] not in {"committed", "rolled-back"}:
+                raise _cleanup_error(HISTORY + "/" + transaction_id, "transaction-not-terminal")
+            if journal.get("cleanupStatus") != "retiring":
+                journal["cleanupStatus"] = "retiring"
+                _write_journal(directory, journal)
+        for path, row, identity in payloads:
+            if not files._rollback_published(path, tuple(identity), row["sha256"]):
+                raise _cleanup_error(HISTORY + "/" + transaction_id + "/" + path.relative_to(directory).as_posix(), "retained-object-delete-failed")
+            transaction._directory_sync(path.parent)
+        for path, identity in directories:
+            _remove_empty_directory(path, identity)
+        if journal["schema"] == JOURNAL_SCHEMA:
+            if transaction._read_json(files._target(directory, "journal.json")) != journal:
+                raise _cleanup_error(HISTORY + "/" + transaction_id + "/journal.json", "journal-changed")
+            compact = dict(schema=RETIRED_SCHEMA, transactionId=transaction_id,
+                           rootIdentity=journal["rootIdentity"], outcome=journal["status"],
+                           fileCount=len(journal["files"]))
+            if len(_encoded(compact)) > MAX_RETIRED_BYTES:
+                raise _cleanup_error(HISTORY + "/" + transaction_id, "audit-record-too-large")
+            _write_journal(directory, compact)
+        if prune:
+            _prune_retired(root, transaction_id)
+        _clear_pending(root, transaction_id)
+    except Exception as error:
+        if isinstance(error, ManagedBaseResourceError) and error.code == "base-cleanup-incomplete":
+            raise
+        raise _cleanup_error(HISTORY + "/" + transaction_id, "cleanup-write-or-validation-failed") from error
 
 
 def _rollback(root, directory, journal):
@@ -236,20 +439,31 @@ def _rollback(root, directory, journal):
     if blocked:
         raise ManagedBaseResourceError("base-rollback-incomplete; retained-backups-and-pending-marker",
                                        [dict(path=path, reason="changed-or-unwritable") for path in blocked])
-    _clear_pending(root, journal["transactionId"])
+    _finish_cleanup(root, directory, journal)
 
 
-def _load_pending(root):
-    pointer = transaction._read_json(files._target(root, PENDING))
-    transaction_id = pointer.get("transactionId")
-    if (pointer.get("schema") != JOURNAL_SCHEMA or not isinstance(transaction_id, str)
-            or not re.fullmatch(r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}", transaction_id)):
-        raise ManagedBaseResourceError("invalid-base-pending-pointer")
-    directory = files._target(root, "work/map-packages/base-repairs/" + transaction_id)
-    journal = transaction._read_json(files._target(directory, "journal.json"))
-    if (journal.get("schema") != JOURNAL_SCHEMA or journal.get("transactionId") != transaction_id
+def _load_history(root, transaction_id):
+    if not _is_transaction_id(transaction_id):
+        raise ManagedBaseResourceError("invalid-base-transaction-id")
+    directory = files._target(root, HISTORY + "/" + transaction_id)
+    path = files._target(directory, "journal.json")
+    journal = transaction._read_json(path)
+    if (journal.get("transactionId") != transaction_id
             or journal.get("rootIdentity") != transaction._identity(root.stat())
-            or journal.get("status") not in {"prepared", "committed", "rolled-back", "rollback-incomplete"}):
+            or journal.get("schema") not in {JOURNAL_SCHEMA, RETIRED_SCHEMA}):
+        raise ManagedBaseResourceError("invalid-base-repair-journal")
+    if journal["schema"] == RETIRED_SCHEMA:
+        if (set(journal) != {"schema", "transactionId", "rootIdentity", "outcome", "fileCount"}
+                or journal["outcome"] not in {"committed", "rolled-back"}
+                or type(journal["fileCount"]) is not int or not 0 < journal["fileCount"] <= 20000
+                or path.stat().st_size > MAX_RETIRED_BYTES):
+            raise ManagedBaseResourceError("invalid-base-retired-record")
+        return directory, journal
+    if (journal.get("status") not in {"preparing", "prepared", "committed", "rolled-back", "rollback-incomplete"}
+            or set(journal) - {"schema", "transactionId", "rootIdentity", "status", "files", "entries", "blockedPaths", "cleanupStatus"}
+            or not isinstance(journal.get("blockedPaths"), list)
+            or journal.get("cleanupStatus") not in {None, "retiring"}
+            or (journal.get("cleanupStatus") == "retiring" and journal["status"] not in {"committed", "rolled-back"})):
         raise ManagedBaseResourceError("invalid-base-repair-journal")
     expected = _rows(journal.get("files"))
     seen = set()
@@ -262,9 +476,10 @@ def _load_pending(root):
         if key in seen or (row["path"] != STATE and expected.get(key) != row):
             raise ManagedBaseResourceError("invalid-base-repair-target")
         seen.add(key)
-        transaction._valid_identity(entry.get("newIdentity"))
-        if not transaction._matches(files._target(directory, "new/" + row["path"]), row, entry["newIdentity"]):
-            raise ManagedBaseResourceError("base-repair-retained-object-changed")
+        if entry.get("newIdentity") is not None:
+            transaction._valid_identity(entry["newIdentity"])
+        elif journal["status"] not in {"preparing", "rolled-back"}:
+            raise ManagedBaseResourceError("invalid-base-repair-file-identity")
         old = entry.get("old")
         if old is not None:
             files._rows([old])
@@ -273,31 +488,102 @@ def _load_pending(root):
                 raise ManagedBaseResourceError("invalid-base-repair-old-target")
     if entries[-1]["new"]["path"] != STATE:
         raise ManagedBaseResourceError("invalid-base-repair-state-entry")
+    if any(not isinstance(path, str) or path.casefold() not in seen for path in journal["blockedPaths"]):
+        raise ManagedBaseResourceError("invalid-base-repair-blocked-path")
     return directory, journal
+
+
+def _load_pending(root):
+    pointer = transaction._read_json(files._target(root, PENDING))
+    transaction_id = pointer.get("transactionId")
+    if pointer != dict(schema=JOURNAL_SCHEMA, transactionId=transaction_id) or not _is_transaction_id(transaction_id):
+        raise ManagedBaseResourceError("invalid-base-pending-pointer")
+    return _load_history(root, transaction_id)
 
 
 def _recover(root):
     if not files._target(root, PENDING).exists():
         return dict(status="no-pending-base-repair")
     directory, journal = _load_pending(root)
-    if journal["status"] == "committed":
-        for row in journal["files"]:
-            if not transaction._matches(files._target(root, row["path"]), row):
-                raise ManagedBaseResourceError("committed-base-file-changed")
-        state = journal["entries"][-1]
-        if not transaction._matches(files._target(root, STATE), state["new"], state["newIdentity"]):
-            raise ManagedBaseResourceError("committed-base-state-changed")
-        _clear_pending(root, journal["transactionId"])
-        return dict(status="committed")
+    if journal["schema"] == RETIRED_SCHEMA or journal["status"] in {"committed", "rolled-back"}:
+        outcome = journal.get("outcome", journal.get("status"))
+        _finish_cleanup(root, directory, journal)
+        return dict(status=outcome, cleanupComplete=True)
+    if journal["status"] == "preparing":
+        # No active target was touched. Validate every retained preparation
+        # object before changing the outcome, never invent an unknown identity.
+        _cleanup_inventory(directory, journal)
+        journal["status"] = "rolled-back"
+        _write_journal(directory, journal)
+        _finish_cleanup(root, directory, journal)
+        return dict(status="rolled-back", cleanupComplete=True)
+    for entry in journal["entries"]:
+        row = entry["new"]
+        if not transaction._matches(files._target(directory, "new/" + row["path"]), row, entry["newIdentity"]):
+            raise ManagedBaseResourceError("base-repair-retained-object-changed")
     _rollback(root, directory, journal)
-    return dict(status="rolled-back")
+    return dict(status="rolled-back", cleanupComplete=True)
+
+
+def _retire_completed(root):
+    retired = 0
+    for directory in _history_directories(root):
+        if not directory.exists():
+            continue  # A previous iteration pruned this verified audit record.
+        path = files._target(directory, "journal.json")
+        if not path.exists() and not any(directory.iterdir()):
+            _remove_empty_directory(directory, transaction._identity(directory.stat()))
+            continue
+        try:
+            _, journal = _load_history(root, directory.name)
+            if journal["schema"] == RETIRED_SCHEMA:
+                # Already compact and clean is a read-only no-op. Do not make
+                # a healthy launch rewrite every audit's pending marker.
+                _cleanup_inventory(directory, journal)
+                continue
+            _ensure_pending(root, directory.name)
+            if journal["schema"] != RETIRED_SCHEMA and journal["status"] not in {"committed", "rolled-back"}:
+                raise _cleanup_error(HISTORY + "/" + directory.name, "historical-transaction-not-terminal")
+            _finish_cleanup(root, directory, journal, prune=False)
+            retired += int(journal["schema"] != RETIRED_SCHEMA)
+        except Exception as error:
+            _ensure_pending(root, directory.name)
+            if isinstance(error, ManagedBaseResourceError) and error.code == "base-cleanup-incomplete":
+                raise
+            raise _cleanup_error(HISTORY + "/" + directory.name, "historical-record-invalid") from error
+    audits = []
+    for directory in _history_directories(root):
+        path = files._target(directory, "journal.json")
+        _, journal = _load_history(root, directory.name)
+        if journal["schema"] == RETIRED_SCHEMA:
+            audits.append((path.stat().st_mtime_ns, directory.name, directory, journal))
+    if len(audits) > MAX_RETIRED_RECORDS:
+        _, _, directory, journal = max(audits, key=lambda item: (item[0], item[1]))
+        _finish_cleanup(root, directory, journal)
+    return dict(status="cleanup-complete", retiredTransactions=retired)
+
+
+def retire_managed_base_resources(install_root):
+    """Retire verified completed history only; never restore old active data."""
+    from resource_transaction import resource_write_lock
+    with resource_write_lock(install_root) as root:
+        root = Path(root)
+        if files._target(root, PENDING).exists():
+            directory, journal = _load_pending(root)
+            if journal["schema"] != RETIRED_SCHEMA and journal["status"] not in {"committed", "rolled-back"}:
+                raise _cleanup_error(PENDING, "transaction-not-terminal")
+            _finish_cleanup(root, directory, journal)
+        return _retire_completed(root)
 
 
 def recover_managed_base_resources(install_root):
     """Recover only verified objects; never overwrite an unknown post-crash edit."""
     from resource_transaction import resource_write_lock
     with resource_write_lock(install_root) as root:
-        return _recover(Path(root))
+        root = Path(root)
+        result = _recover(root)
+        _retire_completed(root)
+        return result
 
 
 def repair_managed_base_resources(install_root):
@@ -312,6 +598,7 @@ def repair_managed_base_resources(install_root):
                            ("pending-removal.json", "removal-recovery-required")):
             if files._target(root, "work/map-packages/" + name).exists():
                 raise ManagedBaseResourceError(code)
+        _retire_completed(root)
         plan = plan_managed_base_resources(root)
         if plan["status"] == "not-managed":
             return plan
@@ -326,23 +613,38 @@ def repair_managed_base_resources(install_root):
         changes = [*plan["changes"], dict(new=state_row, old=old_state)]
         preflight_hardlinks(root, [entry["new"]["path"] for entry in changes])
         transaction_id = str(uuid.uuid4())
-        directory = files._target(root, "work/map-packages/base-repairs/" + transaction_id)
+        directory = files._target(root, HISTORY + "/" + transaction_id)
         directory.mkdir(parents=True, exist_ok=False)
         entries = []
         for change in changes:
             row, old = change["new"], change["old"]
             target = files._target(root, row["path"])
-            retained = files._target(directory, "new/" + row["path"])
-            data = encoded if row["path"] == STATE else files._target(root, CANDIDATE + "/payload/" + row["path"]).read_bytes()
-            transaction._write_new(retained, data)
-            entries.append(dict(new=row, old=old, newIdentity=transaction._capture(retained, row),
+            entries.append(dict(new=row, old=old, newIdentity=None,
                                 oldIdentity=transaction._capture(target, old) if old else None))
             if old is None and target.exists():
                 raise ManagedBaseResourceError("base-target-appeared-before-commit")
         journal = dict(schema=JOURNAL_SCHEMA, transactionId=transaction_id, rootIdentity=transaction._identity(root.stat()),
-                       status="prepared", files=plan["files"], entries=entries, blockedPaths=[])
+                       status="preparing", files=plan["files"], entries=entries, blockedPaths=[])
         _write_journal(directory, journal)
-        transaction._write_new(files._target(root, PENDING), _encoded(dict(schema=JOURNAL_SCHEMA, transactionId=transaction_id)))
+        _ensure_pending(root, transaction_id)
+        try:
+            for entry in entries:
+                row = entry["new"]
+                retained = files._target(directory, "new/" + row["path"])
+                data = encoded if row["path"] == STATE else files._target(root, CANDIDATE + "/payload/" + row["path"]).read_bytes()
+                transaction._write_new(retained, data)
+                entry["newIdentity"] = transaction._capture(retained, row)
+                _write_journal(directory, journal)
+            journal["status"] = "prepared"
+            _write_journal(directory, journal)
+        except Exception as error:
+            try:
+                _recover(root)
+            except Exception as recovery_error:
+                if isinstance(recovery_error, ManagedBaseResourceError) and recovery_error.code == "base-cleanup-incomplete":
+                    raise
+                raise _cleanup_error(HISTORY + "/" + transaction_id, "preparation-incomplete-retained-for-recovery") from recovery_error
+            raise
         try:
             for entry in entries:
                 row = entry["new"]
@@ -362,12 +664,23 @@ def repair_managed_base_resources(install_root):
                 transaction._directory_sync(target.parent)
             journal["status"] = "committed"
             _write_journal(directory, journal)
-            _clear_pending(root, transaction_id)
         except Exception as error:
+            # A write can raise after replacing the journal. Once the durable
+            # record says committed, even an uncertain flush may not resurrect
+            # old active data. Recovery can only finish the terminal cleanup.
+            try:
+                recorded = transaction._read_json(files._target(directory, "journal.json"))
+            except Exception as journal_error:
+                raise _cleanup_error(HISTORY + "/" + transaction_id, "commit-state-unreadable") from journal_error
+            if recorded.get("status") == "committed":
+                raise _cleanup_error(HISTORY + "/" + transaction_id, "commit-record-write-uncertain") from error
             try:
                 _rollback(root, directory, journal)
             except Exception as rollback_error:
+                if isinstance(rollback_error, ManagedBaseResourceError) and rollback_error.code == "base-cleanup-incomplete":
+                    raise
                 raise ManagedBaseResourceError(f"base-repair-failed-and-rollback-incomplete: {rollback_error}") from error
             raise
+        _finish_cleanup(root, directory, journal)
         return dict(status="repaired" if plan["changes"] else "healthy", bundleId=plan["manifest"]["bundleId"],
                     checked=len(plan["files"]), changed=len(plan["changes"]), transactionId=transaction_id)
