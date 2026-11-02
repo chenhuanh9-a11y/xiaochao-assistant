@@ -34,8 +34,8 @@ Popup {
             Note { text: onboardingService.step === 1 ? "和游戏地图按键保持一致；点击修改后按键，再确认保存。" : "用当前快捷键显示一次，再隐藏一次。鼠标按钮也可兜底，来源会单独记录。" }
             RowLayout {
                 Layout.fillWidth: true
-                Label { Layout.fillWidth: true; text: onboardingService.step === 1 ? (settingsService.values.hotkey || "未绑定") : (settingsService.values.actionHotkeys[0] || "未绑定"); font.pixelSize: 20; color: "#183a73" }
-                AppButton { text: "修改"; enabled: !settingsService.busy; onClicked: root.record(onboardingService.step === 1 ? "hotkey" : "toggle-panel") }
+                Label { Layout.fillWidth: true; text: onboardingService.step === 1 ? (settingsService.persistedValues.hotkey || "未绑定") : (settingsService.persistedValues.actionHotkeys[0] || "未绑定"); font.pixelSize: 20; color: "#183a73" }
+                AppButton { objectName: "onboardingRecord"; text: "修改"; enabled: !settingsService.busy; onClicked: root.record(onboardingService.step === 1 ? "hotkey" : "toggle-panel") }
             }
             ColumnLayout {
                 visible: settingsService.shortcutRecording; Layout.fillWidth: true; spacing: 10
@@ -65,8 +65,8 @@ Popup {
                 }
                 Note { text: settingsService.shortcutMessage }
                 RowLayout {
-                    AppButton { text: "确认到草稿"; enabled: settingsService.shortcutCandidateReady; onClicked: settingsService.confirmShortcutCapture() }
-                    AppButton { text: "取消修改"; onClicked: settingsService.cancelShortcutCapture() }
+                    AppButton { objectName: "onboardingCaptureConfirm"; text: settingsService.busy ? "正在保存…" : "保存并生效"; enabled: settingsService.shortcutCandidateReady && !settingsService.busy; onClicked: settingsService.confirmShortcutCapture() }
+                    AppButton { objectName: "onboardingCaptureCancel"; enabled: !settingsService.busy; text: "取消修改"; onClicked: settingsService.cancelShortcutCapture() }
                 }
             }
             ColumnLayout {

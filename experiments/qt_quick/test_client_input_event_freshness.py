@@ -2,6 +2,7 @@
 import os
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from PySide6.QtGui import QGuiApplication
 from client_input import NativeShortcutBackend
@@ -17,6 +18,8 @@ class InputFreshnessTests(unittest.TestCase):
         self.source=PassThroughKeyboardSource()
         self.source.start=Mock(return_value=True)
         self.source.stop=Mock(return_value=True)
+        self.source._thread=SimpleNamespace(is_alive=lambda: True)
+        self.source.installed=True
         self.keys=NativeShortcutBackend(self.native,source=self.source)
         self.events=[]
         self.keys.actionTriggered.connect(self.events.append)
@@ -24,7 +27,8 @@ class InputFreshnessTests(unittest.TestCase):
 
     def configure(self,action,chord):
         self.assertTrue(self.keys.configure({action:chord}))
-        self.keys.enableManagement(); self.keys.bindWindow(42); self.keys.enable()
+        with patch('time.monotonic', return_value=90.):
+            self.keys.enableManagement(); self.keys.bindWindow(42); self.keys.enable()
 
     def emit(self,vk,down,created=97.,foreground=42):
         # Native source creates the original edge; GUI delivery occurs later.
