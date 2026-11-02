@@ -145,6 +145,20 @@ class DiagnosticBudgetTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             service=problems.ProblemsService(SimpleNamespace(work_root=Path(folder)))
             started=time.monotonic();attempted=accepted=diagnostics=last_accepted=0
+            failures=[];original_write=problems._write_batch
+            def measured_write(path,rows):
+                try:return original_write(path,rows)
+                except Exception as error:
+                    chain=[];seen=set()
+                    while error is not None and id(error) not in seen:
+                        seen.add(id(error))
+                        chain.append(dict(type=type(error).__name__,errno=getattr(error,'errno',None),
+                            winerror=getattr(error,'winerror',None)))
+                        error=error.__cause__ or error.__context__
+                    failures.append(chain)
+                    raise
+            measurement=patch.object(problems,'_write_batch',side_effect=measured_write)
+            measurement.start()
             try:
                 while time.monotonic()-started<60:
                     tick_start=time.monotonic()
@@ -179,11 +193,15 @@ class DiagnosticBudgetTests(unittest.TestCase):
                     problemBytes=sum(p.stat().st_size for p in problem_paths if p.exists()),
                     recognitionBytes=sum(p.stat().st_size for p in diag_paths if p.exists()),
                     loss=service.diagnosticSnapshot()['droppedWrites'],problemLoss=service.identity.loss(),
+                    recognitionLoss=service.recognition_identity.loss(),writeFailureTypes=failures,
                     lastAccepted=last_accepted,lastRetained=max(r['captureDiagnostics']['actual'] for r in problem_rows),
                     writeError=bool(service.writeError),writeErrorCodes=__import__('re').findall(r'\[(?:WinError|Errno) \d+\]|diagnostic-[a-z-]+',service.writeErrorDetails))
                 print('DIAGNOSTIC_RETENTION '+json.dumps(report),flush=True)
                 self.assertEqual(report['lastRetained'],last_accepted,report)
                 self.assertEqual(service.identity.loss()['lostTotal'],attempted-accepted,report)
-            finally:service.shutdown();self.wait(service)
+                self.assertEqual(report['recognitionAccepted']-report['recognitionRetained'],
+                    service.recognition_identity.loss()['lostTotal'],report)
+            finally:
+                service.shutdown();self.wait(service);measurement.stop()
 
 if __name__=='__main__': unittest.main()
