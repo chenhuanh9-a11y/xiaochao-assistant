@@ -87,6 +87,37 @@ def test_source_revision_is_exact_checkout_and_missing_is_explicit():
         assert source_revision(folder)['reason'] == 'source checkout metadata absent'
 
 
+def test_windows_own_hidden_window_native_diagnostics_smoke():
+    import os
+    import unittest
+    if sys.platform != 'win32':
+        raise unittest.SkipTest('native Win32 smoke runs on Windows CI only')
+    import ctypes
+    from ctypes import wintypes as w
+    from runtime_environment_diagnostics import WindowsDiagnostics
+    native=WindowsDiagnostics()
+    create=native.user.CreateWindowExW
+    create.argtypes=[w.DWORD,w.LPCWSTR,w.LPCWSTR,w.DWORD,ctypes.c_int,ctypes.c_int,
+                     ctypes.c_int,ctypes.c_int,w.HWND,w.HMENU,w.HINSTANCE,ctypes.c_void_p]
+    create.restype=w.HWND
+    native.user.DestroyWindow.argtypes=[w.HWND]
+    # Empty title; no WS_VISIBLE, hooks, input injection, game or desktop capture.
+    hwnd=create(0,'STATIC','',0x00CF0000,20,20,640,480,None,None,None,None)
+    assert hwnd, 'CreateWindowExW failed for owned hidden diagnostic test window'
+    try:
+        result=collect_runtime_environment(freeze_runtime_inputs(bound_identity={'hwnd':int(hwnd),'pid':os.getpid()}))
+        assert result['qtProcessIntegrity']['status']=='available', result
+        assert result['gameProcessIntegrity']['status']=='available', result
+        window=result['boundWindow']
+        assert window['status']=='available',window
+        assert window['clientArea']['status']=='available',window
+        assert all(value>0 for value in window['clientArea']['size']),window
+        assert window['monitor']['status']=='available' or window['monitor'].get('reason'),window
+        assert window['fullscreenMode']['status']=='unavailable',window
+    finally:
+        assert native.user.DestroyWindow(hwnd)
+
+
 if __name__ == '__main__':
     import unittest
     suite = unittest.TestSuite(unittest.FunctionTestCase(fn) for name, fn in list(globals().items())
