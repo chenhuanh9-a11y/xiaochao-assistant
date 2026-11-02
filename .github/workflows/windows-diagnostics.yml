@@ -42,7 +42,7 @@ jobs:
       - name: Qt production paths and same-input hotfix comparison
         shell: pwsh
         run: |
-          $modules = @('test_diagnostic_log_budget', 'test_diagnostic_noninterference', 'test_client_problems', 'test_client_problem_history', 'test_client_info', 'test_client_diagnostic_integration', 'test8f8b_diagnostics_sampling', 'test_field_failure_samples', 'test_client_preparation_diagnostics', 'test_client_pointer_diagnostics', 'test_client_live_runtime', 'test_client_capture_full', 'test_client_capture_exclusion', 'test_client_capture_compat')
+          $modules = @('test_diagnostic_log_budget', 'test_diagnostic_noninterference', 'test_client_problems', 'test_client_problem_history', 'test_client_info', 'test_client_diagnostic_integration', 'test8f8b_diagnostics_sampling', 'test_field_failure_samples', 'test_client_preparation_diagnostics', 'test_client_pointer_diagnostics', 'test_client_live_runtime', 'test_client_capture_full', 'test_client_capture_exclusion', 'test_client_capture_compat', 'test_client_lifecycle_trace.LifecycleTraceTests.test_existing_writer_rotation_has_fixed_total_bound', 'test_client_lifecycle_trace.LifecycleTraceTests.test_interpreter_exits_with_diagnostic_stream_write_blocked')
           $failed = @()
           foreach ($module in $modules) {
             python -m unittest $module -v
