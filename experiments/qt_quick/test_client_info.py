@@ -62,6 +62,28 @@ class InfoTests(unittest.TestCase):
         service.checkUpdates()
         self.wait(lambda: not service.checking)
 
+    def test_help_reset_changes_only_random_identity_and_next_production_log(self):
+        from client_problems import ProblemsService
+        service = self.service()
+        problems = ProblemsService(service.paths)
+        self.addCleanup(problems.shutdown)
+        service.setProviders(problems=problems)
+        problems.recordTrace(dict(stage='before-reset', round=4, cycle=2))
+        previous = problems.identity.installation.install_id
+        self.assertTrue(service.resetDiagnosticInstallId())
+        self.wait(lambda: not service.checking)
+        current = problems.identity.installation.install_id
+        self.assertNotEqual(previous, current)
+        problems.recordTrace(dict(stage='after-reset', round=4, cycle=2))
+        problems.shutdown()
+        self.wait(lambda: not problems.pendingWrites)
+        rows = [json.loads(line) for line in problems.log_path.read_text('utf-8').splitlines()]
+        self.assertEqual([row['installId'] for row in rows], [previous, current])
+        self.assertEqual(len({row['sessionId'] for row in rows}), 1)
+        self.assertEqual([row['seq'] for row in rows], [1, 2])
+        self.assertEqual([row['round'] for row in rows], [4, 4])
+        self.assertFalse(service.paths.settings_path.exists())
+
     def test_startup_is_idle_and_check_delivers_real_history(self):
         service = self.service()
         self.app.processEvents()

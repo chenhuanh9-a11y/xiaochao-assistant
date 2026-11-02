@@ -54,6 +54,7 @@ def _redact_path_text(text: str) -> str:
     # Apostrophes are legal path characters. Outside a recognized frame line,
     # choose the last quote conservatively instead of leaking a path suffix.
     text = re.sub(r"(?i)'(?:[A-Z]:[\\/]|\\\\)[^\r\n]*'", "'<local-path>'", text)
+    text = re.sub(r'(?<![:/\w])/(?:home|Users|workspace|tmp|var|opt)/[^"\r\n]*', "<local-path>", text)
     return re.sub(r'(?i)(?:\b[A-Z]:[\\/]|\\\\)[^"\r\n]*', "<local-path>", text)
 
 
@@ -110,26 +111,63 @@ def _redact_local_paths(payload: bytes) -> bytes:
     return redacted.encode("utf-8", errors="backslashreplace")
 
 
-def _event_log_session_id(path: Path) -> str | None:
-    """Derive a stable, non-identifying session id from the startup event."""
-    if not path.name.startswith("events-"):
-        return None
-    try:
-        with path.open("r", encoding="utf-8", errors="replace") as handle:
-            for _index, line in zip(range(32), handle):
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if row.get("event") != "assistant-started":
-                    continue
-                seed = "|".join(str(row.get(key, "")) for key in (
-                    "time", "processId", "buildFingerprint",
-                ))
-                return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
-    except OSError:
-        return None
-    return None
+def _log_sessions(payload: bytes, log_name: str) -> list[dict]:
+    """Describe only identities actually present in included records, never hashes."""
+    groups = {}
+    for line in payload.split(b'\n'):
+        try:
+            row = json.loads(line)
+            if not isinstance(row, dict):
+                continue
+            session, pid, stream = row.get('sessionId'), row.get('pid'), row.get('logStream')
+            if not isinstance(session, str) or not re.fullmatch(r'[0-9a-f]{32}', session) or type(pid) is not int or not isinstance(stream, str):
+                continue
+            key = session, pid, stream
+            group = groups.setdefault(key, dict(sessionId=session, pid=pid, logStream=stream,
+                installIds=[], logs=[log_name], firstAt=None, lastAt=None, firstSeq=None, lastSeq=None,
+                recordCount=0, diagnosticLoss={}))
+            group['recordCount'] += 1
+            install = row.get('installId')
+            if isinstance(install, str) and re.fullmatch(r'[0-9a-f]{32}', install) and install not in group['installIds']:
+                group['installIds'].append(install)
+            stamp = row.get('timestampUTC', row.get('time'))
+            try:
+                parsed = datetime.fromisoformat(stamp)
+                if parsed.tzinfo is not None:
+                    stamp = parsed.astimezone().isoformat(timespec='milliseconds')
+                    group['firstAt'] = min(group['firstAt'] or stamp, stamp)
+                    group['lastAt'] = max(group['lastAt'] or stamp, stamp)
+            except (ValueError, TypeError):
+                pass
+            seq = row.get('seq')
+            if type(seq) is int:
+                group['firstSeq'] = min(group['firstSeq'] or seq, seq)
+                group['lastSeq'] = max(group['lastSeq'] or seq, seq)
+            loss = row.get('diagnosticLoss')
+            if isinstance(loss, dict) and type(loss.get('droppedTotal')) is int and loss['droppedTotal'] >= group['diagnosticLoss'].get('droppedTotal', 0):
+                group['diagnosticLoss'] = loss
+        except (ValueError, TypeError):
+            continue
+    return list(groups.values())
+
+
+def _merge_sessions(sessions):
+    merged = {}
+    for row in sessions:
+        key = row['sessionId'], row['pid'], row['logStream']
+        if key not in merged:
+            merged[key] = row
+            continue
+        previous = merged[key]
+        previous['logs'] += row['logs']
+        previous['installIds'] = list(dict.fromkeys(previous['installIds'] + row['installIds']))
+        previous['recordCount'] += row['recordCount']
+        for field, operation in (('firstAt', min), ('lastAt', max), ('firstSeq', min), ('lastSeq', max)):
+            values = [value for value in (previous[field], row[field]) if value is not None]
+            previous[field] = operation(values) if values else None
+        if row['diagnosticLoss'].get('droppedTotal', 0) >= previous['diagnosticLoss'].get('droppedTotal', 0):
+            previous['diagnosticLoss'] = row['diagnosticLoss']
+    return list(merged.values())
 
 
 def diagnostic_package_metadata(app_root: Path, *, app_version: str, build_fingerprint: str) -> dict:
@@ -224,6 +262,7 @@ def export_safe_diagnostic_bundle(
     build_fingerprint: str,
     process_integrity: dict | None = None,
     destination: Path | None = None,
+    export_id: str | None = None,
     summary: dict | None = None,
     automatic_failure_only: bool = False,
     include_automatic_failure_evidence: bool = False,
@@ -232,6 +271,8 @@ def export_safe_diagnostic_bundle(
     """Export bounded logs and explicitly requested, already saved failure evidence."""
     from diagnostic_evidence import export_failure_evidence, log_window
     from package_identity import collect_package_identity
+    from uuid import uuid4
+    export_id = export_id or uuid4().hex
     moment = exported_at or datetime.now().astimezone()
     selected_destination = destination is not None
     destination_root = Path(destination).parent if selected_destination else app_root / "outputs" / "诊断日志"
@@ -252,6 +293,7 @@ def export_safe_diagnostic_bundle(
     logs = safe_diagnostic_log_files(live_root, limit=log_limit)
     included_logs: list[dict] = []
     log_windows = {}
+    sessions = []
     included_bytes = 0
     fd, temporary_name = tempfile.mkstemp(
         prefix=".diagnostic-export-", suffix=".tmp", dir=destination_root,
@@ -272,19 +314,17 @@ def export_safe_diagnostic_bundle(
                 archive.writestr(f"logs/{path.name}", payload)
                 included_bytes += len(payload)
                 included_sha256 = hashlib.sha256(payload).hexdigest().upper()
+                observed_sessions = _log_sessions(payload, path.name)
+                sessions.extend(observed_sessions)
                 included_logs.append({
                     "name": path.name,
                     "sourceBytes": path.stat().st_size,
                     "includedBytes": len(payload),
                     "truncatedToRecentLines": truncated,
                     "includedSha256": included_sha256,
-                    "sessionId": (
-                        _event_log_session_id(path)
-                        or (
-                            included_sha256[:16].lower()
-                            if path.name.startswith("events-") else None
-                        )
-                    ),
+                    "sessionId": observed_sessions[0]['sessionId'] if len(observed_sessions) == 1 else None,
+                    "sessionIdentityStatus": 'recorded' if observed_sessions else 'legacy-not-recorded',
+                    "logId": included_sha256[:16].lower(),
                 })
 
             version_files: list[str] = []
@@ -307,6 +347,9 @@ def export_safe_diagnostic_bundle(
             manifest = {
                 "schema": "identityv-safe-diagnostic-export-v3" if failure_roots else "identityv-safe-diagnostic-export-v2",
                 "exportedAt": moment.isoformat(timespec="seconds"),
+                "exportId": export_id,
+                "sessions": _merge_sessions(sessions),
+                "sessionRangeScope": "included-records-only; rotated and truncated logs may be incomplete",
                 "appVersion": app_version,
                 "buildFingerprint": build_fingerprint,
                 "runtimeProcessIntegrity": process_integrity or {"level": "Unknown", "rank": -1},
@@ -344,7 +387,7 @@ def export_safe_diagnostic_bundle(
                 archive.writestr("qt-client-summary.json", safe_summary)
             archive.writestr(
                 "diagnostic-manifest.json",
-                json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
+                _redact_local_paths(json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")),
             )
         if selected_destination:
             # Publish without replacing a file created since the save dialog.
@@ -356,6 +399,7 @@ def export_safe_diagnostic_bundle(
             temporary.unlink()
     return {
         "path": destination,
+        "exportId": export_id,
         "includedLogCount": len(included_logs),
         "windowCandidateCount": int(
             (window_environment or {}).get("candidateCount", 0),

@@ -179,7 +179,8 @@ class DiagnosticBudgetContracts(unittest.TestCase):
         self.assertEqual(rows[-1]["status"], "accepted")
         self.assertEqual(rows[-1]["diag"]["rateSuppressed"], 9988)
         self.assertEqual(set(recorder.buckets), {"pointer-input", "action-receipt"})
-        self.assertEqual(len(recorder.__dict__), 8)
+        self.assertEqual(len(recorder.__dict__), 9)
+        self.assertEqual(rows[-1]["diag"]["rateSuppressedRange"]["count"], 9988)
 
     def test_allowlist_drops_text_paths_outside_client_and_opaque_context(self):
         from client_input_diagnostics import InputDiagnostics

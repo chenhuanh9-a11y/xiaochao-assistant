@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from floor_observation_policy import MANUAL_FLOOR_HOLD_SECONDS as SHARED_MANUAL_FLOOR_HOLD_SECONDS
 from floor_observation_policy import game_floor_control_hit
@@ -999,36 +999,20 @@ def _bounded_log_tail(path: Path, byte_limit: int) -> tuple[bytes, bool]:
 
 
 def _redact_local_paths(payload: bytes) -> bytes:
-    """Remove local Windows paths while preserving surrounding diagnostic text."""
-    text = payload.decode("utf-8", errors="replace")
-    redacted = re.sub(
-        r'(?i)(?:[A-Z]:[\\/]|\\\\)[^"\r\n]*',
-        "<local-path>",
-        text,
-    )
-    return redacted.encode("utf-8")
+    from diagnostic_export import _redact_local_paths as redact
+    return redact(payload)
 
 
 def _event_log_session_id(path: Path) -> str | None:
-    """Derive a stable, non-identifying session id from the startup event."""
-    if not path.name.startswith("events-"):
-        return None
+    """Read a recorded session only; legacy files have no process session ID."""
+    from diagnostic_export import _bounded_log_tail, _log_sessions
     try:
-        with path.open("r", encoding="utf-8", errors="replace") as handle:
-            for _index, line in zip(range(32), handle):
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if row.get("event") != "assistant-started":
-                    continue
-                seed = "|".join(str(row.get(key, "")) for key in (
-                    "time", "processId", "buildFingerprint",
-                ))
-                return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
+        payload, _ = _bounded_log_tail(path, DIAGNOSTIC_FILE_BYTE_LIMIT)
+        groups = _log_sessions(payload, path.name)
+        sessions = {row['sessionId'] for row in groups}
+        return next(iter(sessions)) if len(sessions) == 1 else None
     except OSError:
         return None
-    return None
 
 
 def diagnostic_package_metadata(app_root: Path) -> dict:
@@ -5835,7 +5819,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         self.optimistic_sheet_cycle_id: int | None = None
         self.optimistic_sheet_floor: str | None = None
         self.event_path = LIVE_ROOT / f"events-{datetime.now():%Y%m%d-%H%M%S}.jsonl"
-        self._event_log = AsyncEventLog(self.event_path)
+        self._event_log = AsyncEventLog(self.event_path, settings_dir=self.settings_path.parent)
         self.diagnostic_export_in_progress = False
         self.display_environment: dict | None = None
         self.process_integrity = process_integrity_level()

@@ -152,7 +152,9 @@ class DiagnosticEvidenceTests(unittest.TestCase):
         with archive:self.assertEqual(report['cases'][0]['files'][0]['status'],'sample-sha256-mismatch')
 
     def test_budget_and_count_omissions_are_explicit(self):
-        self.save(cycle=9);self.save(cycle=10)
+        self.save(cycle=9)
+        time.sleep(.002)  # Journal timestamps have millisecond resolution.
+        self.save(cycle=10)
         report,archive=self.export(max_samples=1,max_bytes=0)
         with archive:
             self.assertEqual(report['omittedBySampleLimit'],1)

@@ -1,5 +1,6 @@
 """Default, bounded metadata for one map-opening preparation; never pixels."""
 import traceback
+import time
 from uuid import uuid4
 
 from client_input_diagnostics import code, number, scope
@@ -63,15 +64,20 @@ class PreparationDiagnostics:
         self.sequence = self.suppressed = self.probes = self.capture_errors = 0
         self.last_outcome = "not-started"
         self.stop_reason = None
+        self.suppressed_range = None
 
     def emit(self, phase, reason, *, final=False, **details):
         if self.sequence >= self.MAX_ROWS - 1 and not final:
             self.suppressed += 1
+            now = time.monotonic()
+            if self.suppressed_range is None:
+                self.suppressed_range = dict(firstMonotonicAt=now, lastMonotonicAt=now)
+            self.suppressed_range["lastMonotonicAt"] = now
             return
         self.sequence += 1
         values = dict(openingId=self.opening, ordinal=self.sequence, phase=phase,
             inputSequence=self.input_sequence, requestScope=self.request, probe=self.probes,
-            captureErrors=self.capture_errors, suppressed=self.suppressed, **details)
+            captureErrors=self.capture_errors, suppressed=self.suppressed, suppressedRange=self.suppressed_range, **details)
         self.runtime._notify("map-preparation", reason=reason, preparation=values)
 
     def finish(self, reason):

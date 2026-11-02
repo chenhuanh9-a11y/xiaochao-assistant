@@ -427,6 +427,15 @@ class ClientInfoService(QObject):
             self._message, self._action_error = str(error) + "；请重试", True
         self.changed.emit()
 
+    @Slot(result=bool)
+    def resetDiagnosticInstallId(self):
+        if self._closed or self.checking:
+            return False
+        from diagnostic_identity import installation
+        def reset():
+            installation(self.paths.settings_path.parent).reset()
+        return self._write(reset, "已重置随机诊断标识；旧日志保留原标识", operation="正在重置诊断标识…")
+
     @Slot(bool)
     def setIncludeFailureEvidence(self, include):
         if not self._closed and not self.checking:
@@ -458,7 +467,9 @@ class ClientInfoService(QObject):
         if self._closed or self.checking:
             return
         destination = Path(destination).resolve()
-        report = dict(schema="xingtu-qt-client-diagnostics-v1", exportedAt=datetime.now(timezone.utc).isoformat(),
+        from uuid import uuid4
+        export_id = uuid4().hex
+        report = dict(exportId=export_id, schema="xingtu-qt-client-diagnostics-v1", exportedAt=datetime.now(timezone.utc).isoformat(),
                       environment=self.facts)
         session = self._providers.get("session")
         if session is not None:
@@ -467,6 +478,8 @@ class ClientInfoService(QObject):
                 "mode", "profileId", "engineConnected", "busy", "generation", "availableCommands")}
         problems = self._providers.get("problems")
         if problems is not None:
+            problems.recordTrace(dict(role='diagnostics', stage='diagnostic-export-requested',
+                diag=dict(exportId=export_id)))
             flush = getattr(problems, 'flushSummary', None)
             if callable(flush):
                 flush()
@@ -537,7 +550,7 @@ class ClientInfoService(QObject):
             result = export_safe_diagnostic_bundle(self.paths.installation_root,
                 self.paths.work_root / "nightmare-live", destination=destination,
                 app_version=self._app_version, build_fingerprint=self._build_fingerprint,
-                package_metadata=package_metadata, window_environment=window_environment,
+                package_metadata=package_metadata, window_environment=window_environment, export_id=export_id,
                 resource_root=self.paths.resource_root,
                 runtime_context=runtime_context, failure_roots=failure_roots, summary=report,
                 automatic_failure_only=automatic_only,

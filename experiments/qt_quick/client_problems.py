@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, QTimer, Qt, Signal, Slot
+from diagnostic_identity import DiagnosticStream
 from client_resource_errors import error_text, safe_code, safe_error_details
 
 PHASE_LABELS = dict(capture="画面采集", input="快捷键", identity="地图识别", floor="楼层识别",
@@ -129,6 +130,8 @@ class ProblemsService(QObject):
         super().__init__(parent)
         stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
         self.log_path = Path(paths.work_root) / 'nightmare-live' / f'events-qt-{stamp}-{os.getpid()}.jsonl'
+        settings = getattr(paths, "settings_path", Path(paths.work_root) / "nightmare-memory" / "ui-settings.json")
+        self.identity = DiagnosticStream(self.log_path.name, Path(settings).parent)
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(1)
         self._recent, self._queue = [], deque()
@@ -172,7 +175,7 @@ class ProblemsService(QObject):
                     continue
                 rows.append({key: deepcopy(value) for key, value in row.items()
                              if not key.startswith('_')})
-        return dict(recentProblems=rows, droppedWrites=self._dropped,
+        return dict(recentProblems=rows, droppedWrites=self._dropped, diagnosticLoss=self.identity.loss(),
                     pendingWrites=bool(self._job is not None or self._queue),
                     snapshotLimit=snapshot_limit)
 
@@ -217,6 +220,7 @@ class ProblemsService(QObject):
             self.changed.emit()
             return True  # Coalesced in memory; no per-refresh append or write.
         self._sequence += 1
+        row.update(self.identity.stamp())
         row.update(id=str(self._sequence), occurrenceId=self.log_path.stem + ':' + str(self._sequence),
                    timestampUTC=utc, lastTimestampUTC=utc,
                    localTime=now.astimezone().strftime('%Y-%m-%d %H:%M:%S %Z'), count=1,
@@ -231,6 +235,8 @@ class ProblemsService(QObject):
                     # retried. Expose the loss instead of silently claiming it
                     # was saved, or retaining an unbounded pending-count map.
                     self._dropped += 1
+                    lost = self.identity.stamp()
+                    self.identity.drop(lost, 'repeat-checkpoint-evicted')
                     self._write_error = '问题重复计数队列已满；被淘汰问题的最新次数未保存。'
                     self._write_error_raw = 'problem-repeat-count-checkpoint-dropped'
         del self._recent[RECENT_LIMIT:]
@@ -240,6 +246,7 @@ class ProblemsService(QObject):
             self._start_next()
         else:
             self._dropped += 1
+            self.identity.drop(row, 'queue-capacity')
             self._write_error = '问题日志队列已满，部分问题仅保留在本次运行列表。'
         self.recentChanged.emit()
         self.changed.emit()
@@ -277,12 +284,15 @@ class ProblemsService(QObject):
         signature = json.dumps(_trace_state({name: value for name,value in row.items()
                                if name not in {'diag', 'frame', 'generation', 'token'}}), sort_keys=True)
         previous = self._trace_states.get(key)
+        row.update(self.identity.stamp())
         if previous is not None and previous[0] == signature:
             self._trace_states[key] = (signature, previous[1]+1)
             self._trace_states.move_to_end(key)
+            self.identity.drop(row, "unchanged-trace-coalesced")
             return True  # No per-refresh UI notification or disk append.
         if len(self._queue) + self._inflight_rows >= PENDING_LIMIT:
             self._dropped += 1
+            self.identity.drop(row, 'queue-capacity')
             self._write_error = '运行诊断日志队列已满，部分状态未写入。'
             self.changed.emit()
             return False
@@ -304,6 +314,8 @@ class ProblemsService(QObject):
         if self._job is not None or not self._queue:
             return
         rows = [self._queue.popleft() for _ in range(min(16, len(self._queue)))]
+        for row in rows:
+            row['diagnosticLoss'] = self.identity.loss()
         self._inflight_rows = len(rows)
         self._job = job = _Write(self.log_path, rows)
         job.signals.done.connect(self._finished, Qt.QueuedConnection)
@@ -332,6 +344,7 @@ class ProblemsService(QObject):
     def _checkpoint(self, row):
         checkpoint = {key: deepcopy(value) for key, value in row.items() if not key.startswith('_')}
         checkpoint['event'] = 'qt-runtime-problem-summary'
+        checkpoint.update(self.identity.stamp())
         self._queue.append(checkpoint)
         row['_checkpoint_count'] = row['count']
 

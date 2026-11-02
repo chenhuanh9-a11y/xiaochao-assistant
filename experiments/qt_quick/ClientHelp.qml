@@ -73,6 +73,7 @@ Item {
                     id: currentFacts
                     anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
                     anchors.margins: 20; spacing: 12
+                    AppButton { objectName: "resetDiagnosticInstallId"; text: "重置随机诊断标识"; enabled: !infoService.checking; onClicked: infoService.resetDiagnosticInstallId() }
                     Label { text: "当前运行信息"; font.pixelSize: 18; font.bold: true; color: "#142b4b" }
                     GridLayout {
                         columns: 2; columnSpacing: 18; rowSpacing: 10; Layout.fillWidth: true

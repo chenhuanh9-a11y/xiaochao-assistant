@@ -49,6 +49,7 @@ class InputDiagnostics:
         self.emit, self.clock = emit, clock
         now = clock()
         self.buckets = {"pointer-input": [12., now, 0], "action-receipt": [6., now, 0]}
+        self.rate_ranges = {}
         self.serial = 0
         self.gesture = self.last_move = None
         self.moves = 0
@@ -62,6 +63,8 @@ class InputDiagnostics:
         bucket[1] = now
         if bucket[0] < 1:
             bucket[2] = min(2**31 - 1, bucket[2] + 1)
+            span = self.rate_ranges.setdefault(stage, dict(firstMonotonicAt=now, lastMonotonicAt=now, count=0))
+            span.update(lastMonotonicAt=now, count=span["count"] + 1)
             return None
         bucket[0] -= 1
         suppressed, bucket[2] = bucket[2], 0
@@ -89,7 +92,7 @@ class InputDiagnostics:
         diag = dict(gestureId=gesture, pointerSequence=identity(event.get("sequence")),
             pointerGeneration=identity(event.get("pointerGeneration")), inputScope=scope(context),
             state=self._state(state), display=scope(display), moveEvents=self.moves,
-            rateSuppressed=suppressed)
+            rateSuppressed=suppressed, rateSuppressedRange=self.rate_ranges.pop("pointer-input", None))
         # Only a down position inside this event's client rectangle. Never log
         # screen origin, outside-client positions, move trajectory or raw input.
         bounds = context.get("clientBounds") if isinstance(context, dict) else None
@@ -140,4 +143,5 @@ class InputDiagnostics:
                 "accepted" if fields.get("success") is True else "unknown",
             reason=fields["reason"], decision=self.serial,
             diag=dict(receipt=fields, requestScope=request, resultScope=result,
-                state=self._state(state), display=scope(display), rateSuppressed=suppressed)))
+                state=self._state(state), display=scope(display), rateSuppressed=suppressed,
+                rateSuppressedRange=self.rate_ranges.pop("action-receipt", None))))

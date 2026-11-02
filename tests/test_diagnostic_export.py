@@ -31,7 +31,7 @@ class DiagnosticExportTests(unittest.TestCase):
         shared = ast.parse((APP / "diagnostic_export.py").read_text("utf-8"))
         # Redaction intentionally diverged to fix JSON escaping; its actual ZIP
         # behavior is covered in test_diagnostic_redaction, not legacy parity.
-        names = {"safe_diagnostic_log_files", "_bounded_log_tail", "_event_log_session_id"}
+        names = {"safe_diagnostic_log_files", "_bounded_log_tail"}
         functions = lambda tree: {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
         for name in names:
             self.assertEqual(ast.dump(functions(original)[name]), ast.dump(functions(shared)[name]), name)
