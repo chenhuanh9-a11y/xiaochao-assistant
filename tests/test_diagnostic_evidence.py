@@ -34,7 +34,8 @@ def production_functions():
              'export_diagnostic_logs', 'diagnostic_runtime_context'}
     functions = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name in names]
     assert len(functions) == len(names)
-    ns = dict(Path=Path, datetime=datetime, json=json, os=os, re=re, sys=sys,
+    from diagnostic_identity import process_scope
+    ns = dict(process_scope=process_scope, Path=Path, datetime=datetime, json=json, os=os, re=re, sys=sys,
               tempfile=tempfile, zipfile=zipfile, hashlib=hashlib, copy=copy, time=time, threading=threading,
               np=np, NightmareMemoryStore=NightmareMemoryStore,
               DIAGNOSTIC_LOG_LIMIT=8, DIAGNOSTIC_FILE_BYTE_LIMIT=8*1024*1024,
@@ -124,6 +125,8 @@ class DiagnosticEvidenceTests(unittest.TestCase):
             _set_diagnostic_export_buttons=lambda *args:None,_log=lambda *args,**kwargs:None,
             game_hwnd=None,game_foreground=True,map_is_open=True,package_metadata={'status':'test'},
             memory_store=self.store,game_mode='nightmare',events=queue.Queue())
+        emitted=[]
+        subject._log=lambda event,**values:emitted.append((event,values))
         self.production['export_diagnostic_logs'](subject)
         result=subject.events.get(timeout=3)
         self.assertEqual(result['kind'],'diagnostic-exported',result)
@@ -131,6 +134,8 @@ class DiagnosticEvidenceTests(unittest.TestCase):
         with zipfile.ZipFile(result['path']) as archive:
             manifest=json.loads(archive.read('diagnostic-manifest.json'))
             self.assertIn('failureSampling',manifest['runtimeContext'])
+            self.assertEqual(manifest['exportId'],emitted[0][1]['exportId'])
+            self.assertEqual(manifest['exportId'],result['exportId'])
             self.assertEqual(manifest['failureEvidence']['cases'][0]['cycleId'],9)
 
     def test_writer_budget_failure_is_exposed_without_frame_or_journal(self):
@@ -152,7 +157,9 @@ class DiagnosticEvidenceTests(unittest.TestCase):
         with archive:self.assertEqual(report['cases'][0]['files'][0]['status'],'sample-sha256-mismatch')
 
     def test_budget_and_count_omissions_are_explicit(self):
-        self.save(cycle=9);self.save(cycle=10)
+        self.save(cycle=9)
+        time.sleep(.002)  # Journal timestamps have millisecond resolution.
+        self.save(cycle=10)
         report,archive=self.export(max_samples=1,max_bytes=0)
         with archive:
             self.assertEqual(report['omittedBySampleLimit'],1)
