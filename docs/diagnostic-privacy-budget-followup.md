@@ -1,3 +1,12 @@
+Latest replay analysis (2026-11-02): main is now
+`59bba3dcea90811964688960f0b8086e345f3c77`, after PRs 81 and 78.
+The baseline merge-base is unchanged; divergence is now 25 / 42 commits.
+The newly changed coordinator, runtime, help, settings, session, input and picker
+seams make an independent hunk-level main port necessary. Preserve main's manual
+picker and map-intent lifecycle; do not copy those older files from this branch.
+No main merge/rebase, PR 76 integration, recognition or capture change was made.
+The 11a7145 comparison below is retained as the earlier observation, not current main.
+
 ## Safety correction after 4d53 review (supersedes retirement claims below)
 
 The watchdog has a separate fixed `watchdog/` reserve (256 KiB, 4 files,

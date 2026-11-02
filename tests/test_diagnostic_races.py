@@ -111,4 +111,3 @@ class RaceTests(unittest.TestCase):
     try:self.assertNotEqual(identity.reset(),before)
     finally:release.set();w.flush(3);w.close();w.thread.join(1)
 if __name__=='__main__':unittest.main()
-
