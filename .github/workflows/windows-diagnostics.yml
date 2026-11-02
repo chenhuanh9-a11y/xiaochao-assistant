@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
@@ -42,7 +42,7 @@ jobs:
       - name: Qt production paths and same-input hotfix comparison
         shell: pwsh
         run: |
-          $modules = @('test_diagnostic_noninterference', 'test_client_problems', 'test_client_problem_history', 'test_client_info', 'test_client_diagnostic_integration', 'test8f8b_diagnostics_sampling', 'test_field_failure_samples', 'test_client_preparation_diagnostics', 'test_client_pointer_diagnostics', 'test_client_live_runtime', 'test_client_capture_full', 'test_client_capture_exclusion', 'test_client_capture_compat')
+          $modules = @('test_diagnostic_log_budget', 'test_diagnostic_noninterference', 'test_client_problems', 'test_client_problem_history', 'test_client_info', 'test_client_diagnostic_integration', 'test8f8b_diagnostics_sampling', 'test_field_failure_samples', 'test_client_preparation_diagnostics', 'test_client_pointer_diagnostics', 'test_client_live_runtime', 'test_client_capture_full', 'test_client_capture_exclusion', 'test_client_capture_compat')
           $failed = @()
           foreach ($module in $modules) {
             python -m unittest $module -v

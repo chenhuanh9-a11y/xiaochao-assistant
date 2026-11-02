@@ -1,0 +1,30 @@
+{
+  "sourceCommit": "980d64949dcec3bcfb747dbf8bacb6dfc00fbded",
+  "scope": "Exact source comparison fixtures; synthetic inputs do not establish real-game correctness.",
+  "files": {
+    "app/difficult_map_ui.py": {
+      "sha256": "69b565185858c6f3146a3b73725cea6948b97b8f99b82e6a54488af40d0e53f4",
+      "fixture": "difficult_map_ui.py.baseline"
+    },
+    "experiments/qt_quick/client_live_runtime.py": {
+      "sha256": "fb7b53cb0afcaf172df4c655bd5d03e3ed8461087126243749a3ccd099f6981b",
+      "fixture": "client_live_runtime.py.baseline"
+    },
+    "app/map_interface_observation.py": {
+      "sha256": "db0494bf1bca66568545eb4e6c4b68f43143f9eac104fe4dd3da3ee2be37d9ae",
+      "fixture": "map_interface_observation.py.baseline"
+    },
+    "experiments/qt_quick/client_capture.py": {
+      "sha256": "94dadead3fc28acd4ff6631adb69feff02a1d72519951348f694c4abc801adfb",
+      "fixture": "client_capture.py.baseline"
+    },
+    "app/client_region_capture.py": {
+      "sha256": "e0327beff4bc0553789f4160aef0f617fe3b5cfc193cac64e28c127d97b21dec",
+      "fixture": null
+    },
+    "experiments/qt_quick/client_capture_exclusion.py": {
+      "sha256": "def0397d6985b6bf2daa5fbebea8b177a9b0f930232543434e1bc649f0deb61a",
+      "fixture": null
+    }
+  }
+}

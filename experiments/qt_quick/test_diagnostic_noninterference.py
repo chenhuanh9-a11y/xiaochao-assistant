@@ -4,6 +4,7 @@ OS/pixels/resources/fit measurements are fixtures. Capture guards and runtime
 commit/pose decisions run unchanged. This is not a real game test.
 """
 import copy
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -23,10 +24,16 @@ from test_client_live_runtime import FixtureCapture, fixture_engine
 
 ROOT = Path(__file__).parents[2]
 BASE = '980d64949dcec3bcfb747dbf8bacb6dfc00fbded'
+FIXTURES = Path(__file__).parent / 'fixtures' / 'diagnostic_hotfix'
+MANIFEST = json.loads((FIXTURES / 'manifest.json').read_text('utf-8'))
 
 
 def baseline(relative, name):
-    source = subprocess.check_output(['git', 'show', f'{BASE}:{relative}'], cwd=ROOT, text=True, encoding='utf-8-sig')
+    record = MANIFEST['files'][relative]
+    payload = (FIXTURES / record['fixture']).read_bytes()
+    if MANIFEST['sourceCommit'] != BASE or hashlib.sha256(payload).hexdigest() != record['sha256']:
+        raise ValueError('diagnostic baseline fixture identity mismatch')
+    source = payload.decode('utf-8-sig')
     module = types.ModuleType(name)
     module.__file__ = str(ROOT/relative)
     sys.modules[name] = module
@@ -40,6 +47,12 @@ class NoninterferenceTests(unittest.TestCase):
         cls.before_ui = baseline('app/difficult_map_ui.py', 'baseline_difficult_ui')
         cls.before_runtime = baseline('experiments/qt_quick/client_live_runtime.py', 'baseline_live_runtime')
         cls.before_observation = baseline('app/map_interface_observation.py', 'baseline_map_observation')
+
+    def test_fixture_loading_never_requires_git_history(self):
+        with patch('subprocess.check_output', side_effect=AssertionError('git unavailable')):
+            module = baseline('app/difficult_map_ui.py', 'baseline_without_git')
+        self.assertTrue(hasattr(module, 'DifficultMapUI'))
+        self.assertEqual(MANIFEST['sourceCommit'], BASE)
 
     def test_same_pixels_difficult_scales_and_decisions_are_equal(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -157,8 +170,8 @@ class NoninterferenceTests(unittest.TestCase):
     def test_capture_authorization_source_is_byte_identical_to_hotfix(self):
         for relative in ('experiments/qt_quick/client_capture.py','app/client_region_capture.py',
                          'experiments/qt_quick/client_capture_exclusion.py'):
-            original=subprocess.check_output(['git','show',f'{BASE}:{relative}'],cwd=ROOT)
-            self.assertEqual(original,(ROOT/relative).read_bytes(),relative)
+            self.assertEqual(hashlib.sha256((ROOT/relative).read_bytes()).hexdigest(),
+                             MANIFEST['files'][relative]['sha256'], relative)
 
     def test_bad_diagnostic_sink_does_not_change_verdict(self):
         original=current.LiveRuntime._recognition_diagnostic
