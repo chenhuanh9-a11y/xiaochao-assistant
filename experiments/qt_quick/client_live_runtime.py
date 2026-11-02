@@ -23,6 +23,7 @@ from client_engine import (EngineAdapter, clone_similarity_state, stage_similari
                            INITIAL_IDENTITY_BUDGET_SECONDS)
 from floor_observation_policy import (MANUAL_FLOOR_HOLD_SECONDS,
                                       read_floor_evidence, decide_floor_transition, game_floor_control_hit)
+from client_manual_map import manual_map_thumbnail_source
 
 
 class _Cancellation:
@@ -329,6 +330,7 @@ class LiveRuntime:
         self._observed_floor = ""
         self._last_observation = None
         self._pointer_context_snapshot = None
+        self._manual_map_thumbnail_cache = {}
         from client_idvb0059_adapter import Idvb0059Adapter
         self._steady = Idvb0059Adapter()
         self._reset_identity()
@@ -341,6 +343,10 @@ class LiveRuntime:
 
     def _context(self):
         return dict(mode=self._mode, profileId=self._profile, roundId=self._round, frameId=self._frame_id)
+
+    def _manual_selection_unlocked(self):
+        """Manual mode waits for the player's pick instead of ranking identity."""
+        return self._settings.get("mapSelectionMode") == "manual" and not self._map_id
 
     def _clear_candidates(self):
         self._reset_identity()
@@ -1367,6 +1373,23 @@ class LiveRuntime:
                 return self._receipt(action, payload, success=True, reason="candidate-selected")
             if action != "confirm_route":
                 return self._receipt(action, payload, success=False, reason="unsupported-action")
+            manual_map_id = payload.get("mapId")
+            if manual_map_id is not None:
+                # The picker's choice enters through this same confirm branch:
+                # select it exactly as a candidate, then let confirm_route own
+                # identity, floor seeding and the fitting hand-off. Reject
+                # before touching gate/floor state when no round is active.
+                if not self._active:
+                    return self._receipt(action, payload, success=False, reason="start-round-before-confirming-map")
+                pack = getattr(self._engine, "pack", None)
+                if type(manual_map_id) is not str or manual_map_id not in getattr(pack, "by_id", {}):
+                    return self._receipt(action, payload, success=False, reason="invalid-manual-map")
+                self._candidate_edit = True
+                self._gate.select(manual_map_id)
+                if not self._floor:
+                    self._floor = str(self._manual_floor
+                                      or getattr(pack, "default_entry_floor", "1"))
+                    self._floor_required = False
             if not self._active:
                 return self._receipt(action, payload, success=False, reason="start-round-before-confirming-map")
             if self._map_id and not self._candidate_edit:
@@ -1493,6 +1516,10 @@ class LiveRuntime:
                 return self._capture_and_solve(action, payload, cancelled)
             entry_candidate = None
             if not selected:
+                if self._manual_selection_unlocked():
+                    return self._receipt(action, payload, success=True,
+                        reason="manual-map-selection-pending", posePending=True,
+                        manualSelectionPending=True)
                 if engine.pack.mode == "difficult" and str(floor) == "2":
                     return self._receipt(action, payload, success=False,
                         reason="difficult-f2-entry-recognition-disabled", posePending=True)
@@ -1516,6 +1543,16 @@ class LiveRuntime:
             ready = capabilities[self._mode]["available"]
             guarded = (self._evidence_kind != "live-client-capture"
                        or callable(getattr(self._capture, "is_current", None)))
+            # The picker is a separate intent from the advertised confirm_route
+            # command. The latter stays tied to a selected candidate so the
+            # existing "确认地图" buttons keep their auto/manual behavior.
+            # A pick is allowed in both selection modes and with the map shut;
+            # confirm_route(mapId) seeds identity/floor and leaves pose pending
+            # until a current map frame exists.
+            manual_pick_available = bool(
+                self._active and ready and self._engine is not None and self._gate is not None
+                and not self._round_preparing and not self._capture_pending
+                and self._group_choice_inflight is None and self._pending_sibling is None)
             commands = list(offline["availableCommands"])
             commands += ["end_round", "close_map", "toggle_sheet_visibility"]
             if ready:
@@ -1526,7 +1563,7 @@ class LiveRuntime:
                 commands.append("set_floor")
             if self._active and self._map_open:
                 commands.append("cycle_floor")
-                if self._map_id:
+                if self._map_id or self._manual_selection_unlocked():
                     commands.append("reselect_map")
                 if self._candidate_rows and (not self._map_id or self._candidate_edit):
                     commands.append("select_candidate")
@@ -1565,6 +1602,9 @@ class LiveRuntime:
                                        capabilities[self._mode]["reason"] if not ready else ""),
                 roundActive=self._active, roundPreparing=self._round_preparing, mapOpen=self._map_open,
                 captureInProgress=self._capture_pending,
+                mapSelectionMode=self._settings.get("mapSelectionMode", "auto"),
+                manualSelectionPending=bool(self._active and self._manual_selection_unlocked()),
+                manualMapPickAvailable=manual_pick_available,
                 alignedVisible=self._aligned_visible,
                 automaticCandidateRows=self._candidate_summary(),
                 candidateRows=copy.deepcopy(self._candidate_rows), selectedCandidateIndex=selected,
@@ -1710,6 +1750,78 @@ class LiveRuntime:
             self._publish_game_pointer_context_locked()
         if changed:
             self._notify("aligned-visibility-changed", reason="settings-updated")
+
+    def manual_map_catalog(self):
+        """Read-only picker catalog for the current mode/profile.
+
+        Identity ranking is deliberately not invoked. The returned identity is
+        compared by the picker so a late result after a mode/resource change
+        cannot present stale maps.
+
+        Only the already-prepared engine is read. Constructing a mode factory
+        here would be heavy, uncached and would serialize with capture under
+        ``_work``; a pick before resources are ready reports that state.
+        """
+        # The engine is assigned under the state lock before a round becomes
+        # active, and its pack is immutable afterwards. Copy the map sequence
+        # under that lock, then build the read-only rows without holding either
+        # the state lock or the capture/solver work lock.
+        with self._lock:
+            mode, profile, engine = self._mode, self._profile, self._engine
+            pack = getattr(engine, "pack", None) if engine is not None else None
+            if (pack is None or getattr(pack, "mode", mode) != mode
+                    or not getattr(pack, "maps", None)):
+                return dict(mode=mode, profileId=profile, available=False,
+                            message="当前模式的地图资源未就绪，暂时不能选图")
+            items = list(pack.maps)
+            default_entry_floor = str(getattr(pack, "default_entry_floor", "1"))
+            native = getattr(engine, "qt_native_context", None)
+            scope = (mode, profile, tuple((str(item.id), str(getattr(item, "name", "") or ""),
+                                           str(getattr(item, "direction", "") or ""))
+                                          for item in items))
+            cache = self._manual_map_thumbnail_cache
+            if cache.get("pack") is not pack or cache.get("scope") != scope:
+                cache.clear()
+                cache.update(pack=pack, scope=scope, rows={})
+            cached_thumbnails = dict(cache["rows"])
+        # File checks are worker-side (this method is the picker's catalog
+        # provider); the UI only receives URIs. Cache only resolved paths and
+        # key them to the exact pack and catalog identity so a mode/resource
+        # change can never reuse the previous pack's thumbnails.
+        resolved = {}
+        for item in items:
+            map_id = str(item.id)
+            if map_id in cached_thumbnails:
+                continue
+            path = manual_map_thumbnail_source(pack, item, mode, native)
+            if path is not None:
+                resolved[map_id] = str(path)
+        if resolved:
+            with self._lock:
+                cache = self._manual_map_thumbnail_cache
+                if (self._engine is engine and self._mode == mode and self._profile == profile
+                        and cache.get("pack") is pack and cache.get("scope") == scope):
+                    cache["rows"].update(resolved)
+        maps = []
+        for item in items:
+            map_id = str(item.id)
+            path = resolved.get(map_id) or cached_thumbnails.get(map_id) or ""
+            if path and not Path(path).is_file():
+                path = ""
+            stamp = ""
+            if path:
+                try:
+                    stat = Path(path).stat()
+                    stamp = f"{stat.st_mtime_ns}-{stat.st_size}"
+                except OSError:
+                    path = ""
+            maps.append(dict(id=map_id, name=str(getattr(item, "name", "") or ""),
+                             direction=str(getattr(item, "direction", "") or ""),
+                             thumbnailPath=path, thumbnailStamp=stamp))
+        identity = dict(mode=mode, profileId=profile,
+                        maps=[(row["id"], row["name"], row["direction"]) for row in maps])
+        return dict(mode=mode, profileId=profile, available=True, identity=identity, maps=maps,
+                    defaultEntryFloor=default_entry_floor)
 
     def _reproject_route_display(self, action, payload, cancelled):
         """A saved author changes pixels/basis only, never runs a pose sensor."""
@@ -2429,7 +2541,13 @@ class LiveRuntime:
         ranked = []
         entry_candidate = None
         if not map_id:
-            if not map_id and engine.pack.mode == "difficult" and str(floor) == "2":
+            if self._manual_selection_unlocked():
+                # Capture, map-open detection and floor reading above already
+                # happened; only the automatic identity request is skipped.
+                return self._receipt(action, payload, success=True,
+                    reason="manual-map-selection-pending", posePending=True,
+                    manualSelectionPending=True, observation=observation)
+            if engine.pack.mode == "difficult" and str(floor) == "2":
                 return self._receipt(action, payload, success=False,
                     reason="difficult-f2-entry-recognition-disabled", posePending=True)
             # Opening the map again refreshes the selected member's geometry.

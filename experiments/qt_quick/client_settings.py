@@ -22,14 +22,17 @@ if str(ROOT / "app") not in sys.path:
     sys.path.insert(0, str(ROOT / "app"))
 from client_control_layout import load_layout, preset_layout, validate_layout
 from floor_control_region import normalized_region
+from client_manual_map import MANUAL_MAP_PICKER_DEFAULT_HOTKEY, MANUAL_PICKER_ACTION, SELECTION_MODES
 from hotkey_bindings import parse_chord, validate_unique
 from hotkey_keys import _primary_hotkey_to_vk, recorded_native_primary, NATIVE_ONLY_SHORTCUT_KEYS
 from opacity_controls import load_opacities
 
 ACTION_ORDER = ("toggle-panel", "candidate-prev", "candidate-next", "confirm-round",
-                "cycle-floor", "end-round", "toggle-sheet-visibility", "start-round", "toggle-round")
+                "cycle-floor", "end-round", "toggle-sheet-visibility", "start-round", "toggle-round",
+                MANUAL_PICKER_ACTION)
 LEGACY_ACTIONS = ["F5", "F6", "F7", "F8", "F9", "F10", "F11", "", ""]
-FRESH_ACTIONS = ["F9", "F6", "F7", "F8", "", "", "F11", "", "F10"]
+FRESH_ACTIONS = ["F9", "F6", "F7", "F8", "", "", "F11", "", "F10",
+                 MANUAL_MAP_PICKER_DEFAULT_HOTKEY]
 BOOL_DEFAULTS = {"referenceSheetVisible": True, "sheetVisibilityEnabled": True,
                  "orbVisible": True, "reduceMotion": False, "uiSoundEnabled": False,
                  "difficultGridEnabled": False, "onboardingCompleted": False}
@@ -37,6 +40,7 @@ RANGES = {"sheetOpacity": (0., 1.), "referenceOpacity": (0., 1.),
           "interfaceOpacity": (.65, .95), "sheetScale": (.5, 1.5)}
 DEFAULTS = {**BOOL_DEFAULTS, "sheetOpacity": .55, "referenceOpacity": .55,
             "interfaceOpacity": .82, "sheetScale": 1., "gameMode": "nightmare",
+            "mapSelectionMode": "auto",
             "routeProfileId": "wang-qingxin", "modeRouteProfiles": {},
             "zhan10CoffinVariantId": "variant-01", "hotkey": "G",
             "actionHotkeys": FRESH_ACTIONS, "gameControlLayout": preset_layout(),
@@ -59,6 +63,9 @@ def _validate(key, value):
     elif key == "gameMode":
         if value not in ("nightmare", "difficult"):
             raise ValueError("模式只能为 nightmare 或 difficult")
+    elif key == "mapSelectionMode":
+        if value not in SELECTION_MODES:
+            raise ValueError("选图方式只能为 auto 或 manual")
     elif key in ("routeProfileId", "zhan10CoffinVariantId"):
         if not isinstance(value, str) or not value or len(value) > 128 or any(ord(c) < 32 for c in value):
             raise ValueError("请输入有效的配置 ID（1–128 个字符）")
@@ -109,35 +116,47 @@ def _validate_floor_region(value):
 
 
 def _validate_hotkeys(values, raw_actions=None):
-    # Tk appended a tenth action; Qt must reserve its chord without exposing or
-    # registering an unsupported action. Invalid tails remain on disk, but must
-    # not be silently overwritten or bypassed by a shortcut edit.
-    extra = {}
-    if isinstance(raw_actions, list) and len(raw_actions) == 10:
-        tail = raw_actions[9]
+    # Slot 10 is Tk's appended manual-map-picker, which Qt now owns as a
+    # regular action: it is validated exactly once, as that action. A stored
+    # tail Qt could not load stays on disk and blocks shortcut writes until the
+    # user binds slot 10 to a valid chord, so it is never silently overwritten.
+    if (isinstance(raw_actions, list) and len(raw_actions) == len(ACTION_ORDER)
+            and not values["actionHotkeys"][-1]):
+        tail = raw_actions[-1]
         if not isinstance(tail, str):
-            raise ValueError("未迁移的第 10 项快捷键需要文本；请先修复原配置")
-        extra["未迁移的第 10 项"] = parse_chord(tail, _primary_hotkey_to_vk)
+            raise ValueError("“手动选图”快捷键（第 10 项）需要文本；请先修复原配置或在设置里重新绑定")
+        parse_chord(tail, _primary_hotkey_to_vk)
     validate_unique({"地图键": parse_chord(values["hotkey"], _primary_hotkey_to_vk),
                      **{key: parse_chord(text, _primary_hotkey_to_vk)
-                        for key, text in zip(ACTION_ORDER, values["actionHotkeys"])}, **extra})
+                        for key, text in zip(ACTION_ORDER, values["actionHotkeys"])}})
 
 
 def _legacy_actions(value, map_name):
-    """Project legacy arrays onto Qt slots; the appended Tk action stays opaque."""
+    """Project stored 6–10 slot arrays onto Qt's ten slots.
+
+    Older nine-slot files never gain an invented manual-map-picker chord (it
+    could collide with a bare ALT or other existing binding); slot 10 stays
+    unbound until the user sets it. A ten-slot file keeps its trailing picker
+    chord; a tail Qt cannot read loads as unbound and is reported on validation.
+    """
     if not isinstance(value, list) or len(value) not in (6, 7, 8, 9, 10):
         return _validate("actionHotkeys", value)
-    value = value[:len(ACTION_ORDER)]
-    if not all(isinstance(item, str) for item in value):
+    known, tail = value[:9], value[9:]
+    if not all(isinstance(item, str) for item in known):
         raise ValueError("功能快捷键需要文本")
-    names = [parse_chord(item, _primary_hotkey_to_vk).name for item in value]
+    names = [parse_chord(item, _primary_hotkey_to_vk).name for item in known]
     if len(names) == 6:
         used = {parse_chord(item, _primary_hotkey_to_vk).vk for item in names}
         used.add(parse_chord(map_name, _primary_hotkey_to_vk).vk)
         # Matches the six-action migration in the legacy reader.
         names.append(next(name for name in ["F11", *(f"F{i}" for i in range(12, 25))]
                           if parse_chord(name, _primary_hotkey_to_vk).vk not in used))
-    return names + [""] * (len(ACTION_ORDER) - len(names))
+    names += [""] * (9 - len(names))
+    try:
+        names.append(parse_chord(tail[0], _primary_hotkey_to_vk).name if tail else "")
+    except (TypeError, ValueError, AttributeError):
+        names.append("")
+    return names
 
 
 class _Signals(QObject):
@@ -534,6 +553,19 @@ class SettingsService(QObject):
                                    if key == "actionHotkeys" else _validate(key, raw[key]))
                 except (TypeError, ValueError) as error:
                     invalid[key] = str(error)
+        if len(values["actionHotkeys"]) != len(ACTION_ORDER):
+            # An existing file without actionHotkeys starts from the nine
+            # legacy slots; like a stored nine-slot array, slot 10 is unbound.
+            values["actionHotkeys"] = _legacy_actions(values["actionHotkeys"], values["hotkey"])
+        stored_actions = raw.get("actionHotkeys")
+        if ("actionHotkeys" in invalid and isinstance(stored_actions, list)
+                and len(stored_actions) == len(ACTION_ORDER)):
+            # A bad known slot must not also drop a readable picker chord when
+            # the user repairs the array.
+            try:
+                values["actionHotkeys"][-1] = parse_chord(stored_actions[-1], _primary_hotkey_to_vk).name
+            except (TypeError, ValueError, AttributeError):
+                pass
         try:
             _validate_hotkeys(values, raw.get("actionHotkeys"))
         except ValueError as error:
@@ -649,7 +681,11 @@ class SettingsService(QObject):
                 merged = deepcopy(stored)
                 for index, name in enumerate(edits["actionHotkeys"]):
                     if "actionHotkeys" in self._invalid or name != self._baseline["actionHotkeys"][index]:
-                        merged[index] = name
+                        if index < len(merged):
+                            merged[index] = name
+                        elif name:
+                            # A nine-slot file only grows when slot 10 is bound.
+                            merged.append(name)
                 payload["actionHotkeys"] = merged
         expected = self._disk_bytes
         self._busy = True

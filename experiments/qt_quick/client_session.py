@@ -184,7 +184,19 @@ class SessionService(QObject):
         action = str(action)
         if self._closed:
             return
-        if self._runtime is None or action not in self._available():
+        available = self._available()
+        manual_pick = False
+        if self._runtime is not None and action == "confirm_route" and action not in available:
+            # The picker's commit is gated by its own snapshot flag, not the
+            # advertised confirm_route command that the existing buttons use.
+            # Runtime _manual_action still validates mapId and round state.
+            map_id = payload.get("mapId") if isinstance(payload, dict) else None
+            if isinstance(map_id, str) and map_id:
+                try:
+                    manual_pick = bool(self._runtime.snapshot().get("manualMapPickAvailable"))
+                except Exception:
+                    manual_pick = False
+        if self._runtime is None or (action not in available and not manual_pick):
             self._message = f"Unavailable command: {action}. Attach a runtime that supports it."
             self.changed.emit()
             return

@@ -16,7 +16,7 @@ from PySide6.QtQml import QQmlComponent, QQmlEngine
 from PySide6.QtQuick import QQuickView
 from PySide6.QtTest import QTest
 
-from client_settings import ACTION_ORDER, ROOT, SettingsService
+from client_settings import ACTION_ORDER, LEGACY_ACTIONS, ROOT, SettingsService
 from client_control_layout import preset_layout
 
 
@@ -205,12 +205,98 @@ class SettingsTests(unittest.TestCase):
             self.write({"actionHotkeys": keys, "hotkey": "F11"})
             service = self.service()
             expected = keys + (["F12"] if len(keys) == 6 else [])
-            expected += [""] * (9 - len(expected))
+            expected += [""] * (len(ACTION_ORDER) - len(expected))
             self.assertEqual(service.values["actionHotkeys"], expected)
             service.setValue("orbVisible", False)
             service.save()
             self.wait(lambda: not service.busy)
             self.assertEqual(json.loads(self.path.read_text())["actionHotkeys"], keys)
+
+    def test_nine_item_actions_never_gain_an_invented_picker_chord(self):
+        nine = ["F5", "F6", "F7", "F8", "F9", "F10", "F11", "", ""]
+        cases = [
+            (nine, "G"),
+            (nine[:7] + ["ALT", ""], "G"),  # bare ALT bound: Alt+1 would disable shortcuts
+            (nine[:7] + ["Alt+1", ""], "G"),
+            (nine, "Alt+1"),
+            (nine, "1"),
+        ]
+        for keys, map_key in cases:
+            with self.subTest(map=map_key, keys=keys):
+                self.write({"actionHotkeys": keys, "hotkey": map_key})
+                service = self.service()
+                self.assertEqual(service.values["actionHotkeys"], [*keys, ""])
+                self.assertNotIn("hotkey/actionHotkeys", service.message)
+                service.setValue("orbVisible", False)
+                service.save()
+                self.wait(lambda: not service.busy)
+                # Readable nine-slot arrays stay untouched until actually edited.
+                self.assertEqual(json.loads(self.path.read_text())["actionHotkeys"], keys)
+                service.shutdown()
+
+    def test_bare_alt_file_keeps_every_native_shortcut_registrable(self):
+        from client_input import NativeShortcutBackend
+        from test_client_input import Native
+        keys = ["ALT", "F6", "F7", "F8", "F9", "F10", "F11", "", ""]
+        self.write({"actionHotkeys": keys, "hotkey": "G"})
+        service = self.service()
+        backend = NativeShortcutBackend(Native())
+        self.addCleanup(backend.shutdown)
+        self.assertTrue(backend.configureSettings(service.values))
+
+    def test_fresh_picker_unbound_allows_bare_alt_map_and_action_keys(self):
+        service = self.service()
+        self.assertEqual(service.values["actionHotkeys"][9], "")
+        self.assertTrue(service.setValue("hotkey", "ALT"), service.message)
+        self.assertTrue(service.save())
+        self.wait(lambda: not service.busy)
+        restored = self.service()
+        self.assertEqual(restored.persistedValues["hotkey"], "ALT")
+        self.assertEqual(restored.persistedValues["actionHotkeys"][9], "")
+        self.assertTrue(restored.setValue("hotkey", "G"))
+        actions = restored.values["actionHotkeys"]
+        actions[1] = "ALT"
+        self.assertTrue(restored.setValue("actionHotkeys", actions), restored.message)
+        self.assertTrue(restored.save())
+        self.wait(lambda: not restored.busy)
+        restarted = self.service()
+        self.assertEqual(restarted.persistedValues["actionHotkeys"], actions)
+        from client_input import NativeShortcutBackend
+        from test_client_input import Native
+        backend = NativeShortcutBackend(Native())
+        self.addCleanup(backend.shutdown)
+        self.assertTrue(backend.configureSettings(restarted.persistedValues))
+
+    def test_binding_slot_ten_on_a_nine_slot_file_appends_it(self):
+        keys = ["F5", "F6", "F7", "F8", "F9", "F10", "F11", "", ""]
+        self.write({"actionHotkeys": keys})
+        service = self.service()
+        edited = service.values["actionHotkeys"]
+        edited[9] = "Ctrl+Alt+M"
+        self.assertTrue(service.setValue("actionHotkeys", edited))
+        self.assertTrue(service.save())
+        self.wait(lambda: not service.busy)
+        self.assertEqual(json.loads(self.path.read_text())["actionHotkeys"], [*keys, "Ctrl+Alt+M"])
+
+    def test_existing_file_without_action_array_leaves_picker_unbound(self):
+        # data is not None but the key is absent: load starts from the legacy
+        # nine slots; slot 10 stays unbound like a stored nine-slot array.
+        self.write({"hotkey": "G"})
+        service = self.service()
+        self.assertEqual(service.values["actionHotkeys"], [*LEGACY_ACTIONS, ""])
+
+    def test_map_selection_mode_defaults_validates_and_preserves_unknown(self):
+        service = self.service()
+        self.assertEqual(service.values["mapSelectionMode"], "auto")
+        self.assertTrue(service.setValue("mapSelectionMode", "manual"))
+        self.assertFalse(service.setValue("mapSelectionMode", "Manual"))
+        service.save()
+        self.wait(lambda: not service.busy)
+        self.assertEqual(json.loads(self.path.read_text())["mapSelectionMode"], "manual")
+        self.write({"mapSelectionMode": "unknown"})
+        service = self.service()
+        self.assertEqual(service.values["mapSelectionMode"], "auto")
+        self.assertIn("mapSelectionMode", service.message)
 
     def test_duplicate_save_and_late_completion_preserve_new_draft(self):
         service = self.service()
@@ -506,6 +592,14 @@ class SettingsTests(unittest.TestCase):
         service.setValue("sheetOpacity", .8)
         self.app.processEvents()
         self.assertEqual(panel.property("preferences")["sheetOpacity"], .8)
+        panel.setProperty("modeExpanded", True)
+        self.app.processEvents()
+        manual = visual_item(panel, "setting_mapSelectionMode_manual")
+        self.assertIsNotNone(manual)
+        manual.clicked.emit()
+        self.wait(lambda: not service.busy)
+        self.assertEqual(service.values["mapSelectionMode"], "manual")
+        self.assertEqual(json.loads(self.path.read_text())["mapSelectionMode"], "manual")
         self.assertEqual(warnings, [])
         panel.deleteLater()
         self.app.processEvents()

@@ -509,3 +509,60 @@ No new Setup or real installation is implied by this source update.
 5. Original-AppId installation/adoption/uninstall and formal release remain separate from the isolated preservation evidence. Do not install into the user's product directory to close this checklist.
 
 Inspection basis: [repository rules](../../AGENTS.md), [development contracts](../../docs/development.md), actual [`GameControlView`](../../app/game_control_view.py) controls and its command map, [`DesktopMainUI`](../../app/desktop_main_ui.py), [`DailyAssistant`](../../app/identityv_daily_assistant.py), [`MapResourcesPage`](../../app/map_resources_page.py), [`MapResourceBrowser`](../../app/map_resource_browser.py), core/resource/package modules named above, and the existing Qt Python/QML files. This document changes no executable behavior.
+
+## Manual map selection (手动选图)
+
+The Qt entry points are `ClientSettings.qml` → “模式与路线” → “选图方式”, the
+`ClientControls.qml` “自动识别 / 手动选图” pair, the “选择本局地图” button, and
+the configurable `manual-map-picker` hotkey (slot 10 of `actionHotkeys`; fresh
+installs default to `Alt+1`). Settings persist `mapSelectionMode` (`auto` /
+`manual`) at the top level. Qt owns slot 10 as a regular action and validates it
+once (no separate opaque-tail check). A saved nine-item `actionHotkeys` array never
+gains an invented `Alt+1` (it could collide with a bare `ALT` binding and disable
+every native shortcut): slot 10 loads unbound and the file stays nine items until
+the user binds slot 10. A ten-item file keeps its trailing chord when the first
+nine are edited; an unreadable tail stays on disk and blocks shortcut writes until
+slot 10 is rebound.
+
+`client_manual_map.py` imports the grouping/paging rules from
+`app/manual_map_picker_core.py`, the toolkit-free half of PR #70's picker shared
+with the Tk UI (the Qt build excludes tkinter). `client_manual_map_service.py` owns the non-activating
+`ClientMapPicker.qml` window, catalog generation checks and picker key routing.
+While the picker is visible the native input seam routes bare F1–F4, PgUp/PgDn,
+Backspace and Escape; configurable actions on those primaries are suppressed.
+Escape retains the existing fixed map-close edge. Picking dispatches the normal
+`confirm_route` command with a `mapId` payload, so identity commit, floor seed,
+fitting and round reset stay on the existing manual-confirmation path. The
+picker's availability is a separate `manualMapPickAvailable` snapshot flag (both
+selection modes, map open or closed), so it never advertises `confirm_route` to
+the existing confirm buttons. The catalog reads only the prepared engine; a
+missing pack returns “当前模式的地图资源未就绪，暂时不能选图” instead of building
+a factory on the picker thread. The window is centered over the bound game
+client rect (primary work area fallback) using the existing capture geometry.
+
+`LiveRuntime` skips only the automatic `rank` request while manual mode has no
+locked map; capture, map open/close, floor reading and later locked-map refreshes
+continue. End-round closes the picker, and an applied difficulty change reloads
+the catalog while invalidating in-flight results.
+
+`LiveRuntime.manual_map_catalog` also resolves each map's display thumbnail on
+its worker thread, using the same rules as the Tk picker: difficult maps use the
+native context's `full_reference(mapId)` (or the pack's `manualReference`
+metadata), while nightmare maps use the first existing layer in entry-floor /
+`1` / `2` / `B1` order. Only resolved local paths and a file stamp are returned;
+no image bytes are copied. The small path cache is keyed by the exact pack object
+plus catalog identity (mode, profile and map list), so a mode/resource change
+cannot reuse the previous pack's thumbnails. Map cards in `ClientMapPicker.qml`
+show a 200×116, aspect-fit, centered `Image` above the existing “F1 · name”
+label. QML decodes it asynchronously with `sourceSize` bounded to that size;
+group cards remain text-only. A missing/unreadable file yields no image URL (or
+an `Image.Error` that is hidden) and the card remains clickable/F1–F4
+selectable. Offline tests write temporary PNGs with Pillow and cover nightmare
+layer fallback, difficult native/manual reference, missing files, stale catalog
+generations and the QML image presence/absence; no binary assets are added.
+
+Unverified on real Windows: global hotkey registration/foreground behavior,
+non-activating picker focus and key routing while the game is foreground, real
+in-game picker→confirm→fit latency, and real-Pack thumbnail decoding/display
+timing. Offline tests use fake native input, temporary images and synthetic
+capture, so they do not constitute a real GUI/game pass.

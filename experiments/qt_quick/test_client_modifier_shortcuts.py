@@ -409,6 +409,9 @@ class ModifierShortcutTests(unittest.TestCase):
         self.assertEqual(len(self.maps), 1)
 
     def test_actual_qml_modifier_record_save_restart_and_native_delivery(self):
+        # A fresh picker is unbound; recording a bare modifier needs no
+        # preliminary workaround or unrelated settings write.
+        self.assertEqual(self.settings.values["actionHotkeys"][9], "")
         view = QQuickView()
         view.rootContext().setContextProperty("settingsService", self.settings)
         view.setSource(QUrl.fromLocalFile(str(Path(__file__).with_name("ClientSettings.qml"))))
