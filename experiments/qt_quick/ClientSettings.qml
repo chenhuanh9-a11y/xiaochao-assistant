@@ -142,6 +142,7 @@ Item {
         }
         Rectangle {
             visible: settingsService.shortcutRecording
+            z: 1  // Keep the recorder above scroll content before the next layout pass.
             Layout.fillWidth: true
             implicitHeight: captureContents.implicitHeight + 24
             radius: 8; color: "#e7effc"

@@ -409,6 +409,13 @@ class ModifierShortcutTests(unittest.TestCase):
         self.assertEqual(len(self.maps), 1)
 
     def test_actual_qml_modifier_record_save_restart_and_native_delivery(self):
+        # Fresh install binds slot 10 (manual-map-picker) to Alt+1; a bare ALT
+        # map key is a real conflict, so clear that slot before recording it.
+        actions = self.settings.values["actionHotkeys"]
+        actions[9] = ""
+        self.assertTrue(self.settings.setValue("actionHotkeys", actions))
+        self.assertTrue(self.settings.saveFields(["actionHotkeys"]))
+        self.storage.wait(lambda: not self.settings.busy)
         view = QQuickView()
         view.rootContext().setContextProperty("settingsService", self.settings)
         view.setSource(QUrl.fromLocalFile(str(Path(__file__).with_name("ClientSettings.qml"))))

@@ -743,11 +743,12 @@ class PickerFocusAndModifierTests(unittest.TestCase):
         self.assertEqual(picked, ["F1", "F2"])
 
     def test_hook_path_picker_closing_synchronously_does_not_duplicate_the_action(self):
-        from unittest.mock import Mock
-        from client_native_keys import PassThroughKeyboardSource
         from test_client_input import Native as HookNative
-        native, source = HookNative(), PassThroughKeyboardSource()
-        source.start, source.stop = Mock(return_value=True), Mock(return_value=True)
+        from test_client_shortcut_delivery import FixtureSource
+        native = HookNative()
+        # A started hook must report running/installed, otherwise #80 keeps the
+        # game actions disabled even though enable() was accepted.
+        source = FixtureSource()
         keys = NativeShortcutBackend(native, source=source)
         self.addCleanup(keys.shutdown)
         picked, actions = [], []
