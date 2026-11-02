@@ -25,6 +25,7 @@ import os
 from pathlib import Path
 import sys
 import threading
+import tempfile
 import time
 import uuid
 
@@ -526,7 +527,7 @@ class GalleryStore:
         self._write_blocked = False
         migration_writable = not self.path.exists()
         try:
-            raw = json.loads(self.path.read_text("utf-8"))
+            raw = json.loads(self.path.read_text("utf-8-sig"))
         except FileNotFoundError:
             raw = None
         except OSError:
@@ -613,10 +614,21 @@ class GalleryStore:
             self.migration_error = f"旧路线迁移失败：{error}；原文件已保留"
 
     def _set_aside(self, reason: str) -> None:
-        backup = self.path.with_name(f"{self.path.stem}.unreadable-{time.strftime('%Y%m%d-%H%M%S')}{self.path.suffix}")
+        backup = None
         try:
+            # Reserve a unique name exclusively, including within the same second.
+            # replace() may overwrite only this reservation, never an older backup.
+            with tempfile.NamedTemporaryFile(
+                    prefix=f"{self.path.stem}.unreadable-{time.strftime('%Y%m%d-%H%M%S')}-",
+                    suffix=self.path.suffix, dir=self.path.parent, delete=False) as reserved:
+                backup = Path(reserved.name)
             os.replace(self.path, backup)
         except OSError:
+            if backup is not None:
+                try:
+                    backup.unlink()
+                except OSError:
+                    pass
             self._write_blocked = True
             self.load_error = f"{reason}，且无法另存备份，本次不会保存修改。"
             return

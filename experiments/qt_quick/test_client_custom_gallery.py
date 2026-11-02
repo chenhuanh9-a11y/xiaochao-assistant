@@ -81,6 +81,17 @@ class CustomGalleryTests(unittest.TestCase):
         until(lambda: not self.service.busy)
         return self.service.snapshot
 
+    def test_bom_gallery_survives_qt_precheck_and_store_load(self):
+        original = json.dumps(dict(schema=GALLERY_SCHEMA, futureField={"keep": True},
+            galleries=[dict(id="mine", name="保留", maps={})])).encode("utf-8-sig")
+        self.service.path.parent.mkdir(parents=True, exist_ok=True)
+        self.service.path.write_bytes(original)
+        state = self.call("refresh")
+        self.assertEqual(state["dataError"], "")
+        self.assertIn("mine", [row["id"] for row in state["galleries"]])
+        self.assertEqual(self.service.path.read_bytes(), original)
+        self.assertEqual(list(self.service.path.parent.glob("*.unreadable-*.json")), [])
+
     def test_real_store_crud_and_default_readonly(self):
         state = self.call("addPoint", 20., 20.)
         self.assertFalse(self.service.path.exists())
