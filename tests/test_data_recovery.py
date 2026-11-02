@@ -34,6 +34,38 @@ class GalleryRecoveryTests(unittest.TestCase):
         self.assertEqual([name for _id, name, _ro in GalleryStore(self.path).galleries()][1:], ["新图库"])
         self.assertEqual(len(self.backups()), 1)
 
+    def test_bom_gallery_loads_without_recovery_or_rewriting(self):
+        original = json.dumps(dict(schema=GALLERY_SCHEMA, futureField={"keep": True},
+            galleries=[dict(id="mine", name="保留", maps={}, futureField=7)])).encode("utf-8-sig")
+        self.path.write_bytes(original)
+        store = GalleryStore(self.path)
+        self.assertEqual(store.name("mine"), "保留")
+        self.assertEqual(store.load_error, "")
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertEqual(self.backups(), [])
+
+    def test_repeated_recovery_in_same_second_preserves_every_backup(self):
+        originals = [b"first damaged gallery", b"second damaged gallery"]
+        with mock.patch("custom_maps.time.strftime", return_value="20261102-120000"):
+            for original in originals:
+                self.path.write_bytes(original)
+                store = GalleryStore(self.path)
+                self.assertTrue(any(path.name in store.load_error for path in self.backups()))
+                store.create("新图库")
+        self.assertEqual(len(self.backups()), 2)
+        self.assertCountEqual([path.read_bytes() for path in self.backups()], originals)
+
+    def test_backup_failure_blocks_saves_and_preserves_original(self):
+        original = b"damaged gallery"
+        self.path.write_bytes(original)
+        with mock.patch("custom_maps.os.replace", side_effect=PermissionError("locked")):
+            store = GalleryStore(self.path)
+        self.assertIn("无法另存备份", store.load_error)
+        with self.assertRaises(OSError):
+            store.create("不可保存")
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertEqual(self.backups(), [])
+
     def test_invalid_gallery_list_is_set_aside(self):
         self.path.write_text(json.dumps(dict(schema=GALLERY_SCHEMA, galleries=7)), "utf-8")
         store = GalleryStore(self.path)
