@@ -269,6 +269,9 @@ class ClientCoordinator(QObject):
             guard(lambda: not self.session.snapshot.get("roundActive", False))
         settings.changed.connect(self._draft_changed)
         settings.saved.connect(self._settings_saved)
+        controls_failure = getattr(settings, "controlsVisibilitySaveFailed", None)
+        if controls_failure is not None:
+            controls_failure.connect(self._controls_save_failed)
         recording_signal = getattr(settings, "shortcutRecordingChanged", None)
         if recording_signal is not None:
             recording_signal.connect(self._set_shortcut_recording)
@@ -1015,7 +1018,7 @@ class ClientCoordinator(QObject):
         # capture/input authority. A later G opens/starts atomically in runtime.
         if self._bound:
             self.setInputEnabled(True)
-        self.windows.show("controls")
+        self._apply_controls_visibility(self.settings.values.get("qtControlsVisible", True))
         self.session.dispatch("start_round")
 
     @Slot(bool)
@@ -1039,18 +1042,42 @@ class ClientCoordinator(QObject):
     def toggleControlsKeyboard(self):
         self._toggle_controls("keyboard")
 
+    @Slot()
+    def showControls(self):
+        self._set_controls_visible(True, "mouse")
+
+    @Slot()
+    def hideControls(self):
+        self._set_controls_visible(False, "mouse")
+
+    def _apply_controls_visibility(self, visible):
+        # WindowController retains its normal before-show protection. Showing
+        # controls grants no capture, session, or live-render authorization.
+        (self.windows.show if visible else self.windows.hide)("controls")
+
     def _toggle_controls(self, source):
+        self._set_controls_visible(not bool(self.windows.snapshot.get("controls", {}).get("visible")), source)
+
+    def _set_controls_visible(self, visible, source):
         if self._closing or self._closed or self._shortcut_recording:
             return
         before = bool(self.windows.snapshot.get("controls", {}).get("visible"))
-        if before:
-            self.windows.hide("controls")
-        else:
-            self.settings.setValue("orbVisible", True)
-            self.windows.show("controls")
+        self._apply_controls_visibility(visible)
         after = bool(self.windows.snapshot.get("controls", {}).get("visible"))
         if before != after:
             self.controlVisibilityChanged.emit(after, source)
+        if not visible:
+            actions = self.settings.persistedValues.get("actionHotkeys") or []
+            binding = actions[0] if actions else ""
+            restore = f"按 {binding} 或在主页点击“打开游戏控件”恢复。" if binding else "在主页点击“打开游戏控件”恢复。"
+            self.notificationRequested.emit("控件已隐藏", restore, "info")
+        self.settings.persistControlsVisibility(visible)
+        self.changed.emit()
+
+    def _controls_save_failed(self, reason):
+        self._message = "控件显示选择仅在本次生效，未保存；下次启动可能恢复默认。" + reason
+        self.notificationRequested.emit("控件偏好未保存", self._message, "warning")
+        self.changed.emit()
 
     @Slot(str)
     def setMode(self, mode):
@@ -1353,8 +1380,8 @@ class ClientCoordinator(QObject):
             self.hideReference()
         if not values.get("sheetVisibilityEnabled", True):
             self.windows.hide("aligned")
-        if not values.get("orbVisible", True):
-            self.windows.hide("controls")
+        if not values.get("qtControlsVisible", True):
+            self._apply_controls_visibility(False)
         self.changed.emit()
 
     def _settings_saved(self):
@@ -1990,7 +2017,8 @@ class ClientCoordinator(QObject):
             if pool is not None:
                 pools[type(writer).__name__ + str(index)] = pool.activeThreadCount()
         hook_running = bool(getattr(self.input, "snapshot", {}).get("hookRunning", False))
-        writes = any(bool(getattr(writer, "pendingWrites", False)) for writer in self.close_writers)
+        writes = (bool(getattr(self.settings, "pendingWrites", False))
+                  or any(bool(getattr(writer, "pendingWrites", False)) for writer in self.close_writers))
         wait_state = (tuple(pools.values()), hook_running, writes)
         if wait_state != self._last_close_wait:
             self._last_close_wait = wait_state
@@ -1999,6 +2027,7 @@ class ClientCoordinator(QObject):
         if getattr(self.input, "snapshot", {}).get("hookRunning", False):
             return
         if (self.resources.pool.activeThreadCount() or self.settings.pool.activeThreadCount()
+                or bool(getattr(self.settings, "pendingWrites", False))
                 or self.session._pool.activeThreadCount()):
             return
         for writer in self.close_writers:

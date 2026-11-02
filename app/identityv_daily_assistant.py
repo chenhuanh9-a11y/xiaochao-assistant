@@ -10782,6 +10782,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
                     self, "drag_boundary_environment_signature", (),
                 )),
             }
+            qt_controls_visible = self.settings.get("qtControlsVisible")
+            if type(qt_controls_visible) is bool:
+                payload["qtControlsVisible"] = qt_controls_visible
             if hotkey_proposal is not None:
                 payload.update(hotkey=hotkey_proposal["hotkey"], actionHotkeys=hotkey_proposal["actionHotkeys"])
             atomic_write_text(

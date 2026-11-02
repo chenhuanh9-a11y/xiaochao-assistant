@@ -240,7 +240,7 @@ Window {
                         y: moreButton.height
                         MenuItem { text: "主页"; onTriggered: clientCoordinator.navigate("home") }
                         MenuItem { text: "自定义控件"; onTriggered: clientCoordinator.navigate("settings") }
-                        MenuItem { text: "隐藏控件"; onTriggered: windows.hide("controls") }
+                        MenuItem { objectName: "controlHideControls"; text: "隐藏控件"; onTriggered: clientCoordinator.hideControls() }
                         MenuSeparator {}
                         MenuItem { text: panel.manualSelection ? "选择本局地图" : "选择地图"; enabled: panel.available("reselect_map"); onTriggered: clientCoordinator.requestManualMapSelection() }
                         MenuItem { text: "重新识别"; enabled: panel.available("capture_now"); onTriggered: session.dispatch("capture_now") }
