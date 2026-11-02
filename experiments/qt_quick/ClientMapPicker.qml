@@ -11,7 +11,7 @@ Window {
     title: pickerService.title
     visible: false
     width: 620
-    height: Math.min(560, 250 + optionsGrid.implicitHeight)
+    height: Math.min(680, 250 + optionsGrid.implicitHeight)
     color: "transparent"
     flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus
 
@@ -49,15 +49,59 @@ Window {
                 columnSpacing: 8; rowSpacing: 8
                 Repeater {
                     model: pickerService.options
-                    delegate: AppButton {
+                    delegate: Button {
+                        id: optionButton
                         required property var modelData
                         required property int index
                         objectName: "pickerOption" + index
                         Layout.fillWidth: true
-                        implicitHeight: 58
+                        Layout.preferredHeight: modelData.kind === "map" ? 174 : 58
+                        implicitHeight: modelData.kind === "map" ? 174 : 58
                         text: modelData.key + " · " + modelData.label
                               + (modelData.kind === "group" ? "（" + modelData.count + " 张）" : "")
                         Accessible.name: text
+                        focusPolicy: Qt.StrongFocus
+                        hoverEnabled: true
+                        padding: 8
+                        HoverHandler { cursorShape: Qt.PointingHandCursor }
+                        contentItem: Column {
+                            spacing: 4
+                            anchors.centerIn: parent
+                            width: parent.width - 16
+                            Image {
+                                objectName: "pickerThumbnail" + optionButton.index
+                                width: visible ? 200 : 0
+                                height: visible ? 116 : 0
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                source: optionButton.modelData.kind === "map"
+                                        ? String(optionButton.modelData.thumbnailUrl || "") : ""
+                                visible: optionButton.modelData.kind === "map"
+                                         && source.toString().length > 0 && status !== Image.Error
+                                asynchronous: true
+                                cache: true
+                                fillMode: Image.PreserveAspectFit
+                                sourceSize.width: 200
+                                sourceSize.height: 116
+                            }
+                            Text {
+                                width: parent.width
+                                text: optionButton.text
+                                color: optionButton.enabled ? "#1f50cc" : "#8491a7"
+                                font: optionButton.font
+                                horizontalAlignment: Text.AlignHCenter
+                                elide: Text.ElideRight
+                            }
+                        }
+                        background: Rectangle {
+                            radius: 8
+                            color: !optionButton.enabled ? "#edf1f6"
+                                   : optionButton.down ? "#dce6fc"
+                                   : optionButton.hovered ? "#dce6fc" : "#e9effd"
+                            border.width: optionButton.activeFocus || optionButton.down ? 2 : 1
+                            border.color: !optionButton.enabled ? "#d6e0ef"
+                                          : optionButton.activeFocus || optionButton.down ? "#2f66eb"
+                                          : optionButton.hovered ? "#8da4c4" : "#cad8ee"
+                        }
                         onClicked: pickerService.choose(index)
                     }
                 }

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+from pathlib import Path
 
 SELECTION_MODES = ("auto", "manual")
 SELECTION_MODE_LABELS = {"auto": "自动识别", "manual": "手动选图"}
@@ -64,6 +65,37 @@ def picker_groups(maps, mode: str = "nightmare") -> list[tuple[str, list]]:
 def option_title(item, group: str) -> str:
     prefix, rest = split_map_name(item.name)
     return rest if prefix and prefix == group else str(item.name)
+
+
+def manual_map_thumbnail_source(pack, item, mode: str = "nightmare", native=None) -> Path | None:
+    """Existing display image for a picker card, or None.
+
+    Mirrors ``ManualMapSelectionMixin._manual_picker_thumbnail_source`` in Tk:
+    difficult maps use the native context's full reference (or the pack's
+    ``manualReference`` metadata), nightmare maps use the first existing layer
+    in entry-floor/1/2/B1 order. Display only; never identity evidence.
+    """
+    if mode == "difficult":
+        try:
+            if native is not None:
+                candidate = native.full_reference(item.id)
+            else:
+                relative = pack.metadata[item.id]["manualReference"]
+                candidate = Path(pack.source_root) / relative
+            path = Path(candidate) if candidate is not None else None
+            return path if path is not None and path.is_file() else None
+        except Exception:
+            return None
+    floors = (str(getattr(pack, "default_entry_floor", "1")), "1", "2", "B1")
+    layers = getattr(item, "layers", None) or {}
+    for floor in floors:
+        try:
+            candidate = layers.get(floor)
+            if candidate is not None and Path(candidate).is_file():
+                return Path(candidate)
+        except Exception:
+            continue
+    return None
 
 
 @dataclass

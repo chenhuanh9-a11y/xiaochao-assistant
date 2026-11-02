@@ -540,8 +540,24 @@ locked map; capture, map open/close, floor reading and later locked-map refreshe
 continue. End-round closes the picker, and an applied difficulty change reloads
 the catalog while invalidating in-flight results.
 
+`LiveRuntime.manual_map_catalog` also resolves each map's display thumbnail on
+its worker thread, using the same rules as the Tk picker: difficult maps use the
+native context's `full_reference(mapId)` (or the pack's `manualReference`
+metadata), while nightmare maps use the first existing layer in entry-floor /
+`1` / `2` / `B1` order. Only resolved local paths and a file stamp are returned;
+no image bytes are copied. The small path cache is keyed by the exact pack object
+plus catalog identity (mode, profile and map list), so a mode/resource change
+cannot reuse the previous pack's thumbnails. Map cards in `ClientMapPicker.qml`
+show a 200×116, aspect-fit, centered `Image` above the existing “F1 · name”
+label. QML decodes it asynchronously with `sourceSize` bounded to that size;
+group cards remain text-only. A missing/unreadable file yields no image URL (or
+an `Image.Error` that is hidden) and the card remains clickable/F1–F4
+selectable. Offline tests write temporary PNGs with Pillow and cover nightmare
+layer fallback, difficult native/manual reference, missing files, stale catalog
+generations and the QML image presence/absence; no binary assets are added.
+
 Unverified on real Windows: global hotkey registration/foreground behavior,
 non-activating picker focus and key routing while the game is foreground, real
-in-game picker→confirm→fit latency, and thumbnail decoding (deliberately not
-implemented in this port). Offline tests use fake native input and synthetic
+in-game picker→confirm→fit latency, and real-Pack thumbnail decoding/display
+timing. Offline tests use fake native input, temporary images and synthetic
 capture, so they do not constitute a real GUI/game pass.

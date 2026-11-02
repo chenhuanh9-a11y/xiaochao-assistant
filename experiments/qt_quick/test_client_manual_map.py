@@ -7,16 +7,20 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from pathlib import Path
 from types import SimpleNamespace
+import tempfile
 import time
 import unittest
 from unittest.mock import patch
 
+from PIL import Image
 from PySide6.QtCore import QObject, QUrl, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlComponent, QQmlEngine
+from PySide6.QtQuick import QQuickItem
 
-from client_manual_map import (OPTION_KEYS, PickerState, normalize_selection_mode, option_title,
-                               picker_groups, split_map_name)
+from client_manual_map import (OPTION_KEYS, PickerState, manual_map_thumbnail_source,
+                               normalize_selection_mode, option_title, picker_groups,
+                               split_map_name)
 from client_manual_map_service import ManualMapPickerService
 from client_input import NativeShortcutBackend
 from client_live_runtime import LiveRuntime, _AlignmentHost
@@ -27,6 +31,84 @@ APP = QGuiApplication.instance() or QGuiApplication([])
 
 def item(map_id, name, direction="unknown"):
     return SimpleNamespace(id=map_id, name=name, direction=direction, layers={})
+
+
+def write_png(directory, name, size=(64, 36), color=(40, 120, 220)):
+    path = Path(directory) / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", size, color).save(path)
+    return path
+
+
+def load_picker(service):
+    engine = QQmlEngine()
+    engine.rootContext().setContextProperty("pickerService", service)
+    warnings = []
+    engine.warnings.connect(lambda rows: warnings.extend(str(row) for row in rows))
+    component = QQmlComponent(engine, QUrl.fromLocalFile(
+        str(Path(__file__).with_name("ClientMapPicker.qml"))))
+    if component.isError():
+        raise AssertionError("\n".join(str(error) for error in component.errors()))
+    window = component.create()
+    if window is None:
+        raise AssertionError("picker component did not create a window")
+    return engine, component, window, warnings
+
+
+def qml_item(window, name):
+    """Repeater delegates are visual children, not necessarily QObject children."""
+    root = window.contentItem()
+    if not isinstance(root, QQuickItem):
+        return None
+    pending = [root]
+    while pending:
+        item = pending.pop()
+        if item.objectName() == name:
+            return item
+        pending.extend(item.childItems())
+    return None
+
+
+def qml_source(item):
+    source = item.property("source")
+    return source.toString() if hasattr(source, "toString") else str(source or "")
+
+
+class ThumbnailSourceTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+
+    def test_nightmare_uses_entry_floor_then_1_2_b1_and_only_existing_layers(self):
+        two = write_png(self.root, "two.png")
+        one = write_png(self.root, "one.png")
+        b1 = write_png(self.root, "b1.png")
+        missing = self.root / "missing.png"
+        item = SimpleNamespace(id="n1", layers={"1": missing, "2": two, "B1": b1})
+        pack = SimpleNamespace(default_entry_floor="2")
+        self.assertEqual(manual_map_thumbnail_source(pack, item, "nightmare"), two)
+        item.layers.pop("2")
+        item.layers["1"] = one
+        self.assertEqual(manual_map_thumbnail_source(pack, item, "nightmare"), one)
+        item.layers.pop("1")
+        self.assertEqual(manual_map_thumbnail_source(pack, item, "nightmare"), b1)
+        item.layers["B1"] = missing
+        self.assertIsNone(manual_map_thumbnail_source(pack, item, "nightmare"))
+
+    def test_difficult_uses_native_full_reference_or_manual_reference(self):
+        native_image = write_png(self.root, "native.png")
+        manual_image = write_png(self.root, "manual/n1.png")
+        native = SimpleNamespace(full_reference=lambda map_id: native_image)
+        item = SimpleNamespace(id="n1")
+        pack = SimpleNamespace(source_root=self.root, metadata={})
+        self.assertEqual(manual_map_thumbnail_source(pack, item, "difficult", native), native_image)
+        pack.metadata = {"n1": {"manualReference": "manual/n1.png"}}
+        self.assertEqual(manual_map_thumbnail_source(pack, item, "difficult"), manual_image)
+        pack.metadata = {"n1": {"manualReference": "manual/missing.png"}}
+        self.assertIsNone(manual_map_thumbnail_source(pack, item, "difficult"))
+        self.assertIsNone(manual_map_thumbnail_source(pack, item, "difficult",
+            SimpleNamespace(full_reference=lambda map_id: self.root / "missing.png")))
 
 
 NIGHTMARE = [item("a", "右中 / 中十"), item("b", "左中 / 红房间 / 雷同图"), item("c", "左中右 / 右S"),
@@ -266,6 +348,83 @@ class PickerServiceTests(unittest.TestCase):
         self.assertEqual((window.x(), window.y()), (expected_x, expected_y))
         self.assertIs(window.screen(), APP.primaryScreen())
 
+    def test_missing_thumbnail_file_keeps_the_map_card_selectable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "missing.png"
+            self.session.currentMode = "difficult"
+            service = self.service(lambda: catalog("difficult", [dict(
+                id="n1", name="北-红门", direction="上",
+                thumbnailPath=str(missing), thumbnailStamp="")]))
+            service.open("test")
+            self.wait(lambda: not service.busy and len(service.options) == 1)
+            self.assertEqual(service.options[0]["thumbnailUrl"], "")
+            self.assertTrue(service.choose(0))
+            self.assertEqual(self.commits, ["n1"])
+
+    def test_stale_generation_and_mode_switch_discard_old_thumbnails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            old_image = write_png(directory, "old.png")
+            new_image = write_png(directory, "new.png")
+            state = {"catalog": catalog("nightmare", [dict(
+                id="old", name="旧地图", direction="上",
+                thumbnailPath=str(old_image), thumbnailStamp="old-stamp")])}
+            service = self.service(lambda: state["catalog"])
+            service.open("test")
+            self.wait(lambda: not service.busy and service.options)
+            old_result, old_generation = state["catalog"], service._generation
+            old_url = service.options[0]["thumbnailUrl"]
+            self.assertIn("old.png", old_url)
+
+            state["catalog"] = catalog("difficult", [dict(
+                id="new", name="新地图", direction="上",
+                thumbnailPath=str(new_image), thumbnailStamp="new-stamp")])
+            self.session.currentMode = "difficult"
+            service._session_changed()
+            self.assertNotIn(old_url, [row.get("thumbnailUrl") for row in service.options])
+            self.wait(lambda: not service.busy and service._catalog_mode == "difficult"
+                      and service.options)
+            new_url = service.options[0]["thumbnailUrl"]
+            self.assertIn("new.png", new_url)
+            # A result from the superseded generation cannot revive old paths.
+            service._catalog_finished(old_generation, old_result, None)
+            self.assertEqual(service.options[0]["thumbnailUrl"], new_url)
+            self.assertEqual(service.options[0]["mapId"], "new")
+
+    def test_qml_picker_renders_thumbnail_only_when_the_image_is_available(self):
+        with tempfile.TemporaryDirectory() as directory:
+            image = write_png(directory, "valid.png")
+            missing = Path(directory) / "missing.png"
+            self.session.currentMode = "difficult"
+            state = {"rows": [dict(id="n1", name="北-红门", direction="上",
+                                   thumbnailPath=str(image), thumbnailStamp="valid")]}
+            service = self.service(lambda: catalog("difficult", state["rows"]))
+            engine, component, window, warnings = load_picker(service)
+            self.addCleanup(lambda: (engine.deleteLater(), component.deleteLater()))
+            self.addCleanup(window.deleteLater)
+            service.open("test")
+            self.wait(lambda: not service.busy and len(service.options) == 1
+                      and qml_item(window, "pickerThumbnail0") is not None)
+            thumbnail = qml_item(window, "pickerThumbnail0")
+            self.assertIsNotNone(qml_item(window, "pickerOption0"))
+            self.assertTrue(qml_source(thumbnail))
+            self.assertTrue(thumbnail.property("visible"))
+            self.assertTrue(thumbnail.property("asynchronous"))
+            self.wait(lambda: thumbnail.property("paintedWidth") > 0)  # Decoded.
+            self.assertEqual(warnings, [])
+
+            service.close()
+            state["rows"] = [dict(id="n1", name="北-红门", direction="上",
+                                  thumbnailPath=str(missing), thumbnailStamp="")]
+            service.open("test")
+            self.wait(lambda: not service.busy and len(service.options) == 1
+                      and qml_item(window, "pickerThumbnail0") is not None)
+            thumbnail = qml_item(window, "pickerThumbnail0")
+            self.assertEqual(qml_source(thumbnail), "")
+            self.assertFalse(thumbnail.property("visible"))
+            self.assertTrue(service.choose(0))
+            self.assertEqual(self.commits, ["n1"])
+            self.assertEqual(warnings, [])
+
     def test_qml_picker_loads_and_renders_the_service_options(self):
         service = self.service(lambda: catalog("nightmare", NIGHTMARE_ROWS))
         engine = QQmlEngine()
@@ -477,6 +636,125 @@ class RuntimeManualModeTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in catalog["maps"]], ["fixture-map"])
         self.assertEqual(catalog["identity"]["mode"], "nightmare")
 
+    def test_catalog_resolves_thumbnail_paths_from_the_prepared_pack(self):
+        with tempfile.TemporaryDirectory() as directory:
+            image = write_png(directory, "layer.png")
+            self.engine.pack.default_entry_floor = "1"
+            map_item = self.engine.pack.maps[0]
+            map_item.direction = "上"
+            map_item.layers = {"1": image}
+            self.runtime.configure_settings({"mapSelectionMode": "manual"})
+            self.assertTrue(self.dispatch("start_round")["success"])
+            catalog = self.runtime.manual_map_catalog()
+            row = catalog["maps"][0]
+            self.assertEqual(row["thumbnailPath"], str(image))
+            self.assertTrue(row["thumbnailStamp"])
+            # A different pack must not reuse the previous pack's thumbnails.
+            replacement = fixture_engine()
+            replacement.pack.default_entry_floor = "1"
+            replacement.pack.maps = [SimpleNamespace(id="other-map", name="换图", direction="上",
+                                                    layers={"1": write_png(directory, "other.png")})]
+            replacement.pack.by_id = {map_item.id: map_item for map_item in replacement.pack.maps}
+            self.runtime._engine = replacement
+            other = self.runtime.manual_map_catalog()["maps"][0]
+            self.assertEqual(other["id"], "other-map")
+            self.assertIn("other.png", other["thumbnailPath"])
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PickerFocusAndModifierTests(unittest.TestCase):
+    """Picker keys are only consumed for the game/assistant and bare presses."""
+
+    def test_poll_path_ignores_other_foreground_apps_and_modifier_chords(self):
+        native = Native()
+        keys = NativeShortcutBackend(native)
+        self.addCleanup(keys.shutdown)
+        picked, actions = [], []
+        keys.pickerKeyRequested.connect(picked.append)
+        keys.actionTriggered.connect(actions.append)
+        self.assertTrue(keys.configure({"map": "G", "candidate-next": "F1"}))
+        keys.bindWindow(42)
+        self.assertTrue(keys.enable())
+        keys.pollOnce()
+        keys.setPickerKeys(["F1"])
+        keys.pollOnce()
+        native.foreground = 77  # Another application owns the keyboard.
+        native.window_process_id = lambda hwnd: 1234
+        native.states[0x70] = 0x8001
+        keys.pollOnce()
+        self.assertEqual(picked, [])
+        native.states[0x70] = 0
+        keys.pollOnce()
+        native.foreground = 42
+        native.window_process_id = lambda hwnd: 9001
+        keys.pollOnce()
+        native.states[0x12] = 0x8000  # Alt+F1 is not a picker choice.
+        native.states[0x70] = 0x8001
+        keys.pollOnce()
+        self.assertEqual(picked, [])
+        native.states[0x12] = 0
+        native.states[0x70] = 0
+        keys.pollOnce()
+        native.states[0x70] = 0x8001
+        keys.pollOnce()
+        self.assertEqual(picked, ["F1"])
+
+    def test_hook_path_consumes_only_bare_keys_for_game_or_assistant(self):
+        from unittest.mock import Mock, patch
+        from client_native_keys import PassThroughKeyboardSource
+        from test_client_input import Native as HookNative
+        native, source = HookNative(), PassThroughKeyboardSource()
+        source.start, source.stop = Mock(return_value=True), Mock(return_value=True)
+        keys = NativeShortcutBackend(native, source=source)
+        self.addCleanup(keys.shutdown)
+        picked, actions = [], []
+        keys.pickerKeyRequested.connect(picked.append)
+        keys.actionTriggered.connect(actions.append)
+        self.assertTrue(keys.configure({"map": "G", "candidate-next": "F1"}))
+        keys.enableManagement(); keys.bindWindow(42); keys.enable()
+        keys.setPickerKeys(["F1", "F2"])
+
+        def press(vk, down, foreground=42):
+            with patch("time.monotonic", return_value=99.9):
+                event = source._transition_event(vk, 0, 0, down, foreground)
+            source.eventReceived.emit(event)
+            with patch("time.monotonic", return_value=100.):
+                APP.processEvents()
+
+        native.process = 1234  # Foreground is not this assistant process.
+        press(0x70, True, foreground=77)
+        press(0x70, False, foreground=77)
+        self.assertEqual(picked, [])
+        press(0xA4, True)  # Left Alt held: Alt+F2 belongs to someone else.
+        press(0x71, True)
+        press(0x71, False)
+        press(0xA4, False)
+        self.assertEqual(picked, [])
+        press(0x70, True)  # Bare F1 in the game goes to the picker only.
+        press(0x70, False)
+        self.assertEqual(picked, ["F1"])
+        self.assertEqual(actions, [])
+        native.process = os.getpid()  # The assistant itself is foreground.
+        press(0x71, True, foreground=55)
+        press(0x71, False, foreground=55)
+        self.assertEqual(picked, ["F1", "F2"])
+
+
+class PickerShutdownFlowTests(unittest.TestCase):
+    def test_client_shutdown_calls_picker_shutdown_and_service_drains(self):
+        import inspect
+        import client as client_module
+        source = inspect.getsource(client_module.QtClient)
+        self.assertIn("self.manual_map_picker.shutdown()", source)
+        settings, session = FakeSettings(), FakeSession()
+        windows, native = FakeWindows(), FakeInput()
+        service = ManualMapPickerService(
+            settings=settings, windows=windows, input_backend=native, session=session,
+            catalog_provider=lambda: dict(mode="nightmare", maps=[], identity={}), commit=lambda _id: True)
+        service.open("test")
+        service.shutdown()
+        self.assertFalse(service.visible)
+        self.assertFalse(service.open("after-shutdown"))

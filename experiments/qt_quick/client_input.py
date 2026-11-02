@@ -26,6 +26,10 @@ from client_map_input import OrderedMapInput
 from client_native_keys import MOUSE_SHORTCUT_VKS
 from client_manual_map import MANUAL_PICKER_ACTION, PICKER_KEY_NAMES, PICKER_KEY_VKS
 
+# Shift/Ctrl/Alt/Win (generic and left/right): any held one means the press is
+# a chord for someone else, not a picker choice.
+PICKER_MODIFIER_VKS = (0x10, 0x11, 0x12, 0x5B, 0x5C, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5)
+
 
 ACTION_ORDER = ("toggle-panel", "candidate-prev", "candidate-next", "confirm-round",
                 "cycle-floor", "end-round", "toggle-sheet-visibility", "start-round", "toggle-round",
@@ -401,8 +405,13 @@ class NativeShortcutBackend(QObject):
             assistant = bool(foreground and self._native.window_process_id(foreground) == os.getpid())
         except OSError:
             assistant = False
+        # The picker only consumes fresh bare presses while the game or this
+        # assistant is foreground; other apps and modifier chords keep their keys.
         picker_name = (next((name for name, key in self._picker_keys.items() if key == vk), None)
                        if down else None)
+        if picker_name is not None and (not (game or assistant)
+                                        or any(read(key) & 0x8000 for key in PICKER_MODIFIER_VKS)):
+            picker_name = None
         if picker_name is not None:
             self.pickerKeyRequested.emit(picker_name)
         try:
@@ -489,18 +498,22 @@ class NativeShortcutBackend(QObject):
             emitted = []
             suppress = self._prime or self._text or self._editing
             game_rearm = game_focus != self._game_focus
+            picker_consumed = set()
             if self._picker_keys:
                 if self._picker_down is None:
                     # First sample after opening only establishes held state.
                     self._picker_down = {name: bool(read(vk) & 0x8000)
                                          for name, vk in self._picker_keys.items()}
                 else:
+                    picker_owner = bool(game_focus or assistant_focus) and not any(
+                        read(key) & 0x8000 for key in PICKER_MODIFIER_VKS)
                     for name, vk in self._picker_keys.items():
                         state = read(vk)
                         down = bool(state & 0x8000)
                         edge = not self._picker_down.get(name, False) and bool(state & 0x8001)
                         self._picker_down[name] = down
-                        if edge and not suppress:
+                        if edge and not suppress and picker_owner:
+                            picker_consumed.add(vk)
                             self.pickerKeyRequested.emit(name)
             else:
                 self._picker_down = None
@@ -519,8 +532,8 @@ class NativeShortcutBackend(QObject):
                     allowed = False  # Held keys cannot fire on game focus return.
                 # The open picker owns bare F1-F4/PgUp/PgDn/Backspace. Escape
                 # keeps its separate fixed map-close edge, as in the Tk client.
-                if (self._picker_keys and action != "escape" and not chord.modifiers
-                        and chord.vk in self._picker_keys.values()):
+                if (action != "escape" and not chord.modifiers
+                        and chord.vk in picker_consumed):
                     allowed = False
                 if (allowed and not suppress and edge
                         and modifiers_match(chord, read, reject_released=True)):

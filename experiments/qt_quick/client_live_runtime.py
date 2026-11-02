@@ -23,6 +23,7 @@ from client_engine import (EngineAdapter, clone_similarity_state, stage_similari
                            INITIAL_IDENTITY_BUDGET_SECONDS)
 from floor_observation_policy import (MANUAL_FLOOR_HOLD_SECONDS,
                                       read_floor_evidence, decide_floor_transition, game_floor_control_hit)
+from client_manual_map import manual_map_thumbnail_source
 
 
 class _Cancellation:
@@ -329,6 +330,7 @@ class LiveRuntime:
         self._observed_floor = ""
         self._last_observation = None
         self._pointer_context_snapshot = None
+        self._manual_map_thumbnail_cache = {}
         from client_idvb0059_adapter import Idvb0059Adapter
         self._steady = Idvb0059Adapter()
         self._reset_identity()
@@ -1763,9 +1765,49 @@ class LiveRuntime:
                             message="当前模式的地图资源未就绪，暂时不能选图")
             items = list(pack.maps)
             default_entry_floor = str(getattr(pack, "default_entry_floor", "1"))
-        maps = [dict(id=str(item.id), name=str(getattr(item, "name", "") or ""),
-                     direction=str(getattr(item, "direction", "") or ""))
-                for item in items]
+            native = getattr(engine, "qt_native_context", None)
+            scope = (mode, profile, tuple((str(item.id), str(getattr(item, "name", "") or ""),
+                                           str(getattr(item, "direction", "") or ""))
+                                          for item in items))
+            cache = self._manual_map_thumbnail_cache
+            if cache.get("pack") is not pack or cache.get("scope") != scope:
+                cache.clear()
+                cache.update(pack=pack, scope=scope, rows={})
+            cached_thumbnails = dict(cache["rows"])
+        # File checks are worker-side (this method is the picker's catalog
+        # provider); the UI only receives URIs. Cache only resolved paths and
+        # key them to the exact pack and catalog identity so a mode/resource
+        # change can never reuse the previous pack's thumbnails.
+        resolved = {}
+        for item in items:
+            map_id = str(item.id)
+            if map_id in cached_thumbnails:
+                continue
+            path = manual_map_thumbnail_source(pack, item, mode, native)
+            if path is not None:
+                resolved[map_id] = str(path)
+        if resolved:
+            with self._lock:
+                cache = self._manual_map_thumbnail_cache
+                if (self._engine is engine and self._mode == mode and self._profile == profile
+                        and cache.get("pack") is pack and cache.get("scope") == scope):
+                    cache["rows"].update(resolved)
+        maps = []
+        for item in items:
+            map_id = str(item.id)
+            path = resolved.get(map_id) or cached_thumbnails.get(map_id) or ""
+            if path and not Path(path).is_file():
+                path = ""
+            stamp = ""
+            if path:
+                try:
+                    stat = Path(path).stat()
+                    stamp = f"{stat.st_mtime_ns}-{stat.st_size}"
+                except OSError:
+                    path = ""
+            maps.append(dict(id=map_id, name=str(getattr(item, "name", "") or ""),
+                             direction=str(getattr(item, "direction", "") or ""),
+                             thumbnailPath=path, thumbnailStamp=stamp))
         identity = dict(mode=mode, profileId=profile,
                         maps=[(row["id"], row["name"], row["direction"]) for row in maps])
         return dict(mode=mode, profileId=profile, available=True, identity=identity, maps=maps,

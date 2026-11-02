@@ -9,10 +9,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+from pathlib import Path
 import sys
 
 from PySide6.QtCore import (QObject, Property, QPoint, QRunnable, QThreadPool, QTimer, Qt,
-                            Signal, Slot)
+                            QUrl, Signal, Slot)
 from PySide6.QtGui import QGuiApplication
 
 from client_paths import APP_ROOT
@@ -28,6 +29,27 @@ class MapEntry:
     id: str
     name: str
     direction: str = ""
+    thumbnail_path: str = ""
+    thumbnail_stamp: str = ""
+
+
+def _thumbnail_url(entry):
+    """Local file URI for QML's asynchronous, size-bounded Image decoding."""
+    path = getattr(entry, "thumbnail_path", "")
+    if not path:
+        return ""
+    try:
+        # Final guard: a file may disappear between catalog resolution and
+        # presentation. The bulk resolver still runs in the catalog worker.
+        if not Path(str(path)).is_file():
+            return ""
+    except OSError:
+        return ""
+    url = QUrl.fromLocalFile(str(path))
+    stamp = getattr(entry, "thumbnail_stamp", "")
+    if stamp:
+        url.setQuery("v=" + str(stamp))
+    return url.toString()
 
 
 class _CatalogSignals(QObject):
@@ -138,7 +160,8 @@ class ManualMapPickerService(QObject):
                 group = state.groups[state.group][0]
                 for index, item in enumerate(state.options()):
                     options.append(dict(kind="map", key=OPTION_KEYS[index],
-                                        label=option_title(item, group), mapId=item.id))
+                                        label=option_title(item, group), mapId=item.id,
+                                        thumbnailUrl=_thumbnail_url(item)))
         self._options = options
         self.changed.emit()
 
@@ -264,7 +287,9 @@ class ManualMapPickerService(QObject):
             QTimer.singleShot(200, self._retry_stale_catalog)
             return
         entries = [MapEntry(str(row.get("id", "")), str(row.get("name", "")),
-                            str(row.get("direction", "") or ""))
+                            str(row.get("direction", "") or ""),
+                            str(row.get("thumbnailPath", "") or ""),
+                            str(row.get("thumbnailStamp", "") or ""))
                    for row in result["maps"] if isinstance(row, dict) and row.get("id")]
         groups = picker_groups(entries, mode)
         self._busy = False
