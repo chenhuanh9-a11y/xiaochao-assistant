@@ -83,16 +83,26 @@ def _validate(key, value):
     return deepcopy(value)
 
 
-def _validate_hotkeys(values):
+def _validate_hotkeys(values, raw_actions=None):
+    # Tk appended a tenth action; Qt must reserve its chord without exposing or
+    # registering an unsupported action. Invalid tails remain on disk, but must
+    # not be silently overwritten or bypassed by a shortcut edit.
+    extra = {}
+    if isinstance(raw_actions, list) and len(raw_actions) == 10:
+        tail = raw_actions[9]
+        if not isinstance(tail, str):
+            raise ValueError("未迁移的第 10 项快捷键需要文本；请先修复原配置")
+        extra["未迁移的第 10 项"] = parse_chord(tail, _primary_hotkey_to_vk)
     validate_unique({"地图键": parse_chord(values["hotkey"], _primary_hotkey_to_vk),
                      **{key: parse_chord(text, _primary_hotkey_to_vk)
-                        for key, text in zip(ACTION_ORDER, values["actionHotkeys"])}})
+                        for key, text in zip(ACTION_ORDER, values["actionHotkeys"])}, **extra})
 
 
 def _legacy_actions(value, map_name):
-    """Read legacy 6/7/8-slot arrays; preserve them on disk until edited."""
-    if not isinstance(value, list) or len(value) not in (6, 7, 8, 9):
+    """Project legacy arrays onto Qt slots; the appended Tk action stays opaque."""
+    if not isinstance(value, list) or len(value) not in (6, 7, 8, 9, 10):
         return _validate("actionHotkeys", value)
+    value = value[:len(ACTION_ORDER)]
     if not all(isinstance(item, str) for item in value):
         raise ValueError("功能快捷键需要文本")
     names = [parse_chord(item, _primary_hotkey_to_vk).name for item in value]
@@ -409,7 +419,7 @@ class SettingsService(QObject):
                 return False
             proposal = {**self._draft, key: value}
             if key in ("hotkey", "actionHotkeys"):
-                _validate_hotkeys(proposal)
+                _validate_hotkeys(proposal, self._raw.get("actionHotkeys"))
             if self._draft.get(key) == value and key not in self._invalid:
                 return True
             self._draft[key] = value
@@ -454,7 +464,7 @@ class SettingsService(QObject):
                 except (TypeError, ValueError) as error:
                     invalid[key] = str(error)
         try:
-            _validate_hotkeys(values)
+            _validate_hotkeys(values, raw.get("actionHotkeys"))
         except ValueError as error:
             invalid["hotkey/actionHotkeys"] = str(error)
         # Legacy reference opacity falls back to the stored sheet opacity.
@@ -549,12 +559,21 @@ class SettingsService(QObject):
         snapshot = {**deepcopy(self._baseline), **deepcopy(edits)}
         if set(edits) & {"hotkey", "actionHotkeys"}:
             try:
-                _validate_hotkeys(snapshot)
+                _validate_hotkeys(snapshot, self._raw.get("actionHotkeys"))
             except ValueError as error:
                 self._message = f"快捷键不能单独保存：{error}"
                 self.changed.emit()
                 return False
         payload = {**deepcopy(self._raw), **edits}
+        if "actionHotkeys" in edits:
+            stored = self._raw.get("actionHotkeys")
+            if isinstance(stored, list) and len(stored) in (9, 10):
+                # Keep untouched source spellings and unknown slots verbatim.
+                merged = deepcopy(stored)
+                for index, name in enumerate(edits["actionHotkeys"]):
+                    if "actionHotkeys" in self._invalid or name != self._baseline["actionHotkeys"][index]:
+                        merged[index] = name
+                payload["actionHotkeys"] = merged
         expected = self._disk_bytes
         self._busy = True
         self._message = "正在保存设置…"
