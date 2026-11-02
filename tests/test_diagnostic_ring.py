@@ -92,9 +92,12 @@ while s.pendingWrites and time.monotonic()<end:app.processEvents();time.sleep(.0
 assert not s.pendingWrites and not s.writeError
 """
   with tempfile.TemporaryDirectory() as d:
-   for _ in range(2):subprocess.run([sys.executable,'-c',code,d],check=True,capture_output=True)
-   result=summarize_problem_history(Path(d)/'nightmare-live')['recentProblems']
-   self.assertEqual(len(result),2)
+   # Match the production history reader's canonical-path contract; Windows
+   # TemporaryDirectory may return an 8.3 alias (RUNNER~1).
+   root=Path(d).resolve()
+   for _ in range(2):subprocess.run([sys.executable,'-c',code,str(root)],check=True,capture_output=True)
+   summary=summarize_problem_history(root/'nightmare-live');result=summary['recentProblems']
+   self.assertEqual(len(result),2,summary['coverage'])
    self.assertEqual(len({r['occurrenceId'] for r in result}),2)
    self.assertEqual(len({r['sessionId'] for r in result}),2)
 
