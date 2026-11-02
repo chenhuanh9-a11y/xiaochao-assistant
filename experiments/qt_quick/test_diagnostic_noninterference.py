@@ -127,6 +127,12 @@ class NoninterferenceTests(unittest.TestCase):
                             self.assertNotIn('captureDiagnostics',row)
                             self.assertLessEqual(len(json.dumps(row['recognitionDiagnostics'],separators=(',',':')).encode()),2048)
 
+    def test_control_band_is_absent_when_small_frame_skips_all_pixel_detectors(self):
+        from recognition_diagnostics import control_band
+        frame=np.zeros((300,400,3),np.uint8)
+        self.assertIsNone(control_band(frame,'nightmare',dict(detectionMode='shape-rejected'),
+            dict(layout='unlocalized')))
+
     def test_foreground_and_cancellation_capture_authority_match_hotfix(self):
         import client_capture
         from test_client_capture_full import Native, Backend
