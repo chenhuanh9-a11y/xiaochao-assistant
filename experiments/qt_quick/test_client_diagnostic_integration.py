@@ -209,6 +209,7 @@ ClientHelp { anchors.fill: parent } }
             reason='current-geometry-failed', frame=np.zeros((8, 8, 3), dtype=np.uint8),
             diagnostic=dict(evidenceKind='live-client-capture', mode='nightmare',
                 eventPath=str(self.problems.log_path), frameCapturedAtUtc=stamp,
+                sessionId=self.problems.recent[0]['sessionId'],pid=self.problems.recent[0]['pid'],
                 buildFingerprint='FIXTURE'), current=lambda: True,
             crop_bounds=(0, 0, 8, 8), crop_provenance='color-component-unvalidated')
         self.assertTrue(sample['saved'], sample)
