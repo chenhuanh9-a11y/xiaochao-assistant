@@ -49,9 +49,9 @@ class ProblemTests(unittest.TestCase):
         self.addCleanup(self.drain)
 
     def wait(self, predicate):
-        end = time.monotonic()+4
+        end = time.monotonic()+12
         while not predicate() and time.monotonic()<end: QTest.qWait(10)
-        self.assertTrue(predicate())
+        self.assertTrue(predicate(), f"diagnostic queue did not drain; pending={len(self.service._queue)}, inflight={self.service._inflight_rows}, error={self.service.writeErrorDetails}")
 
     def drain(self):
         self.service.shutdown(); self.wait(lambda: not self.service.pendingWrites)

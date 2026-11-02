@@ -43,7 +43,12 @@ jobs:
         shell: pwsh
         run: |
           $modules = @('test_diagnostic_noninterference', 'test_client_problems', 'test_client_problem_history', 'test_client_info', 'test_client_diagnostic_integration', 'test8f8b_diagnostics_sampling', 'test_field_failure_samples', 'test_client_preparation_diagnostics', 'test_client_pointer_diagnostics', 'test_client_live_runtime', 'test_client_capture_full', 'test_client_capture_exclusion', 'test_client_capture_compat')
+          $failed = @()
           foreach ($module in $modules) {
             python -m unittest $module -v
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            if ($LASTEXITCODE -ne 0) { $failed += $module }
+          }
+          if ($failed.Count -gt 0) {
+            Write-Error ("Failed test modules: " + ($failed -join ", "))
+            exit 1
           }
