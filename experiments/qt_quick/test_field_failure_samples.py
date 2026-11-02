@@ -38,7 +38,7 @@ class FailureSamplingContracts(unittest.TestCase):
         self.f.engine.memory_store = self.store
         self.problems = ProblemsService(SimpleNamespace(work_root=self.root),
             build_fingerprint="AAAAAAAA", source_commit="a"*40)
-        self.addCleanup(self.problems.shutdown)
+        self.addCleanup(self._drain_problems)
         self.f.runtime.configure_failure_sampling(event_path=self.problems.log_path,
             build_fingerprint="AAAAAAAA", source_commit="a"*40)
         self.f.runtime.set_event_callback(lambda event:self.problems.recordTrace(
@@ -46,6 +46,14 @@ class FailureSamplingContracts(unittest.TestCase):
         self.f.fit = dict(success=False, reason="initial-structure-current-geometry-failed",
             diagnostics=dict(queryChains=3, sourceChains=5, seedCount=2,
                 candidates=[dict(regions=dict(regionalEdgeVerified=False), residual=None)]))
+
+    def _drain_problems(self):
+        self.problems.shutdown()
+        deadline=time.monotonic()+3
+        while self.problems.pendingWrites and time.monotonic()<deadline:
+            self.app.processEvents()
+            time.sleep(.001)
+        self.assertFalse(self.problems.pendingWrites, 'accepted log writes did not drain before temporary cleanup')
 
     def capture_failure(self):
         if not self.f.runtime.snapshot()["roundActive"]:
