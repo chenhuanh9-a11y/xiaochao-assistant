@@ -51,7 +51,7 @@ recorder = FailureSampleRecorder()
 recorder.automatic_enabled = True
 recorder.record_automatic(root=sys.argv[3], reason='structure-current-geometry-failed',
     frame=np.zeros((20,20,3), np.uint8), diagnostic={'evidenceKind':'live-client-capture'},
-    current=lambda:True, crop_bounds=(2,3,10,11), crop_provenance='validated-map-region')
+    current=lambda:True, crop_bounds=(2,3,10,11), crop_provenance='color-component-unvalidated')
 '''
             child = subprocess.run([sys.executable, '-c', code, str(ROOT/'app'),
                 str(ROOT/'experiments/qt_quick'), directory], capture_output=True, text=True, timeout=10)
@@ -122,7 +122,7 @@ recorder = FailureSampleRecorder()
 recorder.automatic_enabled = True
 recorder.record_automatic(root=sys.argv[3], reason='structure-current-geometry-failed',
     frame=np.zeros((20,20,3), np.uint8), diagnostic={'evidenceKind':'live-client-capture'},
-    current=lambda:True, crop_bounds=(2,3,10,11), crop_provenance='validated-map-region')
+    current=lambda:True, crop_bounds=(2,3,10,11), crop_provenance='color-component-unvalidated')
 '''
             child = subprocess.run([sys.executable, '-c', code, str(ROOT/'app'),
                 str(ROOT/'experiments/qt_quick'), directory], capture_output=True, text=True, timeout=10)
@@ -155,7 +155,7 @@ recorder.record_automatic(root=sys.argv[3], reason='structure-current-geometry-f
                     with self.assertRaises(InterruptedProcess):
                         recorder.record_automatic(root=root, reason='structure-current-geometry-failed',
                             frame=np.zeros((20,20,3), np.uint8), diagnostic={'evidenceKind':'live-client-capture'},
-                            current=lambda:True, crop_bounds=(2,3,10,11), crop_provenance='validated-map-region')
+                            current=lambda:True, crop_bounds=(2,3,10,11), crop_provenance='color-component-unvalidated')
                 journal = root/'failures/automatic/automatic-failures.jsonl'
                 row = json.loads(journal.read_text())
                 path = root/row['samplePath']
@@ -199,7 +199,7 @@ recorder.record_automatic(root=sys.argv[3], reason='structure-current-geometry-f
             root = Path(directory)
             arguments = dict(root=root, reason='structure-current-geometry-failed',
                 frame=np.zeros((20,20,3), np.uint8), diagnostic={'evidenceKind':'live-client-capture'},
-                current=lambda:True, crop_bounds=(2,3,10,11), crop_provenance='validated-map-region')
+                current=lambda:True, crop_bounds=(2,3,10,11), crop_provenance='color-component-unvalidated')
             original = failure_sampling.replace_automatic_journal
             def interrupt_commit(directory, data):
                 rows = [json.loads(line) for line in data.splitlines()]
@@ -246,7 +246,7 @@ recorder.record_automatic(root=sys.argv[3], reason='structure-current-geometry-f
                     injected[0] = recorder.record_automatic(root=root,
                         reason='structure-current-geometry-failed', frame=np.zeros((20,20,3), np.uint8),
                         diagnostic={'evidenceKind':'live-client-capture'}, current=lambda:True,
-                        crop_bounds=(2,3,10,11), crop_provenance='validated-map-region')
+                        crop_bounds=(2,3,10,11), crop_provenance='color-component-unvalidated')
                 return snapshot
             with patch.object(failure_sampling, 'automatic_storage_inventory', side_effect=interleave):
                 report = cleanup_automatic_failure_samples(root)
@@ -319,6 +319,46 @@ recorder.record_automatic(root=sys.argv[3], reason='structure-current-geometry-f
             runtime._capture_is_current = lambda *args, **kwargs: False
             self.assertEqual(runtime._automatic_failure_sample('map-open-preparation-deadline')['missingReason'], 'capture-not-current')
 
+    def test_control_band_shares_intent_recovery_capacity_and_disabled_export_boundary(self):
+        class Interrupt(BaseException): pass
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); frame=np.arange(60*80*3,dtype=np.uint8).reshape(60,80,3)
+            recorder=_enabled_recorder()
+            args=dict(root=root,reason='structure-current-geometry-failed',frame=frame,current=lambda:True,
+                diagnostic=dict(evidenceKind='live-client-capture',sampleRole='detector-control-band',
+                    eventPath='events-controls.jsonl',frameCapturedAtUtc=datetime.now(timezone.utc).isoformat()),
+                crop_bounds=(40,0,35,12),crop_provenance='detector-control-band')
+            original=failure_sampling.replace_automatic_journal
+            def interrupt(base,data):
+                if any(json.loads(line).get('event')=='automatic-failure-sample' for line in data.splitlines()):
+                    raise Interrupt()
+                return original(base,data)
+            with patch.object(failure_sampling,'replace_automatic_journal',side_effect=interrupt):
+                with self.assertRaises(Interrupt): recorder.record_automatic(**args)
+            self.assertTrue(cleanup_automatic_failure_samples(root)['complete'])
+            inventory=failure_sampling.automatic_storage_inventory(root)
+            self.assertEqual(inventory['status'],'ready')
+            recovered=inventory['rows'][0][1]
+            self.assertEqual(recovered['cropProvenance'],'detector-control-band')
+            pixels=cv2.imread(str(root/recovered['samplePath']))
+            np.testing.assert_array_equal(pixels,frame[:12,40:75])
+            for _ in range(8):
+                recorder.policy.saved.clear()
+                recorder.record_automatic(**args)
+            inventory=failure_sampling.automatic_storage_inventory(root)
+            self.assertEqual(inventory['status'],'ready')
+            self.assertLessEqual(len(inventory['images']),6)
+            self.assertLessEqual(recorder.automatic_saved_count,6)
+            output=io.BytesIO()
+            with zipfile.ZipFile(output,'w') as archive:
+                report=export_failure_evidence(archive,[root],{},lambda x:x,
+                    build_fingerprint='fixture',automatic_only=True,include_automatic=False)
+            self.assertEqual(report['imageCount'],0)
+            recorder.automatic_enabled=False
+            before={p.name:p.read_bytes() for p in inventory['images']}
+            self.assertEqual(recorder.record_automatic(**args)['missingReason'],'automatic-sampling-disabled')
+            self.assertEqual(before,{p.name:p.read_bytes() for p in inventory['images']})
+
     def test_unproven_crop_is_metadata_only_and_disable_is_explicit(self):
         recorder = _enabled_recorder()
         with tempfile.TemporaryDirectory() as directory:
@@ -339,7 +379,7 @@ recorder.record_automatic(root=sys.argv[3], reason='structure-current-geometry-f
             args = dict(root=Path(directory), reason='structure-current-geometry-failed',
                 frame=np.zeros((20, 20, 3), dtype=np.uint8), current=lambda: True,
                 diagnostic={'evidenceKind': 'live-client-capture'},
-                crop_bounds=(2, 3, 10, 11), crop_provenance='validated-map-region')
+                crop_bounds=(2, 3, 10, 11), crop_provenance='color-component-unvalidated')
             for _ in range(8):
                 recorder.record_automatic(**args)
             self.assertEqual(len(list(Path(directory).rglob('*.png'))), 6)

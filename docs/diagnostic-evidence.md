@@ -18,3 +18,28 @@
 验证使用 Python 3.13.3 / OpenCV 4.12.0：诊断回归、侧门检索和入口预筛共 28 项通过，`git diff --check` 通过。诊断测试调用实际控制器方法、后台导出、失败存储器、ZIP 写入和图片解码；窗口环境/权限查询及采样 token 比较使用替身，没有创建 Tk 或操作游戏。
 
 检查覆盖两模式 B1、像素回读、限频、迟到帧/关图拒绝、缺图/损坏/超限/路径越界/其他会话排除，以及写入预算耗尽的错误状态。这些源码检查不代表已生成或安装新 Setup，也不代表现有 EXE 已具备此功能。旧导出包未携带的截图无法凭文字补回。
+
+## E3 / E2 / E1-F2 云分支增量（父基线 980d649）
+
+- 随机 installId 保存在本应用设置目录的独立 `diagnostic-identity.json`，
+  不改共享 ui-settings；帮助页可重置，仅影响后续记录。每进程随机 sessionId，
+  每 `(sessionId,pid,logStream)` 的 seq 包括限流/队列拒绝的记录。
+  丢弃区间最多保留 16 段，另报被截断段数及总条数；生产者不读写身份文件。
+- 导出 manifest 的 `sessions[]` 从本次实际包含的记录收集时间/seq 范围，
+  合并同一流的轮转文件。旧文件明确 `legacy-not-recorded`、sessionId=null；
+  内容哈希仅作为 logId，不冒充进程会话。exportId 接真实导出入口，
+  round/cycle/frame 只使用既有运行字段，缺少 attemptId 的入口不生成假值。
+- 识别诊断通过独立 `recognitionDiagnostics` 进入现有 Qt 日志与导出；
+  实际输入、拒绝阶段/reason、原有候选/种子/链/残差与阶段耗时最多 2 KiB。
+  诊断浮点保留 5 位小数，未采集的测量保持缺失/空值，不重新求解。
+  困难模式每 scale 保留 glyph 得分/中心、controlScale、spacing/dy、weakGlyphs，
+  不改 mapOpen/floor 返回判定。每诊断阶段至多 4 条/秒，丢弃区间写入流损失摘要。
+- 自动失败采样仍默认关闭、可关闭，导出附图仍需单独勾选。只在原有失败入口
+  使用同次已通过客户区校验且仍 current 的帧；额外保存实际右上检测区域的原样裁剪。
+  地图颜色分量命名为 `color-component-unvalidated`，不宣称地图已验证。
+  控件带使用相同自动样本格式/intent 恢复/ownership，和地图图像共用 6 张、
+  12 MiB 及 7 天保留限制，不另增图片预算。无对应观测不补造控件带。
+- 同输入测试直接读取指定父基线源码，比对两模式检测/识别/pose/授权结果，
+  并检查截图授权源文件未变；OS、像素、资源与求解测量仍是明确替身。
+  Windows Actions 只跑测试，官方 Actions 固定 SHA、contents:read、无发布 secret。
+  不代表真实 Windows 游戏/GUI、长期资源占用、安装或发布验收。

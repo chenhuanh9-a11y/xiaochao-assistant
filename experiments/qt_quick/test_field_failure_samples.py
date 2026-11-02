@@ -74,7 +74,13 @@ class FailureSamplingContracts(unittest.TestCase):
         self.assertEqual(result['reason'], self.f.fit['reason'])
         self.assertEqual(self.f.capture.count, before+1)
         journal = self.root/'memory/failures/automatic/automatic-failures.jsonl'
-        row = json.loads(journal.read_text().splitlines()[-1])
+        rows = [json.loads(line) for line in journal.read_text().splitlines()]
+        row = next(row for row in rows if row.get('cropProvenance') == 'color-component-unvalidated')
+        controls = next(row for row in rows if row.get('cropProvenance') == 'detector-control-band')
+        self.assertEqual(controls['diagnostic']['sampleRole'], 'detector-control-band')
+        x,y,w,h = controls['cropBounds']
+        import cv2
+        np.testing.assert_array_equal(cv2.imread(str(self.store.root/controls['samplePath'])), self.f.capture.frame[y:y+h,x:x+w])
         self.assertEqual(row['cropBounds'], [350, 250, 300, 150])
         self.assertFalse(self.store.alignment_failure_path.exists())
         import cv2
@@ -91,10 +97,10 @@ class FailureSamplingContracts(unittest.TestCase):
             destination=self.root/'automatic-evidence.zip', app_version='fixture', build_fingerprint='AAAAAAAA',
             failure_roots=(self.store.root,), automatic_failure_only=True,
             include_automatic_failure_evidence=True)
-        self.assertEqual(receipt['includedFailureImageCount'], 1)
+        self.assertEqual(receipt['includedFailureImageCount'], 2)
         self.f.runtime.set_automatic_failure_sampling_enabled(False)
         self.capture_failure()
-        self.assertEqual(len(list(journal.parent.glob('auto-*.png'))), 1)
+        self.assertEqual(len(list(journal.parent.glob('auto-*.png'))), 2)
 
     def test_default_off_then_same_frame_opt_in_export_and_cooldown(self):
         self.assertFalse(self.capture_failure()["success"])

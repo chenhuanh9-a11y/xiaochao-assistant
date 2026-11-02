@@ -338,6 +338,7 @@ class LiveRuntime:
         from client_failure_samples import FailureSampleRecorder
         self._failure_samples = FailureSampleRecorder()
         self._failure_capture_stamp = None
+        self._failure_control_observation = None
         if evidence_kind not in ("live-client-capture", "synthetic", "recorded", "unverified"):
             raise ValueError("unsupported capture evidence kind")
         self._offline = EngineAdapter(engine_factories=engine_factories,
@@ -723,6 +724,10 @@ class LiveRuntime:
                 self._map_id = selected
                 self._gate.select(selected)
                 self._gate.confirm()
+        self._recognition_diagnostic('identity-rank', proposal.get('reason', proposal.get('status', 'ranked')),
+            inputs=dict(candidateCount=len(rows), acceptedCount=len(accepted), seedCount=len(seeds),
+                floor=floor, frameId=frame_id, budgetSeconds=INITIAL_IDENTITY_BUDGET_SECONDS),
+            selectedMapId=selected, topCandidate=top, proposal=proposal)
         self._notify("group-state", reason=proposal.get("reason", proposal.get("status", "ranked")),
             identity=self._identity_fields(), groupEvidence=group_evidence, rankVerdict=dict(
                 topMapId=top.get("mapId") if top else None,
@@ -1935,6 +1940,8 @@ class LiveRuntime:
 
     def set_automatic_failure_sampling_enabled(self, enabled):
         self._failure_samples.automatic_enabled = enabled is True
+        if not enabled:
+            self._failure_control_observation = None
 
     def _automatic_failure_sample(self, reason, *, captured=None, current=None, diagnostic=None):
         """Diagnostic-only reuse of the existing guarded capture; never recapture."""
@@ -1963,6 +1970,11 @@ class LiveRuntime:
         result = self._failure_samples.record_automatic(root=root, reason=reason, frame=frame,
             diagnostic=data, current=valid if captured is not None else lambda: bool(
                 self._active and (current is None or current())))
+        controls = getattr(self, '_failure_control_observation', None)
+        if controls is not None and controls[0] is captured and controls[1] is not None and frame is not None:
+            result['controlBand'] = self._failure_samples.record_automatic(root=root, reason=reason, frame=frame,
+                diagnostic=dict(data, sampleRole='detector-control-band'), current=valid,
+                crop_bounds=controls[1], crop_provenance='detector-control-band')
         self._notify('automatic-failure-sample', reason='saved' if result['saved'] else 'metadata-only',
                      failureSample=result)
         return result
@@ -2030,6 +2042,28 @@ class LiveRuntime:
                     return None
             return {**{key: value if key == "pixels" else copy.deepcopy(value) for key, value in row.items()},
                     **self._identity_fields()}
+
+    def _recognition_diagnostic(self, stage, reason, **values):
+        try:
+            from recognition_diagnostics import bounded_recognition, scale_observations
+            if stage == 'floor-observation':
+                observation = values.pop('observation')
+                values.update(mapOpen=observation.get('mapOpen'), floor=observation.get('floor'),
+                    scales=scale_observations(observation), thresholds=observation.get('thresholds'))
+            evidence = bounded_recognition(dict(stage=stage, reason=reason, **values))
+            self._notify('recognition-diagnostic', reason=reason, recognitionDiagnostics=evidence)
+        except Exception:
+            pass  # Diagnostics cannot replace the algorithm's result/exception.
+
+    def _remember_control_observation(self, frame, mode, observation, floor_read):
+        try:
+            stamp = self._failure_capture_stamp
+            if (self._failure_samples.automatic_enabled and stamp is not None
+                    and getattr(stamp[0], 'frame_bgr', None) is frame):
+                from recognition_diagnostics import control_band
+                self._failure_control_observation = (stamp[0], control_band(frame, mode, observation, floor_read))
+        except Exception:
+            self._failure_control_observation = None
 
     def _capture_frame(self, cancelled):
         try:
@@ -3065,7 +3099,13 @@ class LiveRuntime:
         host = _AlignmentHost(engine, group, self._settings, steady=None if staged_observation is not None else (self._steady, steady_context,
             lambda context: not obsolete() and self._steady_is_current(context, captured),
             self._steady_signature(captured)))
+        fit_started = time.monotonic()
         fit = host.fit(frame, map_id, floor, obsolete, entry_candidate) if entry_candidate is not None else host.fit(frame, map_id, floor, obsolete)
+        self._recognition_diagnostic('pose-fit', fit.get('reason', 'reason-not-provided'),
+            success=fit.get('success'), fit=fit, solverEvents=host.events,
+            elapsedMs=(time.monotonic()-fit_started)*1000,
+            inputs=dict(mapId=map_id, floor=floor, frameId=frame_id,
+                cycleId=cycle, captureGeneration=capture_generation, sourceFrameGeneration=frame_generation))
         if obsolete():
             return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
         if not fit.get("success"):
@@ -3255,7 +3295,7 @@ class LiveRuntime:
         return frame
 
     def _observe(self, engine, frame):
-        started = time.monotonic() if self._diagnostics is not None else 0
+        started = time.monotonic()
         if engine.pack.mode == "difficult":
             result = engine.qt_map_ui.observe(frame)
             floor = str(result["floor"]) if result.get("floor") is not None else None
@@ -3263,6 +3303,9 @@ class LiveRuntime:
                 self._diagnostics.record("observation", mode=engine.pack.mode, floor=floor,
                     mapDetected=result.get("mapOpen"), combinedSensor=True,
                     elapsedMs=(time.monotonic()-started)*1000, roundId=self._round, cycleId=self._cycle)
+            self._remember_control_observation(frame, engine.pack.mode, result, result)
+            self._recognition_diagnostic('floor-observation', result.get('reason', 'reason-not-provided'),
+                observation=result, elapsedMs=(time.monotonic()-started)*1000)
             return result, floor, dict(result, selectedFloor=int(floor) if floor in ("1", "2") else None,
                 scores={}, margin=result.get("highlightDifference", 0.), confidence=1. if floor else 0.,
                 layout="difficult-two-buttons", layoutFamily="difficult-two-buttons", difficultObservation=result,
@@ -3279,6 +3322,9 @@ class LiveRuntime:
             self._diagnostics.record("observation", mode=engine.pack.mode, floor=floor,
                 mapDetected=result.get("detected"), combinedSensor=False, floorMs=floor_ms,
                 elapsedMs=(time.monotonic()-started)*1000, roundId=self._round, cycleId=self._cycle)
+        self._remember_control_observation(frame, engine.pack.mode, result, floor_read)
+        self._recognition_diagnostic('map-floor-observation', result.get('reason', 'reason-not-provided'),
+            observation=result, floorRead=floor_read, elapsedMs=(time.monotonic()-started)*1000)
         return result, floor, floor_read
 
     @staticmethod

@@ -12,6 +12,7 @@ import logging
 import math
 from logging.handlers import RotatingFileHandler
 import os
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, QTimer, Qt, Signal, Slot
@@ -142,6 +143,7 @@ class ProblemsService(QObject):
         self._build_fingerprint = _text(build_fingerprint, 64)
         self._source_commit = _text(source_commit, 40)
         self._trace_states = OrderedDict()
+        self._recognition_next = OrderedDict()
         self._summary_dirty = False
         self._summary_timer = QTimer(self)
         self._summary_timer.setSingleShot(True)
@@ -266,6 +268,9 @@ class ProblemsService(QObject):
             value = _metadata(event[name])
             encoded_value = json.dumps(value, ensure_ascii=False)
             row[name] = value if len(encoded_value.encode('utf-8')) <= 2048 else dict(summary=_text(encoded_value, 1900), truncated=True)
+        if 'recognitionDiagnostics' in event:
+            from recognition_diagnostics import bounded_recognition
+            row['recognitionDiagnostics'] = bounded_recognition(event['recognitionDiagnostics'])
         raw_diagnostics = event.get('diag', event.get('diagnostics', {}))
         # Only stable origin fields affect dedup, never arbitrary per-frame
         # diagnostics. Keep independent origin lanes inside the existing 64-key
@@ -282,10 +287,20 @@ class ProblemsService(QObject):
         window_id = window.get('name', window.get('role', '')) if isinstance(window, dict) else window
         key = json.dumps([row.get('role'), row.get('stage'), window_id, origin], sort_keys=True)
         signature = json.dumps(_trace_state({name: value for name,value in row.items()
-                               if name not in {'diag', 'frame', 'generation', 'token'}}), sort_keys=True)
+                               if name not in {'diag', 'recognitionDiagnostics', 'frame', 'generation', 'token'}}), sort_keys=True)
         previous = self._trace_states.get(key)
         row.update(self.identity.stamp())
-        if previous is not None and previous[0] == signature:
+        if 'recognitionDiagnostics' in row:
+            lane = row['recognitionDiagnostics'].get('stage')
+            now = time.monotonic()
+            if now < self._recognition_next.get(lane, 0):
+                self.identity.drop(row, 'recognition-rate-limit')
+                return True
+            self._recognition_next[lane] = now + .25
+            self._recognition_next.move_to_end(lane)
+            while len(self._recognition_next) > 8:
+                self._recognition_next.popitem(last=False)
+        if previous is not None and previous[0] == signature and 'recognitionDiagnostics' not in row:
             self._trace_states[key] = (signature, previous[1]+1)
             self._trace_states.move_to_end(key)
             self.identity.drop(row, "unchanged-trace-coalesced")

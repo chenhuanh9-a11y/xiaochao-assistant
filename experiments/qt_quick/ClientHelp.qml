@@ -26,7 +26,7 @@ Item {
                 AppButton { text: "自愿支持开发"; onClicked: support.open() }
             }
             CheckBox { objectName: "helpAutomaticFailureSampling"; text: "自动保存少量地图失败画面（默认关闭）"; checked: infoService.automaticFailureSampling; enabled: !infoService.checking; onToggled: infoService.setAutomaticFailureSampling(checked) }
-            Label { text: "仅复用已采集的游戏画面并尽量裁剪到地图，仍可能包含昵称或聊天。每种地图模式最多保留 6 张、12 MiB；采样或导出时清理超过 7 天的自动图片。关闭后不再新增，不会自动上传。"; textFormat: Text.PlainText; wrapMode: Text.WordWrap; Layout.fillWidth: true; color: "#526785" }
+            Label { text: "仅复用已采集的游戏客户区画面，保存地图颜色区域及实际检测使用的右上控件带；图片仍可能包含昵称或聊天。两类图片共用每种模式 6 张、12 MiB 上限；采样或导出时清理超过 7 天的自动图片。关闭后不再新增，不会自动上传。"; textFormat: Text.PlainText; wrapMode: Text.WordWrap; Layout.fillWidth: true; color: "#526785" }
             CheckBox { objectName: "helpExportAutomaticFailureEvidence"; text: "本次导出附上已保存的自动采样画面"; checked: infoService.includeAutomaticFailureEvidence; enabled: !infoService.checking; onToggled: infoService.setIncludeAutomaticFailureEvidence(checked) }
             CheckBox { objectName: "helpFailureSampling"; text: "额外保存并导出手动失败画面（可能包含完整游戏窗口）"; checked: infoService.includeFailureEvidence; enabled: !infoService.checking; onToggled: infoService.setIncludeFailureEvidence(checked) }
             Label { text: "开启后再复现：限量保存本次运行中已有的失败采集画面，不额外截图；重启后默认关闭。"; color: "#526785"; wrapMode: Text.WordWrap; Layout.fillWidth: true }

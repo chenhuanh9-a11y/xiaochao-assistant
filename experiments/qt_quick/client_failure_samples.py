@@ -105,7 +105,7 @@ class FailureSampleRecorder:
             return dict(result, missingReason='memory-root-unavailable')
         if not self.lock.acquire(blocking=False):
             return dict(result, missingReason='sample-writer-busy')
-        key = ('automatic', diagnostic.get('mode'), reason)
+        key = ('automatic', diagnostic.get('mode'), reason, crop_provenance == 'detector-control-band')
         admitted = False
         try:
             if not self.policy.eligible(key, time.monotonic()):
@@ -138,7 +138,7 @@ class FailureSampleRecorder:
                 if evidence is not None and evidence.get('visible') is not None:
                     component = evidence['visible'][2]
                     crop_bounds = tuple(int(component[k]) for k in ('x', 'y', 'width', 'height'))
-                    crop_provenance = 'validated-map-region'
+                    crop_provenance = 'color-component-unvalidated'
                     diagnostic = dict(diagnostic, cropExtractor='structure_current_map_evidence',
                                       observationBounds=list(evidence['observationBounds']),
                                       cropPaddingRemoved=8)
@@ -148,7 +148,7 @@ class FailureSampleRecorder:
                 missing = 'legal-captured-frame-unavailable'
             elif diagnostic.get('evidenceKind') != 'live-client-capture':
                 missing = 'not-live-bound-game-capture'
-            elif (crop_provenance == 'validated-map-region' and isinstance(frame, np.ndarray)
+            elif (crop_provenance in ('color-component-unvalidated', 'detector-control-band') and isinstance(frame, np.ndarray)
                   and frame.ndim == 3 and frame.nbytes <= 64*1024*1024
                   and isinstance(crop_bounds, (tuple, list)) and len(crop_bounds) == 4
                   and all(type(v) is int for v in crop_bounds)):
@@ -162,7 +162,7 @@ class FailureSampleRecorder:
                 'eventPath', 'buildFingerprint', 'sourceCommit', 'evidenceKind', 'mode',
                 'frameCapturedAtUtc', 'mapId', 'floor', 'cycleId', 'frameId',
                 'captureGeneration', 'sourceFrameGeneration', 'cropExtractor',
-                'observationBounds', 'cropPaddingRemoved') if k in diagnostic}
+                'observationBounds', 'cropPaddingRemoved', 'sampleRole') if k in diagnostic}
             row = dict(event='automatic-failure-sample', reason=reason,
                        recordedAt=datetime.now(timezone.utc).isoformat(timespec='milliseconds'),
                        capturedAt=diagnostic.get('frameCapturedAtUtc'), diagnostic=bounded_evidence(safe_diagnostic)[0],

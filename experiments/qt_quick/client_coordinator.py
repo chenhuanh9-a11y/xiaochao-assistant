@@ -1920,6 +1920,10 @@ class ClientCoordinator(QObject):
         if self._closed or self._closing or not isinstance(event, dict):
             return
         name = event.get("event", "unknown")
+        if name == 'recognition-diagnostic':
+            self._trace(name, payload=event, role='recognition', reason=event.get('reason', ''),
+                recognitionDiagnostics=event.get('recognitionDiagnostics', {}))
+            return  # Measured evidence only; never a presentation transition.
         if name == "map-preparation":
             details = event.get("preparation") or {}
             self._trace(name, payload=event, role="runtime", reason=event.get("reason", ""),

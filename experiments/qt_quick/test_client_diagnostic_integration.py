@@ -135,6 +135,26 @@ ClientHelp { anchors.fill: parent } }
         self.assertIn('nightmare', summary['automaticFailureCleanup'])
         self.assertEqual(manifest['failureEvidence']['imageCount'], 0)
 
+    def test_measured_recognition_reaches_production_log_and_export_separate_from_capture(self):
+        from client_coordinator import ClientCoordinator
+        from types import SimpleNamespace
+        target=SimpleNamespace(_closed=False,_closing=False)
+        target._trace=lambda stage,**values:self.problems.recordTrace(dict(stage=stage,**values))
+        measured=dict(stage='pose-fit',reason='structure-current-geometry-failed',
+            inputs=dict(frameId='a'*32,cycleId=7),fit=dict(success=False,
+                diagnostics=dict(seedCount=2,queryChains=3,sourceChains=5,candidateCount=4,bestResidual=.2)))
+        ClientCoordinator._on_runtime_event(target,dict(event='recognition-diagnostic',recognitionDiagnostics=measured))
+        self.problems.shutdown(); self.fixture.wait(lambda:not self.problems.pendingWrites)
+        self.info.exportDiagnosticsTo(QUrl.fromLocalFile(str(self.fixture.root/'measured.zip')).toString())
+        self.fixture.wait(lambda:not self.info.checking)
+        with zipfile.ZipFile(self.fixture.root/'measured.zip') as archive:
+            payload=archive.read('logs/'+self.problems.log_path.name)
+            rows=[json.loads(line) for line in payload.splitlines()]
+        row=next(row for row in rows if 'recognitionDiagnostics' in row)
+        self.assertEqual(row['recognitionDiagnostics'],measured)
+        self.assertNotIn('captureDiagnostics',row)
+        self.assertLessEqual(len(json.dumps(row['recognitionDiagnostics'],separators=(',',':')).encode()),2048)
+
     def test_plain_revoke_does_not_invent_exception_fields(self):
         problem = operation_problem(dict(action='capture_now', reason='runtime-error', success=False), {})
         self.assertNotIn('exceptionType', problem)
@@ -190,7 +210,7 @@ ClientHelp { anchors.fill: parent } }
             diagnostic=dict(evidenceKind='live-client-capture', mode='nightmare',
                 eventPath=str(self.problems.log_path), frameCapturedAtUtc=stamp,
                 buildFingerprint='FIXTURE'), current=lambda: True,
-            crop_bounds=(0, 0, 8, 8), crop_provenance='validated-map-region')
+            crop_bounds=(0, 0, 8, 8), crop_provenance='color-component-unvalidated')
         self.assertTrue(sample['saved'], sample)
         for index, include in enumerate((False, True, False)):
             self.info.setIncludeAutomaticFailureEvidence(include)
