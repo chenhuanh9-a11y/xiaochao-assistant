@@ -150,8 +150,11 @@ def export_failure_evidence(archive, roots, log_windows, redact, *, build_finger
                 window = log_windows.get(source_log)
                 # Fixed cross-session slots require the exact recorded process
                 # scope. Never assign an old/missing session to a reused slot.
-                if source_log in ('events-qt-ring.jsonl','events-tk-ring.jsonl',
-                                  'events-qt-ring-previous.jsonl','events-tk-ring-previous.jsonl'):
+                sampling_ring=('events-qt-ring.jsonl','events-tk-ring.jsonl',
+                               'events-qt-ring-previous.jsonl','events-tk-ring-previous.jsonl')
+                if re.search(r'-ring(?:-previous)?\.(?:jsonl|log)$',source_log,re.I) and source_log not in sampling_ring:
+                    continue  # Recognition/lifecycle/startup/watchdog never own samples.
+                if source_log in sampling_ring:
                     sid,pid=diagnostic.get('sessionId'),diagnostic.get('pid')
                     if not isinstance(sid,str) or type(pid) is not int:continue
                     scoped=session_windows or {}
@@ -176,7 +179,7 @@ def export_failure_evidence(archive, roots, log_windows, redact, *, build_finger
                     if diagnostic.get('buildFingerprint') != build_fingerprint:
                         continue
                     source_log = next((name for name, span in log_windows.items()
-                                       if span and not re.search(r'-ring(?:-previous)?\.(?:jsonl|log)$',name)
+                                       if span and not re.search(r'-ring(?:-previous)?\.(?:jsonl|log)$',name,re.I)
                                        and span[0] <= captured <= span[1]), '')
                     window = log_windows.get(source_log)
                 if not window or not window[0] <= captured <= window[1]:

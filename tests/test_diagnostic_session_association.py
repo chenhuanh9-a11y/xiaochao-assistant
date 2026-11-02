@@ -49,6 +49,14 @@ class DiagnosticSessionAssociationTests(unittest.TestCase):
             self.assertEqual(report['cases'], [])
             self.assertEqual(archive.namelist(), [])
 
+    def test_non_sampling_ring_streams_never_authorize_failure_images(self):
+        moment=datetime.fromisoformat(self.stamp).timestamp();span=(moment-60,moment+60)
+        for name in ('events-qt-recognition-ring.jsonl','events-lifecycle-ring.jsonl',
+                     'startup-error-ring.log','thread-stacks-ring.jsonl','events-unknown-ring.jsonl','EVENTS-QT-RING.JSONL'):
+            for sid in ('a'*32,'b'*32):
+                self.assert_excluded(dict(eventPath=name,sessionId=sid,pid=123,buildFingerprint='SYNTHETIC'),
+                    windows={name:span},session_windows={('b'*32,123,name):span})
+
     def test_missing_path_legacy_never_falls_back_to_reused_ring(self):
         moment=datetime.fromisoformat(self.stamp).timestamp();span=(moment-60,moment+60)
         for ring in ('events-qt-ring.jsonl','events-qt-ring-previous.jsonl','events-tk-ring.jsonl'):
