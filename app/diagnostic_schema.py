@@ -1414,3 +1414,8 @@ ENVIRONMENT_TEXT = frozenset([' failed', 'GetDpiForWindow API absent', 'GetDpiFo
 # Known E2 fields assigned through dict subscripts, not supplied by input.
 FIELDS = FIELDS | frozenset(['automaticFailureCleanup', 'bindings', 'boundIdentity', 'boundWindow', 'candidateCount', 'candidates', 'capture', 'clientArea', 'count', 'coverage', 'dpi', 'dragBoundaryNormalized', 'exceptionType', 'exportedAt', 'gameProcessIntegrity', 'gameWindowBound', 'hwnd', 'input', 'lastMonotonicAt', 'map', 'mode', 'monitor', 'path', 'pid', 'problemHistoryCoverage', 'problemLogging', 'qtProcessIntegrity', 'qtVersion', 'reason', 'receipt', 'recentProblems', 'requestGeneration', 'resourceStates', 'runtimeEnvironment', 'scope', 'screens', 'session', 'source', 'steps', 'targets'])
 ENVIRONMENT_TEXT = ENVIRONMENT_TEXT | frozenset(['ClientToScreen failed', 'GetClientRect failed', 'GetMonitorInfoW failed', 'GetTokenInformation(TokenIntegrityLevel size) failed', 'GetTokenInformation(TokenIntegrityLevel) failed', 'GetWindowRect failed', 'GetWindowThreadProcessId failed', 'OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION) failed', 'OpenProcessToken(TOKEN_QUERY) failed'])
+
+FIELDS = FIELDS | frozenset(('bestResidual',))
+CODES = CODES | frozenset(('session-worker', 'Windows', 'Linux', 'Darwin', 'F1', 'F2', 'B1'))
+
+FIELDS = FIELDS | frozenset(('writerHadError',))

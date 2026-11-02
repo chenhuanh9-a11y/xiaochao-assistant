@@ -47,7 +47,7 @@ def safe_record(value):
         if isinstance(item,str):
             if key in STACK:return stack_text(item[:32768])
             if key in FREE:return exception_text(item[:16384])
-            if item in CODES or HEX.fullmatch(item) or CLOCK.fullmatch(item):return item
+            if item in CODES or item in EXCEPTIONS or HEX.fullmatch(item) or CLOCK.fullmatch(item):return item
             if key == 'reason' and item in ENVIRONMENT_TEXT:return item
             if key.lower().endswith('version') and re.fullmatch(r'\d+(?:\.\d+){1,3}',item):return item
             if key in ('invalidationOrigin','exceptionOrigin'):

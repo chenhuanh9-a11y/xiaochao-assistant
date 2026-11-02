@@ -243,7 +243,8 @@ ClientHelp { anchors.fill: parent } }
             problem = json.loads(archive.read('qt-client-summary.json'))['recentProblems'][0]
         self.assertEqual(problem['exceptionType'], 'ValueError')
         self.assertEqual(problem['exceptionOrigin'], receipt['exceptionOrigin'])
-        self.assertIn('snapshot fixture', problem['traceback'])
+        self.assertIn('ValueError', problem['traceback'])
+        self.assertNotIn('snapshot fixture', problem['traceback'])
 
     def test_export_keeps_queued_evicted_repeat_counts_without_waiting_for_disk(self):
         import client_problems
@@ -261,6 +262,7 @@ ClientHelp { anchors.fill: parent } }
             try:
                 for _ in range(50):
                     self.problems.record(event)
+                group_id = self.problems.recent[0]['problemGroupId']
                 self.fixture.wait(entered.is_set)
                 for index in range(32):
                     self.problems.record(dict(event, title='other ' + str(index)))
@@ -271,7 +273,7 @@ ClientHelp { anchors.fill: parent } }
                 self.assertTrue(self.problems.pendingWrites)
                 with zipfile.ZipFile(destination) as archive:
                     problems = json.loads(archive.read('qt-client-summary.json'))['recentProblems']
-                target = next(row for row in problems if row['title'] == event['title'])
+                target = next(row for row in problems if row.get('problemGroupId') == group_id)
                 self.assertEqual(target['count'], 51)
             finally:
                 release.set()
