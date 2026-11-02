@@ -144,7 +144,7 @@ class DiagnosticBudgetTests(unittest.TestCase):
         # Real elapsed time and production writers, synthetic inputs only.
         with tempfile.TemporaryDirectory() as folder:
             service=problems.ProblemsService(SimpleNamespace(work_root=Path(folder)))
-            started=time.monotonic();attempted=accepted=diagnostics=last_accepted=0
+            started=time.monotonic();attempted=accepted=diagnostics=last_accepted=diagnostic_returns=0
             failures=[];original_write=problems._write_batch
             def measured_write(path,rows):
                 try:return original_write(path,rows)
@@ -170,7 +170,7 @@ class DiagnosticBudgetTests(unittest.TestCase):
                         if did_accept:last_accepted=attempted
                     for lane in ('interface','floor','pose'):
                         diagnostics+=1
-                        service.recordTrace(dict(role='runtime',stage='recognition',recognitionDiagnostics=dict(stage=lane,actual=diagnostics)))
+                        diagnostic_returns+=bool(service.recordTrace(dict(role='runtime',stage='recognition',recognitionDiagnostics=dict(stage=lane,actual=diagnostics))))
                     while time.monotonic()-tick_start<.25:
                         QTest.qWait(5);time.sleep(.002)
                 service.shutdown();self.wait(service)
@@ -187,9 +187,11 @@ class DiagnosticBudgetTests(unittest.TestCase):
                 report=dict(elapsedSeconds=round(time.monotonic()-started,3),problemsAttempted=attempted,
                     problemsAccepted=accepted,problemsRetained=len(problem_rows),problemRetention=len(problem_rows)/accepted,
                     recognitionAttempted=diagnostics,recognitionSuppressed=service.recognition_identity.loss()['suppressedTotal'],
-                    recognitionAccepted=diagnostics-service.recognition_identity.loss()['suppressedTotal'],
+                    recognitionReturnedTrue=diagnostic_returns,recognitionRejected=diagnostics-diagnostic_returns,
+                    recognitionEligible=diagnostics-service.recognition_identity.loss()['suppressedTotal'],
+                    recognitionAccepted=diagnostic_returns-service.recognition_identity.loss()['suppressedTotal'],
                     recognitionRetained=len(diag_rows),recognitionRetentionOfAttempts=len(diag_rows)/diagnostics,
-                    recognitionRetentionOfAccepted=len(diag_rows)/(diagnostics-service.recognition_identity.loss()['suppressedTotal']),
+                    recognitionRetentionOfAccepted=len(diag_rows)/max(1,diagnostic_returns-service.recognition_identity.loss()['suppressedTotal']),
                     problemBytes=sum(p.stat().st_size for p in problem_paths if p.exists()),
                     recognitionBytes=sum(p.stat().st_size for p in diag_paths if p.exists()),
                     loss=service.diagnosticSnapshot()['droppedWrites'],problemLoss=service.identity.loss(),
@@ -199,8 +201,13 @@ class DiagnosticBudgetTests(unittest.TestCase):
                 print('DIAGNOSTIC_RETENTION '+json.dumps(report),flush=True)
                 self.assertEqual(report['lastRetained'],last_accepted,report)
                 self.assertEqual(service.identity.loss()['lostTotal'],attempted-accepted,report)
-                self.assertEqual(report['recognitionAccepted']-report['recognitionRetained'],
+                self.assertEqual(report['recognitionEligible']-report['recognitionRetained'],
                     service.recognition_identity.loss()['lostTotal'],report)
+                self.assertEqual(report['recognitionEligible']-report['recognitionAccepted'],
+                    report['recognitionRejected'],report)
+                if not report['recognitionLoss']['omittedRangeCount']:
+                    self.assertEqual(sum(r['count'] for r in report['recognitionLoss']['ranges'] if r['reason']=='queue-capacity'),
+                        report['recognitionRejected'],report)
             finally:
                 service.shutdown();self.wait(service);measurement.stop()
 
