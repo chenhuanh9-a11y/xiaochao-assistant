@@ -12,7 +12,8 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 from custom_maps import (CustomMapLibrary, GalleryStore, RouteError, gallery_of, insertion_index,  # noqa: E402
-                         marker_groups, profile_id, render_game_layer, FloorGraph, MapGraph, mask_sha256)
+                         marker_groups, profile_id, render_game_layer, FloorGraph, MapGraph, mask_sha256,
+                         ROUTE_OUTLINE, draw_route)
 
 # Two floors of a 4x3 tile road grid (60 px tiles). Room "big" is 2x2 tiles,
 # "hall" is a one-tile-wide corridor; a door joins them. Floor 2 is one room.
@@ -72,6 +73,24 @@ class LibraryTests(unittest.TestCase):
         (self.root / "images/m/2.webp").write_bytes(b"changed")
         with self.assertRaisesRegex(ValueError, "校验失败"):
             CustomMapLibrary(self.root).floor("m", "2")
+
+    def test_template_geometry_and_exit_flag(self):
+        asset = self.library.floor("m", "1")
+        self.assertEqual(asset.template_size, asset.image_size, "older packages: the art is the template")
+        self.assertTrue(np.array_equal(asset.template_to_native, asset.to_native))
+        self.assertFalse(self.library.art_includes_exits)
+        manifest = json.loads((self.root / "manifest.json").read_text("utf-8"))
+        manifest["art"] = dict(source="readable", includesExits=True)
+        manifest["maps"][0]["floors"]["1"]["template"] = dict(imageSize=[240, 180],
+                                                              matrixImageToNative=[[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+        (self.root / "manifest.json").write_text(json.dumps(manifest), "utf-8")
+        library = CustomMapLibrary(self.root)
+        asset = library.floor("m", "1")
+        self.assertEqual((asset.image_size, asset.template_size), ((120, 90), (240, 180)))
+        self.assertTrue(np.array_equal(asset.template_to_native, np.eye(3)))
+        self.assertTrue(library.art_includes_exits)
+        with mock.patch.object(library, "exit_icon", side_effect=AssertionError("the art already shows exits")):
+            render_game_layer(library, "m", "1", [])
 
     def test_pick_room_versus_corridor(self):
         graph = self.library.graph("m")
@@ -160,6 +179,23 @@ class LibraryTests(unittest.TestCase):
         self.assertEqual(empty.shape, (180, 240, 4))
 
 
+class RouteDrawingTests(unittest.TestCase):
+    def test_lines_have_a_dark_outline_under_every_colour(self):
+        from PIL import ImageDraw
+        image = Image.new("RGBA", (60, 60), (200, 180, 140, 255))
+        lines = [([(10, 20), (50, 20)], "#63CAFF"), ([(30, 5), (30, 55)], "#FF6B81")]
+        draw_route(ImageDraw.Draw(image), lambda p: p, lines, [], width=6, pill=8)
+        pixel = lambda x, y: image.getpixel((x, y))
+        self.assertEqual(pixel(15, 20), (0x63, 0xCA, 0xFF, 255))
+        # About a third of the 6 px width on each side: rows 16 and 24 are outline, row 27 is the map.
+        self.assertEqual(pixel(15, 16), ROUTE_OUTLINE)
+        self.assertEqual(pixel(15, 24), ROUTE_OUTLINE)
+        self.assertEqual(pixel(15, 27), (200, 180, 140, 255))
+        # Outlines go under all lines, so the first line keeps its colour where the second crosses it.
+        self.assertEqual(pixel(26, 20), (0x63, 0xCA, 0xFF, 255))
+        self.assertEqual(pixel(30, 20), (0xFF, 0x6B, 0x81, 255))
+
+
 class GalleryTests(unittest.TestCase):
     def test_legacy_routes_migrate_per_floor_without_changing_source_or_existing_gallery(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -213,7 +249,10 @@ class GalleryTests(unittest.TestCase):
             (folder / "custom-routes.json").write_text(json.dumps(dict(schema="xingtu-custom-routes-v1", maps={})))
             store = GalleryStore(path)
             self.assertTrue(store.migration_error)
-            self.assertEqual(path.read_bytes(), b"unreadable existing galleries")
+            # The unreadable file is set aside intact (not overwritten) before any save.
+            [backup] = folder.glob("g.unreadable-*.json")
+            self.assertEqual(backup.read_bytes(), b"unreadable existing galleries")
+            self.assertIn(backup.name, store.load_error)
 
     def test_default_is_readonly_and_player_galleries_persist(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -25,6 +25,7 @@ import os
 from pathlib import Path
 import sys
 import threading
+import time
 import uuid
 
 import cv2
@@ -89,6 +90,15 @@ class FloorAsset:
     native_shape: tuple[int, int]
     topology_path: Path
     entrances: tuple[tuple[str, float, float], ...]  # label, image x, image y
+    # The legacy template art the Android route cells and legacy stairs are defined on.
+    # Same as the display image unless the package ships redrawn art.
+    template_size: tuple[int, int] | None = None
+    template_to_native: np.ndarray | None = None
+
+    def __post_init__(self):
+        if self.template_size is None:
+            object.__setattr__(self, "template_size", self.image_size)
+            object.__setattr__(self, "template_to_native", self.to_native)
 
     @property
     def to_image(self) -> np.ndarray:
@@ -108,11 +118,14 @@ class CustomMapLibrary:
         self._verified: set[Path] = set()
         self._images: dict[tuple, Image.Image] = {}
         self._lock = threading.RLock()
+        self.art_includes_exits = False
         try:
             manifest = json.loads((self.root / "manifest.json").read_text("utf-8"))
             if manifest.get("schema") != SCHEMA:
                 raise ValueError("自定义地图资源版本不受支持")
             self.version = str(manifest.get("version") or "")
+            art = manifest.get("art")
+            self.art_includes_exits = isinstance(art, dict) and art.get("includesExits") is True
             for row in manifest["maps"]:
                 self._maps[row["mapId"]] = row
             self._order = [row["mapId"] for row in sorted(manifest["maps"], key=lambda r: r.get("templateNumber", 0))]
@@ -146,13 +159,16 @@ class CustomMapLibrary:
 
     def floor(self, map_id, floor) -> FloorAsset:
         row = self._maps[str(map_id)]["floors"][str(floor)]
+        template = row.get("template") if isinstance(row.get("template"), dict) else None
         return FloorAsset(
             map_id=str(map_id), floor=str(floor),
             image_path=self._checked(row["image"], row["imageSha256"]),
             image_size=tuple(row["imageSize"]), to_native=np.asarray(row["matrixImageToNative"], np.float64),
             native_shape=tuple(row["nativeShape"]),
             topology_path=self._checked(row["topology"], row["topologySha256"]),
-            entrances=tuple((e["label"], float(e["x"]), float(e["y"])) for e in row.get("entrances", ())))
+            entrances=tuple((e["label"], float(e["x"]), float(e["y"])) for e in row.get("entrances", ())),
+            template_size=tuple(template["imageSize"]) if template else None,
+            template_to_native=np.asarray(template["matrixImageToNative"], np.float64) if template else None)
 
     def image(self, map_id, floor) -> Image.Image:
         key = (str(map_id), str(floor))
@@ -400,14 +416,21 @@ def _font(size):
     return ImageFont.load_default(size=size)
 
 
+ROUTE_OUTLINE = (15, 27, 40, 255)
+
+
 def draw_route(draw: ImageDraw.ImageDraw, transform, lines, markers, *, width: float, pill: float):
     """Draw lines and pills; ``transform`` maps native points to target pixels."""
-    for line, color in lines:
-        pts = [transform(p) for p in line]
-        draw.line(pts, fill=(*_rgb(color), 255), width=max(1, round(width)), joint="curve")
-        r = width / 2
-        for x, y in (pts[0], pts[-1]):
-            draw.ellipse((x - r, y - r, x + r, y + r), fill=(*_rgb(color), 255))
+    drawn = [([transform(p) for p in line], color) for line, color in lines]
+    # Same as the Android route: a dark outline about a third of the line width on each side, drawn under
+    # every line first so crossing routes keep their colours.
+    outline = width + max(2.0, width * .7)
+    for stroke, fills in ((outline, [ROUTE_OUTLINE] * len(drawn)), (width, [(*_rgb(color), 255) for _, color in drawn])):
+        for (pts, _), fill in zip(drawn, fills):
+            draw.line(pts, fill=fill, width=max(1, round(stroke)), joint="curve")
+            r = stroke / 2
+            for x, y in (pts[0], pts[-1]):
+                draw.ellipse((x - r, y - r, x + r, y + r), fill=fill)
     font = _font(max(8, round(pill * 1.2)))
     for x, y, label in markers:
         cx, cy = transform((x, y))
@@ -427,7 +450,7 @@ def render_game_layer(library: CustomMapLibrary, map_id, floor, points) -> np.nd
                             borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0, 0))
     canvas = Image.fromarray(warped, "RGBA")
     scale = float(np.sqrt(abs(np.linalg.det(asset.to_native[:2, :2]))))
-    icon = library.exit_icon()
+    icon = None if library.art_includes_exits else library.exit_icon()
     if icon is not None:
         size = max(20, round(max(asset.image_size) * .025 * scale))
         icon = icon.resize((size, size), Image.Resampling.LANCZOS)
@@ -497,20 +520,37 @@ class GalleryStore:
         self.default = default or dict(id=DEFAULT_GALLERY_ID, name="默认路线", maps={})
         self.default["id"] = DEFAULT_GALLERY_ID
         self._galleries: list[dict] = []
+        # A file this version cannot read is never overwritten: unreadable
+        # content is set aside first, and an unknown schema blocks saving.
+        self.load_error = ""
+        self._write_blocked = False
         migration_writable = not self.path.exists()
         try:
             raw = json.loads(self.path.read_text("utf-8"))
-            if isinstance(raw, dict) and raw.get("schema") == GALLERY_SCHEMA:
-                migration_writable = True
+        except FileNotFoundError:
+            raw = None
+        except OSError:
+            raw = None
+            self._write_blocked = True
+            self.load_error = "图库文件暂时无法读取，本次不会保存修改；请关闭占用该文件的程序后重启星图。"
+        except ValueError:
+            raw = None
+            self._set_aside("图库文件已损坏")
+        if isinstance(raw, dict) and raw.get("schema") == GALLERY_SCHEMA:
+            try:
                 migrations = raw.get("legacyRouteMigrations")
-                self._legacy_migrations = [value for value in (migrations if isinstance(migrations, list) else [])
-                                           if isinstance(value, str) and len(value) == 64]
-                for item in raw.get("galleries") or ():
-                    gallery = _clean_gallery(item)
-                    if gallery and gallery["id"] != DEFAULT_GALLERY_ID:
-                        self._galleries.append(gallery)
-        except (OSError, ValueError):
-            pass
+                legacy = [value for value in (migrations if isinstance(migrations, list) else [])
+                          if isinstance(value, str) and len(value) == 64]
+                galleries = [gallery for gallery in map(_clean_gallery, raw.get("galleries") or ())
+                             if gallery and gallery["id"] != DEFAULT_GALLERY_ID]
+            except (TypeError, AttributeError):
+                self._set_aside("图库文件内容无效")
+            else:
+                migration_writable = True
+                self._legacy_migrations, self._galleries = legacy, galleries
+        elif raw is not None:
+            self._write_blocked = True
+            self.load_error = "图库文件格式无法识别（可能来自更新的版本），本次不会改写它。"
         self._migrate_legacy(Path(legacy_path) if legacy_path is not None
                              else self.path.with_name("custom-routes.json"), migration_writable)
 
@@ -572,17 +612,35 @@ class GalleryStore:
         except (OSError, ValueError, TypeError, OverflowError) as error:
             self.migration_error = f"旧路线迁移失败：{error}；原文件已保留"
 
+    def _set_aside(self, reason: str) -> None:
+        backup = self.path.with_name(f"{self.path.stem}.unreadable-{time.strftime('%Y%m%d-%H%M%S')}{self.path.suffix}")
+        try:
+            os.replace(self.path, backup)
+        except OSError:
+            self._write_blocked = True
+            self.load_error = f"{reason}，且无法另存备份，本次不会保存修改。"
+            return
+        self.load_error = f"{reason}，原文件已另存为 {backup.name}，可以从中找回之前的图库。"
+
     def _save(self) -> bool:
+        if self._write_blocked:
+            return False
         payload = dict(schema=GALLERY_SCHEMA, galleries=self._galleries,
                        legacyRouteMigrations=self._legacy_migrations)
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_suffix(".tmp")
-            temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+            with open(temporary, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, ensure_ascii=False, indent=1))
+                handle.flush()
+                os.fsync(handle.fileno())
             os.replace(temporary, self.path)
             return True
         except OSError:
             return False
+
+    def _save_error(self) -> OSError:
+        return OSError(self.load_error if self._write_blocked else "图库保存失败，请检查软件目录是否可写。")
 
     def galleries(self) -> list[tuple[str, str, bool]]:
         with self._lock:
@@ -617,8 +675,10 @@ class GalleryStore:
             gallery = dict(id=uuid.uuid4().hex[:12], name=(str(name).strip() or "我的路线")[:24],
                            maps=json.loads(json.dumps(source["maps"])) if source else {})
             self._galleries.append(gallery)
+            if not self._save():
+                self._galleries.pop()
+                raise self._save_error()
             self.revision += 1
-            self._save()
             return gallery["id"]
 
     def rename(self, gallery_id, name) -> bool:
@@ -626,18 +686,24 @@ class GalleryStore:
             gallery = self._find(gallery_id)
             if gallery is None or self.readonly(gallery_id) or not str(name).strip():
                 return False
-            gallery["name"] = str(name).strip()[:24]
+            previous, gallery["name"] = gallery["name"], str(name).strip()[:24]
+            if not self._save():
+                gallery["name"] = previous
+                return False
             self.revision += 1
-            return self._save()
+            return True
 
     def delete(self, gallery_id) -> bool:
         with self._lock:
-            before = len(self._galleries)
-            self._galleries = [g for g in self._galleries if g["id"] != gallery_id]
-            if len(self._galleries) == before:
+            before = self._galleries
+            self._galleries = [g for g in before if g["id"] != gallery_id]
+            if len(self._galleries) == len(before):
+                return False
+            if not self._save():
+                self._galleries = before
                 return False
             self.revision += 1
-            return self._save()
+            return True
 
     def set_route(self, gallery_id, map_id, points) -> bool:
         with self._lock:
@@ -667,8 +733,10 @@ class GalleryStore:
             raise ValueError("图库内容无效")
         with self._lock:
             self._galleries.append(gallery)
+            if not self._save():
+                self._galleries.pop()
+                raise self._save_error()
             self.revision += 1
-            self._save()
             return gallery["id"]
 
 
