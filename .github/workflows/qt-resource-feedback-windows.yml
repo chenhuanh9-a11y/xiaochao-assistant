@@ -44,7 +44,8 @@ jobs:
           python -B -X utf8 -m unittest -v test_client_map_intent_reset test_client_map_input test_client_coordinator test_client_session test_client_providers test_client_live_runtime test_client_floor_region test_client_input_event_freshness test_client_input_recovery
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Real Session lease and resource readiness feedback regressions
-        if: matrix.source == 'candidate'
+        # Preserve shared failures, but still execute the new focused coverage.
+        if: ${{ always() && matrix.source == 'candidate' }}
         run: |
           python -B -X utf8 -m unittest -v test_client_resource_feedback
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
