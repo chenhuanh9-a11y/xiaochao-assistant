@@ -40,8 +40,6 @@ def scenario(mode, destination):
         setattr(owner, "_pool" if mode == "cancellable" else "pool", pool)
         pool.start(Worker())
     fixture.session.stop = Mock(side_effect=release.set if mode == "cancellable" else None)
-    if mode in ("settings", "resources"):
-        QTimer.singleShot(240, release.set)
     events, beats = [], []
     coordinator.quitRequested.connect(lambda: events.append("quit-requested"))
     coordinator.quitRequested.connect(app.quit)
@@ -54,6 +52,9 @@ def scenario(mode, destination):
     engine.loadData(("import QtQuick\nimport QtQuick.Controls.Basic\nimport QtQuick.Layouts\nApplicationWindow { id:root; visible:true; width:600; height:500; " + closing + choice + popup + "\n}").encode(), QUrl.fromLocalFile(str(Path(__file__).with_name("owned-close.qml"))))
     window = engine.rootObjects()[0]
     heartbeat = QTimer(); heartbeat.timeout.connect(lambda: beats.append(1)); heartbeat.start(10)
+    # Measure draining while this event loop is running, not while QML loads.
+    if mode in ("settings", "resources"):
+        QTimer.singleShot(240, release.set)
     QTimer.singleShot(30, window.close)
     chosen = []
     def choose_exit():

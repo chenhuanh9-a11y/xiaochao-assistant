@@ -62,6 +62,42 @@ class InfoTests(unittest.TestCase):
         service.checkUpdates()
         self.wait(lambda: not service.checking)
 
+    def test_frozen_identity_uses_baked_profile_not_retained_data(self):
+        import client_info
+        baked = self.root / 'baked'
+        baked.mkdir()
+        (baked / 'version.json').write_text('{"version":"1.0","displayVersion":"1.0"}')
+        commit = '7' * 40
+        (baked / 'installation-profile.json').write_text(json.dumps(dict(sourceCommit=commit)))
+        (self.root / 'installation-profile.json').write_text(json.dumps(dict(sourceCommit='f' * 40)))
+        with patch.object(client_info, 'ROOT', baked), patch.object(client_info.sys, 'frozen', True, create=True):
+            service = self.service()
+        self.assertEqual(service._build_fingerprint, '77777777')
+        self.assertEqual(service._source_commit, commit)
+        self.assertFalse((self.root / '_internal/installation-profile.json').exists())
+        self.assertEqual(json.loads((self.root / 'installation-profile.json').read_text())['sourceCommit'], 'f' * 40)
+
+    def test_missing_or_invalid_baked_identity_never_uses_stale_report(self):
+        import client_info
+        baked = self.root / 'baked'
+        baked.mkdir()
+        (baked / 'version.json').write_text('{"version":"1.0","displayVersion":"1.0"}')
+        for payload in (None, '{', '{"sourceCommit":"private-user-text"}'):
+            profile = baked / 'installation-profile.json'
+            if payload is not None:
+                profile.write_text(payload)
+            with patch.object(client_info, 'ROOT', baked), patch.object(client_info.sys, 'frozen', True, create=True), patch.object(client_info, 'diagnostic_package_metadata', return_value=dict(releaseReportSourceCommit='f'*40)):
+                service = self.service()
+            self.assertEqual(service._build_fingerprint, 'UNKNOWN')
+            self.assertEqual(service._source_commit, '')
+            calls = []
+            runtime = SimpleNamespace(configure_failure_sampling=lambda **fields: calls.append(fields))
+            service.setProviders(coordinator=SimpleNamespace(runtime=runtime),
+                                 problems=SimpleNamespace(log_path=self.root/'synthetic-events.jsonl'))
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0]['source_commit'], '')
+            self.assertEqual(calls[0]['build_fingerprint'], 'UNKNOWN')
+
     def test_manual_picker_help_binding_keeps_main_action_order(self):
         service=self.service()
         service._help_topic_template=[dict(steps=[dict(targets=['manual-map-picker'])])]

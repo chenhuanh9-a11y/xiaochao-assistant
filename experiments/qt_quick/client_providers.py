@@ -22,6 +22,17 @@ class ProviderUnavailable(RuntimeError):
     unavailable = True
 
 
+def _load_difficult_map_ui(templates):
+    """Keep the failing stage in cached readiness, without changing validation."""
+    from difficult_map_ui import DifficultMapUI
+    try:
+        return DifficultMapUI(templates)
+    except FileNotFoundError as error:
+        raise ProviderUnavailable(f"difficult-map-ui-template-missing:{type(error).__name__}:{error}") from error
+    except Exception as error:
+        raise ProviderUnavailable(f"difficult-map-ui-template-unavailable:{type(error).__name__}:{error}") from error
+
+
 def _local(root, relative):
     path = (root / str(relative)).resolve()
     if not path.is_relative_to(root):
@@ -262,8 +273,7 @@ class EngineFactories(dict):
         # Source/test diagnostics retain isolated memory.
         memory_root = runtime_paths().memory_root(mode) if PRODUCTION else root / ".qt-saved-frame-memory" / mode
         if mode == "difficult":
-            from difficult_map_ui import DifficultMapUI
-            map_ui = DifficultMapUI(native.local(native.interfaces["uiControls"]))
+            map_ui = _load_difficult_map_ui(native.local(native.interfaces["uiControls"]))
         else:
             map_ui = None
         memory = _build_memory_store(pack, memory_root, root, map_ui=map_ui)

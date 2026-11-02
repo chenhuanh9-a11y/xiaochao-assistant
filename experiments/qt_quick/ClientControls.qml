@@ -240,11 +240,11 @@ Window {
                         y: moreButton.height
                         MenuItem { text: "主页"; onTriggered: clientCoordinator.navigate("home") }
                         MenuItem { text: "自定义控件"; onTriggered: clientCoordinator.navigate("settings") }
-                        MenuItem { text: "隐藏控件"; onTriggered: windows.hide("controls") }
+                        MenuItem { objectName: "controlHideControls"; text: "隐藏控件"; onTriggered: clientCoordinator.hideControls() }
                         MenuSeparator {}
                         MenuItem { text: panel.manualSelection ? "选择本局地图" : "选择地图"; enabled: panel.available("reselect_map"); onTriggered: clientCoordinator.requestManualMapSelection() }
                         MenuItem { text: "重新识别"; enabled: panel.available("capture_now"); onTriggered: session.dispatch("capture_now") }
-                        MenuItem { text: "候选与识别"; onTriggered: clientCoordinator.navigate("recognition") }
+                        MenuItem { objectName: "controlsRecognitionMenu"; text: "打开候选列表（切到主界面）"; onTriggered: clientCoordinator.openRecognitionDetails() }
                     }
                 }
             }
@@ -438,7 +438,7 @@ Window {
             ControlButton { text: "确认地图"; enabled: panel.available("confirm_route"); Layout.fillWidth: true; onClicked: session.dispatch("confirm_route") }
             KeyHint { text: panel.shortcut("confirm-round") }
             ControlButton { text: "重新识别"; enabled: panel.available("capture_now"); Layout.fillWidth: true; onClicked: session.dispatch("capture_now") }
-            ControlButton { text: "查看候选列表"; Layout.fillWidth: true; onClicked: clientCoordinator.navigate("recognition") }
+            ControlButton { objectName: "controlsRecognitionDetails"; text: "打开候选列表（切到主界面）"; Layout.fillWidth: true; onClicked: clientCoordinator.openRecognitionDetails() }
         }
     }
     Component {

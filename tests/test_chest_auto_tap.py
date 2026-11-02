@@ -63,6 +63,51 @@ class OfflineTests(unittest.TestCase):
         return tapper
 
 
+class ReleaseGestureTests(OfflineTests):
+    def test_qt_latches_focus_loss_inside_press_even_if_foreground_returns_immediately(self):
+        tapper = self.tapper(require_release=True)
+        observed_loss = threading.Event()
+        def foreground():
+            if any(not up for _, up, _ in self.events) and not observed_loss.is_set():
+                observed_loss.set()
+                return False
+            return True
+        tapper._in_game = foreground
+        self.assertTrue(tapper.update(dict(BASE, intervalMs=20))['success'])
+        wait_for(lambda: tapper.snapshot()['status'].startswith('等待按住'))
+        self.held = True
+        self.assertTrue(observed_loss.wait(1))
+        wait_for(lambda: any(up for _, up, _ in self.events))
+        time.sleep(.12)
+        self.assertEqual(sum(not up for _, up, _ in self.events), 1,
+                         'Observed focus loss must revoke the old held-key gesture')
+        self.held = False
+        wait_for(lambda: tapper.snapshot()['status'].startswith('等待按住'))
+        self.held = True
+        wait_for(lambda: sum(not up for _, up, _ in self.events) > 1)
+
+    def test_qt_requires_new_release_after_start_and_focus_loss(self):
+        tapper = self.tapper(require_release=True)
+        self.held = True
+        self.assertTrue(tapper.update(BASE)['success'])
+        time.sleep(.025)
+        self.assertEqual(self.events, [])
+        self.held = False
+        wait_for(lambda: tapper.snapshot()['status'].startswith('等待按住'))
+        self.held = True
+        wait_for(lambda: any(not up for _, up, _ in self.events))
+        self.foreground = False
+        wait_for(lambda: tapper.snapshot()['status'].startswith('游戏窗口不在前台'))
+        count = sum(not up for _, up, _ in self.events)
+        self.foreground = True
+        time.sleep(.12)
+        self.assertEqual(sum(not up for _, up, _ in self.events), count)
+        self.held = False
+        wait_for(lambda: tapper.snapshot()['status'].startswith('等待按住'))
+        self.held = True
+        wait_for(lambda: sum(not up for _, up, _ in self.events) > count)
+
+
 class ValidateTests(OfflineTests):
     def test_accepts_defaults_and_mouse_trigger(self):
         self.assertEqual(validate(BASE, {}), BASE)

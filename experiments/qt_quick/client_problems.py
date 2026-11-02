@@ -17,6 +17,37 @@ from uuid import uuid4
 from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, QTimer, Qt, Signal, Slot
 from diagnostic_identity import DiagnosticStream
 from diagnostic_privacy import safe_record
+from client_problem_messages import problem_reason
+
+
+def _feature_evidence(name, value):
+    """Closed feature fields plus existing private/bounded disk policy.
+
+    Keep structured observations, not the free-form UI explanation. These
+    copies have no authority over recognition, capture or reporting lifetime.
+    """
+    from recognition_diagnostics import bounded_recognition
+    fields = {
+        'fitReport': ('attemptCount', 'retryCount', 'firstReason', 'lastReason',
+                      'firstAt', 'lastAt', 'firstDiagnostics', 'lastDiagnostics'),
+        'preparationObservation': ('frameWidth', 'frameHeight', 'mode',
+            'observationReason', 'mapDetected', 'floorReason', 'floorLayout',
+            'shapeReason', 'aspectRatio', 'floorControlSizeEligible'),
+    }
+    if not isinstance(value, dict):
+        return {}
+    selected = {key: value[key] for key in fields[name] if key in value}
+    if name == 'fitReport':
+        for key in ('firstDiagnostics', 'lastDiagnostics'):
+            diagnostic = selected.get(key)
+            if isinstance(diagnostic, dict):
+                selected[key] = {field: diagnostic[field] for field in
+                    ('availability', 'strategy', 'elapsedMs', 'selectedRouteCurrentFrameResidual')
+                    if field in diagnostic}
+            elif key in selected:
+                selected[key] = {}
+    return bounded_recognition(safe_record(selected))
+
 
 PHASE_LABELS = dict(capture="画面采集", input="快捷键", identity="地图识别", floor="楼层识别",
                     **{"recognition-alignment": "识别与贴合", "operation": "任务执行",
@@ -197,6 +228,7 @@ class ProblemsService(QObject):
                        exceptionOrigin=128, exceptionAction=128)
         row = {name: _text(event.get(name, ''), limits[name])
                 for name in ('title', 'summary', 'raw', 'traceback', 'action', 'phase', 'kind', 'mode', 'mapId', 'floor', 'exceptionType', 'exceptionOrigin', 'exceptionAction')}
+        row['reason'] = problem_reason(event.get('reason'))
         row['title'] = row['title'] or '运行出现问题'
         row['summary'] = row['summary'] or '本次操作未完成，可复制下方原始原因进行排查。'
         row['phaseLabel'] = PHASE_LABELS.get(row['phase'], '任务执行')
@@ -204,7 +236,10 @@ class ProblemsService(QObject):
         diagnostics = _metadata(event.get('captureDiagnostics', {}))
         encoded = json.dumps(diagnostics, ensure_ascii=False)
         row['captureDiagnostics'] = diagnostics if len(encoded.encode('utf-8')) <= 1024 else dict(summary=_text(encoded, 900), truncated=True)
-        signature = tuple(row[name] for name in ('title', 'summary', 'raw', 'action', 'phase', 'kind', 'mode', 'mapId', 'floor'))
+        for name in ('fitReport', 'preparationObservation'):
+            if name in event:
+                row[name] = _feature_evidence(name, event[name])
+        signature = tuple(row[name] for name in ('reason', 'title', 'summary', 'raw', 'action', 'phase', 'kind', 'mode', 'mapId', 'floor'))
         signature += (row.get('exceptionType', ''), row.get('exceptionOrigin', ''), row.get('exceptionAction', ''),
                       row.get('errorCode', ''), json.dumps(row.get('errorDetails', {}), sort_keys=True))
         existing = next((item for item in self._recent if item['_signature'] == signature), None)
@@ -271,6 +306,9 @@ class ProblemsService(QObject):
             value = _metadata(event[name])
             encoded_value = json.dumps(value, ensure_ascii=False)
             row[name] = value if len(encoded_value.encode('utf-8')) <= 2048 else dict(summary=_text(encoded_value, 1900), truncated=True)
+        for name in ('fitReport', 'preparationObservation'):
+            if name in event:
+                row[name] = _feature_evidence(name, event[name])
         if 'recognitionDiagnostics' in event:
             from recognition_diagnostics import bounded_recognition
             row['recognitionDiagnostics'] = bounded_recognition(event['recognitionDiagnostics'])
@@ -289,8 +327,10 @@ class ProblemsService(QObject):
         window = row.get('window')
         window_id = window.get('name', window.get('role', '')) if isinstance(window, dict) else window
         key = json.dumps([row.get('role'), row.get('stage'), window_id, origin], sort_keys=True)
+        # Retry clocks/counts are evidence, not new UI states. The separate
+        # close-summary stage carries the final report without per-frame writes.
         signature = json.dumps(_trace_state({name: value for name,value in row.items()
-                               if name not in {'diag', 'recognitionDiagnostics', 'frame', 'generation', 'token'}}), sort_keys=True)
+                               if name not in {'diag', 'recognitionDiagnostics', 'fitReport', 'frame', 'generation', 'token'}}), sort_keys=True)
         previous = self._trace_states.get(key)
         stream = self.recognition_identity if 'recognitionDiagnostics' in row else self.identity
         row.update(stream.stamp())
