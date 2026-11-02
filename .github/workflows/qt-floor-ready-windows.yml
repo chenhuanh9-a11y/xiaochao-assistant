@@ -22,11 +22,32 @@ jobs:
       QT_QUICK_BACKEND: software
       PYTHONUTF8: '1'
     steps:
-      - name: Exact candidate or pre-fix main baseline
+      - name: Exact candidate
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
-          ref: ${{ matrix.revision == 'main-baseline' && 'c06a3f2eb8e0a3a5f3b904fffb8ef0c0a33b6962' || github.sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
+      # First run 41473326470 proved the original input fixture fails equally
+      # on both trees: running=True without installed=True cannot enable input.
+      # Keep baseline PRODUCTION code exact, but use the same repaired synthetic
+      # input source on both sides. No test is skipped and no runtime is patched.
+      - name: Preserve identical corrected input fixture for baseline comparison
+        if: matrix.revision == 'main-baseline'
+        shell: pwsh
+        run: Copy-Item experiments/qt_quick/test_client_game_floor_input.py "$env:RUNNER_TEMP/floor-input-fixture.py"
+      - name: Check out exact pre-fix production baseline
+        if: matrix.revision == 'main-baseline'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: c06a3f2eb8e0a3a5f3b904fffb8ef0c0a33b6962
+          persist-credentials: false
+      - name: Apply only identical input test fixture (baseline production unchanged)
+        if: matrix.revision == 'main-baseline'
+        shell: pwsh
+        run: |
+          Copy-Item "$env:RUNNER_TEMP/floor-input-fixture.py" experiments/qt_quick/test_client_game_floor_input.py
+          git diff --stat
+          git diff -- experiments/qt_quick/test_client_game_floor_input.py
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.13.3'
