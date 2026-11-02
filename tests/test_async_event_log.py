@@ -26,13 +26,13 @@ class WriterTests(unittest.TestCase):
             writer = SlowWriter(Path(folder) / 'events.jsonl', capacity=4)
             writer.emit('first', {})
             self.assertTrue(entered.wait(1))
-            data = {'nested': [1]}
+            data = {'actual': [1]}
             started = time.perf_counter()
             for _ in range(1000):
                 writer.emit('map-probe-observed', data)
             writer.emit('capture-error', data)
             self.assertLess(time.perf_counter() - started, .5)
-            data['nested'][0] = 999
+            data['actual'][0] = 999
             self.assertEqual(writer.status()['pending'], 4)
             self.assertFalse(writer.flush(.01))
             release.set()
@@ -41,7 +41,7 @@ class WriterTests(unittest.TestCase):
             writer.thread.join(1)
             rows = [json.loads(s) for s in writer.path.read_text('utf-8').splitlines()]
             self.assertIn('capture-error', [r['event'] for r in rows])
-            self.assertEqual(rows[-1]['nested'], [1])
+            self.assertEqual(rows[-1]['actual'], [1])
             self.assertGreater(rows[-1]['diagnosticDroppedTotal'], 0)
 
     def test_snapshot_does_not_retain_frames_or_call_arbitrary_str(self):

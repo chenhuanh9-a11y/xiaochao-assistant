@@ -6,6 +6,7 @@ import threading
 import time
 
 from diagnostic_identity import DiagnosticStream
+from diagnostic_privacy import safe_record
 
 
 def snapshot(value, budget=None, depth=0):
@@ -102,7 +103,7 @@ class AsyncEventLog:
     def _write(self, row):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open('a', encoding='utf-8', newline='\n') as handle:
-            handle.write(json.dumps(row, ensure_ascii=False, separators=(',', ':')) + '\n')
+            handle.write(json.dumps(safe_record(row), ensure_ascii=False, separators=(',', ':')) + '\n')
 
     def _run(self):
         while True:

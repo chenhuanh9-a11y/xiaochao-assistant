@@ -309,7 +309,8 @@ def export_safe_diagnostic_bundle(
                 payload, truncated = _bounded_log_tail(
                     path, max(1, min(file_byte_limit, remaining)),
                 )
-                payload = _redact_local_paths(payload)
+                from diagnostic_privacy import sanitize_log_payload
+                payload = sanitize_log_payload(payload)
                 log_windows[path.name] = log_window(payload)
                 archive.writestr(f"logs/{path.name}", payload)
                 included_bytes += len(payload)
@@ -381,7 +382,8 @@ def export_safe_diagnostic_bundle(
                 "versionFiles": version_files,
             }
             if summary is not None:
-                safe_summary = _redact_local_paths(json.dumps(summary, ensure_ascii=False, indent=2).encode("utf-8"))
+                from diagnostic_privacy import safe_record
+                safe_summary = _redact_local_paths(json.dumps(safe_record(summary), ensure_ascii=False, indent=2).encode("utf-8"))
                 if len(safe_summary) > 1024 * 1024:
                     raise ValueError("Diagnostic summary exceeds bounded metadata limit")
                 archive.writestr("qt-client-summary.json", safe_summary)

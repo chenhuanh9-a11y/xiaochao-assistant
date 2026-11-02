@@ -78,7 +78,7 @@ class IdentityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder); live = root/'live'; live.mkdir()
             writer = AsyncEventLog(live/'events-real.jsonl', settings_dir=root/'settings')
-            writer.emit('recognition', dict(roundId=7, cycleId=3, attemptId='existing-attempt', path='/tmp/private/player/file'))
+            writer.emit('recognition', dict(roundId=7, cycleId=3, attemptId='a'*32, path='/tmp/private/player/file'))
             self.assertTrue(writer.flush()); writer.close(); writer.thread.join(1)
             (live/'events-legacy.jsonl').write_text('{"time":"2026-11-02T00:00:00Z","event":"assistant-started","processId":999}\n')
             result = export_safe_diagnostic_bundle(root, live, app_version='fixture', build_fingerprint='FIXTURE',
@@ -94,7 +94,7 @@ class IdentityTests(unittest.TestCase):
                 self.assertIsNone(legacy['sessionId'])
                 self.assertEqual(legacy['sessionIdentityStatus'], 'legacy-not-recorded')
                 row = json.loads(archive.read('logs/events-real.jsonl'))
-                self.assertEqual((row['roundId'],row['cycleId'],row['attemptId']), (7,3,'existing-attempt'))
+                self.assertEqual((row['roundId'],row['cycleId'],row['attemptId']), (7,3,'a'*32))
                 self.assertEqual(row['sessionId'],group['sessionId'])
                 self.assertNotIn(b'/tmp/private/player', archive.read('logs/events-real.jsonl'))
 

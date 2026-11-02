@@ -59,7 +59,7 @@ class DiagnosticExportTests(unittest.TestCase):
         with zipfile.ZipFile(destination) as archive:
             summary = archive.read("qt-client-summary.json")
             self.assertNotIn(b"E:/private", summary)
-            self.assertIn(b"<local-path>", summary)
+            self.assertNotIn(b"Private", summary)
         with self.assertRaises(FileExistsError):
             self.bundle(destination=destination)
         self.assertEqual(destination.read_bytes(), payload)

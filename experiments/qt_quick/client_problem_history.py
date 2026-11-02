@@ -106,7 +106,9 @@ def _merge(rows, current, limit):
             continue
         if not isinstance(row.get('timestampUTC'), str):
             continue
-        signature = json.dumps([row.get(key, '') for key in _FIELDS], sort_keys=True, ensure_ascii=False)
+        group = row.get('problemGroupId')
+        signature = ('run-group:' + group if isinstance(group, str) and len(group) == 32
+                     else json.dumps([row.get(key, '') for key in _FIELDS], sort_keys=True, ensure_ascii=False))
         identity = row.get('occurrenceId') or json.dumps(
             [row.get('id'), row['timestampUTC'], signature], sort_keys=True)
         if not isinstance(identity, str):

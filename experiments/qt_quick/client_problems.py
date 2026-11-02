@@ -9,14 +9,16 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import json
 import logging
-import math
 from logging.handlers import RotatingFileHandler
+import math
 import os
 import time
 from pathlib import Path
+from uuid import uuid4
 
 from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, QTimer, Qt, Signal, Slot
 from diagnostic_identity import DiagnosticStream
+from diagnostic_privacy import safe_record
 from client_resource_errors import error_text, safe_code, safe_error_details
 
 PHASE_LABELS = dict(capture="画面采集", input="快捷键", identity="地图识别", floor="楼层识别",
@@ -84,7 +86,7 @@ def _details(row):
 
 class _StrictHandler(RotatingFileHandler):
     def handleError(self, record):
-        raise  # Surface disk errors to the service instead of silently losing text.
+        raise
 
 
 class _BatchFailure(Exception):
@@ -106,7 +108,7 @@ def _write_batch(path, rows):
     completed = 0
     try:
         for row in rows:
-            message = json.dumps(dict({'event': 'qt-runtime-problem'}, **row), ensure_ascii=False)
+            message = json.dumps(safe_record(dict({'event': 'qt-runtime-problem'}, **row)), ensure_ascii=False)
             handler.emit(logging.LogRecord('xingtu.problems', logging.WARNING, '', 0, message, (), None))
             completed += 1
     except Exception as failure:
@@ -159,6 +161,7 @@ class ProblemsService(QObject):
         self._source_commit = _text(source_commit, 40)
         self._trace_states = OrderedDict()
         self._recognition_next = OrderedDict()
+        self._problem_groups = OrderedDict()
         self._summary_dirty = False
         self._summary_timer = QTimer(self)
         self._summary_timer.setSingleShot(True)
@@ -237,6 +240,13 @@ class ProblemsService(QObject):
             self.recentChanged.emit()
             self.changed.emit()
             return True  # Coalesced in memory; no per-refresh append or write.
+        # Random run-local grouping preserves repeat accounting after disk
+        # redaction; never persist a digest derived from private exception text.
+        group = self._problem_groups.setdefault(signature, uuid4().hex)
+        self._problem_groups.move_to_end(signature)
+        while len(self._problem_groups) > 64:
+            self._problem_groups.popitem(last=False)
+        row['problemGroupId'] = group
         self._sequence += 1
         row.update(self.identity.stamp())
         row.update(id=str(self._sequence), occurrenceId=self.log_path.stem + ':' + str(self._sequence),

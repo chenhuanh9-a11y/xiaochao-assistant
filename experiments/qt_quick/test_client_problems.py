@@ -82,7 +82,7 @@ class ProblemTests(unittest.TestCase):
         self.assertTrue(QMetaObject.invokeMethod(detail,'selectAll',Qt.DirectConnection))
         self.assertIn('ValueError:',detail.property('selectedText'))
         self.drain();rows=[json.loads(line) for line in self.service.log_path.read_text('utf-8').splitlines()]
-        self.assertEqual(rows[0]['raw'],event()['raw']);self.assertEqual(rows[0]['buildFingerprint'],'TEST0001')
+        self.assertEqual(rows[0]['raw'],'ValueError: <redacted-message>');self.assertEqual(rows[0]['buildFingerprint'],'TEST0001')
         self.assertEqual(rows[0]['sourceCommit'],'a'*40);self.assertTrue(rows[0]['timestampUTC'].endswith('Z'))
         bundle=export_safe_diagnostic_bundle(self.root,self.root/'work/nightmare-live',app_version='fixture',
             build_fingerprint='TEST0001',destination=self.root/'diagnostic.zip',summary={'recentProblems':self.service.recent})
@@ -90,8 +90,8 @@ class ProblemTests(unittest.TestCase):
             logs=[name for name in archive.namelist() if name.startswith('logs/events-')]
             self.assertTrue(logs)
             payload=archive.read(logs[0]).decode('utf-8')
-            self.assertIn(event()['raw'],payload);self.assertNotIn('C:/Private/Player',payload)
-            self.assertIn('<local-path>',payload)
+            self.assertIn('ValueError: <redacted-message>',payload);self.assertNotIn('C:/Private/Player',payload)
+            self.assertNotIn('Private/Player',payload)
         self.assertFalse(warnings,warnings);window.hide();engine.deleteLater();QTest.qWait(10)
 
     def test_coalescing_bounded_queue_and_shutdown_drains_callback(self):
