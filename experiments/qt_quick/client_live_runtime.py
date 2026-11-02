@@ -2443,30 +2443,37 @@ class LiveRuntime:
             opened = True
         else:
             capture_generation = self._capture_generation()
-            try:
-                captured = self._capture_frame(obsolete)
-            except Exception as error:
-                from client_capture import CaptureForegroundUnavailable
-                if action != "capture_now" or not isinstance(error, CaptureForegroundUnavailable):
-                    raise
-                with self._lock:
-                    row = self._render
-                    retain = bool(not obsolete() and row is not None and self._display_current(row)
-                        and capture_generation == self._capture_generation()
-                        and row.get("captureGeneration") == error.capture_generation
-                        and self._render_capture_context == error.capture_context)
-                if not retain:
-                    self._revoke_render("capture-preflight-context-invalid")
-                # Retention does not grant display authority: render_payload
-                # still performs the unchanged foreground/context guard.
-                return self._receipt(action, payload, success=False,
-                    reason=f"{type(error).__name__}:{error}", error=True,
-                    **self._error_fields(error, action))
             if action == "capture_now":
+                preflight = getattr(self._capture, "preflight", None)
+                if callable(preflight):
+                    try:
+                        preflight(obsolete)
+                    except Exception as error:
+                        error.error_phase = "capture"
+                        from client_capture import CaptureForegroundUnavailable
+                        if not isinstance(error, CaptureForegroundUnavailable):
+                            raise
+                        with self._lock:
+                            row = self._render
+                            retain = bool(not obsolete() and row is not None and self._display_current(row)
+                                and capture_generation == self._capture_generation()
+                                and row.get("captureGeneration") == error.capture_generation
+                                and self._render_capture_context == error.capture_context)
+                        if not retain:
+                            self._revoke_render("capture-preflight-context-invalid")
+                        # Only this metadata-only refusal can retain anything.
+                        # The consumer's foreground/context guard is unchanged.
+                        return self._receipt(action, payload, success=False,
+                            reason=f"{type(error).__name__}:{error}", error=True,
+                            **self._error_fields(error, action))
                 with self._lock:
                     self._game_floor_intent = None
                     self._floor_click_epoch_span = None
+                # Revoke BEFORE entering the real pixel acquisition. An old
+                # queued render-ready event cannot republish a prior token
+                # while this worker is blocked in a native/backend capture.
                 self._revoke_render("new-capture")
+            captured = self._capture_frame(obsolete)
             observation, floor, floor_read = self._observe(engine, self._full_frame(captured))
             from session_state_machine import verified_map_hotkey_frame
             opened = (observation.get("mapOpen") if engine.pack.mode == "difficult"

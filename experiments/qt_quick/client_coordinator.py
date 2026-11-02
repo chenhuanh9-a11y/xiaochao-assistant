@@ -730,17 +730,33 @@ class ClientCoordinator(QObject):
                 self._invalidate_display()
         self.changed.emit()
 
+    def _show_main(self):
+        self.windows.show("main")
+        window = self.windows._windows.get("main")
+        if window is not None:
+            window.showNormal()
+            window.raise_()
+            window.requestActivate()
+
     @Slot(str)
     def navigate(self, name):
         if name in {"home", "recognition", "gallery", "resources", "downloads", "custom", "settings", "replay", "help"}:
             self.pageRequested.emit(name)
-            self.windows.show("main")
-            window = self.windows._windows.get("main")
-            if window is not None:
-                window.showNormal()
-                window.raise_()
-                if name != "recognition" or not self.runtime.snapshot().get("roundActive"):
-                    window.requestActivate()
+            if name == "recognition" and self.runtime.snapshot().get("roundActive"):
+                # Even show()/showNormal() may activate a normal QQuickWindow.
+                # Do not mutate its visibility/z-order from in-round routing.
+                self._message = "候选页已就绪；控制面板中点击“打开候选列表（切到主界面）”可查看，重新识别会切回游戏"
+                self.changed.emit()
+                return
+            self._show_main()
+
+    @Slot()
+    def openRecognitionDetails(self):
+        """Explicit controls click, labelled as switching to the main window."""
+        if self._closing or self._closed:
+            return
+        self.pageRequested.emit("recognition")
+        self._show_main()
 
     @Slot()
     def requestManualMapSelection(self):

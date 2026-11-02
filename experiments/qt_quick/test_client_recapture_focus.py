@@ -8,6 +8,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 os.environ.setdefault('QT_QUICK_BACKEND', 'software')
 from pathlib import Path
 import time
+import threading
 import sys
 import cv2  # Preload before the bounded native-module fixture restores sys.modules.
 from types import SimpleNamespace
@@ -20,6 +21,7 @@ from PySide6.QtQuick import QQuickWindow
 from PySide6.QtTest import QTest
 from client_capture import ClientCaptureProvider
 from client_session import SessionService
+from client_windows import WindowController
 from test_client_capture_full import Backend
 import test_client_coordinator as coordinator_fixtures
 import test_client_live_runtime as live_fixtures
@@ -64,10 +66,16 @@ class RecaptureFocusTests(unittest.TestCase):
         self.coordinator._bound = '42'
         self.coordinator._native_windows = self.native
         self.coordinator._game_focus._native = self.native
+        self.coordinator._applied_context = ('nightmare', 'shared-structure')
+        self.fixture.settings.values['routeProfileId'] = 'shared-structure'
+        self.fixture.settings.persistedValues['routeProfileId'] = 'shared-structure'
         self.session.actionRequested.connect(self.coordinator._action_requested)
+        self.session.changed.connect(self.coordinator._session_changed)
+        self.runtime.set_event_callback(self.coordinator.runtimeEvent.emit)
+        self.addCleanup(self.runtime.set_event_callback, None)
         self.qml = QQmlEngine()
         self.qml.rootContext().setContextProperty('session', self.session)
-        self.qml.rootContext().setContextProperty('coordinator', self.coordinator)
+        self.qml.rootContext().setContextProperty('clientCoordinator', self.coordinator)
         self.component = QQmlComponent(self.qml, QUrl.fromLocalFile(str(Path(__file__).with_name('ClientRecognition.qml'))))
         self.page = self.component.create()
         self.assertIsNotNone(self.page, str(self.component.errors()))
@@ -182,6 +190,13 @@ class RecaptureFocusTests(unittest.TestCase):
         self.capture.bindFullClient(42); self.capture.enable()
         self.assert_guard_revokes()
 
+    def test_disabled_preflight_preserves_capture_error_phase_and_revokes(self):
+        self.capture.disable()
+        receipt = self.live.dispatch('capture_now')
+        self.assertFalse(receipt['success'])
+        self.assertEqual(receipt.get('errorPhase'), 'capture')
+        self.assertFalse(self.runtime.snapshot()['displayAuthorized'])
+
     def test_guard_cannot_retain_changed_geometry(self):
         from client_region_capture import ClientCaptureContext
         self.backend.current = ClientCaptureContext((100,80), (20,30,120,110), 144)
@@ -202,6 +217,58 @@ class RecaptureFocusTests(unittest.TestCase):
         self.backend.on_capture = lambda: setattr(self.native, 'foreground', 77)
         self.assert_guard_revokes()
         self.assertEqual(len(self.backend.captures), 2)
+
+    def test_queued_ready_during_blocked_capture_cannot_republish_or_show_old_token(self):
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        self.runtime._evidence_kind = 'live-client-capture'
+        self.native.foreground = 42
+        with patch.object(self.coordinator, '_convert_client_geometry'), \
+                patch.object(self.coordinator, '_sync_reference_payload'), \
+                patch.object(self.coordinator.images, 'publish', create=True, return_value='image://fixture/old'):
+            # This queues the real runtime's ready event; do not consume it yet.
+            self.assertTrue(self.live.dispatch('capture_now')['success'])
+            old = self.runtime.snapshot()['pendingRenderToken']
+            self.session.refreshRuntime()
+            self.coordinator.windows.show.reset_mock()
+            self.backend.on_capture = lambda: (entered.set(), release.wait(5))
+            self.session.dispatch('capture_now')
+            try:
+                self.assertTrue(entered.wait(2), 'real capture backend did not start')
+                APP.processEvents()  # Deliver the real queued ready callback.
+                self.assertTrue(self.session.busy)
+                self.assertTrue(self.runtime.snapshot()['captureInProgress'])
+                self.assertIsNone(self.runtime.render_payload(old))
+                self.assertNotEqual(self.coordinator._last_render_token, old)
+                self.assertFalse(any(call.args == ('aligned',)
+                    for call in self.coordinator.windows.show.call_args_list))
+            finally:
+                release.set()
+                self.settle()
+
+    def test_active_recognition_navigation_preserves_real_qquick_focus(self):
+        main, game = QQuickWindow(), QQuickWindow()
+        main.setObjectName('assistant-main'); game.setObjectName('fixture-game')
+        windows = WindowController()
+        windows.bindWindow('main', main)
+        self.coordinator.windows = windows
+        try:
+            main.hide(); game.show(); game.requestActivate(); APP.processEvents()
+            self.assertIs(APP.focusWindow(), game)
+            self.coordinator.navigate('recognition'); APP.processEvents()
+            self.assertIs(APP.focusWindow(), game)
+            self.assertFalse(main.isVisible())
+            self.coordinator.openRecognitionDetails(); APP.processEvents()
+            self.assertTrue(main.isVisible())
+            self.assertIs(APP.focusWindow(), main)
+            main.hide(); game.requestActivate(); APP.processEvents()
+            self.coordinator.navigate('settings'); APP.processEvents()
+            self.assertTrue(main.isVisible())
+            self.assertIs(APP.focusWindow(), main)
+        finally:
+            main.hide(); game.hide()
+            main.deleteLater(); game.deleteLater(); windows.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
     def test_navigation_during_round_does_not_request_recognition_activation(self):
         window = Mock(); self.coordinator.windows._windows['main'] = window

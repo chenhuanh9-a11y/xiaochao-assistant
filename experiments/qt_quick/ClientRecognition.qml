@@ -78,7 +78,7 @@ Item {
             Layout.fillWidth: true
             Label { text: "地图识别"; color: "#142b4b"; font.family: "Microsoft YaHei UI"; font.pixelSize: 26; font.bold: true }
             Item { Layout.fillWidth: true }
-            AppButton { objectName: "recognitionCapture"; text: "回游戏并重新识别"; enabled: page.available("capture_now"); onClicked: coordinator.recaptureFromMain() }
+            AppButton { objectName: "recognitionCapture"; text: "回游戏并重新识别"; enabled: page.available("capture_now"); onClicked: clientCoordinator.recaptureFromMain() }
         }
         Label {
             Layout.fillWidth: true

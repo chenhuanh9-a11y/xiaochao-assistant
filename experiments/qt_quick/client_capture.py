@@ -159,7 +159,14 @@ class ClientCaptureProvider:
             return False
         return bool(cancelled.is_set() if hasattr(cancelled, "is_set") else cancelled())
 
+    def preflight(self, cancelled=None):
+        """Run the same guards/metadata checks without requesting any pixels."""
+        return self._capture(cancelled, preflight_only=True)
+
     def capture(self, cancelled=None):
+        return self._capture(cancelled, preflight_only=False)
+
+    def _capture(self, cancelled=None, *, preflight_only):
         with self._lock:
             if not self._enabled or self._closed:
                 raise CaptureUnavailable("Client capture requires explicit enable")
@@ -200,6 +207,12 @@ class ClientCaptureProvider:
                 region = (0, 0, width, height)
             if region[2] > context.full_client_size[0] or region[3] > context.full_client_size[1]:
                 raise CaptureUnavailable("Bound client rectangle exceeds the current client; rebind explicitly")
+            if preflight_only:
+                with self._lock:
+                    if (generation != self._generation or not self._enabled or self._closed
+                            or self._cancelled(cancelled)):
+                        raise CaptureUnavailable("Capture preflight was superseded or cancelled")
+                return
             frame = capture_client_region(hwnd, region, expected_context=expected or context,
                                           full_capture=self._full_capture, _backend=self._backend,
                                           reject_blank_full_client=full_client)

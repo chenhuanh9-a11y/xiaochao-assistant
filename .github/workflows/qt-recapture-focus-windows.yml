@@ -34,5 +34,5 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Recapture QML chain, foreground rejection and lifetime negatives
         run: |
-          python -B -X utf8 -m unittest -v test_client_recapture_focus test_client_recognition test_client_capture_full test_client_coordinator test_client_session test_client_live_runtime test_client_live_controls test_client_map_intent_reset test_client_map_input test_game_window_focus
+          python -B -X utf8 -m unittest -v test_client_recapture_focus test_client_recapture_composition test_client_recognition test_client_capture_full test_client_coordinator test_client_session test_client_live_runtime test_client_live_controls test_client_map_intent_reset test_client_map_input test_game_window_focus
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
