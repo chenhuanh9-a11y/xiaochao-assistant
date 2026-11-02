@@ -528,7 +528,7 @@ class CoordinatorTests(unittest.TestCase):
         self.session.dispatch.assert_not_called()
         self.session.busy = False
         self.coordinator._watch_foreground()
-        self.session.dispatch.assert_called_once_with("capture_now")
+        self.session.dispatchWithPayload.assert_called_once_with("capture_now", dict(foregroundReturn=True))
 
     def test_position_preview_is_display_only_and_late_reply_is_cancelled(self):
         class Provider(QObject):
