@@ -514,14 +514,19 @@ Inspection basis: [repository rules](../../AGENTS.md), [development contracts](.
 
 The Qt entry points are `ClientSettings.qml` → “模式与路线” → “选图方式”, the
 `ClientControls.qml` “自动识别 / 手动选图” pair, the “选择本局地图” button, and
-the configurable `manual-map-picker` hotkey (default `Alt+1`; the default remains
-pending verification against the other developer's global-hotkey fix). Settings
-persist `mapSelectionMode` (`auto` / `manual`) at the top level. A saved nine-item
-`actionHotkeys` array is read as before and gains `Alt+1` only when that identity
-is free; the file is not rewritten until the user actually edits shortcuts.
+the configurable `manual-map-picker` hotkey (slot 10 of `actionHotkeys`; fresh
+installs default to `Alt+1`). Settings persist `mapSelectionMode` (`auto` /
+`manual`) at the top level. Qt owns slot 10 as a regular action and validates it
+once (no separate opaque-tail check). A saved nine-item `actionHotkeys` array never
+gains an invented `Alt+1` (it could collide with a bare `ALT` binding and disable
+every native shortcut): slot 10 loads unbound and the file stays nine items until
+the user binds slot 10. A ten-item file keeps its trailing chord when the first
+nine are edited; an unreadable tail stays on disk and blocks shortcut writes until
+slot 10 is rebound.
 
-`client_manual_map.py` mirrors the Tk-pure grouping/paging rules from PR #70
-without tkinter. `client_manual_map_service.py` owns the non-activating
+`client_manual_map.py` imports the grouping/paging rules from
+`app/manual_map_picker_core.py`, the toolkit-free half of PR #70's picker shared
+with the Tk UI (the Qt build excludes tkinter). `client_manual_map_service.py` owns the non-activating
 `ClientMapPicker.qml` window, catalog generation checks and picker key routing.
 While the picker is visible the native input seam routes bare F1–F4, PgUp/PgDn,
 Backspace and Escape; configurable actions on those primaries are suppressed.

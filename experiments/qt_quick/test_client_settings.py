@@ -212,33 +212,55 @@ class SettingsTests(unittest.TestCase):
             self.wait(lambda: not service.busy)
             self.assertEqual(json.loads(self.path.read_text())["actionHotkeys"], keys)
 
-    def test_nine_item_actions_gain_picker_default_only_when_free(self):
+    def test_nine_item_actions_never_gain_an_invented_picker_chord(self):
         nine = ["F5", "F6", "F7", "F8", "F9", "F10", "F11", "", ""]
         cases = [
-            (nine, "G", "Alt+1"),
-            (nine[:7] + ["Alt+1", ""], "G", ""),
-            (nine, "Alt+1", ""),
-            (nine, "1", ""),
+            (nine, "G"),
+            (nine[:7] + ["ALT", ""], "G"),  # bare ALT bound: Alt+1 would disable shortcuts
+            (nine[:7] + ["Alt+1", ""], "G"),
+            (nine, "Alt+1"),
+            (nine, "1"),
         ]
-        for keys, map_key, expected in cases:
+        for keys, map_key in cases:
             with self.subTest(map=map_key, keys=keys):
                 self.write({"actionHotkeys": keys, "hotkey": map_key})
                 service = self.service()
-                self.assertEqual(len(service.values["actionHotkeys"]), len(ACTION_ORDER))
-                self.assertEqual(service.values["actionHotkeys"][-1], expected)
+                self.assertEqual(service.values["actionHotkeys"], [*keys, ""])
+                self.assertNotIn("hotkey/actionHotkeys", service.message)
                 service.setValue("orbVisible", False)
                 service.save()
                 self.wait(lambda: not service.busy)
                 # Readable nine-slot arrays stay untouched until actually edited.
                 self.assertEqual(json.loads(self.path.read_text())["actionHotkeys"], keys)
+                service.shutdown()
 
-    def test_existing_file_without_action_array_migrates_the_picker_default(self):
+    def test_bare_alt_file_keeps_every_native_shortcut_registrable(self):
+        from client_input import NativeShortcutBackend
+        from test_client_input import Native
+        keys = ["ALT", "F6", "F7", "F8", "F9", "F10", "F11", "", ""]
+        self.write({"actionHotkeys": keys, "hotkey": "G"})
+        service = self.service()
+        backend = NativeShortcutBackend(Native())
+        self.addCleanup(backend.shutdown)
+        self.assertTrue(backend.configureSettings(service.values))
+
+    def test_binding_slot_ten_on_a_nine_slot_file_appends_it(self):
+        keys = ["F5", "F6", "F7", "F8", "F9", "F10", "F11", "", ""]
+        self.write({"actionHotkeys": keys})
+        service = self.service()
+        edited = service.values["actionHotkeys"]
+        edited[9] = "Ctrl+Alt+M"
+        self.assertTrue(service.setValue("actionHotkeys", edited))
+        self.assertTrue(service.save())
+        self.wait(lambda: not service.busy)
+        self.assertEqual(json.loads(self.path.read_text())["actionHotkeys"], [*keys, "Ctrl+Alt+M"])
+
+    def test_existing_file_without_action_array_leaves_picker_unbound(self):
         # data is not None but the key is absent: load starts from the legacy
-        # nine slots, so the post-load length check is reachable and adds the
-        # picker default exactly as a stored nine-slot array does.
+        # nine slots; slot 10 stays unbound like a stored nine-slot array.
         self.write({"hotkey": "G"})
         service = self.service()
-        self.assertEqual(service.values["actionHotkeys"], [*LEGACY_ACTIONS, "Alt+1"])
+        self.assertEqual(service.values["actionHotkeys"], [*LEGACY_ACTIONS, ""])
 
     def test_map_selection_mode_defaults_validates_and_preserves_unknown(self):
         service = self.service()
