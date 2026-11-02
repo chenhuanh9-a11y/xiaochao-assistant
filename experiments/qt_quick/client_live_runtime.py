@@ -47,9 +47,20 @@ class _PreparationHost:
         self.runtime, self.engine, self.obsolete = runtime, engine, obsolete
         self.initial_context = None
         self.last_unresolved = None
+        self.last_observation_diagnostic = None
         self.events = []
     def _log(self, event, **values):
+        if event == 'map-ready-full-unavailable':
+            # A failed newer capture cannot be presented as a size rejection.
+            self.last_observation_diagnostic = None
         self.events.append(dict(event=event, **values))
+    def observation_diagnostic(self):
+        row = self.last_observation_diagnostic
+        if (row is None or self.obsolete()
+                or not self.runtime._capture_is_current(row[0], row[1])):
+            return {}
+        return dict(row[2])
+
     def _map_ready_context(self):
         return self.runtime._epoch
     def _map_ready_current(self, token, context, cancelled):
@@ -59,6 +70,7 @@ class _PreparationHost:
         from session_state_machine import verified_map_hotkey_frame
         if not self._map_ready_current(token, context, cancelled):
             return None, True
+        self.last_observation_diagnostic = None
         capture_generation = self.runtime._capture_generation()
         captured = self.runtime._capture_frame(cancelled)
         frame = self.runtime._full_frame(captured)
@@ -67,6 +79,11 @@ class _PreparationHost:
         if captured.context != self.initial_context or not self._map_ready_current(token, context, cancelled):
             return None, True
         observation, floor, floor_read = self.runtime._observe(self.engine, frame)
+        if (self._map_ready_current(token, context, cancelled)
+                and self.runtime._capture_is_current(captured.context, capture_generation)):
+            from map_interface_observation import map_preparation_diagnostic
+            self.last_observation_diagnostic = (captured.context, capture_generation,
+                map_preparation_diagnostic(frame, observation, floor_read, mode=self.engine.pack.mode))
         map_detected = (observation.get("mapOpen") is True if self.engine.pack.mode == "difficult"
                         else observation.get("detected") is True)
         self.last_unresolved = ((captured, observation, floor, capture_generation, floor_read)
@@ -2430,8 +2447,10 @@ class LiveRuntime:
                 if obsolete():
                     return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
                 if preparation.last_unresolved is None:
+                    diagnostic = preparation.observation_diagnostic()
                     self.invalidate("map-closed", source="map-preparation-deadline")
-                    return self._receipt(action, payload, success=False, reason="map-open-preparation-deadline")
+                    return self._receipt(action, payload, success=False, reason="map-open-preparation-deadline",
+                        preparationObservation=diagnostic)
                 # A recognized map with unreadable floor stays available for
                 # explicit manual correction; it grants no floor/pose authority.
                 prepared = preparation.last_unresolved
@@ -2477,7 +2496,8 @@ class LiveRuntime:
                     row["floor"] = self._floor
             if effective_floor is not None:
                 return self._solve_retained(action, payload, cancelled, acquire_current=False)
-            return self._receipt(action, payload, success=False, reason="current-floor-unavailable", observation=observation)
+            return self._receipt(action, payload, success=False, reason="current-floor-unavailable", observation=observation,
+                preparationObservation=preparation.observation_diagnostic() if action == "map" else {})
         if opened is not True:
             if action == "refresh_map":
                 from session_state_machine import map_probe_transition

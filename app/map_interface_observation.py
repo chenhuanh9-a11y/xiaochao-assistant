@@ -415,3 +415,21 @@ def detect_selected_floor(frame: np.ndarray) -> dict:
         "regionTop": vertical["regionTop"],
         "regionHeight": vertical["regionHeight"],
     }
+
+
+def map_preparation_diagnostic(frame, observation, floor_read, *, mode):
+    """Describe observed geometry only; never participate in detector decisions.
+
+    The height limit belongs to nightmare floor localization, not map shape.
+    Difficult has its own observation contract: do not apply nightmare limits.
+    """
+    h, w = frame.shape[:2]
+    result = dict(frameWidth=int(w), frameHeight=int(h), mode=mode,
+        observationReason=observation.get("reason", ""),
+        mapDetected=observation.get("mapOpen" if mode == "difficult" else "detected") is True,
+        floorReason=floor_read.get("reason", ""), floorLayout=floor_read.get("layout", ""))
+    if mode == "nightmare":
+        shape = map_interface_shape(w, h)
+        result.update(shapeReason=shape["reason"], aspectRatio=shape["aspectRatio"],
+            floorControlSizeEligible=w >= 1000 and h >= 600)
+    return result

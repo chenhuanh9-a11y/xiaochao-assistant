@@ -7,7 +7,28 @@ def operation_problem(receipt, state):
     phase = str(receipt.get('errorPhase') or 'recognition-alignment')
     kind = 'error' if receipt.get('error') else 'warning'
     title, summary = '操作未完成', '本次操作未完成，原因已保存在帮助页的“最近问题”。'
-    if 'live-runtime-requires-full-client-capture' in raw:
+    observed = receipt.get('preparationObservation') or {}
+    width, height = observed.get('frameWidth'), observed.get('frameHeight')
+    if (raw in {'map-open-preparation-deadline', 'current-floor-unavailable'}
+            and isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0):
+        size = f'当前游戏客户区为 {width} × {height} 像素。'
+        shape = observed.get('shapeReason')
+        if shape == 'capture-shape-width' or observed.get('floorControlSizeEligible') is False:
+            title, phase = '游戏窗口尺寸过小', 'map-preparation'
+            summary = size + '当前尺寸未满足地图／楼层控件检查所需的宽至少 1000、高至少 600 像素。请适当增大游戏窗口，再完整打开地图重试。'
+        elif shape == 'capture-shape-aspect':
+            title, phase = '游戏窗口比例过窄', 'map-preparation'
+            summary = size + '当前宽高比低于 1.25。请适当加宽游戏窗口（宽度至少为高度的 1.25 倍），再打开地图重试。'
+        elif observed.get('mapDetected') and observed.get('floorLayout') == 'unlocalized':
+            title, phase = '尚未定位楼层控件', 'floor'
+            summary = size + '已看到地图，但尚未定位楼层按钮。请确保楼层按钮未被遮挡，等待地图展开稳定后重试。'
+        elif raw == 'current-floor-unavailable':
+            title, phase = '暂未读到楼层', 'floor'
+            summary = size + '请完整打开游戏地图，等待楼层高亮稳定后再试。'
+        else:
+            title, phase = '地图画面尚未确认', 'map-preparation'
+            summary = size + '当前地图画面证据不足，不能据此判断窗口过小。请完整打开地图、避免遮挡并等待画面稳定后重试。'
+    elif 'live-runtime-requires-full-client-capture' in raw:
         title, phase, kind = '采集画面尺寸不一致', 'capture', 'error'
         summary = '采集画面未覆盖当前游戏客户区，本次识别已停止。请重新打开地图；详细尺寸可在帮助页的“最近问题”查看。'
     elif 'capture' in raw.casefold() or 'foreground' in raw.casefold():
@@ -41,4 +62,5 @@ def operation_problem(receipt, state):
     return dict(title=title, summary=summary, raw=raw, action=action, phase=phase, kind=kind,
                 mode=state.get('mode', ''), mapId=state.get('mapId', ''), floor=state.get('floor', ''),
                 captureDiagnostics=receipt.get('captureDiagnostics') or {},
+                preparationObservation=observed,
                 traceback=str(receipt.get('traceback') or '')[:8192])
