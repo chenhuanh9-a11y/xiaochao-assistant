@@ -1,7 +1,7 @@
 """Byte-bounded diagnostic storage with explicit verified ownership.
 
-One root has a 16 MiB / 32-file / 7-day owned-log budget, in addition to each
-stream's 1 MiB + one backup. Unknown, changed, linked and external objects are
+One root has a 16 MiB / 32-file owned-log budget, in addition to each
+stream's two fixed 1 MiB slots. No automatic deletion or recycling. Unknown, changed, linked and external objects are
 never removed/adopted. Interrupted writes fail closed rather than claiming
 ownership. Callers account unconfirmed writes as loss; this is not business IO.
 """
@@ -12,7 +12,6 @@ import os
 from pathlib import Path
 import re
 import stat
-import tempfile
 import threading
 import time
 from diagnostic_privacy import safe_record
@@ -39,44 +38,113 @@ def _safe(path):
             raise DiagnosticStorageError('diagnostic-storage-hardlinked')
 
 
+_local=threading.local()
+_root_guards={}
+
+
+def _windows_open(path, flags, directory=False):
+    import ctypes, msvcrt
+    from ctypes import wintypes
+    kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+    create=kernel.CreateFileW
+    create.argtypes=[wintypes.LPCWSTR,wintypes.DWORD,wintypes.DWORD,ctypes.c_void_p,wintypes.DWORD,wintypes.DWORD,wintypes.HANDLE]
+    create.restype=wintypes.HANDLE
+    access=0x80000000 | (0x40000000 if flags & os.O_RDWR else 0)
+    # Deny rename/delete and concurrent writers while a handle is validated/used.
+    handle=create(str(path),access,1,None,1 if flags & os.O_EXCL else 3,
+                  0x00200000 | (0x02000000 if directory else 0),None)
+    if handle==wintypes.HANDLE(-1).value:raise ctypes.WinError(ctypes.get_last_error())
+    fd=msvcrt.open_osfhandle(handle,(flags & os.O_RDWR) | os.O_BINARY)
+    st=os.fstat(fd)
+    if getattr(st,'st_file_attributes',0)&0x400:
+        os.close(fd);raise DiagnosticStorageError('diagnostic-storage-linked')
+    return fd
+
+
+@contextmanager
+def _pinned_root(root):
+    handles=[]
+    try:
+        if os.name=='nt':
+            current=Path(root.anchor)
+            handles.append(_windows_open(current,os.O_RDONLY,True))
+            for part in root.parts[1:]:
+                current=current/part
+                try:fd=_windows_open(current,os.O_RDONLY,True)
+                except FileNotFoundError:
+                    current.mkdir();fd=_windows_open(current,os.O_RDONLY,True)
+                handles.append(fd)
+        else:
+            handles.append(os.open(root.anchor,os.O_RDONLY|os.O_DIRECTORY))
+            for part in root.parts[1:]:
+                try:fd=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=handles[-1])
+                except FileNotFoundError:
+                    os.mkdir(part,mode=0o700,dir_fd=handles[-1])
+                    fd=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=handles[-1])
+                handles.append(fd)
+        _local.root=root;_local.root_fd=handles[-1]
+        yield
+    finally:
+        for fd in reversed(handles):os.close(fd)
+
+
+def _open_fd(path,flags):
+    if os.name=='nt':fd=_windows_open(path,flags)
+    else:fd=os.open(path.name,flags|os.O_NOFOLLOW,0o600,dir_fd=_local.root_fd)
+    st=os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode) or st.st_nlink!=1:
+        os.close(fd);raise DiagnosticStorageError('diagnostic-storage-linked')
+    return fd
+
+
+def _read_fd(fd):
+    os.lseek(fd,0,os.SEEK_SET)
+    chunks=[]
+    while True:
+        data=os.read(fd,65536)
+        if not data:break
+        chunks.append(data)
+        if sum(map(len,chunks))>FILE_BYTES:raise DiagnosticStorageError('diagnostic-file-budget-invalid')
+    return b''.join(chunks)
+
+
+def _identity(fd):
+    st=os.fstat(fd)
+    return [st.st_dev,st.st_ino]
+
+
 @contextmanager
 def _transaction(root):
-    with _guard:
-        _safe(root);root.mkdir(parents=True,exist_ok=True)
-        lock=root/LOCK;_safe(lock)
-        if lock.exists() and (not lock.is_file() or lock.stat().st_size):
-            raise DiagnosticStorageError('diagnostic-lock-invalid')
-        fd=os.open(lock,os.O_RDWR|os.O_CREAT|getattr(os,'O_NOFOLLOW',0),0o600)
-        if os.fstat(fd).st_nlink != 1:
-            os.close(fd);raise DiagnosticStorageError('diagnostic-lock-linked')
+    with _guard:guard=_root_guards.setdefault(str(root),threading.RLock())
+    with guard, _pinned_root(root):
+        try:fd=_open_fd(root/LOCK,os.O_RDWR|os.O_CREAT|os.O_EXCL)
+        except FileExistsError:fd=_open_fd(root/LOCK,os.O_RDWR)
         locked=False
         try:
+            if os.fstat(fd).st_size:raise DiagnosticStorageError('diagnostic-lock-invalid')
             if os.name=='nt':
                 import msvcrt
                 msvcrt.locking(fd,msvcrt.LK_NBLCK,1)
             else:
                 import fcntl
                 fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
-            locked=True
-            yield
+            locked=True;yield
         finally:
-            if locked:
-                if os.name=='nt':
-                    import msvcrt
-                    os.lseek(fd,0,os.SEEK_SET);msvcrt.locking(fd,msvcrt.LK_UNLCK,1)
-                else:
-                    import fcntl
-                    fcntl.flock(fd,fcntl.LOCK_UN)
+            if locked and os.name!='nt':
+                import fcntl
+                fcntl.flock(fd,fcntl.LOCK_UN)
             os.close(fd)
 
 
 def _read(root):
-    p=root/REGISTRY;_safe(p)
-    if not p.exists():return {}
-    if not p.is_file() or p.stat().st_size>128*1024:raise DiagnosticStorageError('diagnostic-registry-invalid')
+    try:fd=_open_fd(root/REGISTRY,os.O_RDONLY)
+    except FileNotFoundError:_local.journal=None;return {}
     try:
-        record=json.loads(p.read_text('utf-8'))
-        files=record['files']
+        data=_read_fd(fd);_local.journal=(_identity(fd),data)
+    finally:os.close(fd)
+    if len(data)>128*1024:raise DiagnosticStorageError('diagnostic-registry-invalid')
+    try:
+        record=json.loads(data);files=record['files']
         if record['schema']!='diagnostic-ownership-v1' or not isinstance(files,dict) or len(files)>ROOT_FILES+2:raise ValueError()
         for name,r in files.items():
             if not LOG_NAME.fullmatch(name) or len(name)>180 or not isinstance(r,dict):raise ValueError()
@@ -87,38 +155,42 @@ def _read(root):
 
 
 def _save(root,files):
-    path=root/REGISTRY;_safe(path)
-    # Preserve crash leftovers/unknown files but do not add unbounded debris.
-    import itertools
-    leftovers=list(itertools.islice(root.glob('.diagnostic-ownership-*.tmp'),5))
-    if len(leftovers)>4 or sum(p.lstat().st_size for p in leftovers)>512*1024:
-        raise DiagnosticStorageError('diagnostic-journal-reserve-unavailable')
-    fd,name=tempfile.mkstemp(prefix='.diagnostic-ownership-',suffix='.tmp',dir=root)
+    data=json.dumps(dict(schema='diagnostic-ownership-v1',files=files),separators=(',',':')).encode()
+    if len(data)>128*1024:raise DiagnosticStorageError('diagnostic-registry-invalid')
+    expected=_local.journal
+    fd=_open_fd(root/REGISTRY,os.O_RDWR if expected else os.O_RDWR|os.O_CREAT|os.O_EXCL)
     try:
-        with os.fdopen(fd,'wb') as h:
-            h.write(json.dumps(dict(schema='diagnostic-ownership-v1',files=files),separators=(',',':')).encode())
-            h.flush();os.fsync(h.fileno())
-        os.replace(name,path)
-    finally:Path(name).unlink(missing_ok=True)
+        if expected and (_identity(fd)!=expected[0] or _read_fd(fd)!=expected[1]):
+            raise DiagnosticStorageError('diagnostic-journal-changed')
+        os.lseek(fd,0,os.SEEK_SET)
+        if os.write(fd,data)!=len(data):raise DiagnosticStorageError('diagnostic-short-write')
+        os.ftruncate(fd,len(data));os.fsync(fd)
+        _local.journal=(_identity(fd),data)
+    finally:os.close(fd)
 
 
 def _verified(root,name,entry):
-    p=root/name;_safe(p)
-    if not p.is_file() or p.stat().st_size!=entry['bytes']:return False
-    return hashlib.sha256(p.read_bytes()).hexdigest()==entry['sha256']
-
-
-def _entry(path,now):
-    data=path.read_bytes()
-    return dict(bytes=len(data),sha256=hashlib.sha256(data).hexdigest(),writtenAt=now)
+    try:fd=_open_fd(root/name,os.O_RDONLY)
+    except FileNotFoundError:return False
+    try:
+        data=_read_fd(fd)
+        return (len(data)==entry['bytes'] and hashlib.sha256(data).hexdigest()==entry['sha256']
+                and _identity(fd)==entry.get('identity'))
+    finally:os.close(fd)
 
 
 def _append(path,data):
-    # Single complete UTF-8 JSON line, no character-based size prediction.
-    with path.open('ab') as h:
-        count=h.write(data)
-        if count!=len(data):raise DiagnosticStorageError('diagnostic-short-write')
-        h.flush()
+    expected=_local.expected
+    fd=_open_fd(path,os.O_RDWR if expected else os.O_RDWR|os.O_CREAT|os.O_EXCL)
+    try:
+        before=_read_fd(fd)
+        if expected and (_identity(fd)!=expected.get('identity') or len(before)!=expected['bytes'] or hashlib.sha256(before).hexdigest()!=expected['sha256']):
+            raise DiagnosticStorageError('diagnostic-ownership-unavailable')
+        os.lseek(fd,0,os.SEEK_END)
+        if os.write(fd,data)!=len(data):raise DiagnosticStorageError('diagnostic-short-write')
+        return dict(bytes=len(before)+len(data),sha256=hashlib.sha256(before+data).hexdigest(),
+                    writtenAt=_local.now,identity=_identity(fd))
+    finally:os.close(fd)
 
 
 def encode_record(row,limit):
@@ -140,36 +212,20 @@ class BatchStorageError(DiagnosticStorageError):
 
 
 def _append_owned(root,path,previous,files,data,file_limit,root_limit,max_files,max_age,now):
-    # Verify before every mutation. Existing unknown files are never adopted.
-    for p in (path,previous):
-        _safe(p)
-        if p.exists() and (p.name not in files or not _verified(root,p.name,files[p.name])):
-            raise DiagnosticStorageError('diagnostic-ownership-unavailable')
-    # Discard absent ledger entries only; never remove an unknown path.
-    files={n:r for n,r in files.items() if (root/n).exists() or (root/n).is_symlink()}
-    rotate=path.exists() and path.stat().st_size+len(data)>file_limit
-    projected=dict(files)
-    if rotate:
-        projected.pop(previous.name,None)
-        projected[previous.name]=projected.pop(path.name)
-    projected[path.name]=dict(bytes=(0 if rotate or not path.exists() else path.stat().st_size)+len(data),sha256='',writtenAt=now)
-    # Protect both active stream files; retire only verified historical files.
-    victims=[]
-    for name,r in sorted(projected.items(),key=lambda pair:pair[1]['writtenAt']):
-        over=sum(x['bytes'] for x in projected.values())>root_limit or len(projected)>max_files
-        expired=now-r['writtenAt']>max_age
-        if name==path.name or (rotate and name==previous.name) or not (over or expired):continue
-        if name not in files or not _verified(root,name,files[name]):continue
-        victims.append(name);projected.pop(name)
-    if sum(x['bytes'] for x in projected.values())>root_limit or len(projected)>max_files:
+    # No pathname unlink/replace: retirement cannot safely prove a later
+    # pathname still denotes the verified file. Keep both fixed slots, then
+    # reject writes at capacity. No auto-adoption of pre-handle-era ledgers.
+    files=dict(files)
+    target=path
+    if path.name in files and files[path.name]['bytes']+len(data)>file_limit:target=previous
+    expected=files.get(target.name)
+    if expected and expected['bytes']+len(data)>file_limit:
+        raise DiagnosticStorageError('diagnostic-stream-budget-exhausted')
+    total=sum(r['bytes'] for r in files.values())+len(data)
+    if total>root_limit or len(files)+(target.name not in files)>max_files:
         raise DiagnosticStorageError('diagnostic-root-budget-unavailable')
-    for name in victims:
-        (root/name).unlink();files.pop(name)
-    if rotate:
-        os.replace(path,previous)
-        files.pop(path.name,None);files[previous.name]=_entry(previous,now)
-    _append(path,data)
-    files[path.name]=_entry(path,now)
+    _local.expected=expected;_local.now=now
+    files[target.name]=_append(target,data)
     return files
 
 

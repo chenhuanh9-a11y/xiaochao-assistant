@@ -1,3 +1,19 @@
+## Safety correction after 4d53 review (supersedes retirement claims below)
+
+Verified-path-then-open/unlink was not race-safe. Log appends now open no-follow
+handles (Windows reparse-point handles with write/delete sharing denied), verify
+file identity/content on that handle, then write and derive ownership on it.
+Parent directories are pinned during each transaction. Journal updates likewise
+validate and write one handle, never replace a potentially substituted pathname.
+
+Automatic unlink/rename/age retirement is DISABLED. Two fixed 1 MiB slots per
+stream and 16 MiB/32 owned files per root remain bounded; after exhaustion writes
+fail explicitly, rather than deleting even a seemingly owned path. Seven-day
+expiry is no longer promised. Existing pre-handle ledgers are not silently
+adopted. Availability cost: old files must be exported and handled manually before
+capacity is reusable. No user disk was cleaned. Interrupted journal writes fail
+closed rather than reconstructing ownership.
+
 # Diagnostic privacy and storage follow-up
 
 Product baseline: `980d64949dcec3bcfb747dbf8bacb6dfc00fbded`.

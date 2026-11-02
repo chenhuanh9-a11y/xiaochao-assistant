@@ -11,27 +11,30 @@ class StorageTests(unittest.TestCase):
             # Trusted Unicode fixtures isolate the UTF-8 byte writer.
             p=Path(folder)/'events-budget.jsonl'
             # Structural stack text is multibyte-safe; generic text is redacted.
-            for i in range(100):
+            for i in range(2):
                 storage.append_record(p,dict(event='capture-error',seq=i,actual='中文'*40),file_limit=512)
             storage.append_record(p,dict(event='capture-error',seq=100,actual='中文'*1000),file_limit=512)
+            with self.assertRaises(OSError):
+                for i in range(100):storage.append_record(p,dict(event='capture-error',seq=i,actual='中文'*40),file_limit=512)
             logs=list(Path(folder).glob('*.jsonl'))
             self.assertEqual(len(logs),2)
+            rows=[]
             for log in logs:
                 self.assertLessEqual(log.stat().st_size,512)
-                for line in log.read_bytes().splitlines():json.loads(line)
-            self.assertTrue(json.loads(p.read_bytes().splitlines()[-1])['diagnosticRecordTruncated'])
+                rows.extend(json.loads(line) for line in log.read_bytes().splitlines())
+            self.assertTrue(any(row.get('diagnosticRecordTruncated') for row in rows))
 
-    def test_history_budget_and_age_only_retire_verified_owned_files(self):
+    def test_history_budget_refuses_growth_without_retiring_files(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);unknown=root/'events-unknown.jsonl';unknown.write_text('keep-user-file')
-            for i in range(12):
+            for i in range(4):
                 storage.append_record(root/f'events-owned-{i}.jsonl',dict(event='capture-error',seq=i),
                     file_limit=512,root_limit=2048,max_files=4,now=i*100,max_age=150)
-            self.assertEqual(unknown.read_text(),'keep-user-file')
-            owned=json.loads((root/storage.REGISTRY).read_text())['files']
-            self.assertLessEqual(len(owned),4)
-            self.assertLessEqual(sum(x['bytes'] for x in owned.values()),2048)
-            self.assertTrue(all(1100-x['writtenAt']<=150 for x in owned.values()))
+            before={p.name:p.read_bytes() for p in root.glob('*.jsonl')}
+            with self.assertRaises(OSError):
+                storage.append_record(root/'events-new.jsonl',dict(event='capture-error'),
+                    file_limit=512,root_limit=2048,max_files=4,now=1000,max_age=150)
+            self.assertEqual(before,{p.name:p.read_bytes() for p in root.glob('*.jsonl')})
 
     def test_unknown_changed_hardlinked_and_symlink_targets_are_preserved(self):
         with tempfile.TemporaryDirectory() as folder:

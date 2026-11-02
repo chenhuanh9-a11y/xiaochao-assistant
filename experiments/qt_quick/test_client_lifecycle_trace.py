@@ -121,7 +121,8 @@ class LifecycleTraceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="xingtu-trace-rotation-") as directory:
             path = Path(directory) / "lifecycle-detail.jsonl"
             with patch.object(tracing, "LOG_MAX_BYTES", 1024):
-                tracing._write_batch(path, [dict(event="qt-lifecycle-detail", stage="runtime-result", reason="x"*96)]*50)
+                with self.assertRaises(OSError):
+                    tracing._write_batch(path, [dict(event="qt-lifecycle-detail", stage="runtime-result", reason="x"*96)]*50)
             files = sorted(Path(directory).glob("*.jsonl"))
             self.assertEqual(len(files), 2)
             self.assertTrue(all(file.stat().st_size < 1024 for file in files))
