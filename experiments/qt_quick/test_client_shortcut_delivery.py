@@ -330,6 +330,9 @@ class ShortcutDeliveryTests(unittest.TestCase):
                 count = len(self.actions)
                 self.key(vk); self.key(vk); self.key(vk, False)
                 self.assertEqual(self.actions[count:], ['toggle-panel'])
+                # Management now persists Qt controls intent. The next recorder
+                # is intentionally unavailable until that accepted write ends.
+                self.storage.wait(lambda: not self.settings.pendingWrites)
         finally:
             self.settings.cancelShortcutCapture(); view.close(); view.deleteLater(); self.app.processEvents()
 

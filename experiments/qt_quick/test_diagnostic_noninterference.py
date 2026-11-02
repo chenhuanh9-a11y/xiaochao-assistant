@@ -1,4 +1,4 @@
-"""Same synthetic inputs against the exact main source and current code.
+"""Same synthetic inputs against pinned diagnostic and approved feature baselines.
 
 OS/pixels/resources/fit measurements are fixtures. Capture guards and runtime
 commit/pose decisions run unchanged. This is not a real game test.
@@ -41,6 +41,20 @@ def baseline(relative, name):
     return module
 
 
+def capture_baseline(key, name):
+    record = MANIFEST['approvedCaptureBaselines'][key]
+    expected = {'capture_diagnostic_only': '76546adebacdb90a334128837a5f749fa92a680b',
+                'capture_focus_feature': '382d705ab8cf570755f6c346a6b9e35eed1947e7'}
+    payload = (FIXTURES / record['fixture']).read_bytes()
+    if (record['sourceCommit'] != expected[key]
+            or hashlib.sha256(payload).hexdigest() != record['sha256']):
+        raise ValueError('approved capture fixture identity mismatch')
+    module = types.ModuleType(name)
+    module.__file__ = str(ROOT / record['sourcePath'])
+    exec(compile(payload, module.__file__, 'exec'), module.__dict__)
+    return module
+
+
 class NoninterferenceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -51,6 +65,8 @@ class NoninterferenceTests(unittest.TestCase):
     def test_fixture_loading_never_requires_git_history(self):
         with patch('subprocess.check_output', side_effect=AssertionError('git unavailable')):
             module = baseline('app/difficult_map_ui.py', 'baseline_without_git')
+            capture_baseline('capture_diagnostic_only', 'diagnostic_without_git')
+            capture_baseline('capture_focus_feature', 'feature_without_git')
         self.assertTrue(hasattr(module, 'DifficultMapUI'))
         self.assertEqual(MANIFEST['sourceCommit'], BASE)
 
@@ -146,26 +162,32 @@ class NoninterferenceTests(unittest.TestCase):
         self.assertIsNone(control_band(frame,'nightmare',dict(detectionMode='shape-rejected'),
             dict(layout='unlocalized')))
 
-    def test_foreground_and_cancellation_capture_authority_match_main(self):
+    def test_foreground_and_cancellation_capture_authority_match_approved_baselines(self):
         import client_capture
         from test_client_capture_full import Native, Backend
-        before = baseline('experiments/qt_quick/client_capture.py', 'baseline_capture')
-        for kind in ('disabled', 'foreground', 'cancelled', 'destroyed'):
-            results=[]
-            for module in (before,client_capture):
-                native,backend=Native(),Backend()
-                capture=module.ClientCaptureProvider(native,backend)
-                capture.bindFullClient(42)
-                if kind != 'disabled': capture.enable()
-                if kind == 'foreground': native.foreground_window=lambda:77
-                if kind == 'destroyed': native.is_window=lambda hwnd:False
-                try:
-                    capture.capture(lambda:kind == 'cancelled')
-                except Exception as error:
-                    results.append((type(error).__name__,str(error),list(backend.captures)))
-                finally: capture.shutdown()
-            self.assertEqual(results[0],results[1],kind)
-            self.assertFalse(results[0][2],kind)
+        original = baseline('experiments/qt_quick/client_capture.py', 'baseline_capture')
+        diagnostic_only = capture_baseline('capture_diagnostic_only', 'capture_diagnostic_only')
+        approved_focus = capture_baseline('capture_focus_feature', 'capture_focus_feature')
+        # Retain the original log-only contract, then check the approved feature
+        # contract. Typed preflight is a feature change, not diagnostic drift.
+        for before, after in ((original, diagnostic_only), (approved_focus, client_capture)):
+            for kind in ('disabled', 'foreground', 'cancelled', 'destroyed'):
+                results=[]
+                for module in (before, after):
+                    native,backend=Native(),Backend()
+                    capture=module.ClientCaptureProvider(native,backend)
+                    capture.bindFullClient(42)
+                    if kind != 'disabled': capture.enable()
+                    if kind == 'foreground': native.foreground_window=lambda:77
+                    if kind == 'destroyed': native.is_window=lambda hwnd:False
+                    try:
+                        capture.capture(lambda:kind == 'cancelled')
+                    except Exception as error:
+                        results.append((type(error).__name__,str(error),list(backend.captures)))
+                    finally: capture.shutdown()
+                self.assertEqual(len(results), 2, kind)
+                self.assertEqual(results[0],results[1],kind)
+                self.assertFalse(results[0][2],kind)
 
     def test_capture_authorization_source_is_byte_identical_to_main(self):
         for relative in ('app/client_region_capture.py',
@@ -174,12 +196,89 @@ class NoninterferenceTests(unittest.TestCase):
                              MANIFEST['files'][relative]['sha256'], relative)
 
     def test_capture_source_change_is_only_foreign_metadata(self):
-        original = (FIXTURES / MANIFEST['files']['experiments/qt_quick/client_capture.py']['fixture']).read_bytes()
-        original = original.decode('utf-8')
-        start = original.index('                error.capture_diagnostics = dict(expectedHwnd=hwnd, foregroundHwnd=foreground)')
-        end = original.index('                raise error', start)
-        expected = original[:start] + "                error.capture_diagnostics = dict(expectedHwnd=hwnd, foregroundRole='other')\n" + original[end:]
-        self.assertEqual(expected, (ROOT/'experiments/qt_quick/client_capture.py').read_text('utf-8'))
+        original = (FIXTURES / MANIFEST['files']['experiments/qt_quick/client_capture.py']['fixture']).read_text('utf-8')
+        records = MANIFEST['approvedCaptureBaselines']
+        historical = (FIXTURES / records['capture_diagnostic_only']['fixture']).read_text('utf-8')
+        feature = (FIXTURES / records['capture_focus_feature']['fixture']).read_text('utf-8')
+        current_source = (ROOT/'experiments/qt_quick/client_capture.py').read_text('utf-8')
+        for before, after, end_marker in (
+                (original, historical, '                raise error'),
+                (feature, current_source, '                # Metadata only:')):
+            start = before.index('                error.capture_diagnostics = dict(expectedHwnd=hwnd, foregroundHwnd=foreground)')
+            end = before.index(end_marker, start)
+            expected = before[:start] + "                error.capture_diagnostics = dict(expectedHwnd=hwnd, foregroundRole='other')\n" + before[end:]
+            self.assertEqual(expected, after)
+
+    def _recapture_with_diagnostics(self, mode, boundary, enabled):
+        from contextlib import ExitStack
+        from types import SimpleNamespace
+        from test_client_live_runtime import LiveRuntimeContracts
+        from test_client_capture_full import Native, Backend
+        from client_capture import ClientCaptureProvider
+        from client_region_capture import ClientCaptureContext
+        fixture = LiveRuntimeContracts('test_ui_snapshot_does_not_copy_solver_evidence_or_change_candidate_identity')
+        events, measurements = [], []
+        with ExitStack() as stack:
+            if sys.platform != 'win32':
+                stack.enter_context(patch.dict(sys.modules, identityv_live_mvp=SimpleNamespace(
+                    client_frame_is_blank=lambda pixels: not pixels.any())))
+            fixture.setUp()
+            stack.callback(fixture.doCleanups)
+            runtime = fixture.runtime
+            native, backend = Native(), Backend()
+            capture = ClientCaptureProvider(native, backend)
+            stack.callback(capture.shutdown)
+            capture.bindFullClient(42)
+            runtime._capture = capture
+            runtime.set_event_callback(events.append)
+            runtime._diagnostics = SimpleNamespace(record=lambda *a, **kw: measurements.append((a, kw))) if enabled else None
+            runtime.set_failure_sampling_enabled(enabled)
+            runtime.set_automatic_failure_sampling_enabled(enabled)
+            if not enabled:
+                stack.enter_context(patch.object(runtime, '_recognition_diagnostic'))
+                stack.enter_context(patch.object(runtime, '_automatic_failure_sample'))
+            if mode == 'difficult':
+                self.assertTrue(fixture.dispatch('set_context', mode=mode)['success'])
+            self.assertTrue(fixture.dispatch('start_round')['success'])
+            self.assertTrue(fixture.dispatch('capture_now')['success'])
+            old = runtime.snapshot()['pendingRenderToken']
+            before = len(backend.captures)
+            native.foreground_window = lambda: 77
+            if boundary == 'closed': fixture.dispatch('close_map')
+            elif boundary == 'rebound': capture.bindFullClient(42); capture.enable()
+            elif boundary == 'disabled': capture.disable()
+            elif boundary == 'geometry': backend.current = ClientCaptureContext((100,80), (20,30,120,110), 144)
+            elif boundary == 'revoked': runtime._core.revoke_display(reason='fixture-authority-expired')
+            elif boundary == 'acquired-error':
+                native.foreground_window = lambda: 42
+                backend.on_capture = lambda: setattr(native, 'foreground_window', lambda: 77)
+            receipt = fixture.dispatch('capture_now')
+            state = runtime.snapshot()
+            self.assertFalse(receipt['success'])
+            retained = state['pendingRenderToken'] == old
+            self.assertEqual(retained, boundary == 'valid', boundary)
+            self.assertEqual(len(backend.captures) - before, int(boundary == 'acquired-error'))
+            if boundary == 'valid':
+                self.assertTrue(receipt['reason'].startswith('CaptureForegroundUnavailable:'))
+                self.assertEqual(receipt['captureDiagnostics']['foregroundRole'], 'other')
+                self.assertNotIn('foregroundHwnd', receipt['captureDiagnostics'])
+                self.assertNotIn('foregroundPid', receipt['captureDiagnostics'])
+            if enabled:
+                self.assertTrue(measurements)
+                self.assertTrue(any(row['event'] == 'recognition-diagnostic' for row in events))
+            else:
+                self.assertFalse(measurements)
+                self.assertFalse(any(row['event'] == 'recognition-diagnostic' for row in events))
+            # Compare actual feature behavior, not random render tokens or timings.
+            return (receipt['success'], receipt['reason'], receipt.get('errorPhase'),
+                    retained, state['displayAuthorized'], len(backend.captures) - before)
+
+    def test_approved_recapture_feature_diagnostics_off_on_preserve_authority(self):
+        for mode in ('nightmare', 'difficult'):
+            for boundary in ('valid', 'closed', 'rebound', 'disabled', 'geometry', 'revoked', 'acquired-error'):
+                with self.subTest(mode=mode, boundary=boundary):
+                    self.assertEqual(self._recapture_with_diagnostics(mode, boundary, False),
+                                     self._recapture_with_diagnostics(mode, boundary, True))
 
     def test_difficult_region_override_is_actual_logged_floor_and_source(self):
         from test_client_floor_region import hud, REGION

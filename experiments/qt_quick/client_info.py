@@ -35,7 +35,9 @@ class ClientInfoService(QObject):
         self._app_version = version.get("version", "unknown")
         self._build_fingerprint = "UNKNOWN"
         self._package_metadata = {}
-        profile_path = self.paths.resource_root / "installation-profile.json"
+        # Frozen build identity belongs to this running bundle, never the
+        # retained isolated resource/data sandbox (which may predate upgrades).
+        profile_path = (ROOT if getattr(sys, 'frozen', False) else self.paths.resource_root) / "installation-profile.json"
         try:
             if profile_path.stat().st_size <= 1024 * 1024:
                 profile = json.loads(profile_path.read_text(encoding="utf-8"))
@@ -51,6 +53,10 @@ class ClientInfoService(QObject):
             app_version=self._app_version, build_fingerprint=self._build_fingerprint), **self._package_metadata)
         from runtime_environment_diagnostics import source_revision
         self._source_revision = source_revision(ROOT)
+        self._source_commit = self._package_metadata.get('qtSourceCommit') or ''
+        if not getattr(sys, 'frozen', False):
+            self._source_commit = (self._source_commit or self._package_metadata.get('releaseReportSourceCommit')
+                                   or self._source_revision.get('commit') or '')
         self._include_failure_evidence = False
         self._include_automatic_failure_evidence = False
         self._automatic_sampling_pending = None
@@ -246,7 +252,7 @@ class ClientInfoService(QObject):
         if callable(configure) and problems is not None:
             configure(event_path=str(getattr(problems, 'log_path', '') or ''),
                 build_fingerprint=self._build_fingerprint,
-                source_commit=self._package_metadata.get('qtSourceCommit') or self._package_metadata.get('releaseReportSourceCommit') or self._source_revision.get('commit') or '')
+                source_commit=self._source_commit)
         self._set_failure_sampling(self._include_failure_evidence)
         settings = providers.get('settings')
         if settings is not None and hasattr(settings, 'changed'):

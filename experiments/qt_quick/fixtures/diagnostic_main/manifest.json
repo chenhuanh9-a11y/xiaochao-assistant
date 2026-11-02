@@ -23,5 +23,19 @@
     "experiments/qt_quick/client_capture_exclusion.py": {
       "sha256": "f506688c828c97379b74150a539d378c083d8f3b5304cd83587d2366b12b28ef"
     }
+  },
+  "approvedCaptureBaselines": {
+    "capture_diagnostic_only": {
+      "sourceCommit": "76546adebacdb90a334128837a5f749fa92a680b",
+      "sourcePath": "experiments/qt_quick/client_capture.py",
+      "fixture": "capture_diagnostic_only.py.baseline",
+      "sha256": "d6878b191f84ce36b64a81ccb53365eeec6b420582b1f38d681c17fdad5aa70c"
+    },
+    "capture_focus_feature": {
+      "sourceCommit": "382d705ab8cf570755f6c346a6b9e35eed1947e7",
+      "sourcePath": "experiments/qt_quick/client_capture.py",
+      "fixture": "capture_focus_feature.py.baseline",
+      "sha256": "ff8caa733507613a6d073bee0e45d665a3d8daa418f534f5cbd7ff870aa250a5"
+    }
   }
 }

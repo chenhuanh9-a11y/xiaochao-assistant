@@ -96,6 +96,33 @@ class ProblemTests(unittest.TestCase):
             self.assertNotIn('Private/Player',payload)
         self.assertFalse(warnings,warnings);window.hide();engine.deleteLater();QTest.qWait(10)
 
+    def test_closed_reason_survives_problem_disk_and_export_without_free_text(self):
+        from client_problem_messages import operation_problem
+        from diagnostic_privacy import sanitize_log_payload
+        for reason in ('identity-not-uniquely-verified', 'structure-current-geometry-failed'):
+            row = operation_problem(dict(reason=reason, action='map'), dict(mode='nightmare'))
+            row['captureDiagnostics'] = dict(window=dict(role='other', pid=12345, name='PrivateMessenger'), foregroundPid=98765)
+            row['raw'] += ' PrivatePlayer C:/private/account.txt'
+            self.service.record(row)
+        # A direct emitter must not bypass the closed code selection either.
+        self.service.record(event(reason='PrivatePlayer C:/private/account.txt'))
+        self.drain()
+        payload = self.service.log_path.read_bytes()
+        rows = [json.loads(line) for line in payload.splitlines()]
+        self.assertEqual([r['reason'] for r in rows], ['identity-not-uniquely-verified', 'structure-current-geometry-failed', 'unknown-operation-failure'])
+        exported = sanitize_log_payload(payload).decode()
+        bundle = export_safe_diagnostic_bundle(self.root, self.root/'work/nightmare-live',
+            app_version='fixture', build_fingerprint='TEST0001', destination=self.root/'reasons.zip',
+            summary={'recentProblems': self.service.recent})
+        with zipfile.ZipFile(bundle['path']) as archive:
+            exported += ''.join(archive.read(name).decode('utf-8') for name in archive.namelist()
+                                if name.startswith('logs/events-'))
+        for reason in ('identity-not-uniquely-verified', 'structure-current-geometry-failed'):
+            self.assertIn(reason, exported)
+        for secret in ('PrivatePlayer', 'private/account', 'PrivateMessenger', '98765', '12345'):
+            self.assertNotIn(secret, exported)
+        self.assertIn('<redacted-text>', exported)
+
     def test_coalescing_bounded_queue_and_shutdown_drains_callback(self):
         started=threading.Event();release=threading.Event();accepted=[];threads=[]
         original=problems._write_batch

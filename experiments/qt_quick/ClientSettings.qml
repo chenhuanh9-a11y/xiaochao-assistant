@@ -281,7 +281,7 @@ Item {
                                 Repeater {
                                     model: [
                                         {key: "referenceSheetVisible", title: "显示定点地图"},
-                                        {key: "orbVisible", title: "显示悬浮球"},
+                                        {key: "qtControlsVisible", title: "显示游戏控件"},
                                         {key: "reduceMotion", title: "减弱动态效果"},
                                         {key: "uiSoundEnabled", title: "界面提示音"}
                                     ]
@@ -291,7 +291,12 @@ Item {
                                         text: modelData.title
                                         font.family: "Microsoft YaHei UI"; font.pixelSize: 13
                                         checked: root.preferences[modelData.key]
-                                        onToggled: settingsService.setValue(modelData.key, checked)
+                                        onToggled: {
+                                            if (modelData.key === "qtControlsVisible") {
+                                                if (checked) clientCoordinator.showControls()
+                                                else clientCoordinator.hideControls()
+                                            } else settingsService.setValue(modelData.key, checked)
+                                        }
                                     }
                                 }
                             }

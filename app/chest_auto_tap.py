@@ -131,8 +131,9 @@ class ChestAutoTap:
     After the bounded retry budget, the ledger stays visible for diagnosis.
     """
 
-    def __init__(self, path: Path, *, target_window, reserved=lambda: {}):
+    def __init__(self, path: Path, *, target_window, reserved=lambda: {}, require_release=False):
         self.path = Path(path)
+        self._require_release = require_release
         self._target_window = target_window  # Callable returning the game HWND or None.
         self._reserved = reserved
         self._lock = threading.Lock()
@@ -343,6 +344,8 @@ class ChestAutoTap:
 
     def _run(self):
         next_tap = 0.0
+        release_generation = None
+        released = False
         while True:
             self._wake.clear()
             with self._lock:
@@ -372,14 +375,24 @@ class ChestAutoTap:
                 continue
             try:
                 hold_vk, tap_vk = TRIGGER_VKS[settings["holdKey"]], KEY_NAMES[settings["tapKey"]]
+                if generation != release_generation:
+                    release_generation, released = generation, False
+                # Qt restores opt-in, not a physical key gesture. Observe release
+                # in the native owner too: UI polling can miss a short focus loss.
+                if not self._in_game():
+                    released = False
+                    self._set_status("游戏窗口不在前台，暂不连发", holding=False)
+                    next_tap = 0.0
+                    self._wake.wait(POLL_SECONDS)
+                    continue
                 if not key_down(hold_vk):
+                    released = True
                     self._set_status(f"等待按住 {settings['holdKey']}", holding=False)
                     next_tap = 0.0
                     self._wake.wait(POLL_SECONDS)
                     continue
-                if not self._in_game():
-                    self._set_status("游戏窗口不在前台，暂不连发", holding=False)
-                    next_tap = 0.0
+                if self._require_release and not released:
+                    self._set_status("请松开触发键后再按住", holding=False)
                     self._wake.wait(POLL_SECONDS)
                     continue
                 now = time.perf_counter()
@@ -401,11 +414,18 @@ class ChestAutoTap:
                 try:
                     deadline = now + min(PRESS_MS, settings["intervalMs"] / 2) / 1000
                     while (time.perf_counter() < deadline and self._active(generation)
-                           and key_down(hold_vk) and self._in_game()):
+                           and key_down(hold_vk)):
+                        if not self._in_game():
+                            # Latch the observation itself. Focus may return before
+                            # key-up completes or before the adapter polls again.
+                            released = False
+                            break
                         self._wake.wait(min(POLL_SECONDS, max(0, deadline - time.perf_counter())))
                         self._wake.clear()
                 finally:
                     self._release_pending()
+                if not self._in_game():
+                    released = False
                 next_tap = now + settings["intervalMs"] / 1000 if self._active(generation) else 0.0
                 self._set_status(f"正在连发 {settings['tapKey']}，松开 {settings['holdKey']} 停止",
                                  holding=self._active(generation))

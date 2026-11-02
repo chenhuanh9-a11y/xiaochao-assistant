@@ -14,7 +14,7 @@ from pathlib import Path
 import sys
 import tempfile
 
-from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, QEvent, Qt, Signal, Slot
+from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, QEvent, QCoreApplication, Qt, Signal, Slot
 from PySide6.QtGui import QGuiApplication, QKeyEvent
 
 from client_paths import RESOURCE_ROOT as ROOT, WORK_ROOT, runtime_paths
@@ -34,7 +34,7 @@ LEGACY_ACTIONS = ["F5", "F6", "F7", "F8", "F9", "F10", "F11", "", ""]
 FRESH_ACTIONS = ["F9", "F6", "F7", "F8", "", "", "F11", "", "F10",
                  MANUAL_MAP_PICKER_DEFAULT_HOTKEY]
 BOOL_DEFAULTS = {"automaticFailureEvidence": False, "referenceSheetVisible": True, "sheetVisibilityEnabled": True,
-                 "orbVisible": True, "reduceMotion": False, "uiSoundEnabled": False,
+                 "orbVisible": True, "qtControlsVisible": True, "reduceMotion": False, "uiSoundEnabled": False,
                  "difficultGridEnabled": False, "onboardingCompleted": False}
 RANGES = {"sheetOpacity": (0., 1.), "referenceOpacity": (0., 1.),
           "interfaceOpacity": (.65, .95), "sheetScale": (.5, 1.5)}
@@ -179,6 +179,7 @@ class _Write(QRunnable):
 class SettingsService(QObject):
     changed = Signal()
     saved = Signal()
+    controlsVisibilitySaveFailed = Signal(str)
     shortcutRecordingChanged = Signal(bool)
 
     def __init__(self, sandbox: Path):
@@ -190,6 +191,7 @@ class SettingsService(QObject):
         self.pool.setMaxThreadCount(1)
         self._job = None
         self._busy = False
+        self._controls_pending = None
         self._message = ""
         self._read_error = ""
         self._write_error = ""
@@ -228,6 +230,7 @@ class SettingsService(QObject):
     controlLayoutDirty = Property(bool, lambda s: s._draft["gameControlLayout"] != s._baseline["gameControlLayout"]
                                   or "gameControlLayout" in s._repairs, notify=changed)
     busy = Property(bool, lambda s: s._busy, notify=changed)
+    pendingWrites = Property(bool, lambda s: s._busy or s._controls_pending is not None, notify=changed)
     message = Property(str, lambda s: s._message, notify=changed)
     shortcutRecording = Property(bool, lambda s: bool(s._shortcut_target), notify=changed)
     shortcutTarget = Property(str, lambda s: s._shortcut_target, notify=changed)
@@ -628,6 +631,37 @@ class SettingsService(QObject):
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
 
+    @Slot(bool, result=bool)
+    def persistControlsVisibility(self, visible):
+        """Explicit Qt intent only; never infer it from Tk's auto-saved orbVisible.
+
+        One latest-only queue joins the existing writer, without accepting other
+        open drafts. Even explicit True on an old/default file must write a key.
+        """
+        if type(visible) is not bool:
+            return False
+        self._draft["qtControlsVisible"] = visible
+        self._controls_pending = visible
+        self.changed.emit()
+        if self._busy:
+            return True
+        return self._save_pending_controls()
+
+    def _save_pending_controls(self):
+        visible, self._controls_pending = self._controls_pending, None
+        if visible is None:
+            return True
+        # A newer choice may return to the original baseline while an older
+        # opposite write was active. Compare after that write has committed.
+        if (self._raw.get("qtControlsVisible") is visible
+                and self._baseline["qtControlsVisible"] is visible):
+            self.changed.emit()
+            return True
+        accepted = self._save_fields(["qtControlsVisible"], {"qtControlsVisible": visible})
+        if not accepted:
+            self.controlsVisibilitySaveFailed.emit(self._message)
+        return accepted
+
     @Slot(result=bool)
     def save(self):
         return self._save_fields(list(DEFAULTS))
@@ -729,8 +763,20 @@ class SettingsService(QObject):
         self.changed.emit()
         if not error:
             self.saved.emit()
+        elif "qtControlsVisible" in saved_keys:
+            self.controlsVisibilitySaveFailed.emit(self._message)
+        # At most one latest request; a failed write is not retried by itself.
+        self._save_pending_controls()
 
     def shutdown(self):
         """Finish an already accepted write before application teardown."""
         self.cancelShortcutCapture()
+        controls_write = (self._controls_pending is not None
+                          or self._busy and "qtControlsVisible" in self._saving[2])
         self.pool.waitForDone()
+        if controls_write:
+            # Only controls need this extra latest-only drain. Keep ordinary
+            # settings teardown unchanged; no general event-pumping retry loop.
+            QCoreApplication.sendPostedEvents(self, QEvent.MetaCall)
+            self.pool.waitForDone()
+            QCoreApplication.sendPostedEvents(self, QEvent.MetaCall)

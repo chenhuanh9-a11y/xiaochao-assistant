@@ -463,7 +463,7 @@ The coffin selector now follows the original catalog and coordinate-adapter cont
 
 | Additional original action | Existing service | Current Qt consumer (included in 248) |
 | --- | --- | --- |
-| Enable chest auto-tap; select hold/repeat key and interval; show state and stop | `chest_auto_tap.ChestAutoTap`, original `chest-auto-tap.json` | `ClientChestAutoTap.qml` / `ChestAutoTapService`; one owner, explicit per-launch arming, existing conflict checks, validated foreground binding, text/recording/focus/close suspension |
+| Enable chest auto-tap; select hold/repeat key and interval; show state and stop | `chest_auto_tap.ChestAutoTap`, original `chest-auto-tap.json` | `ClientChestAutoTap.qml` / `ChestAutoTapService`; one owner, Qt-specific explicit opt-in restored across launches (legacy enabled is not consent), release-before-press, existing conflict checks, validated foreground binding, text/recording/focus/close suspension |
 
 The authorized editor input now contains 26 maps / 78 typed layers, prepared by `tools/prepare_qt_editor_base.py`. It contains no optional author images. Production uses the old outer editor directory when present, otherwise the baked base. Production installer projection preserves an existing resource plane as a whole; only a fresh installation receives the whole baseline. The editor base is a separate all-or-nothing family. Program/version identity still updates. Synthetic checks pass; no actual installation is inferred.
 
@@ -566,3 +566,53 @@ non-activating picker focus and key routing while the game is foreground, real
 in-game picker→confirm→fit latency, and real-Pack thumbnail decoding/display
 timing. Offline tests use fake native input, temporary images and synthetic
 capture, so they do not constitute a real GUI/game pass.
+
+
+### Qt chest auto-tap: explicit opt-in persistence (2026-11-02)
+
+Production path: `client.py` → `ChestAutoTapService` → `QtChestAutoTap` → the existing
+single native input owner. Only an accepted manual enable in the new Qt UI writes
+`qt-chest-intent.json` with schema `xingtu-qt-chest-explicit-intent-v1` and boolean
+`enabled: true`. The shared Tk/early-Qt `chest-auto-tap.json` remains the key/interval
+source, but its `enabled` bit never authorizes Qt restoration. The separate intent
+file avoids needing a Tk passthrough patch: legacy Tk writes cannot erase it.
+Launch does not migrate/write files or repeatedly show a migration dialog.
+
+Startup explicitly stops the native service. Restored readiness waits for a valid
+binding, matching native identity, enabled input and game foreground. Both the Qt
+adapter and native owner require an observed trigger release before a fresh press;
+focus loss resets this gate, including losses observed between UI polls. A loss
+observed inside the press-duration loop is latched even if foreground returns
+before key-up completes. The native
+owner's new `require_release` option defaults false for legacy Tk. It does not
+replace the existing release ledger or bounded failure retries.
+
+Saved preference, per-session arming and native running are distinct. Conflicts,
+OS/input errors, binding identity loss and end/stop/reset-round pause/disarm input
+without saving false. Binding loss/end-round still require explicit re-arming in
+that session; restarting may restore readiness, never a held-key gesture. The UI
+switch represents the saved preference even while paused (toggle off/on to re-arm).
+Explicit off stops before validation/I/O and saves false even when other entered
+fields are invalid. Shutdown stops without writing false. Save failures are reported
+and fail closed; a failed off-save cannot promise persistence across restart.
+
+Qt writes merge unknown JSON fields and use atomic replacement. Invalid JSON,
+foreign schemas and malformed existing key parameters are retained rather than
+silently replaced; repair the file before enabling. No user configuration or logs
+are checked in. This branch does not implement the separate control-visibility fix.
+
+Validation on Linux/offscreen (native window/key/SendInput boundaries mocked):
+- Baseline `59bba3d`: 109 existing chest/coordinator/session/input-recovery tests pass.
+- Before implementation, new real-file restart and corrupt-file preservation tests
+  fail on baseline (restored readiness false; corrupt shared JSON overwritten).
+- Updated branch (including review regression): 128 tests pass using `PYTHONPATH=app:tests:tools:experiments/qt_quick
+  QT_QPA_PLATFORM=offscreen python -m unittest -v test_client_chest_auto_tap
+  test_client_chest_intent test_chest_auto_tap test_client_coordinator
+  test_client_session test_client_input_recovery`.
+- Coverage includes separate Python-process restarts with real temp JSON, legacy
+  enabled rejection, schema/type checks, unknown/corrupt fields, explicit off,
+  conflicts/faults, first binding and recycled HWND/PID, end-round signal, real
+  worker gesture/release-ledger behavior with mocked native calls, and QML switch.
+- No Windows desktop/game input, installed build, packaging or release was tested.
+  The feature-branch Windows workflow runs offscreen tests only, with read-only
+  repository permissions; it neither builds nor releases anything.

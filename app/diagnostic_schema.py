@@ -1431,3 +1431,15 @@ FIELDS = FIELDS | frozenset({"fixedFloor", "regionRead", "autoRead"})
 CODES = CODES | frozenset({"region", "fixed", "auto-located", "fixed-auto-unread",
     "fixed-region-unavailable", "fixed-region-unavailable-auto-unread",
     "fixed-region-unread", "fixed-region-unread-auto-unread"})
+
+# Reviewed joint Qt reporting evidence; never inferred from free-form messages.
+FIELDS = FIELDS | frozenset({
+    'fitReport', 'attemptCount', 'retryCount', 'firstReason', 'lastReason',
+    'firstDiagnostics', 'lastDiagnostics', 'availability', 'preparationObservation',
+    'observationReason', 'shapeReason', 'floorControlSizeEligible',
+})
+CODES = CODES | frozenset({
+    'map-fit-retry', 'map-fit-waiting', 'map-fit-incomplete', 'not-provided-by-solver',
+})
+EXCEPTIONS = EXCEPTIONS | frozenset({'CaptureForegroundUnavailable'})
+MODULES = MODULES | frozenset({'client_fit_reporting.py'})
