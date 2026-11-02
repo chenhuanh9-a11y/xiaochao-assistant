@@ -117,9 +117,33 @@ class MapIntentResetTests(unittest.TestCase):
                     self.press(keys)
                     self.assertEqual(actions[-1][0], "close_map")
 
-    def test_runtime_floor_unknown_close_reconciles_but_resource_and_focus_do_not(self):
+    def test_observed_open_with_unsupported_floor_keeps_next_key_a_close(self):
         for mode in ("nightmare", "difficult"):
-            for reason, closed in (("floor-unknown", True), ("resource-changed", False),
+            with self.subTest(mode=mode), self.chain(mode) as (owner, live, keys, events, actions):
+                self.press(keys)
+                owner.app.processEvents()
+                self.assertTrue(live.runtime.snapshot()["mapOpen"])
+                self.press(keys)
+                owner.app.processEvents()
+                # The real observation/preparation path sees map-open and F1,
+                # but this synthetic resource contract supports only F2. Do
+                # not stub _observe, preparation, or call invalidate directly.
+                live.runtime._engine.identity_floors = ("2",)
+                with patch.object(runtime_fixture._AlignmentHost, "fit",
+                                  side_effect=AssertionError("unsupported floor must not solve")):
+                    self.press(keys)
+                owner.app.processEvents()
+                packet = next(e for e in reversed(events) if e["event"] == "render-revoked")
+                self.assertEqual(packet["reason"], "floor-unknown")
+                self.assertFalse(live.runtime.snapshot()["displayAuthorized"])
+                self.assertIsNone(live.runtime.render_payload(packet["token"]))
+                self.press(keys)
+                self.assertEqual([a for a, _ in actions], ["map", "close_map", "map", "close_map"])
+                self.assertFalse(actions[-1][1]["openIntent"])
+
+    def test_runtime_floor_resource_and_focus_invalidations_do_not_reset_input(self):
+        for mode in ("nightmare", "difficult"):
+            for reason, closed in (("floor-unknown", False), ("resource-changed", False),
                                    ("foreground-lost", False), ("capture-context-changed", False),
                                    ("floor-changed", False)):
                 with self.subTest(mode=mode, reason=reason), self.chain(mode) as (owner, live, keys, events, actions):

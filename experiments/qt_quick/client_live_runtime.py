@@ -1636,13 +1636,14 @@ class LiveRuntime:
             self._message = str(reason)
             self._publish_game_pointer_context_locked()
             # Only an actual map-close decision reconciles the physical key
-            # toggle. Pure display/focus/resource invalidations are not closes.
+            # toggle. An unsupported floor revokes authority, not physical
+            # map-open intent; display/focus/resource invalidations are not closes.
             # Build/emit while holding this lifetime lock so a newer request
             # cannot lend its sequence or context to an older close decision.
             capture = getattr(self._capture, "snapshot", {})
             capture = capture() if callable(capture) else capture
             self._notify("render-revoked", reason=str(reason), token=previous_token,
-                mapClosed=reason in ("map-closed", "escape", "floor-unknown"),
+                mapClosed=reason in ("map-closed", "escape"),
                 inputSequence=self._last_map_input_sequence,
                 inputWindow=str(capture.get("hwnd", "")))
 
