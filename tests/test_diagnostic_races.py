@@ -45,4 +45,13 @@ class RaceTests(unittest.TestCase):
    with patch.object(s,'_save',side_effect=swap):
     with self.assertRaises(OSError):s.append_record(p,{'event':'capture-error'})
    self.assertEqual(journal.read_text(),'NEW USER FILE')
+ def test_shared_writer_journal_failure_counts_confirmed_row(self):
+  with tempfile.TemporaryDirectory() as d:
+   w=AsyncEventLog(Path(d)/'events.jsonl')
+   with patch.object(s,'_save',side_effect=OSError('journal-denied')):
+    w.emit('capture-error',{});self.assertTrue(w.flush(2))
+   w.close();w.thread.join(1)
+   self.assertEqual(len(w.path.read_bytes().splitlines()),1)
+   self.assertEqual(w.status()['diagnosticLoss']['lostTotal'],0)
+   self.assertEqual(w.status()['failed'],1)
 if __name__=='__main__':unittest.main()

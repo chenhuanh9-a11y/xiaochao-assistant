@@ -119,11 +119,12 @@ class AsyncEventLog:
                 row['diagnosticWriteFailuresTotal'] = self.failed
             try:
                 self._write(row)
-            except Exception:
+            except Exception as error:
                 with self.condition:
                     self.failed += 1
-                    self.dropped += 1
-                    self.identity.drop(row, "write-failed")
+                    if getattr(error, "completed", 0) < 1:
+                        self.dropped += 1
+                        self.identity.drop(row, "write-failed")
             finally:
                 with self.condition:
                     self.active = False
