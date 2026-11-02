@@ -5838,6 +5838,16 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         self.sheet_photo_cache: dict[tuple, np.ndarray] = {}
         self.optimistic_sheet_cycle_id: int | None = None
         self.optimistic_sheet_floor: str | None = None
+        # Startup housekeeping: earlier sessions' logs beyond the export window
+        # and download caches of packages already installed from them.
+        from diagnostic_export import prune_diagnostic_logs
+        prune_diagnostic_logs(LIVE_ROOT, DIAGNOSTIC_LOG_LIMIT - 1)
+        try:
+            from star_map_download import prune_installed_downloads
+            install_root = Path(ROOT).resolve()
+            prune_installed_downloads(install_root / 'work' / 'map-packages' / 'downloads', install_root)
+        except Exception:
+            pass
         self.event_path = LIVE_ROOT / f"events-{datetime.now():%Y%m%d-%H%M%S}.jsonl"
         self._event_log = AsyncEventLog(self.event_path)
         self.diagnostic_export_in_progress = False
