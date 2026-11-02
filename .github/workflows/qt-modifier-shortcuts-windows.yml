@@ -1,8 +1,8 @@
-name: Qt shortcuts Windows (main-based isolated migration)
+name: Qt shortcuts Windows (physical-state and layout fixtures)
 
 on:
   push:
-    branches: [fix/qt-modifier-main-ci-20261102]
+    branches: [fix/qt-modifier-main-ci-20261102, test/qt-shortcut-fixture-readiness-20261102]
   pull_request:
     paths:
       - 'app/**'
@@ -42,6 +42,11 @@ jobs:
       - name: Shortcut regression suite (native packets are fixtures)
         run: |
           python -B -X utf8 -m unittest -v test_client_modifier_shortcuts test_client_native_key_state test_client_native_mouse test_client_input_event_freshness test_client_input_recovery test_client_shortcut_delivery test_client_settings test_client_input
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: External LL review - 11 enhanced cases plus held and unknown counterexamples
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        run: |
+          python -B -X utf8 -m unittest -v test_review_ll_real
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Settings save reload restart dispatch - 20 independent processes
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
