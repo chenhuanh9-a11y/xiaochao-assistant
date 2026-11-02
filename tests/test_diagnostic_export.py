@@ -45,7 +45,8 @@ class DiagnosticExportTests(unittest.TestCase):
         with zipfile.ZipFile(result["path"]) as archive:
             text = archive.read("logs/events-fixture.jsonl")
             self.assertNotIn(b"C:/private", text)
-            self.assertIn(b"<local-path>", text)
+            self.assertNotIn(b"player", text)
+            self.assertLessEqual(len(text), 120)
             manifest = json.loads(archive.read("diagnostic-manifest.json"))
             self.assertTrue(manifest["logs"][0]["truncatedToRecentLines"])
             self.assertTrue(manifest["textOnly"])

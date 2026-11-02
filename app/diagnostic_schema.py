@@ -1,11049 +1,1407 @@
-"""Fixed product diagnostic keys/codes; never extended from input or user files.
-Generated from production source literals; privacy filtering further restricts these.
+"""Fixed production diagnostic schema/codes; not learned from user input.
+Free text and sensitive keys are additionally removed at the disk boundary.
 """
+
 FIELDS = frozenset("""
-problemGroupId
-previousRepeatedCount
-attemptId
-foregroundRole
-ALT
-Accent
-Accept
-AlternateBase
-B1
-BACKSPACE
-BadZipFile
-Base
-BrightText
-Button
-ButtonText
-CAPS
-CAPSLOCK
-CONTROL
-CTRL
-ConnectionError
-DEL
-DELETE
-DOWN
-Dark
-DesktopMainUI
-E
-END
-ENTER
-Enter
-GameControlView
-HOME
-High
-Highlight
-HighlightedText
-HotkeyEditorView
-IDENTITYV_AUTHOR_ROUTE_ASSET_ROOT
-IDENTITYV_AUTHOR_STRUCTURE_INDEX
-IDENTITYV_AUTHOR_STRUCTURE_ROOT
-IDENTITYV_COORDINATE_ADAPTERS_PATH
-IDENTITYV_DIFFICULT_MAPS
-IDENTITYV_DIFFICULT_NATIVE_ROOT
-IDENTITYV_FAST_ALIGNMENT
-IDENTITYV_IDVB0059_STEADY
-IDENTITYV_LEGACY_ASSETS_ROOT
-IDENTITYV_NIGHTMARE_LIVE_ROOT
-IDENTITYV_NIGHTMARE_MAPS
-IDENTITYV_NIGHTMARE_MEMORY_ROOT
-IDENTITYV_NIGHTMARE_RESOURCE_ROOT
-IDENTITYV_REOPEN_DISPLAY_CACHE
-IDENTITYV_REOPEN_FAST_CAPTURE
-IDENTITYV_SHARED_STRUCTURE_INDEX
-IDENTITYV_SHARED_STRUCTURE_ROOT
-INS
-INSERT
-L2gradient
-LEFT
-LOCALAPPDATA
-Light
-Link
-LinkVisited
-Location
-Low
-MEDIA_NEXT
-MEDIA_PLAY_PAUSE
-MEDIA_PREV
-MEDIA_STOP
-MOUSE2
-MOUSE3
-MOUSE4
-MOUSE5
-MapResourceBrowser
-MapResourcesPage
-Medium
-MediumPlus
-Mid
-Midlight
-N
-NIGHTMARE_ALIGNMENT_SOLVER
-NIGHTMARE_DEBUG_FEEDBACK
-NUMLOCK
-NUM_SEPARATOR
-OSError
-PAGEDOWN
-PAGEUP
-PAUSE
-PGDN
-PGUP
-PRINTSCREEN
-PRTSC
-PermissionError
-PlaceholderText
-RBUTTON
-RETURN
-RIGHT
-RIGHTBUTTON
-S
-SCROLLLOCK
-SHIFT
-SPACE
-STAR_MAP_PACKAGE_INDEX_URL
-Shadow
-Space
-System
-TAB
-Tab
-Text
-TimeoutError
-ToolTipBase
-ToolTipText
-UP
-Untrusted
-VOLUME_DOWN
-VOLUME_MUTE
-VOLUME_UP
-W
-Window
-WindowDisplay
-WindowText
-XBUTTON1
-XBUTTON2
-XINGTU_CUSTOM_MAPS_ROOT
-XINGTU_UPDATE_HISTORY_URL
-XINGTU_UPDATE_MANIFEST_URL
-_active_round_layer_group
-_aligned_author_route_image
-_alignment_v2_current_frame_equivalent
-_alignment_v2_failed_input_unchanged
-_alignment_v2_show_overlay
-_allow_scale_recovery
-_backend
-_brown
-_checkpoint_count
-_context
-_coverage
-_discard_rejected_details
-_effective_route_profile
-_entry_validation_context
-_established_members
-_expected_archive
-_fit_only
-_initial_projection
-_initial_regions
-_log
-_log_core_chain_event
-_mark_overlay_display_verified
-_native_group_conflicts
-_native_similarity_resources_ready
-_open_cycle_transient_motion_active
-_precomputed_observation
-_raw
-_reuse_floor_color_mask
-_round_group_floor_view
-_route_cache
-_samples
-_shared_display_bridge
-_shared_display_layer
-_shared_structure_mode_enabled
-_signature
-_source_lines
-_spatial_route_surface_is_visible
-_v2WorkerBaseCanonical
-_v2WorkerBaseRender
-_v2WorkerCrossFloor
-_v2WorkerRenderMatrix
-_v2WorkerRoute
-_v2WorkerStructural
-_v2WorkerStructuralAmbiguity
-_v2WorkerStructuralLandmarks
-_v2WorkerValidationMatrix
-_variants
-a
-absoluteDx
-absoluteDy
-absolutePath
-absoluteScoreMin
-accelerator
-acceptanceProfile
-accepted
-acceptedAsEvidence
-acceptedAt
-acceptedByCurrentBinding
-acceptedCandidateCount
-acceptedCount
-acceptedFloorCount
-acceptedFrameGeneration
-acceptedMapId
-acceptedMapIds
-acceptedPointCount
-acceptedPoseCount
-acceptedPriorAvailable
-acceptedPriorScale
-acceptedPriorUsed
-accepted_prior
-accepts
-accumulatedDiscriminativeEvidence
-accumulator
-acquire_current
-action
-actionHotkeyFieldCount
-actionHotkeys
-actionMs
-action_label
-activation_key_suppressed
-active
-activeAlignmentRequestId
-activeConfirmation
-activeCorrectionGeneration
-activeCycleId
-activeDomainIds
-activeFloor
-activeFrameGeneration
-activeObservation
-activePackageId
-activeResetGeneration
-activeViews
-active_map_cycle_id
-activebackground
-activeforeground
-actual
-actualBytes
-actualConstructor
-actualFloor
-actualSha256
-actualSize
-adaptationGated
-adaptationPolicy
-adapterConnected
-adapterUsed
-adapters
-adaptive
-add
-added
-additionTransactionId
-additions
-adjacentPairs
-adjustedAlpha
-adjusting
-advance_frame
-advanced_targets
-advisoryOnly
-affine
-after
-agreement
-algebraicallyExact
-algorithm
-aligned
-alignedOpacity
-alignedOverlayEligible
-alignedOverlayVisible
-alignedVisible
-alignedWindow
-aligned_overlay_eligible
-aligned_window
-alignment
-alignmentCommitted
-alignmentGeneration
-alignmentInProgress
-alignmentMode
-alignmentModel
-alignmentReady
-alignmentRequestGeneration
-alignmentRequestId
-alignmentStatus
-alignmentV2Candidate
-alignmentV2NextTracker
-alignmentV2WorkerB1UniqueRoom
-alignmentV2WorkerBaseCanonical
-alignmentV2WorkerBaseRender
-alignmentV2WorkerCrossFloor
-alignmentV2WorkerDynamicMotion
-alignmentV2WorkerDynamicTarget
-alignmentV2WorkerExplicit
-alignmentV2WorkerFit
-alignmentV2WorkerNextTracker
-alignmentV2WorkerRecoveryFit
-alignmentV2WorkerRenderMatrix
-alignmentV2WorkerRoute
-alignmentV2WorkerRouteProfileId
-alignmentV2WorkerSiblingCoordinateBasis
-alignmentV2WorkerSiblingSharedSeed
-alignmentV2WorkerSiblingSourceMember
-alignmentV2WorkerStructural
-alignmentV2WorkerStructuralAmbiguity
-alignmentV2WorkerStructuralLandmarks
-alignmentV2WorkerValidationMatrix
-alignment_core_v2
-alignment_succeeded
-alipay
-alive
-allObservedExits
-all_profiles
-all_screens
-all_threads
-allowWideFallback
-allow_clear
-allow_containment
-allow_expansion
-allow_nan
-allow_pickle
-allow_provisional_variant
-allow_scale_recovery
-allow_unusual_scales
-allow_wide_fallback
-allowed
-allowedExitSides
-allowedRatio
-allowed_read_root
-along0
-along1
-alpha
-alreadyConfirmed
-alreadyInstalled
-alreadyPresent
-already_attempted
-alternate
-alternative
-ambiguity
-ambiguousCount
-ambiguousGroups
-ambiguousViews
-ancestorSnapshot
-anchor
-anchorAgeMs
-anchorAlignmentErrorPx
-anchorBottomPosition
-anchorCandidateAttempts
-anchorCapacity
-anchorCenter
-anchorCount
-anchorDistinctMargin
-anchorFloor
-anchorGeometry
-anchorKind
-anchorOffset
-anchorPairs
-anchorPolicy
-anchorPoolKeys
-anchorPoolPresent
-anchorPoolPreserved
-anchorPoolRefreshed
-anchorRatios
-anchorReason
-anchorScale
-anchorScore
-anchorSelection
-anchorSize
-anchorTargetCount
-anchorValidation
-anchor_age_ms
-anchor_count
-anchor_floor
-anchor_kind
-anchor_rect
-anchor_size
-anchor_supported
-anchors
-anchors_before
-angleErrorDegrees
-animate
-anisotropy
-annotated_reference
-announce
-apertureMargin
-apertureSize
-api
-appVersion
-app_version
-appearance
-applicable
-application_idle
-application_stopped
-applied
-apply
-apply_target
-approach
-approachContrast
-approachStrength
-approvedForRuntimeDirectProjection
-archive
-archiveName
-archiveSha256
-area
-areaRatio
-args
-arrowcolor
-aspect
-aspectDifference
-aspectLogError
-aspectRatio
-aspect_ratio
-asset
-assetOverride
-assetSourceDisplayName
-assetSourceId
-asset_base
-asset_root
-assistantIntegrity
-assistant_foreground
-assumptions
-at
-atEvidenceFrame
-atlasVerified
-atol
-attempt
-attemptConsumed
-attemptScope
-attempted
-attempted_token
-attempts
-audience
-authentication
-author
-authorBindings
-authorDisplay
-authorDisplayRequired
-authorError
-authorFilesAdded
-authorFilesAlreadyPresent
-authorFilesReplaced
-authorGeometryErrorUnchanged
-authorLayerCount
-authorReference
-authorResource
-authorRoute
-authorRouteDecodeCalls
-authorRouteDisplayAllowed
-authorRouteEligible
-authorSparseExitContainmentVerified
-authorStatus
-authorVisible
-author_coordinate_adapters
-author_name
-author_profile_id
-author_status
-author_visible_provider
-authoritative
-authorization
-authorizationId
-authorizationMatches
-authorization_id
-authorization_profile_id
-authorized
-authorizedTranslationLimit
-authorizesCrossFloorDisplay
-authorizesCrossFloorProjection
-authorizesDirectDisplay
-authorizesDisplay
-authorizesIdentity
-authorizesMapIdentity
-authorizesPose
-authorizesRoot
-autoImport
-autoPanUpdates
-automatic
-automaticCandidate
-automaticCandidateRows
-automaticFailureEvidence
-automaticFallbackDisabled
-automaticFloor
-automaticGateDetection
-automaticMapLockAllowed
-automaticMapSubmissionAllowed
-automaticMapSubmissionScope
-automatic_failure_only
-automatic_only
-available
-availableCommands
-availableEntryCount
-availableFloors
-availableGeometry
-availableLayerImages
-availableObservationAtWorkerStart
-availableRect
-availableVisualEvidence
-available_rect_px
-awaitingObservation
-axis
-b
-b1Policy
-b1RecoveryEvidence
-b1RecoveryMode
-b1RecoveryPolicy
-b1RecoveryReason
-b1TeleportPolicy
-b1TransitionEvidence
-b1UniqueRoomRefinement
-backdrop
-backdropRatio
-backdropTexture
-backend
-background
-backgroundRevalidated
-backupCount
-backupPath
-badHashes
-bars
-base
-baseCandidate
-baseClientWidth
-baseGroupGeneration
-baseMatrix
-baseMouseDragPreviewOffset
-baseOffset
-baseOpenCycleDragOffset
-baseOpenCycleZoomTransform
-basePoseGeneration
-basePoseRootFingerprint
-baseRenderMatrix
-baseResidual
-baseResourceKey
-baseScore
-baseSeedRevision
-baseSnapshot
-baseToNativeIsIdentity
-base_canonical
-base_render
-baselineRebased
-baselineRefreshed
-basis
-bbox
-bd
-before
-beforeDeadline
-before_publish
-best
-bestCandidates
-bestInliers
-bestLearned
-bestMemorySemantic
-bestScore
-beta
-bg
-bidirectional
-binding
-bindingSuspended
-binding_provider
-bindings
-bitmapBuildCount
-bitmapReuseCount
-blockSize
-blocked
-blockedPaths
-blocking
-blocksSharedProjection
-body
-bold
-border
-borderMode
-borderType
-borderValue
-bordercolor
-borderwidth
-bottom
-bottomControls
-bottomPosition
-boundIdentity
-boundWindow
-bound_identity
-boundary
-boundaryExpanded
-boundedCorrectionStarted
-boundedCrossFloorOnly
-boundedLocalFirst
-boundedWideFallback
-bounds
-boundsClient
-bounds_px
-branchStrengths
-branches
-brightPixels
-brightRatio
-brightnessDeviation
-brown
-budgetExhausted
-budgetMs
-budgetOverrunMs
-budgetSeconds
-budget_exhausted
-budget_ms
-budget_overrun_ms
-budget_seconds
-buildFingerprint
-buildFingerprintConsistent
-buildMode
-build_fingerprint
-builtAt
-bundleId
-busy
-button
-buttons_relevant
-by_id
-byteLimitReached
-bytes
-bytesRead
-cache_candidate
-cache_key
-cachedArchives
-cachedGeneration
-cachedSeedRevalidated
-calculationMs
-calibrated
-calibration
-calibrationProvenance
-calibrationStatus
-callSite
-callback
-callbackMs
-caller
-calls
-canAdjust
-canCancel
-canCheck
-canClear
-canConfirm
-canDownload
-canEdit
-canFinish
-canHide
-canImport
-canRecord
-canRedo
-canRemove
-canShow
-canUndo
-canUse
-cancel
-cancel_event
-cancel_futures
-cancel_path
-cancel_reference_sheet_move
-cancellable
-cancelled
-candidate
-candidateActionsEnabled
-candidateAttempts
-candidateCount
-candidateDiagnostics
-candidateEditMode
-candidateEditModePreserved
-candidateFlowHiddenWhenLocked
-candidateId
-candidateLabel
-candidateMapId
-candidateMapIds
-candidateMapIndexRows
-candidateMemberId
-candidateName
-candidateNormalized
-candidateNormals
-candidateOnly
-candidatePairs
-candidatePoolAfterDirectionCount
-candidatePoolAfterSecondaryCount
-candidatePoolBeforeCount
-candidatePoolDirection
-candidatePoolDirectionReliable
-candidatePoolDirectionSupported
-candidatePoolFallbackReason
-candidatePoolFallbackUsed
-candidatePoolMetrics
-candidatePoolPruningApplied
-candidatePoolScored
-candidatePoolSecondaryStage
-candidatePoolSideDoorStageReady
-candidatePreviewPath
-candidateReason
-candidateReasons
-candidateRetained
-candidateRows
-candidateShellAutoOpened
-candidateSourceFrameGeneration
-candidate_map_id
-candidate_map_ids
-candidates
-canonical
-canonicalCrossFloorSearchCandidates
-canonicalFloor
-canonicalGeometryAccepted
-canonicalGeometryReference
-canonicalGeometryVerifiedFloors
-canonicalGeometryWideRefinement
-canonicalMatrix
-canonicalMatrixSourceToClient
-canonicalPackId
-canonical_geometry_verified
-canonical_matrix
-canonical_matrix_source_to_client
-canonical_profile_id
-canvas
-canvasVisiblePixels
-capabilities
-capstyle
-caption
-capture
-captureAttempts
-captureCapability
-captureContext
-captureDiagnostics
-captureEnabled
-captureErrors
-captureGeneration
-captureInProgress
-captureIntent
-captureMs
-captureReason
-captureRequired
-captureSeconds
-captureSize
-captureStartFrameGeneration
-captureStartedAt
-captureToken
-captureWorkerTotal
-capture_attempts
-capture_context_provider
-capture_generation
-capture_now
-capture_snapshot
-capture_start_frame_generation
-captured
-capturedAt
-capturedBeforeCommit
-capturedMonotonicAt
-captured_at
-captured_at_utc
-captures
-cases
-catalog
-catalog_path
-cell
-cells
-center
-centerClient
-centerDistance
-centerDistancePx
-centerErrorLimitPixels
-centerErrorPixels
-centerProjectionError
-centerSource
-centers
-chain
-chainCount
-chains
-chamferQuality
-changeScore
-change_reference_opacity
-change_sheet_opacity
-changed
-changes
-check
-checked
-checkedLayerCount
-checking
-checkpointMeaning
-checks
-chevron
-children
-choiceAction
-choiceApplied
-choices
-circularity
-class
-classification
-clean
-cleanEntryCount
-cleanMaskSha256
-cleanRecognitionProfileId
-cleanRecognitionReferenceUsed
-cleanReferenceCount
-cleanReferenceUsed
-cleanResourceLoadCalls
-cleanSources
-cleanStructureDescriptorCounts
-clean_sources
-cleanup
-cleanupComplete
-cleanupOnly
-cleanupStatus
-clear_confirmation
-clear_floor_required
-clear_game_intent
-clear_pending
-clickThrough
-clickedFloor
-clickedFloorId
-client
-clientAspect
-clientBounds
-clientCompatibility
-clientCoordinatePolicies
-clientDc
-clientFootprint
-clientHeight
-clientOffset
-clientOrigin
-clientSize
-clientWidth
-clientWidthRatio
-client_bounds
-client_offset
-client_origin
-client_shape
-clipBounds
-clipLimit
-clip_bounds
-clock
-closeButton
-closeControlHit
-closeReady
-close_allowed
-close_fds
-close_kernel_size
-closed
-closedCache
-closing
-clusterMatches
-coalesce_key
-coalesced
-coalescedInputSamples
-coalesced_inputs
-coalesced_samples
-coarsePeakScore
-coarsePoints
-coarseSearchElapsedMs
-coarseSearchScale
-coarseTranslationCorrection
-coarse_motion_hint
-code
-coffinVariantVisible
-collapse_control
-collapsed
-collectionStatus
-collectionTime
-color
-colorConsistency
-colors
-column
-columnspan
-combinedSensor
-combo
-command
-commands
-commit
-commit_core
-commit_group
-committed
-commonRenderedStructureResidual
-commonScale
-common_scale
-compactDock
-compactPosition
-compactWindowAnchor
-compact_min_height
-companyName
-comparedFraction
-compatibleCornerPairs
-compatibleFrames
-compatibleStructureVariants
-competingWins
-competitionComplete
-competitions
-competitiveHypotheses
-competitors
-complete
-completeCoordinatePlaneAcrossFloors
-completeDisplaySet
-completeForeignMapCompetition
-completeHistory
-completeSheetVisible
-completed
-completedAt
-completedAtUTC
-completedObservation
-component
-componentBox
-componentShape
-component_override
-compositeOpen
-compositorMs
-compound
-compression
-compute_uv
-conditionComparisonComplete
-conditionId
-conditionObservations
-conditionReason
-condition_domains
-conditions
-confidence
-confident
-configurationError
-configuration_error
-configured
-configuredCandidateCount
-confirmRouteEnabled
-confirmText
-confirm_inline
-confirm_route
-confirmationCount
-confirmationFrames
-confirmed
-confirmedAt
-confirmedMapOnly
-confirmed_id
-confirmed_map_id
-conflict
-conflictCount
-conflictingHashCount
-conflictingViews
-conflictingWallAxes
-conflicts
-connectionPath
-consecutiveFailures
-consensusCornerMaxPixels
-consensusFrames
-consensusLead
-consensusSpread
-consistencyPixels
-consistencyScope
-constant
-consumed
-consumerKind
-containment
-containmentScore
-containmentSearch
-containsScreenshots
-containsUserPaths
-context
-contextAnchorDescriptor
-contextAnchorTopology
-contextPending
-context_provider
-continuation
-continuity
-continuousRefinementMs
-continuousRefinementReason
-continuousSolver
-continuousSolverMs
-contract
-contradicted
-contradiction
-contrast
-contrastSupportedEdges
-contrastThreshold
-control
-controlBounds
-controlCollapsed
-controlFloorText
-controlPoints
-controlScale
-controlStatusText
-controlVertical
-controlVisible
-controls
-conversion
-conversionError
-convertedFrom
-coordinate
-coordinateBasis
-coordinateBridge
-coordinateEvidence
-coordinateHeight
-coordinatePackId
-coordinateReferenceProfileId
-coordinateSpace
-coordinateWidth
-coordinate_pack_id
-coordinate_space
-coordinates
-coordinator
-copy
-copy_from
-core
-coreCanDisplay
-corners
-correctedLatestResidual
-correctedRenderMatrix
-correctedValidationMatrix
-correction
-correctionDx
-correctionDy
-correctionGeneration
-correctionPending
-correctionSelection
-correctionStarted
-correction_generation
-correction_pending
-correspondences
-cost
-count
-counts
-coverage
-coverageBasis
-coverageComplete
-coverageKey
-coverageState
-coverage_state
-coveredGridCells4x4
-coveredQuadrants
-cpuMs
-create
-created
-createdAt
-createdAtUTC
-created_at
-creationTime
-creationflags
-criteria
-criticalLatencyMs
-cropBounds
-cropExtractor
-cropOffset
-cropPaddingRemoved
-cropProvenance
-cropRect
-crop_bounds
-crop_provenance
-cross
-crossCenteredness
-crossDomainScoresComparable
-crossEvidenceAgreement
-crossEvidenceConflict
-crossFloor
-crossFloorProjectionAllowed
-crossFloorProjectionPolicy
-crossFloorRelation
-crossFloorRelationAvailable
-crossFloorSearchCandidates
-crossFloorSeed
-crossFloorTransfers
-crossHi
-crossLo
-crossMapMargin
-crossMapRows
-crossMapTop
-crossOpenPoseContinuation
-crossOpenProgressivePoseSeed
-cross_end
-cross_floor
-cross_floor_seed
-cross_start
-cue
-cueDraft
-current
-currentBinding
-currentCandidateCount
-currentCenter
-currentCompetitionComplete
-currentCompetitionCompleteCount
-currentDisplayEpoch
-currentDisplaySignature
-currentFloor
-currentFloorAuthorizationRequired
-currentFloorAuthorized
-currentFloorFitOnlyCount
-currentFloorRelocalization
-currentFloorRelocalizationAttempted
-currentFloorStructureCompetition
-currentFrame
-currentFrameAuthorizationRequired
-currentFrameAuthorized
-currentFrameAvailable
-currentFrameCandidates
-currentFrameDisplayAuthorizationPending
-currentFrameDisplayPrecise
-currentFrameDisplayValidated
-currentFrameEquivalenceGate
-currentFrameEvidence
-currentFrameFitFallback
-currentFrameGeneration
-currentFrameGeometryFitRequired
-currentFramePoseSeed
-currentFrameRejection
-currentFrameRelocalizationRequired
-currentFrameResidual
-currentFrameResidualPending
-currentFrameResidualRequired
-currentFrameResidualVerified
-currentFrameRouteResidual
-currentFrameRouteResidualRequired
-currentFrameScaleObservation
-currentFrameSearchSeedAllowed
-currentFrameSeedValidation
-currentFrameSelectedRouteResidualRequired
-currentFrameValidationRequired
-currentFrameVerified
-currentGeneration
-currentGroupGeneration
-currentGroupMemberId
-currentIndices
-currentLabel
-currentMapId
-currentMidpoint
-currentPoseGeneration
-currentProbeGeneration
-currentProfileId
-currentScore
-currentSignature
-currentSurfaceVisibilityGeneration
-currentTargetFloorValidated
-currentToken
-currentTreads
-current_alignment_candidate
-current_bounds
-current_commit
-current_floor
-current_floor_authorized
-current_floor_relocalization
-current_frame
-current_frame_generation
-current_frame_residual_verified
-current_frame_verified
-current_rejection
-cursor
-custom
-cwd
-cycle
-cycleId
-cycle_id
-daemon
-dailyAssistantDefaultBehaviorChanged
-dailyAssistantSourceHookAdded
-dailyHardLimitApplied
-darkRatio
-darkRatioMin
-darkcolor
-dash
-dataError
-deadline
-deadlineAt
-deadlineSeconds
-deadline_at
-debug_feedback
-decision
-decisionElapsedMs
-decisionFromKeyMs
-decisionMode
-decisionThresholds
-decisions
-declaration
-declarationTrusted
-declaredCrossFloorPairCount
-declaredMissingNativeLayers
-dedicatedModeOnly
-default
-defaultEntryFloor
-defaultProfileId
-defaultSettingsTab
-default_factory
-default_min_height
-default_profile_id
-defaultextension
-defer_legacy_when_early_score_at_least
-defer_thumbnails
-deferred
-degrees
-delayMs
-delay_ms
-delete
-deliveryMs
-delta
-deltas
-denoms
-denseContourRawScore
-denseContourScore
-denseDirectionFactor
-dependencies
-dependency
-depth
-depthSkippedCalls
-derivedPairs
-description
-descriptor
-descriptorPixels
-desiredGroupMemberId
-desktopVisibilityHidden
-desktopVisibilityInitial
-desktopVisibilityRestored
-desktop_display
-desktop_main_ui
-desktop_rounded
-destination
-detail
-details
-detailsTitle
-detected
-detectedLayout
-detected_layout
-detectionMode
-determinant
-deterministicRelation
-deterministic_relation
-device
-devicePixelRatio
-deviceScale
-diag
-diagnostic
-diagnosticDroppedTotal
-diagnosticExportText
-diagnosticFrame
-diagnosticLoss
-diagnosticOnly
-diagnosticReason
-diagnosticScales
-diagnosticSnapshotError
-diagnosticWriteFailuresTotal
-diagnostic_export_button
-diagnostic_root
-diagnostics
-diagonalExitAllowed
-differenceBoxes
-differenceEvidence
-differenceProbeStarted
-differenceScope
-difference_boxes
-difficult
-difficultEntry
-difficultEntrySeed
-difficultEntryValidation
-difficultGridEnabled
-difficultObservation
-difficultRecognition
-difficult_identity_resources
-digest
-dir
-directAttempted
-directDisplayAuthorized
-directInstallAllowed
-directPortalSeed
-directPoseRejectionReason
-directProjectionAllowed
-directProjectionWithheldReason
-directSimilarity
-direction
-directionCompatible
-directionConsistency
-directionEvidence
-directionGateFallbackUsed
-directionGeometryDerived
-directionGeometryOverride
-directionHintBoost
-directionMargin
-directionMatch
-directionReason
-directionRejectedRows
-directionReliable
-directionStrengths
-directionSupported
-directionVotes
-directions
-directory
-directoryLimitReached
-disabledbackground
-disabledforeground
-discardedSeedRotationDegrees
-discardedSeedShearDegrees
-discontinuous_jump
-diskBudgetBytes
-diskBytes
-diskDigest
-dismissedBy
-display
-displayAllowed
-displayAssetPath
-displayAssetPattern
-displayAuthority
-displayAuthorization
-displayAuthorizationCrossFrame
-displayAuthorizationId
-displayAuthorized
-displayAxisLocked
-displayCommitContinued
-displayContext
-displayDecision
-displayEligible
-displayEligibleAfterSharedCommitOnly
-displayEnvironment
-displayEpoch
-displayFallback
-displayGeneration
-displayKind
-displayLabel
-displayName
-displayOnly
-displayOriginalPath
-displayPixelsDerived
-displayReprojection
-displayReprojectionPending
-displayResourceIdentity
-displayResourceKey
-displayRotationDegrees
-displayShearDegrees
-displaySignature
-displayTarget
-displayUniformScale
-displayValidation
-displayValidationRequired
-displayVersion
-displayWarningCleared
-displayWarningText
-displayWarningVisible
-display_authorized
-display_context
-display_environment
-display_environment_signature
-display_kind
-display_name
-display_policy
-display_signature
-display_warning_export_button
-displayed
-displayedFloor
-displayedProfileMatches
-distance
-distanceEvaluationSpace
-distancePixels
-distanceSource
-distinctMargin
-distinctPositions
-distinctRunnerUpDistance
-distinctScore
-distribute_temporal_support
-divide
-domainCount
-domainId
-door
-doorCount
-doorErrors
-door_count
-door_observation
-doors
-down
-downloading
-dpi
-dpiAwareness
-dpi_awareness
-dragBoundaryEnvironmentSignature
-dragBoundaryNormalized
-dragBoundaryPromptSeen
-dragBoundaryStatus
-dragCalibrationClosed
-dragCalibrationVisible
-dragCandidate
-dragPromptVisible
-dragSaved
-drag_active
-drag_offset
-drawn
-drawnCount
-dropped
-droppedQueuedProbe
-droppedTotal
-droppedWrites
-dtype
-due
-duplicateEvidenceSuppressed
-durableIdentityUpdated
-durableMapId
-durablemap
-durationMs
-dx
-dy
-dyMax
-dynamicGameHighlightUsedAsIdentity
-dynamic_motion
-early_matcher
-edge
-edgeAt
-edgeCorrection
-edgeId
-edgeMedian
-edgeP90
-edgeSource
-edgeThreshold
-edgeToStartMs
-edgeWithinThree
-edgeWithinTwo
-edge_at
-edges
-editing
-editingBindings
-editingPreview
-effective
-effectiveFloor
-effectiveProfileId
-elapsedMs
-elapsed_ms
-eligible
-eligibleMembers
-enable_registration
-enabled
-enabledByDefault
-enabledMapIds
-encoding
-end
-endRoundVisibleWhenLocked
-endText
-end_round
-endedMonotonicAt
-endpoint
-endpoints
-engine
-engineConnected
-engineIdentity
-engine_factories
-enqueueLatencyMs
-enqueuedMonotonicAt
-enqueued_at_ms
-ensure_ascii
-entranceDirection
-entranceKind
-entranceSceneEvidence
-entranceSceneVerified
-entranceType
-entrance_kind
-entrance_scene_evidence
-entrances
-entries
-entry
-entryContext
-entryCount
-entryCrossCheck
-entryDiagnostics
-entryEstablished
-entryEvidence
-entryFallback
-entryInventoryAvailableMapIds
-entryInventoryComplete
-entryInventoryExpectedMapIds
-entryInventoryIdentitySuppressed
-entryInventoryMissingMapIds
-entryInventoryScope
-entryInventoryUnexpectedMapIds
-entryKind
-entryObservationStatus
-entryObserved
-entryPassport
-entryPoseCandidates
-entryReverification
-entryRoomSource
-entryWalls
-entry_advisory
-entry_context_is_current
-entry_root_relative
-entry_route_loader
-entry_seed
-entry_shared_reference_provider
-entry_structure_store
-entrypoint
-enumeration
-environment
-episodeId
-episode_id
-epoch
-eq
-equivalentSourceFrameGeneration
-errno
-error
-errorCode
-errorDetails
-errorPhase
-errorPixels
-errorReason
-errorType
-errors
-escape
-established
-establishedConditions
-establishedMemberIds
-established_bindings
-estimatedCenterUncertaintyPx
-evaluated
-evaluatedAlongsideRegisteredIdentity
-evaluatedEntryCount
-evaluatedMainMapIds
-evaluatedMapIds
-evaluationScale
-evaluation_scale
-event
-eventDeliveryError
-eventKind
-eventMode
-eventName
-eventPath
-eventSource
-event_path
-events
-evidence
-evidenceFrameCount
-evidenceFrames
-evidenceKind
-evidenceLevel
-evidenceMode
-evidenceScope
-evidenceSource
-exact
-exactAncestors
-exactSeedEvaluations
-examined
-exception
-exceptionAction
-exceptionOrigin
-exceptionType
-exclude_capture
-exclusionMode
-exclusionRadius
-exclusion_radius
-exclusiveMs
-exclusivePixels
-executable
-executableAllowlist
-executableBytes
-executableName
-executablePathIncluded
-executableSha256
-executableVerification
-executionMode
-exemplar
-exemplarCount
-exhaustiveConfirmedMapFallbackRequired
-exhaustiveSearchSkipped
-exist_ok
-existingBasePlane
-existingBoundary
-exit
-exitAnchor
-exitAnchorConflict
-exitAnchorConflictOverridden
-exitAnchoredEntry
-exitContradicted
-exitObserved
-exit_icon_path
-expand
-expand_control
-expanded
-expandedVisible
-expected
-expectedArchive
-expectedBytes
-expectedDirection
-expectedHwnd
-expectedLayerCount
-expectedLayout
-expectedLegacyProfileFloorCount
-expectedMapIds
-expectedPoseIds
-expectedProbeGeneration
-expectedSha256
-expectedSize
-expected_archive_sha256
-expected_binding
-expected_candidate_key
-expected_context
-expected_group
-expected_identity
-expected_layout
-expected_plan_sha256
-expected_probe_generation
-expected_receipt_sha256
-expected_scale
-expected_sources
-experimental
-experimentalAutoOverlay
-expires
-expiresAt
-expiresInMs
-expiresOnMapClose
-explainedPixelFraction
-explicitDiscontinuity
-explicitFloorControl
-explicitIntentBypass
-explicit_discontinuity
-explicit_floor
-explorationFrontierContainmentVerified
-explorationGrowthRatio
-exportId
-export_id
-exportedAt
-exportedImages
-exportedLogFile
-exported_at
-extentGrid
-exterior
-extraBindings
-extraRuntimeCrossFloorPairs
-eye
-factor
-failClosed
-failed
-failedEntries
-failedFrameGeneration
-failedMember
-failedMembers
-failureEvidence
-failureEvidenceStatus
-failureKind
-failureReason
-failureReasonText
-failureSample
-failureSamplePath
-failureSnapshot
-failure_roots
-failures
-faintScoreMin
-fallback
-fallbackAllowed
-fallbackReason
-fallbackRequired
-fallbackShown
-fallbackState
-fallbackTrigger
-fallbackVisible
-fallback_member_ids
-fallback_reason
-fallback_state
-families
-family
-farContextAnchorDescriptor
-farP95
-farRoomAnchorDescriptor
-fastAlignmentDiagnostics
-fastPath
-fastPathEligible
-fastSheet
-fast_exit_attempted
-featureCacheLoadedCount
-featureCacheStatus
-featureEvidence
-featureKeypointCount
-featureMaxEdge
-featureOpenCVVersion
-featureScale
-featureStatus
-featureStore
-featureStoreExists
-featureStorePath
-fetch
-fg
-fieldbackground
-file
-fileBytes
-fileCount
-fileDescription
-fileIdentity
-fileLimitReached
-fileName
-fileVersion
-file_byte_limit
-files
-filesRead
-filesystemAttempts
-filetypes
-fill
-filledFloor
-filledHighlight
-final
-finalScale
-finalState
-final_state
-fineSearchElapsedMs
-fineSearchMaximumDimension
-fineSearchScale
-fineTranslationCorrection
-fineTranslationDistinctMargin
-fineTranslationSearchScore
-fineTranslationSecondScore
-finish_reference_sheet_move
-finished
-first
-firstAt
-firstCandidateText
-firstFloorVerification
-firstMonotonicAt
-firstPoseSensor
-firstProbeImmediate
-firstRunVisible
-firstSeq
-first_evidence_at
-first_floor_verification
-first_teleport
-fit
-fitAttempted
-fitEvidence
-fitReason
-fit_result
-fittedScale
-fittingResiduals
-flags
-flat
-flatMapCanvas
-floatingSheetHidden
-floor
-floorBounds
-floorBucketMeaning
-floorChanged
-floorClickCreatedAt
-floorClickObserverError
-floorClickObserverInstalled
-floorClickSequence
-floorConflict
-floorControlsVisibleInDiagnostics
-floorControlsVisibleWhenLocked
-floorDecision
-floorDecisionMs
-floorDeferred
-floorEvidencePending
-floorHint
-floorIndex
-floorIsConfirmed
-floorLayout
-floorMargin
-floorMode
-floorMs
-floorPairs
-floorPolicyReason
-floorPreloadLoaded
-floorPreloadTotal
-floorPreloadedBeforeRank
-floorRead
-floorReason
-floorRelationCalibration
-floorRelationRefinement
-floorRelations
-floorRequired
-floorSource
-floorStabilizationExhausted
-floorStabilizationRequired
-floorStabilizationRetries
-floorStartedMonotonicAt
-floorState
-floorSwitch
-floorToCanonical
-floorTransition
-floorWidget
-floor_evidence
-floor_read
-floor_relation_calibration
-floor_required
-floors
-flow_error_values
-flush
-focus
-focusPoint
-focusRadius
-focusSource
-fold
-foldKeepsRound
-foldedVisible
-follow_symlinks
-font
-force
-force_neutral
-foreground
-foregroundBudgetMs
-foregroundChanged
-foregroundFitSkipped
-foregroundFitStarted
-foregroundHwnd
-foregroundOwner
-foreignCompetitionCompleteCount
-format
-forwardBackward
-forwardMeanPointCount
-forwardMeanPolicy
-forward_backward
-fraction
-fragmentCount
-fragmentMaxPixels
-frame
-frameCapturedAtUtc
-frameCapturedMonotonicAt
-frameDtype
-frameGeneration
-frameHeight
-frameId
-framePath
-framePixelsEqual
-framePixelsSha256
-frameShape
-frameSize
-frameWidth
-frame_generation
-frame_id
-frame_signature
-frames
-fresh
-freshSceneAnchorBound
-fromFloor
-fromFrameGeneration
-fromLegacyPair
-fromMemberId
-fromMode
-fromRegion
-from_
-frontAnchorDirectEligible
-frontAnchorDirectPose
-frontAnchorDirectPoseRejected
-frontAnchorSupported
-frontCleanGeometryPoseOwner
-frontDoorAnchor
-frontDoorAnchorDistinctMargin
-frontDoorAnchorScore
-frontDoorAnchorSupported
-frontDoorBottomPosition
-frontDoorGenericCandidateMapId
-frontDoorGroupCompetition
-frontDoorGroupGeneration
-frontDoorGroupId
-frontDoorGroupLayout
-frontDoorGroupMargin
-frontDoorGroupScore
-frontDoorGroupState
-frontDoorId
-frontDoorLayout
-frontDoorLayoutCandidate
-frontDoorLayoutLabel
-frontDoorLayoutMapIds
-frontDoorLayoutMargin
-frontDoorLayoutScore
-frontDoorLayouts
-frontDoorLiveTest
-frontDoorLocalIdentity
-frontDoorPair0412Applicable
-frontDoorPair0412CandidateMapId
-frontDoorPair0412Confident
-frontDoorPair0412Evidence
-frontDoorPair0412QueryPixels
-frontDoorPair0412Reason
-frontDoorPair0412RoiPixels
-frontDoorPosePolicy
-frontDoorPoseSeed
-frontDoorPoseSeedUsed
-frontDoorProvisionalMemberId
-frontDoorSingletonNearDoorFingerprint
-frontDoorSingletonNearDoorSupported
-frontDoorStage
-frontGroupAttemptedMemberIds
-frontGroupCompetition
-frontGroupDifferenceEvidence
-frontGroupFrameGeneration
-frontGroupGeneration
-frontGroupGroupGeneration
-frontGroupId
-frontGroupLayout
-frontGroupLocked
-frontGroupMargin
-frontGroupProvisional
-frontGroupProvisionalMemberId
-frontGroupScore
-frontGroupSiblingCoordinateBasis
-frontGroupSiblingSharedSeed
-frontGroupSiblingSourceMember
-frontGroupState
-frontGroupV2CurrentFrameRecovery
-frontGroupV2DifferenceEvidence
-frontGroupV2SiblingCurrentFrame
-frontIdentityStarted
-frontLiveTest
-frontLiveTestVersion
-frontLockReason
-frontMemberId
-frontMemberPromotionRequired
-frontMemberState
-frontMemberVerified
-frontPoseSeed
-frontPreviewCount
-frontSeedUsed
-frontTerrainScaleDecision
-front_door_layout
-front_sibling_context_current
-frozen
-full
-fullClientSize
-fullContextAnchorDescriptor
-fullFitScheduled
-fullFitStarted
-fullFloorBoundaryAccepted
-fullFloorPrecisionAccepted
-fullMapContainmentScore
-fullMapEvidence
-fullMapIdentitySearch
-fullMapReferenceAnchor
-fullProbe
-fullProbePeriodSeconds
-fullRoomAnchorDescriptor
-fullRoomContainmentScore
-full_capture
-full_probe
-fullscreenMode
-futureShutdownElapsedMs
-futures
-fx
-fy
-galleries
-galleries_changed
-gallery
-galleryId
-galleryName
-game
-gameControlLayout
-gameFloor
-gameFloorBindings
-gameFloorFromCurrentObservation
-gameFloorInferredFromSourceFloor
-gameFloorSource
-gameFocused
-gameForeground
-gameIntegrity
-gameMode
-gameMonitorMatched
-gameNativeLayerCount
-gameNativeMaskBytes
-gameNativeMaskResourcePath
-gameNativeMaskShape
-gameNode
-gamePoint
-gameProcessId
-gameProcessIntegrity
-gameRays
-gameRequested
-gameWindowBound
-game_control_view
-game_foreground
-game_intent
-game_intent_active
-game_window_bound
-gap
-gapCv
-gap_dip
-gate
-gdiObjects
-generation
-genericCandidateMapId
-genericReusePolicySkipped
-genericSearchInvoked
-genericWorkerStarted
-geometry
-geometryAccepted
-geometryCandidates
-geometryCheckMs
-geometryComponentBox
-geometryCondition
-geometryCorroboration
-geometryElapsedMs
-geometrySource
-geometryVerdict
-geometryWaitElapsedMs
-geometry_fit
-geometry_provider
-gestureId
-get_bound_hwnd
-get_control_snapshot
-get_user32
-get_value
-globalRecenter
-globalRecenterAllowed
-globalRecenterSevenRegionValidated
-globalRecenterUsed
-globalRecenterValidated
-globalRegistration
-globalResidualIgnored
-globalResidualVerified
-globalScore
-globalTranslation
-global_recenter
-global_residual_verified
-global_verified
-glyphs
-goodMatches
-graph
-gray
-grayStd
-grayStdMax
-greenArea
-gridCells
-gridDisabledReason
-grids
-group
-groupAvailable
-groupCycleId
-groupEvidence
-groupGeneration
-groupGenerationAtStart
-groupId
-groupLayerSwap
-groupLayout
-groupLockLatencyMs
-groupLocked
-groupMapIds
-groupMargin
-groupMemberChoiceStatus
-groupMemberIds
-groupMemberRows
-groupMemberSelectionPending
-groupMemberSelectionReason
-groupPoseAvailable
-groupPoseCurrentFrameAdjustmentPending
-groupPreserved
-groupScores
-groupTranslation
-group_before
-group_generation
-group_generation_at_start
-group_id
-group_index
-group_locked_at
-group_only
-group_pose_available
-group_translation_delta
-groupid
-groups
-guard
-h0
-h0Validation
-h1
-h1Validation
-hEnd
-hSign
-hairline
-handle_list
-handled
-handles
-hardLimitMs
-hardLocked
-hard_locked
-hasSample
-hasTargetFloorEvidence
-has_target_floor_evidence
-headers
-heading
-heartbeatAgeMs
-heartbeatMaxMs
-heartbeatP95Ms
-height
-heightRatio
-held
-heldOut
-heldOutCellCount
-heldOutCellIds
-heldOutClientPoints
-heldOutCount
-heldOutDecisionReason
-heldOutInliers
-heldOutMedianError
-heldOutNormals
-heldOutP90Error
-heldOutRatio
-heldOutSourcePoints
-heldOutVerification
-heldout
-help
-helper
-helperAvailable
-hi
-hidden
-hiddenLayerCount
-hiddenSource
-hiddenVisibilitySaved
-hide_control
-hide_overlay
-hide_route
-highlightDifference
-highlightDifferenceMin
-highlightEvidence
-highlightMargin
-highlightMin
-highlightScore
-highlightbackground
-highlightcolor
-highlightthickness
-history
-historyFrames
-historyObservations
-hitPoints
-hit_target_min
-hits
-holdKey
-holdRemainingMs
-holdSeconds
-hold_active
-hold_until
-holder
-holding
-holdout
-holdout_coverage
-home
-homography
-hookInstalled
-hookRunning
-horizontal
-hotkey
-hotkeyApplied
-hotkeyFeedback
-hotkeyFloor
-hotkeyFloorCenters
-hotkeyFloorLayout
-hotkeyFloorLayoutFamily
-hotkeyFloorMargin
-hotkeyFloorReason
-hotkeyFloorSafeHeight
-hotkeyFloorSafeTop
-hotkeyGeneration
-hotkeyReadPermissionExpected
-hotkeyVirtualKey
-hotkey_generation
-hotkey_proposal
-humanClass
-humanClassMargin
-humanClassRanking
-humanConfirmation
-humanReviewStatus
-hwnd
-hypotheses
-hypothesis
-icon
-iconRatioGeometryVerified
-iconScale
-iconScore
-icon_position
-icon_size
-id
-idempotent
-ident
-identity
-identityAmbiguous
-identityAuthority
-identityAuthorized
-identityBaseMargin
-identityBinding
-identityBudgetExceeded
-identityElapsedMs
-identityEvidence
-identityEvidenceLimit
-identityFiles
-identityHardGatePassed
-identityKind
-identityLocked
-identityMargin
-identityOnly
-identityOrPoseAuthorized
-identityPack
-identityPhase
-identityPreserved
-identityProfileId
-identityRankingRerun
-identityReopened
-identityRerank
-identityRoleLoads
-identityRunnerUpMapId
-identityScore
-identityScoreMargin
-identityScoringElapsedMs
-identitySemanticMargin
-identityShadow
-identitySource
-identitySourceAgnostic
-identityVerified
-identityWindowOpen
-identity_floors
-identity_id
-identity_is_allowed
-identity_margin
-identity_profile_id
-identity_profiles
-identity_recognizer
-identity_rerank
-identity_root
-identity_row
-identity_stage
-identity_status
-identityv_daily_assistant
-idle
-idvb0059
-idvb0059Coverage
-idvb0059Diagnostics
-idvb0059Display
-idvb0059Enabled
-iid
-image
-imageBytes
-imageCount
-imageHeight
-imageSize
-imageSizes
-imageStatus
-imageTransactionSchema
-imageUrl
-imageWidth
-image_path
-image_size
-images
-immediate
-immediateDisplayAuthorized
-immediateLayerSwap
-importGeneration
-importOwnership
-importSnapshot
-import_parent
-improvement
-inUse
-in_
-include_automatic
-include_automatic_failure_evidence
-include_bounds
-include_correspondences
-include_current
-include_inactive
-include_points
-include_query_features
-includedBytes
-includedDisconnectedEntrance
-includedFailureImageCount
-includedLogCount
-includedSha256
-inclusiveMs
-incomplete
-indent
-independentFloorAnchor
-independentOpenCount
-independentRelocalization
-independentScale
-independentValidationCount
-index
-indexEntryCount
-indexPath
-index_path
-indexedCrossFloorPairCount
-indexedWallRefinement
-indexing
-inferredDirectionAgreement
-inferredEntranceDirections
-inferredSideDoorPosition
-inheritedScale
-initMs
-initial
-initialAlpha
-initialCandidates
-initialCount
-initialFitPending
-initialPointCount
-initialScaleLocked
-initialVerification
-initial_count
-initial_translation
-initialfile
-initiallyDown
-initialvalue
-inkCoverage
-inlierCount
-inlierMask
-inlierMatches
-inlierRatio
-inliers
-inner
-input
-inputAt
-inputCreatedAt
-inputFrameBinding
-inputFrameCycleId
-inputFrameGeneration
-inputKind
-inputMonotonicAt
-inputObservationSequence
-inputPosition
-inputScale
-inputScope
-inputSequence
-inputSha256
-inputSource
-inputToPresentMedianMs
-inputToPresentP95Ms
-input_at_ms
-input_snapshot
-input_started_at
-inputs
-insertbackground
-insertcolor
-inside
-inspect_engine_resources
-installId
-installIdStatus
-installIds
-installRoot
-installation
-installed
-installedPackages
-installerInstance
-instance
-integrity
-intent
-intentApplied
-interfaceDetected
-interfaceOpacity
-interior
-interior_details
-internalWallSupport
-interpolate
-interpolation
-interpretation
-interpreter
-intervalMs
-intervals
-invalid
-invalidLines
-invalidationOrigin
-inventory
-inverseError
-ipady
-is_closed
-is_current
-is_primary
-isolatedMemoryRoot
-isolatedWindows
-issueCount
-issued_at
-issues
-item
-iterations
-job
-jobId
-joinstyle
-joint
-jointScore
-journal
-journalTailBytes
-journals
-junctions
-justify
-k
-keep_waiting
-keepdims
-key
-keyGeneration
-keyText
-keyToOverlayLatencyMs
-keyToRequestMs
-keyboard
-keyboardReady
-keypointCount
-kind
-kinds
-knownWallRaster
-known_boundary
-ksize
-kwargs
-label
-labelSource
-labeledLiveMapId
-labeledLiveScore
-labelsPng
-landmark
-landmarkCandidate
-landmarkCount
-landmarkId
-landmarks
-last
-lastAt
-lastCaptureObservation
-lastCycleId
-lastMonotonicAt
-lastProbeOutcome
-lastRawState
-lastReceipt
-lastSamplePath
-lastSeq
-lastSequence
-lastSource
-lastTimestampUTC
-lastTotal
-last_switch_reason
-lateCacheCandidate
-latencyMissMs
-latencyMs
-latencyTargetMissed
-laterRecoveryOutcome
-latestResidual
-latestResidualVerified
-latest_rendered_profile_residual
-layer
-layerCount
-layerImageCount
-layerMeta
-layerRelative
-layers
-layout
-layoutAnchorMask
-layoutAnchorMatrix
-layoutAnchorPreserved
-layoutAspectRatioDelta
-layoutCandidate
-layoutFamily
-layoutGatePassed
-layoutId
-layoutLabel
-layoutMargin
-layoutScaleX
-layoutScaleY
-layoutUniformScale
-layout_candidate
-layouts
-learning
-leaveOneOut
-leaveOneOutMaxPixels
-left
-leftDown
-leftUp
-legacy
-legacyAdoption
-legacyClean
-legacyCleanLayerCount
-legacyEvents
-legacyIndexSourceSha256
-legacyMapId
-legacyMatrixProfileToRecognition
-legacyMigrationRequired
-legacyProfileFloorCount
-legacyRecognitionCoordinatesRequired
-legacyReferenceRankingDeferred
-legacyRoundLayerWriter
-legacyRouteMigrations
-legacyRouteResource
-legacyRouteShapeHW
-legacyScore
-legacy_bindings
-legacy_path
-legacy_relations
-length
-lengths
-level
-lg
-lianghapiSingleFloorToFloor2
-library
-libraryManifestSha256
-libraryMessage
-libraryVersion
-lifecycle_cancelled
-lightcolor
-limit
-limitation
-limits
-line
-linear
-linearDeltaRatio
-lines
-listenerStarted
-live
-liveAcceptance
-liveAnchor
-liveAnchorEvidence
-liveAspect
-liveAuthorization
-liveAvailable
-liveCandidateCount
-liveCenter
-liveEdgeCount
-liveEdgeMedianDistancePx
-liveEdgeWithin4
-liveEdgeWithin8
-liveEngineAvailable
-liveExemplarEvidence
-liveExitIcon
-liveExitScaleRange
-liveGameVerified
-liveImport
-liveIndex
-liveInput
-liveLandmarkCorrection
-liveMargin
-livePitch
-liveRectangle
-liveScore
-liveSideDoorDirection
-liveSpanPx
-liveStairCandidates
-liveStairOverlap
-liveTestProjectionAllowed
-liveTestScope
-liveUnavailableReason
-liveVisualConfirmationPending
-lo
-load_products
-loaded
-loadedEntryCount
-loadedProducts
-loadedRecords
-local
-localBitmapSize
-localBusy
-localFailureReason
-localFailures
-localFirst
-localFloorDiagnostics
-localGeometryVerified
-localIdentity
-localMessage
-localPendingKind
-localRectangle
-localRectangleAccepted
-localScore
-localSearch
-localSearchMaps
-localSeedAvailable
-localSeedSource
-localSeedTotal
-localTime
-local_failures
-local_points
-local_seed_available
-locatorKind
-lockGeneration
-lockReason
-lockSource
-lockToOverlayLatencyMs
-lock_generation
-lock_scale
-locked
-lockedGroupSelectedMapRelocalization
-lockedMapId
-lockedSummaryVisible
-locked_canvas_without_floor
-locked_group_relocalization
-lockingAllowed
-log
-logFile
-logId
-logStream
-log_callback
-log_limit
-loggedMonotonicAt
-logicalDotsPerInch
-logicalRect
-logs
-lookupBinding
-lookupBindings
-loopStopReason
-loss
-lossless
-lostTotal
-lowStructure
-lower
-main
-mainChains
-mainComplete
-mainEntries
-mainFamilyPossible
-managedSnapshot
-managed_parent
-management
-managementEnabled
-managementOnly
-managementRequested
-managementReturnAvailable
-manager
-manifest
-manifest_path
-manual
-manualCapture
-manualChoice
-manualConfirmation
-manualFallbackAvailable
-manualFloor
-manualFloorHoldRemaining
-manualFloorRequired
-manualGroupChoice
-manualGroupMemberHeld
-manualGroupMemberId
-manualOnly
-manualTaxonomy
-manual_choice
-manual_confirmation
-manual_hold_ended
-manual_override
-map
-mapBounds
-mapBoundsClient
-mapCount
-mapCoveragePerProfile
-mapCycleId
-mapDetected
-mapEvidence
-mapExpectedOpen
-mapId
-mapIdentityRanking
-mapIds
-mapIndex
-mapInputObservation
-mapInterface
-mapIsOpen
-mapKeyPresses
-mapName
-mapOpen
-mapOpenEvidence
-mapOpenSource
-mapOrientationIsIdentityFeature
-mapReady
-mapReason
-mapRecognitionRequired
-mapRecovery
-mapRecoveryPending
-mapSample
-mapStillOpenAtResult
-mapVisualSuppressed
-mapWidget
-map_anchor_focus_point
-map_evidence
-map_id
-map_is_open
-map_name
-map_open
-map_resource_browser
-map_resources_page
-map_ui
-mappingCurrentFrameVeto
-mappingDisplayAuthorized
-mappingDisplayed
-mappingFirst
-mappingProfileId
-mappingRetainedForNextOpen
-mappingSeed
-mappingVetoReason
-maps
-margin
-marginMin
-marginPixels
-margin_dip
-margin_px
-marginalMaps
-markedCandidate
-markedDirection
-markedEvidence
-markedMargin
-markerDetected
-markers
-mask
-maskEdges
-maskSha256
-master
-match
-matchAcceptanceRatio
-matchAmbiguity
-matchScore
-match_workers
-matchedAnchors
-matchedAnchorsMin
-matchedFeatureIds
-matchingCases
-matchingMode
-matchingVoteCount
-material
-materialAccepted
-materialPolicy
-materialReady
-materialReason
-material_accepted
-material_scope
-mathLanes
-math_pool
-matrices
-matrix
-matrixCanonicalToLegacyRecognition
-matrixCoordinatePackId
-matrixCoordinateProfileId
-matrixCurrentReferenceToNative
-matrixDisplayToReference
-matrixFloorToCanonical
-matrixProfileToCanonical
-matrixProfileToRecognition
-matrixRawToClient
-matrixRecognitionToClient
-matrixReferenceToClient
-matrixReferenceToQuery
-matrixSourceAuthorToTargetAuthor
-matrixSourceToAuthor
-matrixSourceToClient
-matrixSourceToReference
-matrixStructureSourceToSelected
-matrixSummary
-matrix_source_to_client
-max
-maxBytes
-maxCorners
-maxDepth
-maxDirectoryEntries
-maxEdge
-maxFiles
-maxFullProbes
-maxIters
-maxKeys
-maxLevel
-maxLineGap
-maxMs
-maxPixels
-maxProblems
-maxRecords
-maxSnapshotRecords
-maxSparsePoints
-max_anchors
-max_bytes
-max_edge
-max_entries
-max_files
-max_records
-max_workers
-maximum
-maximumBaseRoundTripError
-maximumBuild
-maximumChangeScore
-maximumClientWidthRatio
-maximumLegacyCompositionError
-maximumPixels
-maximumResidualErrorPx
-maximumRoundTripError
-maximumScale
-maximumSheetOpacity
-maximumShift
-maximumTranslationPixels
-maximum_dimension
-maximum_pyramid_level
-maximum_relative_scale_correction
-maximum_shift
-maximum_translation
-maximum_width
-maxlen
-maxsize
-maxsplit
-md
-meanBrightness
-measured
-measuredForwardMeanPixels
-measuredPairs
-measuredPixels
-median
-medianError
-medianErrorPx
-medianForwardBackwardPixels
-medianPatchError
-medianPixels
-medianResidual
-medianResidualPixels
-meipass
-memberA
-memberB
-memberId
-memberIds
-memberVerificationLatencyMs
-member_reference
-member_verified
-member_verified_at
-members
-memory
-memoryBoost
-memoryConfirmations
-memoryFeatureLoadElapsedMs
-memoryInliers
-memoryPending
-memoryRoot
-memorySemanticMatches
-memory_root
-memory_store
-message
-messageDetail
-messageOmitted
-metadata
-metadataMissing
-metadataPending
-method
-metrics
-migration
-migrationAudit
-milliseconds
-minDistance
-minLineLength
-minimized
-minimum
-minimumAnchorCount
-minimumApertureMargin
-minimumBuild
-minimumClientWidthRatio
-minimumDistinctDistance
-minimumDistinctPositions
-minimumGroupMargin
-minimumMargin
-minimumPositiveDistancePixels
-minimumQueryChains
-minimumQueryPixelRatio
-minimumQueryPixels
-minimumQueryTurns
-minimumRelativeScaleChange
-minimumScale
-minimumScore
-minimumScoreImprovement
-minimumWindowsBuild
-minimumWins
-minimum_anchor_distance
-minimum_area
-minimum_brightness
-minimum_coverage
-minimum_visible_pixels
-minlength
-minsize
-minwidth
-misses
-missing
-missingCount
-missingDeclaredCrossFloorPairs
-missingFiles
-missingMapIds
-missingOldRatio
-missingReason
-missingResources
-missingTargets
-missing_ok
-mode
-modeChangeEnabled
-modeRouteProfiles
-modeRoutes
-mode_text
-model
-modified
-modifiedFiles
-module
-monitor
-monitorBounds
-monitorCount
-monitorId
-monitorRect
-monitorWorkArea
-monitor_bounds
-monitor_count
-monitor_id
-monitor_work_area
-monotonicMs
-motion
-motionSamples
-motionSource
-mouse
-mouseEventSource
-mouseUsed
-mouse_drag_prediction_pending
-movable
-moveEvents
-move_sheet
-moved
-movedLayerCount
-ms
-multiRegionStructureOverride
-multiRegionTransitionConsensus
-multipointAttempt
-multiscaleSameFrameAuthorized
-mutualMatches
-name
-native
-nativeAnchorCapacity
-nativeCandidateMemberId
-nativeChainSupport
-nativeDevice
-nativeFloor
-nativeIndexConsumed
-nativeIndexConsumedCount
-nativeInventory
-nativeInventoryIdentitySuppressed
-nativeLayout
-nativeMoveCount
-nativePoints
-nativePose
-nativePoseSeed
-nativeProfile
-nativeRect
-nativeResource
-nativeSimilarity
-nativeSimilarityProposal
-nativeSimilarityRecheck
-nativeStaticRegistration
-nativeStatus
-nativeSurfaceRestore
-nativeSurfaceRestored
-native_context
-native_floor
-native_layout
-native_mask
-native_path
-native_shape
-native_similarity_binding_provider
-native_similarity_context_provider
-native_similarity_priority_provider
-native_similarity_root
-native_similarity_state
-native_static_context
-native_wall_segments
-nearP95
-nearestProfileId
-neckSpan
-neck_direction
-needsWorker
-needs_vertical_scroll
-neighborChains
-neighborExtentGrid
-network
-neutral
-neutralDisplay
-neutralMatchedAnchors
-neutralRatio
-neutral_relative
-new
-newIdentity
-newPixelRatio
-newReceipt
-newStart
-newline
-next
-nextAnchorCount
-nextAnchors
-nextAt
-nextDelayMs
-nextMember
-nextState
-next_candidate
-nfeatures
-nightmare
-nightmare04MinimumPixels
-nightmare12MaximumPixels
-nightmare_resource_root
-nodes
-nonce
-nonpositiveOrShortSeparation
-nonzeroRows
-normal
-normalize
-normalize_route_profile_id
-normalized
-normalizedBoundary
-normalizedBrown
-normalizedDistance
-normalizedDoorPosition
-normalizedInStructure
-normalizedOccupied
-note
-notes
-notify
-now
-numericLine
-numericVersion
-object_pairs_hook
-observation
-observationAttempt
-observationBounds
-observationCount
-observationCreatedAt
-observationDirection
-observationElapsedMs
-observationId
-observationOrigin
-observationPaths
-observationStatus
-observationWindow
-observation_id
-observations
-observed
-observedCorners
-observedDx
-observedDy
-observedEdgePixels
-observedExclusivePixels
-observedFloor
-observedHwnd
-observedIndices
-observedPixels
-observedRecall
-observedSpan
-observedStrip
-observed_floor
-obsolete
-occupied
-occupiedBounds
-occupiedPixels
-occupiedRatio
-occupied_ratio
-occurredMonotonicAt
-occurrenceId
-occurrences
-offline
-offset
-old
-oldFrameInvalidated
-oldIdentity
-oldReceipt
-oldReceiptSha256
-oldWorkerToken
-omitted
-omittedBySampleLimit
-omittedFailureCaseCount
-omittedRangeCount
-on_alpha
-on_close
-on_hide
-on_scale
-on_show
-onboarding
-onboardingActive
-onboardingCompleted
-onboardingControlTrial
-onboardingWindowAbsent
-onboardingWindowExists
-oneFlow
-oneRuntimePose
-one_flow
-online
-onlineGeneration
-onlineReferenceFallbackCount
-online_parent
-opacity
-opacityMaximum
-opacityMinimum
-opacity_var
-open
-openCycleTransientOffset
-openIntent
-openToOverlayLatencyMs
-openToResultElapsedMs
-open_control_layout_settings
-open_intent
-opencvVersion
-opencv_version
-opened
-opened_at
-openingId
-operation
-operationResult
-optimize
-optionalAuthorCatalogError
-optionalInstances
-optionalPixels
-optionalRooms
-optionalSideDoorError
-optionalSideSearchError
-optional_author_displays
-options
-orb
-orbAfterSuspendVisible
-orbState
-orbVisible
-orbWithoutGameVisible
-orb_body
-orb_mode_text
-orb_shadow
-orb_state
-orb_state_badge
-orb_state_text
-orb_status_dot
-ord
-order
-ordinal
-ordinaryQueueDepth
-orient
-orientation
-orientedPairs
-origin
-originX
-originY
-origin_px
-originalBaseSnapshot
-originalIdentityHardGatePassed
-originalPath
-originalValidationPreserved
-original_path
-otherObservationBounds
-out
-outcome
-outerWindowSize
-outline
-outlinePixels
-output
-outputSpace
-outputToOriginal
-output_dir
-outsideCompetitors
-outsideCount
-outsideSeedsRejected
-outsideSeedsScreened
-over
-overflowCalls
-overflowExtraKey
-overlapCoverage
-overlay
-overlayCaptureExcluded
-overlayEnabled
-overlayPath
-overlayVisible
-overlay_builder
-overlay_visible
-overwrite
-owner
-ownerRole
-ownerThreadId
-ownership
-p90
-p90Pixels
-p90ResidualPixels
-p95Error
-p95ErrorPx
-pack
-packId
-package
-packageId
-packageIdentity
-packageIds
-packageMetadata
-packageMetadataSource
-packageMetadataStatus
-packagePath
-package_metadata
-packages
-packed
-padding
-padx
-pady
-pages
-pair
-pair0412
-pairAmbiguous
-pairMaturityReady
-pairMinimumQueryPixels
-pairResidualPixels
-pair_evidence
-pairs
-panel
-panelVisible
-panel_arrow
-panel_icon
-parallelLinesWeakOnly
-parallelStripPairs
-parent
-parentAttempt
-parentExit
-parentKind
-parent_executable
-parent_handle
-parents
-part
-partial
-partialSearch
-partialWallGeometry
-partial_score
-partition
-partitionHits
-partitionP95
-partitionPoints
-partitions
-passThrough
-passedMaps
-passedPartitions
-passportAvailable
-passportSelected
-passportUnresolved
-patch
-patchError
-path
-pathKind
-payload
-peakRatio
-peaks
-pending
-pendingAction
-pendingDisplayEpoch
-pendingFile
-pendingGroupMemberId
-pendingKind
-pendingMaterial
-pendingOriginalBindings
-pendingReleaseVks
-pendingRenderToken
-pendingSamples
-pendingSiblingToken
-pendingWrites
-persist_pose
-persisted
-persistedSampleDistanceChecked
-persistentIdentityUpdated
-persistentPoseUpdated
-phase
-phaseCandidateContainment
-phaseDisplayPrecise
-phaseFallbackSuppressed
-phaseReason
-phaseRelocationReason
-phaseRelocationVerified
-phaseResponse
-phase_reason
-photo
-physicalDotsPerInch
-physicalDragBypassAvailable
-physicalDragObserved
-pid
-pill
-pitch
-pixelCount
-pixelFormat
-pixel_origin
-pixels
-placement
-plan
-planError
-planSha256
-planes
-platform
-plausibleGeometry
-play
-playerReviewedCrossFloorProjectionTrial
-playerReviewedProjectionTrial
-point
-pointCount
-pointDirections
-pointFragments
-pointGeometry
-pointGeometryReason
-pointIndexes
-pointReason
-pointRejections
-point_observation
-pointerGeneration
-pointerSequence
-points
-policy
-pollError
-polls
-poolUpdated
-pools
-portableAttempted
-portableLayoutPolicy
-portableLayoutProjection
-portableLayoutSeedCount
-portableLayoutSeedId
-portableLayoutSeedUsed
-portableSeedAttempts
-portableSeedElapsedMs
-portable_seed_path
-portalAlternativeCommonScale
-portalAlternativeEndpointDistance
-portalAlternativeLiveCandidateIndex
-portalAlternativeMatrixSourceToClient
-portalAlternativeResidual
-portalAlternativeStructureSeedScore
-portalAlternativeTargetCandidateIndex
-portalAlternativeVerified
-portalBestEndpointDistance
-portalBestStructureSeedScore
-portalCandidateCount
-portalCommonScale
-portalEndpointDistance
-portalGroupRelocalization
-portalGroupTranslation
-portalLiveCandidateIndex
-portalLiveCenter
-portalMedianMarginPixels
-portalPhaseResponse
-portalPhaseTranslation
-portalRouteCoordinateMode
-portalScaleHypotheses
-portalTargetCandidateIndex
-portalTargetCenter
-portalUniqueWinner
-portalWideAttempted
-portalWithinThreeMargin
-pose
-poseA
-poseAmbiguous
-poseAttempt
-poseB
-poseClientSize
-poseCommits
-poseContext
-poseDisplaySignature
-poseGeneration
-poseId
-poseIndexCandidate
-poseIndexCandidatesEnabled
-poseIndexFallback
-poseIndexProvider
-poseInitializationBudgetMs
-poseInitializationElapsedMs
-poseInitializationHardLimitMs
-poseInitializationMode
-poseMaps
-poseMatrixSourceToClient
-poseMemberId
-poseOrigin
-posePending
-posePreserved
-poseProfileMatches
-poseProvisional
-poseReason
-poseRecoveryCandidates
-poseRecoveryEvaluated
-poseReliable
-poseResult
-poseRouteProfileId
-poseSeed
-poseSource
-poseSourceVerifiedAgainstRenderedProfile
-poseState
-poseStrategy
-poseSubmissionAllowed
-poseUninitializedAtStart
-poseVerified
-poseVerifiedAgainstCanonicalGeometry
-poseVerifiedAgainstLiveGeometry
-poseVerifiedAgainstRenderedProfile
-poseVerifiedAgainstSharedStructure
-poseVerifiedAgainstSourceStructure
-pose_before
-pose_generation
-pose_index_candidates
-pose_index_diagnostics
-pose_index_only
-pose_origin
-pose_pending
-pose_verified
-poses
-position
-positionDistinctMargin
-positionJump
-positionSeparationPixels
-positionUnique
-position_space
-positiveDifferences
-positiveEvidenceOnly
-positiveSampleCount
-postCommitAgeMs
-postCorrectionInverseGuard
-post_result
-posted
-precision
-precomputed_anchors
-precomputed_live_icon
-precomputed_query
-precomputed_visible
-predictionGated
-predictionVisible
-preference
-preferences
-preferred
-preferredProfileId
-preferredSize
-preferred_edge
-prefix
-preloadElapsedMs
-preludeMs
-preparation
-preparationAndObservationMs
-prepare_only
-prepared
-preparedContext
-preparedIndices
-preparedStart
-preparing
-preprocessAndFitMs
-presentation
-presentationMode
-presentationMs
-presentationOpacity
-presentationRoundingError
-preserveProvisionalOverlay
-preserveRoute
-preserveVerifiedOverlay
-preserve_confirmation
-preserve_locked_alignment
-preserve_points
-preserve_provisional_overlay
-preserve_route
-preserve_verified_overlay
-preserved
-preservedAnchorCount
-preservedAnchorPools
-preservedAnchors
-preservedCoreFiles
-preservedPoseMaps
-preservedTrackerKeys
-press
-pressClient
-pressed
-presses
-preview
-previewBox
-previewOnly
-previewPath
-preview_offset
-previous
-previousCandidateCount
-previousCenter
-previousContainment
-previousDisplayedFloor
-previousFloor
-previousFrameGeneration
-previousGroup
-previousGroupId
-previousIndices
-previousLatestResidual
-previousLiveStairs
-previousMapId
-previousMemberId
-previousMidpoint
-previousMisses
-previousMode
-previousReachedPercent
-previousReceiptSha256
-previousScore
-previousSignature
-previousSize
-previousTreads
-previousTrustedAnchorPreserved
-previous_candidate
-primary
-primary_profile_to_canonical
-primary_row
-prior
-priorHypotheses
-priorLocalFailures
-priority
-privacy
-privateBytes
-probable
-probe
-probeDisplayEpoch
-probeError
-probeEvidence
-probeGeneration
-probeMisses
-probeMs
-probePending
-probePeriodSeconds
-probeRequired
-probe_generation
-probes
-problems
-process
-processAfter
-processBefore
-processCreateTime
-processDelta
-processId
-processThreads
-process_id
-process_image_path
-process_integrity
-processed
-processedEvents
-processingStartedMonotonicAt
-producedAt
-producedMonotonicAt
-producerSourceFloorLabel
-producerVariantLabel
-producerVariantUncertain
-productName
-productVersion
-profile
-profileAxisLocked
-profileBridgeVerified
-profileCoordinateProjection
-profileCount
-profileCurrentFrameSearchSeed
-profileCurrentFrameValidated
-profileId
-profileIds
-profileMappingVerified
-profileRenderDerivedFromCanonical
-profileSelection
-profileToValidation
-profileType
-profile_bridge_verified
-profile_for_map
-profile_id
-profile_to_recognition
-profiles
-progress
-progressivePoseSeedUsed
-projectedBounds
-projectedCanonicalMatrix
-projectedCenter
-projectedCorners
-projectedFootprint
-projectedReference
-projectedSourceLengths
-projectedSourcePoint
-projection
-projectionCurrentFrameResidual
-projectionOnly
-projectionOnlyUntilTargetStructureVerified
-projectionSourceFloor
-promotionSource
-proposal
-proposalAgreementCount
-proposalCoordinateSpace
-proposalEdgePixels
-proposalMs
-proposalSource
-proposal_source
-proposals
-proposedShiftPixels
-proposedTransformMedianError
-proposedTransformP90Error
-protectedCoreCount
-protectedCustomRoots
-provenance
-provider
-provisional
-provisionalCoverage
-provisionalDisplayAuthorized
-provisionalFloors
-provisionalMapId
-provisionalMemberId
-provisionalOverlayPreserved
-provisionalVariantAccepted
-provisionalVisiblePixels
-provisional_display_authorized
-provisional_member_id
-prune
-publishedAt
-published_at
-published_date
-pythonThreads
-qtFingerprintScheme
-qtInstallerInstance
-qtProcessIntegrity
-qtScreens
-qtSourceCommit
-qualified
-qualifiedAverageGroupMargin
-qualifiedCount
-qualifiedDistinctPositions
-qualifiedObservations
-quality
-qualityLevel
-qualityMargin
-quark
-query
-queryAnchor
-queryChainCount
-queryChains
-queryCoverage
-queryEdge
-queryEdgeCount
-queryEdgeGridCells3x3
-queryFeatureElapsedMs
-queryInReferenceScore
-queryKeypointCount
-queryKeypoints
-queryLengths
-queryLines
-queryNormal
-queryPair
-queryPairs
-queryPixelRatio
-queryPixels
-queryPixelsGrowth
-queryPixelsRequired
-queryPoint
-queryPoints
-queryPointsScaled
-queryScale
-querySegments
-querySpan
-queryTopology
-queryTurns
-query_pixels
-query_shape
-queued
-quick
-quickConnectionText
-quickDetailsAfterPending
-quickDetailsBackground
-quickDetailsBackgroundInvokeBlocked
-quickDetailsCallbackCount
-quickDetailsCleared
-quickDetailsClearedText
-quickDetailsConditions
-quickDetailsConflict
-quickDetailsHealthy
-quickDetailsHealthyText
-quickDetailsIdle
-quickDetailsNeedsUser
-quickDetailsPending
-quickDetailsPendingInvokeBlocked
-quickDetailsResumed
-quickDetailsUserHidden
-quickEndRoundVisibleWhenLocked
-quickHomeVisible
-quickIdentityOnlyStartVisible
-quickLockedEndRoundVisible
-quickLockedHomeVisible
-quickPanelVisible
-quickShellMode
-quick_diagnostic_button
-quiet
-radius
-radiusPixels
-radiusSource
-radiusUnits
-ranges
-rank
-rankAtScale
-rankCaptureStartFrameGeneration
-rankCompletedMonotonicAt
-rankElapsedMs
-rankRequest
-rankSourceFrameGeneration
-rankSourceSurfaceGeneration
-rankStartedMonotonicAt
-rankTiming
-rankVerdict
-ranked
-rankedFloor
-rankedMaps
-rankedMembers
-ranking
-rankingPreload
-ransacInliers
-ransacReprojThreshold
-rasterValidation
-raster_samples
-rateSuppressed
-rateSuppressedRange
-ratio
-ratios
-raw
-rawError
-rawMapOpen
-rawMessage
-rawScore
-rawState
-rawStatus
-rawVisualScore
-rayApproach
-rayApproachStrength
-rayStrengths
-rays
-rcond
-reachedPercent
-readErrors
-readPermission
-readRoots
-readable
-readonly
-ready
-realMatrixFloor1ToFloor2
-reason
-reasons
-receipt
-receiptData
-receiptSha256
-receiptWritten
-receive_button
-receivedBytes
-recentCompetingWins
-recentDeltas
-recentProblems
-recenterPixels
-recenterRequired
-recheckNextOpen
-recognition
-recognitionCenter
-recognitionDetailsVisible
-recognitionDiagnosticLoss
-recognitionDiagnostics
-recognitionMatrixSourceToClient
-recognitionMs
-recognitionPackId
-recognitionPath
-recognitionShellMode
-recognition_matrix
-recognition_matrix_source_to_client
-recognize
-reconcile_popup
-recordCount
-recordId
-recordLimitReached
-recorded
-recordedAt
-recordedMode
-records
-recordsExamined
-recovery
-recoveryAttemptReason
-recoveryB1UniqueRoom
-recoveryBaseCanonical
-recoveryBaseRender
-recoveryBudgetMs
-recoveryContext
-recoveryCrossFloor
-recoveryDynamicMotion
-recoveryDynamicTarget
-recoveryExplicit
-recoveryFit
-recoveryId
-recoveryMode
-recoveryNextTracker
-recoveryObservation
-recoveryPending
-recoveryRenderMatrix
-recoveryRoute
-recoverySiblingCoordinateBasis
-recoverySiblingSharedSeed
-recoverySiblingSourceMember
-recoveryState
-recoveryStructural
-recoveryStructuralAmbiguity
-recoveryStructuralLandmarks
-recoveryTier
-recoveryValidationMatrix
-recoveryVisible
-recovery_context
-recovery_required
-recovery_scope
-rect_px
-rectangle
-rectangleAspectRatio
-rectangleBounds
-rectangleOrientation
-rectangleSource
-reduceMotion
-reference
-referenceAdjusting
-referenceAnchor
-referenceAspectRatio
-referenceAuthor
-referenceAuthorized
-referenceBinding
-referenceBounds
-referenceCanAdjust
-referenceCanvas
-referenceCanvasPolicy
-referenceChannel
-referenceCoordinateSpace
-referenceCoverage
-referenceDx
-referenceDy
-referenceEnabled
-referenceIconScore
-referenceId
-referenceInQueryScore
-referenceMaskSha256
-referenceOpacity
-referenceOpacityPercent
-referencePath
-referencePeakRatio
-referencePitch
-referencePointsScaled
-referencePosition
-referenceProvider
-referenceRepresentation
-referenceResource
-referenceScale
-referenceSheetVisible
-referenceSize
-referenceSpan
-referenceSpanPx
-referenceToLiveMatrix
-referenceToken
-referenceTopology
-referenceVisible
-reference_context
-reference_dx
-reference_dy
-reference_id
-reference_opacity_var
-reference_override
-reference_scale
-refineIters
-refinedPartialContainment
-refinement
-refinementError
-refinementMs
-refresh
-refreshAge
-refreshCompleted
-refreshError
-refreshNextAlignment
-refreshPending
-refreshed
-region
-regionHeight
-regionTop
-regionalEdgeVerified
-regionalObservation
-regions
-registeredCount
-registeredIdentityCandidates
-registeredPackageIds
-regression
-reject_blank_full_client
-reject_released
-rejected
-rejectedAt
-rejectedCandidates
-rejectedCoordinateBindings
-rejectedMaps
-relationEvidenceLevel
-relativeScoreMultiplier
-relaxed
-release
-releaseNotes
-releaseReport
-releaseReportBuildFingerprint
-releaseReportBuiltAt
-releaseReportExecutableSha256
-releaseReportPresent
-releaseReportSourceCommit
-releaseReportSourceDirty
-releaseReportVersion
-releaseRetriesExhausted
-releases
-reliable
-relief
-reloaded
-relocalizationHintDistance
-relocalize
-relwidth
-relx
-rely
-remaining
-remainingMs
-rememberedFloor
-remembered_floor
-remote
-removal
-removalTransactionId
-removed
-removedFiles
-removed_profile
-render
-renderAdapterUsed
-renderBounds
-renderBuild
-renderCanonicalMatrixSourceToClient
-renderMatrix
-renderMatrixSourceToClient
-renderMedianMs
-renderMeta
-renderMs
-renderP95Ms
-renderProfileVerifiedFloors
-renderRecognitionMatrixSourceToClient
-renderRouteProfileId
-renderToken
-render_matrix
-render_matrix_source_to_client
-render_overlay
-render_profile_verified
-renderedMatrixSourceToClient
-renderedPixelsReused
-renderedProfileDiagnostic
-renderedProfileResidual
-rendered_profile_residual
-reopenReuseTotal
-repainted
-replaceFiles
-replace_state
-replaced
-replay
-report
-reprojectionErrorPx
-request
-requestBudgetMs
-requestContext
-requestGeneration
-requestId
-requestScope
-requested
-requestedAt
-requestedClientBounds
-requestedCoordinateSpace
-requestedExecutionLevel
-requestedExecutionLevelReason
-requestedFromFloor
-requestedGlobalRecenter
-requestedMode
-requestedMonotonicAt
-requestedProfileMatches
-requestedRouteProfileId
-requestedWideFallback
-requestedWideFirst
-requested_size
-requested_size_px
-requeue
-require_closed
-require_holdout
-require_locked_round_floor_evidence
-require_qt
-require_recenter
-require_source_frame_current
-required
-requiredAnchorCount
-requiredBackdropRatio
-requiredCompatibleFrames
-requiredMisses
-requiredTailMatches
-requiredVerificationScore
-requiredWindowMatches
-required_map_ids
-required_members
-required_misses
-requiresConfirmedRoundMap
-requiresCurrentFloorFit
-requiresCurrentFrameDisplayValidation
-requiresCurrentFrameGeometryFit
-requiresCurrentFrameRecognitionFit
-requiresCurrentFrameValidation
-requiresFiles
-requiresFreshNativeGeometryValidation
-requiresIndependentDisplayRevalidation
-requiresIndependentScaleCalibration
-requiresMaterialAck
-requiresPhysicalMapKey
-requiresSelectedRouteCurrentFrameResidual
-requiresStableTargetFloor
-requiresUniqueCurrentFrameStructure
-requiresVerifiedSourceFloorTransform
-reserved
-reset
-resetGeneration
-resetGenerationBefore
-resetMatches
-reset_intent
-reset_layout_anchor
-reset_unconfirmed_frame
-residual
-residualErrorPx
-residualRequired
-residualVerified
-residual_verified
-resolution
-resolutionClass
-resolutionP90LimitPixels
-resolutionP90Pixels
-resolutionPrecisionVerified
-resolvedCount
-resource
-resourceBase
-resourceCheck
-resourceContext
-resourceIdentity
-resourceInstallationPolicy
-resourceKey
-resourceKind
-resourceLocked
-resourcePack
-resourcePath
-resourceRoot
-resourceScope
-resourceSha256
-resourceTab
-resourceVersion
-resource_cache
-resource_key
-resource_root
-resource_status
-resources
-restartRequired
-restoreRequested
-restore_error
-restored
-restoredImmediately
-restoredSelectedAuthor
-restoredSettingsTab
-restoredState
-restored_profiles
-restrictedLiveTest
-restrictedLiveTestSearchSeedAllowed
-restrictedLiveTestVerified
-result
-resultContext
-resultGroupGenerationStale
-resultKind
-resultMeaning
-resultQueue
-resultResetGeneration
-resultScope
-results
-retained
-retainedAuxiliaryBytes
-retainedAuxiliaryCount
-retainedBytes
-retainedCandidates
-retainedDirection
-retainedHistoryAnchors
-retainedMode
-retentionDays
-retiredTransactions
-retrievalEvidence
-retry
-retryAtMonotonic
-retryFailureRecorded
-retry_enabled
-returnCode
-return_detection
-return_failure
-return_focus
-return_index
-return_inverse
-return_when
-reuse
-reuseEvidence
-reuseTotalBeforeDisplay
-reuse_evidence
-reverse
-reviewEligible
-reviewFamily
-reviewStatus
-reviewStatuses
-reviewedAnchorCount
-reviewedAuthorAdapterAnchor
-reviewedGeometricResidual
-reviewedLandmarkCount
-reviewedMappingSearchSeedAllowed
-reviewedMaximumPixels
-reviewedP90Pixels
-reviewedSeedKind
-revision
-revoke_display
-rho
-rid
-right
-rightDown
-rightUp
-ringEvaluations
-rivalMinimumRmsPixels
-rivalPair
-rivalRms
-rms
-rmsPixels
-roi
-roiClientBounds
-roiPixelSamples
-roiPixels
-role
-roles
-room
-roomConfigId
-roomGeometry
-roomTypeId
-room_labels
-rooms
-root
-rootIdentity
-rootIndex
-rootMatrix
-rootOverride
-rootPose
-rootPoseValidation
-rootVisible
-root_pose
-rotation
-rotationDeg
-rotationDegrees
-rotation_degrees
-round
-roundActionText
-roundActive
-roundAnchorFloor
-roundCoordinatePrimed
-roundEndEnabled
-roundEndHintShown
-roundGroupGenerationAtStart
-roundGroupPoseAuthorized
-roundGroupPoseMapId
-roundGroupPoseProfileId
-roundGroupProjectionAuthorized
-roundGroupProjectionDisplayAuthorized
-roundGroupSharedLinear
-roundGroupVerifiedRootFloors
-roundGroupZeroExplorationAuthorized
-roundGroupZeroExplorationDisplayAuthorized
-roundGroupZeroGeometryStaticSheetAuthorized
-roundId
-roundLayerGroupCommitted
-roundLocked
-roundPreparing
-roundStartEnabled
-roundStateText
-roundTransferVerified
-roundTrip
-roundWorkActive
-round_identity_locked
-round_layer_group
-round_locked
-route
-routeAgreement
-routeBounds
-routeDisplayAllowed
-routeDisplayBridge
-routeDisplayRequiresCurrentFrameAlignment
-routeDisplayStillRequiresFinalSharedGate
-routeDisplayUntilSharedCommit
-routeFamilies
-routeFamiliesShareGeometry
-routeFamily
-routeHeight
-routeInkUsedAsIdentity
-routePath
-routePixels
-routeProfile
-routeProfileId
-routeProfileIndependent
-routeReferenceCacheHit
-routeReferenceMs
-routeReset
-routeResource
-routeSha256
-routeShape
-routeSource
-routeVariants
-routeVersions
-routeVisible
-routeWidth
-route_adapter_available
-route_family
-route_family_name
-route_loader
-route_override
-route_profile_id
-route_reference
-route_shape
-route_source
-route_variant
-row
-rowheight
-rows
-rowspan
-rtol
-run
-runRoot
-runnerUpSpan
-running
-runtime
-runtimeAfter
-runtimeAllowed
-runtimeBefore
-runtimeBuildFingerprint
-runtimeContext
-runtimeDisplayEnabled
-runtimeEligible
-runtimeEligibleCount
-runtimeEnabled
-runtimeEnabledProfileCount
-runtimeError
-runtimeIdentityBindings
-runtimeInterfaces
-runtimeMapId
-runtimeMaxEdge
-runtimeOpenCVVersion
-runtimePermissionIsNeverGrantedHere
-runtimePolicy
-runtimeProcessIntegrity
-runtimePromotionAllowed
-runtimeRequiresCurrentFrameStructureValidation
-runtimeRequiresSeparateHumanReviewAndCurrentFrameValidation
-runtimeStatus
-runtimeVerified
-runtimeVersion
-runtime_context
-runtime_enabled
-runtime_result
-safeAreaWallScaleRefinementVerified
-safeFallback
-safeHeight
-safeTop
-safety
-sameControlContract
-sameFloorAuthorBridges
-sameFloorLockedReopenRelaxed
-sameFrameExtractionCount
-sameHWND
-sameLayoutMapIds
-sameLayoutMargin
-sameMap
-sameMapAlternativePoses
-sameMapPoseInitialization
-sameMapRelocalizationAllowed
-sameOpenAttempt
-sameVisibleComponent
-same_floor_locked_reopen_relaxed
-sampleBytes
-sampleCount
-sampleEvidenceAccepted
-samplePath
-sampleQueuedMonotonicAt
-sampleRole
-sampleSha256
-sampleSize
-sample_radius_override
-sample_validator
-samples
-sampling
-samplingClass
-samplingEnqueuedMonotonicAt
-samplingScope
-sampling_scope
-sane
-sanity
-saved
-savedCount
-savedDock
-savedDpi
-savedDragBoundary
-savedEnabled
-savedFrameCapabilities
-savedFrameEngineAvailable
-savedHotkey
-savedOnboarding
-savedReduceMotion
-savedRoute
-savedSheetOpacity
-savedUiSound
-savedVariant
-savedWorkRectPx
-saved_dpi
-saved_frame
-saved_result
-saved_work_area_px
-scale
-scaleAgreement
-scaleCalibrationStatus
-scaleChange
-scaleChangedOnRefresh
-scaleClass
-scaleCorrectionFactor
-scaleError
-scaleFactor
-scaleLocked
-scaleMatrixSourceToClient
-scaleObservable
-scalePercent
-scaleRatio
-scaleRefinement
-scaleSearch
-scaleSeed
-scaleSeedSource
-scaleSource
-scaleX
-scaleY
-scale_x
-scale_y
-scales
-scenario
-scene
-sceneFingerprint
-scheduledLateMs
-schema
-schemaErrors
-schemaVersion
-scope
-score
-scoreMargin
-scores
-screen
-screenBounds
-screenCenter
-screenOverlap
-screenSide
-screens
-screenshot
-screenshotKeypoints
-scrollregion
-sdepth
-seams
-searchAttempts
-searchBottom
-searchBounds
-searchCropFallback
-searchElapsedMs
-searchMode
-searchPasses
-searchScope
-searchScore
-searchStages
-searchTier
-searchTop
-searchValidationBasis
-search_bounds
-searchedReferenceCount
-second
-secondScore
-seconds
-section
-sectorMeans
-seedBudget
-seedCorrespondences
-seedCount
-seedHeldOutInliers
-seedId
-seedMatrix
-seedRevision
-seedScale
-seedSource
-seedSources
-seedTranslationError
-seeds
-seenNotesVersion
-segmentCount
-selectbackground
-selectcolor
-selected
-selectedAuthor
-selectedAuthorPixelsInspected
-selectedAuthorResidual
-selectedCandidate
-selectedCandidateIndex
-selectedCount
-selectedFileBytes
-selectedFloor
-selectedFloorProposalReason
-selectedFloorRelocalizationMs
-selectedFresh
-selectedGallery
-selectedMap
-selectedMapFitStarted
-selectedMapId
-selectedMapIds
-selectedMatrixFloor1ToFloor2
-selectedPackage
-selectedPackageId
-selectedPriorHypothesis
-selectedQtScreen
-selectedRouteCurrentFrameResidual
-selectedTabBackground
-selectedTabFont
-selectedTabForeground
-selectedTabPadding
-selectforeground
-selectionPolicy
-selectmode
-semantic
-semanticBoost
-semanticBudgetFallbackUsed
-semanticChecks
-semanticCompetition
-semanticEvidence
-semanticLimits
-semanticMargin
-semanticMemoryCount
-semanticMemoryLoadElapsedMs
-semanticMemoryScore
-semanticPartialScore
-semanticPrecisionOverride
-semanticQueryElapsedMs
-semanticScore
-semanticSilhouetteScore
-semanticSourceScore
-semanticStairGroups
-semanticTopologyScore
-semantic_only
-sensorMode
-sensorResidual
-sensorThread
-separators
-seq
-sequence
-sequenceNs
-session
-sessionConsensus
-sessionId
-sessionIdentityRetained
-sessionIdentityStatus
-sessionRangeScope
-sessions
-set_game_mode
-set_reference_sheet_visible
-settings
-settingsDimensions
-settingsOpacityText
-settingsSelectable
-settingsShellMode
-settingsTabs
-settingsWithoutGameVisible
-settings_dir
-settings_path
-settings_selectable
-settleLatencyMs
-settled_at_ms
-severity
-sha256
-shadow
-shape
-shapeAccepted
-shapeAgreement
-shapeCategory
-shapeChange
-shapeHW
-shape_category
-sharedError
-sharedGeometry
-sharedGroupPoseSeeded
-sharedInitialStructureFit
-sharedLookup
-sharedMaskResourcePath
-sharedProjectionGeometryInsufficient
-sharedReference
-sharedReferenceMetadata
-sharedReferencePath
-sharedResource
-sharedResourcePath
-sharedShellIdentity
-sharedStructuresAreCalibrationEvidenceOnly
-shared_group_pose_seeded
-shared_pose_relocalization
-shared_reference
-shared_reference_loader
-shared_reference_provider
-shared_resources
-shared_version_context
-shearDegrees
-sheetOpacity
-sheetOpacityPercent
-sheetPosition
-sheetPositionSpace
-sheetScale
-sheetShape
-sheetVisibilityEnabled
-shell
-shift
-should_enqueue_background
-show
-show_sheet
-shown
-shownSource
-showvalue
-siblingBoxes
-siblingError
-siblingMapId
-siblingPending
-siblingSupportPixels
-siblingTargetGeometry
-side
-sideCandidate
-sideCandidates
-sideComplete
-sideDoorBoost
-sideDoorConstraint
-sideDoorCrop
-sideDoorDirection
-sideDoorDirectionEvidence
-sideDoorDirectionMargin
-sideDoorDirectionReliable
-sideDoorDirectionSupported
-sideDoorExitCenterError
-sideDoorExitVerified
-sideDoorIdentityScore
-sideDoorLiveExitIcon
-sideDoorLiveExitScaleRange
-sideDoorMinimumQueryPixels
-sideDoorPath
-sideDoorPosition
-sideDoorQueryPixels
-sideDoorResourceError
-sideDoorStageReason
-sideDoorStructuralScore
-sideDoors
-sideEntries
-sideGates
-sideLocalIndexError
-sideObservationWaitElapsedMs
-sideProducer
-sideResourceError
-sideWinnerMapId
-side_diagnostics
-side_door_crop
-side_door_position
-side_error
-side_rows
-siftFallback
-sign
-signature
-significant
-significantComponents
-silentHint
-silent_hint
-silhouette_score
-similarity
-singleCaptureLane
-singlePoseOwner
-singleSharedRuntimePose
-singleStairGlyphNeverAuthorizesDisplay
-singleWorker
-single_link
-singleton
-singletonNearDoorFingerprint
-singletonNearDoorSupported
-singularValues
-size
-skeleton
-skip_exit_fast
-skippedCount
-skippedVersion
-slant
-sliderlength
-sliderrelief
-slots
-slowCalls
-slowLimit
-slowThresholdMs
-sm
-snapshot
-snapshotFailed
-snapshotLimit
-snapshotNumber
-solver
-solverEvents
-solverStageTimingsMs
-sort_keys
-source
-sourceAliasRecords
-sourceAnchor
-sourceAnchorEvidence
-sourceAnchorScore
-sourceArchive
-sourceAspect
-sourceAsset
-sourceAssetPolicy
-sourceAuthorPoint
-sourceBounds
-sourceBoxes
-sourceBytes
-sourceCandidateId
-sourceCandidateIds
-sourceCandidateIndexRows
-sourceCandidateKey
-sourceCandidateRanking
-sourceCandidates
-sourceCanonicalMatrixToClient
-sourceCenter
-sourceChainCount
-sourceChains
-sourceCheckout
-sourceClass
-sourceClientSize
-sourceCommit
-sourceCoordinateSpace
-sourceCoordinatesVerified
-sourceCore
-sourceCorner
-sourceCorners
-sourceCycleId
-sourceDirectionKnown
-sourceDirty
-sourceDirtyFiles
-sourceDisplaySignature
-sourceEdge
-sourceEntryId
-sourceEntryIds
-sourceError
-sourceEvidence
-sourceFloor
-sourceFloorIsProducerLabelOnly
-sourceFloorTransformVerified
-sourceFolder
-sourceFrame
-sourceFrameCurrent
-sourceFrameGeneration
-sourceFrameId
-sourceFrameSignature
-sourceFrameSignatureToken
-sourceGameFloor
-sourceGroup
-sourceGroupGeneration
-sourceIdentityKind
-sourceKind
-sourceLabelsAreNotGameTruth
-sourceLayerPath
-sourceLayout
-sourceLayoutId
-sourceLines
-sourceLocation
-sourceMapComponent
-sourceMapId
-sourceMapSignature
-sourceMargin
-sourceMarkerAgeMs
-sourceMarkerCycleId
-sourceMarkerFrameGeneration
-sourceMatchMethod
-sourceMatchesPayload
-sourceMatrixToClient
-sourceNode
-sourceNormal
-sourceOwner
-sourcePair
-sourcePatchSha256
-sourcePath
-sourcePixelsReused
-sourcePngIsDisplayImage
-sourcePoint
-sourcePointCandidate
-sourcePoints
-sourcePolicy
-sourceProduct
-sourceProfileId
-sourceRays
-sourceReason
-sourceRecognitionMatrixToClient
-sourceRef
-sourceRefreshCount
-sourceRefreshMedianMs
-sourceRegion
-sourceRelative
-sourceResidual
-sourceResidualVerified
-sourceRetained
-sourceRetryMap
-sourceReuseEvidence
-sourceRoleLoads
-sourceRoot
-sourceRoots
-sourceScaledLocation
-sourceScope
-sourceScore
-sourceSeedId
-sourceSegments
-sourceSemanticMatch
-sourceSha256
-sourceShape
-sourceSize
-sourceSpace
-sourceSpan
-sourceStrip
-sourceStrips
-sourceStructureBinding
-sourceStructureCandidate
-sourceStructureCandidateCount
-sourceStructureCandidates
-sourceStructureConsumer
-sourceStructureDiagnostics
-sourceStructureFeatures
-sourceStructureIdentityAuthorized
-sourceStructureIdentityVerified
-sourceStructureVerifiedFloors
-sourceStructures
-sourceSupportPixels
-sourceSurfaceGeneration
-sourceSurfaceVisibilityGeneration
-sourceToLiveMatrix
-sourceToken
-sourceTreeHash
-sourceTurns
-sourceType
-sourceUnknownPixels
-sourceUnmodified
-sourceVersion
-source_bounds
-source_candidate
-source_commit
-source_context
-source_cycle_id
-source_display_signature
-source_floor
-source_frame
-source_frame_signature
-source_icon_override
-source_icon_search_bounds
-source_id
-source_known_boundary
-source_map_component
-source_mask
-source_nodes
-source_path
-source_rendered_profile_residual
-source_root
-source_roots
-source_shape
-source_signature
-source_size
-source_structure_verified
-source_surface_generation
-source_unknown
-source_wall_mask
-sources
-space
-spacing
-spacing1
-spacing3
-spacingMax
-spacingMin
-spanCoverage
-spanHeightRatio
-spanWidthRatio
-span_end
-span_start
-spansMs
-sparseFloorEvidence
-sparsePointCount
-sparseRawFit
-sparseSemantics
-spatialAnchorGroups
-spatialMapId
-spatialQueryPixels
-spatialRoutePreserved
-spatialRouteVisible
-spatialSupportPixels
-spatiallyConsistent
-square
-stableColor
-stableColorRatios
-stableFloor
-stableForReview
-stableMapOpen
-stableOverlapRatio
-stablePromotionPending
-stack
-stage
-stageTimingsMs
-stagedIdentities
-stagedNativeState
-stagedObservation
-staged_observation
-stages
-stairPortalHandoff
-stairScore
-stairs
-stale
-staleDiscarded
-stale_discarded
-start
-startError
-start_background
-start_round
-started
-startedMonotonicAt
-starts
-startupinfo
-state
-stateGetterError
-state_getter
-states
-staticSheetVisible
-status
-status_color
-status_text
-stderr
-stdout
-steady
-step_override
-sticky
-stop
-stop_at
-storage
-strategy
-strengthAgreement
-stretch
-strict
-strict_hotkey_map
-stride
-stripExtentRejected
-strips
-stroke
-strong
-strongBackdropMin
-strongGlyphMin
-strongHighlight
-strongSuggestion
-strong_latest
-structural
-structuralAmbiguity
-structuralLandmarks
-structuralPixels
-structure
-structureContentSha256
-structureFallbackCount
-structureIconConsistency
-structureMask
-structureModel
-structurePreloadDiagnostics
-structureProposalOrigin
-structureRawRecordSha256
-structureReferenceContext
-structureResource
-structureScale
-structureScore
-structureSeedScore
-structureSourceContext
-structureSourceFrame
-structureSourceProfileId
-structureValidationAuthority
-structureVariants
-structureVersionBindings
-structureVersionKey
-structure_cache_context_provider
-structure_direct_resource_loader
-structure_profile_provider
-structure_resource_loader
-structure_store
-style
-success
-suffix
-suju
-summary
-support
-supportAuthors
-supportCoverage
-supportInliers
-supportLabels
-supportMapId
-supportMargin
-supportPixelCount
-supportPointCount
-supportRatio
-supportRoutes
-supportSpreadPixels
-support_coverage
-support_spread
-supported
-supportedMemberIds
-supportedPlanes
-suppress
-suppressed
-suppressedRange
-suppressedTotal
-suppressionCount
-suppressionReasons
-surface
-surfaceGeneration
-surfaceMatches
-surfaceVisibilityGeneration
-surfaceVisible
-surface_generation
-surface_id
-surface_visibility_generation
-surfaces
-survivingAnchors
-switchMargin
-switchReason
-switchedSettingsTab
-sx
-sy
-sync_layout
-synthetic
-system
-tabmargins
-tags
-tailTwoMatch
-takefocus
-tapKey
-tapKeys
-target
-targetCandidateCount
-targetCenter
-targetFloor
-targetFloorGeometryState
-targetFloorQueryPixels
-targetFloorTrusted
-targetFloorTrustedAtStart
-targetFrameValidationRequiredForDisplay
-targetIndex
-targetLatencyMs
-targetLocalCorrectionVerified
-targetMapId
-targetSize
-targetStairCandidates
-targetState
-targetToSourceMatrix
-target_anchor_count
-target_floor_trusted
-target_local_correction_verified
-target_nodes
-target_shape
-target_state
-target_window
-targets
-taxonomy
-taxonomyAdjustment
-taxonomyPositionMatch
-tearoff
-teleport
-templateNumber
-templateScore
-templateSize
-temporalEvidence
-temporalIdentityVerified
-temporalScaleGeometry
-temporalStrongSuggestion
-temporal_fit
-temporaryCopiesRemaining
-terminal
-terminalForSelectedProfile
-terminalState
-terminalVerdict
-termination
-terrainMask
-terrain_mask
-testVersion
-testedCount
-testedScaleHypotheses
-text
-textEntryActive
-textOnly
-textvariable
-theta
-threadId
-thread_name_prefix
-threads
-threshold
-thresholds
-thumb
-thumbnailError
-thumbnailUrl
-tier
-tileGridSize
-time
-timeToLockMs
-timelineSequence
-timeout
-timerCount
-timespec
-timestampBasis
-timestampUTC
-timingMeaning
-timingMs
-tintedControlsLocalized
-tintedMatchedAnchors
-tintedRatios
-title
-titlePolicy
-tkIdleCheckpointMs
-tkImage
-to
-toFloor
-toMemberId
-toMode
-toRegion
-to_native
-toggle
-toggle_round
-toggle_sheet_visibility
-token
-tolerance
-top
-topCandidate
-topCandidateMapId
-topCandidateReason
-topIdentityHardGatePassed
-topMapId
-topRegisteredRows
-topScore
-topStrongSuggestion
-topTwo
-topology
-topologyScore
-topologySignature
-topology_path
-topology_score
-topology_signature
-topology_value
-total
-totalBytes
-totalDelta
-totalDx
-totalDy
-totalMs
-totalReferenceCount
-totalValidPoints
-totalX
-totalY
-total_byte_limit
-traceAttempt
-traceContext
-traceback
-tracked
-tracker
-tracker_alias_before
-tracker_key_before
-tracker_store_before
-tracking
-trackingEvidenceFloors
-trackingFloor
-trackingMode
-trainingExamples
-trainingFrames
-trainingLabelWritten
-transactionId
-transferSource
-transformDistinctCandidate
-transformDistinctMargin
-transformDistinctScore
-transformEvidence
-transformRevision
-transient
-transientMotion
-transientOffset
-transitionBandFailClosed
-transition_or_jump
-translation
-translationAnchorHistory
-translationCorrection
-translationDisagreement
-translationDistinctMargin
-translationMask
-translationMaskMatrix
-translationMaskPose
-translationMaskScale
-translationOnly
-translationPixels
-translationRefinement
-translationRefinementPixels
-translationResidualVerified
-translationSearchRadius
-translationSearchScore
-translationSecondScore
-translationSource
-translation_only
-translation_x
-translation_y
-transparentDisplay
-treadCount
-trigger
-triggerKeys
-triggerMode
-triggerReady
-troughcolor
-truncated
-truncatedLogCount
-truncatedToRecentLines
-trustedB1
-trustedB1TinyVerification
-trustedManual
-tx
-ty
-type
-typedLayers
-typedReference
-uc
-ui
-uiFrameQueuePending
-uiScale
-uiSmoke
-uiSmokeRestart
-uiSoundEnabled
-ui_context
-unavailable
-unavailableFloors
-unavailableReason
-unboundActions
-unboundNativeLayers
-unboundSourceGroups
-unchanged
-uncommittedRecognitionSeed
-unconfirmedRecoveryContext
-under
-uniform
-unique
-uniquePairs
-uniqueRoomAnchor
-uniquenessEvidence
-unit
-unknown
-unknown_mask
-unmanaged
-unregistered
-unsafe
-unselectedTabBackground
-unselectedTabFont
-unselectedTabForeground
-unselectedTabPadding
-unsupported
-until
-unverified
-unverifiedPreservedCount
-up
-update_session
-updatedAt
-updates
-upgrade
-upgradeTransactionId
-uploaded
-upper
-urgentQueueDepth
-url
-usable
-usableAdapterCount
-usableForCurrentFrameRendering
-useHarrisDetector
-use_last_error
-user
-userMessage
-userObjects
-userVisible
-v2Candidate
-v2Handled
-v2RuntimeEnabled
-vEnd
-vSign
-valid
-validCandidateGeometry
-validPartitions
-validPayload
-validate
-validated
-validation
-validationBasis
-validationBudget
-validationEdgeCount
-validationMask
-validationMaskContract
-validationMaskSha256
-validationPixelsUnmodified
-validationPointCount
-validationPolicy
-validationSensorBasis
-validation_spec
-value
-values
-variable
-variant
-variantCountPerProfile
-variantExclusiveEvidence
-variantId
-variant_id
-variants
-verdict
-verification
-verificationComplete
-verificationEvaluated
-verificationMatrixSourceToClient
-verificationMethod
-verificationMode
-verificationPending
-verificationSource
-verification_pending
-verified
-verifiedCandidateCount
-verifiedCommonRange
-verifiedFloors
-verifiedFrame
-verifiedFrameContext
-verifiedMapIds
-verifiedMemberId
-verifiedOverlayPreserved
-verifiedPlayerAuthorPoint
-verifiedPlayerCommittedMonotonicAt
-verifiedPlayerSourceCycleId
-verifiedPlayerSourceFrameGeneration
-verifiedRootFloors
-verified_member_id
-verify_hashes
-verify_rendered_candidates
-version
-versionCode
-versionConsistent
-versionFiles
-versionInfo
-version_code
-version_context
-version_root
-versions
-veryBrightRatio
-viaFloor
-viewable
-viewerPoseId
-virtualKey
-visibilityText
-visibility_generation
-visible
-visibleAnchorRelocalization
-visibleComponent
-visibleComponentElapsedMs
-visibleNativePhaseResponse
-visibleNativeRecovery
-visibleNativeSourcePoseResidual
-visiblePixels
-visiblePorts
-visibleState
-visibleSupportRejected
-visibleSupportRejectedCount
-visible_override
-visible_state
-visualLatencyMs
-visualResidual
-visualSettleMs
-visual_at_ms
-visual_state
-vk
-votes
-wait
-waitMs
-wait_seconds
-waiting
-waitingForNextMap
-wallGeometryReason
-wallIdentity
-wallMs
-wallNormalResiduals
-wallRefinement
-wallRejected
-wallScale
-wallSupport
-wall_correspondence_identity
-wall_geometry
-walls
-wallsVerified
-warning
-warnings
-wasSpatiallyVisible
-weakGlyphMin
-wechat
-weight
-weightedScore
-weights
-where
-whitelistCount
-wholeHidden
-wide
-wideAreaCandidates
-wideAreaCandidatesAreNamedRooms
-wideContextAnchorDescriptor
-wideFirst
-wideMapContainmentScore
-wideNeutralRatio
-wideRecoveryEvidence
-wideRoomAnchorDescriptor
-wideRoomContainmentScore
-wideScore
-wideSearch
-wideSearchRadius
-wideSearches
-wide_first
-wide_recovery_evidence
-widget
-widgetClass
-width
-widthRatio
-winSize
-window
-windowCandidateCount
-windowClass
-windowEnvironment
-windowMode
-window_environment
-window_mode
-window_process_id
-window_text
-windowsBuild
-winerror
-winnerReference
-wins
-within3
-within6
-withinAuthorCrossFloorAttempts
-withinSixPixels
-withinThreePixels
-withinThreePixelsRatio
-withinTwoPixels
-witnesses
-workBounds
-workRect
-work_area
-work_area_px
-worker
-workerComputeMs
-workerFitSucceeded
-workerInvalidated
-workerQueueMs
-workerStarted
-workerToken
-workerTotal
-worker_wide_first
-workingSetBytes
-workingTreeVerification
-worstPoints
-wrap
-wraplength
-writable
-write
-writeError
-writeRoot
-writer
-x
-xl
-xs
-xscrollcommand
-y
-yellowRatio
-yscrollcommand
-zeroExplorationDisplayAllowed
-zeroGeometryStaticSheetHandled
-zeroSheetOpacity
-zhan10CoffinVariantId
-zhanCanonicalConsensus
-zoomControl
-zoom_transform
-""".split())
-CODES = frozenset("""
-presentation-publish
-presentation-hide
-execute
-refresh-map
-solve
-a
-a053cc53feb067edbbbdb510bb7587ccb9acbfc80bea461ceb039444e3e328c6
-a30779908582099378b287112585f019534f2e4d1db681b85b52e062e746b715
-a336f469e06a9b50d962ea3f9c0f5ebf16e229a4ee12f0a37a76f8b68dcfa7e3
-a4e48b71dfa13d4309c77826bf2160785a35eeae99a198fe1ef5d9ba12d4f987
-a5a5e67245c812d0229f01b97f999b80abd637483541ac61daa923819ac4756d
-a6c131ea1aa4a7f355077d8ba63a10db4aeb5434fab85a7fcba1cf645a67f748
-a6dd1317a1326484183b7cd7fd1de0878d3d60c5e9479808371cafa2a3ca70db
-a70dc77c27def3eb557d0e1b8b9f46a667c1ec6cc4c248e3e1005794b873a566
-a9092d28be69c4488ec0c57b7c7516ba1dcf298a9e72f69c55672b01b2b3cf1f
-a93a0d79136354b843e5689753f215809c9f6438640869ee88ed926ebea7bbe6
-a93af26f3be44cbc7508633482899d9d24df8df842690033d454177742a25007
-a9a7285688450154af1a0d6f9248f8c380a79f0203109384068f15736c5052cf
-aab2d37a131b75cca6113fb6d62883e701535a316107ca26d94ac9b2ef3a36f6
-ab
-ab9ba33c17efc5cda314516780dad9eaaf75b930e78b99114fe963e5d43a10e5
-ab9f5b4eb77d40c8d93aff5a4d9a362a0c7dc33e0d905a5da8e9de9b6f5c1b8c
-absent
-absent:
-absolute-contrast
-ac35c6c81f8db58bcb1e7e513573214d97abd30211c4763e972de4f9117e0c4f
-acceptances
-accepted
-accepted-cross-validated-entrance
-accepted-exemplar-consensus
-accepted-exemplar-temporal-consensus
-accepted-full-map-registration
-accepted-full-map-shape
-accepted-human-labeled-live-exemplar
-accepted-live-exemplar
-accepted-marked-entrance
-accepted-prior
-accepted-prior-full-floor
-accepted-session-identity-retained
-accepted-side-door-topology
-accepted-spatial-live-consensus
-access
-accumulator
-acknowledge_render_material
-acknowledge_sibling
-acquisition
-action
-action-
-action-hotkey
-action-receipt
-action_hotkey_vars
-action_hotkeys
-action_label
-activation-key-suppressed
-active
-active_confirmation
-active_map_cycle_id
-active_mode_var
-active_observation
-activebackground
-activeforeground
-actual
-actual-rendered-profile-structural-mask
-actual.status
-actual_selection
-adaa7169ae94706e5dfd6bb13a1dac4220c2684a2aff2dedb53477d99c087be6
-adapters
-add
-added
-addition-journal.json
-additions
-additions-committed
-additions-committed-data-changed
-additions-journal-witness-changed
-additions-pending
-additions-pointer-could-not-be-cleared
-additions-receipt-changed
-additions-recovery-required
-additions-retained-object-changed
-additions-rollback-conflict
-additions-rollback-incomplete
-additions-rolled-back
-additions-stage-cleanup-conflict
-additions-stage-cleanup-incomplete
-adjacent_surface_layout
-adjusting
-advanced-hidden
-advapi32
-advisory-direction-shape-pending-current-frame-fit
-ae06950fb26784f5b01bcf91b0c689b8ba21e4ad2af1c52a21a3a8016a368356
-aea4413e11a501ef1f42e69a2f6a33db2afea11e653c37203a4917ed68a1863c
-aeeaa0b8bac6ab66e664434377ed0d73394240776ed32672a3a9917b9eabbad0
-af7beabe577241462231ff1f44f5fd04946d91d4e885ee8de96bf122f57802a2
-af9a40c486ea0f63e6ae18456022c1600da48bda9900921c61a9fac5854d5c94
-affine
-after
-after_cancel
-after_idle
-agreement
-aichicu-difficult
-align_selected
-align_selected_fast
-align_selected_profile_cross_floor_fast
-align_selected_with_math_pool
-aligned
-aligned-cross-floor-live-stair-overlap
-aligned-cross-floor-stair-anchor
-aligned-current-frame
-aligned-exit-anchor-partial-structure
-aligned-expanded-partial-structure
-aligned-fast-author-sparse-exit
-aligned-fast-exit-anchor
-aligned-fast-exit-anchor-exploration-frontier
-aligned-fast-exit-anchor-local-refine
-aligned-fast-exit-anchor-semantic-partial
-aligned-fast-exit-anchor-wall-scale-refine
-aligned-front-door-pose-current-frame
-aligned-overlay
-aligned-partial-structure
-aligned-profile-cross-floor-current-frame
-aligned-profile-cross-floor-current-frame-global-recenter
-aligned-profile-cross-floor-current-frame-mapped-full-structure
-aligned-profile-cross-floor-current-frame-mapped-transition-consensus
-aligned-stair-portal-current-frame-verified
-aligned-visibility-changed
-aligned_author_route_cache
-aligned_author_route_lock
-aligned_author_structure_cache
-aligned_overlay
-aligned_window
-alignment
-alignment-acceptance-error
-alignment-acceptances.jsonl
-alignment-cancelled
-alignment-candidate-hidden
-alignment-candidate-saved
-alignment-conflict-hidden
-alignment-error:
-alignment-failed
-alignment-failure-frame-encode-failed
-alignment-failure-sample-written
-alignment-failure-sampling-state-changed
-alignment-failure-snapshot-error
-alignment-failure-snapshot-saved
-alignment-failure-writer
-alignment-failures.jsonl
-alignment-fallback
-alignment-fallback-exhausted
-alignment-fallback-stale-ignored
-alignment-hidden
-alignment-identical-frame-retry-suppressed
-alignment-open-to-overlay-hard-budget-exhausted
-alignment-progressive-retry
-alignment-ready
-alignment-ready-cached-for-revalidation
-alignment-ready-late-rejected
-alignment-rejection-frame-encode-failed
-alignment-rejection-save-error
-alignment-rejections.jsonl
-alignment-settle-window-cancelled
-alignment-settle-work-coalesced
-alignment-stale-ignored
-alignment-stale-terminal-current-cycle-restart
-alignment-success-evidence-error
-alignment-success-evidence-saved
-alignment-success-evidence.jsonl
-alignment-success-frame-encode-failed
-alignment-unverified:
-alignment-user-accepted
-alignment-user-rejected
-alignment-user-rejection-veto
-alignment-v2
-alignment-v2-
-alignment-v2-anchor-pool-retained
-alignment-v2-anchor-proposal-rejected
-alignment-v2-atomic-commit-failed
-alignment-v2-author-result-discarded
-alignment-v2-authorization-failed
-alignment-v2-candidate-cached
-alignment-v2-candidate-frame-stale
-alignment-v2-candidate-unavailable
-alignment-v2-close-request
-alignment-v2-commit
-alignment-v2-commit-context-stale
-alignment-v2-committed
-alignment-v2-compositor-rejected
-alignment-v2-continuity-preserved
-alignment-v2-current-frame-equivalent-preserved
-alignment-v2-display-authorized
-alignment-v2-display-continuity-started
-alignment-v2-display-revoked
-alignment-v2-first-pose-sensor-started
-alignment-v2-foreground-suspended
-alignment-v2-frame-change-rejected
-alignment-v2-frame-floor-pending
-alignment-v2-front-seed-rejected
-alignment-v2-front-seed-sync-fallback
-alignment-v2-idempotent-current-frame
-alignment-v2-map-closed
-alignment-v2-marker-provisional-displayed
-alignment-v2-observation-closed
-alignment-v2-observation-opened
-alignment-v2-obsolete-result-discarded
-alignment-v2-overlay-build-failed
-alignment-v2-pose-seeded
-alignment-v2-post-commit-current-frame-failed
-alignment-v2-queued-first-pose-retained
-alignment-v2-queued-frame-already-committed
-alignment-v2-render-input-missing
-alignment-v2-result-dequeued
-alignment-v2-round-pose-committed
-alignment-v2-round-reset
-alignment-v2-runtime-committed
-alignment-v2-sensor-result
-alignment-v2-sensor-result-reset-stale
-alignment-v2-sensor-result-stale-hidden
-alignment-v2-sensor-result-stale-pose
-alignment-v2-sensor-result-stale-pose-requeue-coalesced
-alignment-v2-sensor-result-stale-pose-requeue-upgraded
-alignment-v2-shared-projection-displayed
-alignment-v2-shared-projection-preserved
-alignment-v2-stale-failure-discarded
-alignment-v2-stale-success-sample-queued
-alignment-v2-structural-recovery-attempted
-alignment-v2-structure-candidate-unavailable
-alignment-v2-temporal-geometry-attempted
-alignment-v2-temporal-scale-attempted
-alignment-v2-terminal-verdict
-alignment-v2-transient-current-frame
-alignment-v2-transient-source-or-linear-change
-alignment-v2-worker-dequeued
-alignment-v2-worker-mode-upgrade-consumed
-alignment-v2-worker-requested
-alignment-v2-worker-retry-suppressed
-alignment-v2-worker-terminal
-alignment-v2-worker-terminal-disposition
-alignment-v2:
-alignment-work-cancelled
-alignment-work-coalesced
-alignment-worker-start-failed
-alignment-worker-still-active
-alignment_core_v2
-alignment_failure_sampling_status
-alignment_in_progress
-alignment_request_generation
-alignment_succeeded
-alignment_v2_runtime_enabled
-alipay
-alipay.png
-alive
-all
-all-managed
-all-map-cross-floor-review-20260827
-all-map-review-selected-candidate
-all-map-review-summary.json
-all-reviewed-floor1-candidates-rejected-safe-floating-only
-allowed
-along0
-along1
-alpha_
-already-active
-already-attempted-this-open-floor-transaction
-already-configured
-already-current
-already-current-floor
-already-editing
-already-foreground
-already-hidden
-already-installed
-already-managed
-already-preparing
-already-removed
-already-visible
-alternative
-ambiguous-clamp-only
-ambiguous-short-chord
-anchor
-anchor-disagreement
-anchor_floor
-anchor_pools
-anchor_rect
-anchors
-anisotropy
-annotated-map-layer
-annotated-map-mask-empty-or-excessive
-another-import-is-running
-another-pending-upgrade-recovery-required
-api.xingchenmap.cn
-app
-appearance
-applicable
-application-closed
-application-commit-after-native-call
-application-running-or-not-writable
-applied
-apply
-apply_hotkey
-apply_layout
-apply_widgets
-approach
-archive
-archive-expanded-size-limit
-archive-inventory-mismatch
-archive-size-limit
-area
-args
-arialbd.ttf
-array
-array-bound
-arrow
-ascii
-aspect
-asset
-asset-root
-assets
-assistant
-assistant-close
-assistant-close-requested
-assistant-closed
-assistant-started
-assistant:
-assistant_shell
-assistant_shell_connector
-assistant_shell_mode
-assumptions
-async-level-plus-latched-short-press
-at
-atomic-anchor-commit-rejected
-atomic-commit-failed
-atomic-current-frame-anchor
-atomic-current-frame-floor-relation-calibration
-atomic_write_text
-attempt
-attempted
-attempts
-attributes
-audience
-audit-preservation-marker.bin
-audit-record-changed
-audit-record-too-large
-audited-cross-floor-current-frame
-authentication
-author
-author-already-installed
-author-binding-path-mismatch
-author-catalog-missing
-author-display
-author-display-binding-unavailable
-author-display-canvas-or-image-unavailable
-author-display-load-or-bridge-error
-author-display-only
-author-file-changed-during-inspection
-author-file-changed-during-removal
-author-files-changed-reinspect-required
-author-files-without-receipt
-author-image
-author-import-refresh-failed
-author-import-started
-author-installed-live
-author-internal-current-multipoint-candidate
-author-internal-multipoint-candidate
-author-not-installed
-author-package-import
-author-package-management
-author-package-management-result
-author-package-not-managed
-author-package-removed
-author-processed-route-crops
-author-registration-or-version-unavailable
-author-removed-live
-author-render-to-client
-author-route
-author-route-catalog
-author-sidecar
-author-structure-native-mask
-author-structure-version-or-base-snapshot-mismatch
-author-upgrade-recovery-required
-author-upgraded-live
-author_coordinate_adapters
-author_route_catalog
-author_route_structure_mask
-author_structure_resources
-authoritative
-authorization-failed
-authorization_id
-authorized
-authors
-auto
-auto-
-auto_import
-auto_lock_pending
-automatic
-automatic-alignment-failure
-automatic-author-internal-seed-not-human-approved
-automatic-auxiliary-byte-limit
-automatic-auxiliary-count-limit
-automatic-auxiliary-link-unavailable
-automatic-cross-floor-projection
-automatic-current-frame-validated-success
-automatic-failure-image-intent
-automatic-failure-sample
-automatic-failures.jsonl
-automatic-first-valid-after-pending
-automatic-floor-state-applied
-automatic-floor-switch
-automatic-floor-switch-group
-automatic-floor-switch-unverified
-automatic-floor-working
-automatic-hard-gate
-automatic-image-hash-missing
-automatic-image-intent-budget
-automatic-image-intent-invalid
-automatic-image-intent-v1
-automatic-image-link-unavailable
-automatic-image-ownership-unavailable
-automatic-image-recovery-limit
-automatic-image-recovery-link-unavailable
-automatic-image-recovery-mismatch
-automatic-image-recovery-required
-automatic-overlay-disabled
-automatic-overlay-not-player-verified
-automatic-process-image-limit
-automatic-round-lock
-automatic-sampling-disabled
-automatic-stable
-automatic-storage-busy
-automatic-storage-redirected
-automatic-valid-highlight
-available
-await-current-evidence
-await-stable-current-evidence
-awaiting-current-highlight
-awaiting-geometry
-awaiting-material
-axis
-axis-locked-route-transport-human-reviewed
-b
-b0167277cd4776f212ecf59a9802b6dd7f9059753451eba993ef2e9e31ea8d66
-b1-current-frame-failed
-b1-discontinuous-wide
-b1-explicit-recovery
-b1-explicit-transition-or-jump-only
-b1-explicit-wide-v2
-b1-floor-transition-evidence-consumed
-b1-floor-transition-evidence-produced
-b1-local-failed-wide-recovery
-b1-mapping-veto-recovery
-b1-mapping-veto-recovery-started
-b1-mapping-veto-recovery-unavailable
-b1-recovery-anchor-committed
-b1-relocalization-policy-selected
-b1-relocalization-result
-b1-relocalization-wide-started
-b1-unique-room
-b1-unique-room-anchor
-b1-unique-room-anchor-attempted
-b1-unique-room-current-frame
-b1-unique-room-worker
-b1-v2-wide-fallback-started
-b1-v2-worker-candidate-unavailable
-b1-wide-correction-continuity-pending
-b1-wide-correction-evidence-rejected
-b1-wide-correction-non-unique
-b1-wide-multiscale-same-frame
-b1-wide-two-frame-continuity
-b1_relocalization.py
-b1_relocalization_state
-b1_unique_room_reference_cache
-b1ee12a32b75c3d9b5cdd1606d4cda6f86d75d01dd8ed6d14b3ec3f1287a2e87
-b48d0494f2e2b04c3332ed55b90054da151772a185360a8a3c6f3d6050e6d2ea
-b4a5e86a30b25d2618e2dd6df17bc310bcd03ffb25a07a86b9b673e27013efdf
-b82a30985927945da39e5225c04bb7415d14d1a1b192813179fd18b9342dff69
-b83b61a751c05a5781fcd2dc83d38ca05f616c914bcc146b30325af7f8acbbb2
-b8c2660897c858ad5eb45c76d1ac58e5e5e1c57f314fc50b47740109617a0398
-b8d5ce02fa928628900a9190da6866412e3b5dd407a8106616a51f0604a4caae
-b955e79cef797dc81ad5ed822420796fd5b227f27009af88564af1c7063249d1
-b9778724e8d57e45561c50d903d7de093140792b223c15f52e6a42466a718cc4
-ba686e0165669a52679ad99d9164b3b6399f3538865b3e3070e671b781ce165e
-backdrop
-backend
-background
-background-alignment-atomic-promotion-rejected
-background-alignment-candidate-consumed
-background-alignment-candidate-display-rejected
-background-alignment-candidate-displayed
-background-alignment-candidate-rendered-profile-rejected
-background-alignment-candidate-revalidation-failed
-background-alignment-candidate-root-stale
-background-alignment-warm
-background-cleared
-background-current-frame-group-commit-rejected
-background-enqueued
-background-revalidation-hard-budget-exhausted
-background-waiting
-background_alignment_cache
-background_alignment_in_progress
-background_alignment_locked_group_relocalization
-background_alignment_request_id
-background_alignment_work_key
-background_enabled
-backslashreplace
-backup
-backup-remove
-backward-flow-failed
-bars
-base
-base-candidate-manifest-missing
-base-cleanup-incomplete
-base-dependencies-not-declared
-base-map
-base-map-cache-byte-limit
-base-map-file-missing
-base-map-floor-unavailable
-base-map-invalid-binding-or-image
-base-map-not-prepared
-base-map-stale-preparation
-base-map-unavailable
-base-matrix-not-translation-only
-base-ownership-unknown
-base-pending-pointer-changed
-base-published-object-changed
-base-recovery-required
-base-repair-failed-and-rollback-incomplete
-base-repair-preflight-blocked
-base-repair-retained-object-changed
-base-rollback-incomplete
-base-target-appeared-before-commit
-base-verification-before-state-failed
-base_canonical
-base_render
-basis
-bb7aa3538107da2be24268160b9e3047fee108ea9ee6b74635ff7c3920b1f888
-bb8648040b720db0043f8329f1d6badeaae5a3333e58983641328454a6a507ff
-bd981463adeb3e10c16ff62a08261d582739342c2f096d764b1b501ce321e813
-bda473b253ed4b31d951dee2bdea054011073f2e1dbb2708db7c6b204ed6fd07
-bdad7c66015138a69c48ef8528585d0e8d92dc314347b2acf441dc569a82ce4b
-bdb619eecb1b6faefcb337c0044feb0909df6380658508c351616c23bf64e0da
-bea44c5a9366533b59909bd3b28d6f5e6e779db2569ddc506633ebc8c775adf5
-bec3f89d4dddb6bd43a88aa2b4ea82976962cace05b81dd2ed1440fdd273a133
-before
-begin
-begin_hotkey_edit
-best
-bfc00dfc5ee4cb4b86210e9899bf6aad5ef37cdd311362823ca517f0d3003ced
-bg
-bidirectional
-big
-bind_capture
-binding
-binding-changed
-binding-identity-incomplete
-binding-identity-unreadable
-binding-resumed
-binding-suspended
-binding-unverified
-bindings
-bitmap-dimensions
-bitmap-memory-budget
-blocked
-bold
-bootstrap
-borderless-or-fullscreen
-borderwidth
-both
-bottom
-bound-game
-boundary
-bounded-full-frame-start-cadence
-bounded-full-probe
-bounded-retained-history
-bounds
-branches
-brand
-brand_icon
-break
-bridge-audit.json
-brown
-browse
-budget
-budget-exhausted
-build-fingerprint.txt
-build_daily_release.ps1
-build_label
-busy
-button
-buttons
-by_id
-by_source_group
-byte-limit
-bytes
-c090de483095fa3c503cfbf2a149fefb4f79f6b6d9154013819b81dcecfa624f
-c0a53eb2179d9584d8210172a42c430dc770932a8350e493004c29924373ea01
-c19b39364bcab754f5a8ee405847fc7d95f8cc3fb80cbe8988e23183b1dba74c
-c20c06eca23d1bf4e03f1731b3854eef3a6ac434e423750ed10c883d0ad99ed1
-c28b01ca9ba72d4999cb163394797cd5cdc53312b5997125ad8a622f7e8a85a1
-c2e5859acdd8f4d622e681c11979ad4f4a38ec6b1f332481194b9613b4724978
-c31540f57b82bd088160245c710201b1301c1f8742f80a124483b93b95f48dd9
-c323695b132548f569f843cec709013f8e1d1793a095c9637f97516d13bdf1a6
-c409717053f62d9a2b3814668643eb37cff10f9413130f10e32205f7bc29f54c
-c40e8232a17bd488db76b8545b5f240f936537a18fd855fb1dd4fc5ec3564a7f
-c4bfbdff262832cfdd03d7b0bf74e05c1882de192431afa42ba862e0a42396d1
-c543900f60d525ddf529a61a642315d7adcf8c2a0d19bf2bf06c76d8843c729b
-c5d66288ed03226145708bc976c69e933a75bcbefbbc61154360c7488fffaec9
-c676e974cb2623c834b9766645e1f9600a835f5502bba824a58432dcdb03c2da
-c69438f7ccc79e71ab3875930931ae685847dd47e09622bd998316bbdcb62518
-c6da0da6c5dee5e5b7c4ebc6f7c3e74e13eddbbcb684cd7a7523b9e692ee698e
-c7bcbd75893bbc4fc06a6ba2eb966edb347f2c7a5bdde97c7697bfea8b67c80e
-c7ee88710fa948b1f7c02091d7da06ed4c08ced6ff36cf8e2be9d9569c68bef4
-c8461b7e750de08e5a0d66138d6718c6f88f8c2b607a31015510bf2750f08898
-c8762c6627a5037ac9fa5318d49262f92b1ec48c019450497c28d85d3ad5a110
-c8d68bcbcedf63cdd81830f405cb9e9c449cd7948d065938a2851c266ee4c875
-c97b9e42aa6a21330e01c21fd11b1f8d10f818c4102502d41d0fb5d02d300a6e
-c9aa8be25c7abcc7b81da63b5c1d80011a62bb19bb7ce1e552867fb0240a1930
-c9cb31e1bf01d1293db12475599b165138038ebe1f37c13a32c4fd49a5e99a27
-cached
-cached-seed-failed-recovery-started
-calibrated
-calibration
-called
-caller
-cancel
-cancel-silent
-cancel_hotkey_edit
-cancel_map_open_recovery
-cancel_map_package_import
-cancel_online_map_package
-cancel_pointer
-cancel_reference_sheet_move
-cancelled
-cancelled-or-stale
-cancelling
-candidate
-candidate-
-candidate-awaiting-confirmation
-candidate-b1-f1-static-layer-relation
-candidate-confirm
-candidate-confirmed
-candidate-control-unavailable
-candidate-floor-stale
-candidate-frame-stale
-candidate-frame-stale-cached
-candidate-identity-unavailable
-candidate-integrity-mismatch
-candidate-invalid-geometry
-candidate-map-stale
-candidate-matrix-invalid
-candidate-memory
-candidate-next
-candidate-only-current-frame-route-residual
-candidate-only-revalidate-current-frame
-candidate-or-floor-missing
-candidate-prev
-candidate-produced
-candidate-reselection-opened
-candidate-saved-pending-human-review
-candidate-selected
-candidate-selection-idempotent
-candidate-selection-stale-ignored
-candidate-shell-auto-open-suppressed
-candidate-stale-pose
-candidate-unavailable
-candidate_cache
-candidate_edit_mode
-candidate_flow
-candidate_photo_failures
-candidates
-candidates.json
-canonical
-canonical-author-display-bindings-v1
-canonical-chart-arithmetic-invalid
-canonical-chart-invalid
-canonical-chart-roundtrip-exceeded
-canonical-client
-canonical-current-frame-residual-unverified
-canonical-definition
-canonical-geometry-wide
-canonical-identity
-canonical-validation-geometry-unavailable
-canonical_geometry_verified_floors
-canonical_pack_id
-canvas
-capabilities
-capture
-capture-bound-disabled
-capture-client-dc-fallback
-capture-context-changed
-capture-context-recheck-unavailable
-capture-display-affinity-restored
-capture-enable-rejected
-capture-error
-capture-error-stale-ignored
-capture-evidence
-capture-exception
-capture-failed
-capture-finished
-capture-frame-completed
-capture-generation-mismatch
-capture-map-not-observed
-capture-not-current
-capture-not-enabled
-capture-not-started
-capture-or-observation-exception
-capture-pipeline
-capture-provider-unavailable
-capture-request-cancelled
-capture-request-coalesced
-capture-requested
-capture-resources-not-ready
-capture-result
-capture-result-dequeued
-capture-result-processing
-capture-return
-capture-safe-fallback-unsupported
-capture-shape-aspect
-capture-shape-width
-capture-start
-capture-start-failed
-capture-superseded
-capture-superseded-or-cancelled
-capture-visual-deadline-reached
-capture_diagnostics
-capture_excluded
-capture_exclusion
-capture_generation
-capture_in_progress
-capture_now
-capture_trace
-capture_window_anchor
-captured
-captured-client
-captures
-capturing
-cases
-catalog
-catalog-unavailable
-catalog.json
-cause
-cb
-cbe4f1e010230440459c4eaf2f3ac17d0ac7448d59eada684044d081c17e2f50
-cc2eaa3643d63dce9eb76b003ca8d3e392bd9a13f97cedbb3db75fcae98db412
-cc6745d99a8d91b2d5531fe34612e7838f90642f90088d5af665f33ec88ec615
-cd70da0d507f7e9edfbfe0cae540973b52e38f1fa954b34a656f7bc4fffa684e
-ce281af4e284db7c8f510078b3efe409baef3c8683a685f4b49845b76f627751
-cell
-cells
-center
-centered-16x9-safe-area
-centered-safe-height
-centered-safe-width
-centered-size-fallback
-centered_safe_viewport
-centers
-cf500cff6e3b2dc87539ff8d3ddadf613a245534136af89a60939a526ea3368a
-cfcae4e835e4a8e72061465bfe7adae1263441be26ec208e5eb50e4cbbe6488c
-chain-descriptors
-chains
-change_reference_opacity
-change_sheet_opacity
-changed
-changed-during-capture
-changed-during-read
-changed-or-unwritable
-changes
-char
-check-feedback
-check_entry_evidence
-check_online_map_packages
-checked
-checking
-checking-index
-checkout-head-unbuilt
-chest
-chest-auto-tap
-chest-auto-tap-hotkey-conflict
-chest-auto-tap-updated
-chest-auto-tap.json
-chest_auto_tap
-children
-choice-pending
-choice-scope-changed
-circularity
-clam
-clamp_rect_to_work_area
-class
-classification
-clean
-clean-front-preview-coverage-invalid
-clean-front-preview-schema-unsupported
-clean-geometry
-clean-reference
-clean_distance
-clean_edge_5px
-clean_mask
-cleaning_up
-cleanup-complete
-cleanup-entry-limit
-cleanup-image-limit
-cleanup-object-changed
-cleanup-object-unknown
-cleanup-object-unwritable
-cleanup-write-or-validation-failed
-clear
-clear-preview
-clear_aligned
-clear_game_intent
-clear_hotkey_candidate
-clear_reference
-client
-client-bounds-missing
-client-capture
-client-close-requested
-client-context
-client-dc-native-error
-client-dc-roi
-client-dimensions
-client-geometry-unavailable
-client-live-runtime
-client-region-pipeline
-client-resolution-outside-verified-range
-client-too-small-for-controls
-client-version-missing
-client-width-scale-plus-live-anchor-translation
-client.py
-client_capture.py
-client_chest_auto_tap.py
-client_coordinator.py
-client_failure_samples.py
-client_geometry_signature
-client_info.py
-client_input.py
-client_live_runtime.py
-client_map_input.py
-client_native_keys.py
-client_region_capture.py
-client_screen_bounds
-client_space_geometry.py
-client_window_binding.py
-close
-close-application-first
-close-draining
-close-failed
-close-input
-close-ready
-close-requested
-close-state-applied
-close_map
-closed
-closed-cache
-closed-idle
-closing
-code
-coffin
-coffin-variant-changed
-coffin-variant-setting
-coffin_variant_box
-coffin_variant_row
-coffin_variant_var
-collapse
-collapse_control
-collapsed
-collapsed_canvas
-color
-color-component-unvalidated
-colored-route-layer
-combo
-command
-commit
-commit-context-stale
-commit-record-write-uncertain
-commit-state-unreadable
-committed
-committed-base-file-changed
-committed-base-state-changed
-committed-pose-local
-committed-retired
-common
-compact
-compact_dock
-compact_window_anchor
-comparisons
-competitions
-complete
-complete-same-map-side-competition-pose-unresolved
-complete-sheet
-complete-unique-exit-anchored-entry
-complete-unique-side-structure-and-current-author
-completed
-completed-upgrades-retired
-completion
-component
-component-centre
-component-fallback
-component-strict
-compositor
-compositor-first
-compositor-rejected
-condition-budget-incomplete
-condition-current-geometry-unavailable
-condition-incomplete
-condition_index
-conditions
-confidence
-confident
-config
-configure
-configure_failure_sampling
-configure_settings
-configured-factory
-confirm
-confirm-round
-confirm_author_package_removal
-confirm_hotkey_edit
-confirm_map_package_import
-confirm_route
-confirmation-cleared
-confirmation-context-obsolete
-confirmation-restored
-confirmation-unavailable
-confirmations.jsonl
-confirmed
-confirmed-front-group-binding-unavailable:
-confirmed-front-group-members-unavailable
-confirmed-front-group-provider-unavailable
-confirmed-front:
-confirmed-map-current-floor-only
-confirmed-map-current-frame-fit
-confirmed-map-floor-pose-index
-confirmed-map-mismatch
-confirmed_id
-conflict
-conflicting-image-hashes-quarantined
-conflicting-or-unobserved-positive-evidence
-connections
-consecutive-local-failures
-consecutive-local-failures-wide
-consistent
-constructor
-consumed
-containment
-containment-ambiguous
-containment-client-size-changed
-containment-insufficient
-containment-jump-too-large
-containment-mask-unavailable
-containment-relocalized
-containment-search-failed
-containment-template-degenerate
-containment-template-too-small
-content-length-mismatch
-context
-context-reconfigured
-context-unavailable
-context-updated
-continuation
-continue_auto_map_package_import
-continuity
-continuity-expired
-continuity_until
-continuous-floor-switch
-continuous-local-failure
-continuous-local-failure-wide
-continuous-local-wall-normal-fit
-contradicted
-contradiction
-contrast
-control
-control-action-result
-control-collapsed
-control-expanded
-control-unavailable
-control_
-control_collapse
-control_collapsed
-control_expand
-control_expand_for_alpha
-control_expand_repeat
-control_layout
-control_layout_snapshot
-control_snap
-controls
-controls-unlocalized
-converged
-conversion
-coordinate
-coordinate-adapter
-coordinate-space-conflict
-coordinate_reference_profile_id
-coordinates
-coordinator
-core
-core-commit-rejected
-core-committed
-core-context-stale
-corrected-pose
-corrected-render-failed
-correction
-correction-recorded-not-promoted
-correspondences
-corridor-like-outline
-cost
-count
-coverage
-coverage-or-scale
-create-client
-created
-created_at
-crop
-cropped-wide-hud
-cross
-cross-author-bridge
-cross-author-same-floor-bridge-consensus
-cross-author-same-floor-bridge-human-reviewed
-cross-floor-atlas-schema-invalid
-cross-floor-bounded-local-residual
-cross-floor-dynamic-anchor
-cross-floor-dynamic-anchor-v2
-cross-floor-latency-target-missed
-cross-floor-live-stair-overlap
-cross-floor-local-correction-required
-cross-floor-local-current-frame
-cross-floor-local-evidence-unavailable
-cross-floor-local-v2
-cross-floor-mapping-current-frame-veto
-cross-floor-mapping-translation-corrected
-cross-floor-prediction
-cross-floor-prediction-background-warm
-cross-floor-prediction-outside-screen
-cross-floor-prediction-pending
-cross-floor-prediction-visible
-cross-floor-processed-map-bounded-correction
-cross-floor-projection-kept-without-target-pixels
-cross-floor-projection-user-rejection-veto
-cross-floor-provisional-floor-awaiting-current-frame
-cross-floor-rendered-profile-current-frame-veto
-cross-floor-return
-cross-floor-stair-local
-cross-floor-stair-residual-failed
-cross-floor-zero-geometry
-cross-floor-zero-geometry-static-sheet
-cross-map-ambiguous
-cross-open-progressive-pose-candidate
-crosshair
-cue
-current
-current-delivery
-current-entry-is-not-an-assistant-executable
-current-floor-after-working
-current-floor-authorization-applied
-current-floor-conflict
-current-floor-open-to-overlay-budget-exhausted
-current-floor-relocalization-already-attempted
-current-floor-relocalization-hard-budget-exhausted
-current-floor-relocalization-search
-current-floor-unavailable
-current-floor-unknown
-current-floor-wide-correction-non-unique
-current-frame
-current-frame-canonical-verification-required
-current-frame-entrance-ports
-current-frame-evidence-insufficient
-current-frame-fit
-current-frame-floor-conflict
-current-frame-geometry
-current-frame-group-competition-lost
-current-frame-local-failure
-current-frame-missing
-current-frame-not-display-precise
-current-frame-object
-current-frame-observed-zoom
-current-frame-or-cycle-changed
-current-frame-pose
-current-frame-pose-authorized
-current-frame-recovered
-current-frame-refresh
-current-frame-required
-current-frame-residual
-current-frame-residual-failed
-current-frame-residual-not-required
-current-frame-residual-unverified
-current-frame-structure-conflict
-current-frame-unavailable
-current-frame-unverified
-current-frame-verification-required
-current-frame-verified
-current-frame-verified-and-shared-root-committed
-current-frame-verified-floor-relation
-current-frame-verified-ready-for-atomic-commit
-current-frame-visual-anchor
-current-geometry-failed
-current-grant-during-review
-current-grant-lost
-current-identity-unavailable
-current-map-auto-center
-current-map-component-missing
-current-material-accepted
-current-material-revalidated
-current-member-awaiting-material
-current-member-unavailable
-current-pose-refresh
-current-pose-refreshed
-current-provider-at-error
-current-result
-current-side-door-geometry
-current-validation
-current_alignment_candidate
-current_bounds
-current_floor
-current_floor_authorization
-current_floor_relocalization_attempts
-current_floor_transaction_started_at
-current_frame
-current_frame_captured_at_utc
-current_frame_display_signature
-current_frame_floor_observation
-current_frame_generation
-cursor
-curve
-custom
-custom-display-unavailable
-custom-galleries.json
-custom-gallery
-custom-gallery-changed
-custom-gallery-changed-during-render
-custom-gallery-native-canvas-mismatch
-custom-gallery-nightmare-only
-custom-gallery-reference-binding-mismatch
-custom-gallery-typed-reference-required
-custom-gallery-unavailable-or-changed
-custom-map-unavailable
-custom-maps
-custom-route
-custom-routes.json
-custom:
-custom_default_gallery.json
-custom_galleries
-custom_map_library
-custom_map_snapshot
-cx
-cy
-cycle
-cycle-floor
-cycle-stale
-cycle_floor
-cycle_id
-d0679f93cdb62bc8153abbc2714cd5f884572705140d915ebae2fa9fef0fed3d
-d0cb703ce469cdd4a83b3e89d21e3a8c076a642fbac33847feb494981c649247
-d0f5825e7ad6ed2fc61974f97e9c34bc8e34d701371ce6713c830a39746fd32c
-d14b269080fca29e4aa072b4f2c563eadedd04b184156b74134c3811487c2e82
-d1c87cd07dff297d1018d549b7d2a2f2355e8488b8719e5a635911498d383264
-d20d36315049aaa5f716bc579b89d0fd19547bf829ca2713caddf67056458f41
-d3992c998c93b2344656be435f8628ee06e8c05254aabb83df11f12a1e797233
-d49c1e17386e96e0cc79b7e065c203a11146c5539aa0217d1d1703a9344c00a4
-d4b24d350460fdd3126e308ad1c5b605890a2b46182d5e8930c3911cc6be706f
-d6130996eb8307095b46907e4434cb257b06e3364fd6033f342b838c0714a866
-d88cecc6ec116b85481408bbf8ed7d7907e8d82a8411cbb7f7c70d06e4ab01c5
-d8bc0df8b64e22fea89cdf909b3be3b879972f0037c6d6b656e256a7a633aa88
-d96a816d8834a9d6a41141c2d03cb71dcf9c55596cfc614666f3e4055a4e72a9
-d99385340ffa04afded5bd15374cfdabec183a517b6660e28c868b3df4e9af09
-daemon
-daily.
-daily.atomic_write_text
-damage-tint
-data
-dbcfd38f2c222f7119747399afb386082671a80f5b13559841361e3f183f943a
-dcc8710a1971a37d9e0e82db2698d4572bd50aa3d95f586aaff28bfabb301f3f
-dd3809f07a4674124ed5985c2ebc1ece7b21b668164b02383ea45569edca2241
-ddc2e4e372201506a3efbe10323e4f1db8176e54cd4a237759b13491c7e624dd
-debug_feedback
-decision
-decision-ready
-decisions
-default
-default-fallback
-default-recognition-coordinate-space
-default_entry_floor
-default_profile_id
-deferred
-definition
-degrees
-deiconify
-delete
-delta
-deltas
-denoms
-dense-author-full-grid-after-floor-relation-search
-dense-author-full-grid-after-search
-dense-author-full-grid-after-translation-search
-dense-current-component-missing
-dense-current-edges-missing
-dense-held-out-edges-outside-frame
-dense-original-colour-mask-missing
-dense-round-group-unavailable
-dense-scale-held-out-failed
-dense-scale-held-out-verified
-dense-source-mask-basis-incompatible
-dense-source-mask-basis-singular
-dense-terrain
-dense-terrain-held-out-support-insufficient
-dense-terrain-support-insufficient
-dense-translation-held-out-verified
-dependency
-describe
-descriptor
-desktop-close-requested
-desktop-fallback
-desktop-game-focus
-desktop-hidden
-desktop-not-movable
-desktop-owner-unavailable
-desktop-window-drag-failed
-desktop-window-drag-started
-desktop_display
-desktop_main_ui
-desktop_rounded
-detail_host
-details
-details_surface
-detected
-detector-control-band
-determinant
-determinate
-development-front-test-only
-development-shadow-layout-only
-device
-device-and-geometry
-df970275ddfd6f7ea8ad5663556aee9dc103eae298c96f973c6690d9eddd83ea
-diag
-diagnostic
-diagnostic-bound
-diagnostic-export-error
-diagnostic-export-requested
-diagnostic-exported
-diagnostic-identity.json
-diagnostic-manifest.json
-diagnostic-only-not-training-label
-diagnostic-only-not-training-or-prior
-diagnostic-writer
-diagnostic_export_button
-diagnostic_export_in_progress
-diagnostics
-diff
-different
-different-pending-transaction
-difficult
-difficult-
-difficult-aichicu
-difficult-author-structure-index.json
-difficult-dual-floor-source-correspondence
-difficult-entry-advisory-manual-confirmation-required
-difficult-entry-current-frame-candidate
-difficult-entry-current-frame-rejected
-difficult-entry-current-identity-unresolved
-difficult-entry-scale-relocalization
-difficult-equivalent-verified-pixels
-difficult-existing-root-current-frame-candidate
-difficult-exit-icon.json
-difficult-f2-entry-recognition-disabled
-difficult-geometry-change-recovery-pending
-difficult-map-
-difficult-native-binding-unavailable
-difficult-native-manifest.json
-difficult-recovery-continuity-expired
-difficult-runtime.json
-difficult-structure
-difficult-suju-speed
-difficult-tilemaps
-difficult-two-buttons
-difficult-ui-controls.npz
-difficult-zhan10
-difficult_identity_resources
-difficult_native_context
-digest
-dip_to_px
-directed-wall-held-out
-direction
-direction-conflict
-direction-does-not-reduce-pool
-direction-no-candidate-coverage
-direction-taxonomy-unsupported
-direction-unreliable
-directions
-directory
-directory-identity-changed
-disabled
-disabledbackground
-disabledforeground
-discover
-disjoint-current-frame-structure-points
-disjoint-native-colour-terrain-edge-tiles
-disjoint-point-h1
-dismiss
-dispatch-
-dispatch-map
-display
-display-bindings.json
-display-capture-owner
-display-client-matrix-invalid
-display-disabled
-display-enabled
-display-environment-change
-display-environment-changed
-display-environment-frame-mismatch
-display-environment-revalidation
-display-failure
-display-geometry-verified
-display-invalidated
-display-only
-display-only-assets
-display-provider-unavailable
-display-reference
-display-reference-unavailable
-display-reprojection
-display-reprojection-pending
-display-resource-error
-display-resource-error-for-previous-target
-display-resource-ready
-display-source-context-expired
-display-surface-close-failed
-display-surface-final-close-failed
-display-target-changed
-display_authorization
-display_context
-display_descriptor
-display_environment
-display_environment_var
-display_name
-display_opacity_updates
-display_version_label
-display_warning_export_button
-display_warning_label
-displayed
-displayed_floor
-distance
-distance-unavailable
-domains
-done
-door
-door-anchor-normalized-near-door-topology
-door-anchor-not-distinct
-door-anchor-only
-door-anchor-outside-map
-door-current-frame
-door-current-frame-v2
-door-local-index
-doors
-down
-download
-download-error
-download_online_map_package
-downloading
-downloads
-dpi
-dpi_
-draft-
-draft.json
-drag-approved-delta-inconsistent
-drag-boundary-calibration-armed
-drag-boundary-calibration-cancelled
-drag-boundary-calibration-confirmed
-drag-boundary-calibration-opened
-drag-boundary-display-remapped
-drag-boundary-first-run-prompt-dismissed
-drag-boundary-first-run-prompt-shown
-drag-boundary-physical-map-key-accepted
-drag-boundary-physical-map-key-bounds-rejected
-drag-boundary-prompt
-drag-boundary-ui
-drag-calibration-overlay
-drag-cancel-rejected
-drag-cancelled
-drag-click-ignored
-drag-context-expired
-drag-current-display-unavailable
-drag-delta-invalid
-drag-event-invalid
-drag-follow
-drag-gesture-expired
-drag-matrix-invalid
-drag-not-established
-drag-press-expired
-drag-preview-route-missing
-drag-preview-state-missing
-drag-preview-transform-invalid
-drag-receipt-invalid
-drag-render-state-missing
-drag-source-refresh-stale
-drag-started
-drag-transient-updated
-drag-unavailable
-drag_boundary_calibrate_button
-drag_boundary_calibration_bounds
-drag_boundary_calibration_canvas
-drag_boundary_calibration_drag
-drag_boundary_calibration_rect
-drag_boundary_calibration_window
-drag_boundary_environment_signature
-drag_boundary_normalized
-drag_boundary_open_after_id
-drag_boundary_open_scheduled
-drag_boundary_pending_bounds
-drag_boundary_physical_map_key_seen
-drag_boundary_prompt_after_id
-drag_boundary_prompt_seen
-drag_boundary_prompt_window
-drag_boundary_status_var
-drag_boundary_waiting_for_map
-drag_current_overlay
-drag_follow_updates
-drag_handles
-drag_route_profile_id
-drag_route_source
-drag_transform
-drain_diagnostics
-drive.uc.cn
-drop
-drop-event
-due
-duo
-duplicate-archive-path
-duplicate-capture-ignored
-duplicate-index-key
-duplicate-json-key
-duplicate-upgrade-entry
-durablemap
-dwmapi
-dwrg.exe
-dx
-dy
-dynamic
-dynamic-anchor
-dynamic-anchor-current-frame
-dynamic-observation-basis-uncommitted
-dynamic_motion
-e
-e1f4eacb618c795922fb183568dffef7b2f69cc296bb1bbc8e2866420dba4333
-e20842e2f9bcbb12352146fcf98f3ac49db0f0f84bbdcdd38bfc4a551bfc40b7
-e2357da3a85f588e7f5b71364649f309159f3c981f0f3435d98c3deaac455036
-e444aa79b1fba1c515386dc6171401648d3ef5bb99e5e0094b79566a7fe8e6b0
-e4552177c013ec683d72cf69619de6b9a672613dbec28399cad656bb1e81cd24
-e6412509db94c987834d8434851c93333dedabdd7918398a6a927d64261045aa
-e7b91f3ec45b48563782fe4eccbdb768b9ba43678d9ceab1abefa1b3e23db437
-e837b4a97457f0aa286d8f3a4373c7023cffd076bf754d27e10a4707a36fb8e5
-early-live-evidence-defers-legacy
-eb506b04ef61c5af4677cbc791bd555733e00f81c57ed823a518a018010124f9
-ebc1140b65f573a3b7d285e35192b299bc7def18bf98da073f0f409589e83e31
-ebe6726e614c2b8a725187720fa0b859edb0411da9ececf20d9bbfee554cd853
-ebfd123fe243970adc4792647672be01deb3dd982bd8d444456a6432c39559e4
-ec43c55640115aeeff5a02b6aaefdbe69004c29e5e8bbf060b09c9ee7127b79f
-ed75039cfc98e790ca4922ebd72dc34b91aebc46d8e96636a5b70c95fe70978e
-ed93b8b2dde1c804341ef031d09346ce8e1943c715eea9d44bee27ac84794851
-edge
-edge-correction
-edge-correction-atomic-commit-rejected
-edge-correction-committed
-edge-correction-failed
-edge-correction-front-pose-retained
-edge-correction-latest-frame-rejected
-edge-correction-non-translation-rejected
-edge-correction-open-to-overlay-budget-exhausted
-edge-correction-render-rejected
-edge-correction-residual-rejected
-edge-correction-source-stale
-edge-correction-wide-non-unique
-edit
-editing
-editing-hotkey
-ee31d96ad3ffed5250ae2da5cf801ea7de828c1756dabc5e9d0fb96f40f81d40
-eef6d054b0840c68001a758e6ee91d972db3c3ff84790ba3e7f583694d9e1c19
-ef70161f54681dba8cfda8df1ba87aa3af93c8c8c60be06d8e6af1c6ac301c7c
-effective
-elapsed
-element_create
-eligible
-embedded
-embedded-migration-composition-exceeded
-embedded-snapshot-arithmetic-invalid
-embedded-snapshot-count-mismatch
-embedded-snapshot-invalid
-empty-bitmap
-empty-outline
-empty-upgrade-inventory
-empty-version-inventory
-enabled
-end
-end-round
-end-round-before-changing-mode
-end_round
-ended
-endpoints
-engine
-enqueue
-enter
-entrance-not-observed
-entrances
-entries
-entries.json
-entry
-entry-budget-incomplete
-entry-candidate-budget-incomplete
-entry-coverage-incomplete
-entry-cross-check-unavailable
-entry-current-exit-contradicted
-entry-current-frame-validation
-entry-family-unresolved
-entry-first-verified
-entry-floor-not-indexed
-entry-identity-verified
-entry-index-unavailable:
-entry-inventory-incomplete
-entry-known-identity-pose-verified
-entry-local-competition
-entry-local-observation-incomplete
-entry-local-verification-failed
-entry-neighborhood-candidates
-entry-no-reliable-exit
-entry-observation-unavailable
-entry-observed-walls-insufficient
-entry-other-current-exit-contradiction
-entry-passport-unavailable
-entry-passports.json
-entry-resource-unavailable
-entry-room-outline
-entry-seed-reverification-unavailable
-entry-shared-structure-unavailable
-entry-surface-stale
-entry-unsupported-floor
-entry-visible-structure-insufficient
-entry_context_is_current
-entry_identity
-entry_route_loader
-entry_shared_reference_provider
-entry_structure_store
-episode_id
-epoch
-equal-vote-multi-anchor
-equal-vote-reviewed-centroid
-equivalent-verified-pixels
-errno
-error
-error_phase
-errors
-escape
-established
-established-group-only
-established_bindings
-evaluated
-event
-event-loop-error
-event-loop-error-recovered
-event_path
-events
-events-
-events-qt-
-events-qt-lifecycle-
-events-qt-recognition-
-evidence
-ew
-exact-cn-or-international-prefix-with-separator
-exact-scene-fingerprint
-examined
-exception
-executable
-execute:
-execution
-exemplar
-existing-bound-state-only
-existing-data-conflict
-existing-data-conflict:
-existing-pose-current-frame-only
-existing-pose-entry-observation-unavailable
-existing-pose-invalid-input
-existing-pose-variant-source-conflict
-existing-root-shared-basis-unavailable
-existing-root-validation-unavailable
-existing-state-only
-existing-verified-live-profile-preferred
-exists
-exit
-exit-anchor-not-found
-exit-confirmation
-exit-confirmation-failed
-exit-confirmation-requested
-exit-direction-or-local-width-unresolved
-exit-icon-anchored
-exit-icon-confirmed-structure
-exit-icon-size-ratio
-exit-icon-size-ratio-fast
-exit-icon.png
-exit-icons
-exit-in-progress
-exit-local-wall-geometry-incompatible
-exit-marker-ambiguous
-exit-marker-not-visible
-exit-outside-complete-source-inventory
-exit-wall-geometry-derived-door-direction
-exit-wall-geometry-overrode-door-rectangle
-exit-wall-geometry-unique
-exit_button
-exit_confirmation_in_progress
-exited-matching-process-handle
-expand
-expand_control
-expanded
-expanded-file-size-limit
-expanded_size
-expected
-expected-hash-unavailable
-expected_sources
-experimental
-experimental-fast-alignment
-experimental-fast-structure
-experimental_auto_overlay
-expired
-explicit-confirmation
-explicit-drag
-explicit_floor_control_cycle_id
-explorer.exe
-export
-export-image-budget-exhausted
-export-time-report
-export-worker
-export_diagnostic_logs
-exports
-external-migration-key-mismatch
-external-migration-matrix-mismatch
-external-migration-unreadable
-external-readonly
-extra
-extract
-extractor-mismatch
-eye
-eye-off
-f04f16af919c54a3e67c41b400992e459b08fb231254fe1dd4d97b8263b0fd85
-f0c575f64b50627779b00dd667362ad0b47fc5c787dec9bd1294dbf5c78b50ab
-f139f421ecac99d62858dd660a08d1448bd88f891d7b2e784352e45584c23724
-f28d5365f72a66e24ec82a85c5b7f3109687399c7020ca9a1a8edc889bc5e63f
-f35811a625ae1c6273c9c1e860e56243d4110da213fd39a2785213a64cb52fbd
-f3ae390705bba1e8ba6ffa591d292857c4270f2d977d92940108e25ace1b7933
-f442b85b6c88cb6b04473409df94977c5a1cfd844ae2d10d9bdc62c8453f4f4e
-f4ecf6987b86ea21b1af465e486c44b0f219b71cdd72195ef617891f8bf8132d
-f579b45cb5615bc718aed41923d34c650d541e44b5deb1cb39d7dfbc9ab0004e
-f70c5aace947cd257bcbef0e6b597f3e7b2abbed737ae1d46735610bf15ae122
-f73bf18bda5ce62985463b9311b2ed31355e4245c5974073c41393089cbd8d1c
-f910694fdfa1544454ce39825b8b79d05f514493bdd60ac80752cc96587956bf
-f9a6500d1aaa64f3a509cc2dc497b84e5acde0f05513597aca868a01cd7143dd
-fa5e9622f784d9b660b42108257e00d18c9f33fd70e3843d22b75b2f95f919dc
-fa67eed2346f3c6c2a320aab77e86e61f2619ce3c27865cb6008a8c1fe2fac74
-factor
-factory-unavailable
-failed
-failure
-failure-reason-not-eligible
-failure-sample
-failures
-faint-two-floor-controls-uncertain
-fallback
-fallback_member_ids
-families
-family
-fast-1s
-fast-ambiguous
-fast-author-sparse-exit
-fast-existing-validation-rejected
-fast-exit-anchor
-fast-exit-anchor-exploration-frontier
-fast-exit-anchor-local-refine
-fast-exit-anchor-not-ready
-fast-exit-anchor-ready
-fast-exit-anchor-residual-failed
-fast-exit-anchor-semantic-partial
-fast-exit-anchor-wall-scale-refine
-fast-exit-floor-unsupported
-fast-exit-geometry-ambiguous
-fast-exit-geometry-not-resolution-precise
-fast-exit-no-geometry-match
-fast-exit-structure-too-small
-fast-exit-unique-geometry
-fast-insufficient-edges
-fast-low-score
-fast-observation-unavailable
-fast-proposal
-fast-structure
-fatal
-fb677a5adab985b161afd03b47766ec8765c8012b9aff17b2b835acf8f2071ac
-fc278baa3f8ec38221ec828f90ab548a0a720c17868a7de675e59b0930c50825
-fdcc9911f1f4d721177947567087f79b8ed2489de309b6ac6397d3c167992605
-fdd0f394c00e28cd6b4b8e0f2adf9620b151df8f094968928877cbaca78f1959
-fe01b53068f8b4e00469e25d5a6886ba24befc927b189a378a41dcdf3d588891
-fe02e4d03dc99931cd4342e4292aeee6bb316df9470f949ef983d99abc7f204b
-feacf70e67eb21680c477c24e059d14fe8e474724e9e8d3c2d2ce42bb038e34d
-feature-store-invalid
-feature-store-unavailable
-features
-fefdd5ff3f14fe9e83c927b9aaad44176f1c7abb84ee744c9927c813b53ae00a
-fetch
-ffbba0bbdb0de977f3ab016153e71e6f4171b798b453f2963e104ca91d8ef7db
-fg
-file
-file-integrity-mismatch
-file-size-or-case-mismatch
-file:
-files
-fill
-filled-tile-and-relative-contrast
-finish
-finish_reference_sheet_move
-finish_staging
-finished
-finite-conditions-evaluated
-first
-first-floor-entrance
-first-floor-relocalization-v2
-first-local-awaiting-evidence
-first-pose
-first-pose-atomic-promotion-rejected
-first-ring-topology
-first-run
-first-teleport-wide
-first-verified-entry
-first-verified-exit-anchored-entry
-first-verified-side-structure-and-current-author
-fit
-fit-not-successful
-fit-ready
-flags
-flat
-floor
-floor-
-floor-1.png
-floor-2.png
-floor-auto-cycle-locked
-floor-auto-deferred
-floor-auto-stable
-floor-buttons
-floor-capture-observation
-floor-changed
-floor-click-context-stale
-floor-click-context-unavailable
-floor-click-coordinate-invalid
-floor-click-expired
-floor-click-intent
-floor-click-not-a-control
-floor-click-observer
-floor-click-rejected
-floor-control
-floor-control-unavailable
-floor-controls-unavailable-or-ambiguous
-floor-decision
-floor-evidence-failure-sample-error
-floor-evidence-failure-sample-queued
-floor-evidence-missing
-floor-evidence-unresolved
-floor-input
-floor-known
-floor-layer-group-fit-blocked-transient-motion
-floor-layer-group-fit-rejected
-floor-manual-hold-ended
-floor-manual-temporary
-floor-memory-preload-finished
-floor-observation
-floor-observation-disposition
-floor-observation-evaluated
-floor-overlay-projected-from-current-floor
-floor-overlay-reused
-floor-policy-deferred
-floor-preload-error
-floor-preload-finished
-floor-preload-started
-floor-reference-not-found
-floor-relation-missing
-floor-relation-singular
-floor-relation-unavailable
-floor-relations.json
-floor-required
-floor-required-cleared
-floor-sensor
-floor-stabilization-exhausted
-floor-stair-seed-ready
-floor-state-applied
-floor-static-sheet-shown-without-spatial-pose
-floor-target-updated
-floor-transition
-floor-triplet-not-localized
-floor-unknown
-floor-unresolved
-floor-worker-invalidated
-floor_buttons
-floor_hard_locked
-floor_read
-floor_required
-floor_var
-floors
-focus
-focus-request-failed
-focus_force
-focus_game_from_desktop
-focus_set
-focused
-fold
-follow_symlinks
-font
-foreground
-foreground-change
-foreground-changed-during-capture
-foreground-denied
-foreground-lost
-foreground-not-confirmed
-foreground-query-failed
-foreground-return-recapture
-forget
-format_tk_geometry
-forward-flow-failed
-fraction
-frame
-frame-captured
-frame-floor-pending
-frame-generation-mismatch
-frame_bgr
-frame_id
-frameid
-frames
-fresh-alignment
-fresh-floor-evidence-missing
-fresh-floor-evidence-required
-fresh-front-door-alignment
-from
-front
-front-anchor-aspect-mismatch
-front-anchor-confirmed-map-mismatch
-front-anchor-contract-rejected
-front-anchor-current-floor-mismatch
-front-anchor-direct-pose
-front-anchor-direct-pose-attempted
-front-anchor-direct-pose-authorized
-front-anchor-direct-pose-committed
-front-anchor-direct-pose-current-frame-residual
-front-anchor-direct-pose-rejected
-front-anchor-direct-pose-round-lock-promoted
-front-anchor-direct-similarity-ready
-front-anchor-display-state-stale
-front-anchor-display-state-stale-after-render
-front-anchor-fields-missing
-front-anchor-front-member-promotion-rejected
-front-anchor-generic-reopen-search-skipped
-front-anchor-lock-or-frame-stale
-front-anchor-manual-current-frame-rechecked
-front-anchor-map-closed
-front-anchor-native-display-failed
-front-anchor-native-display-rejected
-front-anchor-nonpositive-or-nonfinite
-front-anchor-overlay-build-failed
-front-anchor-recognition-route-missing
-front-anchor-reference-geometry-invalid
-front-anchor-reference-geometry-missing
-front-anchor-reliability-gate-failed
-front-anchor-render-route-or-adapter-missing
-front-anchor-reprojection-mismatch
-front-anchor-round-group-commit-rejected
-front-anchor-route-adapter-missing
-front-anchor-route-bounds-invalid
-front-anchor-route-bounds-missing
-front-anchor-route-bounds-ready
-front-anchor-route-orientation-invalid
-front-anchor-route-outside-client
-front-anchor-route-projection-invalid
-front-anchor-scale-out-of-range
-front-current-frame-route-residual
-front-door
-front-door-current-frame-insufficient
-front-door-current-frame-seed
-front-door-group-index-layout-coverage-invalid
-front-door-group-index-layout-invalid
-front-door-group-index-map-coverage-invalid
-front-door-group-index-member-invalid
-front-door-group-index-overlap-invalid
-front-door-group-index-schema-unsupported
-front-door-identity-coverage-invalid
-front-door-identity-policy-invalid
-front-door-identity-schema-unsupported
-front-door-layout-group-coverage-invalid
-front-door-layout-group-size-invalid
-front-door-layout-map-coverage-invalid
-front-door-layout-shadow-ranked
-front-door-layout-unknown
-front-door-live-test
-front-door-locked-pose-seed
-front-door-no-structure
-front-door-pose
-front-door-pose-global-recenter
-front-door-pose-local-refine
-front-door-shadow-ranked
-front-entry-floor
-front-entry-scene-anchor-missing
-front-entry-scene-anchor-not-supported
-front-entry-scene-explicit-anchor
-front-entry-scene-gate-rejected
-front-entry-scene-non-f1
-front-entry-scene-visible-map-missing
-front-exit-anchor-missing
-front-gate-observation.jsonl
-front-geometry-not-needed
-front-geometry-preconditions-not-met
-front-geometry-seed-missing
-front-geometry-translation-unavailable
-front-group-current-frame-difference-detected
-front-group-difference
-front-group-difference-ambiguous
-front-group-difference-box-invalid
-front-group-difference-conflicting-positive-evidence
-front-group-difference-coordinate-metadata-unavailable
-front-group-difference-evidence-pending
-front-group-difference-no-switch
-front-group-difference-not-applicable
-front-group-difference-pose-invalid
-front-group-difference-pose-singular
-front-group-difference-pose-unavailable
-front-group-difference-probe-finished
-front-group-difference-reference-unavailable
-front-group-difference-sensor-invalid
-front-group-difference-sensor-unavailable
-front-group-difference-stale-ignored
-front-group-difference-supported
-front-group-difference-unexplored-or-empty
-front-group-difference-window-invalid
-front-group-floor-changed
-front-group-locked
-front-group-member-conflict
-front-group-member-conflict-observed
-front-group-member-promotion-failed
-front-group-member-switch
-front-group-member-switch-attempted
-front-group-member-switch-committed
-front-group-member-switch-deferred
-front-group-member-switch-rejected
-front-group-members-current-frame-failed
-front-group-original-floor-layout-witness
-front-group-original-floor-semantic-witness
-front-group-original-member-revoked
-front-group-resource-changed
-front-group-shared-anchor
-front-group-shared-seed-current-frame-verified
-front-group-sibling
-front-group-sibling-alignment-exhausted
-front-group-sibling-alignment-started
-front-group-sibling-context-stale
-front-group-sibling-context-unavailable
-front-group-sibling-coordinate-transform-invalid
-front-group-sibling-current-frame-residual
-front-group-sibling-current-frame-residual-failed
-front-group-sibling-equivalent-capture
-front-group-sibling-local-fit-finished
-front-group-sibling-local-fit-unavailable
-front-group-sibling-local-v2
-front-group-sibling-local-validation-unavailable
-front-group-sibling-membership-unavailable
-front-group-sibling-native-overlay-failed
-front-group-sibling-native-overlay-not-shown
-front-group-sibling-next-member-started
-front-group-sibling-prepare-failed
-front-group-sibling-revalidation-started
-front-group-sibling-shared-pose-unavailable
-front-group-sibling-stale-reprobe
-front-group-sibling-state-commit-failed
-front-group-sibling-state-commit-rejected
-front-group-sibling-state-committed
-front-group-sibling-target-failed
-front-group-state
-front-group-target-current-geometry-verified
-front-group-target-validation-required
-front-group-unlocked
-front-group-v2-current-frame-residual-failed
-front-identity-current-route-geometry-corroborated
-front-identity-current-route-geometry-rejected
-front-layout-group-local-identity-insufficient
-front-layout-group-local-identity-supported
-front-left-right-exits
-front-live-accumulated-unique-structure-lock-ready
-front-live-auto-lock-ready
-front-live-manual-current-frame-anchor
-front-live-manual-fallback
-front-live-ranked
-front-live-singleton-near-door-lock-ready
-front-live-temporal-lock-ready
-front-live-test-0.1
-front-live-test-started
-front-local-backtracking-failed
-front-local-correspondences-insufficient
-front-local-fit-nonfinite
-front-local-held-out-geometry
-front-local-held-out-geometry-failed
-front-local-input-missing
-front-local-insufficient-current-map
-front-local-invalid-transform
-front-local-point-conversion-failed
-front-local-point-tracking-failed
-front-local-reference-missing
-front-local-reference-outside-visible-component
-front-local-scale-plus-translation
-front-local-structure-points-missing
-front-local-support-inliers-insufficient
-front-local-support-ransac-failed
-front-local-support-validation-split-failed
-front-local-translation-only
-front-local-visible-component-missing
-front-long-term-identity-committed
-front-lr-07-08
-front-member-switch
-front-member-verified
-front-pose-alignment-finished
-front-pose-correction-not-materially-better
-front-pose-failures
-front-pose-scene-gate-rejected
-front-pose-seed-reference-scale
-front-pose-translation-unavailable
-front-provisional-member
-front-reviewed-group
-front-route-unavailable
-front-seed-candidate-not-constructible
-front-seed-local-current-frame
-front-seed-local-fit-finished
-front-seed-local-translation
-front-seed-not-used
-front-seed-render-spec-unavailable
-front-seed-stale
-front-single-
-front-temporal-accumulated-unique-structure
-front-temporal-consensus
-front-temporal-consensus-building
-front-temporal-consensus-ready
-front-temporal-current-frame-ineligible
-front-terrain-decision-unavailable
-front-terrain-scale-consensus
-front-terrain-translation-consensus
-front-tl-04-12
-front-tr-03-09
-front-visible-map-missing
-front_clean_previews
-front_door_groups.py
-front_door_layout
-front_door_layout_recognition.py
-front_door_live_test.py
-front_door_recognition.py
-front_gate_prefilter
-front_group_difference_is_applicable
-front_group_difference_probe
-front_group_difference_probe_key
-front_group_index
-front_group_sibling_attempted_members
-front_group_sibling_pending
-front_group_state
-frozen
-full
-full-client
-full-client-capture-binding-unavailable
-full-client-frame
-full-floor-crop-fallback
-full-floor-expanded
-full-floor-first-fit
-full-frame-fallback-crop
-full-map-registration-disabled
-full-map-registration-features-insufficient
-full-map-registration-not-found
-full-map-registration-unconfirmed
-full-map-shape-unconfirmed
-full-reference
-g
-galleries
-gallery
-gallery_hide
-gallery_repeat
-gallery_return
-game
-game-backgrounded
-game-binding-unavailable
-game-bound
-game-client-dc-returned-blank-frame
-game-floor-control
-game-floor-control-intent
-game-floor-control-intent-consumed
-game-floor-control-intent-rejected
-game-floor-control-intent-stale
-game-floor-control-switch
-game-foregrounded
-game-identity-rejected
-game-lost
-game-lost-foreground
-game-mode-changed
-game-monitor
-game-native-pixels
-game-not-bound
-game-not-foreground
-game-regained-foreground
-game-rendered-shared-structure
-game-window-lost
-game-window-minimized
-game-window-not-found
-game-window-unavailable
-game_control_view
-game_floor_click_context
-game_floor_control_intent
-game_foreground
-game_hwnd
-game_mode
-game_structure_mask
-gate
-gates
-gdi-flush-failed
-gdi32
-generated
-generation
-generic
-geometry
-geometry-reviewed
-geometry-verified
-geometry_fit
-get
-get_control_snapshot
-git
-global
-global-key
-glyphs
-graph
-graph-adjacent-pairs-insufficient
-graph-query-empty
-gray
-grid
-grid-candidate-budget-unresolved
-grid-consensus-insufficient
-grid-descriptor-budget-unresolved
-grid-no-supported-ratios
-grid-proposals
-grid-query-unavailable
-grid-resource-unavailable
-grid-supported-chains-insufficient
-grid_chains
-grid_configure
-grid_forget
-grid_rays
-grid_remove
-grids
-group
-group-candidate
-group-choice-context-expired
-group-choice-requested
-group-context-stale
-group-default
-group-heldout-plus-visible-variant-selection
-group-member-awaiting-geometry
-group-missing
-group-recovery
-group-score-margin
-group-state
-group-state-no-longer-accepts-target
-group-unavailable
-group:
-group_for
-group_id
-groupid
-groups
-guard
-h
-h0
-h1
-hand2
-handle_list
-handled
-handles
-handoff
-hang-diagnostics
-hang-watchdog-snapshot
-hang_watchdog
-hard-lock-deferred
-has_registered_floor
-hashed
-heading
-healthy
-height
-held
-heldout
-help
-help-topics.json
-help.png
-helper
-helper-must-use-separate-executable
-helper-not-installed
-helper-result-
-helper-started
-hi
-hidden
-hidden-current-frame
-hide
-hide_control
-hide_for_new_frame
-high
-highlight-detected
-highlightbackground
-highlightcolor
-highlightthickness
-historical-record-invalid
-historical-replay
-historical-transaction-not-terminal
-history
-history-journal-missing
-history-object-limit
-holder
-holding
-holdout
-holdout_coverage
-home
-home-preview
-home.png
-home_grid
-homography
-horizontal
-horizontal-door-at-left-end
-horizontal-door-at-right-end
-horizontal-door-not-at-end
-hotkey
-hotkey-capture-started
-hotkey-listener-armed
-hotkey-listener-health
-hotkey-settings-recovered
-hotkey-short-press-recovered
-hotkey_capture_active
-hotkey_capture_button
-hotkey_editor
-hotkey_editor_snapshot
-hotkey_feedback_var
-hotkey_name
-hotkey_settings_warning
-hotkey_var
-hotkey_vk
-http
-https
-https-required
-human-confirmation-source-mismatch
-human-confirmed
-human-confirmed-in-daily-assistant
-human-labeled-live-entrance
-human-review-feedback.json
-human-review-pending
-human-visual-review-marginal-live-game-not-verified
-human-visual-review-passed-live-game-not-verified
-hwnd
-hypotheses
-hypothesis
-icon
-icon-below-local-reliability-threshold
-id
-idempotent
-identity
-identity-committed
-identity-confirmed-pose-pending
-identity-evidence-incomplete
-identity-failure-sample-skipped
-identity-invalid
-identity-locked
-identity-mismatch
-identity-not-unique
-identity-not-uniquely-verified
-identity-path-linked
-identity-pending
-identity-rank
-identity-rejection
-identity-rerank-not-alignment
-identity-too-large
-identity-unavailable
-identity-unresolved
-identity_floors
-identity_profile_for_map
-identity_profile_id
-identity_profiles
-identity_root
-identityv
-identityv-app-version-v1
-identityv-assistant.manifest
-identityv-hang-watchdog
-identityv-nightmare-alignment-acceptance-v1
-identityv-nightmare-alignment-failure-v1
-identityv-nightmare-alignment-rejection-v1
-identityv-nightmare-alignment-success-evidence-v1
-identityv-nightmare-author-coordinate-adapters-v1
-identityv-nightmare-b1-f1-layer-relations-v1
-identityv-nightmare-canonical-coordinate-pack-v1
-identityv-nightmare-canonical-floor-calibration-v1
-identityv-nightmare-clean-front-previews-v1
-identityv-nightmare-cross-floor-atlas-v2
-identityv-nightmare-entry-recognition-index-v1
-identityv-nightmare-front-door-identities-v1
-identityv-nightmare-front-live-test-validation-v1
-identityv-nightmare-portable-layout-seeds-v1
-identityv-nightmare-stair-anchors-v1
-identityv-nightmare-structure-signatures-v1
-identityv-nightmare-user-route-canonical-candidate-v1
-identityv-primary-preload
-identityv-release-identity-v1
-identityv-safe-diagnostic-export-v2
-identityv-safe-diagnostic-export-v3
-identityv-secondary-floor-preload
-identityv-voice-navigation-prototype-v1
-identityv-window-environment-v1
-identityv_daily_assistant
-identityv_daily_assistant.py
-identityv_test_button.py
-idle
-idle_repeated_operations
-idvb0059-coverage-unavailable
-idvb0059-display-built
-idvb0059-fast-bootstrap
-idvb0059-retained
-idvb0059-retained-display
-idvb0059-steady
-idvb0059-steady-wrapper
-idvb0059-vpsg3-current-frame
-ignore
-ij
-image
-image-byte-limit
-images
-implausible-display-geometry
-implausible-import-geometry
-implausible-jump
-import
-import-audit-already-started
-import-audit-executable-not-owned-copy
-import-audit-input-fields
-import-audit-input-integrity
-import-audit-input-manifest-size
-import-audit-input-package-id
-import-audit-input-path
-import-audit-input-set
-import-audit-invalid-inventory-boundary
-import-audit-invalid-link-boundary
-import-audit-invalid-owned-root
-import-audit-marker-mismatch
-import-audit-meipass-not-owned-copy
-import-audit-metadata-too-large
-import-audit-noncanonical-root
-import-audit-ownership-mismatch
-import-audit-release-identity-mismatch
-import-audit-reparse-point
-import-busy
-import-cancelled
-import-client
-import-helper-launch-not-confirmed
-import-helper-result-unavailable
-import-receipt
-import-rejected
-import-request-cancelled
-import-scenario.json
-import-start-failed
-import-started.json
-import.lock
-import_resource_page
-improvement
-included
-incomplete
-independent-fixed-coordinate-chart
-independent-open-candidate-inconsistent
-independent-spatial-heldout-sift
-independent-structure-consensus
-indeterminate
-index
-index-content-length-mismatch
-index-not-configured
-index-size-limit
-index.json
-index_digest
-indexed
-indexed-structure-pose
-inf
-info
-initial
-initial-confirmed-map-v2
-initial-or-unknown
-initial-side-door-fast-v2
-initial-structure
-initial-structure-ambiguous
-initial-structure-author-unverified
-initial-structure-candidate
-initial-structure-coordinate-mismatch
-initial-structure-current-geometry-failed
-initial-structure-descriptor-budget-unresolved
-initial-structure-identity-not-current
-initial-structure-no-chain-ratios
-initial-structure-query-unavailable
-initial-structure-resource-unavailable
-initial-structure-supported-chains-insufficient
-initial-structure-v2
-initial-structure-validation-budget-unresolved
-initialize-timer.stop
-injected-fixture
-injected-poll-fixture
-inliers
-input
-input-
-input-failure
-inputs
-inputs.json
-insertbackground
-inside-down
-inside-left
-inside-right
-inside-up
-inspect
-inspect-recovery
-inspect-remove
-inspect_author_package_removal
-inspect_engine_resources
-inspect_map_package
-inspection
-install
-install_root
-installation
-installation-profile.json
-installation-root-missing
-installed
-installed-package-changed
-installed-package-dependencies-unrecorded
-installed-package-dependency-conflict
-installed-package-owned-conflict
-installed-receipt-changed
-installed-receipt.json
-installed-resource-unavailable
-installed-restart-required
-installing
-instance
-insufficient-anchors
-insufficient-current-map-pixels
-insufficient-multi-anchor-evidence
-insufficient-side-door-evidence
-insufficient-stable-evidence
-insufficient-support
-insufficient-wall-edges
-integrity
-intent
-interaction
-intermediate-fit-not-authorized
-intervals
-invalid
-invalid-additions-entry
-invalid-additions-entry-count
-invalid-additions-journal
-invalid-additions-receipt-record
-invalid-additions-stage
-invalid-additions-staged-identities
-invalid-alignment-acceptance
-invalid-alignment-failure
-invalid-alignment-rejection
-invalid-alignment-success-evidence
-invalid-archive-count
-invalid-archive-sha256
-invalid-automatic-sample-path
-invalid-base-inventory
-invalid-base-manifest-bundle-id
-invalid-base-manifest-schema
-invalid-base-path
-invalid-base-pending-pointer
-invalid-base-repair-blocked-path
-invalid-base-repair-entries
-invalid-base-repair-file-identity
-invalid-base-repair-journal
-invalid-base-repair-old-target
-invalid-base-repair-state-entry
-invalid-base-repair-target
-invalid-base-retired-record
-invalid-base-transaction-id
-invalid-cache-
-invalid-candidate
-invalid-candidate-index
-invalid-control-layout-display-options
-invalid-control-layout-modules
-invalid-control-layout-order
-invalid-control-layout-schema
-invalid-dependency-path
-invalid-diagnostic
-invalid-display-transform
-invalid-file-inventory
-invalid-file-record
-invalid-floor
-invalid-frame
-invalid-helper-request
-invalid-image-header
-invalid-index-json
-invalid-index-package
-invalid-input-context
-invalid-installed-package-receipt
-invalid-isotropic-seed
-invalid-json
-invalid-json-object
-invalid-legacy-author-inventory
-invalid-map-bounds
-invalid-map-rectangle
-invalid-mode
-invalid-nightmare-memory-label
-invalid-or-duplicate-file-record
-invalid-or-unreadable
-invalid-owner
-invalid-parent-identity
-invalid-partition
-invalid-path
-invalid-pending-upgrade-pointer
-invalid-pointer-input
-invalid-process-id
-invalid-profile-to-canonical-matrix
-invalid-recovery-plan
-invalid-recovery-request
-invalid-request-id
-invalid-sample-path
-invalid-selection
-invalid-target
-invalid-timeout
-invalid-transform
-invalid-upgrade-blocked-paths
-invalid-upgrade-cache-inventory
-invalid-upgrade-change-inventory
-invalid-upgrade-digest
-invalid-upgrade-entry
-invalid-upgrade-entry-count
-invalid-upgrade-file-identity
-invalid-upgrade-journal
-invalid-upgrade-metadata-file
-invalid-upgrade-package-id
-invalid-upgrade-receipt-proof
-invalid-upgrade-receipt-record
-invalid-upgrade-retired-journal
-invalid-upgrade-stage
-invalid-upgrade-transaction-id
-invalid-url
-invalid-url-port
-invalid-visible-map-bounds
-invalid-wait-deadline
-invalidate
-invalidate_asset_availability
-invalidated
-invoke
-ipadx
-ipady
-is_current
-is_junction
-is_set
-isolated
-issue.
-issues
-item
-iterations
-job
-journal
-journal-
-journal-byte-limit
-journal-changed
-journal-invalid
-journal-invalid-timestamp
-journal-link-unavailable
-journal-missing
-journal.json
-journals
-jpeg
-jpg
-json
-junctions
-kernel32
-key
-keyboard
-ki
-kind
-kinds
-known
-known_boundary
-label
-labeled-live-evidence-disagreement
-labeled-live-evidence-unconfirmed
-landmark
-landmarks
-large_translation_validation_event
-last
-last-import-result.json
-last-recovery-result.json
-last-verified-front-pose
-last-verified-shared-pose
-last_alignment_failure_signature
-last_difficult_evidence
-last_error
-last_live_translation_rejection_log_at
-last_live_translation_rejection_reason
-last_mouse_delta_batch_meta
-last_probe_close_deferred_log_at
-last_reuse_correction_pending
-last_reuse_display_verified
-last_reuse_rendered_profile_residual
-last_reuse_stage_timings
-last_spatial_route_hidden_reason
-last_ui_sound_at
-latched-short-press
-late-background-result
-late-cache-local-revalidate
-late-recognition-outside-strict-window
-latency
-latest
-latest-frame-rendered-profile-unverified
-latest-mask
-latest_map_probe_event
-latest_status.json
-launch-import
-launch-recovery
-launcher-is-not-installed-application
-layer
-layer-metadata-missing
-layer_role
-layers
-layout
-layout-anchor
-layout-anchor-live-relocalized
-layout-anchor-matrix-invalid
-layout-anchor-unavailable
-layout-preview
-layout_surface
-layout_surface_catalog
-layouts
-learning
-leave-one-out-error-too-large
-left
-left-right
-legacy
-legacy-
-legacy-adopted
-legacy-alignment-writer-bypassed
-legacy-author-file-changed
-legacy-clean
-legacy-clean-compatibility-unavailable
-legacy-clean-working-draft
-legacy-difficult-route
-legacy-display-set-not-exact
-legacy-external-readonly-pack
-legacy-import-
-legacy-not-recorded
-legacy-physical-v1
-legacy-receipt-
-legacy-recognition-pixels
-legacy-round-layer-writer-bypassed
-legacy-route-structure
-legacy-shared-binary
-legacy-shared-structure-via-floor-1
-legacy-single-candidate
-legacy-tk
-legacy-unverified
-legacy-verified-fallback
-legacy-verified-preferred
-legacy_bindings
-legal-captured-frame-unavailable
-length
-lengths
-level
-level-edge
-lianghapi
-lianghapi-01-07-alternative-audit.json
-lianghapi-01-07-axis-human-review-feedback.json
-lianghapi-duo
-lianghapi-rejected-fallback-human-review-feedback.json
-lianghapi-single
-lianghapi-transport-human-review-feedback.json
-library
-lifecycle
-lifecycle-detail.jsonl
-lifecycle.
-lifecycle_trace
-limit
-limits
-linear
-lines
-link-probe-
-linked
-linked-file
-linked-history-object
-linked-target
-links
-list
-listener-start-blocked
-listener-started
-listening
-little
-live
-live-client-capture
-live-events-
-live-exemplar-low-score
-live-ground-truth.json
-live-import-requires-idle
-live-import-requires-restart
-live-overlay
-live-overlay-pixel-translation
-live-overlay-translation
-live-recognition-orchestration-not-extracted
-live-removal-requires-idle
-live-runtime-requires-full-client-capture
-live-stair-motion
-live-translation-sources-disagree
-live-translation-unverified
-lo
-load
-load-error
-load_for_route
-load_saved_pose
-load_saved_result
-load_shared_reference
-load_shared_structure
-loaded
-local
-local-exit-rectangle
-local-fast-success
-local-fit-and-author
-local-fit-and-shared-structure
-local-key
-local-lifecycle-trace
-local-package-selected
-local-proposal-only
-local-rectangle-not-found
-local-rectangle-weak
-local-seed-unavailable
-local-structure
-local-user-accepted-prior
-local-wall-pose-candidates
-localized-ambiguous
-localized-triplet
-locked
-locked-first-full-frame
-locked-fit-near-pass-retry-cancelled
-locked-fit-near-pass-retry-scheduled
-locked-fit-near-pass-retry-started
-locked-map-current-frame-unavailable
-locked-map-drift-translation-only
-locked-map-upstairs-local-fit-finished
-locked-map-upstairs-local-only
-locked-map-upstairs-local-recovery-failed
-locked-map-upstairs-local-shift-exceeded
-locked-round-background-fit-discarded
-locked-round-drift-translation-only
-locked-round-full-fit-result-ignored
-locked-round-full-fit-skipped
-locked-round-full-fit-start-blocked
-locked-round-full-fit-worker-aborted
-locked-round-passive-recovery
-locked-round-stale-full-fit-restart-skipped
-locked-round-translation-only
-locked-round-translation-only-recovery-failed
-locked-round-translation-recovery-failed
-locked-selected-map-background-revalidated
-locked-selected-map-relocalization
-locked-selected-map-relocalization-started
-locked-translation-evidence-budget-exhausted
-locked-translation-time-budget-exhausted
-locked-upstairs-portal-wide-search-disabled
-locked_fit_retry_after_id
-locked_fit_retry_count
-locked_fit_retry_key
-locked_summary
-log_lock
-log_path
-logical-group
-logical-group-changed
-logical-group-pending
-logs
-loss
-lost
-low
-low-confidence-or-degenerate
-lower
-ls-files
-lstat
-m
-main
-main-entry-passport
-main-import-request.json
-managed
-managed-remnants
-managed_author_packages_snapshot
-managed_surface
-manifest
-manifest-missing-or-too-large
-manifest-not-object
-manifest-owned-transaction-before-runtime
-manifest.json
-manual
-manual-action-error
-manual-confirmation
-manual-correction-tool
-manual-floor-switch
-manual-group-intent-superseded-automatic-material
-manual-group-intent-superseded-work
-manual-group-member
-manual-group-member-material-verified
-manual-group-pixels-moved
-manual-group-probe
-manual-group-reselection
-manual-hold-deferred
-manual-identity-confirmed
-manual-map-changed
-manual-map-confirmation
-manual-or-internal
-manual-required
-manual-retry-limit
-manual-temporary
-manual_map
-map
-map-01
-map-02
-map-03
-map-04
-map-05
-map-06
-map-07
-map-08
-map-09
-map-10
-map-11
-map-12
-map-13
-map-14
-map-15
-map-16
-map-17
-map-18
-map-19
-map-20
-map-21
-map-22
-map-23
-map-24
-map-25
-map-26
-map-27
-map-28
-map-anchor-not-ready
-map-anchor-pool-refreshed
-map-anchor-reopen-translation
-map-anchors-insufficient
-map-auto-pan-follow
-map-auto-pan-inverse-correction-suppressed
-map-auto-pan-post-correction-phase-quarantined
-map-auto-pan-suppressed-during-pose-settle
-map-auto-pan-unanchored-phase-rejected
-map-backdrop-insufficient
-map-canvas
-map-canvas-texture-mismatch
-map-capture-attempt
-map-capture-error
-map-close
-map-close-control
-map-close-control-edge-hidden
-map-closed
-map-closed-candidate-cached
-map-closed-late-result
-map-crop-unproven
-map-drag-settled
-map-drag-transient-visual-follow-settled
-map-drift
-map-drift-detected
-map-drift-profile-retained
-map-drift-revalidation
-map-evidence-insufficient
-map-floor-observation
-map-hotkey
-map-input
-map-input-intent-invalid
-map-input-reset
-map-input-resources-busy
-map-input-sequence-expired
-map-interface-detected
-map-key
-map-key-capture-request
-map-key-open
-map-key-pressed
-map-key-visual-check
-map-key-visual-check-error
-map-key-visual-check-rejected
-map-key-visual-closed
-map-live-translation-rejected
-map-locked
-map-locked-pose-pending
-map-locked-pose-uninitialized
-map-motion-baseline-rebased
-map-not-confirmed
-map-not-observed
-map-not-open
-map-not-open-stale-ignored
-map-not-ready
-map-open
-map-open-auto-probe
-map-open-preparation
-map-open-preparation-deadline
-map-open-recognition-pending
-map-open-recovery
-map-open-recovery-exhausted
-map-open-recovery-pending
-map-open-recovery-waiting
-map-open-trigger
-map-open-verification-in-progress
-map-opening
-map-package-additions-v1
-map-package-close-failed
-map-package-helper-cancel-failed
-map-package-helper-cancelled-finished
-map-package-helper-poll-failed
-map-package-helper-started
-map-package-inspect
-map-package-inspected
-map-package-live-completed
-map-package-owned-upgrade-v1
-map-package-pending-upgrade-v1
-map-package-removal-v1
-map-package-removals
-map-package-upgrade-retired-v1
-map-package.json
-map-packages
-map-position-jump-followed
-map-position-jump-relocalize
-map-preparation
-map-preparation-unconfirmed
-map-preview
-map-probe
-map-probe-close-deferred-during-alignment
-map-probe-close-deferred-verified-cycle
-map-probe-drag-stale-ignored
-map-probe-indeterminate-ignored
-map-probe-latest
-map-probe-observed
-map-probe-precommit-close-ignored
-map-probe-stale-ignored
-map-probe-start-failed
-map-ready-begin
-map-ready-full-checked
-map-ready-full-unavailable
-map-ready-stopped
-map-recovery-ended
-map-recovery-pending
-map-recovery:
-map-refresh-not-active
-map-reopen
-map-reopen-floor-switch
-map-reopen-no-reusable-layer
-map-reopen-round-layer-group-check
-map-retrieved-awaiting-registration
-map-route
-map-structure-changed
-map_auto_pan_updates
-map_browser
-map_cycle_state
-map_id
-map_identity_pose_pending
-map_input_observation_is_current
-map_is_open
-map_micro_motion_accumulator
-map_micro_motion_history
-map_motion_visual_settle_log_at
-map_motion_visual_settle_reason
-map_motion_visual_settle_until
-map_name
-map_open_intent
-map_package_import_snapshot
-map_probe_event_lock
-map_probe_event_pending
-map_probe_generation
-map_probe_signature
-map_reselection
-map_resource_browser
-map_resources_page
-map_visual_suppressed
-maps
-margin
-marginal-pass
-marked-direction-or-context-insufficient
-marked-entrance-low-margin
-marked-entrance-unconfirmed
-marked-exit-anchor-not-found
-marker-projection-compositor-rejected
-marker-provisional-geometry-pending
-mask
-mask-only-preserve-all-content
-master
-match
-material
-material-context-expired
-material-prior-not-remembered
-material-prior-remembered
-material-remember-queued
-material-token-expired-or-already-accepted
-matrices
-matrix
-matrix-anisotropy
-matrix-degenerate
-matrix-determinant
-matrix-determinant-not-finite-or-at-most-1e-9
-matrix-nonfinite
-matrix-nonpositive-axis
-matrix-not-affine
-matrix-not-finite-3x3
-matrix-rotation-or-shear
-matrix_source_to_client
-max
-max_bytes
-max_entries
-max_files
-max_records
-maximized
-maximum_dimension
-maximum_relative_scale_correction
-measured
-median
-medium
-member-verified-current-frame
-member-verified-current-frame-direct-pose
-member_ids
-members
-memory
-memory-error
-memory-error-for-previous-target
-memory-root-unavailable
-memory-save-failed
-memory-saved
-memory-store-or-frame-unavailable
-memory_root
-memory_store
-message
-metadata
-metadata-only
-method
-metrics
-mi
-migration
-migration-metadata-invalid
-milliseconds
-minimal
-minimap
-minimized
-minimum_coverage
-minimum_visible_pixels
-mismatch
-missing
-missing-door-anchor
-missing-frame-or-route
-missing-hwnd
-missing-integrity-rid
-missing-integrity-sid
-missing-or-incompatible-dependency
-missing-or-incompatible-dependency:
-missing-resource:
-missing:
-mm
-mode
-mode-changed
-mode-preference-changed
-mode-resource-load-failed
-mode-resources-unavailable
-mode-selected
-mode_resource_error
-mode_route_profiles
-model
-modified
-modified-author-file:
-modified-or-unverified
-monitor
-monitor-
-monitor_info
-monitor_topology_signature
-motion
-mouse
-mouse-close-control
-mouse-drag-boundary-transition
-mouse-drag-delta
-mouse-drag-end
-mouse-drag-input
-mouse-drag-input-prioritized
-mouse-drag-motion
-mouse-drag-post-probe-cancelled
-mouse-drag-post-probe-started
-mouse-drag-post-probe-unavailable
-mouse-drag-prediction-click-ignored
-mouse-drag-prediction-end
-mouse-drag-prediction-start
-mouse-drag-source-refresh
-mouse-drag-source-refresh-fallback-failed
-mouse-drag-source-refresh-fallback-throttled
-mouse-drag-start
-mouse-drag-start-stale-ignored
-mouse-drag-transient
-mouse-drag-transient-cleared
-mouse-drag-transient-committed
-mouse-drag-transient-settled
-mouse-up
-mouse_delta_accumulator
-mouse_delta_event_pending
-mouse_delta_first_at
-mouse_delta_last_at
-mouse_delta_lock
-mouse_delta_sample_count
-mouse_drag_base_transform
-mouse_drag_coalesced_input_samples
-mouse_drag_fallback_last_render_at
-mouse_drag_input_to_present_ms
-mouse_drag_prediction_active
-mouse_drag_prediction_pending
-mouse_drag_prediction_updates
-mouse_drag_presentation_mode
-mouse_drag_preview_offset
-mouse_drag_preview_outside_screen
-mouse_drag_preview_overlay
-mouse_drag_probe_generation
-mouse_drag_render_times_ms
-mouse_drag_source_refresh_after_id
-mouse_drag_source_refresh_count
-mouse_drag_source_refresh_generation
-mouse_drag_source_refresh_offset
-mouse_drag_source_refresh_times_ms
-mouse_drag_surface_visibility_generation
-mouse_drag_verified_offset
-mouse_drag_work_invalidated
-move
-move_by
-move_sheet
-moved
-moveto
-ms
-msyh.ttc
-msyhbd.ttc
-multi-anchor
-multi-anchor-consensus
-multipoint
-multipoint-common-features-insufficient
-multipoint-feature-geometry-unique
-multipoint-fit-accepted
-multipoint-fit-below-threshold
-multipoint-geometry-disagreement
-multipoint-live-acceptance.json
-multipoint-live-features-insufficient
-multipoint-masked-source-unavailable
-multipoint-profile-unavailable
-multipoint-ransac-unavailable
-multipoint-reference-features-insufficient
-multipoint-reference-unavailable
-mutual-partial
-n
-name
-names
-nan
-narrow-4x3
-native-
-native-adjacent-pairs-insufficient
-native-call-return-not-screen-presentation
-native-close-failed
-native-context-or-type-unavailable
-native-corner-
-native-corner-binding-mismatch
-native-corner-evidence-matrix-mismatch
-native-corner-matrix-anisotropy-exceeded
-native-corner-pair-node-binding-invalid
-native-corner-pairs-not-reconstructed
-native-corner-reconstruction-unavailable
-native-corner-reference-author-residual-exceeded
-native-corner-source-binding-mismatch
-native-corner-support-holdout-overlap
-native-corner-support-or-holdout-insufficient
-native-corner-support-spread-insufficient
-native-crop-to-floor-local-grid-origin
-native-group-review-completed
-native-group-target-stale
-native-identity-inventory-incomplete
-native-input
-native-monitor-info-unavailable
-native-monitor-unavailable
-native-move-unavailable
-native-overlay-error:
-native-overlay-not-shown
-native-point-heldout-verified
-native-refined-shift-out-of-range
-native-sibling-committed
-native-sibling-context-expired
-native-sibling-discarded
-native-sibling-result-stale
-native-similar-group
-native-similarity
-native-similarity-conditions
-native-similarity-groups
-native-similarity-unavailable:
-native-static-corner-registration
-native-structure-version-bindings
-native-translation-geometry-unverified
-native-turn-constellation
-native-window-anchor-v1
-native_context
-native_dpi_restore
-native_mask
-native_similarity_context_provider
-native_similarity_index
-native_similarity_state
-native_wall_segments
-nav_
-nav_mark
-navigation-landmark-unresolved
-ndim
-ne
-nearby-entry-direction
-nearest-compatible-scene
-nearest-verified-scene-profile
-neck-direction-conflict
-need-fresh-full-frame
-needs-user
-network
-network-or-file-error
-neutral
-neutral-local
-new
-new-authorization
-new-capture
-new-capture-request
-new-frame
-new-map-input
-new-observation
-new-pointer-press
-new-round-recovery-requested
-next
-next_candidate
-nightingale
-nightmare
-nightmare-
-nightmare-01
-nightmare-03
-nightmare-03-only
-nightmare-04
-nightmare-05
-nightmare-06
-nightmare-07
-nightmare-08
-nightmare-09
-nightmare-10
-nightmare-12
-nightmare-author-coordinate-adapters.json
-nightmare-author-route-catalog.json
-nightmare-author-structure-index.json
-nightmare-b1-f1-layer-relations.json
-nightmare-canonical-coordinate-pack.json
-nightmare-cross-floor-atlas.json
-nightmare-direction
-nightmare-entries
-nightmare-entry-recognition-index.json
-nightmare-equal-scale-v1
-nightmare-exit
-nightmare-exit-anchors.json
-nightmare-floor-coordinate-calibration
-nightmare-front-door-clean-previews.json
-nightmare-front-door-identities.json
-nightmare-front-live-test
-nightmare-lianghapi
-nightmare-live
-nightmare-map-pack.json
-nightmare-maps
-nightmare-math
-nightmare-memory
-nightmare-mode-required
-nightmare-multi-author-v1:
-nightmare-nightingale
-nightmare-pack-layer
-nightmare-portable-layout-seeds.json
-nightmare-portable-seed-validation-
-nightmare-shared-structure-index.json
-nightmare-shared-validation-
-nightmare-stair-anchors.json
-nightmare-suju
-nightmare-suju-speed
-nightmare-ui-smoke-
-nightmare-wang-qingxin
-nightmare-zhan10
-nightmare_candidate.py
-nightmare_resource_root
-no
-no-anchor-tracker
-no-approved-legacy-release
-no-authoritative-map-level-registration
-no-bound-game
-no-candidate
-no-candidate-selected
-no-candidates
-no-compatible-layout
-no-current-frame
-no-current-live-grant
-no-feature-model
-no-floor-matched-live-exemplar
-no-floor-spatial-outline
-no-frame
-no-geometric-model
-no-live-exemplar
-no-managed-author-files
-no-matching-identity
-no-matching-saved-frame
-no-observed-fragments
-no-partial-candidates
-no-pending-additions
-no-pending-base-repair
-no-pending-upgrade
-no-primary-screen
-no-result
-no-reviewed-b1-room-anchor
-no-reviewed-sibling-available
-no-reviewed-sibling-passed-current-frame
-no-session-overlay
-no-spatial-outline
-no-supported-native-group
-no-two-stair-locked-axis-consensus
-no-v2-current-frame-candidate
-no-visible-map-component
-node-id-not-int
-node-out-of-range
-nodes
-non-code-value
-non-finite-transform
-non-live-evidence
-non-local-archive
-non-translation-correction
-non-windows
-noncanonical-path
-nonce
-none
-nonfinite
-normal
-normal-waiting
-normalized_rect_to_client
-not-applicable
-not-applied-no-reliable-current-frame-shape-or-door-count
-not-base-or-duplicate
-not-bound-game
-not-captured
-not-configured
-not-drag-handle
-not-editing
-not-evaluated-geometry-failed
-not-file
-not-installed
-not-live-bound-game-capture
-not-loaded
-not-managed
-not-needed
-not-nightmare
-not-object
-not-performed
-not-preloaded
-not-probed
-not-provided
-not-ready
-not-recorded
-not-requested
-not-run
-not-saved
-not-scored-direction-pruned
-not-started
-not-stopped
-not-terminal
-not-tested
-note
-npz
-ns
-nsew
-nt
-nw
-object:
-objects
-observation
-observation-already-terminal
-observation-exception
-observation-not-active
-observation-result
-observation-unavailable
-observations
-observe_coverage
-observe_game_drag
-observed
-observed-floor-button
-observed-floor-changed
-observed-only
-obsolete
-obsolete-completion-drained
-obsolete-resource-preload
-obsolete-ticket-ignored
-occupied
-official-core-or-shared
-offline-human-reviewed-live-test
-offline-multi-landmark-atlas
-offline-player-reviewed-coordinate-binding-trial
-offline-profile-reviewed-current-frame-search-seed
-offline-review-ready-candidate-not-human-approved
-offline-source-structure-verified
-offline-stair-candidate
-offscreen
-offset
-ok
-old
-omitted
-on
-onboarding
-onboarding-completed
-onboarding-control-trial
-onboarding-step-changed
-onboarding_accent_color
-onboarding_action_button
-onboarding_active
-onboarding_coffin_variant_box
-onboarding_coffin_variant_row
-onboarding_hotkey_capture_button
-onboarding_hotkey_editor
-onboarding_panel_editor
-onboarding_route_box
-onboarding_trial_snapshot
-onboarding_trial_view
-onboarding_window
-one
-one-way-strict
-online-archive-binding-mismatch
-online-archive-size-mismatch
-online-binding
-online-map-package
-online-map-packages-completed
-online-operation-busy
-online-unavailable
-online:
-online_map_packages_snapshot
-online_packages
-opacity
-opacity-display-update-failed
-open
-open-current-frame
-open-cycle-drag-current-frame-verified
-open-cycle-drag-floor-switch:
-open-cycle-pose-frozen
-open-cycle-pose-restore-unavailable
-open-cycle-pose-restored
-open-cycle-pose-verified-on-close
-open-doorway-midpoint
-open-map-cycle
-open-process-
-open-to-overlay-hard-budget-exhausted
-open-token-
-open_control_layout_settings
-open_cycle_drag_cycle_id
-open_cycle_drag_map_id
-open_cycle_drag_offset
-open_cycle_observations
-open_cycle_pose_snapshot
-open_cycle_transient_motion
-open_cycle_zoom_transform
-opened
-opening-floor-state-applied
-operation
-operation-exception
-optional_author_displays
-options
-orb
-orb-docked
-orb-visibility-changed
-orb_body
-orb_canvas
-orb_drag_moved
-orb_menu
-orb_mode_text
-orb_press_origin
-orb_recognition_progress
-orb_shadow
-orb_state
-orb_state_badge
-orb_state_text
-orb_status_dot
-orb_status_pill
-orb_status_pill_after_id
-orb_visibility_enabled
-order
-ordinal
-ordinary-or-ambiguous-outline
-ordinary-structure
-ordinary_resize_
-orientation
-orientation-conflict
-origin
-original-identity-and-current-material-verified
-original-identity-pending
-original-sheet-alpha
-original-sheet-layer
-original-sheet-outside-screen
-original-sheet-too-small-or-outside-screen
-original-source-and-target-positive-pixel-centers
-os.
-os.chmod
-os.link
-os.listdir
-os.mkdir
-os.remove
-os.rename
-os.rmdir
-os.scandir
-os.startfile
-os.symlink
-os.system
-os.utime
-other
-out-of-reference
-outcome
-outline
-outline-too-small
-output
-outputs
-outside-current-group
-outside-package
-outside-reviewed-front-entry-scope
-overlay
-overlay-background-warm
-overlay-build-failed
-overlay-calibration-invalid-client-size
-overlay-calibration-profiles.json
-overlay-calibration-unavailable
-overlay-calibrations.json
-overlay-client-size-out-of-profile-range
-overlay-diagnostic
-overlay-display-epoch-committed
-overlay-hide-request-consumed
-overlay-hide-request-failed
-overlay-hide-requested
-overlay-layer-unavailable
-overlay-live-anchor-accepted
-overlay-live-anchor-ambiguous
-overlay-live-anchor-appearance-rejected
-overlay-live-anchor-evidence-missing
-overlay-live-anchor-low-template-score
-overlay-live-anchor-malformed
-overlay-live-anchor-out-of-frame
-overlay-live-anchor-residual-too-high
-overlay-live-anchor-scale-inconsistent
-overlay-live-anchor-unavailable
-overlay-native-call-slow
-overlay-native-error-fallback
-overlay-not-built
-overlay-presentation.json
-overlay-ready
-overlay-retained-presented
-overlay-shown
-overlay-visibility-lock-wait
-overlay-visible
-overlay_display_epoch
-overlay_display_signature
-overlay_verified_at
-overview
-overwrite
-owned-input-copy
-owned-installed-author-image
-owner
-owner-destroyed
-owner-focus-lost
-owner-hidden
-owner.marker
-ownership
-ownership-changed
-ownership-unavailable
-ownership.json
-p90
-pack
-pack-error
-pack_configure
-pack_forget
-pack_id
-package
-package-
-package-remove
-package-runtime-mismatch
-package-size-limit
-package-size-or-sha-mismatch
-package-unreadable
-package_manager
-package_metadata
-packaged
-packages
-packages-partially-removed
-packages-removed
-packed
-padding
-padx
-pady
-page
-page:
-page_
-page_motion
-pages
-pair
-pair-04-12-difference-ambiguous
-pair-04-12-difference-supported
-pair-04-12-not-applicable
-pair-coordinate-shape
-pair-data-or-split-not-reconstructed
-pair-game-point
-pair-node-data-mismatch
-pair-source-point
-pair0412
-pairs
-pan.quark.cn
-panel
-panel-collapsed
-panel-hidden
-panel:
-panel:collapsing
-panel_arrow
-panel_icon
-parent
-parent-creation-time-mismatch
-parent-executable-mismatch
-parent-handle-pid-mismatch
-part
-partial
-partial-display-residual-unverified
-partial-known-wall-conflict
-partial-map-too-small
-partial-multipoint-fit-accepted
-partial-structure-ambiguous
-partial-structure-dice
-partial-structure-visual-residual
-partial-wall-candidate-failed
-partial-wall-fit-speed-first
-partial-wall-fixed-linear
-partial-wall-held-out-failed
-partial-wall-independent-planes-insufficient
-partial-wall-native-similarity
-partial-wall-similarity-speed-first
-partial_math_lanes
-partition
-pass
-pass-through-hook
-passed
-passive-map-probe
-passport
-passports
-patch
-path
-path-not-in-data-allowlist
-payload-expired
-pending
-pending-additions.json
-pending-base-repair.json
-pending-click-mismatch
-pending-marker-invalid
-pending-marker-unwritable
-pending-pointer.json
-pending-removal.json
-pending-sibling-not-current-live
-pending-upgrade
-pending-upgrade-journal-missing
-pending-upgrade-pointer-changed
-pending-upgrade-pointer-could-not-be-cleared
-pending-upgrade-recovery-required
-pending-upgrade.json
-pending:
-pending_sibling_payload
-per-monitor
-per-monitor-v2
-permission-denied
-persisted
-persistent-manual
-phase
-phase-check-not-due
-phase-client-size-changed
-phase-geometry-disagrees
-phase-jump-too-large
-phase-mask-unavailable
-phase-nonfinite
-phase-over-anchor
-phase-relocalization
-phase-relocalized
-phase-reopen
-phase-reopen:
-photo
-picture
-pid
-pitch
-pixels
-place
-place_configure
-place_forget
-plan
-planes
-platform
-platform-not-supported
-play
-player-cancelled
-player-marker
-player-marker-ambiguous
-player-marker-not-found
-player-marker-unique
-player-marker-unverified
-player-rejected-alignment
-player-visual-marginal-pass-current-frame-required
-player-visual-pass-current-frame-required
-png
-point
-point-pairs
-point-projection
-pointer-cancelled
-pointer-context-changed
-pointer-context-provider-changed
-pointer-context-unavailable
-pointer-drag-
-pointer-editing-active
-pointer-generation-expired
-pointer-gesture-failed
-pointer-gesture-started
-pointer-input
-pointer-input-inactive
-pointer-listener-disabled
-pointer-motion-overflow
-pointer-native-query-failed
-pointer-outside-drag-boundary
-pointer-press-before-current-frame
-pointer-queue-overflow
-pointer-rejected
-pointer-resources-busy
-pointer-sequence-invalid
-pointer-source-stopped
-pointer-target-changed
-pointer-text-entry-active
-pointer-window-not-current
-pointer_generation
-pointer_installed
-points
-policy
-poll
-pool
-pools
-portable-cross-floor-seeds
-portable-layout-seed-current-frame
-portable-layout-seed-current-frame-unverified
-portable-layout-seed-current-frame-verified
-portable-layout-seed-revalidation-finished
-portable-neutral-seed-local-translation
-portable-neutral-seed-wide-translation
-portable-seed-translation-unavailable
-portable_layout_seed_candidates
-portable_seed_path
-ports
-pose-attempt
-pose-fit
-pose-fit-failed
-pose-index-disabled
-pose-index-error
-pose-index-no-candidates
-pose-index-unavailable
-pose-replay
-pose-result
-pose-seed-ready
-pose-snapshot-input-unverified
-pose_by_map
-pose_index_candidates
-pose_origin
-poses
-position
-position-jump
-positive-consensus
-positive-differences
-positive-native-footprint-only
-post-capture-foreground
-post-commit-current-frame-failed
-post-correction-inverse-motion-suppressed
-post-correction-phase-motion-quarantined
-post-drag-floor-conflict
-post-drag-observation-current
-post-drag-probe
-post-entry-positive-structure
-post-pose-local-recovery
-post_correction_inverse_guard_delta
-post_correction_inverse_guard_floor
-post_correction_inverse_guard_hits
-post_correction_inverse_guard_map_id
-post_correction_inverse_guard_until
-post_drag_probe_after_id
-pre-open-cycle-motion
-precision
-preference-disabled
-preferences
-preferences-committed
-preferences_surface
-preferred
-preferred_route_profile_id
-preload-error
-preparation
-preparation-deadline
-preparation-exception
-preparation-incomplete-retained-for-recovery
-prepare
-prepare-current-member
-prepare-member
-prepare_round
-prepared
-prepared-current-frame
-preparing
-present
-presentation
-presentation-
-presentation-context-changed
-presentation-context-pending
-presentation-profile-stale
-preserved
-preserved-items
-press
-press-
-pressed
-presses
-preview
-previous
-previous_candidate
-primary
-primary-fallback
-primary_profile_to_canonical
-prior
-prior-only-revalidate-current-frame
-privacy
-probable
-probe
-probe_map_after_drag
-problem-repeat-count-checkpoint-dropped
-problems
-process
-process-exited
-process-identity-changed
-process-identity-changed-during-check
-process-identity-query-failed
-process-image-unavailable
-process_integrity
-processed-author-axis-locked-via-lianghapi-current-frame-required
-processed-author-axis-locked-via-zhan10-speed-current-frame-required
-processed-author-direct-axis-locked-current-frame-required
-producer-source-png-pixels
-product
-production
-production:
-profile
-profile-cross-floor-current-frame
-profile-cross-floor-current-frame-residual-failed
-profile-cross-floor-current-frame-too-small
-profile_has_assets
-profile_id
-profiles
-progress
-progressive-pose-candidate-evicted
-progressive-pose-candidate-retained
-progressive-pose-candidate-stale
-progressive-pose-seed-pending
-progressive-pose-seed-reused
-progressive-retry
-progressive_pose_seed_cache
-projected-quad-invalid
-projection
-projection-illegal-homogeneous-matrix
-projection-illegal-homogeneous-output
-projection-matrix
-projection-output
-projection-points
-projection-token-expired
-protected
-provenance
-provider
-provisional
-provisional-floor-current-frame-unverified
-provisional-floor-revalidation
-provisional-member-current-frame-fit-failed
-provisional_floor_evidence_signature
-provisional_floor_evidence_work_key
-provisional_floor_geometry_state_key
-provisional_member_id
-psapi
-pt
-publish
-publish-metadata
-publish-transform
-put
-px
-qlonglong
-qsize
-qt-client-
-qt-client-runtime
-qt-client-startup-error.txt
-qt-client-summary.json
-qt-editor-base
-qt-import-notice-seen.json
-qt-import-pending.json
-qt-isolated
-qt-lab-installation
-qt-lifecycle
-qt-lifecycle-detail
-qt-logical-v1
-qt-no-implicit-legacy-import.json
-qt-pass-through-keys
-qt-production
-qt-quick-isolated-v1
-qt-recognition-diagnostic
-qt-recovery-pending.json
-qt-runtime-problem
-qt-runtime-problem-summary
-qt-runtime-transition
-qt-update-state.json
-qt_adapters
-qt_base_display
-qt_catalog
-qt_custom_display
-qt_logical_group_registry
-qt_native_context
-qt_optional_displays
-qt_resource_inventory
-qt_shared_provider
-qualified
-quality
-quark
-query
-query-has-insufficient-structure-features
-queue-capacity
-queue-displaced
-queued
-queued-render-replaced
-quick
-quick-round
-quick-start
-quick_connection_var
-quick_diagnostic_button
-quick_end_round_button
-quick_main_button
-quick_panel
-quick_start_round_button
-quick_surface
-radius
-raise
-rank
-rank-outside-sampling-window
-rank_entry
-rank_established_group
-rank_saved_frame
-ranked
-ranked-current-frame
-ranked-opening-capture
-ranked-provisional-group-stale-ignored
-ranked-stale-hidden
-ranking
-ratio
-ratios
-raw
-raw-input
-raw-mouse-input-expired
-raw-mouse-observation-failed
-rays
-rb
-read
-read-only
-readable
-readlink
-readonly
-ready
-ready-after-deadline
-ready-full-frame
-ready-full-frame-verified
-real-game-based-author-crops
-reason
-reason-not-provided
-reasons
-receipt
-receipt.json
-recognition
-recognition-alignment
-recognition-current-frame
-recognition-diagnostic
-recognition-discarded-map-closed
-recognition-rate-limit
-recognition-to-canonical-conversion-unavailable
-recognition-unaccepted
-recognition_rank_history
-recognize
-recognize_live
-recognized
-reconstruction
-recorded
-recording
-records
-recover
-recover_map_open
-recovered
-recovering
-recovery
-recovery-author-refinement-unverified
-recovery-current-frame
-recovery-expired
-recovery-helper-launch-not-confirmed
-recovery-helper-path-mismatch
-recovery-helper-result-unavailable
-recovery-history
-recovery-operation-no-longer-valid
-recovery-plan-changed-reinspect-required
-recovery-receipt
-recovery-request-changed
-recovery-request-path-mismatch
-recovery-request-too-large
-recovery-required
-recovery-target-changed-during-inspection
-recovery-target-not-regular
-recovery.cancel
-recovery_anchor_tracker
-recovery_anchor_tracker_key
-recovery_anchor_trackers
-rect
-rectangle
-rectangle-too-square
-redirect-limit
-redirect-location-missing
-reduce_motion
-reference
-reference-center
-reference-controls
-reference-domain
-reference-edit-active
-reference-image-ready
-reference-image-unavailable
-reference-missing
-reference-move-active
-reference-move-cancelled
-reference-move-finished
-reference-move-started
-reference-move-unavailable
-reference-opacity-display-update-failed
-reference-placement
-reference-placement-rejected
-reference-pointer
-reference-preview
-reference-preview-unavailable
-reference-publish
-reference-ready
-reference-room-not-qualified
-reference-sheet
-reference-size-mismatch
-reference-visibility-save-failed
-reference-visibility-saved
-reference:
-reference:preview:
-reference_editor_surface
-reference_opacity
-reference_payload
-reference_preview
-reference_sheet_snapshot
-reference_sheet_visibility_enabled
-reference_surface
-references
-refine_cross_floor_seed_from_live_landmark
-refine_selected_route_translation_fast
-refinement
-refiner-unavailable-or-no-result
-refresh
-refresh-after-remove
-refresh-after-write
-refresh-cancelled-or-stale
-refresh-coalesced
-refresh-core-commit-rejected
-refresh-current-pose-unavailable
-refresh-map:
-refresh-reference-basis-unavailable
-refresh_map
-region
-regional
-regional_cross_floor_author_relation_for_source
-regions
-registered-family-
-registered-floor-candidate-scope-mismatch
-registered-floor-local-attempt
-registered-floor-local-geometry
-registered-floor-local-started
-registered-floor-main-attempt
-registered-floor-main-geometry
-registered-floor-main-resource-unavailable
-registered-floor-main-unavailable
-registered-floor-resource-unavailable
-registered-logical-family
-registration
-registration-failed
-regression
-regular
-reject
-rejected
-rejected-reviewed-candidates-safe-centered-fallback
-rejections
-relation-refiner-unavailable-or-no-result
-relations
-release
-release-report-incomplete
-release-report-invalid
-release-report-missing
-release-report-not-object
-release-report-too-large
-release-report.json
-releases
-reliable
-reliable-front-anchor-direct-pose
-reliable-front-door-anchor
-relief
-remaining
-remember_render_material
-remembered-seed
-remembered-seed-only
-remote
-removal
-removal-additions-history-changed
-removal-committed
-removal-committed-cleanup-required
-removal-confirmation-and-idle-required
-removal-confirmation-required
-removal-confirmed-file-changed
-removal-confirmed-file-changed-or-unwritable
-removal-history-limit
-removal-invalid-additions-history
-removal-invalid-journal
-removal-invalid-journal-entry
-removal-invalid-pending-pointer
-removal-invalid-receipt
-removal-invalid-receipt-ownership
-removal-not-regular-or-too-large
-removal-object-changed-during-inspection
-removal-other-transaction-pending
-removal-pending
-removal-pending-pointer-changed
-removal-pending-pointer-cleanup-failed
-removal-plan-changed-reinspect-required
-removal-plan-confirmation-required
-removal-plan-too-large
-removal-preserved-items
-removal-recovery-required
-removal-reinspection-required
-removal-retained-object-changed
-removal-retired-upgrade-changed
-removal-rollback-conflict-backup-retained
-removal-rollback-source-missing-or-changed
-removal-rolled-back
-removal-target-not-owned
-removal-temporary-cleanup-failed
-removal-unknown-temporary-object
-removal-unsafe-path
-removal-upgrade-pointer-changed
-removal-upgrade-recovery-required
-remove
-removed
-removing
-render
-render-input-missing
-render-material-accepted
-render-ready
-render-revoked
-render-transform-scope-changed
-render_matrix_source_to_client
-render_payload
-rendered-profile-residual-unverified
-reopen-rendered-profile-unverified
-repair-needed
-repaired
-repeat-checkpoint-evicted
-repeated-current-structure-contradictions
-replace
-replaced
-replacement-candidate-after-zhan-transport-rejected
-replacements
-replay
-report
-request
-request-already-running
-request-deadline-exceeded
-request_desktop_close
-request_hide
-requested
-requested_client_bounds
-requested_size
-reselect_map
-reselection
-reset-stale
-reset_round
-residual
-residual-failure-without-current-frame-difference-evidence
-residual-stat
-residual-stat-empty-or-shape
-residual-stat-input
-residual-stat-nonfinite
-resize_
-resolution
-resource
-resource-binding-changed
-resource-busy
-resource-card
-resource-consumers-not-stopped
-resource-context-published
-resource-context-superseded
-resource-cross-volume-target
-resource-file-error
-resource-hardlinks-unavailable
-resource-import-started
-resource-initialization-failed
-resource-install-failed
-resource-installed
-resource-inventory
-resource-linked-target
-resource-management-started
-resource-metadata
-resource-operation-busy
-resource-operation-failed
-resource-operation-requires-idle
-resource-plan-changed-reinspect-required
-resource-preload-started
-resource-read-cancelled
-resource-removal-started
-resource-root
-resource-runtime-active
-resource-runtime-already-active
-resource-startup-ready
-resource-unsafe-target
-resource-validation
-resource-validation-pending
-resource-worker-unavailable
-resource-workers-drained
-resource:
-resource_key
-resource_preload_pending
-resource_root
-resource_status
-resources
-resources-changed
-resources-not-ready
-resources-opacity
-resources-ready
-resources-unavailable
-resources.png
-restart-recording
-restore
-restore-not-confirmed
-restore_error
-restore_initial_browse_mode
-restore_initial_browse_ready
-restore_window_anchor
-restored
-restoring
-restricted-map03-cross-floor-live-test
-result
-result-consumed
-resume_group_automatic
-resumed-closed
-retain-current
-retained-evicted
-retained-local-bitmap
-retained-object-changed
-retained-object-delete-failed
-retained-object-unwitnessed
-retiring
-retrieval-evidence-disagreement
-retry_enabled
-rev-parse
-review-candidate-only-current-frame-validation-still-required
-review-ready
-reviewed-author-adapter
-reviewed-clean-window-to-recognition
-reviewed-floor-large-recenter-evidence-insufficient
-reviewed-floor-translation-current-frame-verified
-reviewed-floor-translation-residual-failed
-reviewed-navigation-cue
-reviewed-reference-whitelist-local-shape
-reviewed-window-positive-differences-current-frame
-revision
-rid
-right
-rms
-roi
-roi-capture-error
-roi-proposal-only-original-checks-required
-role
-roles
-rollback
-rollback-incomplete
-rolled-back
-rolled-back-retired
-rolling-back
-roman
-room
-room-outline-ambiguous
-room-outline-clipped
-room-reference-or-frame-missing
-room-search-window-invalid
-room-search-window-too-small
-room-template-empty
-root
-root_pose
-rotation
-round
-round-active
-round-already-active
-round-already-prepared
-round-auto-started-verified
-round-confirm-idempotent
-round-ended
-round-first-pose-atomic-commit-rejected
-round-first-pose-promoted-atomic
-round-floor-switch-mapping-first
-round-floor-updated
-round-group-anchor
-round-group-anchor-atomic-commit-rejected
-round-group-anchor-promoted-atomic
-round-group-edge-correction
-round-group-edge-correction-fallback
-round-group-edge-correction-ready
-round-group-edge-correction:current-frame-commit
-round-group-pose-commit-rejected
-round-group-window-cache
-round-group-window-cache:
-round-group-window-cache:current-frame
-round-inactive
-round-layer-group-bootstrapped-from-progressive-seed
-round-layer-group-cleared
-round-layer-group-commit-blocked-transient-motion
-round-layer-group-committed
-round-layer-group-current-floor-relocalization-skipped
-round-layer-group-current-floor-relocalization-started
-round-layer-group-display-change-pending
-round-layer-group-display-reprojected
-round-layer-group-display-revalidation
-round-layer-group-edge-correction-background-warm-committed
-round-layer-group-edge-correction-displayed-committed
-round-layer-group-edge-correction-launch-cancelled
-round-layer-group-edge-correction-rejected
-round-layer-group-edge-correction-skipped-for-transient-drag
-round-layer-group-edge-correction-stale-ignored
-round-layer-group-edge-correction-started
-round-layer-group-edge-correction-unavailable
-round-layer-group-first-floor-anchor-policy
-round-layer-group-floor-fit-rejected
-round-layer-group-floor-relation-learned
-round-layer-group-floor-verification-invalidated
-round-layer-group-large-correction-continuity-pending
-round-layer-group-latency-target-missed
-round-layer-group-pose
-round-layer-group-pose-calibrated
-round-layer-group-pose-translated
-round-layer-group-preserved-for-same-map-reconfirmation
-round-layer-group-progressive-seed-rejected
-round-layer-group-provisional-reuse-user-veto
-round-layer-group-provisional-reused
-round-layer-group-recovery-policy-selected
-round-layer-group-relations-primed
-round-layer-group-reuse-unavailable
-round-layer-group-reused
-round-layer-group-sync
-round-layer-group-transient-floor-render-rejected
-round-layer-group-transient-floor-swapped
-round-layer-group-translation-blocked-transient-motion
-round-layer-group-v2-seed
-round-layer-group-wall-corrected
-round-layer-group-wide-search-blocked
-round-layer-group-window-cache-current-frame-rejected
-round-layer-group-window-cache-restored
-round-layer-group-zero-geometry-static-sheet-deferred
-round-layer-group:
-round-lock-background-fast-verified
-round-lock-fast-verification-pending
-round-lock-floor-evidence-pending
-round-lock-floor-stabilization-exhausted
-round-lock-frame-stale-hidden
-round-lock-overlay-fast-verified
-round-lock-overlay-verification-pending
-round-lock-sheet-fast-verified
-round-lock-sheet-immediate
-round-lock-unavailable
-round-locked-frame
-round-locked-opening-capture
-round-map-identity-locked-pose-pending
-round-map-locked-pose-pending
-round-not-active
-round-open-floor-auto
-round-prepared
-round-reset
-round-start-cancelled
-round-start-check
-round-start-intent-consumed
-round-start-prepared
-round-started
-round-verified-floor-transfer
-round_group_display_reprojection_active
-round_group_edge_correction_applied_at
-round_group_edge_correction_generation
-round_group_edge_correction_pending
-round_layer_group
-round_recovery_bar
-round_rejected_transforms
-round_start_intent
-round_work_active
-route
-route-
-route-display-reprojected
-route-display-reprojection-failed:
-route-family-conflict
-route-graph-unreviewed
-route-hidden
-route-image-missing
-route-mask-empty-or-excessive
-route-material-unavailable
-route-notification
-route-notification-close-failed
-route-notification-presentation-failed
-route-pixel-template
-route-preference-changed
-route-profile-changed
-route-profile-setting
-route-render
-route-reset
-route-selection-awaiting-current-presentation
-route-status-current
-route-status-issue
-route-status-window-created
-route-status-window-destroyed
-route-status-window-hidden
-route-status-window-show-failed
-route-status-window-shown
-route-status-window-unavailable
-route-status-window-updated
-route-visible
-route_choices
-route_image
-route_profile_box
-route_profile_id
-route_profiles
-route_selection_snapshot
-route_status_window
-route_toast_presenter
-route_toast_window
-route_variant
-routed
-row
-rows
-rt
-run-client
-running
-runtime
-runtime-bound-source-display
-runtime-context-changed
-runtime-dispatch
-runtime-drag-rejected
-runtime-error
-runtime-event
-runtime-event-received
-runtime-grant-unavailable
-runtime-payload-expired
-runtime-result
-runtime-result-context-mismatch
-runtime-snapshot
-runtime-snapshot-failed
-runtime-stage-completed
-runtime-successes
-runtime-transient-api-unavailable
-runtime_timeline_enabled
-runtime_timeline_input_frame
-runtime_timeline_scope
-runtime_timeline_sink
-s
-safe-area-floor-triplet-not-localized
-safe-viewport
-safety
-same-floor-door-current-frame-translation
-same-floor-local-edge-current-frame
-same-floor-local-edge-v2
-same-floor-reopen
-same-floor-reopen-linear-change
-same-floor-reopen-must-be-translation-only
-same-floor-reopen-relaxed-3s
-same-floor-reopen-residual
-same-floor-reopen-v2
-same-floor-reopen-verified-refresh
-same-floor-window-cache-current-frame-verified
-same-frame-failure
-same-group-member-current-frame-margin
-same-map-confirmed-floor
-same-map-pose-initialization
-same-map-pose-initialization-already-attempted
-same-map-pose-initialization-cancelled
-same-map-pose-initialization-candidate-finished
-same-map-pose-initialization-failed
-same-map-pose-initialization-no-result
-same-map-pose-initialization-ready
-same-map-pose-initialization-skipped
-same-map-pose-initialization-started
-same-original-author-rgba-canvas
-same-pose-as-structural-candidate
-same-round-transform-veto-and-offline-regression
-same-user-session-assistant-installation
-same-window-current-map-observation
-same-window-identity
-same-window-process-identity
-same_map_pose_initialization_attempts
-sample-cooldown
-sample-file-missing
-sample-outside-memory-root
-sample-preparation-error
-sample-sha256-mismatch
-sample-write-error
-sample-writer-busy
-samples
-samples-
-sampling-not-admitted
-sane
-sanity
-save-failed
-saved
-saved-frame-diagnostic
-saved-frame-engine-unavailable:
-saved-frame-floor-unavailable:
-saved-frame-input-unverified
-saved-frame-rank-ready
-saved-recorded-frame
-saved-settings-startup
-saved-synthetic-frame
-saved_frame
-saved_result
-scale
-scale-consensus
-scale-plus-translation
-scale-unobservable
-scaling
-scan
-scenario
-scene
-schema
-scope
-scope-changed
-score
-scores
-screen-projection-unverified
-screens
-screenshot
-scroll
-second
-second-ring-topology
-secondary_preload_worker
-seconds
-seed
-seeds
-segments
-select_candidate
-select_group_member
-select_monitor_for_rect
-select_route_profile
-selected
-selected-archive-changed
-selected-author-current-frame
-selected-author-layer-missing
-selected-author-layer-unavailable
-selected-author-pixels
-selected-author-pixels-adapter-unavailable
-selected-map-atomic-promotion-rejected
-selected-map-current-frame-group-commit-rejected
-selected-map-current-frame-residual
-selected-route-coordinate-adapter-unavailable
-selected-route-current-frame-residual-failed
-selected-route-current-frame-residual-unverified
-selected-route-current-frame-residual-verified
-selected-route-outside-visible-map
-selected_id
-selection-changed
-semantic-entry-passports
-separate-helper-not-installed
-separate-structure-reference-branch
-seq
-sequence
-session
-session-anchor-candidates-unverified
-session-client-size-changed
-session-completed
-session-consensus-does-not-bypass-per-frame-gate
-session-identity-conflict
-session-identity-mismatch
-session-map-shape-disagrees
-session-map-structure-changed
-session-original-sheet-outside-screen
-session-overlay-invalid
-session-retained-floor
-session-reused
-session-snapshot
-session-start
-session-stop
-session-stopped
-session-worker:
-sessions
-set_automatic_failure_sampling_enabled
-set_available_height
-set_context
-set_control_visible
-set_display_scale
-set_event_callback
-set_failure_sampling_enabled
-set_floor
-set_game_mode
-set_pointer_context_provider
-set_reference_sheet_visible
-set_route_profile
-settings
-settings-directory-not-supplied
-settings-updated
-settings.json
-settings.png
-settings_path
-settings_read_error
-settings_surface
-settings_window
-settled
-severity
-sha256
-shadow
-shadow-ranking-only-until-reviewed
-shape
-shape-accepted
-shape-rejected
-shape:
-shape_category
-shared-author-file-ownership
-shared-canonical-geometry-current-frame
-shared-display-layer
-shared-display-no-visible-ink
-shared-established-group-recovery
-shared-fast-alignment
-shared-group-already-authoritative
-shared-group-became-authoritative
-shared-group-commit-rejected
-shared-group-pose-seed-missing
-shared-index-source-version-or-binding-mismatch
-shared-initial-structure
-shared-linear-transform-disagrees
-shared-local-feature-binding-mismatch
-shared-neutral-geometry-sensor-via-zhan10-standard
-shared-neutral-version-or-binding-mismatch
-shared-pack-floor-manifest
-shared-package-ownership-conflict
-shared-product-missing
-shared-product-unavailable
-shared-projection-compositor-rejected
-shared-projection-context-changed
-shared-reference-adapter-version-mismatch
-shared-reference-canonical
-shared-reference-canonical-basis-unavailable
-shared-reference-or-display-bridge-unavailable
-shared-reference-profile-mismatch
-shared-reference-unavailable
-shared-reference-with-matching-prepared
-shared-registered-floor-recovery
-shared-request-budget-exhausted
-shared-resource-contract:
-shared-root-local
-shared-root-projection
-shared-root-projection-awaiting-material
-shared-root-projection-material-accepted
-shared-root-projection-material-rejected
-shared-root-provisional
-shared-root-provisional-geometry-pending
-shared-root-provisional-material-accepted
-shared-sift-source-structure-advisory
-shared-structure
-shared-structure-alignment-failed
-shared-structure-pose-context-unavailable
-shared-structure-resource-unavailable
-shared-structure-to-client
-shared-version-binding-unavailable
-shared_mask
-shared_reference_loader
-shared_resources
-shared_structure_load_errors
-shared_structure_resources
-shared_structure_version_context
-shared_version_context
-sheet-hidden
-sheet-shown
-sheet-visibility
-sheet-visibility-toggled
-sheet_move_generation
-sheet_move_mode
-sheet_opacity
-sheet_photo_cache
-sheet_position
-sheet_visibility_enabled
-sheet_window
-shell
-shell_animation_generation
-shell_connection_var
-shell_focus_return_hwnd
-shell_nav_buttons
-shell_recognition_nav_button
-shift
-short-open-background-revalidated
-shortcuts-visibility
-show
-show_bgra-cache-check
-show_bgra-commit
-show_bgra-retained-reset
-show_page
-show_retained
-show_sheet
-shown
-shutdown
-shutdown-completed
-shutdown-entered
-sibling-committed
-sibling-context-expired
-sibling-identity-commit-failed
-sibling-material-accepted
-sibling-material-and-identity-committed
-sibling-material-loading
-sibling-material-pending
-sibling-material-rejected
-sibling-rolled-back
-sibling-source-authorization-expired
-sibling-source-expired
-sibling-token-expired
-side
-side-author-observation-unavailable
-side-budget-incomplete
-side-competition-limit-unverified
-side-current-frame-evidence
-side-current-identity-verified
-side-door-anchors.json
-side-door-boundary-contradiction
-side-door-context-insufficient
-side-door-crop-out-of-bounds
-side-door-expanded
-side-door-fast-current-frame
-side-door-local
-side-door-low-margin
-side-door-source-unavailable
-side-door-stage-not-ready
-side-door-stage-unavailable
-side-entries.json
-side-entry-index-unavailable:
-side-entry-passport
-side-entry-path-selected
-side-entry-pose-ambiguous
-side-entry-pose-unverified
-side-entry-search.npz
-side-identity-not-current
-side-local-candidates
-side-neighborhood
-side-observation-unavailable
-side-outside-score-band-unverified
-side-resource-unavailable
-side-search-incomplete-unverified
-side-shared-structure-unavailable
-side-structure-candidates
-side-verification-budget-incomplete
-side-visible-structure-insufficient
-side_door_position
-side_entry_identity
-sign
-signature
-significant
-similar-group-created
-similar-group-final-lock-reopened
-similar-group-member-verified
-similar-group-pending
-similar-group-provisional-changed
-similar-group-provisional-selected
-similar-group-reset
-similar-group-resource-pending
-similar-group-resource-validation-failed
-similar-group-review-pending
-similarity
-similarity-array-incompatible
-similarity-channel-role
-similarity-comparison-pose-missing
-similarity-competition-incomplete
-similarity-condition-mode
-similarity-condition-pose-missing
-similarity-condition-requires-post-entry-comparison-domain
-similarity-context-changed
-similarity-context-mismatch
-similarity-cross-floor-pose
-similarity-differences-changed
-similarity-domain-changed
-similarity-feature-binding-changed
-similarity-feature-changed
-similarity-feature-row-index
-similarity-floor-members-incomplete
-similarity-index-changed
-similarity-index-schema
-similarity-local-reference-matrix
-similarity-member-binding-changed
-similarity-members-incompatible
-similarity-pairs-incomplete
-similarity-path-outside-root
-similarity-reference-outside-pack
-similarity-registration-invalid
-similarity-registration-members
-similarity-registration-mode
-similarity-registration-observation-mismatch
-similarity-root-not-configured
-similarity-sample-arrays
-similarity-sample-count
-similarity-sample-id
-similarity-samples-changed
-similarity-shared-provider-unavailable
-similarity-winning-floor-unavailable
-single
-single-canonical-geometry-pose
-single-consumer-rejection-not-final-cycle-outcome
-single-frame-lock-already-ready
-single-frame-position-jump
-single-live-component-cannot-authorize-recenter
-single-map
-single-neck-room
-single-round-layer-group
-singleton
-singular-transform
-size
-skeleton
-skipped
-skipped-pose-failed
-slant
-snapshot
-snapshot-linked-ancestor
-snapshot-root-must-be-canonical-absolute
-snapshot-wrapper-already-installed
-socket.
-socket.bind
-socket.connect
-socket.getaddrinfo
-solve
-solve_initial_structure
-source
-source-candidate-store-unavailable
-source-client-size-unavailable
-source-commit-prefix
-source-display-signature-changed
-source-exit-direction-incompatible
-source-feature-cache-unavailable
-source-frame-or-group-generation-changed
-source-interpreter-not-package
-source-inventory-incomplete
-source-marker-provisional
-source-present
-source-projection-invalid
-source-refresh
-source-root
-source-sheet-binding-unavailable
-source-structure
-source-structure-
-source-structure-binding-commit-failed
-source-structure-binding-unavailable
-source-structure-competitor-ambiguous
-source-structure-current-frame-unverified
-source-structure-current-frame-verified
-source-structure-feature-scale-invalid
-source-structure-game-floor-unsupported
-source-structure-group-heldout-variant-provisional
-source-structure-group-mismatch
-source-structure-heldout
-source-structure-heldout-after-refinement-rejected
-source-structure-heldout-current-frame
-source-structure-heldout-features
-source-structure-heldout-insufficient
-source-structure-heldout-points-unavailable
-source-structure-heldout-rejected
-source-structure-heldout-unique
-source-structure-identity-rejected
-source-structure-identity-unavailable
-source-structure-no-heldout-match
-source-structure-pose-disagrees-with-current-frame
-source-structure-proposed-pose-invalid
-source-structure-rendered-profile-unverified
-source-structure-same-source-png-pixels
-source-structure-search-incomplete
-source-structure-shared-initial-unavailable
-source-structure-shared-initial-verified
-source-structure-sheet-ambiguous
-source-structure-sift
-source-structure-support-degenerate
-source-structure-to-client
-source-structure-transform-invalid
-source-structure-visible-variant-selected
-source:
-source_candidates
-source_mask
-source_nodes
-source_shape
-source_size
-source_wall_mask
-sources
-space
-spacing
-sparse-shared-structure
-sparse-structure-author-unverified
-sparse-structure-resource-mismatch
-spatial-live-evidence-disagreement
-spatial-outline-ambiguous
-spatial-outline-confirmed
-spatial-outline-plus-live-exemplar
-spatial-route
-speed
-square
-st_file_attributes
-st_nlink
-stable
-stable-local
-stable-overlap-reuse
-stable-pose-preserved
-stack
-stacks.txt
-stage
-stages
-staging-
-stair-pattern
-stair-portal-ambiguous
-stair-portal-current-frame
-stair-portal-current-frame-enumeration
-stair-portal-current-frame-evidence-insufficient
-stair-portal-current-frame-residual-failed
-stair-portal-endpoint-not-observed
-stair-portal-no-visible-target-structure
-stair-portals
-stair-room
-stair_portal_seed_matrix
-stair_portals
-stairs
-stale
-stale-context
-stale-current-frame-result
-stale-display-settings
-stale-group-choice-intent
-stale-hidden
-stale-or-invalid-capture-time
-stale-requeue
-stale-worker-failure
-standard
-star-map-
-star-map-import-helper.exe
-star-map-recovery-helper
-star-map-recovery-helper.exe
-star-maps-difficult-zhan10-native58-legacy2-20261027-r6.zip
-star-maps-nightmare-nightingale-20261027-r1.zip
-star-maps-nightmare-suju-20261027-r1.zip
-star-maps-nightmare-wang-qingxin-20261027-r1.zip
-star_map_import
-start
-start-or-close-failed
-start-round
-start-round-before-confirming-map
-start_hotkey_recording
-start_identityv_assistant.ps1
-start_round
-starting
-starts
-startup
-startup-error-
-startup-recovery-cancel-unconfirmed
-startup-recovery-confirmation-unavailable
-startup-recovery-plan-blocked
-startup-recovery-plan-invalid
-startup-snapshot
-startup_resource_error
-stat
-state
-state-change
-states
-static-floor-sheet-visible
-static-point-pairs-insufficient
-static-point-query-empty
-static-structure
-stats
-status
-status-pill
-status-window-destroy-failed
-steps
-sticky
-stop
-stop_round
-stopped
-storage
-storage-absent
-storage-lock-unavailable
-storage-redirected
-storage-saved
-store_true
-strategy
-strict
-strict-first-two-session-identity
-strict-window-paused
-strict-window-resumed
-strict-window-resumed-during-onboarding
-strict-window-session-identity
-strips
-structural
-structural-base-render-not-axis-locked
-structural-current-frame-residual-failed
-structural-landmark-ambiguity
-structural-landmark-inconsistent
-structural-landmarks
-structural-landmarks-insufficient
-structural-mask-unavailable
-structural-query-too-sparse
-structural-recovery-v2
-structural-target-invalid
-structural-translation-out-of-bounds
-structural-validation-mask-unavailable
-structure
-structure-ambiguous
-structure-blend
-structure-clean-resource-unavailable
-structure-current-geometry-failed
-structure-index-size-unsupported
-structure-no-reliable-scale
-structure-query-no-corners
-structure-query-unavailable
-structure-reference
-structure-semantic-equivalent-capture
-structure-solver
-structure-validation-resource-unavailable
-structure-work-obsolete
-structure_current_map_evidence
-structure_store
-style
-subpixel-accumulator
-success
-success_snapshot_keys
-successful-worker-current-frame-rejected
-suju
-suju-speed-difficult
-suju-speed-nightmare
-summary
-superseded
-superseded-or-cancelled
-support
-support_coverage
-support_spread
-supported
-surface-error
-surface-generation-mismatch
-surface-state
-surface-visibility-generation-changed
-surface_visibility_generation
-suspend
-suspended
-switch_front_provisional_member
-sx
-sy
-symbolic-ref
-sync_game_mode
-sync_managed_packages
-sync_map_package_import
-sync_online_packages
-sync_route_selection
-synthetic
-system
-system-aware-fallback
-take_pointer_events
-target
-target-changed-during-import
-target-client-size-invalid
-target-current-pose-awaiting-material
-target-failed-current-source-preserved
-target-floor-relation-calibration-rejected
-target-floor-relation-wide
-target-material-invalid
-target-material-ready
-target-material-rejected
-target-material-replaced
-target-material-timeout
-target-outside-root
-target-route-material-unavailable
-target-stair-enumeration-locked-linear
-target_nodes
-target_shape
-targets
-task_status
-taxonomy
-taxonomy:
-teleport
-temp
-temporal
-temporal-dense-held-out-edges
-temporal-geometry-author-adapter-singular
-temporal-geometry-author-adapter-unavailable
-temporal-geometry-basis-incompatible
-temporal-geometry-observation-basis-uncommitted
-temporal-geometry-observation-missing
-temporal-geometry-pose-missing
-temporal-mask-author-adapter-singular
-temporal-mask-author-adapter-unavailable
-temporal-mask-backward-flow-unavailable
-temporal-mask-current-frame-verified
-temporal-mask-forward-flow-unavailable
-temporal-mask-observation-missing
-temporal-mask-pairs-insufficient
-temporal-mask-profile-incompatible
-temporal-mask-recovery-v2
-temporal-mask-translation-not-proven
-temporal-scale-current-frame-verified
-temporal-scale-recovery-v2
-temporal-side-door-evidence
-temporal-translation-current-frame-verified
-temporal-translation-recovery-v2
-temporal-translation-scale-unresolved
-temporal_fit
-temporary-file-object-changed
-termination
-text
-thread-stacks-
-threads
-thresholds
-thumb
-tier
-tilemap-entry-candidates
-tilemap-entry-neighborhood-current-frame
-tilemap-entry-verified
-tilemap_entries
-tilemap_root
-time
-timeout
-timestamp
-timestamputc
-tinted-map-controls-unlocalized
-title
-tk
-tk.update_idletasks
-to
-toggle
-toggle-panel
-toggle-round
-toggle-sheet-visibility
-toggle_reference_sheet_visibility
-toggle_round
-toggle_sheet_visibility
-token
-token-info-
-token-size-
-tolist
-top
-top-left
-top-left-right
-top-right
-toplevel
-toplevel_lift
-topology
-total
-trace
-traceback
-tracked
-tracker
-tracking
-tracking_floor
-transaction-not-terminal
-transform-bounds
-transient
-transient-floor-projection
-transient-probe-expired
-transient-probe-unavailable
-transient-projection-unavailable
-transient-source-or-linear-change
-translation
-translation-only
-transparent-display
-transparent-display-overlay-built
-transparent-display-ready
-transparent-display-resource-unavailable
-transparent-display-unavailable
-transparent_display_resources
-tree
-true
-truncated
-trusted-b1-cache-not-eligible
-trusted-b1-local-fast
-trusted-b1-local-fast-retry
-trusted-b1-local-only
-trusted-b1-tiny-commit-rejected
-trusted-b1-tiny-current-frame-verified
-trusted-b1-tiny-display-rejected
-trusted-b1-tiny-matrix-missing
-trusted-b1-tiny-refiner-error
-trusted-b1-tiny-refiner-missing
-trusted-b1-tiny-render-failed
-trusted-b1-tiny-reopen
-trusted-b1-tiny-reopen-committed
-trusted-b1-tiny-reopen-deferred
-trusted-b1-tiny-reopen:
-trusted-b1-tiny-residual-not-display-precise
-trusted-b1-tiny-result-stale
-trusted-b1-tiny-translation-out-of-range
-truth-calibrated-scale-translation
-turns
-two
-two-distinct-stair-observations-required
-two-floor-controls-not-visible
-two-floor-glyphs-visible
-two-floor-highlight-ambiguous
-two-floor-highlight-clipped
-two-floor-scale-ambiguous
-two-stair-group-translation-ambiguous
-two-stair-group-translation-verified
-tx
-ty
-type
-typed-product-unavailable:
-typed-reference-canvas-footprint
-typed-shared-structure-display
-typed-shared-structure-validation-mask
-u
-uc
-ui
-ui-action-background-enqueued
-ui-action-cancelled
-ui-action-completion-queued
-ui-action-failed
-ui-action-first-trusted-content
-ui-action-settle
-ui-action-settled
-ui-action-stale-rejected
-ui-action-visual-confirmed
-ui-adjudication
-ui-audit.json
-ui-event-handler-slow
-ui-event-poll-error
-ui-event-poll-slow
-ui-frame-budget-drained
-ui-roi
-ui-settings.json
-ui-smoke
-ui-smoke-restart
-ui_action_fallback_scheduled
-ui_action_first_content_at
-ui_action_tokens
-ui_actions
-ui_dpi
-ui_environment_poll_after_id
-ui_frame_queue
-ui_layout_after_id
-ui_monitors
-ui_scale
-ui_sound
-ui_sound_enabled
-ui_tokens
-ui_topology_signature
-unavailable
-unavailable:
-uncertain
-unchanged-trace-coalesced
-unclassified-reason
-unconfirmed
-unconfirmed-identity-changed-frame-retry
-unconfirmed-identity-rank-error
-unexpected-http-response
-unique
-unique-containment-and-held-out-terrain-points
-unique-exit-anchor-disagrees-with-structure
-unique-exit-icon
-unique-physical-geometry
-unique-room-outline-matched
-unique-room-unavailable
-unit
-units
-unknown
-unknown-action
-unknown-backend
-unknown-control-layout-preset
-unknown-directory
-unknown-floor-entrance
-unknown-history-file
-unknown-map-or-floor
-unknown-object
-unknown-operation-failure
-unknown-package
-unknown-package-id
-unknown_mask
-unlocalized
-unlocked-floor-required
-unlocked-ranked-candidates-ready
-unlocked-ranking-uncertain
-unmanaged
-unrecognized
-unrecognized-history-object
-unrecognized-installed-package-receipt
-unregistered
-unsafe
-unsafe-path
-unsafe-windows-path
-unsupported
-unsupported-action
-unsupported-archive-entry
-unsupported-author-package
-unsupported-client-compatibility
-unsupported-client-version
-unsupported-floor
-unsupported-import-schema
-unsupported-index-schema
-unsupported-mode
-unsupported-mode-or-floor
-unsupported-modifier
-unsupported-narrow
-unsupported-package-version
-unsupported-perspective
-unsupported-route-channel-count
-unsupported-small
-unsupported-source
-unsupported-without-native-semantics
-untrusted
-unverified
-unverified-clamp-only
-unverified-initialization-only
-unwitnessed
-up
-update-available
-update-state.json
-update_dispatch
-update_idletasks
-update_pointer_target
-upgrade
-upgrade-backup-object-changed
-upgrade-cache-object-changed
-upgrade-cleanup-available
-upgrade-cleanup-cache-changed
-upgrade-cleanup-incomplete
-upgrade-cleanup-inventory-limit
-upgrade-cleanup-metadata-changed
-upgrade-cleanup-not-terminal
-upgrade-cleanup-object-changed
-upgrade-cleanup-owned-file-unavailable
-upgrade-cleanup-pending
-upgrade-cleanup-private-directory-changed
-upgrade-cleanup-unknown-object
-upgrade-committed
-upgrade-data-changed-before-receipt-publication
-upgrade-entry-not-in-inventory
-upgrade-expanded-size-limit
-upgrade-history-unknown-object
-upgrade-metadata-too-large
-upgrade-missing-entry-has-old-identity
-upgrade-missing-target-now-exists
-upgrade-new-receipt-mismatch
-upgrade-old-entry-path-mismatch
-upgrade-old-receipt-changed
-upgrade-old-receipt-package-mismatch
-upgrade-old-receipt-unavailable-or-changed
-upgrade-owned-target-changed-before-backup
-upgrade-owned-target-could-not-be-moved
-upgrade-owned-target-not-exclusively-readable
-upgrade-owned-target-rename-failed
-upgrade-path-not-in-data-allowlist
-upgrade-pointer-source-changed
-upgrade-published-object-changed
-upgrade-receipt-entry-mismatch
-upgrade-receipt-entry-missing
-upgrade-receipt.json
-upgrade-recovery-required
-upgrade-replacement-not-owned-by-old-receipt
-upgrade-retained-new-object-changed
-upgrade-retired-directory-changed
-upgrade-retired-summary-cleanup-failed
-upgrade-staged-data-changed
-upgrade-transaction-no-longer-rollbackable
-upgrade-transaction-retired
-upgraded-restart-required
-upper
-urgent_events
-url
-url-credentials-fragment-or-host-invalid
-usable
-usable-pool-too-small
-usage
-user-approved-multi-anchor-consensus
-user-approved-three-room-live-test
-user-cancelled
-user-hidden
-user-rejected-alignment
-user-visual-accepted
-user-visual-rejected
-user32
-utf-16-le
-utf-8
-utf-8-sig
-utf8
-v
-v2-atomic-commit-failed
-v2-candidate-frame-stale
-v2-commit-context-stale
-v2-compositor-rejected
-v2-current-frame
-v2-current-frame-local-failure
-v2-disabled
-v2-event-candidate
-v2-first-pose-no-result
-v2-first-pose-sensor-error:
-v2-overlay-build-failed
-v2-post-commit-current-frame-failed
-v2-render-input-missing
-v2-sensor-failure-suppressed
-v2-sensor-pending
-v2-sensor-start-failed
-v2-worker-cross-floor-relation
-v2-worker-dynamic-anchor
-v2-worker-local-revalidate
-valid
-validate-profile
-validated
-validation
-validation-geometry-unavailable
-validation_mask
-value
-values
-variant
-variant-01
-variant-02
-variant_id
-variants
-vendor
-verification
-verified
-verified-before-capture
-verified-by-capture
-verified-display
-verified-display-commit-failed
-verified-entry-current-frame
-verified-for-capture
-verified-frame-local-translation
-verified-group-relocalization:
-verified-history-
-verified-live
-verified-live-profile
-verified-near-pass-local-refinement
-verified-open-cycle-consecutive-negative-evidence
-verified-physical-to-logical
-verified_member_id
-verify
-verify_existing_pose
-verify_source_structure_pose
-version
-version-and-short-fingerprint-only
-version.json
-versions
-vertical
-vertical-door-at-bottom-end
-vertical-door-at-top-end
-vertical-door-not-at-end
-via
-view-hidden
-viewable
-visibility
-visibility-requested
-visibility-toggled
-visibility_guard
-visible
-visible-map-component-unavailable
-visible-map-envelope
-visible-map-missing
-visible_override
-vision-index.json
-visual-anchor-translation
-visual-confirmed
-visual-evidence
-visual-map-motion
-visual-probe
-vk
-votes
-w
-waiting
-waiting-fit
-waiting-for-exit
-waiting-game
-waiting-map
-wall-fit-then-author
-wall-native-uniform-scale
-wall-refinement-disjoint-spread-insufficient
-wall-refinement-disjoint-support-insufficient
-wall-scale-axis-model-unavailable
-wall-scale-disjoint-spread-insufficient
-wall-scale-disjoint-support-insufficient
-wall-similarity-held-out
-wall-similarity-then-author
-walls
-wang-qingxin
-wang-qingxin-nightmare-v1
-warning
-warnings
-wb
-webp
-wechat
-wechat.png
-weight
-white
-whole-structure-and-author
-whole-structure-and-shared-structure
-whole-visible-map-shape
-wide
-wide-success-return-to-local-fast
-wide-translation-position-not-unique
-widget
-width
-win32
-window
-window-destroyed
-window-destroyed-during-check
-window-geometry-unverified
-window-pid-changed
-window-pid-changed-during-check
-window-pid-unavailable
-window-title-unavailable
-window_process_id
-windowed
-windows
-windows-build-too-old
-windows-default
-windows-helper-required
-windows-locked-publication-required
-windows-scale-outside-verified-range
-winerror
-winfo
-wins
-withdraw
-withdrawn
-within3
-within6
-wm
-wm_attributes
-wm_geometry
-work
-work_area
-worker
-worker-current-frame-fit
-worker-end
-worker-error
-worker-owned-frame
-worker-rendered-profile-unverified
-worker-start
-working
-wparam
-wraplength
-write
-write-error-backoff
-write-failed
-writer-closed
-wrong-canonical-pack
-x
-xb
-xingtu-base-repair-retired-v1
-xingtu-base-repair-v1
-xingtu-chest-auto-tap-v1
-xingtu-custom-gallery-v1
-xingtu-custom-maps-v1
-xingtu-custom-routes-v1
-xingtu-managed-base-v1
-xingtu-owned-import-audit-v1
-xingtu-package-identity-v1
-xingtu-qt-client-diagnostics-v1
-xingtu-resource-recovery-request-v1
-xingtu-round.png
-xingtu-square.png
-xingtu-update-check
-xingtu.problems
-xingtuqtclienttest.exe
-y
-yes
-zero-geometry-foreground-fit-skipped
-zero-target-floor-geometry
-zhan10
-zhan10-coffin
-zhan10-first
-zhan10-first-audit.json
-zhan10-nightmare
-zhan10-original-scale-global-coordinate-candidate
-zhan10-speed
-zhan10-transport-human-reviewed
-zhan10_coffin_variant_id
-zoomed
-""".split())
-MODULES = frozenset("""
-alignment_core_v2.py
-alignment_observation.py
-alignment_pose_transaction.py
-alignment_structure_dispatch.py
-async_event_log.py
-author_display_policy.py
-author_package_management.py
-author_route_catalog.py
-author_structure_resources.py
-b1_relocalization.py
-base_display_integration.py
-base_map_display.py
-calibration_memory.py
-chest_auto_tap.py
-client_capture.py
-client_capture_exclusion.py
-client_chest_auto_tap.py
-client_control_layout.py
-client_control_snap.py
-client_coordinator.py
-client_custom_display.py
-client_custom_gallery.py
-client_downloads.py
-client_engine.py
-client_failure_samples.py
-client_game_focus.py
-client_group_member_choice.py
-client_group_registry.py
-client_idvb0059_adapter.py
-client_import_handoff.py
-client_info.py
-client_input.py
-client_input_diagnostics.py
-client_known_floor_recovery.py
-client_learning.py
-client_lifecycle.py
-client_lifecycle_trace.py
-client_live_runtime.py
-client_map_input.py
-client_native_keys.py
-client_native_mouse.py
-client_onboarding.py
-client_package_manager.py
-client_paths.py
-client_preparation_diagnostics.py
-client_preview.py
-client_problem_history.py
-client_problem_messages.py
-client_problems.py
-client_process_identity.py
-client_providers.py
-client_reference_presentation.py
-client_region_capture.py
-client_resource_errors.py
-client_resource_recovery.py
-client_resource_startup.py
-client_resource_startup_recovery.py
-client_resources.py
-client_route_preferences.py
-client_route_reprojection.py
-client_screen_geometry.py
-client_session.py
-client_settings.py
-client_single_instance.py
-client_space_geometry.py
-client_startup_cleanup.py
-client_theme.py
-client_ui_feedback.py
-client_window_binding.py
-client_windows.py
-control_layout.py
-control_layout_editor.py
-custom_map_editor.py
-custom_maps.py
-desktop_display.py
-desktop_icons.py
-desktop_lucide.py
-desktop_main_ui.py
-desktop_onboarding.py
-desktop_rounded.py
-desktop_theme.py
-desktop_toast.py
-diagnostic_evidence.py
-diagnostic_export.py
-diagnostic_identity.py
-difficult_entrance.py
-difficult_entry_identity.py
-difficult_grid.py
-difficult_map_ui.py
-difficult_mode.py
-difficult_native_context.py
-difficult_native_identity.py
-difficult_side_entry_identity.py
-difficult_structure.py
-failure_sampling.py
-fast_structure_alignment.py
-floor_observation_policy.py
-front_door_groups.py
-front_door_layout_recognition.py
-front_door_live_test.py
-front_door_recognition.py
-front_floor_structure.py
-front_gate_observation.py
-full_map_retrieval.py
-game_control_view.py
-game_window_focus.py
-hang_diagnostics.py
-hotkey_bindings.py
-hotkey_keys.py
-identityv_daily_assistant.py
-identityv_front_live_test.py
-identityv_live_mvp.py
-identityv_test_button.py
-idvb0059_display.py
-idvb0059_runtime.py
-idvb0059_steady.py
-legacy_author_inventory.py
-live_exemplar_retrieval.py
-managed_base_resources.py
-map_close_control.py
-map_identity_engine.py
-map_interface_observation.py
-map_observation.py
-map_open_preparation.py
-map_overlay_prototype.py
-map_package_recovery_plan.py
-map_package_removal.py
-map_package_upgrade.py
-map_pointer_policy.py
-map_ready_window.py
-map_resource_browser.py
-map_resource_context.py
-map_resource_model.py
-map_resource_overview.py
-map_resources_page.py
-marked_map_retrieval.py
-multipoint_map_overlay.py
-native_resource_validation.py
-native_sibling_transaction.py
-native_similarity_groups.py
-native_static_corner_registration.py
-native_ui_layout.py
-nightmare_author_coordinate_adapter.py
-nightmare_b1_unique_room.py
-nightmare_candidate.py
-nightmare_floor_coordinates.py
-nightmare_semantic_identity.py
-nightmare_stair_portal.py
-nightmare_structure_signature.py
-opacity_controls.py
-optional_author_displays.py
-orb_visual.py
-package_identity.py
-packaged_product_identity.py
-qt_startup_diagnostics.py
-recognition_diagnostics.py
-reference_position_editor.py
-release_identity.py
-resource_transaction.py
-resource_validation_lane.py
-round_layer_group.py
-round_layer_group_commit.py
-route_display_notice.py
-route_status_window.py
-runtime_environment_diagnostics.py
-runtime_map_recognition.py
-runtime_timeline.py
-session_state_machine.py
-shared_structure_context.py
-shared_structure_reference.py
-side_door_recognition.py
-side_entry_geometry.py
-side_entry_search.py
-single_map_structure.py
-sparse_floor_structure.py
-spatial_outline_retrieval.py
-star_brand.py
-star_map_download.py
-star_map_import.py
-star_map_import_helper.py
-star_map_recovery_helper.py
-support_window.py
-transparent_display_resources.py
-ui_action_state.py
-ui_import_audit.py
-ui_interaction_profile.py
-ui_packaged_audit.py
-update_service.py
-voice_navigation_prototype.py
+ALT Accent Accept AlternateBase B1 BACKSPACE BadZipFile Base
+BrightText Button ButtonText CAPS CAPSLOCK CONTROL CTRL ConnectionError
+DEL DELETE DOWN Dark DesktopMainUI E END ENTER
+Enter GameControlView HOME High Highlight HighlightedText HotkeyEditorView IDENTITYV_AUTHOR_ROUTE_ASSET_ROOT
+IDENTITYV_AUTHOR_STRUCTURE_INDEX IDENTITYV_AUTHOR_STRUCTURE_ROOT IDENTITYV_COORDINATE_ADAPTERS_PATH IDENTITYV_DIFFICULT_MAPS IDENTITYV_DIFFICULT_NATIVE_ROOT IDENTITYV_FAST_ALIGNMENT IDENTITYV_IDVB0059_STEADY IDENTITYV_LEGACY_ASSETS_ROOT
+IDENTITYV_NIGHTMARE_LIVE_ROOT IDENTITYV_NIGHTMARE_MAPS IDENTITYV_NIGHTMARE_MEMORY_ROOT IDENTITYV_NIGHTMARE_RESOURCE_ROOT IDENTITYV_REOPEN_DISPLAY_CACHE IDENTITYV_REOPEN_FAST_CAPTURE IDENTITYV_SHARED_STRUCTURE_INDEX IDENTITYV_SHARED_STRUCTURE_ROOT
+INS INSERT L2gradient LEFT LOCALAPPDATA Light Link LinkVisited
+Location Low MEDIA_NEXT MEDIA_PLAY_PAUSE MEDIA_PREV MEDIA_STOP MOUSE2 MOUSE3
+MOUSE4 MOUSE5 MapResourceBrowser MapResourcesPage Medium MediumPlus Mid Midlight
+N NIGHTMARE_ALIGNMENT_SOLVER NIGHTMARE_DEBUG_FEEDBACK NUMLOCK NUM_SEPARATOR OSError PAGEDOWN PAGEUP
+PAUSE PGDN PGUP PRINTSCREEN PRTSC PermissionError PlaceholderText RBUTTON
+RETURN RIGHT RIGHTBUTTON S SCROLLLOCK SHIFT SPACE STAR_MAP_PACKAGE_INDEX_URL
+Shadow Space System TAB Tab Text TimeoutError ToolTipBase
+ToolTipText UP Untrusted VOLUME_DOWN VOLUME_MUTE VOLUME_UP W Window
+WindowDisplay WindowText XBUTTON1 XBUTTON2 XINGTU_CUSTOM_MAPS_ROOT XINGTU_UPDATE_HISTORY_URL XINGTU_UPDATE_MANIFEST_URL _active_round_layer_group
+_aligned_author_route_image _alignment_v2_current_frame_equivalent _alignment_v2_failed_input_unchanged _alignment_v2_show_overlay _allow_scale_recovery _backend _brown _checkpoint_count
+_context _coverage _discard_rejected_details _effective_route_profile _entry_validation_context _established_members _expected_archive _fit_only
+_initial_projection _initial_regions _log _log_core_chain_event _mark_overlay_display_verified _native_group_conflicts _native_similarity_resources_ready _open_cycle_transient_motion_active
+_precomputed_observation _raw _reuse_floor_color_mask _round_group_floor_view _route_cache _samples _shared_display_bridge _shared_display_layer
+_shared_structure_mode_enabled _signature _source_lines _spatial_route_surface_is_visible _v2WorkerBaseCanonical _v2WorkerBaseRender _v2WorkerCrossFloor _v2WorkerRenderMatrix
+_v2WorkerRoute _v2WorkerStructural _v2WorkerStructuralAmbiguity _v2WorkerStructuralLandmarks _v2WorkerValidationMatrix _variants a absoluteDx
+absoluteDy absolutePath absoluteScoreMin accelerator acceptanceProfile accepted acceptedAsEvidence acceptedAt
+acceptedByCurrentBinding acceptedCandidateCount acceptedCount acceptedFloorCount acceptedFrameGeneration acceptedMapId acceptedMapIds acceptedPointCount
+acceptedPoseCount acceptedPriorAvailable acceptedPriorScale acceptedPriorUsed accepted_prior accepts accumulatedDiscriminativeEvidence accumulator
+acquire_current action actionHotkeyFieldCount actionHotkeys actionMs action_label activation_key_suppressed active
+activeAlignmentRequestId activeConfirmation activeCorrectionGeneration activeCycleId activeDomainIds activeFloor activeFrameGeneration activeObservation
+activePackageId activeResetGeneration activeViews active_map_cycle_id activebackground activeforeground actual actualBytes
+actualConstructor actualFloor actualSha256 actualSize adaptationGated adaptationPolicy adapterConnected adapterUsed
+adapters adaptive add added additionTransactionId additions adjacentPairs adjustedAlpha
+adjusting advance_frame advanced_targets advisoryOnly affine after agreement algebraicallyExact
+algorithm aligned alignedOpacity alignedOverlayEligible alignedOverlayVisible alignedVisible alignedWindow aligned_overlay_eligible
+aligned_window alignment alignmentCommitted alignmentGeneration alignmentInProgress alignmentMode alignmentModel alignmentReady
+alignmentRequestGeneration alignmentRequestId alignmentStatus alignmentV2Candidate alignmentV2NextTracker alignmentV2WorkerB1UniqueRoom alignmentV2WorkerBaseCanonical alignmentV2WorkerBaseRender
+alignmentV2WorkerCrossFloor alignmentV2WorkerDynamicMotion alignmentV2WorkerDynamicTarget alignmentV2WorkerExplicit alignmentV2WorkerFit alignmentV2WorkerNextTracker alignmentV2WorkerRecoveryFit alignmentV2WorkerRenderMatrix
+alignmentV2WorkerRoute alignmentV2WorkerRouteProfileId alignmentV2WorkerSiblingCoordinateBasis alignmentV2WorkerSiblingSharedSeed alignmentV2WorkerSiblingSourceMember alignmentV2WorkerStructural alignmentV2WorkerStructuralAmbiguity alignmentV2WorkerStructuralLandmarks
+alignmentV2WorkerValidationMatrix alignment_core_v2 alignment_succeeded alipay alive allObservedExits all_profiles all_screens
+all_threads allowWideFallback allow_clear allow_containment allow_expansion allow_nan allow_pickle allow_provisional_variant
+allow_scale_recovery allow_unusual_scales allow_wide_fallback allowed allowedExitSides allowedRatio allowed_read_root along0
+along1 alpha alreadyConfirmed alreadyInstalled alreadyPresent already_attempted alternate alternative
+ambiguity ambiguousCount ambiguousGroups ambiguousViews ancestorSnapshot anchor anchorAgeMs anchorAlignmentErrorPx
+anchorBottomPosition anchorCandidateAttempts anchorCapacity anchorCenter anchorCount anchorDistinctMargin anchorFloor anchorGeometry
+anchorKind anchorOffset anchorPairs anchorPolicy anchorPoolKeys anchorPoolPresent anchorPoolPreserved anchorPoolRefreshed
+anchorRatios anchorReason anchorScale anchorScore anchorSelection anchorSize anchorTargetCount anchorValidation
+anchor_age_ms anchor_count anchor_floor anchor_kind anchor_rect anchor_size anchor_supported anchors
+anchors_before angleErrorDegrees animate anisotropy annotated_reference announce apertureMargin apertureSize
+api appVersion app_version appearance applicable application_idle application_stopped applied
+apply apply_target approach approachContrast approachStrength approvedForRuntimeDirectProjection archive archiveName
+archiveSha256 area areaRatio args arrowcolor aspect aspectDifference aspectLogError
+aspectRatio aspect_ratio asset assetOverride assetSourceDisplayName assetSourceId asset_base asset_root
+assistantIntegrity assistant_foreground assumptions at atEvidenceFrame atlasVerified atol attempt
+attemptConsumed attemptId attemptScope attempted attempted_token attempts audience authentication
+author authorBindings authorDisplay authorDisplayRequired authorError authorFilesAdded authorFilesAlreadyPresent authorFilesReplaced
+authorGeometryErrorUnchanged authorLayerCount authorReference authorResource authorRoute authorRouteDecodeCalls authorRouteDisplayAllowed authorRouteEligible
+authorSparseExitContainmentVerified authorStatus authorVisible author_coordinate_adapters author_name author_profile_id author_status author_visible_provider
+authoritative authorization authorizationId authorizationMatches authorization_id authorization_profile_id authorized authorizedTranslationLimit
+authorizesCrossFloorDisplay authorizesCrossFloorProjection authorizesDirectDisplay authorizesDisplay authorizesIdentity authorizesMapIdentity authorizesPose authorizesRoot
+autoImport autoPanUpdates automatic automaticCandidate automaticCandidateRows automaticFailureEvidence automaticFallbackDisabled automaticFloor
+automaticGateDetection automaticMapLockAllowed automaticMapSubmissionAllowed automaticMapSubmissionScope automatic_failure_only automatic_only available availableCommands
+availableEntryCount availableFloors availableGeometry availableLayerImages availableObservationAtWorkerStart availableRect availableVisualEvidence available_rect_px
+awaitingObservation axis b b1Policy b1RecoveryEvidence b1RecoveryMode b1RecoveryPolicy b1RecoveryReason
+b1TeleportPolicy b1TransitionEvidence b1UniqueRoomRefinement backdrop backdropRatio backdropTexture backend background
+backgroundRevalidated backupCount backupPath badHashes bars base baseCandidate baseClientWidth
+baseGroupGeneration baseMatrix baseMouseDragPreviewOffset baseOffset baseOpenCycleDragOffset baseOpenCycleZoomTransform basePoseGeneration basePoseRootFingerprint
+baseRenderMatrix baseResidual baseResourceKey baseScore baseSeedRevision baseSnapshot baseToNativeIsIdentity base_canonical
+base_render baselineRebased baselineRefreshed basis bbox bd before beforeDeadline
+before_publish best bestCandidates bestInliers bestLearned bestMemorySemantic bestScore beta
+bg bidirectional binding bindingSuspended binding_provider bindings bitmapBuildCount bitmapReuseCount
+blockSize blocked blockedPaths blocking blocksSharedProjection body bold border
+borderMode borderType borderValue bordercolor borderwidth bottom bottomControls bottomPosition
+boundIdentity boundWindow bound_identity boundary boundaryExpanded boundedCorrectionStarted boundedCrossFloorOnly boundedLocalFirst
+boundedWideFallback bounds boundsClient bounds_px branchStrengths branches brightPixels brightRatio
+brightnessDeviation brown budgetExhausted budgetMs budgetOverrunMs budgetSeconds budget_exhausted budget_ms
+budget_overrun_ms budget_seconds buildFingerprint buildFingerprintConsistent buildMode build_fingerprint builtAt bundleId
+busy button buttons_relevant by_id byteLimitReached bytes bytesRead cache_candidate
+cache_key cachedArchives cachedGeneration cachedSeedRevalidated calculationMs calibrated calibration calibrationProvenance
+calibrationStatus callSite callback callbackMs caller calls canAdjust canCancel
+canCheck canClear canConfirm canDownload canEdit canFinish canHide canImport
+canRecord canRedo canRemove canShow canUndo canUse cancel cancel_event
+cancel_futures cancel_path cancel_reference_sheet_move cancellable cancelled candidate candidateActionsEnabled candidateAttempts
+candidateCount candidateDiagnostics candidateEditMode candidateEditModePreserved candidateFlowHiddenWhenLocked candidateId candidateLabel candidateMapId
+candidateMapIds candidateMapIndexRows candidateMemberId candidateName candidateNormalized candidateNormals candidateOnly candidatePairs
+candidatePoolAfterDirectionCount candidatePoolAfterSecondaryCount candidatePoolBeforeCount candidatePoolDirection candidatePoolDirectionReliable candidatePoolDirectionSupported candidatePoolFallbackReason candidatePoolFallbackUsed
+candidatePoolMetrics candidatePoolPruningApplied candidatePoolScored candidatePoolSecondaryStage candidatePoolSideDoorStageReady candidatePreviewPath candidateReason candidateReasons
+candidateRetained candidateRows candidateShellAutoOpened candidateSourceFrameGeneration candidate_map_id candidate_map_ids candidates canonical
+canonicalCrossFloorSearchCandidates canonicalFloor canonicalGeometryAccepted canonicalGeometryReference canonicalGeometryVerifiedFloors canonicalGeometryWideRefinement canonicalMatrix canonicalMatrixSourceToClient
+canonicalPackId canonical_geometry_verified canonical_matrix canonical_matrix_source_to_client canonical_profile_id canvas canvasVisiblePixels capabilities
+capstyle caption capture captureAttempts captureCapability captureContext captureDiagnostics captureEnabled
+captureErrors captureGeneration captureInProgress captureIntent captureMs captureReason captureRequired captureSeconds
+captureSize captureStartFrameGeneration captureStartedAt captureToken captureWorkerTotal capture_attempts capture_context_provider capture_generation
+capture_now capture_snapshot capture_start_frame_generation captured capturedAt capturedBeforeCommit capturedMonotonicAt captured_at
+captured_at_utc captures cases catalog catalog_path cell cells center
+centerClient centerDistance centerDistancePx centerErrorLimitPixels centerErrorPixels centerProjectionError centerSource centers
+chain chainCount chains chamferQuality changeScore change_reference_opacity change_sheet_opacity changed
+changes check checked checkedLayerCount checking checkpointMeaning checks chevron
+children choiceAction choiceApplied choices circularity class classification clean
+cleanEntryCount cleanMaskSha256 cleanRecognitionProfileId cleanRecognitionReferenceUsed cleanReferenceCount cleanReferenceUsed cleanResourceLoadCalls cleanSources
+cleanStructureDescriptorCounts clean_sources cleanup cleanupComplete cleanupOnly cleanupStatus clear_confirmation clear_floor_required
+clear_game_intent clear_pending clickThrough clickedFloor clickedFloorId client clientAspect clientBounds
+clientCompatibility clientCoordinatePolicies clientDc clientFootprint clientHeight clientOffset clientOrigin clientSize
+clientWidth clientWidthRatio client_bounds client_offset client_origin client_shape clipBounds clipLimit
+clip_bounds clock closeButton closeControlHit closeReady close_allowed close_fds close_kernel_size
+closed closedCache closing clusterMatches coalesce_key coalesced coalescedInputSamples coalesced_inputs
+coalesced_samples coarsePeakScore coarsePoints coarseSearchElapsedMs coarseSearchScale coarseTranslationCorrection coarse_motion_hint code
+coffinVariantVisible collapse_control collapsed collectionStatus collectionTime color colorConsistency colors
+column columnspan combinedSensor combo command commands commit commit_core
+commit_group committed commonRenderedStructureResidual commonScale common_scale compactDock compactPosition compactWindowAnchor
+compact_min_height companyName comparedFraction compatibleCornerPairs compatibleFrames compatibleStructureVariants competingWins competitionComplete
+competitions competitiveHypotheses competitors complete completeCoordinatePlaneAcrossFloors completeDisplaySet completeForeignMapCompetition completeHistory
+completeSheetVisible completed completedAt completedAtUTC completedObservation component componentBox componentShape
+component_override compositeOpen compositorMs compound compression compute_uv conditionComparisonComplete conditionId
+conditionObservations conditionReason condition_domains conditions confidence confident configurationError configuration_error
+configured configuredCandidateCount confirmRouteEnabled confirmText confirm_inline confirm_route confirmationCount confirmationFrames
+confirmed confirmedAt confirmedMapOnly confirmed_id confirmed_map_id conflict conflictCount conflictingHashCount
+conflictingViews conflictingWallAxes conflicts connectionPath consecutiveFailures consensusCornerMaxPixels consensusFrames consensusLead
+consensusSpread consistencyPixels consistencyScope constant consumed consumerKind containment containmentScore
+containmentSearch containsScreenshots containsUserPaths context contextAnchorDescriptor contextAnchorTopology contextPending context_provider
+continuation continuity continuousRefinementMs continuousRefinementReason continuousSolver continuousSolverMs contract contradicted
+contradiction contrast contrastSupportedEdges contrastThreshold control controlBounds controlCollapsed controlFloorText
+controlPoints controlScale controlStatusText controlVertical controlVisible controls conversion conversionError
+convertedFrom coordinate coordinateBasis coordinateBridge coordinateEvidence coordinateHeight coordinatePackId coordinateReferenceProfileId
+coordinateSpace coordinateWidth coordinate_pack_id coordinate_space coordinates coordinator copy copy_from
+core coreCanDisplay corners correctedLatestResidual correctedRenderMatrix correctedValidationMatrix correction correctionDx
+correctionDy correctionGeneration correctionPending correctionSelection correctionStarted correction_generation correction_pending correspondences
+cost count counts coverage coverageBasis coverageComplete coverageKey coverageState
+coverage_state coveredGridCells4x4 coveredQuadrants cpuMs create created createdAt createdAtUTC
+created_at creationTime creationflags criteria criticalLatencyMs cropBounds cropExtractor cropOffset
+cropPaddingRemoved cropProvenance cropRect crop_bounds crop_provenance cross crossCenteredness crossDomainScoresComparable
+crossEvidenceAgreement crossEvidenceConflict crossFloor crossFloorProjectionAllowed crossFloorProjectionPolicy crossFloorRelation crossFloorRelationAvailable crossFloorSearchCandidates
+crossFloorSeed crossFloorTransfers crossHi crossLo crossMapMargin crossMapRows crossMapTop crossOpenPoseContinuation
+crossOpenProgressivePoseSeed cross_end cross_floor cross_floor_seed cross_start cue cueDraft current
+currentBinding currentCandidateCount currentCenter currentCompetitionComplete currentCompetitionCompleteCount currentDisplayEpoch currentDisplaySignature currentFloor
+currentFloorAuthorizationRequired currentFloorAuthorized currentFloorFitOnlyCount currentFloorRelocalization currentFloorRelocalizationAttempted currentFloorStructureCompetition currentFrame currentFrameAuthorizationRequired
+currentFrameAuthorized currentFrameAvailable currentFrameCandidates currentFrameDisplayAuthorizationPending currentFrameDisplayPrecise currentFrameDisplayValidated currentFrameEquivalenceGate currentFrameEvidence
+currentFrameFitFallback currentFrameGeneration currentFrameGeometryFitRequired currentFramePoseSeed currentFrameRejection currentFrameRelocalizationRequired currentFrameResidual currentFrameResidualPending
+currentFrameResidualRequired currentFrameResidualVerified currentFrameRouteResidual currentFrameRouteResidualRequired currentFrameScaleObservation currentFrameSearchSeedAllowed currentFrameSeedValidation currentFrameSelectedRouteResidualRequired
+currentFrameValidationRequired currentFrameVerified currentGeneration currentGroupGeneration currentGroupMemberId currentIndices currentLabel currentMapId
+currentMidpoint currentPoseGeneration currentProbeGeneration currentProfileId currentScore currentSignature currentSurfaceVisibilityGeneration currentTargetFloorValidated
+currentToken currentTreads current_alignment_candidate current_bounds current_commit current_floor current_floor_authorized current_floor_relocalization
+current_frame current_frame_generation current_frame_residual_verified current_frame_verified current_rejection cursor custom cwd
+cycle cycleId cycle_id daemon dailyAssistantDefaultBehaviorChanged dailyAssistantSourceHookAdded dailyHardLimitApplied darkRatio
+darkRatioMin darkcolor dash dataError deadline deadlineAt deadlineSeconds deadline_at
+debug_feedback decision decisionElapsedMs decisionFromKeyMs decisionMode decisionThresholds decisions declaration
+declarationTrusted declaredCrossFloorPairCount declaredMissingNativeLayers dedicatedModeOnly default defaultEntryFloor defaultProfileId defaultSettingsTab
+default_factory default_min_height default_profile_id defaultextension defer_legacy_when_early_score_at_least defer_thumbnails deferred degrees
+delayMs delay_ms delete deliveryMs delta deltas denoms denseContourRawScore
+denseContourScore denseDirectionFactor dependencies dependency depth depthSkippedCalls derivedPairs description
+descriptor descriptorPixels desiredGroupMemberId desktopVisibilityHidden desktopVisibilityInitial desktopVisibilityRestored desktop_display desktop_main_ui
+desktop_rounded destination detail details detailsTitle detected detectedLayout detected_layout
+detectionMode determinant deterministicRelation deterministic_relation device devicePixelRatio deviceScale diag
+diagnostic diagnosticDroppedTotal diagnosticExportText diagnosticFrame diagnosticLoss diagnosticOnly diagnosticReason diagnosticScales
+diagnosticSnapshotError diagnosticWriteFailuresTotal diagnostic_export_button diagnostic_root diagnostics diagonalExitAllowed differenceBoxes differenceEvidence
+differenceProbeStarted differenceScope difference_boxes difficult difficultEntry difficultEntrySeed difficultEntryValidation difficultGridEnabled
+difficultObservation difficultRecognition difficult_identity_resources digest dir directAttempted directDisplayAuthorized directInstallAllowed
+directPortalSeed directPoseRejectionReason directProjectionAllowed directProjectionWithheldReason directSimilarity direction directionCompatible directionConsistency
+directionEvidence directionGateFallbackUsed directionGeometryDerived directionGeometryOverride directionHintBoost directionMargin directionMatch directionReason
+directionRejectedRows directionReliable directionStrengths directionSupported directionVotes directions directory directoryLimitReached
+disabledbackground disabledforeground discardedSeedRotationDegrees discardedSeedShearDegrees discontinuous_jump diskBudgetBytes diskBytes diskDigest
+dismissedBy display displayAllowed displayAssetPath displayAssetPattern displayAuthority displayAuthorization displayAuthorizationCrossFrame
+displayAuthorizationId displayAuthorized displayAxisLocked displayCommitContinued displayContext displayDecision displayEligible displayEligibleAfterSharedCommitOnly
+displayEnvironment displayEpoch displayFallback displayGeneration displayKind displayLabel displayName displayOnly
+displayOriginalPath displayPixelsDerived displayReprojection displayReprojectionPending displayResourceIdentity displayResourceKey displayRotationDegrees displayShearDegrees
+displaySignature displayTarget displayUniformScale displayValidation displayValidationRequired displayVersion displayWarningCleared displayWarningText
+displayWarningVisible display_authorized display_context display_environment display_environment_signature display_kind display_name display_policy
+display_signature display_warning_export_button displayed displayedFloor displayedProfileMatches distance distanceEvaluationSpace distancePixels
+distanceSource distinctMargin distinctPositions distinctRunnerUpDistance distinctScore distribute_temporal_support divide domainCount
+domainId door doorCount doorErrors door_count door_observation doors down
+downloading dpi dpiAwareness dpi_awareness dragBoundaryEnvironmentSignature dragBoundaryNormalized dragBoundaryPromptSeen dragBoundaryStatus
+dragCalibrationClosed dragCalibrationVisible dragCandidate dragPromptVisible dragSaved drag_active drag_offset drawn
+drawnCount dropped droppedQueuedProbe droppedTotal droppedWrites dtype due duplicateEvidenceSuppressed
+durableIdentityUpdated durableMapId durablemap durationMs dx dy dyMax dynamicGameHighlightUsedAsIdentity
+dynamic_motion early_matcher edge edgeAt edgeCorrection edgeId edgeMedian edgeP90
+edgeSource edgeThreshold edgeToStartMs edgeWithinThree edgeWithinTwo edge_at edges editing
+editingBindings editingPreview effective effectiveFloor effectiveProfileId elapsedMs elapsed_ms eligible
+eligibleMembers enable_registration enabled enabledByDefault enabledMapIds encoding end endRoundVisibleWhenLocked
+endText end_round endedMonotonicAt endpoint endpoints engine engineConnected engineIdentity
+engine_factories enqueueLatencyMs enqueuedMonotonicAt enqueued_at_ms ensure_ascii entranceDirection entranceKind entranceSceneEvidence
+entranceSceneVerified entranceType entrance_kind entrance_scene_evidence entrances entries entry entryContext
+entryCount entryCrossCheck entryDiagnostics entryEstablished entryEvidence entryFallback entryInventoryAvailableMapIds entryInventoryComplete
+entryInventoryExpectedMapIds entryInventoryIdentitySuppressed entryInventoryMissingMapIds entryInventoryScope entryInventoryUnexpectedMapIds entryKind entryObservationStatus entryObserved
+entryPassport entryPoseCandidates entryReverification entryRoomSource entryWalls entry_advisory entry_context_is_current entry_root_relative
+entry_route_loader entry_seed entry_shared_reference_provider entry_structure_store entrypoint enumeration environment episodeId
+episode_id epoch eq equivalentSourceFrameGeneration errno error errorCode errorDetails
+errorPhase errorPixels errorReason errorType errors escape established establishedConditions
+establishedMemberIds established_bindings estimatedCenterUncertaintyPx evaluated evaluatedAlongsideRegisteredIdentity evaluatedEntryCount evaluatedMainMapIds evaluatedMapIds
+evaluationScale evaluation_scale event eventDeliveryError eventKind eventMode eventName eventPath
+eventSource event_path events evidence evidenceFrameCount evidenceFrames evidenceKind evidenceLevel
+evidenceMode evidenceScope evidenceSource exact exactAncestors exactSeedEvaluations examined exception
+exceptionAction exceptionOrigin exceptionType exclude_capture exclusionMode exclusionRadius exclusion_radius exclusiveMs
+exclusivePixels executable executableAllowlist executableBytes executableName executablePathIncluded executableSha256 executableVerification
+executionMode exemplar exemplarCount exhaustiveConfirmedMapFallbackRequired exhaustiveSearchSkipped exist_ok existingBasePlane existingBoundary
+exit exitAnchor exitAnchorConflict exitAnchorConflictOverridden exitAnchoredEntry exitContradicted exitObserved exit_icon_path
+expand expand_control expanded expandedVisible expected expectedArchive expectedBytes expectedDirection
+expectedHwnd expectedLayerCount expectedLayout expectedLegacyProfileFloorCount expectedMapIds expectedPoseIds expectedProbeGeneration expectedSha256
+expectedSize expected_archive_sha256 expected_binding expected_candidate_key expected_context expected_group expected_identity expected_layout
+expected_plan_sha256 expected_probe_generation expected_receipt_sha256 expected_scale expected_sources experimental experimentalAutoOverlay expires
+expiresAt expiresInMs expiresOnMapClose explainedPixelFraction explicitDiscontinuity explicitFloorControl explicitIntentBypass explicit_discontinuity
+explicit_floor explorationFrontierContainmentVerified explorationGrowthRatio exportId export_id exportedAt exportedImages exportedLogFile
+exported_at extentGrid exterior extraBindings extraRuntimeCrossFloorPairs eye factor failClosed
+failed failedEntries failedFrameGeneration failedMember failedMembers failureEvidence failureEvidenceStatus failureKind
+failureReason failureReasonText failureSample failureSamplePath failureSnapshot failure_roots failures faintScoreMin
+fallback fallbackAllowed fallbackReason fallbackRequired fallbackShown fallbackState fallbackTrigger fallbackVisible
+fallback_member_ids fallback_reason fallback_state families family farContextAnchorDescriptor farP95 farRoomAnchorDescriptor
+fastAlignmentDiagnostics fastPath fastPathEligible fastSheet fast_exit_attempted featureCacheLoadedCount featureCacheStatus featureEvidence
+featureKeypointCount featureMaxEdge featureOpenCVVersion featureScale featureStatus featureStore featureStoreExists featureStorePath
+fetch fg fieldbackground file fileBytes fileCount fileDescription fileIdentity
+fileLimitReached fileName fileVersion file_byte_limit files filesRead filesystemAttempts filetypes
+fill filledFloor filledHighlight final finalScale finalState final_state fineSearchElapsedMs
+fineSearchMaximumDimension fineSearchScale fineTranslationCorrection fineTranslationDistinctMargin fineTranslationSearchScore fineTranslationSecondScore finish_reference_sheet_move finished
+first firstAt firstCandidateText firstFloorVerification firstMonotonicAt firstPoseSensor firstProbeImmediate firstRunVisible
+firstSeq first_evidence_at first_floor_verification first_teleport fit fitAttempted fitEvidence fitReason
+fit_result fittedScale fittingResiduals flags flat flatMapCanvas floatingSheetHidden floor
+floorBounds floorBucketMeaning floorChanged floorClickCreatedAt floorClickObserverError floorClickObserverInstalled floorClickSequence floorConflict
+floorControlsVisibleInDiagnostics floorControlsVisibleWhenLocked floorDecision floorDecisionMs floorDeferred floorEvidencePending floorHint floorIndex
+floorIsConfirmed floorLayout floorMargin floorMode floorMs floorPairs floorPolicyReason floorPreloadLoaded
+floorPreloadTotal floorPreloadedBeforeRank floorRead floorReason floorRelationCalibration floorRelationRefinement floorRelations floorRequired
+floorSource floorStabilizationExhausted floorStabilizationRequired floorStabilizationRetries floorStartedMonotonicAt floorState floorSwitch floorToCanonical
+floorTransition floorWidget floor_evidence floor_read floor_relation_calibration floor_required floors flow_error_values
+flush focus focusPoint focusRadius focusSource fold foldKeepsRound foldedVisible
+follow_symlinks font force force_neutral foreground foregroundBudgetMs foregroundChanged foregroundFitSkipped
+foregroundFitStarted foregroundHwnd foregroundOwner foregroundRole foreignCompetitionCompleteCount format forwardBackward forwardMeanPointCount
+forwardMeanPolicy forward_backward fraction fragmentCount fragmentMaxPixels frame frameCapturedAtUtc frameCapturedMonotonicAt
+frameDtype frameGeneration frameHeight frameId framePath framePixelsEqual framePixelsSha256 frameShape
+frameSize frameWidth frame_generation frame_id frame_signature frames fresh freshSceneAnchorBound
+fromFloor fromFrameGeneration fromLegacyPair fromMemberId fromMode fromRegion from_ frontAnchorDirectEligible
+frontAnchorDirectPose frontAnchorDirectPoseRejected frontAnchorSupported frontCleanGeometryPoseOwner frontDoorAnchor frontDoorAnchorDistinctMargin frontDoorAnchorScore frontDoorAnchorSupported
+frontDoorBottomPosition frontDoorGenericCandidateMapId frontDoorGroupCompetition frontDoorGroupGeneration frontDoorGroupId frontDoorGroupLayout frontDoorGroupMargin frontDoorGroupScore
+frontDoorGroupState frontDoorId frontDoorLayout frontDoorLayoutCandidate frontDoorLayoutLabel frontDoorLayoutMapIds frontDoorLayoutMargin frontDoorLayoutScore
+frontDoorLayouts frontDoorLiveTest frontDoorLocalIdentity frontDoorPair0412Applicable frontDoorPair0412CandidateMapId frontDoorPair0412Confident frontDoorPair0412Evidence frontDoorPair0412QueryPixels
+frontDoorPair0412Reason frontDoorPair0412RoiPixels frontDoorPosePolicy frontDoorPoseSeed frontDoorPoseSeedUsed frontDoorProvisionalMemberId frontDoorSingletonNearDoorFingerprint frontDoorSingletonNearDoorSupported
+frontDoorStage frontGroupAttemptedMemberIds frontGroupCompetition frontGroupDifferenceEvidence frontGroupFrameGeneration frontGroupGeneration frontGroupGroupGeneration frontGroupId
+frontGroupLayout frontGroupLocked frontGroupMargin frontGroupProvisional frontGroupProvisionalMemberId frontGroupScore frontGroupSiblingCoordinateBasis frontGroupSiblingSharedSeed
+frontGroupSiblingSourceMember frontGroupState frontGroupV2CurrentFrameRecovery frontGroupV2DifferenceEvidence frontGroupV2SiblingCurrentFrame frontIdentityStarted frontLiveTest frontLiveTestVersion
+frontLockReason frontMemberId frontMemberPromotionRequired frontMemberState frontMemberVerified frontPoseSeed frontPreviewCount frontSeedUsed
+frontTerrainScaleDecision front_door_layout front_sibling_context_current frozen full fullClientSize fullContextAnchorDescriptor fullFitScheduled
+fullFitStarted fullFloorBoundaryAccepted fullFloorPrecisionAccepted fullMapContainmentScore fullMapEvidence fullMapIdentitySearch fullMapReferenceAnchor fullProbe
+fullProbePeriodSeconds fullRoomAnchorDescriptor fullRoomContainmentScore full_capture full_probe fullscreenMode futureShutdownElapsedMs futures
+fx fy galleries galleries_changed gallery galleryId galleryName game
+gameControlLayout gameFloor gameFloorBindings gameFloorFromCurrentObservation gameFloorInferredFromSourceFloor gameFloorSource gameFocused gameForeground
+gameIntegrity gameMode gameMonitorMatched gameNativeLayerCount gameNativeMaskBytes gameNativeMaskResourcePath gameNativeMaskShape gameNode
+gamePoint gameProcessId gameProcessIntegrity gameRays gameRequested gameWindowBound game_control_view game_foreground
+game_intent game_intent_active game_window_bound gap gapCv gap_dip gate gdiObjects
+generation genericCandidateMapId genericReusePolicySkipped genericSearchInvoked genericWorkerStarted geometry geometryAccepted geometryCandidates
+geometryCheckMs geometryComponentBox geometryCondition geometryCorroboration geometryElapsedMs geometrySource geometryVerdict geometryWaitElapsedMs
+geometry_fit geometry_provider gestureId get_bound_hwnd get_control_snapshot get_user32 get_value globalRecenter
+globalRecenterAllowed globalRecenterSevenRegionValidated globalRecenterUsed globalRecenterValidated globalRegistration globalResidualIgnored globalResidualVerified globalScore
+globalTranslation global_recenter global_residual_verified global_verified glyphs goodMatches graph gray
+grayStd grayStdMax greenArea gridCells gridDisabledReason grids group groupAvailable
+groupCycleId groupEvidence groupGeneration groupGenerationAtStart groupId groupLayerSwap groupLayout groupLockLatencyMs
+groupLocked groupMapIds groupMargin groupMemberChoiceStatus groupMemberIds groupMemberRows groupMemberSelectionPending groupMemberSelectionReason
+groupPoseAvailable groupPoseCurrentFrameAdjustmentPending groupPreserved groupScores groupTranslation group_before group_generation group_generation_at_start
+group_id group_index group_locked_at group_only group_pose_available group_translation_delta groupid groups
+guard h0 h0Validation h1 h1Validation hEnd hSign hairline
+handle_list handled handles hardLimitMs hardLocked hard_locked hasSample hasTargetFloorEvidence
+has_target_floor_evidence headers heading heartbeatAgeMs heartbeatMaxMs heartbeatP95Ms height heightRatio
+held heldOut heldOutCellCount heldOutCellIds heldOutClientPoints heldOutCount heldOutDecisionReason heldOutInliers
+heldOutMedianError heldOutNormals heldOutP90Error heldOutRatio heldOutSourcePoints heldOutVerification heldout help
+helper helperAvailable hi hidden hiddenLayerCount hiddenSource hiddenVisibilitySaved hide_control
+hide_overlay hide_route highlightDifference highlightDifferenceMin highlightEvidence highlightMargin highlightMin highlightScore
+highlightbackground highlightcolor highlightthickness history historyFrames historyObservations hitPoints hit_target_min
+hits holdKey holdRemainingMs holdSeconds hold_active hold_until holder holding
+holdout holdout_coverage home homography hookInstalled hookRunning horizontal hotkey
+hotkeyApplied hotkeyFeedback hotkeyFloor hotkeyFloorCenters hotkeyFloorLayout hotkeyFloorLayoutFamily hotkeyFloorMargin hotkeyFloorReason
+hotkeyFloorSafeHeight hotkeyFloorSafeTop hotkeyGeneration hotkeyReadPermissionExpected hotkeyVirtualKey hotkey_generation hotkey_proposal humanClass
+humanClassMargin humanClassRanking humanConfirmation humanReviewStatus hwnd hypotheses hypothesis icon
+iconRatioGeometryVerified iconScale iconScore icon_position icon_size id idempotent ident
+identity identityAmbiguous identityAuthority identityAuthorized identityBaseMargin identityBinding identityBudgetExceeded identityElapsedMs
+identityEvidence identityEvidenceLimit identityFiles identityHardGatePassed identityKind identityLocked identityMargin identityOnly
+identityOrPoseAuthorized identityPack identityPhase identityPreserved identityProfileId identityRankingRerun identityReopened identityRerank
+identityRoleLoads identityRunnerUpMapId identityScore identityScoreMargin identityScoringElapsedMs identitySemanticMargin identityShadow identitySource
+identitySourceAgnostic identityVerified identityWindowOpen identity_floors identity_id identity_is_allowed identity_margin identity_profile_id
+identity_profiles identity_recognizer identity_rerank identity_root identity_row identity_stage identity_status identityv_daily_assistant
+idle idvb0059 idvb0059Coverage idvb0059Diagnostics idvb0059Display idvb0059Enabled iid image
+imageBytes imageCount imageHeight imageSize imageSizes imageStatus imageTransactionSchema imageUrl
+imageWidth image_path image_size images immediate immediateDisplayAuthorized immediateLayerSwap importGeneration
+importOwnership importSnapshot import_parent improvement inUse in_ include_automatic include_automatic_failure_evidence
+include_bounds include_correspondences include_current include_inactive include_points include_query_features includedBytes includedDisconnectedEntrance
+includedFailureImageCount includedLogCount includedSha256 inclusiveMs incomplete indent independentFloorAnchor independentOpenCount
+independentRelocalization independentScale independentValidationCount index indexEntryCount indexPath index_path indexedCrossFloorPairCount
+indexedWallRefinement indexing inferredDirectionAgreement inferredEntranceDirections inferredSideDoorPosition inheritedScale initMs initial
+initialAlpha initialCandidates initialCount initialFitPending initialPointCount initialScaleLocked initialVerification initial_count
+initial_translation initialfile initiallyDown initialvalue inkCoverage inlierCount inlierMask inlierMatches
+inlierRatio inliers inner input inputAt inputCreatedAt inputFrameBinding inputFrameCycleId
+inputFrameGeneration inputKind inputMonotonicAt inputObservationSequence inputPosition inputScale inputScope inputSequence
+inputSha256 inputSource inputToPresentMedianMs inputToPresentP95Ms input_at_ms input_snapshot input_started_at inputs
+insertbackground insertcolor inside inspect_engine_resources installId installIdStatus installIds installRoot
+installation installed installedPackages installerInstance instance integrity intent intentApplied
+interfaceDetected interfaceOpacity interior interior_details internalWallSupport interpolate interpolation interpretation
+interpreter intervalMs intervals invalid invalidLines invalidationOrigin inventory inverseError
+ipady is_closed is_current is_primary isolatedMemoryRoot isolatedWindows issueCount issued_at
+issues item iterations job jobId joinstyle joint jointScore
+journal journalTailBytes journals junctions justify k keep_waiting keepdims
+key keyGeneration keyText keyToOverlayLatencyMs keyToRequestMs keyboard keyboardReady keypointCount
+kind kinds knownWallRaster known_boundary ksize kwargs label labelSource
+labeledLiveMapId labeledLiveScore labelsPng landmark landmarkCandidate landmarkCount landmarkId landmarks
+last lastAt lastCaptureObservation lastCycleId lastMonotonicAt lastProbeOutcome lastRawState lastReceipt
+lastSamplePath lastSeq lastSequence lastSource lastTimestampUTC lastTotal last_switch_reason lateCacheCandidate
+latencyMissMs latencyMs latencyTargetMissed laterRecoveryOutcome latestResidual latestResidualVerified latest_rendered_profile_residual layer
+layerCount layerImageCount layerMeta layerRelative layers layout layoutAnchorMask layoutAnchorMatrix
+layoutAnchorPreserved layoutAspectRatioDelta layoutCandidate layoutFamily layoutGatePassed layoutId layoutLabel layoutMargin
+layoutScaleX layoutScaleY layoutUniformScale layout_candidate layouts learning leaveOneOut leaveOneOutMaxPixels
+left leftDown leftUp legacy legacyAdoption legacyClean legacyCleanLayerCount legacyEvents
+legacyIndexSourceSha256 legacyMapId legacyMatrixProfileToRecognition legacyMigrationRequired legacyProfileFloorCount legacyRecognitionCoordinatesRequired legacyReferenceRankingDeferred legacyRoundLayerWriter
+legacyRouteMigrations legacyRouteResource legacyRouteShapeHW legacyScore legacy_bindings legacy_path legacy_relations length
+lengths level lg lianghapiSingleFloorToFloor2 library libraryManifestSha256 libraryMessage libraryVersion
+lifecycle_cancelled lightcolor limit limitation limits line linear linearDeltaRatio
+lines listenerStarted live liveAcceptance liveAnchor liveAnchorEvidence liveAspect liveAuthorization
+liveAvailable liveCandidateCount liveCenter liveEdgeCount liveEdgeMedianDistancePx liveEdgeWithin4 liveEdgeWithin8 liveEngineAvailable
+liveExemplarEvidence liveExitIcon liveExitScaleRange liveGameVerified liveImport liveIndex liveInput liveLandmarkCorrection
+liveMargin livePitch liveRectangle liveScore liveSideDoorDirection liveSpanPx liveStairCandidates liveStairOverlap
+liveTestProjectionAllowed liveTestScope liveUnavailableReason liveVisualConfirmationPending lo load_products loaded loadedEntryCount
+loadedProducts loadedRecords local localBitmapSize localBusy localFailureReason localFailures localFirst
+localFloorDiagnostics localGeometryVerified localIdentity localMessage localPendingKind localRectangle localRectangleAccepted localScore
+localSearch localSearchMaps localSeedAvailable localSeedSource localSeedTotal localTime local_failures local_points
+local_seed_available locatorKind lockGeneration lockReason lockSource lockToOverlayLatencyMs lock_generation lock_scale
+locked lockedGroupSelectedMapRelocalization lockedMapId lockedSummaryVisible locked_canvas_without_floor locked_group_relocalization lockingAllowed log
+logFile logId logStream log_callback log_limit loggedMonotonicAt logicalDotsPerInch logicalRect
+logs lookupBinding lookupBindings loopStopReason loss lossless lostTotal lowStructure
+lower main mainChains mainComplete mainEntries mainFamilyPossible managedSnapshot managed_parent
+management managementEnabled managementOnly managementRequested managementReturnAvailable manager manifest manifest_path
+manual manualCapture manualChoice manualConfirmation manualFallbackAvailable manualFloor manualFloorHoldRemaining manualFloorRequired
+manualGroupChoice manualGroupMemberHeld manualGroupMemberId manualOnly manualTaxonomy manual_choice manual_confirmation manual_hold_ended
+manual_override map mapBounds mapBoundsClient mapCount mapCoveragePerProfile mapCycleId mapDetected
+mapEvidence mapExpectedOpen mapId mapIdentityRanking mapIds mapIndex mapInputObservation mapInterface
+mapIsOpen mapKeyPresses mapName mapOpen mapOpenEvidence mapOpenSource mapOrientationIsIdentityFeature mapReady
+mapReason mapRecognitionRequired mapRecovery mapRecoveryPending mapSample mapStillOpenAtResult mapVisualSuppressed mapWidget
+map_anchor_focus_point map_evidence map_id map_is_open map_name map_open map_resource_browser map_resources_page
+map_ui mappingCurrentFrameVeto mappingDisplayAuthorized mappingDisplayed mappingFirst mappingProfileId mappingRetainedForNextOpen mappingSeed
+mappingVetoReason maps margin marginMin marginPixels margin_dip margin_px marginalMaps
+markedCandidate markedDirection markedEvidence markedMargin markerDetected markers mask maskEdges
+maskSha256 master match matchAcceptanceRatio matchAmbiguity matchScore match_workers matchedAnchors
+matchedAnchorsMin matchedFeatureIds matchingCases matchingMode matchingVoteCount material materialAccepted materialPolicy
+materialReady materialReason material_accepted material_scope mathLanes math_pool matrices matrix
+matrixCanonicalToLegacyRecognition matrixCoordinatePackId matrixCoordinateProfileId matrixCurrentReferenceToNative matrixDisplayToReference matrixFloorToCanonical matrixProfileToCanonical matrixProfileToRecognition
+matrixRawToClient matrixRecognitionToClient matrixReferenceToClient matrixReferenceToQuery matrixSourceAuthorToTargetAuthor matrixSourceToAuthor matrixSourceToClient matrixSourceToReference
+matrixStructureSourceToSelected matrixSummary matrix_source_to_client max maxBytes maxCorners maxDepth maxDirectoryEntries
+maxEdge maxFiles maxFullProbes maxIters maxKeys maxLevel maxLineGap maxMs
+maxPixels maxProblems maxRecords maxSnapshotRecords maxSparsePoints max_anchors max_bytes max_edge
+max_entries max_files max_records max_workers maximum maximumBaseRoundTripError maximumBuild maximumChangeScore
+maximumClientWidthRatio maximumLegacyCompositionError maximumPixels maximumResidualErrorPx maximumRoundTripError maximumScale maximumSheetOpacity maximumShift
+maximumTranslationPixels maximum_dimension maximum_pyramid_level maximum_relative_scale_correction maximum_shift maximum_translation maximum_width maxlen
+maxsize maxsplit md meanBrightness measured measuredForwardMeanPixels measuredPairs measuredPixels
+median medianError medianErrorPx medianForwardBackwardPixels medianPatchError medianPixels medianResidual medianResidualPixels
+meipass memberA memberB memberId memberIds memberVerificationLatencyMs member_reference member_verified
+member_verified_at members memory memoryBoost memoryConfirmations memoryFeatureLoadElapsedMs memoryInliers memoryPending
+memoryRoot memorySemanticMatches memory_root memory_store message messageDetail messageOmitted metadata
+metadataMissing metadataPending method metrics migration migrationAudit milliseconds minDistance
+minLineLength minimized minimum minimumAnchorCount minimumApertureMargin minimumBuild minimumClientWidthRatio minimumDistinctDistance
+minimumDistinctPositions minimumGroupMargin minimumMargin minimumPositiveDistancePixels minimumQueryChains minimumQueryPixelRatio minimumQueryPixels minimumQueryTurns
+minimumRelativeScaleChange minimumScale minimumScore minimumScoreImprovement minimumWindowsBuild minimumWins minimum_anchor_distance minimum_area
+minimum_brightness minimum_coverage minimum_visible_pixels minlength minsize minwidth misses missing
+missingCount missingDeclaredCrossFloorPairs missingFiles missingMapIds missingOldRatio missingReason missingResources missingTargets
+missing_ok mode modeChangeEnabled modeRouteProfiles modeRoutes mode_text model modified
+modifiedFiles module monitor monitorBounds monitorCount monitorId monitorRect monitorWorkArea
+monitor_bounds monitor_count monitor_id monitor_work_area monotonicMs motion motionSamples motionSource
+mouse mouseEventSource mouseUsed mouse_drag_prediction_pending movable moveEvents move_sheet moved
+movedLayerCount ms multiRegionStructureOverride multiRegionTransitionConsensus multipointAttempt multiscaleSameFrameAuthorized mutualMatches name
+native nativeAnchorCapacity nativeCandidateMemberId nativeChainSupport nativeDevice nativeFloor nativeIndexConsumed nativeIndexConsumedCount
+nativeInventory nativeInventoryIdentitySuppressed nativeLayout nativeMoveCount nativePoints nativePose nativePoseSeed nativeProfile
+nativeRect nativeResource nativeSimilarity nativeSimilarityProposal nativeSimilarityRecheck nativeStaticRegistration nativeStatus nativeSurfaceRestore
+nativeSurfaceRestored native_context native_floor native_layout native_mask native_path native_shape native_similarity_binding_provider
+native_similarity_context_provider native_similarity_priority_provider native_similarity_root native_similarity_state native_static_context native_wall_segments nearP95 nearestProfileId
+neckSpan neck_direction needsWorker needs_vertical_scroll neighborChains neighborExtentGrid network neutral
+neutralDisplay neutralMatchedAnchors neutralRatio neutral_relative new newIdentity newPixelRatio newReceipt
+newStart newline next nextAnchorCount nextAnchors nextAt nextDelayMs nextMember
+nextState next_candidate nfeatures nightmare nightmare04MinimumPixels nightmare12MaximumPixels nightmare_resource_root nodes
+nonce nonpositiveOrShortSeparation nonzeroRows normal normalize normalize_route_profile_id normalized normalizedBoundary
+normalizedBrown normalizedDistance normalizedDoorPosition normalizedInStructure normalizedOccupied note notes notify
+now numericLine numericVersion object_pairs_hook observation observationAttempt observationBounds observationCount
+observationCreatedAt observationDirection observationElapsedMs observationId observationOrigin observationPaths observationStatus observationWindow
+observation_id observations observed observedCorners observedDx observedDy observedEdgePixels observedExclusivePixels
+observedFloor observedHwnd observedIndices observedPixels observedRecall observedSpan observedStrip observed_floor
+obsolete occupied occupiedBounds occupiedPixels occupiedRatio occupied_ratio occurredMonotonicAt occurrenceId
+occurrences offline offset old oldFrameInvalidated oldIdentity oldReceipt oldReceiptSha256
+oldWorkerToken omitted omittedBySampleLimit omittedFailureCaseCount omittedRangeCount on_alpha on_close on_hide
+on_scale on_show onboarding onboardingActive onboardingCompleted onboardingControlTrial onboardingWindowAbsent onboardingWindowExists
+oneFlow oneRuntimePose one_flow online onlineGeneration onlineReferenceFallbackCount online_parent opacity
+opacityMaximum opacityMinimum opacity_var open openCycleTransientOffset openIntent openToOverlayLatencyMs openToResultElapsedMs
+open_control_layout_settings open_intent opencvVersion opencv_version opened opened_at openingId operation
+operationResult optimize optionalAuthorCatalogError optionalInstances optionalPixels optionalRooms optionalSideDoorError optionalSideSearchError
+optional_author_displays options orb orbAfterSuspendVisible orbState orbVisible orbWithoutGameVisible orb_body
+orb_mode_text orb_shadow orb_state orb_state_badge orb_state_text orb_status_dot ord order
+ordinal ordinaryQueueDepth orient orientation orientedPairs origin originX originY
+origin_px originalBaseSnapshot originalIdentityHardGatePassed originalPath originalValidationPreserved original_path otherObservationBounds out
+outcome outerWindowSize outline outlinePixels output outputSpace outputToOriginal output_dir
+outsideCompetitors outsideCount outsideSeedsRejected outsideSeedsScreened over overflowCalls overflowExtraKey overlapCoverage
+overlay overlayCaptureExcluded overlayEnabled overlayPath overlayVisible overlay_builder overlay_visible overwrite
+owner ownerRole ownerThreadId ownership p90 p90Pixels p90ResidualPixels p95Error
+p95ErrorPx pack packId package packageId packageIdentity packageIds packageMetadata
+packageMetadataSource packageMetadataStatus packagePath package_metadata packages packed padding padx
+pady pages pair pair0412 pairAmbiguous pairMaturityReady pairMinimumQueryPixels pairResidualPixels
+pair_evidence pairs panel panelVisible panel_arrow panel_icon parallelLinesWeakOnly parallelStripPairs
+parent parentAttempt parentExit parentKind parent_executable parent_handle parents part
+partial partialSearch partialWallGeometry partial_score partition partitionHits partitionP95 partitionPoints
+partitions passThrough passedMaps passedPartitions passportAvailable passportSelected passportUnresolved patch
+patchError path pathKind payload peakRatio peaks pending pendingAction
+pendingDisplayEpoch pendingFile pendingGroupMemberId pendingKind pendingMaterial pendingOriginalBindings pendingReleaseVks pendingRenderToken
+pendingSamples pendingSiblingToken pendingWrites persist_pose persisted persistedSampleDistanceChecked persistentIdentityUpdated persistentPoseUpdated
+phase phaseCandidateContainment phaseDisplayPrecise phaseFallbackSuppressed phaseReason phaseRelocationReason phaseRelocationVerified phaseResponse
+phase_reason photo physicalDotsPerInch physicalDragBypassAvailable physicalDragObserved pid pill pitch
+pixelCount pixelFormat pixel_origin pixels placement plan planError planSha256
+planes platform plausibleGeometry play playerReviewedCrossFloorProjectionTrial playerReviewedProjectionTrial point pointCount
+pointDirections pointFragments pointGeometry pointGeometryReason pointIndexes pointReason pointRejections point_observation
+pointerGeneration pointerSequence points policy pollError polls poolUpdated pools
+portableAttempted portableLayoutPolicy portableLayoutProjection portableLayoutSeedCount portableLayoutSeedId portableLayoutSeedUsed portableSeedAttempts portableSeedElapsedMs
+portable_seed_path portalAlternativeCommonScale portalAlternativeEndpointDistance portalAlternativeLiveCandidateIndex portalAlternativeMatrixSourceToClient portalAlternativeResidual portalAlternativeStructureSeedScore portalAlternativeTargetCandidateIndex
+portalAlternativeVerified portalBestEndpointDistance portalBestStructureSeedScore portalCandidateCount portalCommonScale portalEndpointDistance portalGroupRelocalization portalGroupTranslation
+portalLiveCandidateIndex portalLiveCenter portalMedianMarginPixels portalPhaseResponse portalPhaseTranslation portalRouteCoordinateMode portalScaleHypotheses portalTargetCandidateIndex
+portalTargetCenter portalUniqueWinner portalWideAttempted portalWithinThreeMargin pose poseA poseAmbiguous poseAttempt
+poseB poseClientSize poseCommits poseContext poseDisplaySignature poseGeneration poseId poseIndexCandidate
+poseIndexCandidatesEnabled poseIndexFallback poseIndexProvider poseInitializationBudgetMs poseInitializationElapsedMs poseInitializationHardLimitMs poseInitializationMode poseMaps
+poseMatrixSourceToClient poseMemberId poseOrigin posePending posePreserved poseProfileMatches poseProvisional poseReason
+poseRecoveryCandidates poseRecoveryEvaluated poseReliable poseResult poseRouteProfileId poseSeed poseSource poseSourceVerifiedAgainstRenderedProfile
+poseState poseStrategy poseSubmissionAllowed poseUninitializedAtStart poseVerified poseVerifiedAgainstCanonicalGeometry poseVerifiedAgainstLiveGeometry poseVerifiedAgainstRenderedProfile
+poseVerifiedAgainstSharedStructure poseVerifiedAgainstSourceStructure pose_before pose_generation pose_index_candidates pose_index_diagnostics pose_index_only pose_origin
+pose_pending pose_verified poses position positionDistinctMargin positionJump positionSeparationPixels positionUnique
+position_space positiveDifferences positiveEvidenceOnly positiveSampleCount postCommitAgeMs postCorrectionInverseGuard post_result posted
+precision precomputed_anchors precomputed_live_icon precomputed_query precomputed_visible predictionGated predictionVisible preference
+preferences preferred preferredProfileId preferredSize preferred_edge prefix preloadElapsedMs preludeMs
+preparation preparationAndObservationMs prepare_only prepared preparedContext preparedIndices preparedStart preparing
+preprocessAndFitMs presentation presentationMode presentationMs presentationOpacity presentationRoundingError preserveProvisionalOverlay preserveRoute
+preserveVerifiedOverlay preserve_confirmation preserve_locked_alignment preserve_points preserve_provisional_overlay preserve_route preserve_verified_overlay preserved
+preservedAnchorCount preservedAnchorPools preservedAnchors preservedCoreFiles preservedPoseMaps preservedTrackerKeys press pressClient
+pressed presses preview previewBox previewOnly previewPath preview_offset previous
+previousCandidateCount previousCenter previousContainment previousDisplayedFloor previousFloor previousFrameGeneration previousGroup previousGroupId
+previousIndices previousLatestResidual previousLiveStairs previousMapId previousMemberId previousMidpoint previousMisses previousMode
+previousReachedPercent previousReceiptSha256 previousRepeatedCount previousScore previousSignature previousSize previousTreads previousTrustedAnchorPreserved
+previous_candidate primary primary_profile_to_canonical primary_row prior priorHypotheses priorLocalFailures priority
+privacy privateBytes probable probe probeDisplayEpoch probeError probeEvidence probeGeneration
+probeMisses probeMs probePending probePeriodSeconds probeRequired probe_generation probes problemGroupId
+problems process processAfter processBefore processCreateTime processDelta processId processThreads
+process_id process_image_path process_integrity processed processedEvents processingStartedMonotonicAt producedAt producedMonotonicAt
+producerSourceFloorLabel producerVariantLabel producerVariantUncertain productName productVersion profile profileAxisLocked profileBridgeVerified
+profileCoordinateProjection profileCount profileCurrentFrameSearchSeed profileCurrentFrameValidated profileId profileIds profileMappingVerified profileRenderDerivedFromCanonical
+profileSelection profileToValidation profileType profile_bridge_verified profile_for_map profile_id profile_to_recognition profiles
+progress progressivePoseSeedUsed projectedBounds projectedCanonicalMatrix projectedCenter projectedCorners projectedFootprint projectedReference
+projectedSourceLengths projectedSourcePoint projection projectionCurrentFrameResidual projectionOnly projectionOnlyUntilTargetStructureVerified projectionSourceFloor promotionSource
+proposal proposalAgreementCount proposalCoordinateSpace proposalEdgePixels proposalMs proposalSource proposal_source proposals
+proposedShiftPixels proposedTransformMedianError proposedTransformP90Error protectedCoreCount protectedCustomRoots provenance provider provisional
+provisionalCoverage provisionalDisplayAuthorized provisionalFloors provisionalMapId provisionalMemberId provisionalOverlayPreserved provisionalVariantAccepted provisionalVisiblePixels
+provisional_display_authorized provisional_member_id prune publishedAt published_at published_date pythonThreads qtFingerprintScheme
+qtInstallerInstance qtProcessIntegrity qtScreens qtSourceCommit qualified qualifiedAverageGroupMargin qualifiedCount qualifiedDistinctPositions
+qualifiedObservations quality qualityLevel qualityMargin quark query queryAnchor queryChainCount
+queryChains queryCoverage queryEdge queryEdgeCount queryEdgeGridCells3x3 queryFeatureElapsedMs queryInReferenceScore queryKeypointCount
+queryKeypoints queryLengths queryLines queryNormal queryPair queryPairs queryPixelRatio queryPixels
+queryPixelsGrowth queryPixelsRequired queryPoint queryPoints queryPointsScaled queryScale querySegments querySpan
+queryTopology queryTurns query_pixels query_shape queued quick quickConnectionText quickDetailsAfterPending
+quickDetailsBackground quickDetailsBackgroundInvokeBlocked quickDetailsCallbackCount quickDetailsCleared quickDetailsClearedText quickDetailsConditions quickDetailsConflict quickDetailsHealthy
+quickDetailsHealthyText quickDetailsIdle quickDetailsNeedsUser quickDetailsPending quickDetailsPendingInvokeBlocked quickDetailsResumed quickDetailsUserHidden quickEndRoundVisibleWhenLocked
+quickHomeVisible quickIdentityOnlyStartVisible quickLockedEndRoundVisible quickLockedHomeVisible quickPanelVisible quickShellMode quick_diagnostic_button quiet
+radius radiusPixels radiusSource radiusUnits ranges rank rankAtScale rankCaptureStartFrameGeneration
+rankCompletedMonotonicAt rankElapsedMs rankRequest rankSourceFrameGeneration rankSourceSurfaceGeneration rankStartedMonotonicAt rankTiming rankVerdict
+ranked rankedFloor rankedMaps rankedMembers ranking rankingPreload ransacInliers ransacReprojThreshold
+rasterValidation raster_samples rateSuppressed rateSuppressedRange ratio ratios raw rawError
+rawMapOpen rawMessage rawScore rawState rawStatus rawVisualScore rayApproach rayApproachStrength
+rayStrengths rays rcond reachedPercent readErrors readPermission readRoots readable
+readonly ready realMatrixFloor1ToFloor2 reason reasons receipt receiptData receiptSha256
+receiptWritten receive_button receivedBytes recentCompetingWins recentDeltas recentProblems recenterPixels recenterRequired
+recheckNextOpen recognition recognitionCenter recognitionDetailsVisible recognitionDiagnosticLoss recognitionDiagnostics recognitionMatrixSourceToClient recognitionMs
+recognitionPackId recognitionPath recognitionShellMode recognition_matrix recognition_matrix_source_to_client recognize reconcile_popup recordCount
+recordId recordLimitReached recorded recordedAt recordedMode records recordsExamined recovery
+recoveryAttemptReason recoveryB1UniqueRoom recoveryBaseCanonical recoveryBaseRender recoveryBudgetMs recoveryContext recoveryCrossFloor recoveryDynamicMotion
+recoveryDynamicTarget recoveryExplicit recoveryFit recoveryId recoveryMode recoveryNextTracker recoveryObservation recoveryPending
+recoveryRenderMatrix recoveryRoute recoverySiblingCoordinateBasis recoverySiblingSharedSeed recoverySiblingSourceMember recoveryState recoveryStructural recoveryStructuralAmbiguity
+recoveryStructuralLandmarks recoveryTier recoveryValidationMatrix recoveryVisible recovery_context recovery_required recovery_scope rect_px
+rectangle rectangleAspectRatio rectangleBounds rectangleOrientation rectangleSource reduceMotion reference referenceAdjusting
+referenceAnchor referenceAspectRatio referenceAuthor referenceAuthorized referenceBinding referenceBounds referenceCanAdjust referenceCanvas
+referenceCanvasPolicy referenceChannel referenceCoordinateSpace referenceCoverage referenceDx referenceDy referenceEnabled referenceIconScore
+referenceId referenceInQueryScore referenceMaskSha256 referenceOpacity referenceOpacityPercent referencePath referencePeakRatio referencePitch
+referencePointsScaled referencePosition referenceProvider referenceRepresentation referenceResource referenceScale referenceSheetVisible referenceSize
+referenceSpan referenceSpanPx referenceToLiveMatrix referenceToken referenceTopology referenceVisible reference_context reference_dx
+reference_dy reference_id reference_opacity_var reference_override reference_scale refineIters refinedPartialContainment refinement
+refinementError refinementMs refresh refreshAge refreshCompleted refreshError refreshNextAlignment refreshPending
+refreshed region regionHeight regionTop regionalEdgeVerified regionalObservation regions registeredCount
+registeredIdentityCandidates registeredPackageIds regression reject_blank_full_client reject_released rejected rejectedAt rejectedCandidates
+rejectedCoordinateBindings rejectedMaps relationEvidenceLevel relativeScoreMultiplier relaxed release releaseNotes releaseReport
+releaseReportBuildFingerprint releaseReportBuiltAt releaseReportExecutableSha256 releaseReportPresent releaseReportSourceCommit releaseReportSourceDirty releaseReportVersion releaseRetriesExhausted
+releases reliable relief reloaded relocalizationHintDistance relocalize relwidth relx
+rely remaining remainingMs rememberedFloor remembered_floor remote removal removalTransactionId
+removed removedFiles removed_profile render renderAdapterUsed renderBounds renderBuild renderCanonicalMatrixSourceToClient
+renderMatrix renderMatrixSourceToClient renderMedianMs renderMeta renderMs renderP95Ms renderProfileVerifiedFloors renderRecognitionMatrixSourceToClient
+renderRouteProfileId renderToken render_matrix render_matrix_source_to_client render_overlay render_profile_verified renderedMatrixSourceToClient renderedPixelsReused
+renderedProfileDiagnostic renderedProfileResidual rendered_profile_residual reopenReuseTotal repainted replaceFiles replace_state replaced
+replay report reprojectionErrorPx request requestBudgetMs requestContext requestGeneration requestId
+requestScope requested requestedAt requestedClientBounds requestedCoordinateSpace requestedExecutionLevel requestedExecutionLevelReason requestedFromFloor
+requestedGlobalRecenter requestedMode requestedMonotonicAt requestedProfileMatches requestedRouteProfileId requestedWideFallback requestedWideFirst requested_size
+requested_size_px requeue require_closed require_holdout require_locked_round_floor_evidence require_qt require_recenter require_source_frame_current
+required requiredAnchorCount requiredBackdropRatio requiredCompatibleFrames requiredMisses requiredTailMatches requiredVerificationScore requiredWindowMatches
+required_map_ids required_members required_misses requiresConfirmedRoundMap requiresCurrentFloorFit requiresCurrentFrameDisplayValidation requiresCurrentFrameGeometryFit requiresCurrentFrameRecognitionFit
+requiresCurrentFrameValidation requiresFiles requiresFreshNativeGeometryValidation requiresIndependentDisplayRevalidation requiresIndependentScaleCalibration requiresMaterialAck requiresPhysicalMapKey requiresSelectedRouteCurrentFrameResidual
+requiresStableTargetFloor requiresUniqueCurrentFrameStructure requiresVerifiedSourceFloorTransform reserved reset resetGeneration resetGenerationBefore resetMatches
+reset_intent reset_layout_anchor reset_unconfirmed_frame residual residualErrorPx residualRequired residualVerified residual_verified
+resolution resolutionClass resolutionP90LimitPixels resolutionP90Pixels resolutionPrecisionVerified resolvedCount resource resourceBase
+resourceCheck resourceContext resourceIdentity resourceInstallationPolicy resourceKey resourceKind resourceLocked resourcePack
+resourcePath resourceRoot resourceScope resourceSha256 resourceTab resourceVersion resource_cache resource_key
+resource_root resource_status resources restartRequired restoreRequested restore_error restored restoredImmediately
+restoredSelectedAuthor restoredSettingsTab restoredState restored_profiles restrictedLiveTest restrictedLiveTestSearchSeedAllowed restrictedLiveTestVerified result
+resultContext resultGroupGenerationStale resultKind resultMeaning resultQueue resultResetGeneration resultScope results
+retained retainedAuxiliaryBytes retainedAuxiliaryCount retainedBytes retainedCandidates retainedDirection retainedHistoryAnchors retainedMode
+retentionDays retiredTransactions retrievalEvidence retry retryAtMonotonic retryFailureRecorded retry_enabled returnCode
+return_detection return_failure return_focus return_index return_inverse return_when reuse reuseEvidence
+reuseTotalBeforeDisplay reuse_evidence reverse reviewEligible reviewFamily reviewStatus reviewStatuses reviewedAnchorCount
+reviewedAuthorAdapterAnchor reviewedGeometricResidual reviewedLandmarkCount reviewedMappingSearchSeedAllowed reviewedMaximumPixels reviewedP90Pixels reviewedSeedKind revision
+revoke_display rho rid right rightDown rightUp ringEvaluations rivalMinimumRmsPixels
+rivalPair rivalRms rms rmsPixels roi roiClientBounds roiPixelSamples roiPixels
+role roles room roomConfigId roomGeometry roomTypeId room_labels rooms
+root rootIdentity rootIndex rootMatrix rootOverride rootPose rootPoseValidation rootVisible
+root_pose rotation rotationDeg rotationDegrees rotation_degrees round roundActionText roundActive
+roundAnchorFloor roundCoordinatePrimed roundEndEnabled roundEndHintShown roundGroupGenerationAtStart roundGroupPoseAuthorized roundGroupPoseMapId roundGroupPoseProfileId
+roundGroupProjectionAuthorized roundGroupProjectionDisplayAuthorized roundGroupSharedLinear roundGroupVerifiedRootFloors roundGroupZeroExplorationAuthorized roundGroupZeroExplorationDisplayAuthorized roundGroupZeroGeometryStaticSheetAuthorized roundId
+roundLayerGroupCommitted roundLocked roundPreparing roundStartEnabled roundStateText roundTransferVerified roundTrip roundWorkActive
+round_identity_locked round_layer_group round_locked route routeAgreement routeBounds routeDisplayAllowed routeDisplayBridge
+routeDisplayRequiresCurrentFrameAlignment routeDisplayStillRequiresFinalSharedGate routeDisplayUntilSharedCommit routeFamilies routeFamiliesShareGeometry routeFamily routeHeight routeInkUsedAsIdentity
+routePath routePixels routeProfile routeProfileId routeProfileIndependent routeReferenceCacheHit routeReferenceMs routeReset
+routeResource routeSha256 routeShape routeSource routeVariants routeVersions routeVisible routeWidth
+route_adapter_available route_family route_family_name route_loader route_override route_profile_id route_reference route_shape
+route_source route_variant row rowheight rows rowspan rtol run
+runRoot runnerUpSpan running runtime runtimeAfter runtimeAllowed runtimeBefore runtimeBuildFingerprint
+runtimeContext runtimeDisplayEnabled runtimeEligible runtimeEligibleCount runtimeEnabled runtimeEnabledProfileCount runtimeError runtimeIdentityBindings
+runtimeInterfaces runtimeMapId runtimeMaxEdge runtimeOpenCVVersion runtimePermissionIsNeverGrantedHere runtimePolicy runtimeProcessIntegrity runtimePromotionAllowed
+runtimeRequiresCurrentFrameStructureValidation runtimeRequiresSeparateHumanReviewAndCurrentFrameValidation runtimeStatus runtimeVerified runtimeVersion runtime_context runtime_enabled runtime_result
+safeAreaWallScaleRefinementVerified safeFallback safeHeight safeTop safety sameControlContract sameFloorAuthorBridges sameFloorLockedReopenRelaxed
+sameFrameExtractionCount sameHWND sameLayoutMapIds sameLayoutMargin sameMap sameMapAlternativePoses sameMapPoseInitialization sameMapRelocalizationAllowed
+sameOpenAttempt sameVisibleComponent same_floor_locked_reopen_relaxed sampleBytes sampleCount sampleEvidenceAccepted samplePath sampleQueuedMonotonicAt
+sampleRole sampleSha256 sampleSize sample_radius_override sample_validator samples sampling samplingClass
+samplingEnqueuedMonotonicAt samplingScope sampling_scope sane sanity saved savedCount savedDock
+savedDpi savedDragBoundary savedEnabled savedFrameCapabilities savedFrameEngineAvailable savedHotkey savedOnboarding savedReduceMotion
+savedRoute savedSheetOpacity savedUiSound savedVariant savedWorkRectPx saved_dpi saved_frame saved_result
+saved_work_area_px scale scaleAgreement scaleCalibrationStatus scaleChange scaleChangedOnRefresh scaleClass scaleCorrectionFactor
+scaleError scaleFactor scaleLocked scaleMatrixSourceToClient scaleObservable scalePercent scaleRatio scaleRefinement
+scaleSearch scaleSeed scaleSeedSource scaleSource scaleX scaleY scale_x scale_y
+scales scenario scene sceneFingerprint scheduledLateMs schema schemaErrors schemaVersion
+scope score scoreMargin scores screen screenBounds screenCenter screenOverlap
+screenSide screens screenshot screenshotKeypoints scrollregion sdepth seams searchAttempts
+searchBottom searchBounds searchCropFallback searchElapsedMs searchMode searchPasses searchScope searchScore
+searchStages searchTier searchTop searchValidationBasis search_bounds searchedReferenceCount second secondScore
+seconds section sectorMeans seedBudget seedCorrespondences seedCount seedHeldOutInliers seedId
+seedMatrix seedRevision seedScale seedSource seedSources seedTranslationError seeds seenNotesVersion
+segmentCount selectbackground selectcolor selected selectedAuthor selectedAuthorPixelsInspected selectedAuthorResidual selectedCandidate
+selectedCandidateIndex selectedCount selectedFileBytes selectedFloor selectedFloorProposalReason selectedFloorRelocalizationMs selectedFresh selectedGallery
+selectedMap selectedMapFitStarted selectedMapId selectedMapIds selectedMatrixFloor1ToFloor2 selectedPackage selectedPackageId selectedPriorHypothesis
+selectedQtScreen selectedRouteCurrentFrameResidual selectedTabBackground selectedTabFont selectedTabForeground selectedTabPadding selectforeground selectionPolicy
+selectmode semantic semanticBoost semanticBudgetFallbackUsed semanticChecks semanticCompetition semanticEvidence semanticLimits
+semanticMargin semanticMemoryCount semanticMemoryLoadElapsedMs semanticMemoryScore semanticPartialScore semanticPrecisionOverride semanticQueryElapsedMs semanticScore
+semanticSilhouetteScore semanticSourceScore semanticStairGroups semanticTopologyScore semantic_only sensorMode sensorResidual sensorThread
+separators seq sequence sequenceNs session sessionConsensus sessionId sessionIdentityRetained
+sessionIdentityStatus sessionRangeScope sessions set_game_mode set_reference_sheet_visible settings settingsDimensions settingsOpacityText
+settingsSelectable settingsShellMode settingsTabs settingsWithoutGameVisible settings_dir settings_path settings_selectable settleLatencyMs
+settled_at_ms severity sha256 shadow shape shapeAccepted shapeAgreement shapeCategory
+shapeChange shapeHW shape_category sharedError sharedGeometry sharedGroupPoseSeeded sharedInitialStructureFit sharedLookup
+sharedMaskResourcePath sharedProjectionGeometryInsufficient sharedReference sharedReferenceMetadata sharedReferencePath sharedResource sharedResourcePath sharedShellIdentity
+sharedStructuresAreCalibrationEvidenceOnly shared_group_pose_seeded shared_pose_relocalization shared_reference shared_reference_loader shared_reference_provider shared_resources shared_version_context
+shearDegrees sheetOpacity sheetOpacityPercent sheetPosition sheetPositionSpace sheetScale sheetShape sheetVisibilityEnabled
+shell shift should_enqueue_background show show_sheet shown shownSource showvalue
+siblingBoxes siblingError siblingMapId siblingPending siblingSupportPixels siblingTargetGeometry side sideCandidate
+sideCandidates sideComplete sideDoorBoost sideDoorConstraint sideDoorCrop sideDoorDirection sideDoorDirectionEvidence sideDoorDirectionMargin
+sideDoorDirectionReliable sideDoorDirectionSupported sideDoorExitCenterError sideDoorExitVerified sideDoorIdentityScore sideDoorLiveExitIcon sideDoorLiveExitScaleRange sideDoorMinimumQueryPixels
+sideDoorPath sideDoorPosition sideDoorQueryPixels sideDoorResourceError sideDoorStageReason sideDoorStructuralScore sideDoors sideEntries
+sideGates sideLocalIndexError sideObservationWaitElapsedMs sideProducer sideResourceError sideWinnerMapId side_diagnostics side_door_crop
+side_door_position side_error side_rows siftFallback sign signature significant significantComponents
+silentHint silent_hint silhouette_score similarity singleCaptureLane singlePoseOwner singleSharedRuntimePose singleStairGlyphNeverAuthorizesDisplay
+singleWorker single_link singleton singletonNearDoorFingerprint singletonNearDoorSupported singularValues size skeleton
+skip_exit_fast skippedCount skippedVersion slant sliderlength sliderrelief slots slowCalls
+slowLimit slowThresholdMs sm snapshot snapshotFailed snapshotLimit snapshotNumber solver
+solverEvents solverStageTimingsMs sort_keys source sourceAliasRecords sourceAnchor sourceAnchorEvidence sourceAnchorScore
+sourceArchive sourceAspect sourceAsset sourceAssetPolicy sourceAuthorPoint sourceBounds sourceBoxes sourceBytes
+sourceCandidateId sourceCandidateIds sourceCandidateIndexRows sourceCandidateKey sourceCandidateRanking sourceCandidates sourceCanonicalMatrixToClient sourceCenter
+sourceChainCount sourceChains sourceCheckout sourceClass sourceClientSize sourceCommit sourceCoordinateSpace sourceCoordinatesVerified
+sourceCore sourceCorner sourceCorners sourceCycleId sourceDirectionKnown sourceDirty sourceDirtyFiles sourceDisplaySignature
+sourceEdge sourceEntryId sourceEntryIds sourceError sourceEvidence sourceFloor sourceFloorIsProducerLabelOnly sourceFloorTransformVerified
+sourceFolder sourceFrame sourceFrameCurrent sourceFrameGeneration sourceFrameId sourceFrameSignature sourceFrameSignatureToken sourceGameFloor
+sourceGroup sourceGroupGeneration sourceIdentityKind sourceKind sourceLabelsAreNotGameTruth sourceLayerPath sourceLayout sourceLayoutId
+sourceLines sourceLocation sourceMapComponent sourceMapId sourceMapSignature sourceMargin sourceMarkerAgeMs sourceMarkerCycleId
+sourceMarkerFrameGeneration sourceMatchMethod sourceMatchesPayload sourceMatrixToClient sourceNode sourceNormal sourceOwner sourcePair
+sourcePatchSha256 sourcePath sourcePixelsReused sourcePngIsDisplayImage sourcePoint sourcePointCandidate sourcePoints sourcePolicy
+sourceProduct sourceProfileId sourceRays sourceReason sourceRecognitionMatrixToClient sourceRef sourceRefreshCount sourceRefreshMedianMs
+sourceRegion sourceRelative sourceResidual sourceResidualVerified sourceRetained sourceRetryMap sourceReuseEvidence sourceRoleLoads
+sourceRoot sourceRoots sourceScaledLocation sourceScope sourceScore sourceSeedId sourceSegments sourceSemanticMatch
+sourceSha256 sourceShape sourceSize sourceSpace sourceSpan sourceStrip sourceStrips sourceStructureBinding
+sourceStructureCandidate sourceStructureCandidateCount sourceStructureCandidates sourceStructureConsumer sourceStructureDiagnostics sourceStructureFeatures sourceStructureIdentityAuthorized sourceStructureIdentityVerified
+sourceStructureVerifiedFloors sourceStructures sourceSupportPixels sourceSurfaceGeneration sourceSurfaceVisibilityGeneration sourceToLiveMatrix sourceToken sourceTreeHash
+sourceTurns sourceType sourceUnknownPixels sourceUnmodified sourceVersion source_bounds source_candidate source_commit
+source_context source_cycle_id source_display_signature source_floor source_frame source_frame_signature source_icon_override source_icon_search_bounds
+source_id source_known_boundary source_map_component source_mask source_nodes source_path source_rendered_profile_residual source_root
+source_roots source_shape source_signature source_size source_structure_verified source_surface_generation source_unknown source_wall_mask
+sources space spacing spacing1 spacing3 spacingMax spacingMin spanCoverage
+spanHeightRatio spanWidthRatio span_end span_start spansMs sparseFloorEvidence sparsePointCount sparseRawFit
+sparseSemantics spatialAnchorGroups spatialMapId spatialQueryPixels spatialRoutePreserved spatialRouteVisible spatialSupportPixels spatiallyConsistent
+square stableColor stableColorRatios stableFloor stableForReview stableMapOpen stableOverlapRatio stablePromotionPending
+stack stage stageTimingsMs stagedIdentities stagedNativeState stagedObservation staged_observation stages
+stairPortalHandoff stairScore stairs stale staleDiscarded stale_discarded start startError
+start_background start_round started startedMonotonicAt starts startupinfo state stateGetterError
+state_getter states staticSheetVisible status status_color status_text stderr stdout
+steady step_override sticky stop stop_at storage strategy strengthAgreement
+stretch strict strict_hotkey_map stride stripExtentRejected strips stroke strong
+strongBackdropMin strongGlyphMin strongHighlight strongSuggestion strong_latest structural structuralAmbiguity structuralLandmarks
+structuralPixels structure structureContentSha256 structureFallbackCount structureIconConsistency structureMask structureModel structurePreloadDiagnostics
+structureProposalOrigin structureRawRecordSha256 structureReferenceContext structureResource structureScale structureScore structureSeedScore structureSourceContext
+structureSourceFrame structureSourceProfileId structureValidationAuthority structureVariants structureVersionBindings structureVersionKey structure_cache_context_provider structure_direct_resource_loader
+structure_profile_provider structure_resource_loader structure_store style success suffix suju summary
+support supportAuthors supportCoverage supportInliers supportLabels supportMapId supportMargin supportPixelCount
+supportPointCount supportRatio supportRoutes supportSpreadPixels support_coverage support_spread supported supportedMemberIds
+supportedPlanes suppress suppressed suppressedRange suppressedTotal suppressionCount suppressionReasons surface
+surfaceGeneration surfaceMatches surfaceVisibilityGeneration surfaceVisible surface_generation surface_id surface_visibility_generation surfaces
+survivingAnchors switchMargin switchReason switchedSettingsTab sx sy sync_layout synthetic
+system tabmargins tags tailTwoMatch takefocus tapKey tapKeys target
+targetCandidateCount targetCenter targetFloor targetFloorGeometryState targetFloorQueryPixels targetFloorTrusted targetFloorTrustedAtStart targetFrameValidationRequiredForDisplay
+targetIndex targetLatencyMs targetLocalCorrectionVerified targetMapId targetSize targetStairCandidates targetState targetToSourceMatrix
+target_anchor_count target_floor_trusted target_local_correction_verified target_nodes target_shape target_state target_window targets
+taxonomy taxonomyAdjustment taxonomyPositionMatch tearoff teleport templateNumber templateScore templateSize
+temporalEvidence temporalIdentityVerified temporalScaleGeometry temporalStrongSuggestion temporal_fit temporaryCopiesRemaining terminal terminalForSelectedProfile
+terminalState terminalVerdict termination terrainMask terrain_mask testVersion testedCount testedScaleHypotheses
+text textEntryActive textOnly textvariable theta threadId thread_name_prefix threads
+threshold thresholds thumb thumbnailError thumbnailUrl tier tileGridSize time
+timeToLockMs timelineSequence timeout timerCount timespec timestampBasis timestampUTC timingMeaning
+timingMs tintedControlsLocalized tintedMatchedAnchors tintedRatios title titlePolicy tkIdleCheckpointMs tkImage
+to toFloor toMemberId toMode toRegion to_native toggle toggle_round
+toggle_sheet_visibility token tolerance top topCandidate topCandidateMapId topCandidateReason topIdentityHardGatePassed
+topMapId topRegisteredRows topScore topStrongSuggestion topTwo topology topologyScore topologySignature
+topology_path topology_score topology_signature topology_value total totalBytes totalDelta totalDx
+totalDy totalMs totalReferenceCount totalValidPoints totalX totalY total_byte_limit traceAttempt
+traceContext traceback tracked tracker tracker_alias_before tracker_key_before tracker_store_before tracking
+trackingEvidenceFloors trackingFloor trackingMode trainingExamples trainingFrames trainingLabelWritten transactionId transferSource
+transformDistinctCandidate transformDistinctMargin transformDistinctScore transformEvidence transformRevision transient transientMotion transientOffset
+transitionBandFailClosed transition_or_jump translation translationAnchorHistory translationCorrection translationDisagreement translationDistinctMargin translationMask
+translationMaskMatrix translationMaskPose translationMaskScale translationOnly translationPixels translationRefinement translationRefinementPixels translationResidualVerified
+translationSearchRadius translationSearchScore translationSecondScore translationSource translation_only translation_x translation_y transparentDisplay
+treadCount trigger triggerKeys triggerMode triggerReady troughcolor truncated truncatedLogCount
+truncatedToRecentLines trustedB1 trustedB1TinyVerification trustedManual tx ty type typedLayers
+typedReference uc ui uiFrameQueuePending uiScale uiSmoke uiSmokeRestart uiSoundEnabled
+ui_context unavailable unavailableFloors unavailableReason unboundActions unboundNativeLayers unboundSourceGroups unchanged
+uncommittedRecognitionSeed unconfirmedRecoveryContext under uniform unique uniquePairs uniqueRoomAnchor uniquenessEvidence
+unit unknown unknown_mask unmanaged unregistered unsafe unselectedTabBackground unselectedTabFont
+unselectedTabForeground unselectedTabPadding unsupported until unverified unverifiedPreservedCount up update_session
+updatedAt updates upgrade upgradeTransactionId uploaded upper urgentQueueDepth url
+usable usableAdapterCount usableForCurrentFrameRendering useHarrisDetector use_last_error user userMessage userObjects
+userVisible v2Candidate v2Handled v2RuntimeEnabled vEnd vSign valid validCandidateGeometry
+validPartitions validPayload validate validated validation validationBasis validationBudget validationEdgeCount
+validationMask validationMaskContract validationMaskSha256 validationPixelsUnmodified validationPointCount validationPolicy validationSensorBasis validation_spec
+value values variable variant variantCountPerProfile variantExclusiveEvidence variantId variant_id
+variants verdict verification verificationComplete verificationEvaluated verificationMatrixSourceToClient verificationMethod verificationMode
+verificationPending verificationSource verification_pending verified verifiedCandidateCount verifiedCommonRange verifiedFloors verifiedFrame
+verifiedFrameContext verifiedMapIds verifiedMemberId verifiedOverlayPreserved verifiedPlayerAuthorPoint verifiedPlayerCommittedMonotonicAt verifiedPlayerSourceCycleId verifiedPlayerSourceFrameGeneration
+verifiedRootFloors verified_member_id verify_hashes verify_rendered_candidates version versionCode versionConsistent versionFiles
+versionInfo version_code version_context version_root versions veryBrightRatio viaFloor viewable
+viewerPoseId virtualKey visibilityText visibility_generation visible visibleAnchorRelocalization visibleComponent visibleComponentElapsedMs
+visibleNativePhaseResponse visibleNativeRecovery visibleNativeSourcePoseResidual visiblePixels visiblePorts visibleState visibleSupportRejected visibleSupportRejectedCount
+visible_override visible_state visualLatencyMs visualResidual visualSettleMs visual_at_ms visual_state vk
+votes wait waitMs wait_seconds waiting waitingForNextMap wallGeometryReason wallIdentity
+wallMs wallNormalResiduals wallRefinement wallRejected wallScale wallSupport wall_correspondence_identity wall_geometry
+walls wallsVerified warning warnings wasSpatiallyVisible weakGlyphMin wechat weight
+weightedScore weights where whitelistCount wholeHidden wide wideAreaCandidates wideAreaCandidatesAreNamedRooms
+wideContextAnchorDescriptor wideFirst wideMapContainmentScore wideNeutralRatio wideRecoveryEvidence wideRoomAnchorDescriptor wideRoomContainmentScore wideScore
+wideSearch wideSearchRadius wideSearches wide_first wide_recovery_evidence widget widgetClass width
+widthRatio winSize window windowCandidateCount windowClass windowEnvironment windowMode window_environment
+window_mode window_process_id window_text windowsBuild winerror winnerReference wins within3
+within6 withinAuthorCrossFloorAttempts withinSixPixels withinThreePixels withinThreePixelsRatio withinTwoPixels witnesses workBounds
+workRect work_area work_area_px worker workerComputeMs workerFitSucceeded workerInvalidated workerQueueMs
+workerStarted workerToken workerTotal worker_wide_first workingSetBytes workingTreeVerification worstPoints wrap
+wraplength writable write writeError writeRoot writer x xl
+xs xscrollcommand y yellowRatio yscrollcommand zeroExplorationDisplayAllowed zeroGeometryStaticSheetHandled zeroSheetOpacity
+zhan10CoffinVariantId zhanCanonicalConsensus zoomControl zoom_transform
 """.split())
 
-EXCEPTIONS = frozenset(['ArithmeticError', 'AssertionError', 'AttributeError', 'BaseException', 'BaseExceptionGroup', 'BlockingIOError', 'BrokenPipeError', 'BufferError', 'BytesWarning', 'CaptureExclusionError', 'CaptureUnavailable', 'ChildProcessError', 'ClientCleanupError', 'ConnectionAbortedError', 'ConnectionError', 'ConnectionRefusedError', 'ConnectionResetError', 'DeprecationWarning', 'DiagnosticStorageError', 'DirtySourceError', 'DownloadError', 'EOFError', 'EncodingWarning', 'EngineUnavailable', 'EnvironmentError', 'Exception', 'ExceptionGroup', 'FileExistsError', 'FileNotFoundError', 'FloatingPointError', 'FutureWarning', 'GeneratorExit', 'IOError', 'ImportError', 'ImportWarning', 'IndentationError', 'IndexError', 'InstallationProfileError', 'InterruptedError', 'IsADirectoryError', 'KeyError', 'KeyboardInterrupt', 'LookupError', 'ManagedBaseResourceError', 'MemoryError', 'ModuleNotFoundError', 'NameError', 'NotADirectoryError', 'NotImplementedError', 'NumericValidationError', 'OSError', 'OverflowError', 'PendingDeprecationWarning', 'PermissionError', 'ProcessLookupError', 'ProviderUnavailable', 'RecursionError', 'ReferenceError', 'ReleaseIdentityError', 'ResourceTransactionError', 'ResourceWarning', 'RouteError', 'RuntimeError', 'RuntimeWarning', 'ScreenGeometryError', 'SingleInstanceError', 'StartupRecoveryError', 'StopAsyncIteration', 'StopIteration', 'SyntaxError', 'SyntaxWarning', 'SystemError', 'SystemExit', 'TabError', 'TimeoutError', 'TypeError', 'UnboundLocalError', 'UnicodeDecodeError', 'UnicodeEncodeError', 'UnicodeError', 'UnicodeTranslateError', 'UnicodeWarning', 'UserWarning', 'ValueError', 'Warning', 'ZeroDivisionError'])
+CODES = frozenset("""
+a a053cc53feb067edbbbdb510bb7587ccb9acbfc80bea461ceb039444e3e328c6 a30779908582099378b287112585f019534f2e4d1db681b85b52e062e746b715 a336f469e06a9b50d962ea3f9c0f5ebf16e229a4ee12f0a37a76f8b68dcfa7e3 a4e48b71dfa13d4309c77826bf2160785a35eeae99a198fe1ef5d9ba12d4f987 a5a5e67245c812d0229f01b97f999b80abd637483541ac61daa923819ac4756d a6c131ea1aa4a7f355077d8ba63a10db4aeb5434fab85a7fcba1cf645a67f748 a6dd1317a1326484183b7cd7fd1de0878d3d60c5e9479808371cafa2a3ca70db
+a70dc77c27def3eb557d0e1b8b9f46a667c1ec6cc4c248e3e1005794b873a566 a9092d28be69c4488ec0c57b7c7516ba1dcf298a9e72f69c55672b01b2b3cf1f a93a0d79136354b843e5689753f215809c9f6438640869ee88ed926ebea7bbe6 a93af26f3be44cbc7508633482899d9d24df8df842690033d454177742a25007 a9a7285688450154af1a0d6f9248f8c380a79f0203109384068f15736c5052cf aab2d37a131b75cca6113fb6d62883e701535a316107ca26d94ac9b2ef3a36f6 ab ab9ba33c17efc5cda314516780dad9eaaf75b930e78b99114fe963e5d43a10e5
+ab9f5b4eb77d40c8d93aff5a4d9a362a0c7dc33e0d905a5da8e9de9b6f5c1b8c absent absent: absolute-contrast ac35c6c81f8db58bcb1e7e513573214d97abd30211c4763e972de4f9117e0c4f acceptances accepted accepted-cross-validated-entrance
+accepted-exemplar-consensus accepted-exemplar-temporal-consensus accepted-full-map-registration accepted-full-map-shape accepted-human-labeled-live-exemplar accepted-live-exemplar accepted-marked-entrance accepted-prior
+accepted-prior-full-floor accepted-session-identity-retained accepted-side-door-topology accepted-spatial-live-consensus access accumulator acknowledge_render_material acknowledge_sibling
+acquisition action action- action-hotkey action-receipt action_hotkey_vars action_hotkeys action_label
+activation-key-suppressed active active_confirmation active_map_cycle_id active_mode_var active_observation activebackground activeforeground
+actual actual-rendered-profile-structural-mask actual.status actual_selection adaa7169ae94706e5dfd6bb13a1dac4220c2684a2aff2dedb53477d99c087be6 adapters add added
+addition-journal.json additions additions-committed additions-committed-data-changed additions-journal-witness-changed additions-pending additions-pointer-could-not-be-cleared additions-receipt-changed
+additions-recovery-required additions-retained-object-changed additions-rollback-conflict additions-rollback-incomplete additions-rolled-back additions-stage-cleanup-conflict additions-stage-cleanup-incomplete adjacent_surface_layout
+adjusting advanced-hidden advapi32 advisory-direction-shape-pending-current-frame-fit ae06950fb26784f5b01bcf91b0c689b8ba21e4ad2af1c52a21a3a8016a368356 aea4413e11a501ef1f42e69a2f6a33db2afea11e653c37203a4917ed68a1863c aeeaa0b8bac6ab66e664434377ed0d73394240776ed32672a3a9917b9eabbad0 af7beabe577241462231ff1f44f5fd04946d91d4e885ee8de96bf122f57802a2
+af9a40c486ea0f63e6ae18456022c1600da48bda9900921c61a9fac5854d5c94 affine after after_cancel after_idle agreement aichicu-difficult align_selected
+align_selected_fast align_selected_profile_cross_floor_fast align_selected_with_math_pool aligned aligned-cross-floor-live-stair-overlap aligned-cross-floor-stair-anchor aligned-current-frame aligned-exit-anchor-partial-structure
+aligned-expanded-partial-structure aligned-fast-author-sparse-exit aligned-fast-exit-anchor aligned-fast-exit-anchor-exploration-frontier aligned-fast-exit-anchor-local-refine aligned-fast-exit-anchor-semantic-partial aligned-fast-exit-anchor-wall-scale-refine aligned-front-door-pose-current-frame
+aligned-overlay aligned-partial-structure aligned-profile-cross-floor-current-frame aligned-profile-cross-floor-current-frame-global-recenter aligned-profile-cross-floor-current-frame-mapped-full-structure aligned-profile-cross-floor-current-frame-mapped-transition-consensus aligned-stair-portal-current-frame-verified aligned-visibility-changed
+aligned_author_route_cache aligned_author_route_lock aligned_author_structure_cache aligned_overlay aligned_window alignment alignment-acceptance-error alignment-acceptances.jsonl
+alignment-cancelled alignment-candidate-hidden alignment-candidate-saved alignment-conflict-hidden alignment-error: alignment-failed alignment-failure-frame-encode-failed alignment-failure-sample-written
+alignment-failure-sampling-state-changed alignment-failure-snapshot-error alignment-failure-snapshot-saved alignment-failure-writer alignment-failures.jsonl alignment-fallback alignment-fallback-exhausted alignment-fallback-stale-ignored
+alignment-hidden alignment-identical-frame-retry-suppressed alignment-open-to-overlay-hard-budget-exhausted alignment-progressive-retry alignment-ready alignment-ready-cached-for-revalidation alignment-ready-late-rejected alignment-rejection-frame-encode-failed
+alignment-rejection-save-error alignment-rejections.jsonl alignment-settle-window-cancelled alignment-settle-work-coalesced alignment-stale-ignored alignment-stale-terminal-current-cycle-restart alignment-success-evidence-error alignment-success-evidence-saved
+alignment-success-evidence.jsonl alignment-success-frame-encode-failed alignment-unverified: alignment-user-accepted alignment-user-rejected alignment-user-rejection-veto alignment-v2 alignment-v2-
+alignment-v2-anchor-pool-retained alignment-v2-anchor-proposal-rejected alignment-v2-atomic-commit-failed alignment-v2-author-result-discarded alignment-v2-authorization-failed alignment-v2-candidate-cached alignment-v2-candidate-frame-stale alignment-v2-candidate-unavailable
+alignment-v2-close-request alignment-v2-commit alignment-v2-commit-context-stale alignment-v2-committed alignment-v2-compositor-rejected alignment-v2-continuity-preserved alignment-v2-current-frame-equivalent-preserved alignment-v2-display-authorized
+alignment-v2-display-continuity-started alignment-v2-display-revoked alignment-v2-first-pose-sensor-started alignment-v2-foreground-suspended alignment-v2-frame-change-rejected alignment-v2-frame-floor-pending alignment-v2-front-seed-rejected alignment-v2-front-seed-sync-fallback
+alignment-v2-idempotent-current-frame alignment-v2-map-closed alignment-v2-marker-provisional-displayed alignment-v2-observation-closed alignment-v2-observation-opened alignment-v2-obsolete-result-discarded alignment-v2-overlay-build-failed alignment-v2-pose-seeded
+alignment-v2-post-commit-current-frame-failed alignment-v2-queued-first-pose-retained alignment-v2-queued-frame-already-committed alignment-v2-render-input-missing alignment-v2-result-dequeued alignment-v2-round-pose-committed alignment-v2-round-reset alignment-v2-runtime-committed
+alignment-v2-sensor-result alignment-v2-sensor-result-reset-stale alignment-v2-sensor-result-stale-hidden alignment-v2-sensor-result-stale-pose alignment-v2-sensor-result-stale-pose-requeue-coalesced alignment-v2-sensor-result-stale-pose-requeue-upgraded alignment-v2-shared-projection-displayed alignment-v2-shared-projection-preserved
+alignment-v2-stale-failure-discarded alignment-v2-stale-success-sample-queued alignment-v2-structural-recovery-attempted alignment-v2-structure-candidate-unavailable alignment-v2-temporal-geometry-attempted alignment-v2-temporal-scale-attempted alignment-v2-terminal-verdict alignment-v2-transient-current-frame
+alignment-v2-transient-source-or-linear-change alignment-v2-worker-dequeued alignment-v2-worker-mode-upgrade-consumed alignment-v2-worker-requested alignment-v2-worker-retry-suppressed alignment-v2-worker-terminal alignment-v2-worker-terminal-disposition alignment-v2:
+alignment-work-cancelled alignment-work-coalesced alignment-worker-start-failed alignment-worker-still-active alignment_core_v2 alignment_failure_sampling_status alignment_in_progress alignment_request_generation
+alignment_succeeded alignment_v2_runtime_enabled alipay alipay.png alive all all-managed all-map-cross-floor-review-20260827
+all-map-review-selected-candidate all-map-review-summary.json all-reviewed-floor1-candidates-rejected-safe-floating-only allowed along0 along1 alpha_ already-active
+already-attempted-this-open-floor-transaction already-configured already-current already-current-floor already-editing already-foreground already-hidden already-installed
+already-managed already-preparing already-removed already-visible alternative ambiguous-clamp-only ambiguous-short-chord anchor
+anchor-disagreement anchor_floor anchor_pools anchor_rect anchors anisotropy annotated-map-layer annotated-map-mask-empty-or-excessive
+another-import-is-running another-pending-upgrade-recovery-required api.xingchenmap.cn app appearance applicable application-closed application-commit-after-native-call
+application-running-or-not-writable applied apply apply_hotkey apply_layout apply_widgets approach archive
+archive-expanded-size-limit archive-inventory-mismatch archive-size-limit area args arialbd.ttf array array-bound
+arrow ascii aspect asset asset-root assets assistant assistant-close
+assistant-close-requested assistant-closed assistant-started assistant: assistant_shell assistant_shell_connector assistant_shell_mode assumptions
+async-level-plus-latched-short-press at atomic-anchor-commit-rejected atomic-commit-failed atomic-current-frame-anchor atomic-current-frame-floor-relation-calibration atomic_write_text attempt
+attempted attempts attributes audience audit-preservation-marker.bin audit-record-changed audit-record-too-large audited-cross-floor-current-frame
+authentication author author-already-installed author-binding-path-mismatch author-catalog-missing author-display author-display-binding-unavailable author-display-canvas-or-image-unavailable
+author-display-load-or-bridge-error author-display-only author-file-changed-during-inspection author-file-changed-during-removal author-files-changed-reinspect-required author-files-without-receipt author-image author-import-refresh-failed
+author-import-started author-installed-live author-internal-current-multipoint-candidate author-internal-multipoint-candidate author-not-installed author-package-import author-package-management author-package-management-result
+author-package-not-managed author-package-removed author-processed-route-crops author-registration-or-version-unavailable author-removed-live author-render-to-client author-route author-route-catalog
+author-sidecar author-structure-native-mask author-structure-version-or-base-snapshot-mismatch author-upgrade-recovery-required author-upgraded-live author_coordinate_adapters author_route_catalog author_route_structure_mask
+author_structure_resources authoritative authorization-failed authorization_id authorized authors auto auto-
+auto_import auto_lock_pending automatic automatic-alignment-failure automatic-author-internal-seed-not-human-approved automatic-auxiliary-byte-limit automatic-auxiliary-count-limit automatic-auxiliary-link-unavailable
+automatic-cross-floor-projection automatic-current-frame-validated-success automatic-failure-image-intent automatic-failure-sample automatic-failures.jsonl automatic-first-valid-after-pending automatic-floor-state-applied automatic-floor-switch
+automatic-floor-switch-group automatic-floor-switch-unverified automatic-floor-working automatic-hard-gate automatic-image-hash-missing automatic-image-intent-budget automatic-image-intent-invalid automatic-image-intent-v1
+automatic-image-link-unavailable automatic-image-ownership-unavailable automatic-image-recovery-limit automatic-image-recovery-link-unavailable automatic-image-recovery-mismatch automatic-image-recovery-required automatic-overlay-disabled automatic-overlay-not-player-verified
+automatic-process-image-limit automatic-round-lock automatic-sampling-disabled automatic-stable automatic-storage-busy automatic-storage-redirected automatic-valid-highlight available
+await-current-evidence await-stable-current-evidence awaiting-current-highlight awaiting-geometry awaiting-material axis axis-locked-route-transport-human-reviewed b
+b0167277cd4776f212ecf59a9802b6dd7f9059753451eba993ef2e9e31ea8d66 b1-current-frame-failed b1-discontinuous-wide b1-explicit-recovery b1-explicit-transition-or-jump-only b1-explicit-wide-v2 b1-floor-transition-evidence-consumed b1-floor-transition-evidence-produced
+b1-local-failed-wide-recovery b1-mapping-veto-recovery b1-mapping-veto-recovery-started b1-mapping-veto-recovery-unavailable b1-recovery-anchor-committed b1-relocalization-policy-selected b1-relocalization-result b1-relocalization-wide-started
+b1-unique-room b1-unique-room-anchor b1-unique-room-anchor-attempted b1-unique-room-current-frame b1-unique-room-worker b1-v2-wide-fallback-started b1-v2-worker-candidate-unavailable b1-wide-correction-continuity-pending
+b1-wide-correction-evidence-rejected b1-wide-correction-non-unique b1-wide-multiscale-same-frame b1-wide-two-frame-continuity b1_relocalization.py b1_relocalization_state b1_unique_room_reference_cache b1ee12a32b75c3d9b5cdd1606d4cda6f86d75d01dd8ed6d14b3ec3f1287a2e87
+b48d0494f2e2b04c3332ed55b90054da151772a185360a8a3c6f3d6050e6d2ea b4a5e86a30b25d2618e2dd6df17bc310bcd03ffb25a07a86b9b673e27013efdf b82a30985927945da39e5225c04bb7415d14d1a1b192813179fd18b9342dff69 b83b61a751c05a5781fcd2dc83d38ca05f616c914bcc146b30325af7f8acbbb2 b8c2660897c858ad5eb45c76d1ac58e5e5e1c57f314fc50b47740109617a0398 b8d5ce02fa928628900a9190da6866412e3b5dd407a8106616a51f0604a4caae b955e79cef797dc81ad5ed822420796fd5b227f27009af88564af1c7063249d1 b9778724e8d57e45561c50d903d7de093140792b223c15f52e6a42466a718cc4
+ba686e0165669a52679ad99d9164b3b6399f3538865b3e3070e671b781ce165e backdrop backend background background-alignment-atomic-promotion-rejected background-alignment-candidate-consumed background-alignment-candidate-display-rejected background-alignment-candidate-displayed
+background-alignment-candidate-rendered-profile-rejected background-alignment-candidate-revalidation-failed background-alignment-candidate-root-stale background-alignment-warm background-cleared background-current-frame-group-commit-rejected background-enqueued background-revalidation-hard-budget-exhausted
+background-waiting background_alignment_cache background_alignment_in_progress background_alignment_locked_group_relocalization background_alignment_request_id background_alignment_work_key background_enabled backslashreplace
+backup backup-remove backward-flow-failed bars base base-candidate-manifest-missing base-cleanup-incomplete base-dependencies-not-declared
+base-map base-map-cache-byte-limit base-map-file-missing base-map-floor-unavailable base-map-invalid-binding-or-image base-map-not-prepared base-map-stale-preparation base-map-unavailable
+base-matrix-not-translation-only base-ownership-unknown base-pending-pointer-changed base-published-object-changed base-recovery-required base-repair-failed-and-rollback-incomplete base-repair-preflight-blocked base-repair-retained-object-changed
+base-rollback-incomplete base-target-appeared-before-commit base-verification-before-state-failed base_canonical base_render basis bb7aa3538107da2be24268160b9e3047fee108ea9ee6b74635ff7c3920b1f888 bb8648040b720db0043f8329f1d6badeaae5a3333e58983641328454a6a507ff
+bd981463adeb3e10c16ff62a08261d582739342c2f096d764b1b501ce321e813 bda473b253ed4b31d951dee2bdea054011073f2e1dbb2708db7c6b204ed6fd07 bdad7c66015138a69c48ef8528585d0e8d92dc314347b2acf441dc569a82ce4b bdb619eecb1b6faefcb337c0044feb0909df6380658508c351616c23bf64e0da bea44c5a9366533b59909bd3b28d6f5e6e779db2569ddc506633ebc8c775adf5 bec3f89d4dddb6bd43a88aa2b4ea82976962cace05b81dd2ed1440fdd273a133 before begin
+begin_hotkey_edit best bfc00dfc5ee4cb4b86210e9899bf6aad5ef37cdd311362823ca517f0d3003ced bg bidirectional big bind_capture binding
+binding-changed binding-identity-incomplete binding-identity-unreadable binding-resumed binding-suspended binding-unverified bindings bitmap-dimensions
+bitmap-memory-budget blocked bold bootstrap borderless-or-fullscreen borderwidth both bottom
+bound-game boundary bounded-full-frame-start-cadence bounded-full-probe bounded-retained-history bounds branches brand
+brand_icon break bridge-audit.json brown browse budget budget-exhausted build-fingerprint.txt
+build_daily_release.ps1 build_label busy button buttons by_id by_source_group byte-limit
+bytes c090de483095fa3c503cfbf2a149fefb4f79f6b6d9154013819b81dcecfa624f c0a53eb2179d9584d8210172a42c430dc770932a8350e493004c29924373ea01 c19b39364bcab754f5a8ee405847fc7d95f8cc3fb80cbe8988e23183b1dba74c c20c06eca23d1bf4e03f1731b3854eef3a6ac434e423750ed10c883d0ad99ed1 c28b01ca9ba72d4999cb163394797cd5cdc53312b5997125ad8a622f7e8a85a1 c2e5859acdd8f4d622e681c11979ad4f4a38ec6b1f332481194b9613b4724978 c31540f57b82bd088160245c710201b1301c1f8742f80a124483b93b95f48dd9
+c323695b132548f569f843cec709013f8e1d1793a095c9637f97516d13bdf1a6 c409717053f62d9a2b3814668643eb37cff10f9413130f10e32205f7bc29f54c c40e8232a17bd488db76b8545b5f240f936537a18fd855fb1dd4fc5ec3564a7f c4bfbdff262832cfdd03d7b0bf74e05c1882de192431afa42ba862e0a42396d1 c543900f60d525ddf529a61a642315d7adcf8c2a0d19bf2bf06c76d8843c729b c5d66288ed03226145708bc976c69e933a75bcbefbbc61154360c7488fffaec9 c676e974cb2623c834b9766645e1f9600a835f5502bba824a58432dcdb03c2da c69438f7ccc79e71ab3875930931ae685847dd47e09622bd998316bbdcb62518
+c6da0da6c5dee5e5b7c4ebc6f7c3e74e13eddbbcb684cd7a7523b9e692ee698e c7bcbd75893bbc4fc06a6ba2eb966edb347f2c7a5bdde97c7697bfea8b67c80e c7ee88710fa948b1f7c02091d7da06ed4c08ced6ff36cf8e2be9d9569c68bef4 c8461b7e750de08e5a0d66138d6718c6f88f8c2b607a31015510bf2750f08898 c8762c6627a5037ac9fa5318d49262f92b1ec48c019450497c28d85d3ad5a110 c8d68bcbcedf63cdd81830f405cb9e9c449cd7948d065938a2851c266ee4c875 c97b9e42aa6a21330e01c21fd11b1f8d10f818c4102502d41d0fb5d02d300a6e c9aa8be25c7abcc7b81da63b5c1d80011a62bb19bb7ce1e552867fb0240a1930
+c9cb31e1bf01d1293db12475599b165138038ebe1f37c13a32c4fd49a5e99a27 cached cached-seed-failed-recovery-started calibrated calibration called caller cancel
+cancel-silent cancel_hotkey_edit cancel_map_open_recovery cancel_map_package_import cancel_online_map_package cancel_pointer cancel_reference_sheet_move cancelled
+cancelled-or-stale cancelling candidate candidate- candidate-awaiting-confirmation candidate-b1-f1-static-layer-relation candidate-confirm candidate-confirmed
+candidate-control-unavailable candidate-floor-stale candidate-frame-stale candidate-frame-stale-cached candidate-identity-unavailable candidate-integrity-mismatch candidate-invalid-geometry candidate-map-stale
+candidate-matrix-invalid candidate-memory candidate-next candidate-only-current-frame-route-residual candidate-only-revalidate-current-frame candidate-or-floor-missing candidate-prev candidate-produced
+candidate-reselection-opened candidate-saved-pending-human-review candidate-selected candidate-selection-idempotent candidate-selection-stale-ignored candidate-shell-auto-open-suppressed candidate-stale-pose candidate-unavailable
+candidate_cache candidate_edit_mode candidate_flow candidate_photo_failures candidates candidates.json canonical canonical-author-display-bindings-v1
+canonical-chart-arithmetic-invalid canonical-chart-invalid canonical-chart-roundtrip-exceeded canonical-client canonical-current-frame-residual-unverified canonical-definition canonical-geometry-wide canonical-identity
+canonical-validation-geometry-unavailable canonical_geometry_verified_floors canonical_pack_id canvas capabilities capture capture-bound-disabled capture-client-dc-fallback
+capture-context-changed capture-context-recheck-unavailable capture-display-affinity-restored capture-enable-rejected capture-error capture-error-stale-ignored capture-evidence capture-exception
+capture-failed capture-finished capture-frame-completed capture-generation-mismatch capture-map-not-observed capture-not-current capture-not-enabled capture-not-started
+capture-or-observation-exception capture-pipeline capture-provider-unavailable capture-request-cancelled capture-request-coalesced capture-requested capture-resources-not-ready capture-result
+capture-result-dequeued capture-result-processing capture-return capture-safe-fallback-unsupported capture-shape-aspect capture-shape-width capture-start capture-start-failed
+capture-superseded capture-superseded-or-cancelled capture-visual-deadline-reached capture_diagnostics capture_excluded capture_exclusion capture_generation capture_in_progress
+capture_now capture_trace capture_window_anchor captured captured-client captures capturing cases
+catalog catalog-unavailable catalog.json cause cb cbe4f1e010230440459c4eaf2f3ac17d0ac7448d59eada684044d081c17e2f50 cc2eaa3643d63dce9eb76b003ca8d3e392bd9a13f97cedbb3db75fcae98db412 cc6745d99a8d91b2d5531fe34612e7838f90642f90088d5af665f33ec88ec615
+cd70da0d507f7e9edfbfe0cae540973b52e38f1fa954b34a656f7bc4fffa684e ce281af4e284db7c8f510078b3efe409baef3c8683a685f4b49845b76f627751 cell cells center centered-16x9-safe-area centered-safe-height centered-safe-width
+centered-size-fallback centered_safe_viewport centers cf500cff6e3b2dc87539ff8d3ddadf613a245534136af89a60939a526ea3368a cfcae4e835e4a8e72061465bfe7adae1263441be26ec208e5eb50e4cbbe6488c chain-descriptors chains change_reference_opacity
+change_sheet_opacity changed changed-during-capture changed-during-read changed-or-unwritable changes char check-feedback
+check_entry_evidence check_online_map_packages checked checking checking-index checkout-head-unbuilt chest chest-auto-tap
+chest-auto-tap-hotkey-conflict chest-auto-tap-updated chest-auto-tap.json chest_auto_tap children choice-pending choice-scope-changed circularity
+clam clamp_rect_to_work_area class classification clean clean-front-preview-coverage-invalid clean-front-preview-schema-unsupported clean-geometry
+clean-reference clean_distance clean_edge_5px clean_mask cleaning_up cleanup-complete cleanup-entry-limit cleanup-image-limit
+cleanup-object-changed cleanup-object-unknown cleanup-object-unwritable cleanup-write-or-validation-failed clear clear-preview clear_aligned clear_game_intent
+clear_hotkey_candidate clear_reference client client-bounds-missing client-capture client-close-requested client-context client-dc-native-error
+client-dc-roi client-dimensions client-geometry-unavailable client-live-runtime client-region-pipeline client-resolution-outside-verified-range client-too-small-for-controls client-version-missing
+client-width-scale-plus-live-anchor-translation client.py client_capture.py client_chest_auto_tap.py client_coordinator.py client_failure_samples.py client_geometry_signature client_info.py
+client_input.py client_live_runtime.py client_map_input.py client_native_keys.py client_region_capture.py client_screen_bounds client_space_geometry.py client_window_binding.py
+close close-application-first close-draining close-failed close-input close-ready close-requested close-state-applied
+close_map closed closed-cache closed-idle closing code coffin coffin-variant-changed
+coffin-variant-setting coffin_variant_box coffin_variant_row coffin_variant_var collapse collapse_control collapsed collapsed_canvas
+color color-component-unvalidated colored-route-layer combo command commit commit-context-stale commit-record-write-uncertain
+commit-state-unreadable committed committed-base-file-changed committed-base-state-changed committed-pose-local committed-retired common compact
+compact_dock compact_window_anchor comparisons competitions complete complete-same-map-side-competition-pose-unresolved complete-sheet complete-unique-exit-anchored-entry
+complete-unique-side-structure-and-current-author completed completed-upgrades-retired completion component component-centre component-fallback component-strict
+compositor compositor-first compositor-rejected condition-budget-incomplete condition-current-geometry-unavailable condition-incomplete condition_index conditions
+confidence confident config configure configure_failure_sampling configure_settings configured-factory confirm
+confirm-round confirm_author_package_removal confirm_hotkey_edit confirm_map_package_import confirm_route confirmation-cleared confirmation-context-obsolete confirmation-restored
+confirmation-unavailable confirmations.jsonl confirmed confirmed-front-group-binding-unavailable: confirmed-front-group-members-unavailable confirmed-front-group-provider-unavailable confirmed-front: confirmed-map-current-floor-only
+confirmed-map-current-frame-fit confirmed-map-floor-pose-index confirmed-map-mismatch confirmed_id conflict conflicting-image-hashes-quarantined conflicting-or-unobserved-positive-evidence connections
+consecutive-local-failures consecutive-local-failures-wide consistent constructor consumed containment containment-ambiguous containment-client-size-changed
+containment-insufficient containment-jump-too-large containment-mask-unavailable containment-relocalized containment-search-failed containment-template-degenerate containment-template-too-small content-length-mismatch
+context context-reconfigured context-unavailable context-updated continuation continue_auto_map_package_import continuity continuity-expired
+continuity_until continuous-floor-switch continuous-local-failure continuous-local-failure-wide continuous-local-wall-normal-fit contradicted contradiction contrast
+control control-action-result control-collapsed control-expanded control-unavailable control_ control_collapse control_collapsed
+control_expand control_expand_for_alpha control_expand_repeat control_layout control_layout_snapshot control_snap controls controls-unlocalized
+converged conversion coordinate coordinate-adapter coordinate-space-conflict coordinate_reference_profile_id coordinates coordinator
+core core-commit-rejected core-committed core-context-stale corrected-pose corrected-render-failed correction correction-recorded-not-promoted
+correspondences corridor-like-outline cost count coverage coverage-or-scale create-client created
+created_at crop cropped-wide-hud cross cross-author-bridge cross-author-same-floor-bridge-consensus cross-author-same-floor-bridge-human-reviewed cross-floor-atlas-schema-invalid
+cross-floor-bounded-local-residual cross-floor-dynamic-anchor cross-floor-dynamic-anchor-v2 cross-floor-latency-target-missed cross-floor-live-stair-overlap cross-floor-local-correction-required cross-floor-local-current-frame cross-floor-local-evidence-unavailable
+cross-floor-local-v2 cross-floor-mapping-current-frame-veto cross-floor-mapping-translation-corrected cross-floor-prediction cross-floor-prediction-background-warm cross-floor-prediction-outside-screen cross-floor-prediction-pending cross-floor-prediction-visible
+cross-floor-processed-map-bounded-correction cross-floor-projection-kept-without-target-pixels cross-floor-projection-user-rejection-veto cross-floor-provisional-floor-awaiting-current-frame cross-floor-rendered-profile-current-frame-veto cross-floor-return cross-floor-stair-local cross-floor-stair-residual-failed
+cross-floor-zero-geometry cross-floor-zero-geometry-static-sheet cross-map-ambiguous cross-open-progressive-pose-candidate crosshair cue current current-delivery
+current-entry-is-not-an-assistant-executable current-floor-after-working current-floor-authorization-applied current-floor-conflict current-floor-open-to-overlay-budget-exhausted current-floor-relocalization-already-attempted current-floor-relocalization-hard-budget-exhausted current-floor-relocalization-search
+current-floor-unavailable current-floor-unknown current-floor-wide-correction-non-unique current-frame current-frame-canonical-verification-required current-frame-entrance-ports current-frame-evidence-insufficient current-frame-fit
+current-frame-floor-conflict current-frame-geometry current-frame-group-competition-lost current-frame-local-failure current-frame-missing current-frame-not-display-precise current-frame-object current-frame-observed-zoom
+current-frame-or-cycle-changed current-frame-pose current-frame-pose-authorized current-frame-recovered current-frame-refresh current-frame-required current-frame-residual current-frame-residual-failed
+current-frame-residual-not-required current-frame-residual-unverified current-frame-structure-conflict current-frame-unavailable current-frame-unverified current-frame-verification-required current-frame-verified current-frame-verified-and-shared-root-committed
+current-frame-verified-floor-relation current-frame-verified-ready-for-atomic-commit current-frame-visual-anchor current-geometry-failed current-grant-during-review current-grant-lost current-identity-unavailable current-map-auto-center
+current-map-component-missing current-material-accepted current-material-revalidated current-member-awaiting-material current-member-unavailable current-pose-refresh current-pose-refreshed current-provider-at-error
+current-result current-side-door-geometry current-validation current_alignment_candidate current_bounds current_floor current_floor_authorization current_floor_relocalization_attempts
+current_floor_transaction_started_at current_frame current_frame_captured_at_utc current_frame_display_signature current_frame_floor_observation current_frame_generation cursor curve
+custom custom-display-unavailable custom-galleries.json custom-gallery custom-gallery-changed custom-gallery-changed-during-render custom-gallery-native-canvas-mismatch custom-gallery-nightmare-only
+custom-gallery-reference-binding-mismatch custom-gallery-typed-reference-required custom-gallery-unavailable-or-changed custom-map-unavailable custom-maps custom-route custom-routes.json custom:
+custom_default_gallery.json custom_galleries custom_map_library custom_map_snapshot cx cy cycle cycle-floor
+cycle-stale cycle_floor cycle_id d0679f93cdb62bc8153abbc2714cd5f884572705140d915ebae2fa9fef0fed3d d0cb703ce469cdd4a83b3e89d21e3a8c076a642fbac33847feb494981c649247 d0f5825e7ad6ed2fc61974f97e9c34bc8e34d701371ce6713c830a39746fd32c d14b269080fca29e4aa072b4f2c563eadedd04b184156b74134c3811487c2e82 d1c87cd07dff297d1018d549b7d2a2f2355e8488b8719e5a635911498d383264
+d20d36315049aaa5f716bc579b89d0fd19547bf829ca2713caddf67056458f41 d3992c998c93b2344656be435f8628ee06e8c05254aabb83df11f12a1e797233 d49c1e17386e96e0cc79b7e065c203a11146c5539aa0217d1d1703a9344c00a4 d4b24d350460fdd3126e308ad1c5b605890a2b46182d5e8930c3911cc6be706f d6130996eb8307095b46907e4434cb257b06e3364fd6033f342b838c0714a866 d88cecc6ec116b85481408bbf8ed7d7907e8d82a8411cbb7f7c70d06e4ab01c5 d8bc0df8b64e22fea89cdf909b3be3b879972f0037c6d6b656e256a7a633aa88 d96a816d8834a9d6a41141c2d03cb71dcf9c55596cfc614666f3e4055a4e72a9
+d99385340ffa04afded5bd15374cfdabec183a517b6660e28c868b3df4e9af09 daemon daily. daily.atomic_write_text damage-tint data dbcfd38f2c222f7119747399afb386082671a80f5b13559841361e3f183f943a dcc8710a1971a37d9e0e82db2698d4572bd50aa3d95f586aaff28bfabb301f3f
+dd3809f07a4674124ed5985c2ebc1ece7b21b668164b02383ea45569edca2241 ddc2e4e372201506a3efbe10323e4f1db8176e54cd4a237759b13491c7e624dd debug_feedback decision decision-ready decisions default default-fallback
+default-recognition-coordinate-space default_entry_floor default_profile_id deferred definition degrees deiconify delete
+delta deltas denoms dense-author-full-grid-after-floor-relation-search dense-author-full-grid-after-search dense-author-full-grid-after-translation-search dense-current-component-missing dense-current-edges-missing
+dense-held-out-edges-outside-frame dense-original-colour-mask-missing dense-round-group-unavailable dense-scale-held-out-failed dense-scale-held-out-verified dense-source-mask-basis-incompatible dense-source-mask-basis-singular dense-terrain
+dense-terrain-held-out-support-insufficient dense-terrain-support-insufficient dense-translation-held-out-verified dependency describe descriptor desktop-close-requested desktop-fallback
+desktop-game-focus desktop-hidden desktop-not-movable desktop-owner-unavailable desktop-window-drag-failed desktop-window-drag-started desktop_display desktop_main_ui
+desktop_rounded detail_host details details_surface detected detector-control-band determinant determinate
+development-front-test-only development-shadow-layout-only device device-and-geometry df970275ddfd6f7ea8ad5663556aee9dc103eae298c96f973c6690d9eddd83ea diag diagnostic diagnostic-bound
+diagnostic-export-error diagnostic-export-requested diagnostic-exported diagnostic-identity.json diagnostic-manifest.json diagnostic-only-not-training-label diagnostic-only-not-training-or-prior diagnostic-writer
+diagnostic_export_button diagnostic_export_in_progress diagnostics diff different different-pending-transaction difficult difficult-
+difficult-aichicu difficult-author-structure-index.json difficult-dual-floor-source-correspondence difficult-entry-advisory-manual-confirmation-required difficult-entry-current-frame-candidate difficult-entry-current-frame-rejected difficult-entry-current-identity-unresolved difficult-entry-scale-relocalization
+difficult-equivalent-verified-pixels difficult-existing-root-current-frame-candidate difficult-exit-icon.json difficult-f2-entry-recognition-disabled difficult-geometry-change-recovery-pending difficult-map- difficult-native-binding-unavailable difficult-native-manifest.json
+difficult-recovery-continuity-expired difficult-runtime.json difficult-structure difficult-suju-speed difficult-tilemaps difficult-two-buttons difficult-ui-controls.npz difficult-zhan10
+difficult_identity_resources difficult_native_context digest dip_to_px directed-wall-held-out direction direction-conflict direction-does-not-reduce-pool
+direction-no-candidate-coverage direction-taxonomy-unsupported direction-unreliable directions directory directory-identity-changed disabled disabledbackground
+disabledforeground discover disjoint-current-frame-structure-points disjoint-native-colour-terrain-edge-tiles disjoint-point-h1 dismiss dispatch- dispatch-map
+display display-bindings.json display-capture-owner display-client-matrix-invalid display-disabled display-enabled display-environment-change display-environment-changed
+display-environment-frame-mismatch display-environment-revalidation display-failure display-geometry-verified display-invalidated display-only display-only-assets display-provider-unavailable
+display-reference display-reference-unavailable display-reprojection display-reprojection-pending display-resource-error display-resource-error-for-previous-target display-resource-ready display-source-context-expired
+display-surface-close-failed display-surface-final-close-failed display-target-changed display_authorization display_context display_descriptor display_environment display_environment_var
+display_name display_opacity_updates display_version_label display_warning_export_button display_warning_label displayed displayed_floor distance
+distance-unavailable domains done door door-anchor-normalized-near-door-topology door-anchor-not-distinct door-anchor-only door-anchor-outside-map
+door-current-frame door-current-frame-v2 door-local-index doors down download download-error download_online_map_package
+downloading downloads dpi dpi_ draft- draft.json drag-approved-delta-inconsistent drag-boundary-calibration-armed
+drag-boundary-calibration-cancelled drag-boundary-calibration-confirmed drag-boundary-calibration-opened drag-boundary-display-remapped drag-boundary-first-run-prompt-dismissed drag-boundary-first-run-prompt-shown drag-boundary-physical-map-key-accepted drag-boundary-physical-map-key-bounds-rejected
+drag-boundary-prompt drag-boundary-ui drag-calibration-overlay drag-cancel-rejected drag-cancelled drag-click-ignored drag-context-expired drag-current-display-unavailable
+drag-delta-invalid drag-event-invalid drag-follow drag-gesture-expired drag-matrix-invalid drag-not-established drag-press-expired drag-preview-route-missing
+drag-preview-state-missing drag-preview-transform-invalid drag-receipt-invalid drag-render-state-missing drag-source-refresh-stale drag-started drag-transient-updated drag-unavailable
+drag_boundary_calibrate_button drag_boundary_calibration_bounds drag_boundary_calibration_canvas drag_boundary_calibration_drag drag_boundary_calibration_rect drag_boundary_calibration_window drag_boundary_environment_signature drag_boundary_normalized
+drag_boundary_open_after_id drag_boundary_open_scheduled drag_boundary_pending_bounds drag_boundary_physical_map_key_seen drag_boundary_prompt_after_id drag_boundary_prompt_seen drag_boundary_prompt_window drag_boundary_status_var
+drag_boundary_waiting_for_map drag_current_overlay drag_follow_updates drag_handles drag_route_profile_id drag_route_source drag_transform drain_diagnostics
+drive.uc.cn drop drop-event due duo duplicate-archive-path duplicate-capture-ignored duplicate-index-key
+duplicate-json-key duplicate-upgrade-entry durablemap dwmapi dwrg.exe dx dy dynamic
+dynamic-anchor dynamic-anchor-current-frame dynamic-observation-basis-uncommitted dynamic_motion e e1f4eacb618c795922fb183568dffef7b2f69cc296bb1bbc8e2866420dba4333 e20842e2f9bcbb12352146fcf98f3ac49db0f0f84bbdcdd38bfc4a551bfc40b7 e2357da3a85f588e7f5b71364649f309159f3c981f0f3435d98c3deaac455036
+e444aa79b1fba1c515386dc6171401648d3ef5bb99e5e0094b79566a7fe8e6b0 e4552177c013ec683d72cf69619de6b9a672613dbec28399cad656bb1e81cd24 e6412509db94c987834d8434851c93333dedabdd7918398a6a927d64261045aa e7b91f3ec45b48563782fe4eccbdb768b9ba43678d9ceab1abefa1b3e23db437 e837b4a97457f0aa286d8f3a4373c7023cffd076bf754d27e10a4707a36fb8e5 early-live-evidence-defers-legacy eb506b04ef61c5af4677cbc791bd555733e00f81c57ed823a518a018010124f9 ebc1140b65f573a3b7d285e35192b299bc7def18bf98da073f0f409589e83e31
+ebe6726e614c2b8a725187720fa0b859edb0411da9ececf20d9bbfee554cd853 ebfd123fe243970adc4792647672be01deb3dd982bd8d444456a6432c39559e4 ec43c55640115aeeff5a02b6aaefdbe69004c29e5e8bbf060b09c9ee7127b79f ed75039cfc98e790ca4922ebd72dc34b91aebc46d8e96636a5b70c95fe70978e ed93b8b2dde1c804341ef031d09346ce8e1943c715eea9d44bee27ac84794851 edge edge-correction edge-correction-atomic-commit-rejected
+edge-correction-committed edge-correction-failed edge-correction-front-pose-retained edge-correction-latest-frame-rejected edge-correction-non-translation-rejected edge-correction-open-to-overlay-budget-exhausted edge-correction-render-rejected edge-correction-residual-rejected
+edge-correction-source-stale edge-correction-wide-non-unique edit editing editing-hotkey ee31d96ad3ffed5250ae2da5cf801ea7de828c1756dabc5e9d0fb96f40f81d40 eef6d054b0840c68001a758e6ee91d972db3c3ff84790ba3e7f583694d9e1c19 ef70161f54681dba8cfda8df1ba87aa3af93c8c8c60be06d8e6af1c6ac301c7c
+effective elapsed element_create eligible embedded embedded-migration-composition-exceeded embedded-snapshot-arithmetic-invalid embedded-snapshot-count-mismatch
+embedded-snapshot-invalid empty-bitmap empty-outline empty-upgrade-inventory empty-version-inventory enabled end end-round
+end-round-before-changing-mode end_round ended endpoints engine enqueue enter entrance-not-observed
+entrances entries entries.json entry entry-budget-incomplete entry-candidate-budget-incomplete entry-coverage-incomplete entry-cross-check-unavailable
+entry-current-exit-contradicted entry-current-frame-validation entry-family-unresolved entry-first-verified entry-floor-not-indexed entry-identity-verified entry-index-unavailable: entry-inventory-incomplete
+entry-known-identity-pose-verified entry-local-competition entry-local-observation-incomplete entry-local-verification-failed entry-neighborhood-candidates entry-no-reliable-exit entry-observation-unavailable entry-observed-walls-insufficient
+entry-other-current-exit-contradiction entry-passport-unavailable entry-passports.json entry-resource-unavailable entry-room-outline entry-seed-reverification-unavailable entry-shared-structure-unavailable entry-surface-stale
+entry-unsupported-floor entry-visible-structure-insufficient entry_context_is_current entry_identity entry_route_loader entry_shared_reference_provider entry_structure_store episode_id
+epoch equal-vote-multi-anchor equal-vote-reviewed-centroid equivalent-verified-pixels errno error error_phase errors
+escape established established-group-only established_bindings evaluated event event-loop-error event-loop-error-recovered
+event_path events events- events-qt- events-qt-lifecycle- events-qt-recognition- evidence ew
+exact-cn-or-international-prefix-with-separator exact-scene-fingerprint examined exception executable execute execute: execution
+exemplar existing-bound-state-only existing-data-conflict existing-data-conflict: existing-pose-current-frame-only existing-pose-entry-observation-unavailable existing-pose-invalid-input existing-pose-variant-source-conflict
+existing-root-shared-basis-unavailable existing-root-validation-unavailable existing-state-only existing-verified-live-profile-preferred exists exit exit-anchor-not-found exit-confirmation
+exit-confirmation-failed exit-confirmation-requested exit-direction-or-local-width-unresolved exit-icon-anchored exit-icon-confirmed-structure exit-icon-size-ratio exit-icon-size-ratio-fast exit-icon.png
+exit-icons exit-in-progress exit-local-wall-geometry-incompatible exit-marker-ambiguous exit-marker-not-visible exit-outside-complete-source-inventory exit-wall-geometry-derived-door-direction exit-wall-geometry-overrode-door-rectangle
+exit-wall-geometry-unique exit_button exit_confirmation_in_progress exited-matching-process-handle expand expand_control expanded expanded-file-size-limit
+expanded_size expected expected-hash-unavailable expected_sources experimental experimental-fast-alignment experimental-fast-structure experimental_auto_overlay
+expired explicit-confirmation explicit-drag explicit_floor_control_cycle_id explorer.exe export export-image-budget-exhausted export-time-report
+export-worker export_diagnostic_logs exports external-migration-key-mismatch external-migration-matrix-mismatch external-migration-unreadable external-readonly extra
+extract extractor-mismatch eye eye-off f04f16af919c54a3e67c41b400992e459b08fb231254fe1dd4d97b8263b0fd85 f0c575f64b50627779b00dd667362ad0b47fc5c787dec9bd1294dbf5c78b50ab f139f421ecac99d62858dd660a08d1448bd88f891d7b2e784352e45584c23724 f28d5365f72a66e24ec82a85c5b7f3109687399c7020ca9a1a8edc889bc5e63f
+f35811a625ae1c6273c9c1e860e56243d4110da213fd39a2785213a64cb52fbd f3ae390705bba1e8ba6ffa591d292857c4270f2d977d92940108e25ace1b7933 f442b85b6c88cb6b04473409df94977c5a1cfd844ae2d10d9bdc62c8453f4f4e f4ecf6987b86ea21b1af465e486c44b0f219b71cdd72195ef617891f8bf8132d f579b45cb5615bc718aed41923d34c650d541e44b5deb1cb39d7dfbc9ab0004e f70c5aace947cd257bcbef0e6b597f3e7b2abbed737ae1d46735610bf15ae122 f73bf18bda5ce62985463b9311b2ed31355e4245c5974073c41393089cbd8d1c f910694fdfa1544454ce39825b8b79d05f514493bdd60ac80752cc96587956bf
+f9a6500d1aaa64f3a509cc2dc497b84e5acde0f05513597aca868a01cd7143dd fa5e9622f784d9b660b42108257e00d18c9f33fd70e3843d22b75b2f95f919dc fa67eed2346f3c6c2a320aab77e86e61f2619ce3c27865cb6008a8c1fe2fac74 factor factory-unavailable failed failure failure-reason-not-eligible
+failure-sample failures faint-two-floor-controls-uncertain fallback fallback_member_ids families family fast-1s
+fast-ambiguous fast-author-sparse-exit fast-existing-validation-rejected fast-exit-anchor fast-exit-anchor-exploration-frontier fast-exit-anchor-local-refine fast-exit-anchor-not-ready fast-exit-anchor-ready
+fast-exit-anchor-residual-failed fast-exit-anchor-semantic-partial fast-exit-anchor-wall-scale-refine fast-exit-floor-unsupported fast-exit-geometry-ambiguous fast-exit-geometry-not-resolution-precise fast-exit-no-geometry-match fast-exit-structure-too-small
+fast-exit-unique-geometry fast-insufficient-edges fast-low-score fast-observation-unavailable fast-proposal fast-structure fatal fb677a5adab985b161afd03b47766ec8765c8012b9aff17b2b835acf8f2071ac
+fc278baa3f8ec38221ec828f90ab548a0a720c17868a7de675e59b0930c50825 fdcc9911f1f4d721177947567087f79b8ed2489de309b6ac6397d3c167992605 fdd0f394c00e28cd6b4b8e0f2adf9620b151df8f094968928877cbaca78f1959 fe01b53068f8b4e00469e25d5a6886ba24befc927b189a378a41dcdf3d588891 fe02e4d03dc99931cd4342e4292aeee6bb316df9470f949ef983d99abc7f204b feacf70e67eb21680c477c24e059d14fe8e474724e9e8d3c2d2ce42bb038e34d feature-store-invalid feature-store-unavailable
+features fefdd5ff3f14fe9e83c927b9aaad44176f1c7abb84ee744c9927c813b53ae00a fetch ffbba0bbdb0de977f3ab016153e71e6f4171b798b453f2963e104ca91d8ef7db fg file file-integrity-mismatch file-size-or-case-mismatch
+file: files fill filled-tile-and-relative-contrast finish finish_reference_sheet_move finish_staging finished
+finite-conditions-evaluated first first-floor-entrance first-floor-relocalization-v2 first-local-awaiting-evidence first-pose first-pose-atomic-promotion-rejected first-ring-topology
+first-run first-teleport-wide first-verified-entry first-verified-exit-anchored-entry first-verified-side-structure-and-current-author fit fit-not-successful fit-ready
+flags flat floor floor- floor-1.png floor-2.png floor-auto-cycle-locked floor-auto-deferred
+floor-auto-stable floor-buttons floor-capture-observation floor-changed floor-click-context-stale floor-click-context-unavailable floor-click-coordinate-invalid floor-click-expired
+floor-click-intent floor-click-not-a-control floor-click-observer floor-click-rejected floor-control floor-control-unavailable floor-controls-unavailable-or-ambiguous floor-decision
+floor-evidence-failure-sample-error floor-evidence-failure-sample-queued floor-evidence-missing floor-evidence-unresolved floor-input floor-known floor-layer-group-fit-blocked-transient-motion floor-layer-group-fit-rejected
+floor-manual-hold-ended floor-manual-temporary floor-memory-preload-finished floor-observation floor-observation-disposition floor-observation-evaluated floor-overlay-projected-from-current-floor floor-overlay-reused
+floor-policy-deferred floor-preload-error floor-preload-finished floor-preload-started floor-reference-not-found floor-relation-missing floor-relation-singular floor-relation-unavailable
+floor-relations.json floor-required floor-required-cleared floor-sensor floor-stabilization-exhausted floor-stair-seed-ready floor-state-applied floor-static-sheet-shown-without-spatial-pose
+floor-target-updated floor-transition floor-triplet-not-localized floor-unknown floor-unresolved floor-worker-invalidated floor_buttons floor_hard_locked
+floor_read floor_required floor_var floors focus focus-request-failed focus_force focus_game_from_desktop
+focus_set focused fold follow_symlinks font foreground foreground-change foreground-changed-during-capture
+foreground-denied foreground-lost foreground-not-confirmed foreground-query-failed foreground-return-recapture forget format_tk_geometry forward-flow-failed
+fraction frame frame-captured frame-floor-pending frame-generation-mismatch frame_bgr frame_id frameid
+frames fresh-alignment fresh-floor-evidence-missing fresh-floor-evidence-required fresh-front-door-alignment from front front-anchor-aspect-mismatch
+front-anchor-confirmed-map-mismatch front-anchor-contract-rejected front-anchor-current-floor-mismatch front-anchor-direct-pose front-anchor-direct-pose-attempted front-anchor-direct-pose-authorized front-anchor-direct-pose-committed front-anchor-direct-pose-current-frame-residual
+front-anchor-direct-pose-rejected front-anchor-direct-pose-round-lock-promoted front-anchor-direct-similarity-ready front-anchor-display-state-stale front-anchor-display-state-stale-after-render front-anchor-fields-missing front-anchor-front-member-promotion-rejected front-anchor-generic-reopen-search-skipped
+front-anchor-lock-or-frame-stale front-anchor-manual-current-frame-rechecked front-anchor-map-closed front-anchor-native-display-failed front-anchor-native-display-rejected front-anchor-nonpositive-or-nonfinite front-anchor-overlay-build-failed front-anchor-recognition-route-missing
+front-anchor-reference-geometry-invalid front-anchor-reference-geometry-missing front-anchor-reliability-gate-failed front-anchor-render-route-or-adapter-missing front-anchor-reprojection-mismatch front-anchor-round-group-commit-rejected front-anchor-route-adapter-missing front-anchor-route-bounds-invalid
+front-anchor-route-bounds-missing front-anchor-route-bounds-ready front-anchor-route-orientation-invalid front-anchor-route-outside-client front-anchor-route-projection-invalid front-anchor-scale-out-of-range front-current-frame-route-residual front-door
+front-door-current-frame-insufficient front-door-current-frame-seed front-door-group-index-layout-coverage-invalid front-door-group-index-layout-invalid front-door-group-index-map-coverage-invalid front-door-group-index-member-invalid front-door-group-index-overlap-invalid front-door-group-index-schema-unsupported
+front-door-identity-coverage-invalid front-door-identity-policy-invalid front-door-identity-schema-unsupported front-door-layout-group-coverage-invalid front-door-layout-group-size-invalid front-door-layout-map-coverage-invalid front-door-layout-shadow-ranked front-door-layout-unknown
+front-door-live-test front-door-locked-pose-seed front-door-no-structure front-door-pose front-door-pose-global-recenter front-door-pose-local-refine front-door-shadow-ranked front-entry-floor
+front-entry-scene-anchor-missing front-entry-scene-anchor-not-supported front-entry-scene-explicit-anchor front-entry-scene-gate-rejected front-entry-scene-non-f1 front-entry-scene-visible-map-missing front-exit-anchor-missing front-gate-observation.jsonl
+front-geometry-not-needed front-geometry-preconditions-not-met front-geometry-seed-missing front-geometry-translation-unavailable front-group-current-frame-difference-detected front-group-difference front-group-difference-ambiguous front-group-difference-box-invalid
+front-group-difference-conflicting-positive-evidence front-group-difference-coordinate-metadata-unavailable front-group-difference-evidence-pending front-group-difference-no-switch front-group-difference-not-applicable front-group-difference-pose-invalid front-group-difference-pose-singular front-group-difference-pose-unavailable
+front-group-difference-probe-finished front-group-difference-reference-unavailable front-group-difference-sensor-invalid front-group-difference-sensor-unavailable front-group-difference-stale-ignored front-group-difference-supported front-group-difference-unexplored-or-empty front-group-difference-window-invalid
+front-group-floor-changed front-group-locked front-group-member-conflict front-group-member-conflict-observed front-group-member-promotion-failed front-group-member-switch front-group-member-switch-attempted front-group-member-switch-committed
+front-group-member-switch-deferred front-group-member-switch-rejected front-group-members-current-frame-failed front-group-original-floor-layout-witness front-group-original-floor-semantic-witness front-group-original-member-revoked front-group-resource-changed front-group-shared-anchor
+front-group-shared-seed-current-frame-verified front-group-sibling front-group-sibling-alignment-exhausted front-group-sibling-alignment-started front-group-sibling-context-stale front-group-sibling-context-unavailable front-group-sibling-coordinate-transform-invalid front-group-sibling-current-frame-residual
+front-group-sibling-current-frame-residual-failed front-group-sibling-equivalent-capture front-group-sibling-local-fit-finished front-group-sibling-local-fit-unavailable front-group-sibling-local-v2 front-group-sibling-local-validation-unavailable front-group-sibling-membership-unavailable front-group-sibling-native-overlay-failed
+front-group-sibling-native-overlay-not-shown front-group-sibling-next-member-started front-group-sibling-prepare-failed front-group-sibling-revalidation-started front-group-sibling-shared-pose-unavailable front-group-sibling-stale-reprobe front-group-sibling-state-commit-failed front-group-sibling-state-commit-rejected
+front-group-sibling-state-committed front-group-sibling-target-failed front-group-state front-group-target-current-geometry-verified front-group-target-validation-required front-group-unlocked front-group-v2-current-frame-residual-failed front-identity-current-route-geometry-corroborated
+front-identity-current-route-geometry-rejected front-layout-group-local-identity-insufficient front-layout-group-local-identity-supported front-left-right-exits front-live-accumulated-unique-structure-lock-ready front-live-auto-lock-ready front-live-manual-current-frame-anchor front-live-manual-fallback
+front-live-ranked front-live-singleton-near-door-lock-ready front-live-temporal-lock-ready front-live-test-0.1 front-live-test-started front-local-backtracking-failed front-local-correspondences-insufficient front-local-fit-nonfinite
+front-local-held-out-geometry front-local-held-out-geometry-failed front-local-input-missing front-local-insufficient-current-map front-local-invalid-transform front-local-point-conversion-failed front-local-point-tracking-failed front-local-reference-missing
+front-local-reference-outside-visible-component front-local-scale-plus-translation front-local-structure-points-missing front-local-support-inliers-insufficient front-local-support-ransac-failed front-local-support-validation-split-failed front-local-translation-only front-local-visible-component-missing
+front-long-term-identity-committed front-lr-07-08 front-member-switch front-member-verified front-pose-alignment-finished front-pose-correction-not-materially-better front-pose-failures front-pose-scene-gate-rejected
+front-pose-seed-reference-scale front-pose-translation-unavailable front-provisional-member front-reviewed-group front-route-unavailable front-seed-candidate-not-constructible front-seed-local-current-frame front-seed-local-fit-finished
+front-seed-local-translation front-seed-not-used front-seed-render-spec-unavailable front-seed-stale front-single- front-temporal-accumulated-unique-structure front-temporal-consensus front-temporal-consensus-building
+front-temporal-consensus-ready front-temporal-current-frame-ineligible front-terrain-decision-unavailable front-terrain-scale-consensus front-terrain-translation-consensus front-tl-04-12 front-tr-03-09 front-visible-map-missing
+front_clean_previews front_door_groups.py front_door_layout front_door_layout_recognition.py front_door_live_test.py front_door_recognition.py front_gate_prefilter front_group_difference_is_applicable
+front_group_difference_probe front_group_difference_probe_key front_group_index front_group_sibling_attempted_members front_group_sibling_pending front_group_state frozen full
+full-client full-client-capture-binding-unavailable full-client-frame full-floor-crop-fallback full-floor-expanded full-floor-first-fit full-frame-fallback-crop full-map-registration-disabled
+full-map-registration-features-insufficient full-map-registration-not-found full-map-registration-unconfirmed full-map-shape-unconfirmed full-reference g galleries gallery
+gallery_hide gallery_repeat gallery_return game game-backgrounded game-binding-unavailable game-bound game-client-dc-returned-blank-frame
+game-floor-control game-floor-control-intent game-floor-control-intent-consumed game-floor-control-intent-rejected game-floor-control-intent-stale game-floor-control-switch game-foregrounded game-identity-rejected
+game-lost game-lost-foreground game-mode-changed game-monitor game-native-pixels game-not-bound game-not-foreground game-regained-foreground
+game-rendered-shared-structure game-window-lost game-window-minimized game-window-not-found game-window-unavailable game_control_view game_floor_click_context game_floor_control_intent
+game_foreground game_hwnd game_mode game_structure_mask gate gates gdi-flush-failed gdi32
+generated generation generic geometry geometry-reviewed geometry-verified geometry_fit get
+get_control_snapshot git global global-key glyphs graph graph-adjacent-pairs-insufficient graph-query-empty
+gray grid grid-candidate-budget-unresolved grid-consensus-insufficient grid-descriptor-budget-unresolved grid-no-supported-ratios grid-proposals grid-query-unavailable
+grid-resource-unavailable grid-supported-chains-insufficient grid_chains grid_configure grid_forget grid_rays grid_remove grids
+group group-candidate group-choice-context-expired group-choice-requested group-context-stale group-default group-heldout-plus-visible-variant-selection group-member-awaiting-geometry
+group-missing group-recovery group-score-margin group-state group-state-no-longer-accepts-target group-unavailable group: group_for
+group_id groupid groups guard h h0 h1 hand2
+handle_list handled handles handoff hang-diagnostics hang-watchdog-snapshot hang_watchdog hard-lock-deferred
+has_registered_floor hashed heading healthy height held heldout help
+help-topics.json help.png helper helper-must-use-separate-executable helper-not-installed helper-result- helper-started hi
+hidden hidden-current-frame hide hide_control hide_for_new_frame high highlight-detected highlightbackground
+highlightcolor highlightthickness historical-record-invalid historical-replay historical-transaction-not-terminal history history-journal-missing history-object-limit
+holder holding holdout holdout_coverage home home-preview home.png home_grid
+homography horizontal horizontal-door-at-left-end horizontal-door-at-right-end horizontal-door-not-at-end hotkey hotkey-capture-started hotkey-listener-armed
+hotkey-listener-health hotkey-settings-recovered hotkey-short-press-recovered hotkey_capture_active hotkey_capture_button hotkey_editor hotkey_editor_snapshot hotkey_feedback_var
+hotkey_name hotkey_settings_warning hotkey_var hotkey_vk http https https-required human-confirmation-source-mismatch
+human-confirmed human-confirmed-in-daily-assistant human-labeled-live-entrance human-review-feedback.json human-review-pending human-visual-review-marginal-live-game-not-verified human-visual-review-passed-live-game-not-verified hwnd
+hypotheses hypothesis icon icon-below-local-reliability-threshold id idempotent identity identity-committed
+identity-confirmed-pose-pending identity-evidence-incomplete identity-failure-sample-skipped identity-invalid identity-locked identity-mismatch identity-not-unique identity-not-uniquely-verified
+identity-path-linked identity-pending identity-rank identity-rejection identity-rerank-not-alignment identity-too-large identity-unavailable identity-unresolved
+identity_floors identity_profile_for_map identity_profile_id identity_profiles identity_root identityv identityv-app-version-v1 identityv-assistant.manifest
+identityv-hang-watchdog identityv-nightmare-alignment-acceptance-v1 identityv-nightmare-alignment-failure-v1 identityv-nightmare-alignment-rejection-v1 identityv-nightmare-alignment-success-evidence-v1 identityv-nightmare-author-coordinate-adapters-v1 identityv-nightmare-b1-f1-layer-relations-v1 identityv-nightmare-canonical-coordinate-pack-v1
+identityv-nightmare-canonical-floor-calibration-v1 identityv-nightmare-clean-front-previews-v1 identityv-nightmare-cross-floor-atlas-v2 identityv-nightmare-entry-recognition-index-v1 identityv-nightmare-front-door-identities-v1 identityv-nightmare-front-live-test-validation-v1 identityv-nightmare-portable-layout-seeds-v1 identityv-nightmare-stair-anchors-v1
+identityv-nightmare-structure-signatures-v1 identityv-nightmare-user-route-canonical-candidate-v1 identityv-primary-preload identityv-release-identity-v1 identityv-safe-diagnostic-export-v2 identityv-safe-diagnostic-export-v3 identityv-secondary-floor-preload identityv-voice-navigation-prototype-v1
+identityv-window-environment-v1 identityv_daily_assistant identityv_daily_assistant.py identityv_test_button.py idle idle_repeated_operations idvb0059-coverage-unavailable idvb0059-display-built
+idvb0059-fast-bootstrap idvb0059-retained idvb0059-retained-display idvb0059-steady idvb0059-steady-wrapper idvb0059-vpsg3-current-frame ignore ij
+image image-byte-limit images implausible-display-geometry implausible-import-geometry implausible-jump import import-audit-already-started
+import-audit-executable-not-owned-copy import-audit-input-fields import-audit-input-integrity import-audit-input-manifest-size import-audit-input-package-id import-audit-input-path import-audit-input-set import-audit-invalid-inventory-boundary
+import-audit-invalid-link-boundary import-audit-invalid-owned-root import-audit-marker-mismatch import-audit-meipass-not-owned-copy import-audit-metadata-too-large import-audit-noncanonical-root import-audit-ownership-mismatch import-audit-release-identity-mismatch
+import-audit-reparse-point import-busy import-cancelled import-client import-helper-launch-not-confirmed import-helper-result-unavailable import-receipt import-rejected
+import-request-cancelled import-scenario.json import-start-failed import-started.json import.lock import_resource_page improvement included
+incomplete independent-fixed-coordinate-chart independent-open-candidate-inconsistent independent-spatial-heldout-sift independent-structure-consensus indeterminate index index-content-length-mismatch
+index-not-configured index-size-limit index.json index_digest indexed indexed-structure-pose inf info
+initial initial-confirmed-map-v2 initial-or-unknown initial-side-door-fast-v2 initial-structure initial-structure-ambiguous initial-structure-author-unverified initial-structure-candidate
+initial-structure-coordinate-mismatch initial-structure-current-geometry-failed initial-structure-descriptor-budget-unresolved initial-structure-identity-not-current initial-structure-no-chain-ratios initial-structure-query-unavailable initial-structure-resource-unavailable initial-structure-supported-chains-insufficient
+initial-structure-v2 initial-structure-validation-budget-unresolved initialize-timer.stop injected-fixture injected-poll-fixture inliers input input-
+input-failure inputs inputs.json insertbackground inside-down inside-left inside-right inside-up
+inspect inspect-recovery inspect-remove inspect_author_package_removal inspect_engine_resources inspect_map_package inspection install
+install_root installation installation-profile.json installation-root-missing installed installed-package-changed installed-package-dependencies-unrecorded installed-package-dependency-conflict
+installed-package-owned-conflict installed-receipt-changed installed-receipt.json installed-resource-unavailable installed-restart-required installing instance insufficient-anchors
+insufficient-current-map-pixels insufficient-multi-anchor-evidence insufficient-side-door-evidence insufficient-stable-evidence insufficient-support insufficient-wall-edges integrity intent
+interaction intermediate-fit-not-authorized intervals invalid invalid-additions-entry invalid-additions-entry-count invalid-additions-journal invalid-additions-receipt-record
+invalid-additions-stage invalid-additions-staged-identities invalid-alignment-acceptance invalid-alignment-failure invalid-alignment-rejection invalid-alignment-success-evidence invalid-archive-count invalid-archive-sha256
+invalid-automatic-sample-path invalid-base-inventory invalid-base-manifest-bundle-id invalid-base-manifest-schema invalid-base-path invalid-base-pending-pointer invalid-base-repair-blocked-path invalid-base-repair-entries
+invalid-base-repair-file-identity invalid-base-repair-journal invalid-base-repair-old-target invalid-base-repair-state-entry invalid-base-repair-target invalid-base-retired-record invalid-base-transaction-id invalid-cache-
+invalid-candidate invalid-candidate-index invalid-control-layout-display-options invalid-control-layout-modules invalid-control-layout-order invalid-control-layout-schema invalid-dependency-path invalid-diagnostic
+invalid-display-transform invalid-file-inventory invalid-file-record invalid-floor invalid-frame invalid-helper-request invalid-image-header invalid-index-json
+invalid-index-package invalid-input-context invalid-installed-package-receipt invalid-isotropic-seed invalid-json invalid-json-object invalid-legacy-author-inventory invalid-map-bounds
+invalid-map-rectangle invalid-mode invalid-nightmare-memory-label invalid-or-duplicate-file-record invalid-or-unreadable invalid-owner invalid-parent-identity invalid-partition
+invalid-path invalid-pending-upgrade-pointer invalid-pointer-input invalid-process-id invalid-profile-to-canonical-matrix invalid-recovery-plan invalid-recovery-request invalid-request-id
+invalid-sample-path invalid-selection invalid-target invalid-timeout invalid-transform invalid-upgrade-blocked-paths invalid-upgrade-cache-inventory invalid-upgrade-change-inventory
+invalid-upgrade-digest invalid-upgrade-entry invalid-upgrade-entry-count invalid-upgrade-file-identity invalid-upgrade-journal invalid-upgrade-metadata-file invalid-upgrade-package-id invalid-upgrade-receipt-proof
+invalid-upgrade-receipt-record invalid-upgrade-retired-journal invalid-upgrade-stage invalid-upgrade-transaction-id invalid-url invalid-url-port invalid-visible-map-bounds invalid-wait-deadline
+invalidate invalidate_asset_availability invalidated invoke ipadx ipady is_current is_junction
+is_set isolated issue. issues item iterations job journal
+journal- journal-byte-limit journal-changed journal-invalid journal-invalid-timestamp journal-link-unavailable journal-missing journal.json
+journals jpeg jpg json junctions kernel32 key keyboard
+ki kind kinds known known_boundary label labeled-live-evidence-disagreement labeled-live-evidence-unconfirmed
+landmark landmarks large_translation_validation_event last last-import-result.json last-recovery-result.json last-verified-front-pose last-verified-shared-pose
+last_alignment_failure_signature last_difficult_evidence last_error last_live_translation_rejection_log_at last_live_translation_rejection_reason last_mouse_delta_batch_meta last_probe_close_deferred_log_at last_reuse_correction_pending
+last_reuse_display_verified last_reuse_rendered_profile_residual last_reuse_stage_timings last_spatial_route_hidden_reason last_ui_sound_at latched-short-press late-background-result late-cache-local-revalidate
+late-recognition-outside-strict-window latency latest latest-frame-rendered-profile-unverified latest-mask latest_map_probe_event latest_status.json launch-import
+launch-recovery launcher-is-not-installed-application layer layer-metadata-missing layer_role layers layout layout-anchor
+layout-anchor-live-relocalized layout-anchor-matrix-invalid layout-anchor-unavailable layout-preview layout_surface layout_surface_catalog layouts learning
+leave-one-out-error-too-large left left-right legacy legacy- legacy-adopted legacy-alignment-writer-bypassed legacy-author-file-changed
+legacy-clean legacy-clean-compatibility-unavailable legacy-clean-working-draft legacy-difficult-route legacy-display-set-not-exact legacy-external-readonly-pack legacy-import- legacy-not-recorded
+legacy-physical-v1 legacy-receipt- legacy-recognition-pixels legacy-round-layer-writer-bypassed legacy-route-structure legacy-shared-binary legacy-shared-structure-via-floor-1 legacy-single-candidate
+legacy-tk legacy-unverified legacy-verified-fallback legacy-verified-preferred legacy_bindings legal-captured-frame-unavailable length lengths
+level level-edge lianghapi lianghapi-01-07-alternative-audit.json lianghapi-01-07-axis-human-review-feedback.json lianghapi-duo lianghapi-rejected-fallback-human-review-feedback.json lianghapi-single
+lianghapi-transport-human-review-feedback.json library lifecycle lifecycle-detail.jsonl lifecycle. lifecycle_trace limit limits
+linear lines link-probe- linked linked-file linked-history-object linked-target links
+list listener-start-blocked listener-started listening little live live-client-capture live-events-
+live-exemplar-low-score live-ground-truth.json live-import-requires-idle live-import-requires-restart live-overlay live-overlay-pixel-translation live-overlay-translation live-recognition-orchestration-not-extracted
+live-removal-requires-idle live-runtime-requires-full-client-capture live-stair-motion live-translation-sources-disagree live-translation-unverified lo load load-error
+load_for_route load_saved_pose load_saved_result load_shared_reference load_shared_structure loaded local local-exit-rectangle
+local-fast-success local-fit-and-author local-fit-and-shared-structure local-key local-lifecycle-trace local-package-selected local-proposal-only local-rectangle-not-found
+local-rectangle-weak local-seed-unavailable local-structure local-user-accepted-prior local-wall-pose-candidates localized-ambiguous localized-triplet locked
+locked-first-full-frame locked-fit-near-pass-retry-cancelled locked-fit-near-pass-retry-scheduled locked-fit-near-pass-retry-started locked-map-current-frame-unavailable locked-map-drift-translation-only locked-map-upstairs-local-fit-finished locked-map-upstairs-local-only
+locked-map-upstairs-local-recovery-failed locked-map-upstairs-local-shift-exceeded locked-round-background-fit-discarded locked-round-drift-translation-only locked-round-full-fit-result-ignored locked-round-full-fit-skipped locked-round-full-fit-start-blocked locked-round-full-fit-worker-aborted
+locked-round-passive-recovery locked-round-stale-full-fit-restart-skipped locked-round-translation-only locked-round-translation-only-recovery-failed locked-round-translation-recovery-failed locked-selected-map-background-revalidated locked-selected-map-relocalization locked-selected-map-relocalization-started
+locked-translation-evidence-budget-exhausted locked-translation-time-budget-exhausted locked-upstairs-portal-wide-search-disabled locked_fit_retry_after_id locked_fit_retry_count locked_fit_retry_key locked_summary log_lock
+log_path logical-group logical-group-changed logical-group-pending logs loss lost low
+low-confidence-or-degenerate lower ls-files lstat m main main-entry-passport main-import-request.json
+managed managed-remnants managed_author_packages_snapshot managed_surface manifest manifest-missing-or-too-large manifest-not-object manifest-owned-transaction-before-runtime
+manifest.json manual manual-action-error manual-confirmation manual-correction-tool manual-floor-switch manual-group-intent-superseded-automatic-material manual-group-intent-superseded-work
+manual-group-member manual-group-member-material-verified manual-group-pixels-moved manual-group-probe manual-group-reselection manual-hold-deferred manual-identity-confirmed manual-map-changed
+manual-map-confirmation manual-or-internal manual-required manual-retry-limit manual-temporary manual_map map map-01
+map-02 map-03 map-04 map-05 map-06 map-07 map-08 map-09
+map-10 map-11 map-12 map-13 map-14 map-15 map-16 map-17
+map-18 map-19 map-20 map-21 map-22 map-23 map-24 map-25
+map-26 map-27 map-28 map-anchor-not-ready map-anchor-pool-refreshed map-anchor-reopen-translation map-anchors-insufficient map-auto-pan-follow
+map-auto-pan-inverse-correction-suppressed map-auto-pan-post-correction-phase-quarantined map-auto-pan-suppressed-during-pose-settle map-auto-pan-unanchored-phase-rejected map-backdrop-insufficient map-canvas map-canvas-texture-mismatch map-capture-attempt
+map-capture-error map-close map-close-control map-close-control-edge-hidden map-closed map-closed-candidate-cached map-closed-late-result map-crop-unproven
+map-drag-settled map-drag-transient-visual-follow-settled map-drift map-drift-detected map-drift-profile-retained map-drift-revalidation map-evidence-insufficient map-floor-observation
+map-hotkey map-input map-input-intent-invalid map-input-reset map-input-resources-busy map-input-sequence-expired map-interface-detected map-key
+map-key-capture-request map-key-open map-key-pressed map-key-visual-check map-key-visual-check-error map-key-visual-check-rejected map-key-visual-closed map-live-translation-rejected
+map-locked map-locked-pose-pending map-locked-pose-uninitialized map-motion-baseline-rebased map-not-confirmed map-not-observed map-not-open map-not-open-stale-ignored
+map-not-ready map-open map-open-auto-probe map-open-preparation map-open-preparation-deadline map-open-recognition-pending map-open-recovery map-open-recovery-exhausted
+map-open-recovery-pending map-open-recovery-waiting map-open-trigger map-open-verification-in-progress map-opening map-package-additions-v1 map-package-close-failed map-package-helper-cancel-failed
+map-package-helper-cancelled-finished map-package-helper-poll-failed map-package-helper-started map-package-inspect map-package-inspected map-package-live-completed map-package-owned-upgrade-v1 map-package-pending-upgrade-v1
+map-package-removal-v1 map-package-removals map-package-upgrade-retired-v1 map-package.json map-packages map-position-jump-followed map-position-jump-relocalize map-preparation
+map-preparation-unconfirmed map-preview map-probe map-probe-close-deferred-during-alignment map-probe-close-deferred-verified-cycle map-probe-drag-stale-ignored map-probe-indeterminate-ignored map-probe-latest
+map-probe-observed map-probe-precommit-close-ignored map-probe-stale-ignored map-probe-start-failed map-ready-begin map-ready-full-checked map-ready-full-unavailable map-ready-stopped
+map-recovery-ended map-recovery-pending map-recovery: map-refresh-not-active map-reopen map-reopen-floor-switch map-reopen-no-reusable-layer map-reopen-round-layer-group-check
+map-retrieved-awaiting-registration map-route map-structure-changed map_auto_pan_updates map_browser map_cycle_state map_id map_identity_pose_pending
+map_input_observation_is_current map_is_open map_micro_motion_accumulator map_micro_motion_history map_motion_visual_settle_log_at map_motion_visual_settle_reason map_motion_visual_settle_until map_name
+map_open_intent map_package_import_snapshot map_probe_event_lock map_probe_event_pending map_probe_generation map_probe_signature map_reselection map_resource_browser
+map_resources_page map_visual_suppressed maps margin marginal-pass marked-direction-or-context-insufficient marked-entrance-low-margin marked-entrance-unconfirmed
+marked-exit-anchor-not-found marker-projection-compositor-rejected marker-provisional-geometry-pending mask mask-only-preserve-all-content master match material
+material-context-expired material-prior-not-remembered material-prior-remembered material-remember-queued material-token-expired-or-already-accepted matrices matrix matrix-anisotropy
+matrix-degenerate matrix-determinant matrix-determinant-not-finite-or-at-most-1e-9 matrix-nonfinite matrix-nonpositive-axis matrix-not-affine matrix-not-finite-3x3 matrix-rotation-or-shear
+matrix_source_to_client max max_bytes max_entries max_files max_records maximized maximum_dimension
+maximum_relative_scale_correction measured median medium member-verified-current-frame member-verified-current-frame-direct-pose member_ids members
+memory memory-error memory-error-for-previous-target memory-root-unavailable memory-save-failed memory-saved memory-store-or-frame-unavailable memory_root
+memory_store message metadata metadata-only method metrics mi migration
+migration-metadata-invalid milliseconds minimal minimap minimized minimum_coverage minimum_visible_pixels mismatch
+missing missing-door-anchor missing-frame-or-route missing-hwnd missing-integrity-rid missing-integrity-sid missing-or-incompatible-dependency missing-or-incompatible-dependency:
+missing-resource: missing: mm mode mode-changed mode-preference-changed mode-resource-load-failed mode-resources-unavailable
+mode-selected mode_resource_error mode_route_profiles model modified modified-author-file: modified-or-unverified monitor
+monitor- monitor_info monitor_topology_signature motion mouse mouse-close-control mouse-drag-boundary-transition mouse-drag-delta
+mouse-drag-end mouse-drag-input mouse-drag-input-prioritized mouse-drag-motion mouse-drag-post-probe-cancelled mouse-drag-post-probe-started mouse-drag-post-probe-unavailable mouse-drag-prediction-click-ignored
+mouse-drag-prediction-end mouse-drag-prediction-start mouse-drag-source-refresh mouse-drag-source-refresh-fallback-failed mouse-drag-source-refresh-fallback-throttled mouse-drag-start mouse-drag-start-stale-ignored mouse-drag-transient
+mouse-drag-transient-cleared mouse-drag-transient-committed mouse-drag-transient-settled mouse-up mouse_delta_accumulator mouse_delta_event_pending mouse_delta_first_at mouse_delta_last_at
+mouse_delta_lock mouse_delta_sample_count mouse_drag_base_transform mouse_drag_coalesced_input_samples mouse_drag_fallback_last_render_at mouse_drag_input_to_present_ms mouse_drag_prediction_active mouse_drag_prediction_pending
+mouse_drag_prediction_updates mouse_drag_presentation_mode mouse_drag_preview_offset mouse_drag_preview_outside_screen mouse_drag_preview_overlay mouse_drag_probe_generation mouse_drag_render_times_ms mouse_drag_source_refresh_after_id
+mouse_drag_source_refresh_count mouse_drag_source_refresh_generation mouse_drag_source_refresh_offset mouse_drag_source_refresh_times_ms mouse_drag_surface_visibility_generation mouse_drag_verified_offset mouse_drag_work_invalidated move
+move_by move_sheet moved moveto ms msyh.ttc msyhbd.ttc multi-anchor
+multi-anchor-consensus multipoint multipoint-common-features-insufficient multipoint-feature-geometry-unique multipoint-fit-accepted multipoint-fit-below-threshold multipoint-geometry-disagreement multipoint-live-acceptance.json
+multipoint-live-features-insufficient multipoint-masked-source-unavailable multipoint-profile-unavailable multipoint-ransac-unavailable multipoint-reference-features-insufficient multipoint-reference-unavailable mutual-partial n
+name names nan narrow-4x3 native- native-adjacent-pairs-insufficient native-call-return-not-screen-presentation native-close-failed
+native-context-or-type-unavailable native-corner- native-corner-binding-mismatch native-corner-evidence-matrix-mismatch native-corner-matrix-anisotropy-exceeded native-corner-pair-node-binding-invalid native-corner-pairs-not-reconstructed native-corner-reconstruction-unavailable
+native-corner-reference-author-residual-exceeded native-corner-source-binding-mismatch native-corner-support-holdout-overlap native-corner-support-or-holdout-insufficient native-corner-support-spread-insufficient native-crop-to-floor-local-grid-origin native-group-review-completed native-group-target-stale
+native-identity-inventory-incomplete native-input native-monitor-info-unavailable native-monitor-unavailable native-move-unavailable native-overlay-error: native-overlay-not-shown native-point-heldout-verified
+native-refined-shift-out-of-range native-sibling-committed native-sibling-context-expired native-sibling-discarded native-sibling-result-stale native-similar-group native-similarity native-similarity-conditions
+native-similarity-groups native-similarity-unavailable: native-static-corner-registration native-structure-version-bindings native-translation-geometry-unverified native-turn-constellation native-window-anchor-v1 native_context
+native_dpi_restore native_mask native_similarity_context_provider native_similarity_index native_similarity_state native_wall_segments nav_ nav_mark
+navigation-landmark-unresolved ndim ne nearby-entry-direction nearest-compatible-scene nearest-verified-scene-profile neck-direction-conflict need-fresh-full-frame
+needs-user network network-or-file-error neutral neutral-local new new-authorization new-capture
+new-capture-request new-frame new-map-input new-observation new-pointer-press new-round-recovery-requested next next_candidate
+nightingale nightmare nightmare- nightmare-01 nightmare-03 nightmare-03-only nightmare-04 nightmare-05
+nightmare-06 nightmare-07 nightmare-08 nightmare-09 nightmare-10 nightmare-12 nightmare-author-coordinate-adapters.json nightmare-author-route-catalog.json
+nightmare-author-structure-index.json nightmare-b1-f1-layer-relations.json nightmare-canonical-coordinate-pack.json nightmare-cross-floor-atlas.json nightmare-direction nightmare-entries nightmare-entry-recognition-index.json nightmare-equal-scale-v1
+nightmare-exit nightmare-exit-anchors.json nightmare-floor-coordinate-calibration nightmare-front-door-clean-previews.json nightmare-front-door-identities.json nightmare-front-live-test nightmare-lianghapi nightmare-live
+nightmare-map-pack.json nightmare-maps nightmare-math nightmare-memory nightmare-mode-required nightmare-multi-author-v1: nightmare-nightingale nightmare-pack-layer
+nightmare-portable-layout-seeds.json nightmare-portable-seed-validation- nightmare-shared-structure-index.json nightmare-shared-validation- nightmare-stair-anchors.json nightmare-suju nightmare-suju-speed nightmare-ui-smoke-
+nightmare-wang-qingxin nightmare-zhan10 nightmare_candidate.py nightmare_resource_root no no-anchor-tracker no-approved-legacy-release no-authoritative-map-level-registration
+no-bound-game no-candidate no-candidate-selected no-candidates no-compatible-layout no-current-frame no-current-live-grant no-feature-model
+no-floor-matched-live-exemplar no-floor-spatial-outline no-frame no-geometric-model no-live-exemplar no-managed-author-files no-matching-identity no-matching-saved-frame
+no-observed-fragments no-partial-candidates no-pending-additions no-pending-base-repair no-pending-upgrade no-primary-screen no-result no-reviewed-b1-room-anchor
+no-reviewed-sibling-available no-reviewed-sibling-passed-current-frame no-session-overlay no-spatial-outline no-supported-native-group no-two-stair-locked-axis-consensus no-v2-current-frame-candidate no-visible-map-component
+node-id-not-int node-out-of-range nodes non-code-value non-finite-transform non-live-evidence non-local-archive non-translation-correction
+non-windows noncanonical-path nonce none nonfinite normal normal-waiting normalized_rect_to_client
+not-applicable not-applied-no-reliable-current-frame-shape-or-door-count not-base-or-duplicate not-bound-game not-captured not-configured not-drag-handle not-editing
+not-evaluated-geometry-failed not-file not-installed not-live-bound-game-capture not-loaded not-managed not-needed not-nightmare
+not-object not-performed not-preloaded not-probed not-provided not-ready not-recorded not-requested
+not-run not-saved not-scored-direction-pruned not-started not-stopped not-terminal not-tested note
+npz ns nsew nt nw object: objects observation
+observation-already-terminal observation-exception observation-not-active observation-result observation-unavailable observations observe_coverage observe_game_drag
+observed observed-floor-button observed-floor-changed observed-only obsolete obsolete-completion-drained obsolete-resource-preload obsolete-ticket-ignored
+occupied official-core-or-shared offline-human-reviewed-live-test offline-multi-landmark-atlas offline-player-reviewed-coordinate-binding-trial offline-profile-reviewed-current-frame-search-seed offline-review-ready-candidate-not-human-approved offline-source-structure-verified
+offline-stair-candidate offscreen offset ok old omitted on onboarding
+onboarding-completed onboarding-control-trial onboarding-step-changed onboarding_accent_color onboarding_action_button onboarding_active onboarding_coffin_variant_box onboarding_coffin_variant_row
+onboarding_hotkey_capture_button onboarding_hotkey_editor onboarding_panel_editor onboarding_route_box onboarding_trial_snapshot onboarding_trial_view onboarding_window one
+one-way-strict online-archive-binding-mismatch online-archive-size-mismatch online-binding online-map-package online-map-packages-completed online-operation-busy online-unavailable
+online: online_map_packages_snapshot online_packages opacity opacity-display-update-failed open open-current-frame open-cycle-drag-current-frame-verified
+open-cycle-drag-floor-switch: open-cycle-pose-frozen open-cycle-pose-restore-unavailable open-cycle-pose-restored open-cycle-pose-verified-on-close open-doorway-midpoint open-map-cycle open-process-
+open-to-overlay-hard-budget-exhausted open-token- open_control_layout_settings open_cycle_drag_cycle_id open_cycle_drag_map_id open_cycle_drag_offset open_cycle_observations open_cycle_pose_snapshot
+open_cycle_transient_motion open_cycle_zoom_transform opened opening-floor-state-applied operation operation-exception optional_author_displays options
+orb orb-docked orb-visibility-changed orb_body orb_canvas orb_drag_moved orb_menu orb_mode_text
+orb_press_origin orb_recognition_progress orb_shadow orb_state orb_state_badge orb_state_text orb_status_dot orb_status_pill
+orb_status_pill_after_id orb_visibility_enabled order ordinal ordinary-or-ambiguous-outline ordinary-structure ordinary_resize_ orientation
+orientation-conflict origin original-identity-and-current-material-verified original-identity-pending original-sheet-alpha original-sheet-layer original-sheet-outside-screen original-sheet-too-small-or-outside-screen
+original-source-and-target-positive-pixel-centers os. os.chmod os.link os.listdir os.mkdir os.remove os.rename
+os.rmdir os.scandir os.startfile os.symlink os.system os.utime other out-of-reference
+outcome outline outline-too-small output outputs outside-current-group outside-package outside-reviewed-front-entry-scope
+overlay overlay-background-warm overlay-build-failed overlay-calibration-invalid-client-size overlay-calibration-profiles.json overlay-calibration-unavailable overlay-calibrations.json overlay-client-size-out-of-profile-range
+overlay-diagnostic overlay-display-epoch-committed overlay-hide-request-consumed overlay-hide-request-failed overlay-hide-requested overlay-layer-unavailable overlay-live-anchor-accepted overlay-live-anchor-ambiguous
+overlay-live-anchor-appearance-rejected overlay-live-anchor-evidence-missing overlay-live-anchor-low-template-score overlay-live-anchor-malformed overlay-live-anchor-out-of-frame overlay-live-anchor-residual-too-high overlay-live-anchor-scale-inconsistent overlay-live-anchor-unavailable
+overlay-native-call-slow overlay-native-error-fallback overlay-not-built overlay-presentation.json overlay-ready overlay-retained-presented overlay-shown overlay-visibility-lock-wait
+overlay-visible overlay_display_epoch overlay_display_signature overlay_verified_at overview overwrite owned-input-copy owned-installed-author-image
+owner owner-destroyed owner-focus-lost owner-hidden owner.marker ownership ownership-changed ownership-unavailable
+ownership.json p90 pack pack-error pack_configure pack_forget pack_id package
+package- package-remove package-runtime-mismatch package-size-limit package-size-or-sha-mismatch package-unreadable package_manager package_metadata
+packaged packages packages-partially-removed packages-removed packed padding padx pady
+page page: page_ page_motion pages pair pair-04-12-difference-ambiguous pair-04-12-difference-supported
+pair-04-12-not-applicable pair-coordinate-shape pair-data-or-split-not-reconstructed pair-game-point pair-node-data-mismatch pair-source-point pair0412 pairs
+pan.quark.cn panel panel-collapsed panel-hidden panel: panel:collapsing panel_arrow panel_icon
+parent parent-creation-time-mismatch parent-executable-mismatch parent-handle-pid-mismatch part partial partial-display-residual-unverified partial-known-wall-conflict
+partial-map-too-small partial-multipoint-fit-accepted partial-structure-ambiguous partial-structure-dice partial-structure-visual-residual partial-wall-candidate-failed partial-wall-fit-speed-first partial-wall-fixed-linear
+partial-wall-held-out-failed partial-wall-independent-planes-insufficient partial-wall-native-similarity partial-wall-similarity-speed-first partial_math_lanes partition pass pass-through-hook
+passed passive-map-probe passport passports patch path path-not-in-data-allowlist payload-expired
+pending pending-additions.json pending-base-repair.json pending-click-mismatch pending-marker-invalid pending-marker-unwritable pending-pointer.json pending-removal.json
+pending-sibling-not-current-live pending-upgrade pending-upgrade-journal-missing pending-upgrade-pointer-changed pending-upgrade-pointer-could-not-be-cleared pending-upgrade-recovery-required pending-upgrade.json pending:
+pending_sibling_payload per-monitor per-monitor-v2 permission-denied persisted persistent-manual phase phase-check-not-due
+phase-client-size-changed phase-geometry-disagrees phase-jump-too-large phase-mask-unavailable phase-nonfinite phase-over-anchor phase-relocalization phase-relocalized
+phase-reopen phase-reopen: photo picture pid pitch pixels place
+place_configure place_forget plan planes platform platform-not-supported play player-cancelled
+player-marker player-marker-ambiguous player-marker-not-found player-marker-unique player-marker-unverified player-rejected-alignment player-visual-marginal-pass-current-frame-required player-visual-pass-current-frame-required
+png point point-pairs point-projection pointer-cancelled pointer-context-changed pointer-context-provider-changed pointer-context-unavailable
+pointer-drag- pointer-editing-active pointer-generation-expired pointer-gesture-failed pointer-gesture-started pointer-input pointer-input-inactive pointer-listener-disabled
+pointer-motion-overflow pointer-native-query-failed pointer-outside-drag-boundary pointer-press-before-current-frame pointer-queue-overflow pointer-rejected pointer-resources-busy pointer-sequence-invalid
+pointer-source-stopped pointer-target-changed pointer-text-entry-active pointer-window-not-current pointer_generation pointer_installed points policy
+poll pool pools portable-cross-floor-seeds portable-layout-seed-current-frame portable-layout-seed-current-frame-unverified portable-layout-seed-current-frame-verified portable-layout-seed-revalidation-finished
+portable-neutral-seed-local-translation portable-neutral-seed-wide-translation portable-seed-translation-unavailable portable_layout_seed_candidates portable_seed_path ports pose-attempt pose-fit
+pose-fit-failed pose-index-disabled pose-index-error pose-index-no-candidates pose-index-unavailable pose-replay pose-result pose-seed-ready
+pose-snapshot-input-unverified pose_by_map pose_index_candidates pose_origin poses position position-jump positive-consensus
+positive-differences positive-native-footprint-only post-capture-foreground post-commit-current-frame-failed post-correction-inverse-motion-suppressed post-correction-phase-motion-quarantined post-drag-floor-conflict post-drag-observation-current
+post-drag-probe post-entry-positive-structure post-pose-local-recovery post_correction_inverse_guard_delta post_correction_inverse_guard_floor post_correction_inverse_guard_hits post_correction_inverse_guard_map_id post_correction_inverse_guard_until
+post_drag_probe_after_id pre-open-cycle-motion precision preference-disabled preferences preferences-committed preferences_surface preferred
+preferred_route_profile_id preload-error preparation preparation-deadline preparation-exception preparation-incomplete-retained-for-recovery prepare prepare-current-member
+prepare-member prepare_round prepared prepared-current-frame preparing present presentation presentation-
+presentation-context-changed presentation-context-pending presentation-hide presentation-profile-stale presentation-publish preserved preserved-items press
+press- pressed presses preview previous previous_candidate primary primary-fallback
+primary_profile_to_canonical prior prior-only-revalidate-current-frame privacy probable probe probe_map_after_drag problem-repeat-count-checkpoint-dropped
+problems process process-exited process-identity-changed process-identity-changed-during-check process-identity-query-failed process-image-unavailable process_integrity
+processed-author-axis-locked-via-lianghapi-current-frame-required processed-author-axis-locked-via-zhan10-speed-current-frame-required processed-author-direct-axis-locked-current-frame-required producer-source-png-pixels product production production: profile
+profile-cross-floor-current-frame profile-cross-floor-current-frame-residual-failed profile-cross-floor-current-frame-too-small profile_has_assets profile_id profiles progress progressive-pose-candidate-evicted
+progressive-pose-candidate-retained progressive-pose-candidate-stale progressive-pose-seed-pending progressive-pose-seed-reused progressive-retry progressive_pose_seed_cache projected-quad-invalid projection
+projection-illegal-homogeneous-matrix projection-illegal-homogeneous-output projection-matrix projection-output projection-points projection-token-expired protected provenance
+provider provisional provisional-floor-current-frame-unverified provisional-floor-revalidation provisional-member-current-frame-fit-failed provisional_floor_evidence_signature provisional_floor_evidence_work_key provisional_floor_geometry_state_key
+provisional_member_id psapi pt publish publish-metadata publish-transform put px
+qlonglong qsize qt-client- qt-client-runtime qt-client-startup-error.txt qt-client-summary.json qt-editor-base qt-import-notice-seen.json
+qt-import-pending.json qt-isolated qt-lab-installation qt-lifecycle qt-lifecycle-detail qt-logical-v1 qt-no-implicit-legacy-import.json qt-pass-through-keys
+qt-production qt-quick-isolated-v1 qt-recognition-diagnostic qt-recovery-pending.json qt-runtime-problem qt-runtime-problem-summary qt-runtime-transition qt-update-state.json
+qt_adapters qt_base_display qt_catalog qt_custom_display qt_logical_group_registry qt_native_context qt_optional_displays qt_resource_inventory
+qt_shared_provider qualified quality quark query query-has-insufficient-structure-features queue-capacity queue-displaced
+queued queued-render-replaced quick quick-round quick-start quick_connection_var quick_diagnostic_button quick_end_round_button
+quick_main_button quick_panel quick_start_round_button quick_surface radius raise rank rank-outside-sampling-window
+rank_entry rank_established_group rank_saved_frame ranked ranked-current-frame ranked-opening-capture ranked-provisional-group-stale-ignored ranked-stale-hidden
+ranking ratio ratios raw raw-input raw-mouse-input-expired raw-mouse-observation-failed rays
+rb read read-only readable readlink readonly ready ready-after-deadline
+ready-full-frame ready-full-frame-verified real-game-based-author-crops reason reason-not-provided reasons receipt receipt.json
+recognition recognition-alignment recognition-current-frame recognition-diagnostic recognition-discarded-map-closed recognition-rate-limit recognition-to-canonical-conversion-unavailable recognition-unaccepted
+recognition_rank_history recognize recognize_live recognized reconstruction recorded recording records
+recover recover_map_open recovered recovering recovery recovery-author-refinement-unverified recovery-current-frame recovery-expired
+recovery-helper-launch-not-confirmed recovery-helper-path-mismatch recovery-helper-result-unavailable recovery-history recovery-operation-no-longer-valid recovery-plan-changed-reinspect-required recovery-receipt recovery-request-changed
+recovery-request-path-mismatch recovery-request-too-large recovery-required recovery-target-changed-during-inspection recovery-target-not-regular recovery.cancel recovery_anchor_tracker recovery_anchor_tracker_key
+recovery_anchor_trackers rect rectangle rectangle-too-square redirect-limit redirect-location-missing reduce_motion reference
+reference-center reference-controls reference-domain reference-edit-active reference-image-ready reference-image-unavailable reference-missing reference-move-active
+reference-move-cancelled reference-move-finished reference-move-started reference-move-unavailable reference-opacity-display-update-failed reference-placement reference-placement-rejected reference-pointer
+reference-preview reference-preview-unavailable reference-publish reference-ready reference-room-not-qualified reference-sheet reference-size-mismatch reference-visibility-save-failed
+reference-visibility-saved reference: reference:preview: reference_editor_surface reference_opacity reference_payload reference_preview reference_sheet_snapshot
+reference_sheet_visibility_enabled reference_surface references refine_cross_floor_seed_from_live_landmark refine_selected_route_translation_fast refinement refiner-unavailable-or-no-result refresh
+refresh-after-remove refresh-after-write refresh-cancelled-or-stale refresh-coalesced refresh-core-commit-rejected refresh-current-pose-unavailable refresh-map refresh-map:
+refresh-reference-basis-unavailable refresh_map region regional regional_cross_floor_author_relation_for_source regions registered-family- registered-floor-candidate-scope-mismatch
+registered-floor-local-attempt registered-floor-local-geometry registered-floor-local-started registered-floor-main-attempt registered-floor-main-geometry registered-floor-main-resource-unavailable registered-floor-main-unavailable registered-floor-resource-unavailable
+registered-logical-family registration registration-failed regression regular reject rejected rejected-reviewed-candidates-safe-centered-fallback
+rejections relation-refiner-unavailable-or-no-result relations release release-report-incomplete release-report-invalid release-report-missing release-report-not-object
+release-report-too-large release-report.json releases reliable reliable-front-anchor-direct-pose reliable-front-door-anchor relief remaining
+remember_render_material remembered-seed remembered-seed-only remote removal removal-additions-history-changed removal-committed removal-committed-cleanup-required
+removal-confirmation-and-idle-required removal-confirmation-required removal-confirmed-file-changed removal-confirmed-file-changed-or-unwritable removal-history-limit removal-invalid-additions-history removal-invalid-journal removal-invalid-journal-entry
+removal-invalid-pending-pointer removal-invalid-receipt removal-invalid-receipt-ownership removal-not-regular-or-too-large removal-object-changed-during-inspection removal-other-transaction-pending removal-pending removal-pending-pointer-changed
+removal-pending-pointer-cleanup-failed removal-plan-changed-reinspect-required removal-plan-confirmation-required removal-plan-too-large removal-preserved-items removal-recovery-required removal-reinspection-required removal-retained-object-changed
+removal-retired-upgrade-changed removal-rollback-conflict-backup-retained removal-rollback-source-missing-or-changed removal-rolled-back removal-target-not-owned removal-temporary-cleanup-failed removal-unknown-temporary-object removal-unsafe-path
+removal-upgrade-pointer-changed removal-upgrade-recovery-required remove removed removing render render-input-missing render-material-accepted
+render-ready render-revoked render-transform-scope-changed render_matrix_source_to_client render_payload rendered-profile-residual-unverified reopen-rendered-profile-unverified repair-needed
+repaired repeat-checkpoint-evicted repeated-current-structure-contradictions replace replaced replacement-candidate-after-zhan-transport-rejected replacements replay
+report request request-already-running request-deadline-exceeded request_desktop_close request_hide requested requested_client_bounds
+requested_size reselect_map reselection reset-stale reset_round residual residual-failure-without-current-frame-difference-evidence residual-stat
+residual-stat-empty-or-shape residual-stat-input residual-stat-nonfinite resize_ resolution resource resource-binding-changed resource-busy
+resource-card resource-consumers-not-stopped resource-context-published resource-context-superseded resource-cross-volume-target resource-file-error resource-hardlinks-unavailable resource-import-started
+resource-initialization-failed resource-install-failed resource-installed resource-inventory resource-linked-target resource-management-started resource-metadata resource-operation-busy
+resource-operation-failed resource-operation-requires-idle resource-plan-changed-reinspect-required resource-preload-started resource-read-cancelled resource-removal-started resource-root resource-runtime-active
+resource-runtime-already-active resource-startup-ready resource-unsafe-target resource-validation resource-validation-pending resource-worker-unavailable resource-workers-drained resource:
+resource_key resource_preload_pending resource_root resource_status resources resources-changed resources-not-ready resources-opacity
+resources-ready resources-unavailable resources.png restart-recording restore restore-not-confirmed restore_error restore_initial_browse_mode
+restore_initial_browse_ready restore_window_anchor restored restoring restricted-map03-cross-floor-live-test result result-consumed resume_group_automatic
+resumed-closed retain-current retained-evicted retained-local-bitmap retained-object-changed retained-object-delete-failed retained-object-unwitnessed retiring
+retrieval-evidence-disagreement retry_enabled rev-parse review-candidate-only-current-frame-validation-still-required review-ready reviewed-author-adapter reviewed-clean-window-to-recognition reviewed-floor-large-recenter-evidence-insufficient
+reviewed-floor-translation-current-frame-verified reviewed-floor-translation-residual-failed reviewed-navigation-cue reviewed-reference-whitelist-local-shape reviewed-window-positive-differences-current-frame revision rid right
+rms roi roi-capture-error roi-proposal-only-original-checks-required role roles rollback rollback-incomplete
+rolled-back rolled-back-retired rolling-back roman room room-outline-ambiguous room-outline-clipped room-reference-or-frame-missing
+room-search-window-invalid room-search-window-too-small room-template-empty root root_pose rotation round round-active
+round-already-active round-already-prepared round-auto-started-verified round-confirm-idempotent round-ended round-first-pose-atomic-commit-rejected round-first-pose-promoted-atomic round-floor-switch-mapping-first
+round-floor-updated round-group-anchor round-group-anchor-atomic-commit-rejected round-group-anchor-promoted-atomic round-group-edge-correction round-group-edge-correction-fallback round-group-edge-correction-ready round-group-edge-correction:current-frame-commit
+round-group-pose-commit-rejected round-group-window-cache round-group-window-cache: round-group-window-cache:current-frame round-inactive round-layer-group-bootstrapped-from-progressive-seed round-layer-group-cleared round-layer-group-commit-blocked-transient-motion
+round-layer-group-committed round-layer-group-current-floor-relocalization-skipped round-layer-group-current-floor-relocalization-started round-layer-group-display-change-pending round-layer-group-display-reprojected round-layer-group-display-revalidation round-layer-group-edge-correction-background-warm-committed round-layer-group-edge-correction-displayed-committed
+round-layer-group-edge-correction-launch-cancelled round-layer-group-edge-correction-rejected round-layer-group-edge-correction-skipped-for-transient-drag round-layer-group-edge-correction-stale-ignored round-layer-group-edge-correction-started round-layer-group-edge-correction-unavailable round-layer-group-first-floor-anchor-policy round-layer-group-floor-fit-rejected
+round-layer-group-floor-relation-learned round-layer-group-floor-verification-invalidated round-layer-group-large-correction-continuity-pending round-layer-group-latency-target-missed round-layer-group-pose round-layer-group-pose-calibrated round-layer-group-pose-translated round-layer-group-preserved-for-same-map-reconfirmation
+round-layer-group-progressive-seed-rejected round-layer-group-provisional-reuse-user-veto round-layer-group-provisional-reused round-layer-group-recovery-policy-selected round-layer-group-relations-primed round-layer-group-reuse-unavailable round-layer-group-reused round-layer-group-sync
+round-layer-group-transient-floor-render-rejected round-layer-group-transient-floor-swapped round-layer-group-translation-blocked-transient-motion round-layer-group-v2-seed round-layer-group-wall-corrected round-layer-group-wide-search-blocked round-layer-group-window-cache-current-frame-rejected round-layer-group-window-cache-restored
+round-layer-group-zero-geometry-static-sheet-deferred round-layer-group: round-lock-background-fast-verified round-lock-fast-verification-pending round-lock-floor-evidence-pending round-lock-floor-stabilization-exhausted round-lock-frame-stale-hidden round-lock-overlay-fast-verified
+round-lock-overlay-verification-pending round-lock-sheet-fast-verified round-lock-sheet-immediate round-lock-unavailable round-locked-frame round-locked-opening-capture round-map-identity-locked-pose-pending round-map-locked-pose-pending
+round-not-active round-open-floor-auto round-prepared round-reset round-start-cancelled round-start-check round-start-intent-consumed round-start-prepared
+round-started round-verified-floor-transfer round_group_display_reprojection_active round_group_edge_correction_applied_at round_group_edge_correction_generation round_group_edge_correction_pending round_layer_group round_recovery_bar
+round_rejected_transforms round_start_intent round_work_active route route- route-display-reprojected route-display-reprojection-failed: route-family-conflict
+route-graph-unreviewed route-hidden route-image-missing route-mask-empty-or-excessive route-material-unavailable route-notification route-notification-close-failed route-notification-presentation-failed
+route-pixel-template route-preference-changed route-profile-changed route-profile-setting route-render route-reset route-selection-awaiting-current-presentation route-status-current
+route-status-issue route-status-window-created route-status-window-destroyed route-status-window-hidden route-status-window-show-failed route-status-window-shown route-status-window-unavailable route-status-window-updated
+route-visible route_choices route_image route_profile_box route_profile_id route_profiles route_selection_snapshot route_status_window
+route_toast_presenter route_toast_window route_variant routed row rows rt run-client
+running runtime runtime-bound-source-display runtime-context-changed runtime-dispatch runtime-drag-rejected runtime-error runtime-event
+runtime-event-received runtime-grant-unavailable runtime-payload-expired runtime-result runtime-result-context-mismatch runtime-snapshot runtime-snapshot-failed runtime-stage-completed
+runtime-successes runtime-transient-api-unavailable runtime_timeline_enabled runtime_timeline_input_frame runtime_timeline_scope runtime_timeline_sink s safe-area-floor-triplet-not-localized
+safe-viewport safety same-floor-door-current-frame-translation same-floor-local-edge-current-frame same-floor-local-edge-v2 same-floor-reopen same-floor-reopen-linear-change same-floor-reopen-must-be-translation-only
+same-floor-reopen-relaxed-3s same-floor-reopen-residual same-floor-reopen-v2 same-floor-reopen-verified-refresh same-floor-window-cache-current-frame-verified same-frame-failure same-group-member-current-frame-margin same-map-confirmed-floor
+same-map-pose-initialization same-map-pose-initialization-already-attempted same-map-pose-initialization-cancelled same-map-pose-initialization-candidate-finished same-map-pose-initialization-failed same-map-pose-initialization-no-result same-map-pose-initialization-ready same-map-pose-initialization-skipped
+same-map-pose-initialization-started same-original-author-rgba-canvas same-pose-as-structural-candidate same-round-transform-veto-and-offline-regression same-user-session-assistant-installation same-window-current-map-observation same-window-identity same-window-process-identity
+same_map_pose_initialization_attempts sample-cooldown sample-file-missing sample-outside-memory-root sample-preparation-error sample-sha256-mismatch sample-write-error sample-writer-busy
+samples samples- sampling-not-admitted sane sanity save-failed saved saved-frame-diagnostic
+saved-frame-engine-unavailable: saved-frame-floor-unavailable: saved-frame-input-unverified saved-frame-rank-ready saved-recorded-frame saved-settings-startup saved-synthetic-frame saved_frame
+saved_result scale scale-consensus scale-plus-translation scale-unobservable scaling scan scenario
+scene schema scope scope-changed score scores screen-projection-unverified screens
+screenshot scroll second second-ring-topology secondary_preload_worker seconds seed seeds
+segments select_candidate select_group_member select_monitor_for_rect select_route_profile selected selected-archive-changed selected-author-current-frame
+selected-author-layer-missing selected-author-layer-unavailable selected-author-pixels selected-author-pixels-adapter-unavailable selected-map-atomic-promotion-rejected selected-map-current-frame-group-commit-rejected selected-map-current-frame-residual selected-route-coordinate-adapter-unavailable
+selected-route-current-frame-residual-failed selected-route-current-frame-residual-unverified selected-route-current-frame-residual-verified selected-route-outside-visible-map selected_id selection-changed semantic-entry-passports separate-helper-not-installed
+separate-structure-reference-branch seq sequence session session-anchor-candidates-unverified session-client-size-changed session-completed session-consensus-does-not-bypass-per-frame-gate
+session-identity-conflict session-identity-mismatch session-map-shape-disagrees session-map-structure-changed session-original-sheet-outside-screen session-overlay-invalid session-retained-floor session-reused
+session-snapshot session-start session-stop session-stopped session-worker: sessions set_automatic_failure_sampling_enabled set_available_height
+set_context set_control_visible set_display_scale set_event_callback set_failure_sampling_enabled set_floor set_game_mode set_pointer_context_provider
+set_reference_sheet_visible set_route_profile settings settings-directory-not-supplied settings-updated settings.json settings.png settings_path
+settings_read_error settings_surface settings_window settled severity sha256 shadow shadow-ranking-only-until-reviewed
+shape shape-accepted shape-rejected shape: shape_category shared-author-file-ownership shared-canonical-geometry-current-frame shared-display-layer
+shared-display-no-visible-ink shared-established-group-recovery shared-fast-alignment shared-group-already-authoritative shared-group-became-authoritative shared-group-commit-rejected shared-group-pose-seed-missing shared-index-source-version-or-binding-mismatch
+shared-initial-structure shared-linear-transform-disagrees shared-local-feature-binding-mismatch shared-neutral-geometry-sensor-via-zhan10-standard shared-neutral-version-or-binding-mismatch shared-pack-floor-manifest shared-package-ownership-conflict shared-product-missing
+shared-product-unavailable shared-projection-compositor-rejected shared-projection-context-changed shared-reference-adapter-version-mismatch shared-reference-canonical shared-reference-canonical-basis-unavailable shared-reference-or-display-bridge-unavailable shared-reference-profile-mismatch
+shared-reference-unavailable shared-reference-with-matching-prepared shared-registered-floor-recovery shared-request-budget-exhausted shared-resource-contract: shared-root-local shared-root-projection shared-root-projection-awaiting-material
+shared-root-projection-material-accepted shared-root-projection-material-rejected shared-root-provisional shared-root-provisional-geometry-pending shared-root-provisional-material-accepted shared-sift-source-structure-advisory shared-structure shared-structure-alignment-failed
+shared-structure-pose-context-unavailable shared-structure-resource-unavailable shared-structure-to-client shared-version-binding-unavailable shared_mask shared_reference_loader shared_resources shared_structure_load_errors
+shared_structure_resources shared_structure_version_context shared_version_context sheet-hidden sheet-shown sheet-visibility sheet-visibility-toggled sheet_move_generation
+sheet_move_mode sheet_opacity sheet_photo_cache sheet_position sheet_visibility_enabled sheet_window shell shell_animation_generation
+shell_connection_var shell_focus_return_hwnd shell_nav_buttons shell_recognition_nav_button shift short-open-background-revalidated shortcuts-visibility show
+show_bgra-cache-check show_bgra-commit show_bgra-retained-reset show_page show_retained show_sheet shown shutdown
+shutdown-completed shutdown-entered sibling-committed sibling-context-expired sibling-identity-commit-failed sibling-material-accepted sibling-material-and-identity-committed sibling-material-loading
+sibling-material-pending sibling-material-rejected sibling-rolled-back sibling-source-authorization-expired sibling-source-expired sibling-token-expired side side-author-observation-unavailable
+side-budget-incomplete side-competition-limit-unverified side-current-frame-evidence side-current-identity-verified side-door-anchors.json side-door-boundary-contradiction side-door-context-insufficient side-door-crop-out-of-bounds
+side-door-expanded side-door-fast-current-frame side-door-local side-door-low-margin side-door-source-unavailable side-door-stage-not-ready side-door-stage-unavailable side-entries.json
+side-entry-index-unavailable: side-entry-passport side-entry-path-selected side-entry-pose-ambiguous side-entry-pose-unverified side-entry-search.npz side-identity-not-current side-local-candidates
+side-neighborhood side-observation-unavailable side-outside-score-band-unverified side-resource-unavailable side-search-incomplete-unverified side-shared-structure-unavailable side-structure-candidates side-verification-budget-incomplete
+side-visible-structure-insufficient side_door_position side_entry_identity sign signature significant similar-group-created similar-group-final-lock-reopened
+similar-group-member-verified similar-group-pending similar-group-provisional-changed similar-group-provisional-selected similar-group-reset similar-group-resource-pending similar-group-resource-validation-failed similar-group-review-pending
+similarity similarity-array-incompatible similarity-channel-role similarity-comparison-pose-missing similarity-competition-incomplete similarity-condition-mode similarity-condition-pose-missing similarity-condition-requires-post-entry-comparison-domain
+similarity-context-changed similarity-context-mismatch similarity-cross-floor-pose similarity-differences-changed similarity-domain-changed similarity-feature-binding-changed similarity-feature-changed similarity-feature-row-index
+similarity-floor-members-incomplete similarity-index-changed similarity-index-schema similarity-local-reference-matrix similarity-member-binding-changed similarity-members-incompatible similarity-pairs-incomplete similarity-path-outside-root
+similarity-reference-outside-pack similarity-registration-invalid similarity-registration-members similarity-registration-mode similarity-registration-observation-mismatch similarity-root-not-configured similarity-sample-arrays similarity-sample-count
+similarity-sample-id similarity-samples-changed similarity-shared-provider-unavailable similarity-winning-floor-unavailable single single-canonical-geometry-pose single-consumer-rejection-not-final-cycle-outcome single-frame-lock-already-ready
+single-frame-position-jump single-live-component-cannot-authorize-recenter single-map single-neck-room single-round-layer-group singleton singular-transform size
+skeleton skipped skipped-pose-failed slant snapshot snapshot-linked-ancestor snapshot-root-must-be-canonical-absolute snapshot-wrapper-already-installed
+socket. socket.bind socket.connect socket.getaddrinfo solve solve_initial_structure source source-candidate-store-unavailable
+source-client-size-unavailable source-commit-prefix source-display-signature-changed source-exit-direction-incompatible source-feature-cache-unavailable source-frame-or-group-generation-changed source-interpreter-not-package source-inventory-incomplete
+source-marker-provisional source-present source-projection-invalid source-refresh source-root source-sheet-binding-unavailable source-structure source-structure-
+source-structure-binding-commit-failed source-structure-binding-unavailable source-structure-competitor-ambiguous source-structure-current-frame-unverified source-structure-current-frame-verified source-structure-feature-scale-invalid source-structure-game-floor-unsupported source-structure-group-heldout-variant-provisional
+source-structure-group-mismatch source-structure-heldout source-structure-heldout-after-refinement-rejected source-structure-heldout-current-frame source-structure-heldout-features source-structure-heldout-insufficient source-structure-heldout-points-unavailable source-structure-heldout-rejected
+source-structure-heldout-unique source-structure-identity-rejected source-structure-identity-unavailable source-structure-no-heldout-match source-structure-pose-disagrees-with-current-frame source-structure-proposed-pose-invalid source-structure-rendered-profile-unverified source-structure-same-source-png-pixels
+source-structure-search-incomplete source-structure-shared-initial-unavailable source-structure-shared-initial-verified source-structure-sheet-ambiguous source-structure-sift source-structure-support-degenerate source-structure-to-client source-structure-transform-invalid
+source-structure-visible-variant-selected source: source_candidates source_mask source_nodes source_shape source_size source_wall_mask
+sources space spacing sparse-shared-structure sparse-structure-author-unverified sparse-structure-resource-mismatch spatial-live-evidence-disagreement spatial-outline-ambiguous
+spatial-outline-confirmed spatial-outline-plus-live-exemplar spatial-route speed square st_file_attributes st_nlink stable
+stable-local stable-overlap-reuse stable-pose-preserved stack stacks.txt stage stages staging-
+stair-pattern stair-portal-ambiguous stair-portal-current-frame stair-portal-current-frame-enumeration stair-portal-current-frame-evidence-insufficient stair-portal-current-frame-residual-failed stair-portal-endpoint-not-observed stair-portal-no-visible-target-structure
+stair-portals stair-room stair_portal_seed_matrix stair_portals stairs stale stale-context stale-current-frame-result
+stale-display-settings stale-group-choice-intent stale-hidden stale-or-invalid-capture-time stale-requeue stale-worker-failure standard star-map-
+star-map-import-helper.exe star-map-recovery-helper star-map-recovery-helper.exe star-maps-difficult-zhan10-native58-legacy2-20261027-r6.zip star-maps-nightmare-nightingale-20261027-r1.zip star-maps-nightmare-suju-20261027-r1.zip star-maps-nightmare-wang-qingxin-20261027-r1.zip star_map_import
+start start-or-close-failed start-round start-round-before-confirming-map start_hotkey_recording start_identityv_assistant.ps1 start_round starting
+starts startup startup-error- startup-recovery-cancel-unconfirmed startup-recovery-confirmation-unavailable startup-recovery-plan-blocked startup-recovery-plan-invalid startup-snapshot
+startup_resource_error stat state state-change states static-floor-sheet-visible static-point-pairs-insufficient static-point-query-empty
+static-structure stats status status-pill status-window-destroy-failed steps sticky stop
+stop_round stopped storage storage-absent storage-lock-unavailable storage-redirected storage-saved store_true
+strategy strict strict-first-two-session-identity strict-window-paused strict-window-resumed strict-window-resumed-during-onboarding strict-window-session-identity strips
+structural structural-base-render-not-axis-locked structural-current-frame-residual-failed structural-landmark-ambiguity structural-landmark-inconsistent structural-landmarks structural-landmarks-insufficient structural-mask-unavailable
+structural-query-too-sparse structural-recovery-v2 structural-target-invalid structural-translation-out-of-bounds structural-validation-mask-unavailable structure structure-ambiguous structure-blend
+structure-clean-resource-unavailable structure-current-geometry-failed structure-index-size-unsupported structure-no-reliable-scale structure-query-no-corners structure-query-unavailable structure-reference structure-semantic-equivalent-capture
+structure-solver structure-validation-resource-unavailable structure-work-obsolete structure_current_map_evidence structure_store style subpixel-accumulator success
+success_snapshot_keys successful-worker-current-frame-rejected suju suju-speed-difficult suju-speed-nightmare summary superseded superseded-or-cancelled
+support support_coverage support_spread supported surface-error surface-generation-mismatch surface-state surface-visibility-generation-changed
+surface_visibility_generation suspend suspended switch_front_provisional_member sx sy symbolic-ref sync_game_mode
+sync_managed_packages sync_map_package_import sync_online_packages sync_route_selection synthetic system system-aware-fallback take_pointer_events
+target target-changed-during-import target-client-size-invalid target-current-pose-awaiting-material target-failed-current-source-preserved target-floor-relation-calibration-rejected target-floor-relation-wide target-material-invalid
+target-material-ready target-material-rejected target-material-replaced target-material-timeout target-outside-root target-route-material-unavailable target-stair-enumeration-locked-linear target_nodes
+target_shape targets task_status taxonomy taxonomy: teleport temp temporal
+temporal-dense-held-out-edges temporal-geometry-author-adapter-singular temporal-geometry-author-adapter-unavailable temporal-geometry-basis-incompatible temporal-geometry-observation-basis-uncommitted temporal-geometry-observation-missing temporal-geometry-pose-missing temporal-mask-author-adapter-singular
+temporal-mask-author-adapter-unavailable temporal-mask-backward-flow-unavailable temporal-mask-current-frame-verified temporal-mask-forward-flow-unavailable temporal-mask-observation-missing temporal-mask-pairs-insufficient temporal-mask-profile-incompatible temporal-mask-recovery-v2
+temporal-mask-translation-not-proven temporal-scale-current-frame-verified temporal-scale-recovery-v2 temporal-side-door-evidence temporal-translation-current-frame-verified temporal-translation-recovery-v2 temporal-translation-scale-unresolved temporal_fit
+temporary-file-object-changed termination text thread-stacks- threads thresholds thumb tier
+tilemap-entry-candidates tilemap-entry-neighborhood-current-frame tilemap-entry-verified tilemap_entries tilemap_root time timeout timestamp
+timestamputc tinted-map-controls-unlocalized title tk tk.update_idletasks to toggle toggle-panel
+toggle-round toggle-sheet-visibility toggle_reference_sheet_visibility toggle_round toggle_sheet_visibility token token-info- token-size-
+tolist top top-left top-left-right top-right toplevel toplevel_lift topology
+total trace traceback tracked tracker tracking tracking_floor transaction-not-terminal
+transform-bounds transient transient-floor-projection transient-probe-expired transient-probe-unavailable transient-projection-unavailable transient-source-or-linear-change translation
+translation-only transparent-display transparent-display-overlay-built transparent-display-ready transparent-display-resource-unavailable transparent-display-unavailable transparent_display_resources tree
+true truncated trusted-b1-cache-not-eligible trusted-b1-local-fast trusted-b1-local-fast-retry trusted-b1-local-only trusted-b1-tiny-commit-rejected trusted-b1-tiny-current-frame-verified
+trusted-b1-tiny-display-rejected trusted-b1-tiny-matrix-missing trusted-b1-tiny-refiner-error trusted-b1-tiny-refiner-missing trusted-b1-tiny-render-failed trusted-b1-tiny-reopen trusted-b1-tiny-reopen-committed trusted-b1-tiny-reopen-deferred
+trusted-b1-tiny-reopen: trusted-b1-tiny-residual-not-display-precise trusted-b1-tiny-result-stale trusted-b1-tiny-translation-out-of-range truth-calibrated-scale-translation turns two two-distinct-stair-observations-required
+two-floor-controls-not-visible two-floor-glyphs-visible two-floor-highlight-ambiguous two-floor-highlight-clipped two-floor-scale-ambiguous two-stair-group-translation-ambiguous two-stair-group-translation-verified tx
+ty type typed-product-unavailable: typed-reference-canvas-footprint typed-shared-structure-display typed-shared-structure-validation-mask u uc
+ui ui-action-background-enqueued ui-action-cancelled ui-action-completion-queued ui-action-failed ui-action-first-trusted-content ui-action-settle ui-action-settled
+ui-action-stale-rejected ui-action-visual-confirmed ui-adjudication ui-audit.json ui-event-handler-slow ui-event-poll-error ui-event-poll-slow ui-frame-budget-drained
+ui-roi ui-settings.json ui-smoke ui-smoke-restart ui_action_fallback_scheduled ui_action_first_content_at ui_action_tokens ui_actions
+ui_dpi ui_environment_poll_after_id ui_frame_queue ui_layout_after_id ui_monitors ui_scale ui_sound ui_sound_enabled
+ui_tokens ui_topology_signature unavailable unavailable: uncertain unchanged-trace-coalesced unclassified-reason unconfirmed
+unconfirmed-identity-changed-frame-retry unconfirmed-identity-rank-error unexpected-http-response unique unique-containment-and-held-out-terrain-points unique-exit-anchor-disagrees-with-structure unique-exit-icon unique-physical-geometry
+unique-room-outline-matched unique-room-unavailable unit units unknown unknown-action unknown-backend unknown-control-layout-preset
+unknown-directory unknown-floor-entrance unknown-history-file unknown-map-or-floor unknown-object unknown-operation-failure unknown-package unknown-package-id
+unknown_mask unlocalized unlocked-floor-required unlocked-ranked-candidates-ready unlocked-ranking-uncertain unmanaged unrecognized unrecognized-history-object
+unrecognized-installed-package-receipt unregistered unsafe unsafe-path unsafe-windows-path unsupported unsupported-action unsupported-archive-entry
+unsupported-author-package unsupported-client-compatibility unsupported-client-version unsupported-floor unsupported-import-schema unsupported-index-schema unsupported-mode unsupported-mode-or-floor
+unsupported-modifier unsupported-narrow unsupported-package-version unsupported-perspective unsupported-route-channel-count unsupported-small unsupported-source unsupported-without-native-semantics
+untrusted unverified unverified-clamp-only unverified-initialization-only unwitnessed up update-available update-state.json
+update_dispatch update_idletasks update_pointer_target upgrade upgrade-backup-object-changed upgrade-cache-object-changed upgrade-cleanup-available upgrade-cleanup-cache-changed
+upgrade-cleanup-incomplete upgrade-cleanup-inventory-limit upgrade-cleanup-metadata-changed upgrade-cleanup-not-terminal upgrade-cleanup-object-changed upgrade-cleanup-owned-file-unavailable upgrade-cleanup-pending upgrade-cleanup-private-directory-changed
+upgrade-cleanup-unknown-object upgrade-committed upgrade-data-changed-before-receipt-publication upgrade-entry-not-in-inventory upgrade-expanded-size-limit upgrade-history-unknown-object upgrade-metadata-too-large upgrade-missing-entry-has-old-identity
+upgrade-missing-target-now-exists upgrade-new-receipt-mismatch upgrade-old-entry-path-mismatch upgrade-old-receipt-changed upgrade-old-receipt-package-mismatch upgrade-old-receipt-unavailable-or-changed upgrade-owned-target-changed-before-backup upgrade-owned-target-could-not-be-moved
+upgrade-owned-target-not-exclusively-readable upgrade-owned-target-rename-failed upgrade-path-not-in-data-allowlist upgrade-pointer-source-changed upgrade-published-object-changed upgrade-receipt-entry-mismatch upgrade-receipt-entry-missing upgrade-receipt.json
+upgrade-recovery-required upgrade-replacement-not-owned-by-old-receipt upgrade-retained-new-object-changed upgrade-retired-directory-changed upgrade-retired-summary-cleanup-failed upgrade-staged-data-changed upgrade-transaction-no-longer-rollbackable upgrade-transaction-retired
+upgraded-restart-required upper urgent_events url url-credentials-fragment-or-host-invalid usable usable-pool-too-small usage
+user-approved-multi-anchor-consensus user-approved-three-room-live-test user-cancelled user-hidden user-rejected-alignment user-visual-accepted user-visual-rejected user32
+utf-16-le utf-8 utf-8-sig utf8 v v2-atomic-commit-failed v2-candidate-frame-stale v2-commit-context-stale
+v2-compositor-rejected v2-current-frame v2-current-frame-local-failure v2-disabled v2-event-candidate v2-first-pose-no-result v2-first-pose-sensor-error: v2-overlay-build-failed
+v2-post-commit-current-frame-failed v2-render-input-missing v2-sensor-failure-suppressed v2-sensor-pending v2-sensor-start-failed v2-worker-cross-floor-relation v2-worker-dynamic-anchor v2-worker-local-revalidate
+valid validate-profile validated validation validation-geometry-unavailable validation_mask value values
+variant variant-01 variant-02 variant_id variants vendor verification verified
+verified-before-capture verified-by-capture verified-display verified-display-commit-failed verified-entry-current-frame verified-for-capture verified-frame-local-translation verified-group-relocalization:
+verified-history- verified-live verified-live-profile verified-near-pass-local-refinement verified-open-cycle-consecutive-negative-evidence verified-physical-to-logical verified_member_id verify
+verify_existing_pose verify_source_structure_pose version version-and-short-fingerprint-only version.json versions vertical vertical-door-at-bottom-end
+vertical-door-at-top-end vertical-door-not-at-end via view-hidden viewable visibility visibility-requested visibility-toggled
+visibility_guard visible visible-map-component-unavailable visible-map-envelope visible-map-missing visible_override vision-index.json visual-anchor-translation
+visual-confirmed visual-evidence visual-map-motion visual-probe vk votes w waiting
+waiting-fit waiting-for-exit waiting-game waiting-map wall-fit-then-author wall-native-uniform-scale wall-refinement-disjoint-spread-insufficient wall-refinement-disjoint-support-insufficient
+wall-scale-axis-model-unavailable wall-scale-disjoint-spread-insufficient wall-scale-disjoint-support-insufficient wall-similarity-held-out wall-similarity-then-author walls wang-qingxin wang-qingxin-nightmare-v1
+warning warnings wb webp wechat wechat.png weight white
+whole-structure-and-author whole-structure-and-shared-structure whole-visible-map-shape wide wide-success-return-to-local-fast wide-translation-position-not-unique widget width
+win32 window window-destroyed window-destroyed-during-check window-geometry-unverified window-pid-changed window-pid-changed-during-check window-pid-unavailable
+window-title-unavailable window_process_id windowed windows windows-build-too-old windows-default windows-helper-required windows-locked-publication-required
+windows-scale-outside-verified-range winerror winfo wins withdraw withdrawn within3 within6
+wm wm_attributes wm_geometry work work_area worker worker-current-frame-fit worker-end
+worker-error worker-owned-frame worker-rendered-profile-unverified worker-start working wparam wraplength write
+write-error-backoff write-failed writer-closed wrong-canonical-pack x xb xingtu-base-repair-retired-v1 xingtu-base-repair-v1
+xingtu-chest-auto-tap-v1 xingtu-custom-gallery-v1 xingtu-custom-maps-v1 xingtu-custom-routes-v1 xingtu-managed-base-v1 xingtu-owned-import-audit-v1 xingtu-package-identity-v1 xingtu-qt-client-diagnostics-v1
+xingtu-resource-recovery-request-v1 xingtu-round.png xingtu-square.png xingtu-update-check xingtu.problems xingtuqtclienttest.exe y yes
+zero-geometry-foreground-fit-skipped zero-target-floor-geometry zhan10 zhan10-coffin zhan10-first zhan10-first-audit.json zhan10-nightmare zhan10-original-scale-global-coordinate-candidate
+zhan10-speed zhan10-transport-human-reviewed zhan10_coffin_variant_id zoomed
+""".split())
+
+MODULES = frozenset("""
+alignment_core_v2.py alignment_observation.py alignment_pose_transaction.py alignment_structure_dispatch.py async_event_log.py author_display_policy.py author_package_management.py author_route_catalog.py
+author_structure_resources.py b1_relocalization.py base_display_integration.py base_map_display.py calibration_memory.py chest_auto_tap.py client_capture.py client_capture_exclusion.py
+client_chest_auto_tap.py client_control_layout.py client_control_snap.py client_coordinator.py client_custom_display.py client_custom_gallery.py client_downloads.py client_engine.py
+client_failure_samples.py client_game_focus.py client_group_member_choice.py client_group_registry.py client_idvb0059_adapter.py client_import_handoff.py client_info.py client_input.py
+client_input_diagnostics.py client_known_floor_recovery.py client_learning.py client_lifecycle.py client_lifecycle_trace.py client_live_runtime.py client_map_input.py client_native_keys.py
+client_native_mouse.py client_onboarding.py client_package_manager.py client_paths.py client_preparation_diagnostics.py client_preview.py client_problem_history.py client_problem_messages.py
+client_problems.py client_process_identity.py client_providers.py client_reference_presentation.py client_region_capture.py client_resource_errors.py client_resource_recovery.py client_resource_startup.py
+client_resource_startup_recovery.py client_resources.py client_route_preferences.py client_route_reprojection.py client_screen_geometry.py client_session.py client_settings.py client_single_instance.py
+client_space_geometry.py client_startup_cleanup.py client_theme.py client_ui_feedback.py client_window_binding.py client_windows.py control_layout.py control_layout_editor.py
+custom_map_editor.py custom_maps.py desktop_display.py desktop_icons.py desktop_lucide.py desktop_main_ui.py desktop_onboarding.py desktop_rounded.py
+desktop_theme.py desktop_toast.py diagnostic_evidence.py diagnostic_export.py diagnostic_identity.py difficult_entrance.py difficult_entry_identity.py difficult_grid.py
+difficult_map_ui.py difficult_mode.py difficult_native_context.py difficult_native_identity.py difficult_side_entry_identity.py difficult_structure.py failure_sampling.py fast_structure_alignment.py
+floor_observation_policy.py front_door_groups.py front_door_layout_recognition.py front_door_live_test.py front_door_recognition.py front_floor_structure.py front_gate_observation.py full_map_retrieval.py
+game_control_view.py game_window_focus.py hang_diagnostics.py hotkey_bindings.py hotkey_keys.py identityv_daily_assistant.py identityv_front_live_test.py identityv_live_mvp.py
+identityv_test_button.py idvb0059_display.py idvb0059_runtime.py idvb0059_steady.py legacy_author_inventory.py live_exemplar_retrieval.py managed_base_resources.py map_close_control.py
+map_identity_engine.py map_interface_observation.py map_observation.py map_open_preparation.py map_overlay_prototype.py map_package_recovery_plan.py map_package_removal.py map_package_upgrade.py
+map_pointer_policy.py map_ready_window.py map_resource_browser.py map_resource_context.py map_resource_model.py map_resource_overview.py map_resources_page.py marked_map_retrieval.py
+multipoint_map_overlay.py native_resource_validation.py native_sibling_transaction.py native_similarity_groups.py native_static_corner_registration.py native_ui_layout.py nightmare_author_coordinate_adapter.py nightmare_b1_unique_room.py
+nightmare_candidate.py nightmare_floor_coordinates.py nightmare_semantic_identity.py nightmare_stair_portal.py nightmare_structure_signature.py opacity_controls.py optional_author_displays.py orb_visual.py
+package_identity.py packaged_product_identity.py qt_startup_diagnostics.py recognition_diagnostics.py reference_position_editor.py release_identity.py resource_transaction.py resource_validation_lane.py
+round_layer_group.py round_layer_group_commit.py route_display_notice.py route_status_window.py runtime_environment_diagnostics.py runtime_map_recognition.py runtime_timeline.py session_state_machine.py
+shared_structure_context.py shared_structure_reference.py side_door_recognition.py side_entry_geometry.py side_entry_search.py single_map_structure.py sparse_floor_structure.py spatial_outline_retrieval.py
+star_brand.py star_map_download.py star_map_import.py star_map_import_helper.py star_map_recovery_helper.py support_window.py transparent_display_resources.py ui_action_state.py
+ui_import_audit.py ui_interaction_profile.py ui_packaged_audit.py update_service.py voice_navigation_prototype.py
+""".split())
+
+EXCEPTIONS = frozenset("""
+ArithmeticError AssertionError AttributeError BaseException BaseExceptionGroup BlockingIOError BrokenPipeError BufferError
+BytesWarning CaptureExclusionError CaptureUnavailable ChildProcessError ClientCleanupError ConnectionAbortedError ConnectionError ConnectionRefusedError
+ConnectionResetError DeprecationWarning DiagnosticStorageError DirtySourceError DownloadError EOFError EncodingWarning EngineUnavailable
+EnvironmentError Exception ExceptionGroup FileExistsError FileNotFoundError FloatingPointError FutureWarning GeneratorExit
+IOError ImportError ImportWarning IndentationError IndexError InstallationProfileError InterruptedError IsADirectoryError
+KeyError KeyboardInterrupt LookupError ManagedBaseResourceError MemoryError ModuleNotFoundError NameError NotADirectoryError
+NotImplementedError NumericValidationError OSError OverflowError PendingDeprecationWarning PermissionError ProcessLookupError ProviderUnavailable
+RecursionError ReferenceError ReleaseIdentityError ResourceTransactionError ResourceWarning RouteError RuntimeError RuntimeWarning
+ScreenGeometryError SingleInstanceError StartupRecoveryError StopAsyncIteration StopIteration SyntaxError SyntaxWarning SystemError
+SystemExit TabError TimeoutError TypeError UnboundLocalError UnicodeDecodeError UnicodeEncodeError UnicodeError
+UnicodeTranslateError UnicodeWarning UserWarning ValueError Warning ZeroDivisionError
+""".split())

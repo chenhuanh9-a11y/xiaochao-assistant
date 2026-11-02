@@ -311,6 +311,16 @@ def export_safe_diagnostic_bundle(
                 )
                 from diagnostic_privacy import sanitize_log_payload
                 payload = sanitize_log_payload(payload)
+                # Sanitization can expand legacy text: reapply the byte budget.
+                cap = max(1, min(file_byte_limit, remaining))
+                if len(payload) > cap:
+                    kept, used = [], 0
+                    for line in reversed(payload.split(b'\n')):
+                        if not line: continue
+                        if used + len(line) + 1 > cap: break
+                        kept.append(line); used += len(line) + 1
+                    payload = b'\n'.join(reversed(kept)) + (b'\n' if kept else b'')
+                    truncated = True
                 log_windows[path.name] = log_window(payload)
                 archive.writestr(f"logs/{path.name}", payload)
                 included_bytes += len(payload)

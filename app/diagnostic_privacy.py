@@ -8,7 +8,7 @@ import math
 import re
 from diagnostic_schema import FIELDS, CODES, MODULES, EXCEPTIONS
 
-PRIVATE = re.compile(r'username|nickname|account|password|secret|tokenvalue|windowtitle|foreground(hwnd|pid|name)|executable|commandline|hostname',re.I)
+PRIVATE = re.compile(r'username|nickname|playername|account|password|secret|tokenvalue|(?:window|process|program)(?:name|title|exe|path)|foreground(hwnd|pid|name)|executable|commandline|hostname',re.I)
 FREE = frozenset(('raw','summary','title','message','error','errorMessage','details','stateGetterError'))
 STACK = frozenset(('traceback','stack'))
 EXCEPTION = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*(?:Error|Exception|Unavailable))\b')
