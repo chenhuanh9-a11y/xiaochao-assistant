@@ -239,6 +239,7 @@ class ClientCoordinator(QObject):
         self._shortcut_recording = bool(getattr(settings, "shortcutRecording", False))
         self._requested_action = ""
         self._map_input_sequence = 0
+        self._map_resource_notified = set()
         self._focus_loss_map_sequence = None
         self._pointer_drag = None
         self._pointer_sequence = 0
@@ -275,6 +276,7 @@ class ClientCoordinator(QObject):
         session.changed.connect(self._session_changed)
         session.actionRequested.connect(self._action_requested)
         resources.resourcesChanged.connect(self._resources_changed)
+        resources.changed.connect(self._resource_readiness_changed)
         native_input.actionTriggered.connect(self._native_action)
         map_signal = getattr(native_input, "mapInputRequested", None)
         ordered_setter = getattr(native_input, "setOrderedMapInputEnabled", None)
@@ -480,10 +482,46 @@ class ClientCoordinator(QObject):
             finish(token, committed)
         self.changed.emit()
 
+    def _map_resource_problem(self, state=None):
+        """Cached readiness only: never read or prepare resources on input/UI."""
+        state = self.session.snapshot if state is None else state
+        mode = state.get("mode", self._applied_context[0])
+        if self.resources.busy or self.resources.pendingKind or state.get("resourceLocked"):
+            return ((mode, "resource-operation"), "正在更新地图资源，请等待资源操作完成后再打开地图")
+        if self._pending_context or state.get("contextPending"):
+            return ((mode, "context-pending"), "正在切换地图资源，请稍后再打开地图")
+        report = (state.get("savedFrameCapabilities") or {}).get(mode) or {}
+        reason = str(report.get("reason") or state.get("liveUnavailableReason") or "")
+        if reason == "resource-validation-pending" or state.get("pendingAction") == "inspect_engine_resources":
+            return ((mode, "resource-validation-pending"), "正在校验地图识别资源，请稍后再打开地图")
+        if report.get("available") is False:
+            label = "困难模式" if mode == "difficult" else "噩梦模式"
+            if "difficult-map-ui-template-missing:" in reason:
+                summary = "困难模式缺少楼层识别模板，请到地图资源页补齐或重新导入资源"
+            elif "difficult-map-ui-template-unavailable:" in reason:
+                summary = "困难模式楼层识别模板未通过校验或无法读取，请到地图资源页检查并重新导入资源"
+            else:
+                summary = f"{label}缺少地图识别资源或资源未通过校验，请到地图资源页检查并重新导入"
+            return ((mode, reason), summary)
+        return None
+
+    @Slot()
+    def _resource_readiness_changed(self):
+        if self._closing or self._closed:
+            return
+        # A ready interval rearms an identical later reason. Repeated reads or
+        # key presses within the same unavailable interval cannot spam toasts.
+        if self._map_resource_problem() is None:
+            self._map_resource_notified.clear()
+        self.changed.emit()
+
     def _status_text(self):
         if self._focus_notice:
             return self._focus_notice
         state = self.session.snapshot
+        resource_problem = self._map_resource_problem(state)
+        if resource_problem is not None:
+            return resource_problem[1]
         if self.session.busy and state.get("pendingAction") != "refresh_map":
             return {"inspect_engine_resources": "正在准备识别资源…", "start_round": "正在准备本局…"}.get(self._requested_action, "正在核对地图与位置…")
         receipt = state.get("lastReceipt", {})
@@ -564,12 +602,20 @@ class ClientCoordinator(QObject):
                        inputCreatedAt=created, inputSource=event.get("source", "hotkey"))
         if not opening:
             self._close_map_from_input(payload)
-        elif (self.resources.busy or self.resources.pendingKind or self._pending_context
-              or self.session.snapshot.get("resourceLocked")):
-            self._reset_map_input("map-input-resources-busy")
-            self._message = "正在准备地图资源，请稍后再打开地图"
-            self.changed.emit()
         else:
+            problem = self._map_resource_problem()
+            if problem is not None:
+                # Reject this opening edge before dispatch, while preserving
+                # sequence identity. The next physical edge must retry opening,
+                # not close a map that was never accepted.
+                self._reset_map_input("map-input-resources-unready")
+                key, self._message = problem
+                if key not in self._map_resource_notified:
+                    self._map_resource_notified.add(key)
+                    self.notificationRequested.emit("地图资源未就绪", self._message, "warning")
+                self.changed.emit()
+                return
+            self._map_resource_notified.clear()
             self._cancel_pointer_drag("map-key-open")
             self._revoke_runtime("map-key-open")
             # Runtime owns atomic ensure-start + original map preparation.
@@ -1468,6 +1514,8 @@ class ClientCoordinator(QObject):
     def _session_changed(self):
         if self._closing or self._closed:
             return
+        if self._map_resource_problem() is None:
+            self._map_resource_notified.clear()
         if self.session.busy:
             pending = self.session.snapshot.get("pendingAction")
             reprojecting = (pending == "set_context" and self._pending_context
