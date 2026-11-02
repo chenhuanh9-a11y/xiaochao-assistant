@@ -11,7 +11,8 @@ import re
 import sys
 from urllib.parse import urlsplit
 from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QGuiApplication
+from PySide6.QtCore import qVersion
 from backend import ROOT, Work
 from map_resource_context import load_browse_context
 from client_paths import PRODUCTION, WORK_ROOT, runtime_paths
@@ -48,7 +49,12 @@ class ClientInfoService(QObject):
             pass
         self._package_metadata = dict(diagnostic_package_metadata(self.paths.installation_root,
             app_version=self._app_version, build_fingerprint=self._build_fingerprint), **self._package_metadata)
+        from runtime_environment_diagnostics import source_revision
+        self._source_revision = source_revision(ROOT)
         self._include_failure_evidence = False
+        self._include_automatic_failure_evidence = False
+        self._automatic_sampling_pending = None
+        self._automatic_sampling_applied = None
         self._service = UpdateService(self._version, self.paths.update_state_path,
                                       **({"fetch": fetch} if fetch is not None else {}))
         self._message = "尚未检查更新"
@@ -81,7 +87,8 @@ class ClientInfoService(QObject):
 
     version = Property(str, lambda s: s._version + ("" if PRODUCTION else " · Qt 迁移测试"), constant=True)
     message = Property(str, lambda s: s._message, notify=changed)
-    checking = Property(bool, lambda s: s._service.phase == "checking" or s._writing, notify=changed)
+    checking = Property(bool, lambda s: s._service.phase == "checking" or s._writing
+                        or s._automatic_sampling_pending is not None, notify=changed)
     updatePhase = Property(str, lambda s: s._service.phase, notify=changed)
     operation = Property(str, lambda s: s._operation, notify=changed)
     hasError = Property(bool, lambda s: s._action_error, notify=changed)
@@ -89,6 +96,8 @@ class ClientInfoService(QObject):
     skippedVersion = Property(str, lambda s: s._service.skipped_version, notify=changed)
     historyMessage = Property(str, lambda s: s._history_message, notify=changed)
     includeFailureEvidence = Property(bool, lambda s: s._include_failure_evidence, notify=changed)
+    includeAutomaticFailureEvidence = Property(bool, lambda s: s._include_automatic_failure_evidence, notify=changed)
+    automaticFailureSampling = Property(bool, lambda s: s._automatic_sampling_enabled(), notify=changed)
     diagnosticsReceipt = Property("QVariantMap", lambda s: dict(s._diagnostics), notify=changed)
     release = Property("QVariantMap", lambda s: s._release_row(s._service.latest) if s._service.latest else {}, notify=changed)
     history = Property("QVariantList", lambda s: [s._release_row(r) for r in s._service.history
@@ -225,10 +234,79 @@ class ClientInfoService(QObject):
             self.homePreviewRequested.emit(*self._home_context, str(key))
 
     def setProviders(self, **providers):
+        self._set_failure_sampling(False)
+        self._set_automatic_failure_sampling(False)
         self._providers = providers
         for provider in providers.values():
             if hasattr(provider, "changed"):
                 provider.changed.connect(self.changed)
+        runtime = getattr(providers.get('coordinator'), 'runtime', None)
+        configure = getattr(runtime, 'configure_failure_sampling', None)
+        problems = providers.get('problems')
+        if callable(configure) and problems is not None:
+            configure(event_path=str(getattr(problems, 'log_path', '') or ''),
+                build_fingerprint=self._build_fingerprint,
+                source_commit=self._package_metadata.get('qtSourceCommit') or self._package_metadata.get('releaseReportSourceCommit') or self._source_revision.get('commit') or '')
+        self._set_failure_sampling(self._include_failure_evidence)
+        settings = providers.get('settings')
+        if settings is not None and hasattr(settings, 'changed'):
+            settings.changed.connect(self._sync_failure_sampling)
+        self._automatic_sampling_applied = None
+        self._sync_failure_sampling()
+
+    def _automatic_sampling_enabled(self):
+        settings = self._providers.get('settings')
+        return (settings is not None and not getattr(settings, 'loadFailed', False)
+                and settings.persistedValues.get('automaticFailureEvidence', False) is True)
+
+    def _set_automatic_failure_sampling(self, enabled):
+        runtime = getattr(self._providers.get('coordinator'), 'runtime', None)
+        signature = (id(runtime), bool(enabled))
+        if self._automatic_sampling_applied == signature:
+            return
+        setter = getattr(runtime, 'set_automatic_failure_sampling_enabled', None)
+        if callable(setter):
+            setter(bool(enabled))
+        self._automatic_sampling_applied = signature
+
+    def _sync_failure_sampling(self):
+        if self._closed:
+            return
+        enabled = self._automatic_sampling_enabled()
+        self._set_automatic_failure_sampling(enabled)
+        settings = self._providers.get('settings')
+        if self._automatic_sampling_pending is not None and settings is not None and not settings.busy:
+            desired, self._automatic_sampling_pending = self._automatic_sampling_pending, None
+            self._action_error = enabled != desired
+            self._message = (settings.message if self._action_error else
+                             '已开启有限地图失败采样' if enabled else '已关闭自动地图失败采样')
+        self.changed.emit()
+
+    @Slot(bool, result=bool)
+    def setAutomaticFailureSampling(self, enabled):
+        settings = self._providers.get('settings')
+        if self._closed or self.checking or settings is None or settings.busy:
+            return False
+        if bool(enabled) == self._automatic_sampling_enabled():
+            return True
+        if not settings.setValue('automaticFailureEvidence', bool(enabled)):
+            self._message, self._action_error = settings.message, True
+            self.changed.emit()
+            return False
+        self._automatic_sampling_pending = bool(enabled)
+        if not settings.saveFields(['automaticFailureEvidence']):
+            self._automatic_sampling_pending = None
+            self._message, self._action_error = settings.message, True
+            self.changed.emit()
+            return False
+        self.changed.emit()
+        return True
+
+    def _set_failure_sampling(self, enabled):
+        runtime = getattr(self._providers.get('coordinator'), 'runtime', None)
+        setter = getattr(runtime, 'set_failure_sampling_enabled', None)
+        if callable(setter):
+            setter(bool(enabled))
 
     @Slot(bool, result=bool)
     def scheduleStartupCheck(self, enabled=True):
@@ -346,10 +424,26 @@ class ClientInfoService(QObject):
             self._message, self._action_error = str(error) + "；请重试", True
         self.changed.emit()
 
+    @Slot(result=bool)
+    def resetDiagnosticInstallId(self):
+        if self._closed or self.checking:
+            return False
+        from diagnostic_identity import installation
+        def reset():
+            installation(self.paths.settings_path.parent).reset()
+        return self._write(reset, "已重置随机诊断标识；旧日志保留原标识", operation="正在重置诊断标识…")
+
     @Slot(bool)
     def setIncludeFailureEvidence(self, include):
         if not self._closed and not self.checking:
             self._include_failure_evidence = bool(include)
+            self._set_failure_sampling(self._include_failure_evidence)
+            self.changed.emit()
+
+    @Slot(bool)
+    def setIncludeAutomaticFailureEvidence(self, include):
+        if not self._closed and not self.checking:
+            self._include_automatic_failure_evidence = bool(include)
             self.changed.emit()
 
     @Slot()
@@ -370,7 +464,9 @@ class ClientInfoService(QObject):
         if self._closed or self.checking:
             return
         destination = Path(destination).resolve()
-        report = dict(schema="xingtu-qt-client-diagnostics-v1", exportedAt=datetime.now(timezone.utc).isoformat(),
+        from uuid import uuid4
+        export_id = uuid4().hex
+        report = dict(exportId=export_id, schema="xingtu-qt-client-diagnostics-v1", exportedAt=datetime.now(timezone.utc).isoformat(),
                       environment=self.facts)
         session = self._providers.get("session")
         if session is not None:
@@ -379,7 +475,18 @@ class ClientInfoService(QObject):
                 "mode", "profileId", "engineConnected", "busy", "generation", "availableCommands")}
         problems = self._providers.get("problems")
         if problems is not None:
-            report["recentProblems"] = problems.recent
+            problems.recordTrace(dict(role='diagnostics', stage='diagnostic-export-requested',
+                diag=dict(exportId=export_id)))
+            flush = getattr(problems, 'flushSummary', None)
+            if callable(flush):
+                flush()
+            snapshotter = getattr(problems, 'diagnosticSnapshot', None)
+            if callable(snapshotter):
+                problem_snapshot = snapshotter()
+                report['recentProblems'] = problem_snapshot.pop('recentProblems')
+                report['problemLogging'] = problem_snapshot
+            else:
+                report["recentProblems"] = deepcopy(problems.recent)
         resources = self._providers.get("resources")
         if resources is not None:
             report["resourceStates"] = [{key: row.get(key) for key in ("packageId", "status")}
@@ -402,16 +509,50 @@ class ClientInfoService(QObject):
         runtime_context = dict(collectionStatus="existing-state-only",
             gameWindowBound=window_environment["gameWindowBound"], mapOpen=bool(state.get("mapOpen")),
             gameForeground=state.get("gameForeground", "unknown"))
-        failure_roots = tuple(self.paths.memory_root(mode) for mode in ("nightmare", "difficult")) if self._include_failure_evidence else ()
-        package_metadata = dict(self._package_metadata)
+        failure_roots = tuple(self.paths.memory_root(mode) for mode in ("nightmare", "difficult")) if (
+            self._include_failure_evidence or self._include_automatic_failure_evidence) else ()
+        automatic_only = not self._include_failure_evidence
+        include_automatic = self._include_automatic_failure_evidence
+        from runtime_environment_diagnostics import freeze_runtime_inputs, collect_runtime_environment
+        screens = []
+        for screen in QGuiApplication.screens():
+            try:
+                geometry, available = screen.geometry(), screen.availableGeometry()
+                screens.append(dict(geometry=[geometry.x(), geometry.y(), geometry.width(), geometry.height()],
+                    availableGeometry=[available.x(), available.y(), available.width(), available.height()],
+                    devicePixelRatio=screen.devicePixelRatio(), logicalDotsPerInch=screen.logicalDotsPerInch(),
+                    physicalDotsPerInch=screen.physicalDotsPerInch()))
+            except (RuntimeError, ValueError) as error:
+                screens.append(dict(status='unavailable', reason=type(error).__name__))
+        identity = getattr(coordinator, '_binding_identity', None)
+        bound_identity = dict(hwnd=identity[0], pid=identity[1]) if identity and len(identity) >= 2 else None
+        capture_provider = self._providers.get('capture')
+        inputs = freeze_runtime_inputs(screens=screens, input_snapshot=input_state or None,
+            capture_snapshot=deepcopy(capture_provider.snapshot) if capture_provider is not None else None,
+            bound_identity=bound_identity)
+        recent = deepcopy(report.get('recentProblems', []))
+        log_dir = self.paths.work_root / 'nightmare-live'
+        package_metadata = dict(self._package_metadata, sourceCheckout=self._source_revision)
         self._diagnostics = {}
         def save():
+            from failure_sampling import cleanup_automatic_failure_samples
+            report['automaticFailureCleanup'] = {mode: cleanup_automatic_failure_samples(self.paths.memory_root(mode))
+                for mode in ('nightmare', 'difficult')}
+            from client_problem_history import summarize_problem_history
+            history = summarize_problem_history(log_dir, recent)
+            report['recentProblems'], report['problemHistoryCoverage'] = history['recentProblems'], history['coverage']
+            environment = collect_runtime_environment(inputs)
+            environment['qtVersion'] = qVersion()
+            report['runtimeEnvironment'] = environment
             result = export_safe_diagnostic_bundle(self.paths.installation_root,
                 self.paths.work_root / "nightmare-live", destination=destination,
                 app_version=self._app_version, build_fingerprint=self._build_fingerprint,
-                package_metadata=package_metadata, window_environment=window_environment,
+                package_metadata=package_metadata, window_environment=window_environment, export_id=export_id,
+                resource_root=self.paths.resource_root,
                 runtime_context=runtime_context, failure_roots=failure_roots, summary=report,
-                process_integrity=dict(level="Unknown", rank=-1, collectionStatus="not-collected"))
+                automatic_failure_only=automatic_only,
+                include_automatic_failure_evidence=include_automatic,
+                process_integrity=environment['qtProcessIntegrity'])
             return dict(result, path=str(result["path"]), bytes=destination.stat().st_size,
                         exportedAt=report["exportedAt"])
         def complete(receipt, error):
@@ -419,6 +560,8 @@ class ClientInfoService(QObject):
         self._write(save, f"已导出到 {destination}", operation="正在导出本次诊断…", complete=complete)
 
     def shutdown(self):
+        self._set_failure_sampling(False)
+        self._set_automatic_failure_sampling(False)
         self._startup_timer.stop()
         self._closed = True
         self._home_preview_generation += 1

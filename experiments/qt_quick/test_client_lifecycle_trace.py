@@ -121,7 +121,8 @@ class LifecycleTraceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="xingtu-trace-rotation-") as directory:
             path = Path(directory) / "lifecycle-detail.jsonl"
             with patch.object(tracing, "LOG_MAX_BYTES", 1024):
-                tracing._write_batch(path, [dict(event="qt-lifecycle-detail", stage="runtime-result", reason="x"*96)]*50)
+                with self.assertRaises(OSError):
+                    tracing._write_batch(path, [dict(event="qt-lifecycle-detail", stage="runtime-result", reason="x"*96)]*50)
             files = sorted(Path(directory).glob("*.jsonl"))
             self.assertEqual(len(files), 2)
             self.assertTrue(all(file.stat().st_size < 1024 for file in files))
@@ -134,18 +135,13 @@ from types import SimpleNamespace
 from unittest.mock import patch
 import client_lifecycle_trace as tracing
 entered = threading.Event()
-original = Path.open
-class Blocked:
-    def __init__(self, stream): self.stream = stream
-    def tell(self): return self.stream.tell()
-    def write(self, data):
-        entered.set()
-        threading.Event().wait(30)
-    def close(self): self.stream.close()
-def opened(path, *args, **kwargs):
-    stream = original(path, *args, **kwargs)
-    return Blocked(stream) if path.name == 'lifecycle-detail.jsonl' else stream
-with patch.object(Path, 'open', opened):
+import diagnostic_storage
+original = diagnostic_storage._append
+def blocked(path, data):
+    entered.set()
+    threading.Event().wait(30)
+    return original(path, data)
+with patch.object(diagnostic_storage, '_append', blocked):
     trace = tracing.LifecycleTrace(SimpleNamespace(work_root=Path(sys.argv[1])))
     trace.record('observation', mapDetected=True)
     assert entered.wait(2)

@@ -7,71 +7,63 @@ import weakref
 _transaction_guard = threading.Lock()
 _transaction_locks = weakref.WeakValueDictionary()
 _lock_name = '.automatic-sampling.lock'
+_automatic_state = threading.local()
 
 
 @contextmanager
 def automatic_storage_transaction(root, *, create=False):
-    """One nonblocking root transaction shared by threads and processes.
+    """Pin Windows storage and retain the journal's exclusive handle throughout.
 
-    The reserved zero-byte lock file is persistent; it is never truncated or
-    removed (which would split file locks across processes).
+    POSIX advisory locks cannot establish the same noncooperative-write contract.
+    No journal/path replacement or deletion is used, including on cancellation.
     """
     import os
     from pathlib import Path
-    base = Path(root).resolve()
+    base = Path(root).absolute()
     directory = base / 'failures' / 'automatic'
-    if directory.is_symlink() or directory.resolve() != directory:
-        yield 'storage-redirected'
-        return
+    from diagnostic_storage import _safe
+    try: _safe(directory)
+    except OSError:
+        yield 'storage-redirected'; return
     if not directory.exists() and not create:
-        yield 'storage-absent'
-        return
-    if create:
-        directory.mkdir(parents=True, exist_ok=True)
+        yield 'storage-absent'; return
+    if os.name != 'nt':
+        yield 'automatic-safe-storage-unsupported'; return
     if not _transaction_guard.acquire(blocking=False):
-        yield 'automatic-storage-busy'
-        return
+        yield 'automatic-storage-busy'; return
     try:
         lock = _transaction_locks.setdefault(str(directory), threading.Lock())
     finally:
         _transaction_guard.release()
     if not lock.acquire(blocking=False):
-        yield 'automatic-storage-busy'
-        return
-    descriptor = None
-    locked = False
+        yield 'automatic-storage-busy'; return
+    descriptor = journal_fd = None
     try:
-        path = directory / _lock_name
-        if path.is_symlink() or (path.exists() and (not path.is_file() or path.stat().st_nlink != 1 or path.stat().st_size)):
-            yield 'storage-lock-unavailable'
-            return
-        descriptor = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, 'O_BINARY', 0), 0o600)
-        if os.fstat(descriptor).st_nlink != 1 or os.fstat(descriptor).st_size:
-            yield 'storage-lock-unavailable'
-            return
-        try:
-            if os.name == 'nt':
+        from diagnostic_storage import _pinned_root, _open_fd, _read_fd
+        with _pinned_root(directory):
+            try:
+                try: descriptor = _open_fd(directory / _lock_name, os.O_RDWR | os.O_CREAT | os.O_EXCL)
+                except FileExistsError: descriptor = _open_fd(directory / _lock_name, os.O_RDWR)
+                if os.fstat(descriptor).st_size:
+                    yield 'storage-lock-unavailable'; return
                 import msvcrt
                 msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            locked = True
-        except OSError:
-            yield 'automatic-storage-busy'
-            return
-        yield 'ready'
+                journal = directory / 'automatic-failures.jsonl'
+                try: journal_fd = _open_fd(journal, os.O_RDWR | os.O_CREAT | os.O_EXCL)
+                except FileExistsError: journal_fd = _open_fd(journal, os.O_RDWR)
+                data = _read_fd(journal_fd)
+                if len(data) > 256*1024:
+                    yield 'journal-byte-limit'; return
+            except OSError:
+                yield 'automatic-storage-handle-unavailable'; return
+            _automatic_state.journal = (directory, journal_fd, data)
+            try:
+                yield 'ready'
+            finally:
+                _automatic_state.journal = None
     finally:
-        if descriptor is not None:
-            if locked:
-                if os.name == 'nt':
-                    import msvcrt
-                    os.lseek(descriptor, 0, os.SEEK_SET)
-                    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-                    fcntl.flock(descriptor, fcntl.LOCK_UN)
-            os.close(descriptor)
+        if journal_fd is not None: os.close(journal_fd)
+        if descriptor is not None: os.close(descriptor)
         lock.release()
 
 
@@ -82,11 +74,13 @@ def automatic_storage_inventory(root):
     import json
     from pathlib import Path
     import re
-    base = Path(root).resolve()
+    base = Path(root).absolute()
     directory = base / 'failures' / 'automatic'
     result = dict(status='ready', images=[], rows=[], directory=directory,
                   retainedAuxiliaryCount=0, retainedAuxiliaryBytes=0)
-    if directory.resolve() != directory or directory.is_symlink():
+    from diagnostic_storage import _safe
+    try: _safe(directory)
+    except OSError:
         return dict(result, status='storage-redirected')
     if not directory.exists():
         return result
@@ -149,24 +143,23 @@ def automatic_storage_inventory(root):
 
 
 def replace_automatic_journal(directory, data):
-    """Atomic replacement never truncates an existing inode or follows a link."""
+    """Write only the same exclusively held, validated Windows journal handle."""
     import os
-    import tempfile
-    if directory.is_symlink() or directory.resolve(strict=True) != directory:
-        raise OSError('storage-redirected')
-    journal = directory / 'automatic-failures.jsonl'
-    if journal.is_symlink() or (journal.exists() and journal.stat().st_nlink != 1):
-        raise OSError('journal-link-unavailable')
-    descriptor, name = tempfile.mkstemp(prefix='.automatic-journal-', suffix='.tmp', dir=directory)
-    try:
-        with os.fdopen(descriptor, 'wb') as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(name, journal)
-    finally:
-        from pathlib import Path
-        Path(name).unlink(missing_ok=True)
+    from diagnostic_storage import _read_fd
+    current = getattr(_automatic_state, 'journal', None)
+    if os.name != 'nt' or current is None or current[0] != directory:
+        raise OSError('automatic-safe-storage-unsupported')
+    if len(data) > 256*1024:
+        raise OSError('journal-byte-limit')
+    _, fd, expected = current
+    if _read_fd(fd) != expected:
+        raise OSError('automatic-journal-changed')
+    os.lseek(fd, 0, os.SEEK_SET)
+    if os.write(fd, data) != len(data):
+        raise OSError('automatic-journal-short-write')
+    os.ftruncate(fd, len(data))
+    os.fsync(fd)
+    _automatic_state.journal = (directory, fd, data)
 
 
 def cleanup_automatic_failure_samples(root, *, now=None):
@@ -197,8 +190,9 @@ def _cleanup_automatic_failure_samples_locked(root, *, now=None):
         return report
     for path in inventory['images']:
         if now - path.stat().st_mtime > 7*86400:
-            path.unlink()
-            report['removed'] += 1
+            # Pathname unlink cannot atomically prove the checked image is still
+            # the same owned object. Preserve it and stop additional sampling.
+            return dict(report, status='automatic-safe-retirement-unavailable', complete=False)
     rows = []
     for line, row in inventory['rows']:
         try:
@@ -216,16 +210,18 @@ def _cleanup_automatic_failure_samples_locked(root, *, now=None):
 def _recover_automatic_image_intent_locked(root):
     """Replay one durable image intent under the existing root transaction.
 
-    A complete matching PNG is committed; a missing PNG cancels the intent.
+    A complete matching PNG remains pending; a missing PNG cancels the intent.
     Partial/changed/linked objects are preserved and reported, never deleted.
     """
     import hashlib
     import json
     from pathlib import Path
     import re
-    directory = Path(root).resolve() / 'failures' / 'automatic'
+    directory = Path(root).absolute() / 'failures' / 'automatic'
     journal = directory / 'automatic-failures.jsonl'
-    if directory.resolve() != directory or directory.is_symlink():
+    from diagnostic_storage import _safe
+    try: _safe(directory)
+    except OSError:
         return 'storage-redirected'
     if not journal.exists():
         return 'ready'
@@ -254,7 +250,8 @@ def _recover_automatic_image_intent_locked(root):
             or type(size) is not int or not 0 < size <= 12*1024*1024):
         return 'automatic-image-intent-invalid'
     path = directory / relative.rsplit('/', 1)[-1]
-    if path.is_symlink() or path.resolve() != path:
+    try: _safe(path)
+    except OSError:
         return 'automatic-image-recovery-link-unavailable'
     if path.exists():
         if not path.is_file() or path.stat().st_nlink != 1:
@@ -263,8 +260,9 @@ def _recover_automatic_image_intent_locked(root):
             pixels = stream.read(12*1024*1024+1)
         if len(pixels) != size or hashlib.sha256(pixels).hexdigest() != digest:
             return 'automatic-image-recovery-mismatch'
-        intent['event'] = 'automatic-failure-sample'
-        intent.pop('imageTransactionSchema')
+        # A complete image does not prove that the final current()/consent
+        # check succeeded before interruption. Preserve intent, never export it.
+        return 'automatic-image-recovery-required'
     else:
         rows.remove(intent)
     payload = b'\n'.join(json.dumps(row, ensure_ascii=False).encode('utf-8') for row in rows)

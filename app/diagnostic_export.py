@@ -14,6 +14,23 @@ DIAGNOSTIC_LOG_LIMIT = 8
 DIAGNOSTIC_FILE_BYTE_LIMIT = 8 * 1024 * 1024
 DIAGNOSTIC_TOTAL_BYTE_LIMIT = 24 * 1024 * 1024
 
+def prune_diagnostic_logs(live_root: Path, keep: int = DIAGNOSTIC_LOG_LIMIT) -> None:
+    """Preserve main's startup ABI without deleting unowned legacy paths.
+
+    Historical files predate ownership journals and cannot safely be adopted or
+    unlinked. New writers use bounded owned slots instead. Export reports this
+    compatibility difference; this function never promises a whole-directory cap.
+    """
+    return None
+
+
+def diagnostic_log_retention_status():
+    import os
+    return dict(legacyHistory="preserved-unowned-not-pruned", legacyGrowth="no-new-legacy-writes",
+        newLogs="bounded-owned-fixed-slots" if os.name == "nt" else "bounded-owned-refuse-at-capacity",
+        budgetScope="new-managed-logs-only-not-all-historical-files")
+
+
 def safe_diagnostic_log_files(live_root: Path, limit: int = DIAGNOSTIC_LOG_LIMIT) -> list[Path]:
     """Return only recent text event/error logs from the dedicated live folder."""
     if limit <= 0 or not live_root.is_dir():
@@ -372,6 +389,7 @@ def export_safe_diagnostic_bundle(
                 "exportedAt": moment.isoformat(timespec="seconds"),
                 "exportId": export_id,
                 "sessions": _merge_sessions(sessions),
+                "logRetention": diagnostic_log_retention_status(),
                 "sessionRangeScope": "included-records-only; rotated and truncated logs may be incomplete",
                 "appVersion": app_version,
                 "buildFingerprint": build_fingerprint,

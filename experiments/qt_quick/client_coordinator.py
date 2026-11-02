@@ -1858,6 +1858,10 @@ class ClientCoordinator(QObject):
         if self._closed or self._closing or not isinstance(event, dict):
             return
         name = event.get("event", "unknown")
+        if name == 'recognition-diagnostic':
+            self._trace(name, payload=event, role='recognition', reason=event.get('reason', ''),
+                recognitionDiagnostics=event.get('recognitionDiagnostics', {}))
+            return  # Diagnostics never enter presentation transitions.
         if self._diagnostics is not None:
             produced = event.get("producedAt")
             self._diagnostics.record("runtime-event-received", eventName=name, reason=event.get("reason"),

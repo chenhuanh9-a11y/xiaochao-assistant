@@ -292,6 +292,10 @@ class LiveRuntime:
     def __init__(self, *, engine_factories, capture_provider=None,
                  allowed_read_root=None, evidence_kind="unverified", clock=None, diagnostics=None):
         self._diagnostics = diagnostics
+        from client_failure_samples import FailureSampleRecorder
+        self._failure_samples = FailureSampleRecorder()
+        self._failure_capture_stamp = None
+        self._failure_control_observation = None
         if evidence_kind not in ("live-client-capture", "synthetic", "recorded", "unverified"):
             raise ValueError("unsupported capture evidence kind")
         self._offline = EngineAdapter(engine_factories=engine_factories,
@@ -683,6 +687,10 @@ class LiveRuntime:
                 self._map_id = selected
                 self._gate.select(selected)
                 self._gate.confirm()
+        self._recognition_diagnostic('identity-rank', proposal.get('reason', proposal.get('status', 'ranked')),
+            inputs=dict(candidateCount=len(rows), acceptedCount=len(accepted), seedCount=len(seeds),
+                floor=floor, frameId=frame_id, budgetSeconds=INITIAL_IDENTITY_BUDGET_SECONDS),
+            selectedMapId=selected, topCandidate=top, proposal=proposal)
         self._notify("group-state", reason=proposal.get("reason", proposal.get("status", "ranked")),
             identity=self._identity_fields(), groupEvidence=group_evidence, rankVerdict=dict(
                 topMapId=top.get("mapId") if top else None,
@@ -1919,6 +1927,8 @@ class LiveRuntime:
                         floor=str(self._floor), resourceIdentity=str(id(self._engine)))
 
     def shutdown(self):
+        self.set_automatic_failure_sampling_enabled(False)
+        self.set_failure_sampling_enabled(False)
         self.dispatch("end_round")
         if self._capture is not None:
             self._capture.shutdown()
@@ -1980,9 +1990,88 @@ class LiveRuntime:
             return {**{key: value if key == "pixels" else copy.deepcopy(value) for key, value in row.items()},
                     **self._identity_fields()}
 
+    def configure_failure_sampling(self, *, event_path, build_fingerprint, source_commit=""):
+        self._failure_samples.configure(event_path=event_path,
+            build_fingerprint=build_fingerprint, source_commit=source_commit)
+
+    def set_failure_sampling_enabled(self, enabled):
+        self._failure_samples.enabled = enabled is True
+        if not self._failure_samples.enabled:
+            self._failure_capture_stamp = None
+
+    def set_automatic_failure_sampling_enabled(self, enabled):
+        self._failure_samples.automatic_enabled = enabled is True
+        if not enabled:
+            self._failure_control_observation = None
+
+    def _automatic_failure_sample(self, reason, *, captured=None, current=None, diagnostic=None):
+        """Diagnostic-only reuse of the existing guarded capture; never recapture."""
+        try:
+            return self._record_automatic_failure_sample(reason, captured=captured, current=current, diagnostic=diagnostic)
+        except Exception as error:
+            result = dict(saved=False, sampling='automatic', missingReason='sample-preparation-error', error=type(error).__name__)
+            self._notify('automatic-failure-sample', reason='metadata-only', failureSample=result)
+            return result
+
+    def _record_automatic_failure_sample(self, reason, *, captured=None, current=None, diagnostic=None):
+        stamp = self._failure_capture_stamp
+        if captured is None and stamp is not None:
+            captured = stamp[0]
+        generation = stamp[3] if stamp is not None and len(stamp) > 3 else None
+        def valid():
+            return bool(self._active and (current is None or current()) and captured is not None
+                        and stamp is not None and stamp[0] is captured
+                        and self._capture_is_current(captured.context, generation))
+        # A missing legal frame is represented explicitly; no new capture is requested.
+        frame = self._full_frame(captured) if valid() else None
+        data = dict(diagnostic or {}, evidenceKind=self._evidence_kind, mode=self._mode,
+                    frameCapturedAtUtc=stamp[1] if stamp is not None else None,
+                    **self._failure_samples.metadata)
+        root = getattr(getattr(self._engine, 'memory_store', None), 'root', None)
+        result = self._failure_samples.record_automatic(root=root, reason=reason, frame=frame,
+            diagnostic=data, current=valid if captured is not None else lambda: bool(
+                self._active and (current is None or current())))
+        controls = getattr(self, '_failure_control_observation', None)
+        if controls is not None and controls[0] is captured and controls[1] is not None and frame is not None:
+            result['controlBand'] = self._failure_samples.record_automatic(root=root, reason=reason, frame=frame,
+                diagnostic=dict(data, sampleRole='detector-control-band'), current=valid,
+                crop_bounds=controls[1], crop_provenance='detector-control-band')
+        self._notify('automatic-failure-sample', reason='saved' if result['saved'] else 'metadata-only',
+                     failureSample=result)
+        return result
+
+    def _recognition_diagnostic(self, stage, reason, **values):
+        try:
+            from recognition_diagnostics import bounded_recognition, scale_observations
+            if stage == 'floor-observation':
+                observation = values.pop('observation')
+                values.update(mapOpen=observation.get('mapOpen'), fixedFloor=observation.get('floor'),
+                    floor=(values.get('floorRead') or {}).get('selectedFloor'),
+                    scales=scale_observations(observation), thresholds=observation.get('thresholds'))
+            evidence = bounded_recognition(dict(stage=stage, reason=reason, **values))
+            self._notify('recognition-diagnostic', reason=reason, recognitionDiagnostics=evidence)
+        except Exception:
+            pass  # Diagnostics cannot replace the algorithm's result/exception.
+
+    def _remember_control_observation(self, frame, mode, observation, floor_read):
+        try:
+            stamp = self._failure_capture_stamp
+            if (self._failure_samples.automatic_enabled and stamp is not None
+                    and getattr(stamp[0], 'frame_bgr', None) is frame):
+                from recognition_diagnostics import control_band
+                self._failure_control_observation = (stamp[0], control_band(frame, mode, observation, floor_read))
+        except Exception:
+            self._failure_control_observation = None
+
     def _capture_frame(self, cancelled):
         try:
-            return self._capture.capture(cancelled)
+            sample_generation = self._capture_generation()
+            captured = self._capture.capture(cancelled)
+            if self._failure_samples.enabled or self._failure_samples.automatic_enabled:
+                from datetime import datetime, timezone
+                self._failure_capture_stamp = (captured, datetime.now(timezone.utc).isoformat(),
+                    time.monotonic(), sample_generation)
+            return captured
         except Exception as error:
             error.error_phase = "capture"
             raise
@@ -1990,11 +2079,13 @@ class LiveRuntime:
     def _error_fields(self, error, action):
         fields = dict(traceback="".join(traceback.format_exception(
             type(error), error, error.__traceback__, limit=-12, chain=False))[-8192:])
+        fields.update(exceptionType=type(error).__name__, exceptionOrigin="runtime-dispatch",
+                      exceptionAction=action)
         if getattr(error, "error_phase", None) == "capture" or action == "bind_capture":
             fields["errorPhase"] = "capture"
             raw_diagnostics = getattr(error, "capture_diagnostics", {})
             allowed = {"frameShape", "frameDtype", "roiClientBounds", "requestedClientBounds",
-                       "fullClientSize", "clientBounds", "dpi", "expectedHwnd", "foregroundHwnd", "foregroundPid"}
+                       "fullClientSize", "clientBounds", "dpi", "expectedHwnd", "foregroundRole"}
             diagnostics = {key:value for key,value in raw_diagnostics.items() if key in allowed} if isinstance(raw_diagnostics, dict) else {}
             try:
                 state = getattr(self._capture, "snapshot", {})
@@ -2430,6 +2521,7 @@ class LiveRuntime:
                 if obsolete():
                     return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
                 if preparation.last_unresolved is None:
+                    self._automatic_failure_sample("map-open-preparation-deadline", current=lambda: not obsolete())
                     self.invalidate("map-closed", source="map-preparation-deadline")
                     return self._receipt(action, payload, success=False, reason="map-open-preparation-deadline")
                 # A recognized map with unreadable floor stays available for
@@ -2774,11 +2866,58 @@ class LiveRuntime:
         host = _AlignmentHost(engine, group, self._settings, steady=(self._steady, steady_context,
             lambda context: not obsolete() and self._steady_is_current(context, captured),
             self._steady_signature(captured)))
+        fit_started = time.monotonic()
         fit = host.fit(frame, map_id, floor, obsolete, entry_candidate) if entry_candidate is not None else host.fit(frame, map_id, floor, obsolete)
+        self._recognition_diagnostic('pose-fit', fit.get('reason', 'reason-not-provided'),
+            success=fit.get('success'), fit=fit, solverEvents=host.events,
+            elapsedMs=(time.monotonic()-fit_started)*1000,
+            inputs=dict(mapId=map_id, floor=floor, frameId=frame_id,
+                cycleId=cycle, captureGeneration=capture_generation, sourceFrameGeneration=frame_generation))
         if obsolete():
             return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
         if not fit.get("success"):
             reason = str(fit.get("reason", "pose-fit-failed"))
+            if reason in ('structure-current-geometry-failed', 'initial-structure-current-geometry-failed', 'current-geometry-failed'):
+                self._automatic_failure_sample(reason, captured=captured,
+                    current=lambda: not obsolete() and self._capture_is_current(captured.context, capture_generation),
+                    diagnostic=dict(mapId=map_id, floor=floor, cycleId=cycle, frameId=frame_id,
+                                    captureGeneration=capture_generation, sourceFrameGeneration=frame_generation))
+            try:
+                stamp = self._failure_capture_stamp
+                if (self._failure_samples.enabled and stamp is not None and stamp[0] is captured
+                        and self._failure_samples.can_record(frame, (self._mode, map_id, self._profile, floor, reason))):
+                    def sample_current():
+                        with self._lock:
+                            return bool(not obsolete() and self._active and self._map_open
+                                and self._capture_is_current(captured.context, capture_generation) and floor == self._floor
+                                and cycle == self._cycle and engine is self._engine
+                                and self._capture_is_current(captured.context, capture_generation))
+                    reference = host._shared_structure_reference("shared-structure", map_id, floor)
+                    resource = dict(metadata=reference.metadata,
+                        cleanMaskSha256=hashlib.sha256(reference.clean_mask.tobytes()).hexdigest(),
+                        validationMaskSha256=hashlib.sha256(reference.validation_mask.tobytes()).hexdigest()) if reference is not None else None
+                    diagnostic = dict(mode=self._mode, profileId=self._profile, evidenceKind=self._evidence_kind,
+                        frameId=frame_id, sourceFrameGeneration=frame_generation,
+                        captureGeneration=capture_generation, requestGeneration=payload.get("generation"),
+                        roundId=self._round, cycleId=cycle, epoch=epoch,
+                        frameCapturedAtUtc=stamp[1], frameCapturedMonotonicAt=stamp[2],
+                        timestampBasis="capture-return", fullClientSize=list(captured.context.full_client_size),
+                        clientBounds=list(captured.context.client_screen_bounds), dpi=captured.context.dpi,
+                        roiClientBounds=list(captured.roi_client_bounds), sharedResource=resource,
+                        displayResourceIdentity=display.get("resourceIdentity"),
+                        floorRead=copy.deepcopy((self._last_observation or {}).get("floor_read", {})))
+                    saved = self._failure_samples.record(getattr(engine, "memory_store", None),
+                        map_id=map_id, floor=floor, reason=reason, fit=fit, frame=frame,
+                        client_bounds=captured.context.client_screen_bounds, cycle_id=cycle,
+                        diagnostic=diagnostic, current=sample_current)
+                    self._notify("failure-sample", reason="saved" if saved else "not-saved",
+                        failureSample=dict(savedCount=self._failure_samples.saved_count,
+                            error=self._failure_samples.last_error, frameCapturedAtUtc=stamp[1]))
+            except Exception as error:
+                # Optional sample preparation must not replace the fit verdict.
+                self._failure_samples.last_error = type(error).__name__
+                self._notify("failure-sample", reason="not-saved", failureSample=dict(
+                    savedCount=self._failure_samples.saved_count, error=self._failure_samples.last_error))
             reopened = self._consume_identity_conflict(fit, engine=engine, epoch=epoch, captured=captured,
                 capture_generation=capture_generation, frame_id=frame_id, frame_generation=frame_generation,
                 cycle=cycle, map_id=map_id, floor=floor)
@@ -2916,7 +3055,7 @@ class LiveRuntime:
 
     def _observe(self, engine, frame):
         from floor_control_region import apply_floor_region
-        started = time.monotonic() if self._diagnostics is not None else 0
+        started = time.monotonic()
         # One settings snapshot per frame; configure_settings swaps the dict.
         settings = getattr(self, "_settings", None) or {}
         if engine.pack.mode == "difficult":
@@ -2937,6 +3076,11 @@ class LiveRuntime:
                     mapDetected=result.get("mapOpen"), combinedSensor=True,
                     floorSource=floor_read.get("floorSource"),
                     elapsedMs=(time.monotonic()-started)*1000, roundId=self._round, cycleId=self._cycle)
+            self._remember_control_observation(frame, engine.pack.mode, result, floor_read)
+            self._recognition_diagnostic('floor-observation', result.get('reason', 'reason-not-provided'),
+                observation=result, floorRead={key: floor_read.get(key) for key in
+                    ('selectedFloor', 'floorSource', 'regionRead', 'autoRead')},
+                elapsedMs=(time.monotonic()-started)*1000)
             return result, floor, floor_read
         from map_interface_observation import detect_map_interface, detect_selected_floor
         floor_read = detect_selected_floor(frame)
@@ -2954,6 +3098,9 @@ class LiveRuntime:
                 mapDetected=result.get("detected"), combinedSensor=False, floorMs=floor_ms,
                 floorSource=floor_read.get("floorSource"),
                 elapsedMs=(time.monotonic()-started)*1000, roundId=self._round, cycleId=self._cycle)
+        self._remember_control_observation(frame, engine.pack.mode, result, floor_read)
+        self._recognition_diagnostic('map-floor-observation', result.get('reason', 'reason-not-provided'),
+            observation=result, floorRead=floor_read, elapsedMs=(time.monotonic()-started)*1000)
         return result, floor, floor_read
 
     @staticmethod

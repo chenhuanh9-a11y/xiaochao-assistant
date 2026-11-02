@@ -38,9 +38,9 @@ class DifficultMapUI:
             best = max(opened, key=lambda r: sum(g["score"] for g in r["glyphs"]))
             if len(floors) > 1:
                 best = dict(best, floor=None, reason="two-floor-scale-ambiguous")
-            return best
+            return dict(best, diagnosticScales=observations)
         uncertain = [r for r in observations if r["mapOpen"] is None]
-        return (uncertain or observations)[0]
+        return dict((uncertain or observations)[0], diagnosticScales=observations)
 
     def _observe_scale(self, frame, scale):
         h, w = frame.shape[:2]
@@ -50,7 +50,7 @@ class DifficultMapUI:
         x1, y1 = min(round(w * .97), round(w - 150 * scale)), min(h, round(180 * scale))
         if x1 <= x0 or y1 <= y0:
             return dict(mapOpen=None, floor=None, entryKind="unknown",
-                        reason="client-too-small-for-controls")
+                        reason="client-too-small-for-controls", scale=scale, controlBounds=[x0, y0, x1, y1])
         crop = frame[y0:y1, x0:x1, :3]
         normalized = cv2.resize(crop, (max(1, round(crop.shape[1] / scale)),
                                       max(1, round(crop.shape[0] / scale))),
@@ -60,7 +60,7 @@ class DifficultMapUI:
         if any(region.shape[0] < t.shape[0] or region.shape[1] < t.shape[1]
                for t in (self.one, self.two)):
             return dict(mapOpen=None, floor=None, entryKind="unknown",
-                        reason="client-too-small-for-controls")
+                        reason="client-too-small-for-controls", scale=scale, controlBounds=[x0, y0, x1, y1])
         matches = []
         for template in (self.one, self.two):
             scores = cv2.matchTemplate(region, template, cv2.TM_CCOEFF_NORMED)
@@ -83,6 +83,12 @@ class DifficultMapUI:
             and abs(a["center"][1]-b["center"][1]) <= 12
         )
         result = {"mapOpen": bool(valid), "floor": None,
+                  "scale": scale, "spacing": float(spacing),
+                  "dy": float(abs(a["center"][1]-b["center"][1])),
+                  "controlBounds": [x0, y0, x1, y1],
+                  "thresholds": dict(strongGlyphMin=.70, weakGlyphMin=.35,
+                      spacingMin=72, spacingMax=108, dyMax=12,
+                      faintScoreMin=.65, highlightMin=65, highlightDifferenceMin=15),
                   "glyphs": [dict(m, center=[x0 + m["center"][0]*sx,
                                               y0 + m["center"][1]*sy]) for m in matches],
                   "controlScale": [sx, sy], "size": [w, h],

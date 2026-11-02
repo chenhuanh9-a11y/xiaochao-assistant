@@ -120,6 +120,7 @@ from session_state_machine import (
     verified_map_hotkey_frame,
 )
 from async_event_log import AsyncEventLog
+from diagnostic_identity import process_scope
 from native_resource_validation import NativeResourceValidationMixin
 from base_display_integration import BaseDisplayIntegrationMixin, display_source_guard
 from manual_map_picker import normalize_selection_mode
@@ -816,10 +817,10 @@ def report_unhandled_error(exc_type, exc_value, exc_traceback) -> None:
     try:
         LIVE_ROOT.mkdir(parents=True, exist_ok=True)
         path = LIVE_ROOT / f"startup-error-{datetime.now():%Y%m%d-%H%M%S}.log"
-        path.write_text(
-            "".join(traceback.format_exception(exc_type, exc_value, exc_traceback)),
-            encoding="utf-8",
-        )
+        from diagnostic_storage import append_record, slot_path
+        path = slot_path(path, "startup")
+        append_record(path, dict(event="startup-error", traceback="".join(
+            traceback.format_exception(exc_type, exc_value, exc_traceback))))
         message = f"星图遇到错误，已保存诊断日志：\n{path}"
     except OSError:
         message = f"星图遇到错误：\n{exc_value}"
@@ -995,43 +996,27 @@ def _bounded_log_tail(path: Path, byte_limit: int) -> tuple[bytes, bool]:
         handle.readline()  # Drop a partial JSON/text line at the truncation edge.
         payload = handle.read(byte_limit)
         if not payload:
-            # One abnormally long line is still more useful than an empty log.
-            handle.seek(max(0, size - byte_limit))
-            payload = handle.read(byte_limit)
+            # Never invent a malformed JSONL suffix when a single row exceeds
+            # the export budget. The manifest records this truncated empty tail.
+            payload = b""
     return payload, True
 
 
 def _redact_local_paths(payload: bytes) -> bytes:
-    """Remove local Windows paths while preserving surrounding diagnostic text."""
-    text = payload.decode("utf-8", errors="replace")
-    redacted = re.sub(
-        r'(?i)(?:[A-Z]:[\\/]|\\\\)[^"\r\n]*',
-        "<local-path>",
-        text,
-    )
-    return redacted.encode("utf-8")
+    from diagnostic_export import _redact_local_paths as redact
+    return redact(payload)
 
 
 def _event_log_session_id(path: Path) -> str | None:
-    """Derive a stable, non-identifying session id from the startup event."""
-    if not path.name.startswith("events-"):
-        return None
+    """Read a recorded session only; legacy files have no process session ID."""
+    from diagnostic_export import _bounded_log_tail, _log_sessions
     try:
-        with path.open("r", encoding="utf-8", errors="replace") as handle:
-            for _index, line in zip(range(32), handle):
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if row.get("event") != "assistant-started":
-                    continue
-                seed = "|".join(str(row.get(key, "")) for key in (
-                    "time", "processId", "buildFingerprint",
-                ))
-                return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
+        payload, _ = _bounded_log_tail(path, DIAGNOSTIC_FILE_BYTE_LIMIT)
+        groups = _log_sessions(payload, path.name)
+        sessions = {row['sessionId'] for row in groups}
+        return next(iter(sessions)) if len(sessions) == 1 else None
     except OSError:
         return None
-    return None
 
 
 def diagnostic_package_metadata(app_root: Path) -> dict:
@@ -1175,13 +1160,14 @@ def export_safe_diagnostic_bundle(
     runtime_context: dict | None = None,
     package_metadata: dict | None = None,
     failure_roots: tuple[Path, ...] = (),
+    export_id: str | None = None,
 ) -> dict:
     """Use the shared bounded exporter with this process's original identity."""
     from diagnostic_export import export_safe_diagnostic_bundle as export_bundle
     return export_bundle(app_root, live_root, exported_at=exported_at,
         log_limit=log_limit, file_byte_limit=file_byte_limit, total_byte_limit=total_byte_limit,
         window_environment=window_environment, runtime_context=runtime_context,
-        package_metadata=package_metadata, failure_roots=failure_roots,
+        package_metadata=package_metadata, failure_roots=failure_roots, export_id=export_id,
         app_version=APP_VERSION, build_fingerprint=BUILD_FINGERPRINT,
         process_integrity=process_integrity_level())
 
@@ -5872,7 +5858,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
         except Exception:
             pass
         self.event_path = LIVE_ROOT / f"events-{datetime.now():%Y%m%d-%H%M%S}.jsonl"
-        self._event_log = AsyncEventLog(self.event_path)
+        from diagnostic_storage import slot_path
+        self.event_path = slot_path(self.event_path, "tk")
+        self._event_log = AsyncEventLog(self.event_path, settings_dir=self.settings_path.parent)
         self.diagnostic_export_in_progress = False
         self.display_environment: dict | None = None
         self.process_integrity = process_integrity_level()
@@ -10133,7 +10121,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
             return
         self.diagnostic_export_in_progress = True
         self._set_diagnostic_export_buttons(False, "正在导出…")
-        self._log("diagnostic-export-requested")
+        from uuid import uuid4
+        export_id = uuid4().hex
+        self._log("diagnostic-export-requested", exportId=export_id)
         runtime_context = diagnostic_runtime_context(
             getattr(self, "display_environment", None),
             game_window_bound=self.game_hwnd is not None,
@@ -10161,10 +10151,10 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
                     window_environment=environment,
                     runtime_context=runtime_context,
                     package_metadata=package_metadata,
-                    failure_roots=failure_roots,
+                    failure_roots=failure_roots, export_id=export_id,
                 )
                 self._log(
-                    "diagnostic-exported",
+                    "diagnostic-exported", exportId=export_id,
                     fileName=result["path"].name,
                     includedLogCount=result["includedLogCount"],
                     windowCandidateCount=result["windowCandidateCount"],
@@ -10176,7 +10166,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
                 self.events.put({"kind": "diagnostic-exported", **result})
             except Exception as error:
                 self._log(
-                    "diagnostic-export-error",
+                    "diagnostic-export-error", exportId=export_id,
                     errorType=type(error).__name__, message=str(error),
                 )
                 self.events.put({
@@ -14133,7 +14123,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
             observations = {name: value.astype(np.uint8, copy=True) for name, value in observations.items()}
             diagnostic = compact(dict(
                 version=APP_VERSION, buildFingerprint=BUILD_FINGERPRINT,
-                processId=os.getpid(), eventPath=str(getattr(self, 'event_path', '')),
+                **process_scope(), processId=os.getpid(), eventPath=str(getattr(self, 'event_path', '')),
                 profileId=event.get('routeProfileId'),
                 frameCapturedAtUtc=context.get('frameCapturedAtUtc'),
                 sourceFrameGeneration=event.get('sourceFrameGeneration'),
@@ -14505,7 +14495,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
                 map_evidence = self._mode_map_interface(frame, floor_read=floor_read)
             diagnostic = dict(stage=reason, failureKind=failure_kind, mode=self.game_mode, profileId=profile,
                 version=APP_VERSION, buildFingerprint=BUILD_FINGERPRINT,
-                processId=os.getpid(), eventPath=str(self.event_path),
+                **process_scope(), processId=os.getpid(), eventPath=str(self.event_path),
                 cycleId=cycle_id, captureGeneration=cycle_id,
                 frameCapturedAtUtc=captured_at,
                 captureStartFrameGeneration=capture_start_frame_generation,
@@ -14586,7 +14576,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
             diagnostic = dict(stage='identity-rejection', mode=mode, profileId=profile,
                 version=APP_VERSION, buildFingerprint=BUILD_FINGERPRINT,
                 packageMetadata=copy.deepcopy(getattr(self, 'package_metadata', None)),
-                processId=os.getpid(), eventPath=str(getattr(self, 'event_path', '')),
+                **process_scope(), processId=os.getpid(), eventPath=str(getattr(self, 'event_path', '')),
                 cycleId=cycle_id, captureGeneration=event.get('token'),
                 rankStartedMonotonicAt=started,rankCompletedMonotonicAt=completed,
                 sampleQueuedMonotonicAt=now,

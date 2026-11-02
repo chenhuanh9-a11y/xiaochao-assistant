@@ -1419,3 +1419,15 @@ FIELDS = FIELDS | frozenset(('bestResidual',))
 CODES = CODES | frozenset(('session-worker', 'Windows', 'Linux', 'Darwin', 'F1', 'F2', 'B1'))
 
 FIELDS = FIELDS | frozenset(('writerHadError',))
+
+# Explicit conservative image-retirement outcome, not a capture decision.
+CODES = CODES | frozenset({"automatic-safe-retirement-unavailable"})
+
+CODES = CODES | frozenset({"automatic-safe-storage-unsupported", "automatic-storage-handle-unavailable"})
+FIELDS = FIELDS | frozenset({"recoveryRequired"})
+
+# Main's effective custom/automatic floor reading, not the fixed detector alone.
+FIELDS = FIELDS | frozenset({"fixedFloor", "regionRead", "autoRead"})
+CODES = CODES | frozenset({"region", "fixed", "auto-located", "fixed-auto-unread",
+    "fixed-region-unavailable", "fixed-region-unavailable-auto-unread",
+    "fixed-region-unread", "fixed-region-unread-auto-unread"})

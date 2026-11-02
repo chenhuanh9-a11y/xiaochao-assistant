@@ -41,7 +41,7 @@ class RetentionTests(unittest.TestCase):
     def tearDown(self):
         self.folder.cleanup()
 
-    def test_event_and_startup_logs_keep_newest_per_kind(self):
+    def test_legacy_logs_are_preserved_while_new_writers_have_separate_owned_budget(self):
         # Shared by Tk and Qt; Qt names its logs events-qt-* inside the same glob.
         prune = prune_diagnostic_logs
         live = self.root / 'live'
@@ -49,11 +49,40 @@ class RetentionTests(unittest.TestCase):
             touch(live / f'events-{age:02d}.jsonl', age)
         touch(live / 'startup-error-a.log', 1)
         touch(live / 'hang-diagnostics' / 'thread-stacks-1.jsonl', 0)
-        prune(live, 7)
+        self.assertIsNone(prune(live, 7))
         self.assertEqual(sorted(p.name for p in live.glob('events-*.jsonl')),
-                         [f'events-{age:02d}.jsonl' for age in range(5, 12)])
+                         [f'events-{age:02d}.jsonl' for age in range(12)])
         self.assertTrue((live / 'startup-error-a.log').is_file())
         self.assertTrue((live / 'hang-diagnostics' / 'thread-stacks-1.jsonl').is_file())
+
+    def test_qt_and_tk_startup_prune_statements_preserve_unknown_files_and_none_abi(self):
+        # Execute the actual import/call statements at both production startup
+        # seams, not a reimplementation. Full Tk GUI is not available in Linux.
+        from unittest.mock import patch
+        import diagnostic_export
+        live = self.root / 'nightmare-live'
+        sentinel = touch(live / 'events-user.jsonl', 0)
+        before = sentinel.read_bytes()
+        sources = [
+            ('app/identityv_daily_assistant.py', '        from diagnostic_export import prune_diagnostic_logs',
+             '        self.event_path = LIVE_ROOT'),
+            ('experiments/qt_quick/client.py', '        try:\n            from diagnostic_export import DIAGNOSTIC_LOG_LIMIT, prune_diagnostic_logs',
+             '        from client_lifecycle_trace')]
+        import textwrap
+        for relative, first, last in sources:
+            source = (APP.parent / relative).read_text('utf-8-sig')
+            start = source.index(first); end = source.index(last, start)
+            with patch.object(diagnostic_export, 'prune_diagnostic_logs', wraps=prune_diagnostic_logs) as call, \
+                 patch('star_map_download.prune_installed_downloads') as downloads:
+                exec(textwrap.dedent(source[start:end]), dict(
+                    LIVE_ROOT=live, DIAGNOSTIC_LOG_LIMIT=8, ROOT=self.root, Path=Path,
+                    self=SimpleNamespace(sandbox=self.root, paths=SimpleNamespace(work_root=self.root))))
+                call.assert_called_once_with(live, 7)
+                downloads.assert_called_once_with(self.root/'work/map-packages/downloads', self.root)
+            self.assertEqual(sentinel.read_bytes(), before)
+        status = diagnostic_export.diagnostic_log_retention_status()
+        self.assertEqual(status['legacyHistory'], 'preserved-unowned-not-pruned')
+        self.assertEqual(status['budgetScope'], 'new-managed-logs-only-not-all-historical-files')
 
     def test_failure_budget_evicts_oldest_images_not_the_journal(self):
         failures = self.root / 'memory' / 'failures' / 'm' / '1'
