@@ -75,7 +75,9 @@ class PreparationDiagnosticContracts(unittest.TestCase):
                     if name.startswith("logs/events-")]
                 data = "\n".join(texts)
                 self.assertIn("map-preparation", data)
-                self.assertIn('"errno": 5', data)
+                exported_rows = [json.loads(line) for text in texts for line in text.splitlines()]
+                self.assertTrue(any(row.get('diag', {}).get('exception', {}).get('errno') == 5
+                                    for row in exported_rows))
                 self.assertIn("map-open-preparation-deadline", data)
                 self.assertNotIn("PRIVATE-ACCOUNT", data)
                 self.assertNotIn("C:/Private", data)

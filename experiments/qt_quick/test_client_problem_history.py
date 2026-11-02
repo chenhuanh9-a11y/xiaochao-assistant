@@ -18,6 +18,7 @@ def row(count=1, occurrence='run:1', **extra):
 class HistoryTests(unittest.TestCase):
     def test_overlap_checkpoint_copies_current_use_max_then_sum_distinct_occurrences(self):
         with tempfile.TemporaryDirectory() as folder:
+            folder = str(Path(folder).resolve())  # Windows temp may use an 8.3 alias.
             path = Path(folder)
             data = '\n'.join(json.dumps(item) for item in (row(), row(7), row(2, 'run:2'))) + '\n'
             (path/'events-a.jsonl').write_text(data)
@@ -28,12 +29,14 @@ class HistoryTests(unittest.TestCase):
 
     def test_legacy_missing_repeat_count_is_not_invented(self):
         with tempfile.TemporaryDirectory() as folder:
+            folder = str(Path(folder).resolve())  # Windows temp may use an 8.3 alias.
             old = row(); old.pop('occurrenceId'); old.pop('count')
             (Path(folder)/'events-old.jsonl').write_text(json.dumps(old)+'\n')
             self.assertEqual(summarize_problem_history(folder, [old])['recentProblems'][0]['count'], 1)
 
     def test_file_byte_record_and_output_budgets(self):
         with tempfile.TemporaryDirectory() as folder:
+            folder = str(Path(folder).resolve())  # Windows temp may use an 8.3 alias.
             for index in range(4):
                 (Path(folder)/f'events-{index}.jsonl').write_text((json.dumps(row())+'\n')*20)
             result = summarize_problem_history(folder, max_files=1, max_bytes=1024, max_records=2)
@@ -50,6 +53,7 @@ class HistoryTests(unittest.TestCase):
         from client_problems import ProblemsService
         app = QCoreApplication.instance() or QCoreApplication([])
         with tempfile.TemporaryDirectory() as folder:
+            folder = str(Path(folder).resolve())  # Windows temp may use an 8.3 alias.
             service = ProblemsService(SimpleNamespace(work_root=folder))
             service._start_next = lambda: None
             for _ in range(50):
@@ -68,6 +72,7 @@ class HistoryTests(unittest.TestCase):
         from client_problems import ProblemsService, _write_batch
         app = QCoreApplication.instance() or QCoreApplication([])
         with tempfile.TemporaryDirectory() as folder:
+            folder = str(Path(folder).resolve())  # Windows temp may use an 8.3 alias.
             service = ProblemsService(SimpleNamespace(work_root=folder))
             service._start_next = lambda: None
             for _ in range(50):
@@ -96,6 +101,7 @@ class HistoryTests(unittest.TestCase):
         from client_problems import ProblemsService, PENDING_LIMIT
         app = QCoreApplication.instance() or QCoreApplication([])
         with tempfile.TemporaryDirectory() as folder:
+            folder = str(Path(folder).resolve())  # Windows temp may use an 8.3 alias.
             service = ProblemsService(SimpleNamespace(work_root=folder))
             service._start_next = lambda: None
             for _ in range(50):
@@ -118,6 +124,7 @@ class HistoryTests(unittest.TestCase):
         from client_problems import ProblemsService
         app = QCoreApplication.instance() or QCoreApplication([])
         with tempfile.TemporaryDirectory() as folder:
+            folder = str(Path(folder).resolve())  # Windows temp may use an 8.3 alias.
             service = ProblemsService(SimpleNamespace(work_root=folder))
             service._start_next = lambda: None
             service.record(row()); service.record(row())
@@ -137,6 +144,7 @@ class HistoryTests(unittest.TestCase):
         from client_problems import ProblemsService, PENDING_LIMIT, RECENT_LIMIT
         app = QCoreApplication.instance() or QCoreApplication([])
         with tempfile.TemporaryDirectory() as folder:
+            folder = str(Path(folder).resolve())  # Windows temp may use an 8.3 alias.
             service = ProblemsService(SimpleNamespace(work_root=folder))
             service._start_next = lambda: None
             for index in range(32):
@@ -169,6 +177,7 @@ class HistoryTests(unittest.TestCase):
 
     def test_history_consumes_pending_checkpoint_at_snapshot_end_with_hard_limit(self):
         with tempfile.TemporaryDirectory() as folder:
+            folder = str(Path(folder).resolve())  # Windows temp may use an 8.3 alias.
             snapshot = [row()] * 95 + [row(50), row(999)]
             result = summarize_problem_history(folder, iter(snapshot), max_files=0)
             self.assertEqual(result['recentProblems'][0]['count'], 50)
