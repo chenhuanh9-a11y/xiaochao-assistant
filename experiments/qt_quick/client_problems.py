@@ -133,6 +133,8 @@ class ProblemsService(QObject):
         self.log_path = Path(paths.work_root) / 'nightmare-live' / f'events-qt-{stamp}-{os.getpid()}.jsonl'
         settings = getattr(paths, "settings_path", Path(paths.work_root) / "nightmare-memory" / "ui-settings.json")
         self.identity = DiagnosticStream(self.log_path.name, Path(settings).parent)
+        self.recognition_path = self.log_path.with_name(self.log_path.name.replace('events-qt-', 'events-qt-recognition-', 1))
+        self.recognition_identity = DiagnosticStream(self.recognition_path.name, Path(settings).parent)
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(1)
         self._recent, self._queue = [], deque()
@@ -289,12 +291,13 @@ class ProblemsService(QObject):
         signature = json.dumps(_trace_state({name: value for name,value in row.items()
                                if name not in {'diag', 'recognitionDiagnostics', 'frame', 'generation', 'token'}}), sort_keys=True)
         previous = self._trace_states.get(key)
-        row.update(self.identity.stamp())
+        stream = self.recognition_identity if 'recognitionDiagnostics' in row else self.identity
+        row.update(stream.stamp())
         if 'recognitionDiagnostics' in row:
             lane = row['recognitionDiagnostics'].get('stage')
             now = time.monotonic()
             if now < self._recognition_next.get(lane, 0):
-                self.identity.drop(row, 'recognition-rate-limit')
+                stream.drop(row, 'recognition-rate-limit')
                 return True
             self._recognition_next[lane] = now + .25
             self._recognition_next.move_to_end(lane)
@@ -305,14 +308,15 @@ class ProblemsService(QObject):
             self._trace_states.move_to_end(key)
             self.identity.drop(row, "unchanged-trace-coalesced")
             return True  # No per-refresh UI notification or disk append.
-        if len(self._queue) + self._inflight_rows >= PENDING_LIMIT:
+        limit = PENDING_LIMIT // 2 if 'recognitionDiagnostics' in row else PENDING_LIMIT
+        if len(self._queue) + self._inflight_rows >= limit:
             self._dropped += 1
-            self.identity.drop(row, 'queue-capacity')
+            stream.drop(row, 'queue-capacity')
             self._write_error = '运行诊断日志队列已满，部分状态未写入。'
             self.changed.emit()
             return False
         now = datetime.now(timezone.utc)
-        row.update(event='qt-runtime-transition', timestampUTC=now.isoformat(timespec='milliseconds').replace('+00:00', 'Z'),
+        row.update(event='qt-recognition-diagnostic' if 'recognitionDiagnostics' in row else 'qt-runtime-transition', timestampUTC=now.isoformat(timespec='milliseconds').replace('+00:00', 'Z'),
                    buildFingerprint=self._build_fingerprint, sourceCommit=self._source_commit, count=1)
         if previous is not None and previous[1] > 1:
             row['previousRepeatedCount'] = previous[1]
@@ -328,11 +332,16 @@ class ProblemsService(QObject):
     def _start_next(self):
         if self._job is not None or not self._queue:
             return
-        rows = [self._queue.popleft() for _ in range(min(16, len(self._queue)))]
+        # Keep recognition observations in their own rotating file. They must
+        # never consume the retained problem-history byte budget.
+        recognition = 'recognitionDiagnostics' in self._queue[0]
+        rows = []
+        while self._queue and len(rows) < 16 and ('recognitionDiagnostics' in self._queue[0]) == recognition:
+            rows.append(self._queue.popleft())
         for row in rows:
             row['diagnosticLoss'] = self.identity.loss()
         self._inflight_rows = len(rows)
-        self._job = job = _Write(self.log_path, rows)
+        self._job = job = _Write(self.recognition_path if recognition else self.log_path, rows)
         job.signals.done.connect(self._finished, Qt.QueuedConnection)
         self.pool.start(job)
 
