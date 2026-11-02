@@ -333,6 +333,51 @@ class ShortcutDeliveryTests(unittest.TestCase):
         finally:
             self.settings.cancelShortcutCapture(); view.close(); view.deleteLater(); self.app.processEvents()
 
+    def wait_capture_click_position(self, view, area):
+        """Wait for rendered layout and a BackButton-capable hit target.
+
+        Focus can arrive before the Qt Quick layout/render pass. A fixed sleep
+        or candidate retry would hide this race; instead require the same
+        in-window hit-tested center on two completed frames, then click once.
+        """
+        self.assertTrue(QTest.qWaitForWindowExposed(view))
+        frames = []
+        def rendered():
+            frames.append(None)
+        view.frameSwapped.connect(rendered)
+        deadline = time.monotonic() + 3
+        last_frame, previous, stable = 0, None, 0
+        try:
+            view.update()
+            while time.monotonic() < deadline:
+                self.app.processEvents()
+                if len(frames) > last_frame:
+                    last_frame = len(frames)
+                    pos = area.mapToScene(area.boundingRect().center()).toPoint()
+                    valid = (area.isVisible() and area.isEnabled() and area.hasActiveFocus()
+                             and area.width() > 0 and area.height() > 0
+                             and 0 <= pos.x() < view.width() and 0 <= pos.y() < view.height())
+                    item = view.contentItem()
+                    inside_area, accepts = False, False
+                    while item is not None:
+                        inside_area = inside_area or item == area
+                        accepts = inside_area and bool(item.acceptedMouseButtons() & Qt.BackButton)
+                        local = item.mapFromScene(pos)
+                        child = item.childAt(local.x(), local.y())
+                        if child is None:
+                            break
+                        item = child
+                    geometry = (pos.x(), pos.y(), area.width(), area.height())
+                    stable = stable + 1 if valid and accepts and geometry == previous else 0
+                    previous = geometry if valid and accepts else None
+                    if stable >= 1:
+                        return pos
+                    view.update()
+                QTest.qWait(1)  # bounded event-loop polling, not a readiness delay
+            self.fail("capture layout/hit target did not stabilize on two rendered frames")
+        finally:
+            view.frameSwapped.disconnect(rendered)
+
     def test_actual_settings_controls_save_hot_reload_restart_and_dispatch(self):
         view = QQuickView()
         view.setResizeMode(QQuickView.SizeRootObjectToView)
@@ -350,7 +395,7 @@ class ShortcutDeliveryTests(unittest.TestCase):
                 area = visual_item(panel, 'shortcutCaptureArea')
                 self.assertTrue(area.hasActiveFocus())
                 if expected == 'MOUSE4':
-                    pos = area.mapToScene(area.boundingRect().center()).toPoint()
+                    pos = self.wait_capture_click_position(view, area)
                     QTest.mouseClick(view, Qt.BackButton, Qt.NoModifier, pos)
                 else:
                     QTest.keyClick(view, key)

@@ -1905,6 +1905,19 @@ class ClientCoordinator(QObject):
             # continues. Present it without changing Session's request/frame ID.
             self._present_runtime_state(state, trigger=name)
         elif name == "render-revoked":
+            # Runtime may close after preparation/probe failure without a key
+            # edge. Reconcile only that exact input and still-current lifetime;
+            # a queued old close must never flip a newer open back to closed.
+            if (event.get("mapClosed") is True
+                    and type(event.get("inputSequence")) is int
+                    and event["inputSequence"] == self._map_input_sequence
+                    and self._bound and event.get("inputWindow") == str(self._bound)):
+                state = self.runtime.snapshot()
+                fields = ("epoch", "mode", "profileId", "roundId", "frameId", "generation", "cycleId")
+                if (state.get("mapOpen") is False
+                        and all(key in event and event[key] == state.get(key) for key in fields)
+                        and str(state.get("capture", {}).get("hwnd", "")) == str(self._bound)):
+                    self._reset_map_input("runtime-map-closed")
             getter = getattr(self.runtime, "render_payload", None)
             if getter is None or not self._last_render_token or getter(self._last_render_token) is None:
                 self._withdraw_expired_source(event.get("reason") or "render-revoked")

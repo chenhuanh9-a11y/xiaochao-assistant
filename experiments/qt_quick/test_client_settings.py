@@ -244,20 +244,28 @@ class SettingsTests(unittest.TestCase):
         self.addCleanup(backend.shutdown)
         self.assertTrue(backend.configureSettings(service.values))
 
-    def test_fresh_bare_alt_map_key_conflicts_until_picker_slot_is_cleared(self):
+    def test_fresh_picker_unbound_allows_bare_alt_map_and_action_keys(self):
         service = self.service()
-        self.assertEqual(service.values["actionHotkeys"][9], "Alt+1")
-        self.assertFalse(service.setValue("hotkey", "ALT"))
-        self.assertIn("单独修饰键冲突", service.message)
-        actions = service.values["actionHotkeys"]
-        actions[9] = ""
-        self.assertTrue(service.setValue("actionHotkeys", actions))
-        self.assertTrue(service.setValue("hotkey", "ALT"))
+        self.assertEqual(service.values["actionHotkeys"][9], "")
+        self.assertTrue(service.setValue("hotkey", "ALT"), service.message)
         self.assertTrue(service.save())
         self.wait(lambda: not service.busy)
         restored = self.service()
         self.assertEqual(restored.persistedValues["hotkey"], "ALT")
         self.assertEqual(restored.persistedValues["actionHotkeys"][9], "")
+        self.assertTrue(restored.setValue("hotkey", "G"))
+        actions = restored.values["actionHotkeys"]
+        actions[1] = "ALT"
+        self.assertTrue(restored.setValue("actionHotkeys", actions), restored.message)
+        self.assertTrue(restored.save())
+        self.wait(lambda: not restored.busy)
+        restarted = self.service()
+        self.assertEqual(restarted.persistedValues["actionHotkeys"], actions)
+        from client_input import NativeShortcutBackend
+        from test_client_input import Native
+        backend = NativeShortcutBackend(Native())
+        self.addCleanup(backend.shutdown)
+        self.assertTrue(backend.configureSettings(restarted.persistedValues))
 
     def test_binding_slot_ten_on_a_nine_slot_file_appends_it(self):
         keys = ["F5", "F6", "F7", "F8", "F9", "F10", "F11", "", ""]

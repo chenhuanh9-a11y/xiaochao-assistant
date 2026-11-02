@@ -95,8 +95,10 @@ class ManualMapPickerService(QObject):
         self._catalog_mode = ""
         self._catalog_stale = False
         self._opened_selection_mode = "auto"
-        self._last_active = bool(session.snapshot.get("roundActive")
-                                 if session is not None else False)
+        initial = session.snapshot if session is not None else {}
+        self._last_round_work = bool(initial.get("roundActive") or initial.get("roundPreparing"))
+        self._opened_session_context = None
+        self._catalog_session_context = None
         settings.changed.connect(self._settings_changed)
         if session is not None:
             session.changed.connect(self._session_changed)
@@ -116,6 +118,10 @@ class ManualMapPickerService(QObject):
     def _applied_mode(self):
         mode = getattr(self.session, "currentMode", "") if self.session is not None else ""
         return mode or self.settings.values.get("gameMode", "nightmare")
+
+    def _session_context(self):
+        state = self.session.snapshot if self.session is not None else {}
+        return (self._applied_mode(), state.get("profileId"), state.get("roundId"))
 
     def _title(self):
         mode = self._catalog_mode or self._applied_mode()
@@ -228,8 +234,12 @@ class ManualMapPickerService(QObject):
 
     @Slot(str)
     def open(self, source="button"):
-        if self._closed or self._catalog_provider is None:
+        state = self.session.snapshot if self.session is not None else {}
+        if (self._closed or self._catalog_provider is None
+                or state.get("resourceLocked") or state.get("closed")):
             return False
+        self._opened_session_context = self._session_context()
+        self._catalog_session_context = None
         self._opened_selection_mode = normalize_selection_mode(
             self.settings.values.get("mapSelectionMode"))
         self._generation += 1
@@ -275,7 +285,8 @@ class ManualMapPickerService(QObject):
             QTimer.singleShot(0, self._place)
             return
         mode = str(result.get("mode") or self._applied_mode())
-        if mode != self._applied_mode():
+        if (mode != self._applied_mode()
+                or self._opened_session_context != self._session_context()):
             # A mode switch landed while this job ran; do not show the old
             # map pack. Retry with a bound delay rather than spinning while
             # the runtime context is still being applied.
@@ -294,6 +305,7 @@ class ManualMapPickerService(QObject):
         groups = picker_groups(entries, mode)
         self._busy = False
         self._catalog_identity = result.get("identity")
+        self._catalog_session_context = self._opened_session_context
         self._catalog_mode = mode
         self._message = "" if groups else "当前模式没有可选地图，请先检查地图资源。"
         self._state = PickerState(groups) if groups else None
@@ -315,6 +327,7 @@ class ManualMapPickerService(QObject):
         self._catalog_identity = None
         self._catalog_mode = ""
         self._catalog_stale = False
+        self._catalog_session_context = None
         self._set_visible(False)
         self.changed.emit()
 
@@ -355,7 +368,12 @@ class ManualMapPickerService(QObject):
             return True
         identity = self._catalog_identity
         mode = self._catalog_mode
-        if identity is None or mode != self._applied_mode():
+        state = self.session.snapshot if self.session is not None else {}
+        if state.get("resourceLocked") or state.get("closed"):
+            self.close()
+            return False
+        if (identity is None or mode != self._applied_mode()
+                or self._catalog_session_context != self._session_context()):
             self._message = "地图列表已变化，请重新选择"
             self.open("stale-catalog")
             return False
@@ -378,17 +396,30 @@ class ManualMapPickerService(QObject):
     def _session_changed(self):
         if self._closed:
             return
-        active = bool(self.session.snapshot.get("roundActive"))
-        if self._visible and self._last_active and not active:
-            self.close()  # 结束本局 returns manual mode to waiting.
-        self._last_active = active
-        if (self._visible and not self._busy
-                and (self._catalog_stale
-                     or (self._catalog_mode and self._catalog_mode != self._applied_mode()))):
+        state = self.session.snapshot
+        round_work = bool(state.get("roundActive") or state.get("roundPreparing"))
+        if self._visible and ((self._last_round_work and not round_work)
+                              or state.get("resourceLocked") or state.get("closed")):
+            # Ending a prepared-but-not-active round revokes its catalog too.
+            # An exclusive resource lease always revokes idle picker state.
+            self.close()
+        self._last_round_work = round_work
+        if (self._visible
+                and (self._opened_session_context != self._session_context()
+                     or (not self._busy and (self._catalog_stale
+                         or (self._catalog_mode and self._catalog_mode != self._applied_mode()))))):
             self._catalog_stale = False
             self.open("mode-changed")
 
-    def shutdown(self):
+    def cancel(self):
+        """Revoke UI/input immediately; the coordinator drains our pool first.
+
+        A catalog read cannot be interrupted safely, but its generation is
+        obsolete and cannot reopen the picker while application close waits.
+        """
         self._closed = True
         self.close()
+
+    def shutdown(self):
+        self.cancel()
         self._pool.waitForDone()

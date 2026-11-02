@@ -718,6 +718,7 @@ class PickerFocusAndModifierTests(unittest.TestCase):
         keys.setPickerKeys(["F1", "F2"])
 
         def press(vk, down, foreground=42):
+            native.foreground = foreground  # Match the OS consumption-time focus.
             with patch("time.monotonic", return_value=99.9):
                 event = source._transition_event(vk, 0, 0, down, foreground)
             source.eventReceived.emit(event)
@@ -766,6 +767,7 @@ class PickerFocusAndModifierTests(unittest.TestCase):
         keys.setPickerKeys(["F1", "F2"])
 
         def press(vk, down, foreground=42):
+            native.foreground = foreground  # Match the OS consumption-time focus.
             with patch("time.monotonic", return_value=99.9):
                 event = source._transition_event(vk, 0, 0, down, foreground)
             source.eventReceived.emit(event)
@@ -816,11 +818,7 @@ class PickerFocusAndModifierTests(unittest.TestCase):
 
 
 class PickerShutdownFlowTests(unittest.TestCase):
-    def test_client_shutdown_calls_picker_shutdown_and_service_drains(self):
-        import inspect
-        import client as client_module
-        source = inspect.getsource(client_module.QtClient)
-        self.assertIn("self.manual_map_picker.shutdown()", source)
+    def test_service_shutdown_revokes_picker_and_rejects_reopen(self):
         settings, session = FakeSettings(), FakeSession()
         windows, native = FakeWindows(), FakeInput()
         service = ManualMapPickerService(

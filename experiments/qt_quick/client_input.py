@@ -402,7 +402,8 @@ class NativeShortcutBackend(QObject):
         except OSError:
             game = False  # A lost game must not disable global management keys.
         try:
-            assistant = bool(foreground and self._native.window_process_id(foreground) == os.getpid())
+            assistant = bool(foreground and self._native.foreground_window() == foreground
+                             and self._native.window_process_id(foreground) == os.getpid())
         except OSError:
             assistant = False
         # The picker only consumes fresh bare presses while the game or this

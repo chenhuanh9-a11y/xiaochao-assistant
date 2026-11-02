@@ -182,7 +182,7 @@ class QtClient:
                                coordinator=self.coordinator, problems=self.problems)
         self.coordinator.close_writers = (self.custom_galleries, self.info, self.online_packages,
                                          self.backend, self.route_choices, self.problems, self.reference_preview,
-                                         self.capture_exclusion)
+                                         self.capture_exclusion, self.manual_map_picker)
         if self.lifecycle_trace is not None:
             self.coordinator.close_writers += (self.lifecycle_trace,)
         self.custom_galleries.setUseHandler(self._use_custom_gallery)

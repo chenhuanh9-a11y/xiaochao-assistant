@@ -21,8 +21,9 @@ from manual_map_picker_core import (  # noqa: F401  (re-exported for Qt callers)
     split_map_name)
 
 MANUAL_PICKER_ACTION = "manual-map-picker"
-# Fresh-install default for slot 10; never invented for older nine-slot files.
-MANUAL_MAP_PICKER_DEFAULT_HOTKEY = "Alt+1"
+# Fresh installs start unbound: Alt+1 would conflict with a standalone ALT
+# map/action key. Stored ten-slot bindings are preserved by SettingsService.
+MANUAL_MAP_PICKER_DEFAULT_HOTKEY = ""
 # Only routed while the picker is visible; Escape keeps its existing map-close
 # edge as well, matching the Tk picker.
 PICKER_KEY_VKS = {"F1": 0x70, "F2": 0x71, "F3": 0x72, "F4": 0x73,

@@ -46,6 +46,7 @@ Window {
                 objectName: "pickerOptions"
                 Layout.fillWidth: true
                 columns: 2
+                uniformCellWidths: true
                 columnSpacing: 8; rowSpacing: 8
                 Repeater {
                     model: pickerService.options
