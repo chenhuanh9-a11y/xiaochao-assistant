@@ -487,13 +487,15 @@ class ClientCoordinator(QObject):
         if self.session.busy and state.get("pendingAction") != "refresh_map":
             return {"inspect_engine_resources": "正在准备识别资源…", "start_round": "正在准备本局…"}.get(self._requested_action, "正在核对地图与位置…")
         receipt = state.get("lastReceipt", {})
-        if receipt.get("success") is False:
+        if receipt.get("success") is False and not receipt.get("fitReportingDeferred"):
             reason = str(receipt.get("reason", ""))
             if "capture" in reason:
                 return "截图暂不可用，请检查游戏前台与窗口尺寸后重新连接"
             if "map" in reason:
                 return "尚未看到稳定的地图画面，打开地图后可重试"
             return "本次核对未完成，可查看诊断信息后重试"
+        if state.get("fitReportingWaiting"):
+            return "正在继续核对地图位置，请保持地图打开"
         if state.get("roundActive"):
             return "当前地图位置已核对" if state.get("displayAuthorized") else "本局已开始，切回游戏并打开地图"
         return "已准备本局，等待游戏窗口并打开地图" if state.get("roundPreparing") else "游戏窗口已连接，可以开始本局" if self._bound else "可先准备本局，启动游戏并打开地图后开始"
@@ -1679,7 +1681,7 @@ class ClientCoordinator(QObject):
                 self.notificationRequested.emit("本局已结束", "本局显示与识别已停止", "info")
         receipt = state.get("lastReceipt", {})
         reason = receipt.get("reason", "")
-        if receipt.get("success") is False:
+        if receipt.get("success") is False and not receipt.get("fitReportingDeferred"):
             key = ("failure", state.get("roundId"), state.get("cycleId"), receipt.get("action"), reason)
             if key not in self._notified:
                 self._notified.add(key)
@@ -1874,7 +1876,22 @@ class ClientCoordinator(QObject):
                     role="runtime", status=event.get("status"),
                     diag={key: event.get(key) for key in ("poseResult", "poseAttempt", "groupMemberIds") if key in event},
                     **decision)
-        if name == "round-started":
+        if name == "map-fit-incomplete":
+            # A finalized historical segment is independent of the current open.
+            # It cannot mutate current runtime/input/display state.
+            key = ("map-fit-incomplete", event.get("mode"), event.get("roundId"),
+                   event.get("cycleId"), event.get("epoch"))
+            if key not in self._notified:
+                from client_fit_reporting import incomplete_problem
+                self._notified.add(key)
+                self.errorReported.emit(incomplete_problem(event))
+        elif name == "map-fit-waiting":
+            state = self.runtime.snapshot()
+            if all(event.get(k) == state.get(k) for k in
+                   ("epoch", "mode", "roundId", "cycleId", "generation")) and state.get("mapOpen"):
+                self._message = "正在继续核对地图位置，请保持地图打开"
+                self.changed.emit()
+        elif name == "round-started":
             # This event is emitted only after capture activation succeeds,
             # before the first recognition/fit worker can finish.
             self._notify_session_transitions(self.runtime.snapshot())

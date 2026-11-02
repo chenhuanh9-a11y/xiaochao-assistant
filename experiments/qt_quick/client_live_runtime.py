@@ -296,6 +296,8 @@ class LiveRuntime:
             raise ValueError("unsupported capture evidence kind")
         self._offline = EngineAdapter(engine_factories=engine_factories,
                                       allowed_read_root=allowed_read_root or WORK_ROOT, clock=clock)
+        from client_fit_reporting import FitReporting
+        self._fit_reporting = FitReporting()
         self._monotonic = clock or time.monotonic
         self._factories, self._capture = engine_factories, capture_provider
         self._evidence_kind = evidence_kind
@@ -855,6 +857,7 @@ class LiveRuntime:
                     self._render, self._reference_sheet = pending["render"], pending["reference"]
                     metadata = self._identity_fields()
                     self._render.update(metadata, requiresMaterialAck=False)
+                    self._fit_reporting.success(self._fit_reporting_scope())
                     self._reference_sheet.update(metadata)
                     if pending.get("manualChoice") is not None:
                         self._provisional_reference_context = self._reference_owner_context(self._reference_sheet)
@@ -1601,6 +1604,8 @@ class LiveRuntime:
                                        "capture-provider-unavailable" if self._capture is None else
                                        capabilities[self._mode]["reason"] if not ready else ""),
                 roundActive=self._active, roundPreparing=self._round_preparing, mapOpen=self._map_open,
+                fitReportingWaiting=(self._fit_reporting.scope == self._fit_reporting_scope()
+                    and self._fit_reporting.waiting and not self._fit_reporting.succeeded),
                 captureInProgress=self._capture_pending,
                 mapSelectionMode=self._settings.get("mapSelectionMode", "auto"),
                 manualSelectionPending=bool(self._active and self._manual_selection_unlocked()),
@@ -1640,6 +1645,11 @@ class LiveRuntime:
         return [{key: copy.deepcopy(row[key]) for key in fields if key in row}
                 for row in self._automatic_candidate_rows]
 
+    def _fit_reporting_scope(self, map_id=None, floor=None):
+        return (self._epoch, self._mode, self._round, self._cycle,
+                self._map_id if map_id is None else map_id,
+                str(self._floor if floor is None else floor))
+
     def invalidate(self, reason="invalidated", *, source=""):
         """Owner-thread fast path: revoke before canceling/queueing slow work."""
         with self._lock:
@@ -1647,6 +1657,13 @@ class LiveRuntime:
                 self._diagnostics.record("invalidate", reason=str(reason), source=source, epoch=self._epoch,
                     mode=self._mode, mapId=self._map_id, floor=str(self._floor), frameId=self._frame_id,
                     roundId=self._round, cycleId=self._cycle, probeMisses=self._probe_misses)
+            # Finalize only a real close. Other boundaries discard an incomplete
+            # segment; they are not evidence that an opening failed.
+            self._fit_reporting.select(self._fit_reporting_scope())
+            report = self._fit_reporting.close() if reason in ("map-closed", "escape") else None
+            self._fit_reporting.discard()
+            if report is not None:
+                self._notify("map-fit-incomplete", reason="map-fit-incomplete", fitReport=report)
             previous_token = self._render.get("token", "") if self._render is not None else ""
             self._transient_drag = None
             if reason in ("map-closed","escape","foreground-lost","capture-context-changed","floor-unknown") or any(
@@ -2393,6 +2410,7 @@ class LiveRuntime:
                 self._reference_sheet.update(self._identity_fields())
             self._remember_provisional_reference()
             render_token = self._render["token"]
+            self._fit_reporting.success(self._fit_reporting_scope())
             self._register_material_proposal(self._render, frame,
                 dict(success=True, selectedRouteCurrentFrameResidual=residual), captured, self._group,
                 accepted=material_accepted)
@@ -2782,8 +2800,28 @@ class LiveRuntime:
             reopened = self._consume_identity_conflict(fit, engine=engine, epoch=epoch, captured=captured,
                 capture_generation=capture_generation, frame_id=frame_id, frame_generation=frame_generation,
                 cycle=cycle, map_id=map_id, floor=floor)
-            self._set_pose_phase("rejected", reason, map_id, floor, frame_id, frame_generation)
-            return self._receipt(action, payload, success=False, reason=reason, identityReopened=reopened)
+            with self._lock:
+                # Recheck the originating lifetime before touching reporting state.
+                if not reopened and (obsolete() or frame_id != self._frame_id
+                                     or cycle != self._cycle or floor != self._floor):
+                    return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+                from client_fit_reporting import RETRY_REASONS
+                deferred = reason in RETRY_REASONS and not reopened
+                if deferred:
+                    # Only actual solver fields are retained; absent diagnostics
+                    # are explicitly unavailable, never inferred from a later frame.
+                    diagnostics = {key: copy.deepcopy(fit[key]) for key in
+                        ("strategy", "elapsedMs", "selectedRouteCurrentFrameResidual") if key in fit}
+                    if not diagnostics:
+                        diagnostics = {"availability": "not-provided-by-solver"}
+                    report, waiting = self._fit_reporting.failure(
+                        self._fit_reporting_scope(map_id, floor), reason, self._monotonic(), diagnostics)
+                    self._notify("map-fit-retry", reason=reason, fitReport=report)
+                    if waiting:
+                        self._notify("map-fit-waiting", reason=reason)
+                self._set_pose_phase("rejected", reason, map_id, floor, frame_id, frame_generation)
+                return self._receipt(action, payload, success=False, reason=reason,
+                    identityReopened=reopened, fitReportingDeferred=deferred)
         residual = fit.get("selectedRouteCurrentFrameResidual")
         if not rendered_profile_residual_is_verified(residual):
             raise ValueError("current-frame-canonical-verification-required")
@@ -2873,6 +2911,7 @@ class LiveRuntime:
                 self._gate.select(map_id)
                 self._gate.confirm()
                 self._group, self._render = target_group, target_render
+                self._fit_reporting.success(self._fit_reporting_scope())
                 self._render_capture_context = captured.context
                 self._reference_sheet = reference_sheet
                 self._reference_capture_context = captured.context

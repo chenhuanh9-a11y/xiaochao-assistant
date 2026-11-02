@@ -7,7 +7,20 @@ def operation_problem(receipt, state):
     phase = str(receipt.get('errorPhase') or 'recognition-alignment')
     kind = 'error' if receipt.get('error') else 'warning'
     title, summary = '操作未完成', '本次操作未完成，原因已保存在帮助页的“最近问题”。'
-    if 'live-runtime-requires-full-client-capture' in raw:
+    from client_fit_reporting import RETRY_REASONS
+    if raw in RETRY_REASONS:
+        title, summary = '地图位置仍在核对', RETRY_REASONS[raw] + '，请保持地图打开并等待画面稳定。'
+    elif raw == 'initial-structure-query-unavailable':
+        title, summary = '当前结构输入不可用', '当前画面未提供可用的结构输入，请重新打开地图；详情已保存在最近问题。'
+    elif raw == 'initial-structure-identity-not-current':
+        title, summary = '地图身份已变化', '本次贴合所用地图身份已失效，请等待当前地图重新核对。'
+    elif raw == 'initial-structure-resource-unavailable':
+        title, summary = '贴合结构资源不可用', '请检查当前图包的结构资源；详情已保存在最近问题。'
+    elif raw == 'initial-structure-coordinate-mismatch':
+        title, summary = '结构坐标不一致', '当前结构资源坐标未核对通过，请检查图包。'
+    elif raw == 'initial-structure-author-unverified':
+        title, summary = '显示图位置未核对通过', '显示图与结构的对应关系未验证，请检查当前路线资源。'
+    elif 'live-runtime-requires-full-client-capture' in raw:
         title, phase, kind = '采集画面尺寸不一致', 'capture', 'error'
         summary = '采集画面未覆盖当前游戏客户区，本次识别已停止。请重新打开地图；详细尺寸可在帮助页的“最近问题”查看。'
     elif 'capture' in raw.casefold() or 'foreground' in raw.casefold():
