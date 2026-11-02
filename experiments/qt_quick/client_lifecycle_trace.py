@@ -14,7 +14,7 @@ from client_problems import LOG_MAX_BYTES, PENDING_LIMIT
 ENVIRONMENT_FLAG = "XINGTU_LIFECYCLE_TRACE"
 # Codes/identities only. In particular no arbitrary error text or nested payload.
 TEXT_FIELDS = frozenset(("action", "source", "reason", "mode", "mapId", "floor", "frameId",
-    "token", "eventName", "status", "imageStatus", "buildFingerprint", "sourceCommit"))
+    "token", "eventName", "status", "imageStatus", "buildFingerprint", "sourceCommit", "floorSource"))
 NUMBER_FIELDS = frozenset(("inputAt", "producedAt", "elapsedMs", "floorMs", "deliveryMs",
     "jobId", "sequence", "epoch", "roundId", "cycleId", "generation", "probeMisses"))
 BOOL_FIELDS = frozenset(("success", "accepted", "cancelled", "mapDetected", "openIntent",

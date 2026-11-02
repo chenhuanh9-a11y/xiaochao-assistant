@@ -60,8 +60,8 @@ jobs:
             exit 1
           }
           Write-Output 'All 20 independent processes passed.'
-      - name: Existing coordinator and onboarding contracts
+      - name: Existing coordinator, onboarding, compatibility and floor contracts
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         run: |
-          python -B -X utf8 -m unittest -v test_client_onboarding test_client_coordinator
+          python -B -X utf8 -m unittest -v test_client_onboarding test_client_coordinator test_hotkey_layout_compat test_client_floor_region
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

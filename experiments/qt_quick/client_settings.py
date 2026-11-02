@@ -21,6 +21,7 @@ from client_paths import RESOURCE_ROOT as ROOT, WORK_ROOT, runtime_paths
 if str(ROOT / "app") not in sys.path:
     sys.path.insert(0, str(ROOT / "app"))
 from client_control_layout import load_layout, preset_layout, validate_layout
+from floor_control_region import normalized_region
 from hotkey_bindings import parse_chord, validate_unique
 from hotkey_keys import _primary_hotkey_to_vk, recorded_native_primary, NATIVE_ONLY_SHORTCUT_KEYS
 from opacity_controls import load_opacities
@@ -39,7 +40,9 @@ DEFAULTS = {**BOOL_DEFAULTS, "sheetOpacity": .55, "referenceOpacity": .55,
             "routeProfileId": "wang-qingxin", "modeRouteProfiles": {},
             "zhan10CoffinVariantId": "variant-01", "hotkey": "G",
             "actionHotkeys": FRESH_ACTIONS, "gameControlLayout": preset_layout(),
-            "sheetPosition": None, "sheetPositionSpace": "unknown", "compactPosition": None}
+            "sheetPosition": None, "sheetPositionSpace": "unknown", "compactPosition": None,
+            "floorControlMode": "auto", "floorControlRegion": None}
+FLOOR_CONTROL_MODES = ("auto", "region", "fixed")
 
 
 def _validate(key, value):
@@ -73,6 +76,11 @@ def _validate(key, value):
     elif key == "sheetPositionSpace":
         if value not in ("unknown", "qt-logical-v1", "legacy-physical-v1"):
             raise ValueError("位置坐标类型无效")
+    elif key == "floorControlMode":
+        if value not in FLOOR_CONTROL_MODES:
+            raise ValueError("楼层识别方式只能为自动、框选或固定")
+    elif key == "floorControlRegion":
+        value = _validate_floor_region(value)
     elif key == "hotkey":
         if not isinstance(value, str):
             raise ValueError("快捷键需要文本")
@@ -84,16 +92,42 @@ def _validate(key, value):
     return deepcopy(value)
 
 
-def _validate_hotkeys(values):
+def _validate_floor_region(value):
+    """None, or the framed floor-button range normalized to the client it was drawn on."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {"rect", "clientSize"}:
+        raise ValueError("楼层框选范围需要 rect 和 clientSize")
+    rect = normalized_region(value["rect"])
+    size = value["clientSize"]
+    if rect is None:
+        raise ValueError("楼层框选范围需要在游戏窗口内")
+    if (not isinstance(size, list) or len(size) != 2
+            or any(type(v) is not int or not 100 <= v <= 32768 for v in size)):
+        raise ValueError("楼层框选的窗口尺寸无效")
+    return dict(rect=list(rect), clientSize=list(size))
+
+
+def _validate_hotkeys(values, raw_actions=None):
+    # Tk appended a tenth action; Qt must reserve its chord without exposing or
+    # registering an unsupported action. Invalid tails remain on disk, but must
+    # not be silently overwritten or bypassed by a shortcut edit.
+    extra = {}
+    if isinstance(raw_actions, list) and len(raw_actions) == 10:
+        tail = raw_actions[9]
+        if not isinstance(tail, str):
+            raise ValueError("未迁移的第 10 项快捷键需要文本；请先修复原配置")
+        extra["未迁移的第 10 项"] = parse_chord(tail, _primary_hotkey_to_vk)
     validate_unique({"地图键": parse_chord(values["hotkey"], _primary_hotkey_to_vk),
                      **{key: parse_chord(text, _primary_hotkey_to_vk)
-                        for key, text in zip(ACTION_ORDER, values["actionHotkeys"])}})
+                        for key, text in zip(ACTION_ORDER, values["actionHotkeys"])}, **extra})
 
 
 def _legacy_actions(value, map_name):
-    """Read legacy 6/7/8-slot arrays; preserve them on disk until edited."""
-    if not isinstance(value, list) or len(value) not in (6, 7, 8, 9):
+    """Project legacy arrays onto Qt slots; the appended Tk action stays opaque."""
+    if not isinstance(value, list) or len(value) not in (6, 7, 8, 9, 10):
         return _validate("actionHotkeys", value)
+    value = value[:len(ACTION_ORDER)]
     if not all(isinstance(item, str) for item in value):
         raise ValueError("功能快捷键需要文本")
     names = [parse_chord(item, _primary_hotkey_to_vk).name for item in value]
@@ -456,7 +490,7 @@ class SettingsService(QObject):
                 return False
             proposal = {**self._draft, key: value}
             if key in ("hotkey", "actionHotkeys"):
-                _validate_hotkeys(proposal)
+                _validate_hotkeys(proposal, self._raw.get("actionHotkeys"))
             if self._draft.get(key) == value and key not in self._invalid:
                 return True
             self._draft[key] = value
@@ -501,7 +535,7 @@ class SettingsService(QObject):
                 except (TypeError, ValueError) as error:
                     invalid[key] = str(error)
         try:
-            _validate_hotkeys(values)
+            _validate_hotkeys(values, raw.get("actionHotkeys"))
         except ValueError as error:
             invalid["hotkey/actionHotkeys"] = str(error)
         # Legacy reference opacity falls back to the stored sheet opacity.
@@ -598,7 +632,7 @@ class SettingsService(QObject):
         snapshot = {**deepcopy(self._baseline), **deepcopy(edits)}
         if set(edits) & {"hotkey", "actionHotkeys"}:
             try:
-                _validate_hotkeys(snapshot)
+                _validate_hotkeys(snapshot, self._raw.get("actionHotkeys"))
             except ValueError as error:
                 self._message = f"快捷键不能单独保存：{error}"
                 self.changed.emit()
@@ -608,6 +642,15 @@ class SettingsService(QObject):
             # A new file otherwise looks like a legacy install on restart and
             # replaces untouched fresh shortcuts with LEGACY_ACTIONS.
             payload.setdefault("actionHotkeys", deepcopy(snapshot["actionHotkeys"]))
+        if "actionHotkeys" in edits:
+            stored = self._raw.get("actionHotkeys")
+            if isinstance(stored, list) and len(stored) in (9, 10):
+                # Keep untouched source spellings and unknown slots verbatim.
+                merged = deepcopy(stored)
+                for index, name in enumerate(edits["actionHotkeys"]):
+                    if "actionHotkeys" in self._invalid or name != self._baseline["actionHotkeys"][index]:
+                        merged[index] = name
+                payload["actionHotkeys"] = merged
         expected = self._disk_bytes
         self._busy = True
         self._message = "正在保存设置…"

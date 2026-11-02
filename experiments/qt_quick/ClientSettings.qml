@@ -298,6 +298,8 @@ Item {
                     }
                     Rectangle { Layout.fillWidth: true; height: 1; color: "#edf2fa" }
                     ClientChestAutoTap { Layout.fillWidth: true }
+                    Rectangle { Layout.fillWidth: true; height: 1; color: "#edf2fa" }
+                    ClientFloorRegion { Layout.fillWidth: true }
                     Disclosure { objectName: "modeSettingsToggle"; text: root.modeExpanded ? "收起模式与路线" : "模式与路线"; expanded: root.modeExpanded; onClicked: root.modeExpanded = !root.modeExpanded }
                     ColumnLayout {
                         visible: root.modeExpanded
