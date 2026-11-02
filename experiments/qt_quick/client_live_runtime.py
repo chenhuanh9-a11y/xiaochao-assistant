@@ -2619,7 +2619,20 @@ class LiveRuntime:
             return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
         map_detected = (observation.get("mapOpen") is True if engine.pack.mode == "difficult"
                         else observation.get("detected") is True)
-        effective_floor = self._observe_floor_policy(floor_read, obsolete=obsolete) if map_detected else None
+        # Preparation and direct captures already use this shared map-only UI
+        # proof. Do not let the weaker generic texture verdict veto its floor
+        # evidence a second time. This is floor policy input, NOT pose/display
+        # authority; keep generic map detection for unresolved/region handling.
+        from session_state_machine import verified_map_hotkey_frame
+        floor_ready = map_detected or (engine.pack.mode == "nightmare"
+            and verified_map_hotkey_frame(observation, floor_read))
+        with self._lock:
+            if (floor_ready and not map_detected
+                    and (obsolete() or engine is not self._engine or group is not self._group
+                         or not self._capture_is_current(captured.context, capture_generation)
+                         or capture_generation != self._capture_generation())):
+                return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
+            effective_floor = self._observe_floor_policy(floor_read, obsolete=obsolete) if floor_ready else None
         if floor is None and map_detected:
             self._revoke_render("current-floor-unavailable")
             digest = hashlib.sha256(frame.tobytes()).hexdigest()
