@@ -581,7 +581,9 @@ Launch does not migrate/write files or repeatedly show a migration dialog.
 Startup explicitly stops the native service. Restored readiness waits for a valid
 binding, matching native identity, enabled input and game foreground. Both the Qt
 adapter and native owner require an observed trigger release before a fresh press;
-focus loss resets this gate, including losses observed between UI polls. The native
+focus loss resets this gate, including losses observed between UI polls. A loss
+observed inside the press-duration loop is latched even if foreground returns
+before key-up completes. The native
 owner's new `require_release` option defaults false for legacy Tk. It does not
 replace the existing release ledger or bounded failure retries.
 
@@ -603,7 +605,7 @@ Validation on Linux/offscreen (native window/key/SendInput boundaries mocked):
 - Baseline `59bba3d`: 109 existing chest/coordinator/session/input-recovery tests pass.
 - Before implementation, new real-file restart and corrupt-file preservation tests
   fail on baseline (restored readiness false; corrupt shared JSON overwritten).
-- Updated branch: 127 tests pass using `PYTHONPATH=app:tests:tools:experiments/qt_quick
+- Updated branch (including review regression): 128 tests pass using `PYTHONPATH=app:tests:tools:experiments/qt_quick
   QT_QPA_PLATFORM=offscreen python -m unittest -v test_client_chest_auto_tap
   test_client_chest_intent test_chest_auto_tap test_client_coordinator
   test_client_session test_client_input_recovery`.

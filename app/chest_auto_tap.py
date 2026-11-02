@@ -414,7 +414,12 @@ class ChestAutoTap:
                 try:
                     deadline = now + min(PRESS_MS, settings["intervalMs"] / 2) / 1000
                     while (time.perf_counter() < deadline and self._active(generation)
-                           and key_down(hold_vk) and self._in_game()):
+                           and key_down(hold_vk)):
+                        if not self._in_game():
+                            # Latch the observation itself. Focus may return before
+                            # key-up completes or before the adapter polls again.
+                            released = False
+                            break
                         self._wake.wait(min(POLL_SECONDS, max(0, deadline - time.perf_counter())))
                         self._wake.clear()
                 finally:
