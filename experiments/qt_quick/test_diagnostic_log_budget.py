@@ -144,14 +144,16 @@ class DiagnosticBudgetTests(unittest.TestCase):
         # Real elapsed time and production writers, synthetic inputs only.
         with tempfile.TemporaryDirectory() as folder:
             service=problems.ProblemsService(SimpleNamespace(work_root=Path(folder)))
-            started=time.monotonic();attempted=accepted=diagnostics=0
+            started=time.monotonic();attempted=accepted=diagnostics=last_accepted=0
             try:
                 while time.monotonic()-started<60:
                     tick_start=time.monotonic()
                     for _ in range(8):
                         attempted+=1
-                        accepted+=bool(service.record(dict(kind='error',title='synthetic-'+str(attempted),
-                            phase='capture',raw='ValueError: synthetic-only',captureDiagnostics=dict(actual=attempted))))
+                        did_accept=service.record(dict(kind='error',title='synthetic-'+str(attempted),
+                            phase='capture',raw='ValueError: synthetic-only',captureDiagnostics=dict(actual=attempted)))
+                        accepted+=bool(did_accept)
+                        if did_accept:last_accepted=attempted
                     for lane in ('interface','floor','pose'):
                         diagnostics+=1
                         service.recordTrace(dict(role='runtime',stage='recognition',recognitionDiagnostics=dict(stage=lane,actual=diagnostics)))
@@ -165,7 +167,7 @@ class DiagnosticBudgetTests(unittest.TestCase):
                 problem_rows,diag_rows=retained(problem_paths),retained(diag_paths)
                 self.assertTrue(problem_rows);self.assertTrue(diag_rows)
                 self.assertTrue(all('recognitionDiagnostics' not in r for r in problem_rows))
-                self.assertEqual(max(r['captureDiagnostics']['actual'] for r in problem_rows),attempted)
+
                 for paths in (problem_paths,diag_paths):
                     self.assertLessEqual(sum(p.stat().st_size for p in paths if p.exists()),2*problems.LOG_MAX_BYTES)
                 report=dict(elapsedSeconds=round(time.monotonic()-started,3),problemsAttempted=attempted,
@@ -176,8 +178,12 @@ class DiagnosticBudgetTests(unittest.TestCase):
                     recognitionRetentionOfAccepted=len(diag_rows)/(diagnostics-service.recognition_identity.loss()['suppressedTotal']),
                     problemBytes=sum(p.stat().st_size for p in problem_paths if p.exists()),
                     recognitionBytes=sum(p.stat().st_size for p in diag_paths if p.exists()),
-                    loss=service.diagnosticSnapshot()['droppedWrites'])
+                    loss=service.diagnosticSnapshot()['droppedWrites'],problemLoss=service.identity.loss(),
+                    lastAccepted=last_accepted,lastRetained=max(r['captureDiagnostics']['actual'] for r in problem_rows),
+                    writeError=bool(service.writeError),writeErrorCodes=__import__('re').findall(r'\[(?:WinError|Errno) \d+\]|diagnostic-[a-z-]+',service.writeErrorDetails))
                 print('DIAGNOSTIC_RETENTION '+json.dumps(report),flush=True)
+                self.assertEqual(report['lastRetained'],last_accepted,report)
+                self.assertEqual(service.identity.loss()['lostTotal'],attempted-accepted,report)
             finally:service.shutdown();self.wait(service)
 
 if __name__=='__main__': unittest.main()

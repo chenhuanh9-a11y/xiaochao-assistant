@@ -43,7 +43,9 @@ merge different problems or destroy retained repeat accounting.
   reparse points, hardlinks, changed content and unknown targets are preserved.
   If safe mutation/ownership cannot be established, writing fails explicitly
   rather than expanding the budget or touching external targets. Process/file
-  transactions serialize writers. Crash-interrupted ambiguous writes fail closed;
+  transactions serialize writers. Qt batches publish ownership once per at most
+  16 records (rather than fsync/rename per record); failures verify and record the
+  confirmed prefix without adopting a partial/changed suffix. Crash-interrupted ambiguous writes fail closed;
   this is not a claim of automatic recovery from arbitrary partial disk writes.
 
 Only temporary-directory fault injections were executed. No user log directory
@@ -90,3 +92,15 @@ help/client/info, failure samples and environment diagnostics. Those require
 hunk-level compatibility analysis; do not import the 25 hotfix-history commits or
 PR 76 to satisfy dependencies. Any conflict or missing production entry point is
 a reportable dependency, not permission to replace the main implementation.
+
+
+Windows first mixed-stream run retained last attempted problem 1912/1920. The
+initial test incorrectly equated attempted with accepted entries; follow-up
+measurement records both, all genuine loss counters/ranges and the last accepted
+versus retained sequence. No unaccepted event is silently counted as retained.
+This prompted bounded batch ownership publication to reduce per-row disk overhead,
+not any relaxation of capture or recognition decisions.
+
+Ownership-journal failure after confirmed complete log writes is reported as a
+writer error, not mislabeled as lost log rows. An unregistered/ambiguous object
+is preserved and future writes fail closed; no automatic adoption is attempted.

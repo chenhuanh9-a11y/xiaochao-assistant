@@ -89,14 +89,15 @@ class _BatchFailure(Exception):
 
 
 def _write_batch(path, rows):
-    from diagnostic_storage import append_record
+    from diagnostic_storage import append_records
     completed = 0
     try:
-        for row in rows:
-            append_record(path, dict({'event': 'qt-runtime-problem'}, **row), file_limit=LOG_MAX_BYTES)
-            completed += 1
+        for start in range(0,len(rows),16):
+            batch=[dict({'event': 'qt-runtime-problem'}, **row) for row in rows[start:start+16]]
+            append_records(path,batch,file_limit=LOG_MAX_BYTES)
+            completed += len(batch)
     except Exception as failure:
-        raise _BatchFailure(failure, completed) from failure
+        raise _BatchFailure(failure, completed + getattr(failure, 'completed', 0)) from failure
 
 
 class _Signals(QObject):
@@ -175,7 +176,7 @@ class ProblemsService(QObject):
                 rows.append({key: deepcopy(value) for key, value in row.items()
                              if not key.startswith('_')})
         return dict(recentProblems=rows, droppedWrites=self._dropped, diagnosticLoss=self.identity.loss(),
-                    recognitionDiagnosticLoss=self.recognition_identity.loss(),
+                    recognitionDiagnosticLoss=self.recognition_identity.loss(), writerHadError=bool(self._write_error),
                     pendingWrites=bool(self._job is not None or self._queue),
                     snapshotLimit=snapshot_limit)
 

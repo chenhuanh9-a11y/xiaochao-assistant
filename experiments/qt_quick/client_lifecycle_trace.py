@@ -25,9 +25,9 @@ STATE_CODE = re.compile(r"[a-z][a-z0-9_-]{0,95}\Z")
 
 
 def _write_batch(path, rows):
-    from diagnostic_storage import append_record
-    for row in rows:
-        append_record(path, row, file_limit=LOG_MAX_BYTES)
+    from diagnostic_storage import append_records
+    for start in range(0,len(rows),16):
+        append_records(path, rows[start:start+16], file_limit=LOG_MAX_BYTES)
 
 
 def create_lifecycle_trace(paths):

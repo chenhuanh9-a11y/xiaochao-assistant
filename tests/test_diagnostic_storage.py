@@ -76,4 +76,34 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(old.read_text(),'changed-user-data')
             self.assertEqual(outside.read_text(),'private-user-data')
 
+    def test_batch_uses_one_ownership_publish_and_recovers_exact_prefix(self):
+        with tempfile.TemporaryDirectory() as folder:
+            p=Path(folder)/'events-batch.jsonl'
+            with patch.object(storage,'_save',wraps=storage._save) as save:
+                storage.append_records(p,[dict(event='capture-error',seq=i) for i in range(16)])
+                self.assertEqual(save.call_count,1)
+            original=storage._append;calls=[0]
+            def failing(path,data):
+                calls[0]+=1
+                if calls[0]==2:raise OSError('disk-full')
+                return original(path,data)
+            with patch.object(storage,'_append',side_effect=failing):
+                with self.assertRaises(storage.BatchStorageError) as error:
+                    storage.append_records(p,[dict(event='capture-error',seq=i) for i in range(16,19)])
+            self.assertEqual(error.exception.completed,1)
+            storage.append_record(p,dict(event='capture-error',seq=19))
+            self.assertEqual([json.loads(x)['seq'] for x in p.read_bytes().splitlines()],list(range(17))+[19])
+
+    def test_journal_failure_does_not_mislabel_confirmed_log_rows_as_lost(self):
+        with tempfile.TemporaryDirectory() as folder:
+            p=Path(folder)/'events-journal-error.jsonl'
+            with patch.object(storage,'_save',side_effect=OSError('journal-denied')):
+                with self.assertRaises(storage.BatchStorageError) as error:
+                    storage.append_records(p,[dict(event='capture-error',seq=i) for i in range(3)])
+            self.assertEqual(error.exception.completed,3)
+            before=p.read_bytes()
+            self.assertEqual(len(before.splitlines()),3)
+            with self.assertRaises(OSError):storage.append_record(p,{'event':'capture-error'})
+            self.assertEqual(p.read_bytes(),before)  # Unregistered file is preserved.
+
 if __name__=='__main__':unittest.main()

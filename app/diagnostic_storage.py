@@ -133,43 +133,75 @@ def encode_record(row,limit):
     return data
 
 
-def append_record(path,row,*,file_limit=FILE_BYTES,root_limit=ROOT_BYTES,max_files=ROOT_FILES,max_age=MAX_AGE,now=None):
+class BatchStorageError(DiagnosticStorageError):
+    def __init__(self, failure, completed):
+        super().__init__(str(failure))
+        self.completed = completed
+
+
+def _append_owned(root,path,previous,files,data,file_limit,root_limit,max_files,max_age,now):
+    # Verify before every mutation. Existing unknown files are never adopted.
+    for p in (path,previous):
+        _safe(p)
+        if p.exists() and (p.name not in files or not _verified(root,p.name,files[p.name])):
+            raise DiagnosticStorageError('diagnostic-ownership-unavailable')
+    # Discard absent ledger entries only; never remove an unknown path.
+    files={n:r for n,r in files.items() if (root/n).exists() or (root/n).is_symlink()}
+    rotate=path.exists() and path.stat().st_size+len(data)>file_limit
+    projected=dict(files)
+    if rotate:
+        projected.pop(previous.name,None)
+        projected[previous.name]=projected.pop(path.name)
+    projected[path.name]=dict(bytes=(0 if rotate or not path.exists() else path.stat().st_size)+len(data),sha256='',writtenAt=now)
+    # Protect both active stream files; retire only verified historical files.
+    victims=[]
+    for name,r in sorted(projected.items(),key=lambda pair:pair[1]['writtenAt']):
+        over=sum(x['bytes'] for x in projected.values())>root_limit or len(projected)>max_files
+        expired=now-r['writtenAt']>max_age
+        if name==path.name or (rotate and name==previous.name) or not (over or expired):continue
+        if name not in files or not _verified(root,name,files[name]):continue
+        victims.append(name);projected.pop(name)
+    if sum(x['bytes'] for x in projected.values())>root_limit or len(projected)>max_files:
+        raise DiagnosticStorageError('diagnostic-root-budget-unavailable')
+    for name in victims:
+        (root/name).unlink();files.pop(name)
+    if rotate:
+        os.replace(path,previous)
+        files.pop(path.name,None);files[previous.name]=_entry(previous,now)
+    _append(path,data)
+    files[path.name]=_entry(path,now)
+    return files
+
+
+def append_records(path,rows,*,file_limit=FILE_BYTES,root_limit=ROOT_BYTES,max_files=ROOT_FILES,max_age=MAX_AGE,now=None):
+    """At most 16 records / one ownership fsync; exact confirmed prefix on error."""
+    if not isinstance(rows,(tuple,list)) or len(rows)>16:
+        raise DiagnosticStorageError('diagnostic-batch-limit')
+    if not rows:return 0
     path=Path(path).absolute();root=path.parent
     if not 256<=file_limit<=FILE_BYTES:raise DiagnosticStorageError('diagnostic-file-budget-invalid')
     if not LOG_NAME.fullmatch(path.name) or len(path.name)>180:raise DiagnosticStorageError('diagnostic-file-name-invalid')
-    data=encode_record(row,file_limit);now=time.time() if now is None else now
+    payloads=[encode_record(row,file_limit) for row in rows]
+    now=time.time() if now is None else now
     previous=path.with_name(path.stem+'-previous'+path.suffix)
     with _transaction(root):
-        files=_read(root)
-        # Verify before every mutation. Existing unknown files are never adopted.
-        for p in (path,previous):
-            _safe(p)
-            if p.exists() and (p.name not in files or not _verified(root,p.name,files[p.name])):
-                raise DiagnosticStorageError('diagnostic-ownership-unavailable')
-        # Discard absent ledger entries only; never remove an unknown path.
-        files={n:r for n,r in files.items() if (root/n).exists() or (root/n).is_symlink()}
-        rotate=path.exists() and path.stat().st_size+len(data)>file_limit
-        projected=dict(files)
-        if rotate:
-            projected.pop(previous.name,None)
-            projected[previous.name]=projected.pop(path.name)
-        projected[path.name]=dict(bytes=(0 if rotate or not path.exists() else path.stat().st_size)+len(data),sha256='',writtenAt=now)
-        # Protect both active stream files; retire only verified historical files.
-        victims=[]
-        for name,r in sorted(projected.items(),key=lambda pair:pair[1]['writtenAt']):
-            over=sum(x['bytes'] for x in projected.values())>root_limit or len(projected)>max_files
-            expired=now-r['writtenAt']>max_age
-            if name==path.name or (rotate and name==previous.name) or not (over or expired):continue
-            if name not in files or not _verified(root,name,files[name]):continue
-            victims.append(name);projected.pop(name)
-        if sum(x['bytes'] for x in projected.values())>root_limit or len(projected)>max_files:
-            raise DiagnosticStorageError('diagnostic-root-budget-unavailable')
-        for name in victims:
-            (root/name).unlink();files.pop(name)
-        if rotate:
-            os.replace(path,previous)
-            files.pop(path.name,None);files[previous.name]=_entry(previous,now)
-        _append(path,data)
-        files[path.name]=_entry(path,now)
-        _save(root,files)
-    return len(data)
+        files=_read(root);original=dict(files);completed=0
+        try:
+            for data in payloads:
+                files=_append_owned(root,path,previous,files,data,file_limit,root_limit,max_files,max_age,now)
+                completed+=1
+        except Exception as failure:
+            # A clean failure can publish the verified successful prefix. A
+            # partial/changed object is never adopted or silently truncated.
+            valid=(not path.exists() or path.name in files) and all(_verified(root,n,e) for n,e in files.items())
+            if files!=original and valid:
+                try:_save(root,files)
+                except Exception as journal_error:raise BatchStorageError(journal_error,completed) from journal_error
+            raise BatchStorageError(failure,completed) from failure
+        try:_save(root,files)
+        except Exception as failure:raise BatchStorageError(failure,completed) from failure
+    return sum(map(len,payloads))
+
+
+def append_record(path,row,**options):
+    return append_records(path,[row],**options)
