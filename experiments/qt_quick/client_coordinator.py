@@ -244,6 +244,7 @@ class ClientCoordinator(QObject):
         self._pointer_sequence = 0
         self._waiting_foreground = False
         self._map_was_open = False
+        self._main_recapture_active = False
         self._closing = False
         self._close_ready = False
         self._last_close_wait = None
@@ -738,7 +739,8 @@ class ClientCoordinator(QObject):
             if window is not None:
                 window.showNormal()
                 window.raise_()
-                window.requestActivate()
+                if name != "recognition" or not self.runtime.snapshot().get("roundActive"):
+                    window.requestActivate()
 
     @Slot()
     def requestManualMapSelection(self):
@@ -860,6 +862,53 @@ class ClientCoordinator(QObject):
         result = self._game_focus.requestFocus()
         self._message = str(result.get("message", ""))
         self._focus_notice = self._message
+        self.changed.emit()
+
+    @Slot()
+    def recaptureFromMain(self):
+        """Explicit main-page click only; never called by polling/background IO."""
+        if (self._main_recapture_active or self._closing or self._closed or self.session.busy or self.resources.busy
+                or self.resources.pendingKind or self._pending_context
+                or self.session.snapshot.get("resourceLocked")
+                or "capture_now" not in self.session.snapshot.get("availableCommands", ())):
+            return
+        state = self.runtime.snapshot()
+        fields = ("mode", "profileId", "roundId", "roundActive", "roundPreparing")
+        scope = tuple(state.get(key) for key in fields)
+        binding, generation = self._bound, getattr(self.capture, "generation", None)
+        session_generation = self.session.snapshot.get("generation")
+        self._main_recapture_active = True
+        try:
+            result = self._game_focus.requestFocus()
+        finally:
+            self._main_recapture_active = False
+        self._message = str(result.get("message", ""))
+        self._focus_notice = self._message
+        if result.get("success"):
+            current = self.runtime.snapshot()
+            try:
+                same_foreground = bool(binding and self._native_windows.foreground_window() == int(binding))
+            except (OSError, ValueError, TypeError):
+                same_foreground = False
+            if (not self._closing and not self._closed and not self.session.busy
+                    and binding == self._bound and type(generation) is int
+                    and generation == getattr(self.capture, "generation", None)
+                    and str(self.capture.snapshot.get("hwnd", "")) == binding
+                    and scope == tuple(current.get(key) for key in fields)
+                    and session_generation == self.session.snapshot.get("generation")
+                    and not self.resources.busy and not self.resources.pendingKind
+                    and not self._pending_context and not self.session.snapshot.get("resourceLocked")
+                    and same_foreground):
+                # Consume an old focus-return plan so polling cannot enqueue a
+                # duplicate recapture after this explicit request completes.
+                if self._waiting_foreground and self._focus_loss_map_sequence == self._map_input_sequence:
+                    reset = getattr(self.input, "resetMapInput", None)
+                    if callable(reset):
+                        reset(bool(self._map_was_open))
+                self._clear_focus_return_plan()
+                self.session.dispatch("capture_now")
+            else:
+                self._message = self._focus_notice = "识别环境已变化，未截图；请确认游戏地图已打开后重试"
         self.changed.emit()
 
     @Slot()

@@ -78,7 +78,7 @@ Item {
             Layout.fillWidth: true
             Label { text: "地图识别"; color: "#142b4b"; font.family: "Microsoft YaHei UI"; font.pixelSize: 26; font.bold: true }
             Item { Layout.fillWidth: true }
-            AppButton { objectName: "recognitionCapture"; text: "重新识别"; enabled: page.available("capture_now"); onClicked: session.dispatch("capture_now") }
+            AppButton { objectName: "recognitionCapture"; text: "回游戏并重新识别"; enabled: page.available("capture_now"); onClicked: coordinator.recaptureFromMain() }
         }
         Label {
             Layout.fillWidth: true
@@ -144,7 +144,7 @@ Item {
                 visible: !page.groupVisible && page.candidates.length === 0
                 spacing: 10
                 Label { text: session.busy ? "正在读取识别候选…" : "尚无识别候选"; color: "#142b4b"; font.family: "Microsoft YaHei UI"; font.pixelSize: 18; font.bold: true; Layout.alignment: Qt.AlignHCenter }
-                Label { text: page.available("capture_now") ? "打开游戏地图后，点击“重新识别”获取候选。" : "当前识别入口不可用，候选与确认操作尚未开放。"; color: "#526785"; font.family: "Microsoft YaHei UI"; font.pixelSize: 13; wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true }
+                Label { text: page.available("capture_now") ? "先打开游戏地图，再点击“回游戏并重新识别”；也可使用游戏内控制面板的“重新识别”。" : "当前识别入口不可用，候选与确认操作尚未开放。"; color: "#526785"; font.family: "Microsoft YaHei UI"; font.pixelSize: 13; wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true }
             }
             ScrollView {
                 anchors.fill: parent; anchors.margins: 16; visible: page.groupVisible

@@ -2413,7 +2413,11 @@ class LiveRuntime:
             if not self._active:
                 return self._receipt(action, payload, success=False, reason="round-not-active")
             epoch, engine, group = self._epoch, self._engine, self._group
-        if action != "refresh_map":
+        # Recapture has not changed the observed map until acquisition starts.
+        # A provider's narrow pre-pixel foreground refusal must not itself
+        # erase a still-current observation. Other actions keep their existing
+        # revocation semantics; no failure after acquisition is retained.
+        if action not in ("refresh_map", "capture_now"):
             with self._lock:
                 self._game_floor_intent = None
                 self._floor_click_epoch_span = None
@@ -2439,7 +2443,30 @@ class LiveRuntime:
             opened = True
         else:
             capture_generation = self._capture_generation()
-            captured = self._capture_frame(obsolete)
+            try:
+                captured = self._capture_frame(obsolete)
+            except Exception as error:
+                from client_capture import CaptureForegroundUnavailable
+                if action != "capture_now" or not isinstance(error, CaptureForegroundUnavailable):
+                    raise
+                with self._lock:
+                    row = self._render
+                    retain = bool(not obsolete() and row is not None and self._display_current(row)
+                        and capture_generation == self._capture_generation()
+                        and row.get("captureGeneration") == error.capture_generation
+                        and self._render_capture_context == error.capture_context)
+                if not retain:
+                    self._revoke_render("capture-preflight-context-invalid")
+                # Retention does not grant display authority: render_payload
+                # still performs the unchanged foreground/context guard.
+                return self._receipt(action, payload, success=False,
+                    reason=f"{type(error).__name__}:{error}", error=True,
+                    **self._error_fields(error, action))
+            if action == "capture_now":
+                with self._lock:
+                    self._game_floor_intent = None
+                    self._floor_click_epoch_span = None
+                self._revoke_render("new-capture")
             observation, floor, floor_read = self._observe(engine, self._full_frame(captured))
             from session_state_machine import verified_map_hotkey_frame
             opened = (observation.get("mapOpen") if engine.pack.mode == "difficult"

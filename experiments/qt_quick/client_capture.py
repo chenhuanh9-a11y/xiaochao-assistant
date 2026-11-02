@@ -17,6 +17,10 @@ class CaptureUnavailable(RuntimeError):
     pass
 
 
+class CaptureForegroundUnavailable(CaptureUnavailable):
+    """Only a foreground refusal before any pixels were requested."""
+
+
 class ClientCaptureProvider:
     """Worker-safe provider returning the existing RegionCapture contract.
 
@@ -169,7 +173,7 @@ class ClientCaptureProvider:
                 raise CaptureUnavailable("Bound game window is unavailable; rebind explicitly")
             foreground = self._native.foreground_window()
             if not global_key_is_allowed(hwnd, foreground):
-                error = CaptureUnavailable("Bound game must own the foreground before capture")
+                error = CaptureForegroundUnavailable("Bound game must own the foreground before capture")
                 error.capture_diagnostics = dict(expectedHwnd=hwnd, foregroundHwnd=foreground)
                 process_id = getattr(self._native, "window_process_id", None)
                 if callable(process_id) and foreground:
@@ -177,6 +181,15 @@ class ClientCaptureProvider:
                         error.capture_diagnostics["foregroundPid"] = process_id(foreground)
                     except OSError:
                         pass
+                # Metadata only: let the runtime distinguish an unchanged,
+                # still-valid prior observation from a lost/rebound context.
+                from client_region_capture import client_capture_context
+                error.capture_context = client_capture_context(hwnd, _backend=self._backend)
+                error.capture_generation = generation
+                with self._lock:
+                    if (generation != self._generation or not self._enabled or self._closed
+                            or self._cancelled(cancelled)):
+                        raise CaptureUnavailable("Capture request was superseded or cancelled")
                 raise error
             from client_region_capture import capture_client_region, client_capture_context
             context = client_capture_context(hwnd, _backend=self._backend)
