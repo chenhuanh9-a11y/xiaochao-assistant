@@ -124,6 +124,8 @@ class DiagnosticEvidenceTests(unittest.TestCase):
             _set_diagnostic_export_buttons=lambda *args:None,_log=lambda *args,**kwargs:None,
             game_hwnd=None,game_foreground=True,map_is_open=True,package_metadata={'status':'test'},
             memory_store=self.store,game_mode='nightmare',events=queue.Queue())
+        emitted=[]
+        subject._log=lambda event,**values:emitted.append((event,values))
         self.production['export_diagnostic_logs'](subject)
         result=subject.events.get(timeout=3)
         self.assertEqual(result['kind'],'diagnostic-exported',result)
@@ -131,6 +133,8 @@ class DiagnosticEvidenceTests(unittest.TestCase):
         with zipfile.ZipFile(result['path']) as archive:
             manifest=json.loads(archive.read('diagnostic-manifest.json'))
             self.assertIn('failureSampling',manifest['runtimeContext'])
+            self.assertEqual(manifest['exportId'],emitted[0][1]['exportId'])
+            self.assertEqual(manifest['exportId'],result['exportId'])
             self.assertEqual(manifest['failureEvidence']['cases'][0]['cycleId'],9)
 
     def test_writer_budget_failure_is_exposed_without_frame_or_journal(self):

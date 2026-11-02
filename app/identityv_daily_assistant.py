@@ -992,9 +992,9 @@ def _bounded_log_tail(path: Path, byte_limit: int) -> tuple[bytes, bool]:
         handle.readline()  # Drop a partial JSON/text line at the truncation edge.
         payload = handle.read(byte_limit)
         if not payload:
-            # One abnormally long line is still more useful than an empty log.
-            handle.seek(max(0, size - byte_limit))
-            payload = handle.read(byte_limit)
+            # Never invent a malformed JSONL suffix when a single row exceeds
+            # the export budget. The manifest records this truncated empty tail.
+            payload = b""
     return payload, True
 
 
@@ -1156,13 +1156,14 @@ def export_safe_diagnostic_bundle(
     runtime_context: dict | None = None,
     package_metadata: dict | None = None,
     failure_roots: tuple[Path, ...] = (),
+    export_id: str | None = None,
 ) -> dict:
     """Use the shared bounded exporter with this process's original identity."""
     from diagnostic_export import export_safe_diagnostic_bundle as export_bundle
     return export_bundle(app_root, live_root, exported_at=exported_at,
         log_limit=log_limit, file_byte_limit=file_byte_limit, total_byte_limit=total_byte_limit,
         window_environment=window_environment, runtime_context=runtime_context,
-        package_metadata=package_metadata, failure_roots=failure_roots,
+        package_metadata=package_metadata, failure_roots=failure_roots, export_id=export_id,
         app_version=APP_VERSION, build_fingerprint=BUILD_FINGERPRINT,
         process_integrity=process_integrity_level())
 
@@ -10075,7 +10076,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             return
         self.diagnostic_export_in_progress = True
         self._set_diagnostic_export_buttons(False, "正在导出…")
-        self._log("diagnostic-export-requested")
+        from uuid import uuid4
+        export_id = uuid4().hex
+        self._log("diagnostic-export-requested", exportId=export_id)
         runtime_context = diagnostic_runtime_context(
             getattr(self, "display_environment", None),
             game_window_bound=self.game_hwnd is not None,
@@ -10103,10 +10106,10 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                     window_environment=environment,
                     runtime_context=runtime_context,
                     package_metadata=package_metadata,
-                    failure_roots=failure_roots,
+                    failure_roots=failure_roots, export_id=export_id,
                 )
                 self._log(
-                    "diagnostic-exported",
+                    "diagnostic-exported", exportId=export_id,
                     fileName=result["path"].name,
                     includedLogCount=result["includedLogCount"],
                     windowCandidateCount=result["windowCandidateCount"],
@@ -10118,7 +10121,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 self.events.put({"kind": "diagnostic-exported", **result})
             except Exception as error:
                 self._log(
-                    "diagnostic-export-error",
+                    "diagnostic-export-error", exportId=export_id,
                     errorType=type(error).__name__, message=str(error),
                 )
                 self.events.put({

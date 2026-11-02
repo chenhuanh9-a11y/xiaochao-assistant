@@ -46,6 +46,23 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(loss['omittedRangeCount'], 34)
         self.assertTrue(all(row['firstAt'] and row['lastAt'] for row in loss['ranges']))
 
+    def test_overlong_json_line_does_not_create_unparseable_partial_export(self):
+        from diagnostic_export import _bounded_log_tail, _log_sessions, _merge_sessions
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'events-long.jsonl'
+            path.write_text(json.dumps(dict(payload='x'*1000))+'\n')
+            payload,truncated=_bounded_log_tail(path,64)
+            self.assertTrue(truncated)
+            self.assertEqual(payload,b'')
+        identity=DiagnosticStream('rotation-fixture').stamp()
+        a=json.dumps(dict(identity,time='2026-11-01T01:59:00-04:00')).encode()
+        b=json.dumps(dict(identity,time='2026-11-01T01:00:00-05:00',seq=2)).encode()
+        groups=_merge_sessions(_log_sessions(a,'events-previous.jsonl')+_log_sessions(b,'events.jsonl'))
+        self.assertEqual(len(groups),1)
+        self.assertEqual(groups[0]['firstAt'],'2026-11-01T05:59:00.000+00:00')
+        self.assertEqual(groups[0]['lastAt'],'2026-11-01T06:00:00.000+00:00')
+        self.assertEqual(len(groups[0]['logs']),2)
+
     def test_real_writer_and_legacy_export_never_invent_session(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder); live = root/'live'; live.mkdir()

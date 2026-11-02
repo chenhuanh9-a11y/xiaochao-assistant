@@ -1,6 +1,6 @@
 """Bounded existing diagnostic ZIP export shared by Tk and Qt; no capture/UI imports."""
 from __future__ import annotations
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -39,9 +39,9 @@ def _bounded_log_tail(path: Path, byte_limit: int) -> tuple[bytes, bool]:
         handle.readline()  # Drop a partial JSON/text line at the truncation edge.
         payload = handle.read(byte_limit)
         if not payload:
-            # One abnormally long line is still more useful than an empty log.
-            handle.seek(max(0, size - byte_limit))
-            payload = handle.read(byte_limit)
+            # Never invent a malformed JSONL suffix when a single row exceeds
+            # the export budget. The manifest records this truncated empty tail.
+            payload = b""
     return payload, True
 
 
@@ -134,7 +134,7 @@ def _log_sessions(payload: bytes, log_name: str) -> list[dict]:
             try:
                 parsed = datetime.fromisoformat(stamp)
                 if parsed.tzinfo is not None:
-                    stamp = parsed.astimezone().isoformat(timespec='milliseconds')
+                    stamp = parsed.astimezone(timezone.utc).isoformat(timespec='milliseconds')
                     group['firstAt'] = min(group['firstAt'] or stamp, stamp)
                     group['lastAt'] = max(group['lastAt'] or stamp, stamp)
             except (ValueError, TypeError):
