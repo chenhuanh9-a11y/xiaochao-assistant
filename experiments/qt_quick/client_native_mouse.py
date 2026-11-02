@@ -73,12 +73,14 @@ class RawMouseObserver:
     REMOVE = 0x00000001
 
     def __init__(self, receive, relevant, *, user=None, cancel=None, clock=time.monotonic, ticks=None,
-                 buttons=None, wants_buttons=None):
+                 buttons=None, wants_buttons=None, modifier_activity=None, activity_relevant=None):
         self.user = user or ctypes.WinDLL("user32", use_last_error=True)
         self.receive, self.relevant = receive, relevant
         # Optional (transitions, foreground) receiver for shortcut buttons: they
         # are global like keyboard shortcuts, so they skip the map-target filter.
         # Packets are only parsed for it while a binding uses a mouse button.
+        self.modifier_activity = modifier_activity
+        self.activity_relevant = activity_relevant or (lambda: False)
         self.buttons = buttons
         self.wants_buttons = wants_buttons or (lambda: buttons is not None)
         self.cancel, self.clock = cancel or (lambda reason: None), clock
@@ -150,7 +152,8 @@ class RawMouseObserver:
             foreground = int(self.user.GetForegroundWindow() or 0)
             relevant = self.relevant(foreground)
             buttons = self.buttons is not None and self.wants_buttons()
-            if not relevant and not buttons:
+            activity = self.modifier_activity is not None and self.activity_relevant()
+            if not relevant and not buttons and not activity:
                 return True
             size, header_size = W.UINT(), ctypes.sizeof(RawInputHeader)
             if self.user.GetRawInputData(message.lParam, 0x10000003, None,
@@ -169,6 +172,8 @@ class RawMouseObserver:
             if header.kind != 0 or header.size != read:
                 return True
             mouse = RawMouse.from_buffer(buffer, header_size)
+            if activity and mouse.buttonUnion.buttons.flags:
+                self.modifier_activity(int(mouse.buttonUnion.buttons.flags))
             # MSG.time/pt describe enqueue time/location, not the later point
             # after Python resumes. Retain the existing input freshness budget.
             age = ((int(self.ticks()) & 0xffffffff) - int(message.time)) & 0xffffffff

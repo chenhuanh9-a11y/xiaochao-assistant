@@ -20,6 +20,7 @@ Window {
     readonly property bool effectiveCollapsed: collapsed && !editing
     readonly property real naturalExpandedHeight: header.height + 24 + scrollContent.implicitHeight + (editing ? 76 : 0)
     readonly property var preferences: settingsService.values
+    readonly property var committedShortcuts: settingsService.persistedValues.actionHotkeys || []
     readonly property var layout: preferences.gameControlLayout || ({order: [], enabled: [], display: {}})
     readonly property var snapshot: session.snapshot
     property var groupChoices: []
@@ -123,7 +124,7 @@ Window {
     }
     function shortcut(action) {
         var index = actionOrder.indexOf(action)
-        return index >= 0 && preferences.actionHotkeys ? preferences.actionHotkeys[index] || "" : ""
+        return index >= 0 ? committedShortcuts[index] || "" : ""
     }
     function commit(key) { settingsService.saveFields([key]) }
     function savePosition() {
@@ -430,7 +431,7 @@ Window {
                     else session.dispatch(roundControls.action)
                 }
             }
-            KeyHint { text: panel.shortcut("toggle-round") || panel.shortcut(roundControls.active ? "end-round" : "start-round") }
+            KeyHint { objectName: "controlRoundKeyHint"; text: panel.shortcut("toggle-round") || panel.shortcut(roundControls.active ? "end-round" : "start-round") }
             KeyHint { visible: !panel.available(roundControls.action); text: session.busy ? "正在处理当前操作" : panel.snapshot.resourceLocked ? "等待资源操作完成" : "等待地图资源准备就绪" }
         }
     }

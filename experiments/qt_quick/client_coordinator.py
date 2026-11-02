@@ -840,6 +840,9 @@ class ClientCoordinator(QObject):
             return
         if self._automatic_live and not self._input_enable_allowed():
             return
+        recover = getattr(self.input, "recoverListening", None)
+        if callable(recover):
+            recover()
         try:
             rows = list(self._catalog())
         except Exception as error:
