@@ -185,5 +185,95 @@ class FitCoordinatorTests(CoordinatorTests):
 
 def load_tests(loader, tests, pattern):
     # Reuse fixture setup, not all inherited test methods.
-    return unittest.TestSuite(cls(name) for cls in (FitRuntimeTests, FitCoordinatorTests)
+    return unittest.TestSuite(cls(name) for cls in (FitRuntimeTests, FitCoordinatorTests, FitCloseConsumerTests)
         for name in cls.__dict__ if name.startswith('test_'))
+
+
+class FitCloseConsumerTests(unittest.TestCase):
+    """Actual problem store + coordinator; capture/solver and native UI are fixtures."""
+    @classmethod
+    def setUpClass(cls):
+        FitCoordinatorTests.setUpClass()
+
+    def setUp(self):
+        import tempfile
+        from types import SimpleNamespace
+        from client_problems import ProblemsService
+        self.r = FitRuntimeTests('test_fixture_assertions_really_raise')
+        self.r.setUp(); self.addCleanup(self.r.doCleanups)
+        self.c = FitCoordinatorTests('test_deferred_receipt_does_not_report_or_toast')
+        self.c.setUp(); self.addCleanup(self.c.tearDown)
+        self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
+        self.problems = ProblemsService(SimpleNamespace(work_root=self.temp.name))
+        self.c.coordinator.errorReported.connect(self.problems.record)
+        self.notices = []
+        self.c.coordinator.notificationRequested.connect(
+            lambda *args: self.notices.append(args) if args[2] in {"warning", "error"} else None)
+        self.r.dispatch('start_round')
+        self.c.coordinator._last_round_active = True
+        self.c.runtime.snapshot = self.r.runtime.snapshot
+        self.r.runtime.set_event_callback(self.c.coordinator._on_runtime_event)
+        self.addCleanup(self.drain)
+
+    def drain(self):
+        self.problems.shutdown()
+        import time
+        deadline = time.monotonic() + 3
+        while self.problems.pendingWrites and time.monotonic() < deadline:
+            self.problems.pool.waitForDone()
+            self.c.app.processEvents()
+        self.assertFalse(self.problems.pendingWrites)
+
+    def consume(self, receipt):
+        state = self.r.runtime.snapshot()
+        state['lastReceipt'] = receipt
+        self.c.coordinator._notify_session_transitions(state)
+
+    def auto_probe(self):
+        # Use the production coordinator timer entry, with only the worker
+        # scheduling replaced by synchronous fixture dispatch.
+        self.c.session.snapshot = self.r.runtime.snapshot()
+        self.c.session.dispatch.reset_mock()
+        self.c.session.dispatch.side_effect = lambda action: self.consume(self.r.dispatch(action))
+        self.c.coordinator._track_map()
+        self.c.session.dispatch.assert_called_once_with('refresh_map')
+
+    def test_automatic_probe_close_has_exactly_one_problem_no_toast(self):
+        from unittest.mock import patch
+        self.consume(self.r.fail_fit())
+        with patch('map_interface_observation.detect_map_interface', return_value=dict(detected=False)):
+            self.auto_probe()
+            self.assertEqual(self.problems.recent, [])
+            self.assertEqual(self.notices, [])
+            self.auto_probe()
+        self.assertEqual([p['title'] for p in self.problems.recent], ['本次开图未能贴合'])
+        self.assertEqual(self.problems.recent[0]['count'], 1)
+        self.assertEqual(self.notices, [])
+
+    def test_capture_close_has_exactly_one_problem_no_toast(self):
+        from unittest.mock import patch
+        self.consume(self.r.fail_fit())
+        with patch('map_interface_observation.detect_map_interface', return_value=dict(detected=False)):
+            self.consume(self.r.dispatch('capture_now'))
+        self.assertEqual([p['title'] for p in self.problems.recent], ['本次开图未能贴合'])
+        self.assertEqual(self.notices, [])
+
+    def test_map_not_observed_without_fit_segment_still_reports(self):
+        from unittest.mock import patch
+        with patch('map_interface_observation.detect_map_interface', return_value=dict(detected=False)):
+            receipt = self.r.dispatch('capture_now')
+            self.consume(receipt)
+        self.assertFalse(receipt.get('fitReportingDeferred', False))
+        self.assertEqual(len(self.problems.recent), 1)
+        self.assertEqual(len(self.notices), 1)
+
+    def test_capture_exception_during_fit_segment_still_reports(self):
+        from unittest.mock import patch
+        self.consume(self.r.fail_fit())
+        with patch.object(self.r.capture, 'capture', side_effect=OSError('capture-test-error')):
+            receipt = self.r.dispatch('capture_now')
+            self.consume(receipt)
+        self.assertTrue(receipt.get('error'))
+        self.assertFalse(receipt.get('fitReportingDeferred', False))
+        self.assertEqual(len(self.problems.recent), 1)
+        self.assertEqual(len(self.notices), 1)

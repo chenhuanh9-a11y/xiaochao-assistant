@@ -1651,7 +1651,7 @@ class LiveRuntime:
                 str(self._floor if floor is None else floor))
 
     def invalidate(self, reason="invalidated", *, source=""):
-        """Owner-thread fast path: revoke before canceling/queueing slow work."""
+        """Revoke immediately; return whether this close emitted a fit summary."""
         with self._lock:
             if self._diagnostics is not None:
                 self._diagnostics.record("invalidate", reason=str(reason), source=source, epoch=self._epoch,
@@ -1706,6 +1706,7 @@ class LiveRuntime:
                 mapClosed=reason in ("map-closed", "escape"),
                 inputSequence=self._last_map_input_sequence,
                 inputWindow=str(capture.get("hwnd", "")))
+            return report is not None
 
     def set_event_callback(self, callback):
         """Install a thread-safe emitter only; it must queue work to Qt's owner."""
@@ -2502,15 +2503,28 @@ class LiveRuntime:
                 probe_open = (observation.get("mapOpen") if engine.pack.mode == "difficult"
                               else bool(observation.get("detected")))
                 with self._lock:
+                    if obsolete():
+                        return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
                     self._probe_misses, transition = map_probe_transition(
                         self._map_open, self._probe_misses, probe_open)
-                reason = "current-floor-unavailable" if probe_open is True and floor is None else "map-not-observed"
-                self._revoke_render(reason)
-                if transition == "close":
-                    self.invalidate("map-closed", source="passive-map-probe")
-                return self._receipt(action, payload, success=False, reason=reason, observation=observation)
-            self.invalidate("map-closed", source="capture-map-not-observed")
-            return self._receipt(action, payload, success=False, reason="map-not-observed", observation=observation)
+                    reason = "current-floor-unavailable" if probe_open is True and floor is None else "map-not-observed"
+                    self._revoke_render(reason)
+                    # While a failed-fit segment awaits the existing two-miss
+                    # close decision, don't report its first probe miss as a
+                    # separate operation failure. No segment: legacy reporting.
+                    deferred = bool(reason == "map-not-observed"
+                        and self._fit_reporting.scope == self._fit_reporting_scope()
+                        and self._fit_reporting.report and not self._fit_reporting.succeeded)
+                    if transition == "close":
+                        deferred = self.invalidate("map-closed", source="passive-map-probe")
+                    return self._receipt(action, payload, success=False, reason=reason,
+                        observation=observation, fitReportingDeferred=deferred)
+            with self._lock:
+                if obsolete():
+                    return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+                deferred = self.invalidate("map-closed", source="capture-map-not-observed")
+                return self._receipt(action, payload, success=False, reason="map-not-observed",
+                    observation=observation, fitReportingDeferred=deferred)
         if floor is None or str(floor) not in tuple(map(str, engine.identity_floors)):
             with self._lock:
                 self._observed_floor = ""
