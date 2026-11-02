@@ -85,16 +85,12 @@ Item {
         Field {
             objectName: keyRow.actionIndex < 0 ? "setting_hotkey" : "setting_action_" + keyRow.actionIndex
             Layout.preferredWidth: 104; Layout.maximumWidth: 132
+            readOnly: true
             enabled: !settingsService.shortcutRecording
-            text: keyRow.actionIndex < 0 ? root.preferences.hotkey : root.preferences.actionHotkeys[keyRow.actionIndex]
+            text: keyRow.actionIndex < 0 ? settingsService.persistedValues.hotkey : settingsService.persistedValues.actionHotkeys[keyRow.actionIndex]
             placeholderText: "未绑定"
             horizontalAlignment: Text.AlignHCenter
             Accessible.name: keyRow.title + "快捷键"
-            onEditingFinished: {
-                if (keyRow.actionIndex < 0) settingsService.setValue("hotkey", text)
-                else root.setAction(keyRow.actionIndex, text)
-                text = Qt.binding(function() { return keyRow.actionIndex < 0 ? root.preferences.hotkey : root.preferences.actionHotkeys[keyRow.actionIndex] })
-            }
         }
         AppButton {
             objectName: keyRow.actionIndex < 0 ? "record_hotkey" : "record_action_" + keyRow.actionIndex
@@ -183,10 +179,10 @@ Item {
                 Note { text: settingsService.shortcutMessage }
                 Flow {
                     Layout.fillWidth: true; spacing: 8
-                    AppButton { id: captureConfirm; objectName: "shortcutCaptureConfirm"; text: "确认到草稿"; primary: true; enabled: settingsService.shortcutCandidateReady; onClicked: settingsService.confirmShortcutCapture() }
-                    AppButton { objectName: "shortcutCaptureAgain"; text: "重新录入"; onClicked: root.recordShortcut(settingsService.shortcutTarget) }
-                    AppButton { objectName: "shortcutCaptureClear"; text: "解绑"; onClicked: settingsService.clearShortcutCandidate() }
-                    AppButton { objectName: "shortcutCaptureCancel"; text: "取消"; onClicked: settingsService.cancelShortcutCapture() }
+                    AppButton { id: captureConfirm; objectName: "shortcutCaptureConfirm"; text: settingsService.busy ? "正在保存…" : "保存并生效"; primary: true; enabled: settingsService.shortcutCandidateReady && !settingsService.busy; onClicked: settingsService.confirmShortcutCapture() }
+                    AppButton { objectName: "shortcutCaptureAgain"; enabled: !settingsService.busy; text: "重新录入"; onClicked: root.recordShortcut(settingsService.shortcutTarget) }
+                    AppButton { objectName: "shortcutCaptureClear"; enabled: !settingsService.busy; text: "解绑"; onClicked: settingsService.clearShortcutCandidate() }
+                    AppButton { objectName: "shortcutCaptureCancel"; enabled: !settingsService.busy; text: "取消"; onClicked: settingsService.cancelShortcutCapture() }
                 }
             }
         }
@@ -302,6 +298,8 @@ Item {
                     }
                     Rectangle { Layout.fillWidth: true; height: 1; color: "#edf2fa" }
                     ClientChestAutoTap { Layout.fillWidth: true }
+                    Rectangle { Layout.fillWidth: true; height: 1; color: "#edf2fa" }
+                    ClientFloorRegion { Layout.fillWidth: true }
                     Disclosure { objectName: "modeSettingsToggle"; text: root.modeExpanded ? "收起模式与路线" : "模式与路线"; expanded: root.modeExpanded; onClicked: root.modeExpanded = !root.modeExpanded }
                     ColumnLayout {
                         visible: root.modeExpanded

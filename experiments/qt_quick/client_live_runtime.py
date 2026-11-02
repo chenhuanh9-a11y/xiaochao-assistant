@@ -318,6 +318,9 @@ class LiveRuntime:
         self._reference_sheet = None
         self._reference_capture_context = None
         self._settings = {}
+        # Latest full-client frame in which the map was seen open; only the
+        # floor-region editor reads it. A reference, never a copy per frame.
+        self._latest_map_frame = None
         self._gate = None
         self._candidate_rows = []
         self._candidate_edit = False
@@ -1686,6 +1689,10 @@ class LiveRuntime:
             self._render_capture_context = None
         self._notify("render-revoked", reason=reason, token=token)
 
+    def latest_map_frame(self):
+        """(BGR frame, mode, fixed floor read) of the last open-map frame, or None."""
+        return self._latest_map_frame
+
     def configure_settings(self, settings):
         """Update explicit solver preferences; mode/profile use set_context."""
         with self._lock:
@@ -2790,29 +2797,44 @@ class LiveRuntime:
         return frame
 
     def _observe(self, engine, frame):
+        from floor_control_region import apply_floor_region
         started = time.monotonic() if self._diagnostics is not None else 0
+        # One settings snapshot per frame; configure_settings swaps the dict.
+        settings = getattr(self, "_settings", None) or {}
         if engine.pack.mode == "difficult":
             result = engine.qt_map_ui.observe(frame)
             floor = str(result["floor"]) if result.get("floor") is not None else None
-            if self._diagnostics is not None:
-                self._diagnostics.record("observation", mode=engine.pack.mode, floor=floor,
-                    mapDetected=result.get("mapOpen"), combinedSensor=True,
-                    elapsedMs=(time.monotonic()-started)*1000, roundId=self._round, cycleId=self._cycle)
-            return result, floor, dict(result, selectedFloor=int(floor) if floor in ("1", "2") else None,
+            floor_read = dict(result, selectedFloor=int(floor) if floor in ("1", "2") else None,
                 scores={}, margin=result.get("highlightDifference", 0.), confidence=1. if floor else 0.,
                 layout="difficult-two-buttons", layoutFamily="difficult-two-buttons", difficultObservation=result,
                 centers=[g["center"][0] / frame.shape[1] for g in result.get("glyphs", [])],
                 controlVertical=dict(regionTop=(min((g["center"][1] for g in result.get("glyphs", [])), default=0)-22)/frame.shape[0],
                                      regionHeight=44/frame.shape[0]))
+            if result.get("mapOpen") is True:
+                self._latest_map_frame = (frame, "difficult", floor_read)
+                floor_read = apply_floor_region(settings, "difficult", frame, floor_read)
+                floor = str(floor_read["selectedFloor"]) if floor_read["selectedFloor"] in (1, 2) else None
+            if self._diagnostics is not None:
+                self._diagnostics.record("observation", mode=engine.pack.mode, floor=floor,
+                    mapDetected=result.get("mapOpen"), combinedSensor=True,
+                    floorSource=floor_read.get("floorSource"),
+                    elapsedMs=(time.monotonic()-started)*1000, roundId=self._round, cycleId=self._cycle)
+            return result, floor, floor_read
         from map_interface_observation import detect_map_interface, detect_selected_floor
         floor_read = detect_selected_floor(frame)
         floor_ms = (time.monotonic()-started)*1000 if self._diagnostics is not None else 0
+        # Map detection keeps using the fixed reading; the region only answers
+        # which floor is selected once the map is known to be open.
         result = detect_map_interface(frame, floor_read=floor_read)
+        if result.get("detected"):
+            self._latest_map_frame = (frame, "nightmare", floor_read)
+            floor_read = apply_floor_region(settings, "nightmare", frame, floor_read)
         floor = floor_read.get("selectedFloor")
         floor = "B1" if floor == -1 else str(floor) if floor in (1, 2) else None
         if self._diagnostics is not None:
             self._diagnostics.record("observation", mode=engine.pack.mode, floor=floor,
                 mapDetected=result.get("detected"), combinedSensor=False, floorMs=floor_ms,
+                floorSource=floor_read.get("floorSource"),
                 elapsedMs=(time.monotonic()-started)*1000, roundId=self._round, cycleId=self._cycle)
         return result, floor, floor_read
 

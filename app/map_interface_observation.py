@@ -412,4 +412,6 @@ def detect_selected_floor(frame: np.ndarray) -> dict:
         "layoutFamily": vertical["layoutFamily"],
         "safeTop": vertical["safeTop"],
         "safeHeight": vertical["safeHeight"],
+        "regionTop": vertical["regionTop"],
+        "regionHeight": vertical["regionHeight"],
     }

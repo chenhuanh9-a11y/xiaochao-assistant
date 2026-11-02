@@ -34,5 +34,5 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Input, coordinator, runtime and asynchronous close regressions
         run: |
-          python -B -X utf8 -m unittest -v test_client_map_intent_reset test_client_map_input test_client_coordinator test_client_live_runtime
+          python -B -X utf8 -m unittest -v test_client_map_intent_reset test_client_map_input test_client_coordinator test_client_live_runtime test_client_floor_region test_client_input_event_freshness test_client_input_recovery
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

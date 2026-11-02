@@ -19,7 +19,7 @@ APP = APP_ROOT
 if str(APP) not in sys.path:
     sys.path.insert(0, str(APP))
 from hotkey_bindings import Chord, modifiers_match, parse_chord, primary_state, validate_unique
-from hotkey_keys import _primary_hotkey_to_vk
+from hotkey_keys import _primary_hotkey_to_vk, NATIVE_ONLY_SHORTCUT_KEYS
 from session_state_machine import global_key_is_allowed
 from floor_observation_policy import MANUAL_FLOOR_HOLD_SECONDS
 from client_map_input import OrderedMapInput
@@ -106,6 +106,10 @@ class NativeShortcutBackend(QObject):
             source = PassThroughKeyboardSource(self)
         self._source = source
         self._management_enabled = False
+        self._management_requested = self._game_requested = False
+        self._binding_suspended = False
+        self._game_events_after = 0.0
+        self._modifier_presses = {}
         self._event_down = set()
         self._pointer_error = ""
         self._ordered_map_input = False
@@ -138,13 +142,22 @@ class NativeShortcutBackend(QObject):
         self._timer.timeout.connect(self.pollOnce)
 
     enabled = Property(bool, lambda self: self._enabled, notify=changed)
-    message = Property(str, lambda self: self._message, notify=changed)
+    def _public_message(self):
+        if (self._source is not None and (self._enabled or self._management_enabled) and self._observer_ready()
+                and any(chord.vk in (0x10, 0x11, 0x12) for chord in self._bindings.values())
+                and not getattr(self._source, "pointer_installed", False)):
+            return "鼠标监听尚未就绪，单独 Alt、Shift、Ctrl 快捷键已暂停；其他快捷键仍可使用。"
+        return self._message
+
+    message = Property(str, _public_message, notify=changed)
     snapshot = Property("QVariantMap", lambda self: dict(
-        enabled=self._enabled, status=self._status, message=self._message,
+        enabled=self._enabled, status=self._status, message=self._public_message(),
         hwnd=str(self._hwnd), bindings={name: chord.name for name, chord in self._bindings.items()},
         textEntryActive=self._text, editingBindings=self._editing,
         readPermission="unknown", passThrough=True, globalRegistration=False,
         closed=self._closed, managementEnabled=self._management_enabled,
+        managementRequested=self._management_requested, gameRequested=self._game_requested,
+        bindingSuspended=self._binding_suspended,
         hookRunning=bool(self._source and self._source.running),
         floorClickObserverInstalled=bool(self._source and getattr(self._source, "pointer_installed", False)),
         floorClickObserverError=self._pointer_error,
@@ -153,6 +166,7 @@ class NativeShortcutBackend(QObject):
 
     def _stop(self, status, message):
         self._timer.stop()
+        self._cancel_modifier_taps()
         self._enabled = False
         update = getattr(self._source, "update_pointer_target", None)
         if callable(update):
@@ -192,18 +206,20 @@ class NativeShortcutBackend(QObject):
         if self._closed:
             return
         self._hwnd = int(hwnd)
+        self._binding_suspended = False
         if self._hwnd <= 0:
             self._hwnd = 0
-            self._stop("unknown", "An explicit game HWND is required.")
+            self._stop("waiting", "Waiting for a verified game window.")
 
     @Slot("QVariantMap", result=bool)
     def configure(self, bindings):
         self.disable()
         if self._closed:
             return False
-        management_requested = self._management_enabled
+        management_requested = self._management_requested
         self._bindings, self._down = {}, {}
         self._management_enabled = False
+        self._management_requested = False
         if set(bindings) - KNOWN_ACTIONS:
             self._stop("unknown", "Unknown shortcut actions: " + ", ".join(sorted(set(bindings) - KNOWN_ACTIONS)))
             return False
@@ -219,7 +235,8 @@ class NativeShortcutBackend(QObject):
             self._stop("conflict", str(error))
             return False
         self._bindings = chords
-        self._management_enabled = management_requested
+        self._management_requested = management_requested
+        self._management_enabled = management_requested and self._observer_ready()
         if self._source is not None:
             self._source.update_keys(chord.vk for chord in chords.values() if chord.vk)
             self._event_down = set(self._source.held)
@@ -232,6 +249,8 @@ class NativeShortcutBackend(QObject):
     def configureSettings(self, settings):
         actions = settings.get("actionHotkeys", [])
         if len(actions) != len(ACTION_ORDER):
+            self.disable()
+            self._management_requested = self._management_enabled = False
             self._bindings, self._down = {}, {}
             self._stop("conflict", "Shortcut action count does not match the product contract.")
             return False
@@ -253,35 +272,40 @@ class NativeShortcutBackend(QObject):
         except Exception as error:
             self._stop("failed", f"Native shortcuts unavailable: {error}")
             return False
+        self._game_requested = True
         self._prime, self._game_focus = True, None
-        self._enabled, self._status = True, "ready"
-        update = getattr(self._source, "update_pointer_target", None)
-        if callable(update):
-            update(self._hwnd)
-        self._message = "Pass-through native observer enabled; input permission is unknown."
         if self._source is None:
             self._timer.start()  # Injected diagnostic API only; never production.
         elif not self._source.start():
             self._stop("failed", "Native keyboard events are unavailable.")
             return False
-        self.changed.emit()
+        self._publish_listener_state()
         return True
 
     @Slot(result=bool)
     def enableManagement(self):
-        if self._closed or not self._bindings or self._status in ("conflict", "unknown"):
+        if self._closed or not self._bindings or self._status == "conflict":
             return False
         if self._source is None:
             return False  # No production polling fallback.
-        self._management_enabled = bool(self._source.start())
-        self.changed.emit()
-        return self._management_enabled
+        self._management_requested = True
+        accepted = bool(self._source.start())
+        self._publish_listener_state()
+        return accepted
 
-    def _hook_started(self, held):
-        self._event_down.update(held)
+    def _hook_started(self, snapshot):
+        if self._closed or not self._observer_ready():
+            return
+        if isinstance(snapshot, dict):
+            if snapshot.get("generation") == self._source.generation:
+                self._event_down = set(snapshot.get("held", ()))
+        else:
+            # Older injected fixtures have no generation authority to erase
+            # held keys seeded by a later configure. Production is versioned.
+            self._event_down.update(snapshot)
         if getattr(self._source, "pointer_installed", False):
             self._pointer_error = ""
-        self.changed.emit()
+        self._publish_listener_state()
 
     def setGamePointerContextProvider(self, provider):
         setter = getattr(self._source, "set_pointer_context_provider", None)
@@ -318,17 +342,28 @@ class NativeShortcutBackend(QObject):
             self.gamePointerPressed.emit(event)
 
     def _hook_failed(self, error):
+        if self._closed:
+            return
+        # A failure queued by the previous native thread must not disable its
+        # replacement after start() has cleared that thread's error.
+        if hasattr(self._source, "last_error") and self._source.last_error != error:
+            return
         self._management_enabled = False
         self._stop("failed", "Native keyboard observer failed: " + error)
 
     def _key_event(self, event):
         if self._closed or self._source is None or event.get("generation") != self._source.generation:
             return
-        vk, down = event["vk"], event["down"]
-        previous = vk in self._event_down
-        if down:self._event_down.add(vk)
-        else:self._event_down.discard(vk)
-        if not down or previous or self._text or self._editing:
+        from client_native_keys import BARE_MODIFIERS, generic_modifier
+        vk, down = generic_modifier(event["vk"]), event["down"]
+        physical = event.get("physicalVk", event["vk"])
+        previous = physical in self._event_down
+        if down:self._event_down.add(physical)
+        else:self._event_down.discard(physical)
+        press = self._modifier_presses.pop(physical, None) if not down else None
+        modifier_release = (not down and vk in BARE_MODIFIERS and
+                            event.get("modifierTap") is True and press is not None)
+        if (not down and not modifier_release) or (down and previous) or self._text or self._editing:
             return
         # Native enqueue time survives the Qt queue. Always process releases
         # above, but never turn a delayed/invalid press into a fresh action.
@@ -362,27 +397,41 @@ class NativeShortcutBackend(QObject):
                 if action in MANAGEMENT_ACTIONS:
                     allowed=self._management_enabled
                 else:
-                    allowed=self._enabled and game
-                # QML owns keyboard panel toggles in the assistant, but cannot
-                # consume mouse chords; those retain their one native owner.
-                if action == "toggle-panel" and assistant and vk not in MOUSE_SHORTCUT_VKS:allowed=False
+                    created = event.get("createdAt")
+                    after_resume = (not self._game_events_after or
+                        type(created) in (int, float) and created >= self._game_events_after)
+                    allowed=self._enabled and game and after_resume
+                # The existing app-local QML shortcut owns F9 when this app is
+                # foreground. The hook owns it globally when hidden/background.
+                if action == "toggle-panel" and assistant and chord.vk not in NATIVE_ONLY_SHORTCUT_KEYS:allowed=False
+                if vk in BARE_MODIFIERS:
+                    if down:
+                        if allowed:
+                            self._modifier_presses[physical] = (foreground, created)
+                        continue  # A modifier is a tap only after a clean release.
+                    allowed = (allowed and press[0] == foreground
+                        and (action in MANAGEMENT_ACTIONS or not self._game_events_after
+                             or press[1] >= self._game_events_after))
                 if allowed:self._dispatch_action(action, event)
         except Exception as error:
             self._hook_failed(str(error))
 
     @Slot()
     def disable(self):
+        self._game_requested = False
         self._stop("disabled", "Native shortcuts are disabled.")
 
     @Slot(bool)
     def setTextEntryActive(self, active):
         if self._text != bool(active):
+            self._cancel_modifier_taps()
             self._text, self._prime = bool(active), True
             self.changed.emit()
 
     @Slot(bool)
     def setEditingBindings(self, active):
         if self._editing != bool(active):
+            self._cancel_modifier_taps()
             self._editing, self._prime = bool(active), True
             self.changed.emit()
 
@@ -416,7 +465,7 @@ class NativeShortcutBackend(QObject):
                 edge = not previous and bool(state & 0x8001)
                 self._down[action] = down
                 allowed = action in MANAGEMENT_ACTIONS or game_focus
-                if action == "toggle-panel" and assistant_focus and chord.vk not in MOUSE_SHORTCUT_VKS:
+                if action == "toggle-panel" and assistant_focus and chord.vk not in NATIVE_ONLY_SHORTCUT_KEYS:
                     allowed = False  # Application-local shortcut owns this edge.
                 if action not in MANAGEMENT_ACTIONS and game_rearm:
                     allowed = False  # Held keys cannot fire on game focus return.
@@ -437,9 +486,75 @@ class NativeShortcutBackend(QObject):
     def shutdown(self):
         self.disable()
         self._management_enabled = False
+        self._management_requested = False
         self._closed = True
         self._hwnd = 0
         self.setGamePointerContextProvider(None)
         if self._source is not None:
             self._source.stop()
         self.changed.emit()
+
+    def _cancel_modifier_taps(self):
+        self._modifier_presses.clear()
+        cancel = getattr(self._source, "cancel_modifier_taps", None)
+        if callable(cancel):
+            cancel()
+
+    @Slot()
+    def suspendGameBinding(self):
+        """Uncertain identity/geometry pauses input without revoking user intent."""
+        if self._closed or self._binding_suspended:
+            return
+        self._binding_suspended = True
+        self._stop("suspended", "Game window verification is temporarily unavailable.")
+
+    @Slot()
+    def resumeGameBinding(self):
+        """Only the owner can confirm the same binding; explicit disable wins."""
+        if self._closed or not self._binding_suspended:
+            return
+        self._game_events_after = time.monotonic()
+        self._binding_suspended = False
+        self._publish_listener_state()
+
+    def _observer_ready(self):
+        return self._source is None or (self._source.running
+            and bool(getattr(self._source, "installed", True)))
+
+    def _publish_listener_state(self):
+        ready = self._observer_ready()
+        game_valid = False
+        if self._game_requested and self._hwnd and not self._binding_suspended:
+            try:
+                game_valid = self._native.is_window(self._hwnd)
+            except Exception:
+                pass
+        self._enabled = bool(ready and self._game_requested and game_valid)
+        self._management_enabled = bool(ready and self._management_requested)
+        update = getattr(self._source, "update_pointer_target", None)
+        if callable(update):
+            update(self._hwnd if self._enabled else 0)
+        if self._binding_suspended:
+            self._status, self._message = "suspended", "Game window verification is temporarily unavailable."
+        elif self._enabled or self._management_enabled:
+            self._status, self._message = "ready", "Pass-through native observer enabled; input permission is unknown."
+        elif self._source is not None and self._source.running:
+            self._status, self._message = "starting", "Native keyboard observer is starting."
+        self.changed.emit()
+
+    @Slot(result=bool)
+    def recoverListening(self):
+        """Reconcile requested listening on the owner's bounded discovery tick.
+
+        No new input intent is granted. Game disable/unbind, invalid bindings
+        and shutdown revoke their intent; management may survive a lost game.
+        This checks thread/installation state, never polls keyboard levels.
+        """
+        if (self._closed or self._source is None or not self._bindings
+                or not (self._management_requested or self._game_requested)):
+            return False
+        if self._source.running:
+            return self._observer_ready()
+        accepted = bool(self._source.start())
+        self._publish_listener_state()
+        return accepted

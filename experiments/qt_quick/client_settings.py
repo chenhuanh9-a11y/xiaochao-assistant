@@ -14,14 +14,16 @@ from pathlib import Path
 import sys
 import tempfile
 
-from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, Qt, Signal, Slot
+from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, QEvent, Qt, Signal, Slot
+from PySide6.QtGui import QGuiApplication, QKeyEvent
 
 from client_paths import RESOURCE_ROOT as ROOT, WORK_ROOT, runtime_paths
 if str(ROOT / "app") not in sys.path:
     sys.path.insert(0, str(ROOT / "app"))
 from client_control_layout import load_layout, preset_layout, validate_layout
+from floor_control_region import normalized_region
 from hotkey_bindings import parse_chord, validate_unique
-from hotkey_keys import _primary_hotkey_to_vk
+from hotkey_keys import _primary_hotkey_to_vk, recorded_native_primary, NATIVE_ONLY_SHORTCUT_KEYS
 from opacity_controls import load_opacities
 
 ACTION_ORDER = ("toggle-panel", "candidate-prev", "candidate-next", "confirm-round",
@@ -38,7 +40,9 @@ DEFAULTS = {**BOOL_DEFAULTS, "sheetOpacity": .55, "referenceOpacity": .55,
             "routeProfileId": "wang-qingxin", "modeRouteProfiles": {},
             "zhan10CoffinVariantId": "variant-01", "hotkey": "G",
             "actionHotkeys": FRESH_ACTIONS, "gameControlLayout": preset_layout(),
-            "sheetPosition": None, "sheetPositionSpace": "unknown", "compactPosition": None}
+            "sheetPosition": None, "sheetPositionSpace": "unknown", "compactPosition": None,
+            "floorControlMode": "auto", "floorControlRegion": None}
+FLOOR_CONTROL_MODES = ("auto", "region", "fixed")
 
 
 def _validate(key, value):
@@ -72,6 +76,11 @@ def _validate(key, value):
     elif key == "sheetPositionSpace":
         if value not in ("unknown", "qt-logical-v1", "legacy-physical-v1"):
             raise ValueError("位置坐标类型无效")
+    elif key == "floorControlMode":
+        if value not in FLOOR_CONTROL_MODES:
+            raise ValueError("楼层识别方式只能为自动、框选或固定")
+    elif key == "floorControlRegion":
+        value = _validate_floor_region(value)
     elif key == "hotkey":
         if not isinstance(value, str):
             raise ValueError("快捷键需要文本")
@@ -83,16 +92,42 @@ def _validate(key, value):
     return deepcopy(value)
 
 
-def _validate_hotkeys(values):
+def _validate_floor_region(value):
+    """None, or the framed floor-button range normalized to the client it was drawn on."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {"rect", "clientSize"}:
+        raise ValueError("楼层框选范围需要 rect 和 clientSize")
+    rect = normalized_region(value["rect"])
+    size = value["clientSize"]
+    if rect is None:
+        raise ValueError("楼层框选范围需要在游戏窗口内")
+    if (not isinstance(size, list) or len(size) != 2
+            or any(type(v) is not int or not 100 <= v <= 32768 for v in size)):
+        raise ValueError("楼层框选的窗口尺寸无效")
+    return dict(rect=list(rect), clientSize=list(size))
+
+
+def _validate_hotkeys(values, raw_actions=None):
+    # Tk appended a tenth action; Qt must reserve its chord without exposing or
+    # registering an unsupported action. Invalid tails remain on disk, but must
+    # not be silently overwritten or bypassed by a shortcut edit.
+    extra = {}
+    if isinstance(raw_actions, list) and len(raw_actions) == 10:
+        tail = raw_actions[9]
+        if not isinstance(tail, str):
+            raise ValueError("未迁移的第 10 项快捷键需要文本；请先修复原配置")
+        extra["未迁移的第 10 项"] = parse_chord(tail, _primary_hotkey_to_vk)
     validate_unique({"地图键": parse_chord(values["hotkey"], _primary_hotkey_to_vk),
                      **{key: parse_chord(text, _primary_hotkey_to_vk)
-                        for key, text in zip(ACTION_ORDER, values["actionHotkeys"])}})
+                        for key, text in zip(ACTION_ORDER, values["actionHotkeys"])}, **extra})
 
 
 def _legacy_actions(value, map_name):
-    """Read legacy 6/7/8-slot arrays; preserve them on disk until edited."""
-    if not isinstance(value, list) or len(value) not in (6, 7, 8, 9):
+    """Project legacy arrays onto Qt slots; the appended Tk action stays opaque."""
+    if not isinstance(value, list) or len(value) not in (6, 7, 8, 9, 10):
         return _validate("actionHotkeys", value)
+    value = value[:len(ACTION_ORDER)]
     if not all(isinstance(item, str) for item in value):
         raise ValueError("功能快捷键需要文本")
     names = [parse_chord(item, _primary_hotkey_to_vk).name for item in value]
@@ -145,6 +180,7 @@ class SettingsService(QObject):
         self._disk_bytes = None
         self._baseline = deepcopy(DEFAULTS)
         self._draft = deepcopy(DEFAULTS)
+        self._shortcut_native_event = None
         self._shortcut_target = ""
         self._shortcut_candidate = ""
         self._shortcut_ready = False
@@ -157,6 +193,15 @@ class SettingsService(QObject):
         self._route_runtime = None
         self._mode_change_guard = lambda: True
         self.reload()
+
+    def _application_panel_shortcut(self):
+        try:
+            chord = parse_chord(self._baseline["actionHotkeys"][0], _primary_hotkey_to_vk)
+            return "" if chord.vk in NATIVE_ONLY_SHORTCUT_KEYS else chord.name
+        except (ValueError, IndexError):
+            return ""
+
+    applicationPanelShortcut = Property(str, _application_panel_shortcut, notify=changed)
 
     values = Property("QVariantMap", lambda s: deepcopy(s._draft), notify=changed)
     persistedValues = Property("QVariantMap", lambda s: deepcopy(s._baseline), notify=changed)
@@ -261,6 +306,10 @@ class SettingsService(QObject):
         self._shortcut_ready = False
         self._shortcut_primary_seen = False
         self._shortcut_message = "请按一个主键，可同时按 Ctrl、Alt、Shift；Esc 取消"
+        self._shortcut_native_event = None
+        app = QGuiApplication.instance()
+        if app is not None and not was_recording:
+            app.installEventFilter(self)
         if not was_recording:
             self.shortcutRecordingChanged.emit(True)
         self.changed.emit()
@@ -279,7 +328,7 @@ class SettingsService(QObject):
         try:
             self._shortcut_candidate = self._candidate_from_primary(primary, modifiers)
             self._shortcut_ready = True
-            self._shortcut_message = "请确认录入；确认后仍需保存快捷键"
+            self._shortcut_message = "点击保存并生效即可保存此快捷键"
             self.changed.emit()
             return True
         except ValueError as error:
@@ -289,11 +338,25 @@ class SettingsService(QObject):
             self.changed.emit()
             return False
 
+    def eventFilter(self, watched, event):
+        # Only the focused, owned recorder's Qt events. No global hook, polling
+        # or saved text. QML KeyEvent omits nativeVirtualKey, so bridge it once
+        # to the synchronous capture slot without interpreting the typed glyph.
+        if self.shortcutRecording and isinstance(event, QKeyEvent) and event.type() in (QEvent.KeyPress, QEvent.KeyRelease):
+            app = QGuiApplication.instance()
+            focus = app.focusObject() if app is not None else None
+            if focus is not None and focus.objectName() in ("shortcutCaptureArea", "onboardingRecorder"):
+                self._shortcut_native_event = (event.key(), event.modifiers().value, event.text(),
+                    event.type() == QEvent.KeyRelease, event.nativeVirtualKey())
+        return False
+
     @Slot(int, int, str, bool, result=bool)
     def captureShortcutKey(self, key, modifiers, text, released):
         """Consume an owned Qt key event only; no global polling or registration."""
         if not self.shortcutRecording:
             return False
+        native_event, self._shortcut_native_event = self._shortcut_native_event, None
+        native_vk = native_event[4] if native_event and native_event[:4] == (key, modifiers, text, released) else 0
         if key == Qt.Key_Escape:
             self.cancelShortcutCapture()
             return False
@@ -301,6 +364,12 @@ class SettingsService(QObject):
         if key in modifier_names:
             if released and not self._shortcut_primary_seen:
                 remaining = modifiers & (Qt.ControlModifier.value | Qt.AltModifier.value | Qt.ShiftModifier.value)
+                # Qt may include the released modifier itself in KeyEvent.
+                # Only OTHER held modifiers make this an incomplete chord.
+                own = {Qt.Key_Control: Qt.ControlModifier.value,
+                       Qt.Key_Alt: Qt.AltModifier.value,
+                       Qt.Key_Shift: Qt.ShiftModifier.value}[key]
+                remaining &= ~own
                 if remaining:
                     self._shortcut_primary_seen = True
                     self._shortcut_ready = False
@@ -323,13 +392,16 @@ class SettingsService(QObject):
                  Qt.Key_VolumeUp: "VOLUME_UP", Qt.Key_MediaNext: "MEDIA_NEXT",
                  Qt.Key_MediaPrevious: "MEDIA_PREV", Qt.Key_MediaStop: "MEDIA_STOP",
                  Qt.Key_MediaPlay: "MEDIA_PLAY_PAUSE", Qt.Key_MediaTogglePlayPause: "MEDIA_PLAY_PAUSE"}
-        if Qt.Key_F1 <= key <= Qt.Key_F24:
+        native_primary = recorded_native_primary(native_vk)
+        if native_primary:
+            primary = native_primary
+        elif Qt.Key_F1 <= key <= Qt.Key_F24:
             primary = f"F{key - Qt.Key_F1 + 1}"
         elif Qt.Key_A <= key <= Qt.Key_Z or Qt.Key_0 <= key <= Qt.Key_9:
             primary = chr(key)
         else:
-            primary = named.get(key, text)
-        if modifiers & Qt.KeypadModifier.value:
+            primary = named.get(key, text if modifiers & Qt.KeypadModifier.value else "")
+        if modifiers & Qt.KeypadModifier.value and not native_primary:
             primary = ("NUMPAD" + primary if primary.isdigit() and len(primary) == 1
                        else {"*": "NUM*", "+": "NUM+", "-": "NUM-", ".": "NUM.", "/": "NUM/"}.get(primary, primary))
         return self._offer_shortcut(primary, modifiers)
@@ -350,22 +422,27 @@ class SettingsService(QObject):
         if not self.shortcutRecording:
             return False
         self._shortcut_candidate, self._shortcut_ready = "", True
-        self._shortcut_message = "确认后将解绑此快捷键；仍需保存快捷键"
+        self._shortcut_message = "点击保存并生效即可解绑此快捷键"
         self.changed.emit()
         return True
 
     @Slot(result=bool)
     def confirmShortcutCapture(self):
-        if not self.shortcutRecording or not self._shortcut_ready:
+        if self._busy or not self.shortcutRecording or not self._shortcut_ready:
             return False
-        if self._shortcut_target == "hotkey":
-            accepted = self.setValue("hotkey", self._shortcut_candidate)
+        target = self._shortcut_target
+        candidate = self._shortcut_candidate
+        key = "hotkey" if target == "hotkey" else "actionHotkeys"
+        value = deepcopy(self._baseline[key])
+        index = None if target == "hotkey" else ACTION_ORDER.index(target)
+        if index is None:
+            value = candidate
         else:
-            keys = deepcopy(self._draft["actionHotkeys"])
-            keys[ACTION_ORDER.index(self._shortcut_target)] = self._shortcut_candidate
-            accepted = self.setValue("actionHotkeys", keys)
+            value[index] = candidate
+        original_draft = deepcopy(self._draft[key] if index is None else self._draft[key][index])
+        accepted = self._save_fields([key], {key: value})
         if accepted:
-            self.cancelShortcutCapture()
+            self._capture_commit = (key, index, candidate, original_draft)
         else:
             self._shortcut_message = self._message
             self.changed.emit()
@@ -375,6 +452,10 @@ class SettingsService(QObject):
     def cancelShortcutCapture(self):
         if not self.shortcutRecording:
             return
+        self._shortcut_native_event = None
+        app = QGuiApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
         self._shortcut_target = ""
         self._shortcut_candidate = ""
         self._shortcut_ready = False
@@ -409,7 +490,7 @@ class SettingsService(QObject):
                 return False
             proposal = {**self._draft, key: value}
             if key in ("hotkey", "actionHotkeys"):
-                _validate_hotkeys(proposal)
+                _validate_hotkeys(proposal, self._raw.get("actionHotkeys"))
             if self._draft.get(key) == value and key not in self._invalid:
                 return True
             self._draft[key] = value
@@ -454,7 +535,7 @@ class SettingsService(QObject):
                 except (TypeError, ValueError) as error:
                     invalid[key] = str(error)
         try:
-            _validate_hotkeys(values)
+            _validate_hotkeys(values, raw.get("actionHotkeys"))
         except ValueError as error:
             invalid["hotkey/actionHotkeys"] = str(error)
         # Legacy reference opacity falls back to the stored sheet opacity.
@@ -531,7 +612,7 @@ class SettingsService(QObject):
             return False
         return self._save_fields(keys)
 
-    def _save_fields(self, keys):
+    def _save_fields(self, keys, explicit_edits=None):
         if self._busy:
             return False
         if self._read_error:
@@ -540,6 +621,8 @@ class SettingsService(QObject):
             return False
         edits = {k: deepcopy(self._draft[k]) for k in keys
                  if self._draft[k] != self._baseline[k] or k in self._repairs}
+        if explicit_edits is not None:
+            edits = deepcopy(explicit_edits)
         if not edits:
             self._message = "没有需要保存的更改"
             self.changed.emit()
@@ -549,12 +632,25 @@ class SettingsService(QObject):
         snapshot = {**deepcopy(self._baseline), **deepcopy(edits)}
         if set(edits) & {"hotkey", "actionHotkeys"}:
             try:
-                _validate_hotkeys(snapshot)
+                _validate_hotkeys(snapshot, self._raw.get("actionHotkeys"))
             except ValueError as error:
                 self._message = f"快捷键不能单独保存：{error}"
                 self.changed.emit()
                 return False
         payload = {**deepcopy(self._raw), **edits}
+        if self._disk_bytes is None:
+            # A new file otherwise looks like a legacy install on restart and
+            # replaces untouched fresh shortcuts with LEGACY_ACTIONS.
+            payload.setdefault("actionHotkeys", deepcopy(snapshot["actionHotkeys"]))
+        if "actionHotkeys" in edits:
+            stored = self._raw.get("actionHotkeys")
+            if isinstance(stored, list) and len(stored) in (9, 10):
+                # Keep untouched source spellings and unknown slots verbatim.
+                merged = deepcopy(stored)
+                for index, name in enumerate(edits["actionHotkeys"]):
+                    if "actionHotkeys" in self._invalid or name != self._baseline["actionHotkeys"][index]:
+                        merged[index] = name
+                payload["actionHotkeys"] = merged
         expected = self._disk_bytes
         self._busy = True
         self._message = "正在保存设置…"
@@ -572,12 +668,24 @@ class SettingsService(QObject):
         snapshot, payload, saved_keys = self._saving
         self._busy = False
         self._job = None
+        capture_commit = getattr(self, "_capture_commit", None)
+        self._capture_commit = None
         if error:
             self._write_error = f"保存失败：{error}；草稿已保留。"
             self._message = self._write_error
+            if capture_commit and self.shortcutRecording:
+                self._shortcut_message = self._write_error
         else:
             self._raw, self._disk_bytes = payload, data
             self._baseline = snapshot
+            if capture_commit:
+                key, index, candidate, original_draft = capture_commit
+                if index is None:
+                    if self._draft[key] == original_draft:
+                        self._draft[key] = candidate
+                elif self._draft[key][index] == original_draft:
+                    self._draft[key][index] = candidate
+                self.cancelShortcutCapture()
             self._invalid = {k: v for k, v in self._invalid.items() if k not in saved_keys}
             self._repairs.difference_update(saved_keys)
             self._write_error = ""
@@ -588,4 +696,5 @@ class SettingsService(QObject):
 
     def shutdown(self):
         """Finish an already accepted write before application teardown."""
+        self.cancelShortcutCapture()
         self.pool.waitForDone()
