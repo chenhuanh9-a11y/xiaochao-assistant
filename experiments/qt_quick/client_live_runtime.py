@@ -1551,7 +1551,7 @@ class LiveRuntime:
                 capture_state = capture_state()
             metadata = ({key: copy.deepcopy(value) for key, value in self._render.items()
                          if key not in ("pixels",)} if self._render is not None else {})
-            return dict(**self._context(), cycleId=self._cycle, mapId=self._durable_map_id, floor=self._floor,
+            return dict(**self._context(), epoch=self._epoch, cycleId=self._cycle, mapId=self._durable_map_id, floor=self._floor,
                 generation=self._frame_generation, preferredProfileId=self._profile,
                 effectiveProfileId=metadata.get("effectiveProfileId", ""),
                 displayFallback=metadata.get("fallback", False), fallbackReason=metadata.get("fallbackReason", ""),
@@ -1635,7 +1635,16 @@ class LiveRuntime:
                     self._capture.disable()
             self._message = str(reason)
             self._publish_game_pointer_context_locked()
-        self._notify("render-revoked", reason=str(reason), token=previous_token)
+            # Only an actual map-close decision reconciles the physical key
+            # toggle. Pure display/focus/resource invalidations are not closes.
+            # Build/emit while holding this lifetime lock so a newer request
+            # cannot lend its sequence or context to an older close decision.
+            capture = getattr(self._capture, "snapshot", {})
+            capture = capture() if callable(capture) else capture
+            self._notify("render-revoked", reason=str(reason), token=previous_token,
+                mapClosed=reason in ("map-closed", "escape", "floor-unknown"),
+                inputSequence=self._last_map_input_sequence,
+                inputWindow=str(capture.get("hwnd", "")))
 
     def set_event_callback(self, callback):
         """Install a thread-safe emitter only; it must queue work to Qt's owner."""
