@@ -231,7 +231,7 @@ class ProblemsService(QObject):
         row['problemGroupId'] = group
         self._sequence += 1
         row.update(self.identity.stamp())
-        row.update(id=str(self._sequence), occurrenceId=self.log_path.stem + ':' + str(self._sequence),
+        row.update(id=str(self._sequence), occurrenceId=self.log_path.stem + ':' + row['sessionId'] + ':' + str(row['pid']) + ':' + str(row['seq']),
                    timestampUTC=utc, lastTimestampUTC=utc,
                    localTime=now.astimezone().strftime('%Y-%m-%d %H:%M:%S %Z'), count=1,
                    _signature=signature, _checkpoint_count=1)

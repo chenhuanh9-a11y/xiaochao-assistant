@@ -37,7 +37,7 @@ class WindowsRingTests(unittest.TestCase):
  def test_recycle_holds_exclusive_handle_and_failed_write_is_unconfirmed(self):
   with tempfile.TemporaryDirectory() as d:
    path=storage.slot_path(Path(d)/'events-any.jsonl','problem')
-   row=dict(event='capture-error',sessionId='a'*32,pid=1,logStream=path.name,seq=1)
+   row=dict(event='capture-error',sessionId='a'*32,pid=1,logStream=path.name,seq=1,actual=list(range(12)))
    storage.append_record(path,row,file_limit=256);storage.append_record(path,dict(row,seq=2),file_limit=256)
    inode=path.stat().st_ino;original=storage.os.ftruncate;checked=[]
    def truncate(fd,size):
@@ -76,6 +76,27 @@ for i in range(4):append_record(p,{'event':'capture-error','actual':int(sys.argv
    self.assertGreaterEqual(len({r['sessionId'] for r in rows}),2)
    self.assertTrue(all(len(r['sessionId'])==32 and r['pid']>0 and r['seq']>0 for r in rows))
    self.assertLessEqual(sum(p.stat().st_size for p in files),2048)
+
+ def test_real_qt_restart_history_keeps_distinct_process_occurrences(self):
+  import subprocess,sys
+  from client_problem_history import summarize_problem_history
+  code="""import sys,time
+from pathlib import Path
+from types import SimpleNamespace
+from PySide6.QtCore import QCoreApplication
+from client_problems import ProblemsService
+app=QCoreApplication([]);s=ProblemsService(SimpleNamespace(work_root=Path(sys.argv[1])))
+s.record({'kind':'error','title':'synthetic'});s.shutdown()
+end=time.monotonic()+10
+while s.pendingWrites and time.monotonic()<end:app.processEvents();time.sleep(.002)
+assert not s.pendingWrites and not s.writeError
+"""
+  with tempfile.TemporaryDirectory() as d:
+   for _ in range(2):subprocess.run([sys.executable,'-c',code,d],check=True,capture_output=True)
+   result=summarize_problem_history(Path(d)/'nightmare-live')['recentProblems']
+   self.assertEqual(len(result),2)
+   self.assertEqual(len({r['occurrenceId'] for r in result}),2)
+   self.assertEqual(len({r['sessionId'] for r in result}),2)
 
  def test_stream_and_watchdog_slots_are_disjoint(self):
   with tempfile.TemporaryDirectory() as d:

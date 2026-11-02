@@ -49,6 +49,14 @@ class DiagnosticSessionAssociationTests(unittest.TestCase):
             self.assertEqual(report['cases'], [])
             self.assertEqual(archive.namelist(), [])
 
+    def test_missing_path_legacy_never_falls_back_to_reused_ring(self):
+        moment=datetime.fromisoformat(self.stamp).timestamp();span=(moment-60,moment+60)
+        for ring in ('events-qt-ring.jsonl','events-qt-ring-previous.jsonl','events-tk-ring.jsonl'):
+            self.assert_excluded(dict(buildFingerprint='SYNTHETIC'),windows={ring:span},
+                session_windows={('b'*32,456,ring):span})
+        report,archive=self.export(dict(buildFingerprint='SYNTHETIC'),windows={'events-legacy.jsonl':span})
+        with archive:self.assertEqual(report['imageCount'],1)
+
     def test_fixed_slot_requires_actual_session_and_uses_correct_backup(self):
         ring='events-qt-ring.jsonl';previous='events-qt-ring-previous.jsonl'
         moment=datetime.fromisoformat(self.stamp).timestamp();span=(moment-60,moment+60)

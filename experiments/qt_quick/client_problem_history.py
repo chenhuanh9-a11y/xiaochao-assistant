@@ -113,6 +113,8 @@ def _merge(rows, current, limit):
             [row.get('id'), row['timestampUTC'], signature], sort_keys=True)
         if not isinstance(identity, str):
             continue
+        if isinstance(row.get('sessionId'),str) and len(row['sessionId'])==32 and type(row.get('pid')) is int:
+            identity=(row['sessionId'],row['pid'],identity)
         count = row.get('count', 1)
         count = min(_MAX_COUNT, count) if type(count) is int and count > 0 else 1
         previous = occurrences.get(identity)

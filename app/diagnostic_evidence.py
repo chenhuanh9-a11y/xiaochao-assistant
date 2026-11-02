@@ -176,7 +176,8 @@ def export_failure_evidence(archive, roots, log_windows, redact, *, build_finger
                     if diagnostic.get('buildFingerprint') != build_fingerprint:
                         continue
                     source_log = next((name for name, span in log_windows.items()
-                                       if span and span[0] <= captured <= span[1]), '')
+                                       if span and not re.search(r'-ring(?:-previous)?\.(?:jsonl|log)$',name)
+                                       and span[0] <= captured <= span[1]), '')
                     window = log_windows.get(source_log)
                 if not window or not window[0] <= captured <= window[1]:
                     continue

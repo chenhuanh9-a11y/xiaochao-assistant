@@ -21,7 +21,10 @@ without an envelope receive the current process envelope, never an invented old
 session. Export manifest sessions are derived from retained rows. Failure-image
 metadata now carries the real session scope; fixed-slot matching requires that
 scope and its retained time window, including the other slot, not the filename
-alone. Image opt-in, admission, bounds and pixels are unchanged.
+alone. Missing-path legacy evidence may fall back only to legacy logs, never
+any reused ring. New problem occurrence IDs include session/pid/stream sequence;
+history also scopes older occurrence strings by session/pid before deduplication.
+Image opt-in, admission, bounds and pixels are unchanged.
 
 Tests use temporary synthetic data only: 100 synthetic sessions, 40 actual child
 process restarts, both fixed-slot byte caps, changed files, denied second write

@@ -16,6 +16,16 @@ def row(count=1, occurrence='run:1', **extra):
 
 
 class HistoryTests(unittest.TestCase):
+    def test_fixed_slot_legacy_occurrences_do_not_deduplicate_distinct_sessions(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder=str(Path(folder).resolve())
+            records=[row(2,'events-qt-ring:1',sessionId='a'*32,pid=123,problemGroupId='c'*32),
+                     row(3,'events-qt-ring:1',sessionId='b'*32,pid=456,problemGroupId='d'*32)]
+            (Path(folder)/'events-qt-ring.jsonl').write_text('\n'.join(map(json.dumps,records)))
+            result=summarize_problem_history(folder)['recentProblems']
+            self.assertEqual(len(result),2)
+            self.assertEqual(sum(r['count'] for r in result),5)
+
     def test_overlap_checkpoint_copies_current_use_max_then_sum_distinct_occurrences(self):
         with tempfile.TemporaryDirectory() as folder:
             folder = str(Path(folder).resolve())  # Windows temp may use an 8.3 alias.
