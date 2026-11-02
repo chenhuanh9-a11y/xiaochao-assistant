@@ -52,7 +52,12 @@ jobs:
           }
           $failed = @()
           foreach ($module in $modules) {
-            python -B -X utf8 -m unittest -v $module
+            if ($module -eq 'test_runtime_environment_diagnostics') {
+              # This module owns its FunctionTestCase runner; unittest discovery finds zero tests.
+              python -B -X utf8 tests/test_runtime_environment_diagnostics.py
+            } else {
+              python -B -X utf8 -m unittest -v $module
+            }
             if ($LASTEXITCODE -ne 0) { $failed += $module }
           }
           if ($failed.Count -gt 0) {
