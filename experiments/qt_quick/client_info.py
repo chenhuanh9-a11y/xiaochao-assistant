@@ -49,6 +49,8 @@ class ClientInfoService(QObject):
             pass
         self._package_metadata = dict(diagnostic_package_metadata(self.paths.installation_root,
             app_version=self._app_version, build_fingerprint=self._build_fingerprint), **self._package_metadata)
+        from runtime_environment_diagnostics import source_revision
+        self._source_revision = source_revision(ROOT)
         self._include_failure_evidence = False
         self._include_automatic_failure_evidence = False
         self._automatic_sampling_pending = None
@@ -249,7 +251,7 @@ class ClientInfoService(QObject):
         if callable(configure) and problems is not None:
             configure(event_path=str(getattr(problems, 'log_path', '') or ''),
                 build_fingerprint=self._build_fingerprint,
-                source_commit=self._package_metadata.get('qtSourceCommit') or '')
+                source_commit=self._package_metadata.get('qtSourceCommit') or self._package_metadata.get('releaseReportSourceCommit') or self._source_revision.get('commit') or '')
         self._set_failure_sampling(self._include_failure_evidence)
         settings = providers.get('settings')
         if settings is not None and hasattr(settings, 'changed'):
@@ -535,7 +537,7 @@ class ClientInfoService(QObject):
             bound_identity=bound_identity)
         recent = deepcopy(report.get('recentProblems', []))
         log_dir = self.paths.work_root / 'nightmare-live'
-        package_metadata = dict(self._package_metadata)
+        package_metadata = dict(self._package_metadata, sourceCheckout=self._source_revision)
         self._diagnostics = {}
         def save():
             from failure_sampling import cleanup_automatic_failure_samples

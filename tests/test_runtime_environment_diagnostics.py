@@ -41,6 +41,52 @@ def test_no_binding_never_discovers_processes():
     assert native.calls == [None]
     assert result['boundWindow']['reason'] == 'bound HWND/PID not supplied'
 
+# Exercise production Win32 structure/API marshalling with a fake API only.
+def test_native_geometry_has_client_and_monitor_without_names_or_mode_guess():
+    import ctypes
+    from ctypes import wintypes as w
+    from runtime_environment_diagnostics import WindowsDiagnostics
+    class Api:
+        def GetWindowRect(self, hwnd, pointer):
+            r = pointer._obj; r.left, r.top, r.right, r.bottom = 90, 180, 1390, 930
+            return 1
+        def GetClientRect(self, hwnd, pointer):
+            r = pointer._obj; r.left, r.top, r.right, r.bottom = 0, 0, 1280, 720
+            return 1
+        def ClientToScreen(self, hwnd, pointer):
+            pointer._obj.x, pointer._obj.y = 100, 200
+            return 1
+        def MonitorFromWindow(self, hwnd, flags):
+            assert flags == 0
+            return 7
+        def GetMonitorInfoW(self, monitor, pointer):
+            m = pointer._obj
+            m.rcMonitor.left, m.rcMonitor.top, m.rcMonitor.right, m.rcMonitor.bottom = 0, 0, 1920, 1080
+            m.rcWork.left, m.rcWork.top, m.rcWork.right, m.rcWork.bottom = 0, 0, 1920, 1040
+            m.dwFlags = 1
+            return 1
+        def IsZoomed(self, hwnd): return 0
+        def IsIconic(self, hwnd): return 0
+    native = WindowsDiagnostics.__new__(WindowsDiagnostics)
+    native.user, native.w = Api(), w
+    row = native.window(9)
+    assert row['clientArea'] == dict(status='available', size=[1280, 720], screenBounds=[100,200,1380,920])
+    assert row['monitor']['resolution'] == [1920, 1080]
+    assert row['fullscreenMode']['reason']
+    assert row['dpi']['reason'] == 'GetDpiForWindow API absent'
+    assert not {'title', 'deviceName', 'username'} & row.keys()
+
+
+def test_source_revision_is_exact_checkout_and_missing_is_explicit():
+    import tempfile
+    from runtime_environment_diagnostics import source_revision
+    import subprocess
+    root = Path(__file__).parents[1]
+    assert source_revision(root)['commit'] == subprocess.check_output(['git','rev-parse','HEAD'], cwd=root, text=True).strip()
+    with tempfile.TemporaryDirectory() as folder:
+        assert source_revision(folder)['reason'] == 'source checkout metadata absent'
+
+
 if __name__ == '__main__':
     import unittest
     suite = unittest.TestSuite(unittest.FunctionTestCase(fn) for name, fn in list(globals().items())

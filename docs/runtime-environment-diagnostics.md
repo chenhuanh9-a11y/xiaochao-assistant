@@ -29,3 +29,18 @@ borderless fullscreen is unavailable because geometry cannot establish it.
 Validation uses synthetic native refusal/stale binding/non-Windows paths and
 synthetic capture pixels. A current-process token smoke query can validate the
 native API locally; it does not establish live Qt/game acceptance.
+
+Bound-window diagnostics also query `GetClientRect` / `ClientToScreen` for current
+client pixels and screen bounds, and `MonitorFromWindow(hwnd, 0)` /
+`GetMonitorInfoW(MONITORINFO)` for the intersecting display's geometry and work
+area. Device names, titles, account names and other applications are not queried.
+Client and monitor failures are separate unavailable values, so a partial native
+read does not erase the successful fields. Geometry is evidence only and does not
+change capture authorization, coordinate conversion or fullscreen classification.
+Reference: [GetClientRect](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getclientrect),
+[GetMonitorInfoW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getmonitorinfow).
+
+Source runs report this checkout's HEAD, labelled `checkout-head-unbuilt` with
+working tree verification not performed. Packaged runs continue to use their
+existing installation/release metadata. Missing git metadata stays unavailable;
+no commit is synthesized. Exported Qt summaries retain the observed Qt version.

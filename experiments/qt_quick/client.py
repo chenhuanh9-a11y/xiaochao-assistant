@@ -163,7 +163,7 @@ class QtClient:
             self._read_recovery_receipt()
         self.info = ClientInfoService(self.sandbox, fetch=info_fetch)
         self.problems = ProblemsService(self.paths, build_fingerprint=self.info._build_fingerprint,
-            source_commit=self.info._package_metadata.get('qtSourceCommit') or self.info._package_metadata.get('releaseReportSourceCommit') or '')
+            source_commit=self.info._package_metadata.get('qtSourceCommit') or self.info._package_metadata.get('releaseReportSourceCommit') or self.info._source_revision.get('commit') or '')
         if self.lifecycle_trace is not None:
             self.lifecycle_trace.record("startup", buildFingerprint=self.info._build_fingerprint,
                 sourceCommit=self.problems._source_commit)

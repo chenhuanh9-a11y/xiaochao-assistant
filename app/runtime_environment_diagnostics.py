@@ -55,6 +55,11 @@ class WindowsDiagnostics:
         self.advapi.GetSidSubAuthority.restype = ctypes.POINTER(w.DWORD)
         self.user.GetWindowThreadProcessId.argtypes = [w.HWND, ctypes.POINTER(w.DWORD)]
         self.user.GetWindowRect.argtypes = [w.HWND, ctypes.POINTER(w.RECT)]
+        self.user.GetClientRect.argtypes = [w.HWND, ctypes.POINTER(w.RECT)]
+        self.user.ClientToScreen.argtypes = [w.HWND, ctypes.POINTER(w.POINT)]
+        self.user.MonitorFromWindow.argtypes = [w.HWND, w.DWORD]
+        self.user.MonitorFromWindow.restype = w.HANDLE
+        self.user.GetMonitorInfoW.argtypes = [w.HANDLE, ctypes.c_void_p]
         self.user.IsZoomed.argtypes = [w.HWND]
         self.user.IsIconic.argtypes = [w.HWND]
 
@@ -98,6 +103,31 @@ class WindowsDiagnostics:
             if pid is not None:
                 self.kernel.CloseHandle(process)
 
+    def client(self, hwnd):
+        rect, origin = self.w.RECT(), self.w.POINT(0, 0)
+        self._check(self.user.GetClientRect(hwnd, ctypes.byref(rect)), 'GetClientRect')
+        self._check(self.user.ClientToScreen(hwnd, ctypes.byref(origin)), 'ClientToScreen')
+        width, height = rect.right - rect.left, rect.bottom - rect.top
+        return dict(status='available', size=[width, height],
+                    screenBounds=[origin.x, origin.y, origin.x + width, origin.y + height])
+
+    def monitor(self, hwnd):
+        # MONITORINFO deliberately excludes MONITORINFOEX's device name.
+        class MonitorInfo(ctypes.Structure):
+            _fields_ = [('cbSize', self.w.DWORD), ('rcMonitor', self.w.RECT),
+                        ('rcWork', self.w.RECT), ('dwFlags', self.w.DWORD)]
+        monitor = self.user.MonitorFromWindow(hwnd, 0)  # No nearest-monitor guess.
+        if not monitor:
+            return unavailable('MonitorFromWindow returned no intersecting monitor')
+        info = MonitorInfo()
+        info.cbSize = ctypes.sizeof(info)
+        self._check(self.user.GetMonitorInfoW(monitor, ctypes.byref(info)), 'GetMonitorInfoW')
+        bounds = lambda r: [r.left, r.top, r.right, r.bottom]
+        return dict(status='available', bounds=bounds(info.rcMonitor),
+                    workBounds=bounds(info.rcWork), primary=bool(info.dwFlags & 1),
+                    resolution=[info.rcMonitor.right-info.rcMonitor.left,
+                                info.rcMonitor.bottom-info.rcMonitor.top])
+
     def window(self, hwnd):
         rect = self.w.RECT()
         self._check(self.user.GetWindowRect(hwnd, ctypes.byref(rect)), "GetWindowRect")
@@ -105,6 +135,8 @@ class WindowsDiagnostics:
                       presentation="minimized" if self.user.IsIconic(hwnd) else
                       "maximized" if self.user.IsZoomed(hwnd) else "normal",
                       fullscreenMode=unavailable("exclusive versus borderless cannot be established by window geometry"))
+        result['clientArea'] = _query(lambda: self.client(hwnd))
+        result['monitor'] = _query(lambda: self.monitor(hwnd))
         dpi = getattr(self.user, "GetDpiForWindow", None)
         if dpi:
             dpi.argtypes = [self.w.HWND]
@@ -172,3 +204,24 @@ def collect_runtime_environment(inputs: RuntimeInputs, *, native=None, platform_
     result["gameProcessIntegrity"] = _query(lambda: native.integrity(pid))
     result["boundWindow"] = _query(lambda: native.window(hwnd))
     return result
+
+
+def source_revision(root):
+    """Read this checkout only, at startup; packaged identity comes from its report."""
+    if getattr(sys, 'frozen', False):
+        return unavailable('packaged source revision requires installation profile')
+    from pathlib import Path
+    import subprocess
+    import re
+    root = Path(root)
+    if not (root / '.git').exists():
+        return unavailable('source checkout metadata absent')
+    try:
+        value = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'],
+            timeout=2, stderr=subprocess.DEVNULL, text=True).strip()
+        if re.fullmatch(r'[0-9a-f]{40}', value):
+            return dict(status='available', commit=value, basis='checkout-head-unbuilt',
+                        workingTreeVerification='not-performed')
+        return unavailable('source commit invalid')
+    except (OSError, subprocess.SubprocessError):
+        return unavailable('source commit query failed')
