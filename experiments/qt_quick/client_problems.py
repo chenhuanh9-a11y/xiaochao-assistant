@@ -112,7 +112,10 @@ def _write_batch(path, rows):
     except Exception as failure:
         raise _BatchFailure(failure, completed) from failure
     finally:
-        handler.close()
+        try:
+            handler.close()
+        except Exception as failure:
+            raise _BatchFailure(failure, completed) from failure
 
 
 class _Signals(QObject):

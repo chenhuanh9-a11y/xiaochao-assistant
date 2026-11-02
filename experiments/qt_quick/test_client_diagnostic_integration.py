@@ -148,7 +148,7 @@ ClientHelp { anchors.fill: parent } }
         self.info.exportDiagnosticsTo(QUrl.fromLocalFile(str(self.fixture.root/'measured.zip')).toString())
         self.fixture.wait(lambda:not self.info.checking)
         with zipfile.ZipFile(self.fixture.root/'measured.zip') as archive:
-            payload=archive.read('logs/'+self.problems.log_path.name)
+            payload=archive.read('logs/'+self.problems.recognition_path.name)
             rows=[json.loads(line) for line in payload.splitlines()]
         row=next(row for row in rows if 'recognitionDiagnostics' in row)
         self.assertEqual(row['recognitionDiagnostics'],measured)

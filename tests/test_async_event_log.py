@@ -66,7 +66,15 @@ class WriterTests(unittest.TestCase):
             writer.emit('good', {})
             self.assertTrue(writer.flush(2))
             self.assertEqual(writer.status()['failed'], 1)
+            loss = writer.status()['diagnosticLoss']
+            self.assertEqual(loss['lostTotal'], 1)
+            self.assertEqual(loss['suppressedTotal'], 0)
+            self.assertEqual(loss['ranges'][0]['reason'], 'write-failed')
+            rows = [json.loads(line) for line in writer.path.read_text().splitlines()]
+            self.assertEqual(rows[0]['seq'], loss['ranges'][0]['lastSeq'] + 1)
+            self.assertEqual(rows[0]['diagnosticLoss']['lostTotal'], 1)
             writer.close()
+            writer.thread.join(1)
 
     def test_nonstring_keys_and_snapshot_failure_are_bounded(self):
         value = snapshot(dict.fromkeys(range(100000)))

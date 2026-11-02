@@ -24,7 +24,7 @@ class DiagnosticBudgetTests(unittest.TestCase):
         self.assertFalse(service.pendingWrites)
 
     def test_sixty_second_recognition_stream_cannot_rotate_problem_records(self):
-        with tempfile.TemporaryDirectory() as folder:
+        with tempfile.TemporaryDirectory() as folder, patch.object(problems, 'LOG_MAX_BYTES', 4096):
             service=problems.ProblemsService(SimpleNamespace(work_root=Path(folder)))
             try:
                 service.record(dict(kind='error',title='retained-problem',raw='important-original'))
@@ -42,7 +42,7 @@ class DiagnosticBudgetTests(unittest.TestCase):
                 self.assertFalse(any('recognitionDiagnostics' in row for row in rows))
                 self.assertLess(service.log_path.stat().st_size,10_000)
                 diagnostic_paths=list(service.log_path.parent.glob('events-qt-recognition-*.jsonl'))
-                self.assertTrue(diagnostic_paths)
+                self.assertEqual(len(diagnostic_paths), 2)  # Exercise actual rotation at a small capacity.
                 self.assertLessEqual(sum(p.stat().st_size for p in diagnostic_paths),2*problems.LOG_MAX_BYTES)
             finally:
                 service.shutdown();self.wait(service)

@@ -142,6 +142,8 @@ class ProblemTests(unittest.TestCase):
         self.assertEqual(recent_notifications,[])
         rows=[json.loads(line) for line in self.service.log_path.read_text('utf-8').splitlines()]
         self.assertEqual(len(rows),3)
+        self.assertEqual(self.service.identity.loss()['lostTotal'], 0)
+        self.assertEqual(self.service.identity.loss()['suppressedTotal'], 100)
         self.assertTrue(all(row['event']=='qt-runtime-transition' for row in rows))
         self.assertEqual(rows[0]['token'],'first');self.assertEqual(rows[0]['generation'],1)
         self.assertEqual(rows[1]['previousRepeatedCount'],101)
