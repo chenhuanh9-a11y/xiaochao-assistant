@@ -407,12 +407,16 @@ class NativeShortcutBackend(QObject):
             assistant = False
         # The picker only consumes fresh bare presses while the game or this
         # assistant is foreground; other apps and modifier chords keep their keys.
-        picker_name = (next((name for name, key in self._picker_keys.items() if key == vk), None)
+        picker_keys = self._picker_keys
+        picker_vks = frozenset(picker_keys.values())
+        picker_name = (next((name for name, key in picker_keys.items() if key == vk), None)
                        if down else None)
         if picker_name is not None and (not (game or assistant)
                                         or any(read(key) & 0x8000 for key in PICKER_MODIFIER_VKS)):
             picker_name = None
         if picker_name is not None:
+            # A receiver may close the picker synchronously (clearing the live
+            # key set), so consumption below uses this pre-emit snapshot.
             self.pickerKeyRequested.emit(picker_name)
         try:
             for action,chord in self._bindings.items():
@@ -438,7 +442,7 @@ class NativeShortcutBackend(QObject):
                 # The open picker owns bare F1-F4/PgUp/PgDn/Backspace; configurable
                 # actions on those primaries must not also fire.
                 if (picker_name is not None and action != "escape"
-                        and not chord.modifiers and chord.vk in self._picker_keys.values()):
+                        and not chord.modifiers and chord.vk in picker_vks):
                     allowed=False
                 if allowed:self._dispatch_action(action, event)
         except Exception as error:
@@ -499,15 +503,16 @@ class NativeShortcutBackend(QObject):
             suppress = self._prime or self._text or self._editing
             game_rearm = game_focus != self._game_focus
             picker_consumed = set()
-            if self._picker_keys:
+            picker_keys = dict(self._picker_keys)
+            if picker_keys:
                 if self._picker_down is None:
                     # First sample after opening only establishes held state.
                     self._picker_down = {name: bool(read(vk) & 0x8000)
-                                         for name, vk in self._picker_keys.items()}
+                                         for name, vk in picker_keys.items()}
                 else:
                     picker_owner = bool(game_focus or assistant_focus) and not any(
                         read(key) & 0x8000 for key in PICKER_MODIFIER_VKS)
-                    for name, vk in self._picker_keys.items():
+                    for name, vk in picker_keys.items():
                         state = read(vk)
                         down = bool(state & 0x8000)
                         edge = not self._picker_down.get(name, False) and bool(state & 0x8001)
@@ -515,6 +520,10 @@ class NativeShortcutBackend(QObject):
                         if edge and not suppress and picker_owner:
                             picker_consumed.add(vk)
                             self.pickerKeyRequested.emit(name)
+                            if self._picker_keys != picker_keys:
+                                # A receiver closed (or replaced) the picker during
+                                # the emit; do not route stale keys from this tick.
+                                break
             else:
                 self._picker_down = None
             for action, chord in self._bindings.items():

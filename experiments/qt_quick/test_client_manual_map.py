@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import patch
 
 from PIL import Image
-from PySide6.QtCore import QObject, QUrl, Signal
+from PySide6.QtCore import QObject, Qt, QUrl, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlComponent, QQmlEngine
 from PySide6.QtQuick import QQuickItem
@@ -741,6 +741,77 @@ class PickerFocusAndModifierTests(unittest.TestCase):
         press(0x71, True, foreground=55)
         press(0x71, False, foreground=55)
         self.assertEqual(picked, ["F1", "F2"])
+
+    def test_hook_path_picker_closing_synchronously_does_not_duplicate_the_action(self):
+        from unittest.mock import Mock
+        from client_native_keys import PassThroughKeyboardSource
+        from test_client_input import Native as HookNative
+        native, source = HookNative(), PassThroughKeyboardSource()
+        source.start, source.stop = Mock(return_value=True), Mock(return_value=True)
+        keys = NativeShortcutBackend(native, source=source)
+        self.addCleanup(keys.shutdown)
+        picked, actions = [], []
+
+        def select(name):
+            picked.append(name)
+            # ManualMapPickerService closes the picker inside this signal when
+            # a pick commits, which clears the picker key set synchronously.
+            keys.setPickerKeys([])
+
+        keys.pickerKeyRequested.connect(select, Qt.DirectConnection)
+        keys.actionTriggered.connect(actions.append)
+        self.assertTrue(keys.configure({"map": "G", "candidate-next": "F1"}))
+        keys.enableManagement(); keys.bindWindow(42); keys.enable()
+        keys.setPickerKeys(["F1", "F2"])
+
+        def press(vk, down, foreground=42):
+            with patch("time.monotonic", return_value=99.9):
+                event = source._transition_event(vk, 0, 0, down, foreground)
+            source.eventReceived.emit(event)
+            with patch("time.monotonic", return_value=100.):
+                APP.processEvents()
+
+        press(0x70, True)
+        press(0x70, False)
+        self.assertEqual(picked, ["F1"])
+        self.assertEqual(actions, [])
+        self.assertEqual(keys._picker_keys, {})
+        # Once the picker is closed, bare F1 belongs to candidate-next again.
+        press(0x70, True)
+        press(0x70, False)
+        self.assertEqual(picked, ["F1"])
+        self.assertEqual(actions, ["candidate-next"])
+
+    def test_poll_path_picker_closing_synchronously_does_not_duplicate_the_action(self):
+        native = Native()
+        keys = NativeShortcutBackend(native)
+        self.addCleanup(keys.shutdown)
+        picked, actions = [], []
+
+        def select(name):
+            picked.append(name)
+            keys.setPickerKeys([])
+
+        keys.pickerKeyRequested.connect(select, Qt.DirectConnection)
+        keys.actionTriggered.connect(actions.append)
+        self.assertTrue(keys.configure({"map": "G", "candidate-next": "F1"}))
+        keys.bindWindow(42)
+        self.assertTrue(keys.enable())
+        keys.pollOnce()
+        keys.setPickerKeys(["F1", "F2"])
+        keys.pollOnce()
+        native.states[0x70] = 0x8001
+        self.assertEqual(keys.pollOnce(), [])
+        self.assertEqual(picked, ["F1"])
+        self.assertEqual(actions, [])
+        self.assertEqual(keys._picker_keys, {})
+        # A closed picker no longer consumes the next bare F1.
+        native.states[0x70] = 0
+        keys.pollOnce()
+        native.states[0x70] = 0x8001
+        self.assertEqual(keys.pollOnce(), ["candidate-next"])
+        self.assertEqual(picked, ["F1"])
+        self.assertEqual(actions, ["candidate-next"])
 
 
 class PickerShutdownFlowTests(unittest.TestCase):
