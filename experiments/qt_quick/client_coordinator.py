@@ -1533,6 +1533,11 @@ class ClientCoordinator(QObject):
             self._applied_context = self._pending_context
             self._pending_context = None
             self._context_timer.stop()
+            # Readiness at callback entry still included the pending context.
+            # Rearm now that the applied, ready mode is actually observable,
+            # even if no map key or later runtime refresh occurs in this mode.
+            if self._map_resource_problem(state) is None:
+                self._map_resource_notified.clear()
         receipt = state.get("lastReceipt", {})
         if receipt.get("action") == "bind_capture":
             if receipt.get("success") and self._bound:
