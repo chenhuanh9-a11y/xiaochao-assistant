@@ -32,6 +32,17 @@ class WindowFeedbackTests(unittest.TestCase):
         receipt = runtime.dispatch('map', {'generation': 31})
         return runtime, receipt, operation_problem(receipt, runtime.snapshot())
 
+    def test_other_problem_branches_keep_preparation_diagnostic_object(self):
+        for reason in ('current-frame-floor-conflict', 'capture-context-changed',
+                       'candidate-awaiting-confirmation', 'unknown-operation-failure'):
+            with self.subTest(reason=reason):
+                problem = operation_problem(dict(reason=reason, observedFloor='1', targetFloor='2'), {})
+                self.assertEqual(problem['preparationObservation'], {})
+                self.assertIsInstance(problem['preparationObservation'], dict)
+                if reason == 'current-frame-floor-conflict':
+                    self.assertEqual(problem['title'], '目标楼层与当前画面不一致')
+                    self.assertIn('当前画面仍是 F1，目标为 F2', problem['summary'])
+
     def test_width_height_aspect_and_valid_size(self):
         for w, h, reason, title in [(999, 600, 'capture-shape-width', '游戏窗口尺寸过小'),
                 (1000, 599, 'shape-accepted', '游戏窗口尺寸过小'),
