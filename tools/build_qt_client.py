@@ -637,7 +637,7 @@ def main(argv=None):
     product = instance["product"]
     instance.update(defaultDirName=("{localappdata}\\Programs\\XiaochaoAssistant" if args.instance == "production"
                                     else "{autopf}\\" + instance["installFolder"]),
-                    usePreviousAppDir=args.instance == "production",
+                    usePreviousAppDir=True,
                     installerPrivilege="lowest" if args.instance == "production" else "admin",
                     runtimeDataProfile="production" if args.instance == "production" else "isolated")
     output_name = source["commit"][:12] + ("-" + args.instance if args.instance != "client" else "")
