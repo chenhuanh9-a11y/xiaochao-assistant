@@ -338,8 +338,10 @@ class ProblemsService(QObject):
         rows = []
         while self._queue and len(rows) < 16 and ('recognitionDiagnostics' in self._queue[0]) == recognition:
             rows.append(self._queue.popleft())
-        for row in rows:
-            row['diagnosticLoss'] = self.identity.loss()
+        stream = self.recognition_identity if recognition else self.identity
+        checkpoint = stream.checkpoint()
+        if checkpoint is not None:
+            rows[0]['diagnosticLoss'] = checkpoint
         self._inflight_rows = len(rows)
         self._job = job = _Write(self.recognition_path if recognition else self.log_path, rows)
         job.signals.done.connect(self._finished, Qt.QueuedConnection)

@@ -112,7 +112,9 @@ class AsyncEventLog:
                     return
                 row = self.pending.popleft()
                 self.active = True
-                row['diagnosticLoss'] = self.identity.loss()
+                checkpoint = self.identity.checkpoint()
+                if checkpoint is not None:
+                    row['diagnosticLoss'] = checkpoint
                 row['diagnosticDroppedTotal'] = self.dropped
                 row['diagnosticWriteFailuresTotal'] = self.failed
             try:

@@ -94,6 +94,7 @@ class DiagnosticStream:
         self.dropped = 0
         self.ranges = deque(maxlen=16)
         self.omitted_ranges = 0
+        self._checkpoint_dropped = None
 
     def stamp(self):
         global _process
@@ -124,3 +125,15 @@ class DiagnosticStream:
         with self.lock:
             return dict(droppedTotal=self.dropped, ranges=[dict(row) for row in self.ranges],
                         omittedRangeCount=self.omitted_ranges)
+
+    def checkpoint(self, *, force=False):
+        """Emit bounded loss ranges only initially or when actual loss changes.
+
+        Live export snapshots call loss() directly. No event repeats a stale
+        16-range payload just because another diagnostic record was accepted.
+        """
+        with self.lock:
+            if not force and self._checkpoint_dropped == self.dropped:
+                return None
+            self._checkpoint_dropped = self.dropped
+            return self.loss()

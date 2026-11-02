@@ -46,6 +46,17 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(loss['omittedRangeCount'], 34)
         self.assertTrue(all(row['firstAt'] and row['lastAt'] for row in loss['ranges']))
 
+    def test_loss_ranges_only_emitted_when_changed(self):
+        stream = DiagnosticStream('checkpoint-test')
+        for i in range(16):
+            stream.drop(stream.stamp(), str(i))
+        self.assertEqual(len(stream.checkpoint()['ranges']), 16)
+        for _ in range(100):
+            self.assertIsNone(stream.checkpoint())
+        stream.drop(stream.stamp(), 'new-loss')
+        self.assertEqual(stream.checkpoint()['droppedTotal'], 17)
+        self.assertIsNone(stream.checkpoint())
+
     def test_overlong_json_line_does_not_create_unparseable_partial_export(self):
         from diagnostic_export import _bounded_log_tail, _log_sessions, _merge_sessions
         with tempfile.TemporaryDirectory() as folder:
