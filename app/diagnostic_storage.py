@@ -51,7 +51,7 @@ def _windows_open(path, flags, directory=False):
     create.restype=wintypes.HANDLE
     access=0x80000000 | (0x40000000 if flags & os.O_RDWR else 0)
     # Deny rename/delete and concurrent writers while a handle is validated/used.
-    handle=create(str(path),access,1,None,1 if flags & os.O_EXCL else 3,
+    handle=create(str(path),access,3 if directory else 1,None,1 if flags & os.O_EXCL else 3,
                   0x00200000 | (0x02000000 if directory else 0),None)
     if handle==wintypes.HANDLE(-1).value:raise ctypes.WinError(ctypes.get_last_error())
     fd=msvcrt.open_osfhandle(handle,(flags & os.O_RDWR) | os.O_BINARY)

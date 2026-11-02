@@ -146,7 +146,7 @@ class FailureSamplingContracts(unittest.TestCase):
             manifest = json.loads(bundle.read("diagnostic-manifest.json"))
         self.assertEqual(manifest["failureEvidence"]["imageCount"], 1)
 
-    def test_saved_frame_survives_actual_problems_log_rotation(self):
+    def test_saved_frame_survives_fixed_slot_spill_without_renaming_evidence(self):
         self.f.runtime.set_failure_sampling_enabled(True)
         self.capture_failure()
         deadline = time.monotonic() + 3
@@ -170,7 +170,7 @@ class FailureSamplingContracts(unittest.TestCase):
             manifest = json.loads(bundle.read("diagnostic-manifest.json"))
         evidence = manifest["failureEvidence"]
         self.assertEqual(evidence["imageCount"], 1)
-        self.assertEqual(evidence["cases"][0]["logFile"], previous.name)
+        self.assertEqual(evidence["cases"][0]["logFile"], self.problems.log_path.name)
 
     def test_cancelled_or_changed_capture_does_not_save_and_sampling_error_does_not_change_reason(self):
         self.f.runtime.set_failure_sampling_enabled(True)

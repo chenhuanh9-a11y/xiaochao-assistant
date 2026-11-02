@@ -26,6 +26,18 @@ from test_client_input import Native
 CODE = "capture-safe-fallback-unsupported"
 
 
+from contextlib import contextmanager
+@contextmanager
+def exclusion_dll_probe():
+    # Probe only capture's loader; global ctypes is also used by safe log IO.
+    import client_capture_exclusion
+    from unittest.mock import Mock
+    proxy=SimpleNamespace(**vars(client_capture_exclusion.ctypes))
+    probe=Mock();proxy.WinDLL=probe
+    with patch.object(client_capture_exclusion,'ctypes',proxy):
+        yield probe
+
+
 class CaptureCompatibilityTests(unittest.TestCase):
     run_worker = exclusion_fixtures.CaptureExclusionTests.run_worker
 
@@ -53,7 +65,7 @@ class CaptureCompatibilityTests(unittest.TestCase):
             self.backend.capture = failed
 
     def test_old_windows_normal_dc_is_usable_without_loading_exclusion(self):
-        with self.old_windows(17763), patch("client_capture_exclusion.ctypes.WinDLL") as dll:
+        with self.old_windows(17763), exclusion_dll_probe() as dll:
             result = self.run_worker(self.helper, target=self.provider.capture)
         self.assertNotIn("error", result)
         self.assertEqual(result["value"].acquisition, "client-dc-roi")
@@ -74,7 +86,7 @@ class CaptureCompatibilityTests(unittest.TestCase):
                 with self.subTest(build=build, trigger=trigger):
                     self.fail_dc(trigger)
                     generation = self.provider.generation
-                    with self.old_windows(build), patch("client_capture_exclusion.ctypes.WinDLL") as dll:
+                    with self.old_windows(build), exclusion_dll_probe() as dll:
                         result = self.run_worker(self.helper, target=self.provider.capture)
                     error = result["error"]
                     self.assertEqual(getattr(error, "code", None), CODE)
@@ -110,7 +122,7 @@ class CaptureCompatibilityTests(unittest.TestCase):
     def test_wrong_foreground_never_attempts_fallback_or_changes_focus(self):
         self.fail_dc("blank")
         self.native.foreground = 77
-        with self.old_windows(17763), patch("client_capture_exclusion.ctypes.WinDLL") as dll:
+        with self.old_windows(17763), exclusion_dll_probe() as dll:
             result = self.run_worker(self.helper, target=self.provider.capture)
         self.assertIn("foreground", str(result["error"]))
         self.assertEqual(self.native.foreground, 77)
@@ -184,7 +196,7 @@ measurements. The Qt queue, runtime, preparation and diagnostic consumers run.
             self.coordinator.errorReported.connect(service.record)
             try:
                 with self.old_windows(17763), \
-                        patch("client_capture_exclusion.ctypes.WinDLL") as dll, \
+                        exclusion_dll_probe() as dll, \
                         patch.object(self.backend, "capture", side_effect=OSError(5, "PRIVATE-DC-DETAIL")):
                     receipt = self.open_first_map()
                 self.assertFalse(receipt["success"])
@@ -231,7 +243,7 @@ measurements. The Qt queue, runtime, preparation and diagnostic consumers run.
                 self.assertNotIn("map-open-preparation-deadline", texts)
             # The failed opening retains the user's map intent. Close/reopen
             # through the same input path and round when ordinary DC recovers.
-            with self.old_windows(17763), patch("client_capture_exclusion.ctypes.WinDLL") as dll:
+            with self.old_windows(17763), exclusion_dll_probe() as dll:
                 closed = self.press_map()
                 self.assertEqual(closed["action"], "close_map")
                 self.assertTrue(closed["success"])

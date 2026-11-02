@@ -98,4 +98,17 @@ class RaceTests(unittest.TestCase):
    self.assertTrue(files)
    for p in files:self.assertNotIn(b'PRIVATE',p.read_bytes());json.loads(p.read_bytes())
    self.assertEqual(set(safe_diagnostic_log_files(root)),set(files))
+ def test_pinned_log_directory_does_not_block_sibling_identity_reset(self):
+  from diagnostic_identity import installation
+  with tempfile.TemporaryDirectory() as d:
+   root=Path(d);identity=installation(root/'settings');before=identity.install_id
+   entered=threading.Event();release=threading.Event();original=s._append
+   def blocked(path,data):
+    entered.set();release.wait(3);return original(path,data)
+   with patch.object(s,'_append',side_effect=blocked):
+    w=AsyncEventLog(root/'logs'/'events.jsonl');w.emit('capture-error',{})
+    self.assertTrue(entered.wait(1))
+    try:self.assertNotEqual(identity.reset(),before)
+    finally:release.set();w.flush(3);w.close();w.thread.join(1)
 if __name__=='__main__':unittest.main()
+

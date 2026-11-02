@@ -73,7 +73,7 @@ class InfoTests(unittest.TestCase):
         self.assertTrue(service.resetDiagnosticInstallId())
         self.wait(lambda: not service.checking)
         current = problems.identity.installation.install_id
-        self.assertNotEqual(previous, current)
+        self.assertNotEqual(previous, current, service.message)
         problems.recordTrace(dict(stage='after-reset', round=4, cycle=2))
         problems.shutdown()
         self.wait(lambda: not problems.pendingWrites)
