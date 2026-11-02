@@ -50,7 +50,9 @@ class ProblemTests(unittest.TestCase):
 
     def wait(self, predicate):
         end = time.monotonic()+12
-        while not predicate() and time.monotonic()<end: QTest.qWait(10)
+        while not predicate() and time.monotonic()<end:
+            QTest.qWait(10)
+            time.sleep(.001)  # Release the Python GIL to the real writer.
         self.assertTrue(predicate(), f"diagnostic queue did not drain; pending={len(self.service._queue)}, inflight={self.service._inflight_rows}, error={self.service.writeErrorDetails}")
 
     def drain(self):

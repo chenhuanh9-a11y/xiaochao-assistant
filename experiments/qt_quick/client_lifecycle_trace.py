@@ -25,26 +25,9 @@ STATE_CODE = re.compile(r"[a-z][a-z0-9_-]{0,95}\Z")
 
 
 def _write_batch(path, rows):
-    # A logging.Handler would register for atexit flush/close and could make
-    # optional daemon IO block interpreter shutdown. Keep this sink independent.
-    from client_paths import _no_links
-    previous = path.with_name(path.stem + "-previous.jsonl")
-    _no_links(path.parent)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _no_links(path); _no_links(previous)
-    stream = path.open("ab")
-    try:
-        for row in rows:
-            data = (json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8")
-            if len(data) > LOG_MAX_BYTES:
-                continue
-            if stream.tell() + len(data) > LOG_MAX_BYTES:
-                stream.close()
-                path.replace(previous)
-                stream = path.open("ab")
-            stream.write(data)
-    finally:
-        stream.close()
+    from diagnostic_storage import append_record
+    for row in rows:
+        append_record(path, row, file_limit=LOG_MAX_BYTES)
 
 
 def create_lifecycle_trace(paths):

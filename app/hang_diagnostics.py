@@ -126,9 +126,8 @@ class HangWatchdog:
         try:
             self.output_dir.mkdir(parents=True, exist_ok=True)
             path = self.output_dir / f"thread-stacks-{self.process_id}.jsonl"
-            with path.open("a", encoding="utf-8", newline="\n") as handle:
-                handle.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
-                handle.flush()
+            from diagnostic_storage import append_record
+            append_record(path, row)
         except OSError:
             # The watchdog must not feed a second failure back into the UI.
             return

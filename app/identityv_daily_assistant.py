@@ -813,10 +813,9 @@ def report_unhandled_error(exc_type, exc_value, exc_traceback) -> None:
     try:
         LIVE_ROOT.mkdir(parents=True, exist_ok=True)
         path = LIVE_ROOT / f"startup-error-{datetime.now():%Y%m%d-%H%M%S}.log"
-        path.write_text(
-            "".join(traceback.format_exception(exc_type, exc_value, exc_traceback)),
-            encoding="utf-8",
-        )
+        from diagnostic_storage import append_record
+        append_record(path, dict(event="startup-error", traceback="".join(
+            traceback.format_exception(exc_type, exc_value, exc_traceback))))
         message = f"星图遇到错误，已保存诊断日志：\n{path}"
     except OSError:
         message = f"星图遇到错误：\n{exc_value}"

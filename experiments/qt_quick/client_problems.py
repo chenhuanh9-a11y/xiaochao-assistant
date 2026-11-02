@@ -8,8 +8,6 @@ from collections import OrderedDict, deque
 from copy import deepcopy
 from datetime import datetime, timezone
 import json
-import logging
-from logging.handlers import RotatingFileHandler
 import math
 import os
 import time
@@ -84,11 +82,6 @@ def _details(row):
             + ("\n\n原始调用栈：\n" + row['traceback'] if row['traceback'] else ""))
 
 
-class _StrictHandler(RotatingFileHandler):
-    def handleError(self, record):
-        raise
-
-
 class _BatchFailure(Exception):
     def __init__(self, failure, completed):
         super().__init__(str(failure))
@@ -96,28 +89,14 @@ class _BatchFailure(Exception):
 
 
 def _write_batch(path, rows):
-    from client_paths import _no_links
-    _no_links(path.parent)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _no_links(path)
-    _no_links(path.with_name(path.stem + '-previous.jsonl'))
-    handler = _StrictHandler(path, maxBytes=LOG_MAX_BYTES, backupCount=1, encoding='utf-8')
-    # Keep the single backup inside diagnostic_export's existing events-*.jsonl glob.
-    handler.namer = lambda name: name.removesuffix('.jsonl.1') + '-previous.jsonl'
-    handler.setFormatter(logging.Formatter('%(message)s'))
+    from diagnostic_storage import append_record
     completed = 0
     try:
         for row in rows:
-            message = json.dumps(safe_record(dict({'event': 'qt-runtime-problem'}, **row)), ensure_ascii=False)
-            handler.emit(logging.LogRecord('xingtu.problems', logging.WARNING, '', 0, message, (), None))
+            append_record(path, dict({'event': 'qt-runtime-problem'}, **row), file_limit=LOG_MAX_BYTES)
             completed += 1
     except Exception as failure:
         raise _BatchFailure(failure, completed) from failure
-    finally:
-        try:
-            handler.close()
-        except Exception as failure:
-            raise _BatchFailure(failure, completed) from failure
 
 
 class _Signals(QObject):

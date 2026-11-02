@@ -101,9 +101,8 @@ class AsyncEventLog:
             self.condition.notify()
 
     def _write(self, row):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open('a', encoding='utf-8', newline='\n') as handle:
-            handle.write(json.dumps(safe_record(row), ensure_ascii=False, separators=(',', ':')) + '\n')
+        from diagnostic_storage import append_record
+        append_record(self.path, row)
 
     def _run(self):
         while True:

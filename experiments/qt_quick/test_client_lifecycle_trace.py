@@ -137,6 +137,8 @@ entered = threading.Event()
 original = Path.open
 class Blocked:
     def __init__(self, stream): self.stream = stream
+    def __enter__(self): return self
+    def __exit__(self, *args): self.close()
     def tell(self): return self.stream.tell()
     def write(self, data):
         entered.set()
