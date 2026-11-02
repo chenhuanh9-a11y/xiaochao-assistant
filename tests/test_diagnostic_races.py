@@ -70,5 +70,30 @@ class RaceTests(unittest.TestCase):
    row=json.loads(p.read_bytes())
    self.assertEqual(row['recognitionDiagnostics']['floorRead']['scores'],read['scores'])
    self.assertEqual(set(read['scores']),{'-1','1','2'})
+ def test_watchdog_progress_while_event_write_blocked(self):
+  with tempfile.TemporaryDirectory() as d:
+   entered=threading.Event();release=threading.Event();original=s._append
+   def blocked(path,data):
+    if path.name=='events.jsonl':entered.set();release.wait(3)
+    return original(path,data)
+   with patch.object(s,'_append',side_effect=blocked):
+    w=AsyncEventLog(Path(d)/'events.jsonl');w.emit('capture-error',{});self.assertTrue(entered.wait(1))
+    dog=HangWatchdog(output_dir=Path(d),process_id=123,build_fingerprint='ABC')
+    t=threading.Thread(target=dog._write_snapshot,args=(1,),daemon=True);t.start();t.join(.5)
+    try:self.assertFalse(t.is_alive());self.assertTrue(list(Path(d).rglob('thread-stacks-*.jsonl')))
+    finally:release.set();w.flush(3);w.close();t.join(3)
+ def test_watchdog_reserved_budget_and_export(self):
+  from diagnostic_export import safe_diagnostic_log_files
+  with tempfile.TemporaryDirectory() as d:
+   root=Path(d)
+   for pid in range(8):
+    dog=HangWatchdog(output_dir=root,process_id=pid,build_fingerprint='ABC',state_getter=lambda:{'username':'PRIVATE'})
+    dog._write_snapshot(1)
+   files=list((root/'watchdog').glob('*.jsonl'))
+   self.assertLessEqual(len(files),4);self.assertLessEqual(sum(p.stat().st_size for p in files),256*1024)
+   self.assertTrue(files)
+   for p in files:self.assertNotIn(b'PRIVATE',p.read_bytes());json.loads(p.read_bytes())
+   self.assertEqual(set(safe_diagnostic_log_files(root)),set(files))
 if __name__=='__main__':unittest.main()
+
 

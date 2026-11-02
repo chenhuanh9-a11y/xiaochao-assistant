@@ -1,5 +1,18 @@
 ## Safety correction after 4d53 review (supersedes retirement claims below)
 
+The watchdog has a separate fixed `watchdog/` reserve (256 KiB, 4 files,
+64 KiB each), with separate root transaction locking. A blocked event writer
+cannot hold its lock. It uses the SAME no-follow, identity, privacy and bounded
+storage implementation; there is no unbounded fallback. Export explicitly includes
+this reserve under the existing aggregate export cap. Total owned log allowance is
+therefore 16 MiB normal + 256 KiB watchdog, plus bounded journals/lock files.
+A stalled filesystem can still stall watchdog IO; only independence from normal
+logging locks is promised.
+
+Shared Tk writer errors now honor completed-row accounting. Only numeric values
+under `floorRead.scores` retain the three fixed keys `-1`, `1`, `2`.
+
+
 Verified-path-then-open/unlink was not race-safe. Log appends now open no-follow
 handles (Windows reparse-point handles with write/delete sharing denied), verify
 file identity/content on that handle, then write and derive ownership on it.

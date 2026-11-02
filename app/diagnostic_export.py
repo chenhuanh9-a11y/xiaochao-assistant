@@ -23,6 +23,12 @@ def safe_diagnostic_log_files(live_root: Path, limit: int = DIAGNOSTIC_LOG_LIMIT
         for path in live_root.glob(pattern):
             if path.is_file():
                 candidates[path.name.casefold()] = path
+    # Explicit watchdog reserve only; no arbitrary recursive file collection.
+    watchdog=live_root / 'watchdog'
+    if watchdog.is_dir() and not watchdog.is_symlink():
+        for path in watchdog.glob('thread-stacks-*.jsonl'):
+            if path.is_file() and not path.is_symlink():
+                candidates['watchdog/'+path.name.casefold()]=path
     return sorted(
         candidates.values(),
         key=lambda path: (path.stat().st_mtime, path.name),
