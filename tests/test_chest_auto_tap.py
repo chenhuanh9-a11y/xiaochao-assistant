@@ -63,6 +63,29 @@ class OfflineTests(unittest.TestCase):
         return tapper
 
 
+class ReleaseGestureTests(OfflineTests):
+    def test_qt_requires_new_release_after_start_and_focus_loss(self):
+        tapper = self.tapper(require_release=True)
+        self.held = True
+        self.assertTrue(tapper.update(BASE)['success'])
+        time.sleep(.025)
+        self.assertEqual(self.events, [])
+        self.held = False
+        wait_for(lambda: tapper.snapshot()['status'].startswith('等待按住'))
+        self.held = True
+        wait_for(lambda: any(not up for _, up, _ in self.events))
+        self.foreground = False
+        wait_for(lambda: tapper.snapshot()['status'].startswith('游戏窗口不在前台'))
+        count = sum(not up for _, up, _ in self.events)
+        self.foreground = True
+        time.sleep(.12)
+        self.assertEqual(sum(not up for _, up, _ in self.events), count)
+        self.held = False
+        wait_for(lambda: tapper.snapshot()['status'].startswith('等待按住'))
+        self.held = True
+        wait_for(lambda: sum(not up for _, up, _ in self.events) > count)
+
+
 class ValidateTests(OfflineTests):
     def test_accepts_defaults_and_mouse_trigger(self):
         self.assertEqual(validate(BASE, {}), BASE)

@@ -9,14 +9,15 @@ from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
 from client_paths import APP_ROOT, _no_links
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
-from chest_auto_tap import ChestAutoTap, TAP_KEYS, TRIGGER_KEYS
+from chest_auto_tap import TAP_KEYS, TRIGGER_KEYS, TRIGGER_VKS, key_down
+from client_chest_preferences import QtChestAutoTap, INTENT_SCHEMA, read_object, merge_save
 from game_window_focus import NativeGameFocusAPI
 from hotkey_bindings import parse_chord
 from hotkey_keys import _primary_hotkey_to_vk
 
 
 class ChestAutoTapService(QObject):
-    """Loading an enabled preference never arms or starts the native worker.
+    """Only the Qt-specific explicit opt-in restores readiness, never input.
 
     Qt snapshots are read only on the UI thread. The existing worker receives
     an immutable, lock-protected target, and retains ownership of key releases.
@@ -24,7 +25,7 @@ class ChestAutoTapService(QObject):
     changed = Signal()
 
     def __init__(self, paths, coordinator, native_input, settings, *,
-                 service_factory=ChestAutoTap, native=None, parent=None):
+                 service_factory=QtChestAutoTap, native=None, key_is_down=key_down, parent=None):
         super().__init__(parent)
         self.coordinator, self.input, self.settings = coordinator, native_input, settings
         self._native = native if native is not None else NativeGameFocusAPI()
@@ -33,19 +34,37 @@ class ChestAutoTapService(QObject):
         self._reserved = {}
         self._armed = self._running = self._closed = False
         self._bound = ""
+        self._bound_identity = None
+        self._key_is_down = key_is_down
+        self._needs_release = True
+        self._saved_enabled = False
         self._message = "请连接游戏并启用快捷键，再手动开启开箱连点"
         self._last = None
         path = Path(paths.settings_path).with_name("chest-auto-tap.json")
         _no_links(path)
+        self._intent_path = path.with_name("qt-chest-intent.json")
+        try:
+            intent = read_object(self._intent_path, INTENT_SCHEMA)
+            self._saved_enabled = intent.get("enabled") is True
+        except OSError:
+            self._message = "Qt 开箱偏好无法读取，已安全停用；原文件保留"
         self._refresh_reserved()
         self._service = service_factory(path, target_window=self._target_window,
                                         reserved=lambda: dict(self._reserved))
+        self._service.stop()  # Startup always suspends the native owner, even with saved opt-in.
+        self._armed = self._saved_enabled
         self._timer = QTimer(self)
         self._timer.setInterval(50)
         self._timer.timeout.connect(self.pollOnce)
         coordinator.changed.connect(self.pollOnce)
         native_input.changed.connect(self.pollOnce)
         settings.saved.connect(self._settings_saved)
+        session = getattr(coordinator, "session", None)
+        if session is not None:
+            session.actionRequested.connect(self._action_requested)
+        if self._armed:
+            self._message = "已记住开启偏好；等待游戏，松开后再按触发键"
+            self._timer.start()
 
     def _target_window(self):
         with self._lock:
@@ -63,7 +82,7 @@ class ChestAutoTapService(QObject):
 
     def _snapshot(self):
         state = self._service.snapshot()
-        return dict(state, savedEnabled=bool(state.get("enabled")), enabled=self._armed,
+        return dict(state, savedEnabled=self._saved_enabled, enabled=self._armed,
                     running=self._running, message=self._message,
                     tapKeys=list(TAP_KEYS), triggerKeys=list(TRIGGER_KEYS))
 
@@ -81,6 +100,23 @@ class ChestAutoTapService(QObject):
         if self._running:
             self._service.stop()
         self._running = False
+        self._needs_release = True
+
+    @Slot(str, dict)
+    def _action_requested(self, action, payload):
+        state = getattr(getattr(self.coordinator, "session", None), "snapshot", {})
+        ending = action == "toggle_round" and (state.get("roundActive") or state.get("roundPreparing"))
+        if action in {"end_round", "stop_round", "reset_round"} or ending:
+            self._armed = False
+            self._timer.stop()
+            self._stop()
+            self._message = "本局结束或绑定变化，连点已暂停；开启偏好仍保留，请重新手动开启"
+            self._publish()
+
+    def _binding_identity(self):
+        hwnd = str(self.coordinator.boundWindow or "")
+        row = next((r for r in self.coordinator.gameWindows if str(r.get("hwnd")) == hwnd), {})
+        return hwnd, row.get("pid"), row.get("processCreateTime"), row.get("executable")
 
     def _gate(self):
         owner, state = self.coordinator, self.input.snapshot
@@ -118,18 +154,32 @@ class ChestAutoTapService(QObject):
             self._stop()
             self._publish()
             return
-        if str(self.coordinator.boundWindow) != self._bound:
+        if self._bound and self._binding_identity() != self._bound_identity:
             self._armed = False
             self._timer.stop()
             self._stop()
             self._message = "游戏绑定已变化；请重新手动开启"
             self._publish()
             return
+        if not self._bound and self.coordinator.boundWindow:
+            self._bound = str(self.coordinator.boundWindow)
+            self._bound_identity = self._binding_identity()
         handle, reason = self._gate()
         if not handle:
             self._stop()
             self._message = reason
         elif not self._running:
+            self._bound = str(self.coordinator.boundWindow)
+            if self._needs_release:
+                try:
+                    held = self._key_is_down(TRIGGER_VKS[self._service.snapshot()["holdKey"]])
+                except Exception:
+                    held = True  # Failed physical-state reads must never authorize input.
+                if held:
+                    self._message = "已准备；请松开触发键后再按住，才会连发"
+                    self._publish()
+                    return
+                self._needs_release = False
             with self._lock:
                 self._target = handle
             result = self._service.update(dict(enabled=True))
@@ -156,6 +206,14 @@ class ChestAutoTapService(QObject):
         self._armed = False
         self._timer.stop()
         self._refresh_reserved()
+        if not enabled:
+            try:
+                merge_save(self._intent_path, INTENT_SCHEMA, dict(enabled=False))
+                self._saved_enabled = False
+            except OSError:
+                self._message = "连点已停止，但关闭偏好保存失败；重启前请修复配置"
+                self._publish()
+                return dict(success=False, message=self._message)
         # Save/validate while suspended. update(enabled=True) owns native sync,
         # so it is called only by pollOnce after the complete foreground gate.
         result = self._service.update(dict(enabled=False, holdKey=hold_key,
@@ -165,8 +223,16 @@ class ChestAutoTapService(QObject):
             state = self.input.snapshot
             if (self.coordinator.boundWindow and state.get("enabled")
                     and str(state.get("hwnd")) == str(self.coordinator.boundWindow)):
+                try:
+                    merge_save(self._intent_path, INTENT_SCHEMA, dict(enabled=True))
+                except OSError:
+                    self._message = "开启偏好保存失败，连点保持停止；请检查配置文件"
+                    self._publish()
+                    return dict(success=False, message=self._message)
+                self._saved_enabled = True
                 self._armed = True
                 self._bound = str(self.coordinator.boundWindow)
+                self._bound_identity = self._binding_identity()
                 self._timer.start()
                 self.pollOnce()
             else:
