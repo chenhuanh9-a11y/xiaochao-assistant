@@ -144,9 +144,16 @@ class ChestAutoTap:
         self._pending_releases = {}  # VK -> number of key-up attempts.
         self.status = "未开启"
         self.holding = False
-        self.error = ""
+        self._runtime_error = ""
+        self._configuration_error = ""
         self.available = _user32 is not None
         self.settings = self._load()
+
+    @property
+    def error(self):
+        # Configuration can be repaired; native faults remain sticky. Never
+        # clear a release failure merely because the player chose another key.
+        return " ".join(filter(None, (self._runtime_error, self._configuration_error)))
 
     def _defaults(self) -> dict:
         taken = self._reserved()
@@ -162,7 +169,7 @@ class ChestAutoTap:
                 try:
                     return validate(settings, self._reserved())
                 except ValueError as error:
-                    self.error = self.status = f"开箱连点已停用：{error}"
+                    self._configuration_error = self.status = f"开箱连点已停用：{error}"
                     return dict(settings, enabled=False)
         except (OSError, ValueError):
             pass
@@ -203,7 +210,9 @@ class ChestAutoTap:
                 self._save(disabled)
             except OSError:
                 message += " 停用状态保存失败，请检查软件目录是否可写。"
-            self._set_status(message, holding=False, error=message)
+            with self._lock:
+                self._configuration_error = message
+            self._set_status(message, holding=False)
             return dict(success=False, message=message)
         return dict(success=True, message="开箱连点按键检查通过。")
 
@@ -233,6 +242,8 @@ class ChestAutoTap:
         if normalised["enabled"] and not self.available:
             return dict(success=False, message="开箱连点只能在 Windows 上使用。")
         with self._lock:
+            if normalised["enabled"] and self._runtime_error:
+                return dict(success=False, message=self._runtime_error)
             if (normalised["enabled"] and self._pending_releases
                     and (self._stop.is_set() or any(self._pending_releases.values()))):
                 return dict(success=False, message="仍有按键未确认释放，开箱连点保持停用；请检查状态。")
@@ -249,6 +260,12 @@ class ChestAutoTap:
                 current = dict(self.settings)
             else:
                 self.settings = normalised
+                if not validation_error:
+                    # Only a validated, persisted, committed update may
+                    # acknowledge a repaired configuration. No input intent is
+                    # granted here; sync and the Qt foreground/release gate own it.
+                    self._configuration_error = ""
+                    self.status = self.error or "未开启"
                 self._generation += 1
         if interrupted:
             # A worker failure/stop during disk I/O takes priority over enabling.
@@ -275,7 +292,7 @@ class ChestAutoTap:
     def sync(self) -> None:
         """Wake the single worker; never join it or replace a live thread."""
         with self._lock:
-            enabled = (self.settings["enabled"] and self.available
+            enabled = (self.settings["enabled"] and self.available and not self._runtime_error
                        and not any(self._pending_releases.values()))
             if enabled:
                 self._stop.clear()
@@ -306,8 +323,8 @@ class ChestAutoTap:
             if holding is not None:
                 self.holding = holding
             if error is not None:
-                if error and error not in self.error:
-                    self.error = f"{self.error} {error}".strip()
+                if error and error not in self._runtime_error:
+                    self._runtime_error = f"{self._runtime_error} {error}".strip()
             self.status = self.error or text
 
     def _fault(self, message):

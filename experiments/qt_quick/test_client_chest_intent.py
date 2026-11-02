@@ -65,6 +65,104 @@ class IntentTests(unittest.TestCase):
         self.assertFalse(self.adapter.snapshot['running'])
         self.assertTrue(self.adapter.snapshot['savedEnabled'])
 
+    def conflict(self, key):
+        self.assertTrue(self.enable()['success'])
+        self.input.snapshot['bindings']['confirm-round'] = key
+        self.settings.saved.emit()
+        self.assertFalse(self.adapter.snapshot['running'])
+        self.assertIn('confirm-round', self.adapter.snapshot['error'])
+
+    def test_corrected_trigger_and_tap_conflicts_survive_following_polls(self):
+        for conflict, hold, tap in [('F12', 'F4', 'F'), ('F', 'F12', 'E')]:
+            with self.subTest(conflict=conflict):
+                self.input.snapshot['bindings'].pop('confirm-round', None)
+                self.restart()
+                self.conflict(conflict)
+                self.assertTrue(self.adapter.snapshot['savedEnabled'])
+                self.assertTrue(self.adapter.update(True, hold, tap, '90')['success'])
+                for _ in range(3):
+                    self.adapter.pollOnce()
+                state = self.adapter.snapshot
+                self.assertEqual((state['holdKey'], state['tapKey']), (hold, tap))
+                self.assertTrue(state['running'])
+                self.assertEqual(state['error'], '')
+                self.assertNotIn('confirm-round', state['message'])
+
+    def test_still_conflicting_or_failed_save_cannot_clear_reason(self):
+        self.conflict('F12')
+        self.assertFalse(self.adapter.update(True, 'F12', 'E', '90')['success'])
+        self.assertIn('confirm-round', self.adapter.snapshot['error'])
+        with mock.patch.object(self.service, '_save', side_effect=OSError('disk full')):
+            self.assertFalse(self.adapter.update(True, 'F4', 'F', '90')['success'])
+        self.assertEqual(self.adapter.snapshot['holdKey'], 'F12')
+        self.assertIn('confirm-round', self.adapter.snapshot['error'])
+        self.assertFalse(self.adapter.snapshot['running'])
+
+    def test_corrected_conflict_does_not_clear_native_fault_or_release_ledger(self):
+        self.conflict('F12')
+        self.service._fault('native key-up failed')
+        self.service._pending_releases[ord('F')] = 4
+        self.adapter.update(True, 'F4', 'F', '90')
+        self.adapter.pollOnce()
+        self.assertIn('native key-up failed', self.adapter.snapshot['error'])
+        self.assertEqual(self.adapter.snapshot['pendingReleaseVks'], [ord('F')])
+        self.assertFalse(self.adapter.snapshot['running'])
+        self.assertNotIn('confirm-round', self.adapter.snapshot['error'])
+
+    def test_fixing_ordinary_binding_waits_for_explicit_reenable(self):
+        self.conflict('F12')
+        self.input.snapshot['bindings']['confirm-round'] = 'F8'
+        self.settings.saved.emit()
+        self.adapter.pollOnce()
+        self.assertTrue(self.adapter.snapshot['savedEnabled'])
+        self.assertFalse(self.adapter.snapshot['enabled'])
+        self.assertFalse(self.adapter.snapshot['running'])
+        self.assertTrue(self.enable()['success'])
+        self.adapter.pollOnce()
+        self.assertTrue(self.adapter.snapshot['running'])
+        self.assertEqual(self.adapter.snapshot['error'], '')
+
+    def test_loaded_conflict_can_be_repaired_without_restart(self):
+        self.conflict('F12')
+        self.restart()
+        self.assertIn('confirm-round', self.adapter.snapshot['error'])
+        self.assertTrue(self.adapter.update(True, 'F4', 'F', '90')['success'])
+        self.adapter.pollOnce()
+        self.assertTrue(self.adapter.snapshot['running'])
+        self.assertEqual(self.adapter.snapshot['error'], '')
+
+    def test_native_fault_without_pending_release_survives_valid_update(self):
+        self.conflict('F12')
+        self.service._fault('native key-down failed')
+        before = self.syncs.count(True)
+        self.adapter.update(True, 'F4', 'F', '90')
+        self.adapter.pollOnce()
+        self.assertEqual(self.syncs.count(True), before)
+        self.assertIn('native key-down failed', self.adapter.snapshot['error'])
+        self.assertNotIn('confirm-round', self.adapter.snapshot['error'])
+        self.assertFalse(self.adapter.snapshot['running'])
+
+    def test_correcting_while_disabled_never_rearms_or_changes_false_intent(self):
+        self.conflict('F12')
+        self.assertTrue(self.adapter.update(False, 'F4', 'F', '90')['success'])
+        self.adapter.pollOnce()
+        self.assertFalse(self.adapter.snapshot['savedEnabled'])
+        self.assertFalse(self.adapter.snapshot['enabled'])
+        self.assertFalse(self.adapter.snapshot['running'])
+        self.assertEqual(self.adapter.snapshot['error'], '')
+
+    def test_corrected_conflict_waits_for_release_before_restarting(self):
+        self.conflict('F12')
+        self.held = True
+        self.assertTrue(self.adapter.update(True, 'F4', 'F', '90')['success'])
+        self.assertFalse(self.adapter.snapshot['running'])
+        self.assertEqual(self.adapter.snapshot['error'], '')
+        self.adapter.pollOnce()
+        self.assertFalse(self.adapter.snapshot['running'])
+        self.held = False
+        self.adapter.pollOnce()
+        self.assertTrue(self.adapter.snapshot['running'])
+
     def test_restart_while_held_waits_for_release_and_new_press(self):
         self.enable()
         self.held = True
