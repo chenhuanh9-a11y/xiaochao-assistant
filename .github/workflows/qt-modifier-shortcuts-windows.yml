@@ -43,7 +43,7 @@ jobs:
         run: |
           python -B -X utf8 -m unittest -v test_client_modifier_shortcuts test_client_native_key_state test_client_native_mouse test_client_input_event_freshness test_client_input_recovery test_client_shortcut_delivery test_client_settings test_client_input
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: External LL review - 11 enhanced cases plus held and unknown counterexamples
+      - name: External LL review - enhanced cases, counterexamples and source timing boundaries
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         run: |
           python -B -X utf8 -m unittest -v test_review_ll_real

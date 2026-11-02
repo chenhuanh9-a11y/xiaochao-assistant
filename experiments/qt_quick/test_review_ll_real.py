@@ -167,6 +167,8 @@ class R(unittest.TestCase):
 
     def test_10_long_hold_does_not_fire(self):
         self.configure({"map": "ALT"}); c = self.n()
+        source_events = []
+        self.source.eventReceived.connect(source_events.append)
         old = time.monotonic() - 30
         with patch("client_native_keys.time", SimpleNamespace(monotonic=lambda: old)):
             self.down(LAL)
@@ -174,6 +176,36 @@ class R(unittest.TestCase):
         self.up(LAL)
         print("\n[10] 30s hold then release fired:", self.n() - c)
         self.assertEqual(self.n(), c)
+        # Assert BEFORE downstream freshness can hide a bad source decision.
+        self.assertFalse(source_events[-1]["down"])
+        self.assertIs(source_events[-1]["modifierTap"], False)
+
+    def test_10b_source_release_boundary_uses_one_clock_despite_repeats(self):
+        source_events = []
+        self.source.eventReceived.connect(source_events.append)
+        for name, key in (("SHIFT", LSH), ("SHIFT", RSH),
+                          ("CTRL", LCT), ("CTRL", RCT),
+                          ("ALT", LAL), ("ALT", RAL)):
+            for milliseconds, expected in ((499, True), (500, True), (501, False)):
+                with self.subTest(binding=name, vk=hex(key[0]), milliseconds=milliseconds):
+                    self.configure({"map": name})
+                    source_events.clear()
+                    clock = [100.0]
+                    with patch("client_native_keys.time", SimpleNamespace(monotonic=lambda: clock[0])):
+                        self.down(key)
+                        clock[0] = 100.4
+                        self.down(key, repeat=5)
+                        clock[0] = 100.0 + milliseconds / 1000
+                        self.up(key)
+                    # Source events are inspected directly; intentionally old
+                    # timestamps cannot turn downstream drops into a pass.
+                    self.assertEqual(len(source_events), 8)
+                    self.assertTrue(all(event["down"] for event in source_events[:-1]))
+                    self.assertTrue(all(not event["modifierTap"] for event in source_events[:-1]))
+                    release = source_events[-1]
+                    self.assertFalse(release["down"])
+                    self.assertEqual(release["createdAt"], clock[0])
+                    self.assertIs(release["modifierTap"], expected)
 
     def test_11_injected_modifier_tap(self):
         self.configure({"map": "CTRL"}); c = self.n()
