@@ -63,12 +63,16 @@ class RaceTests(unittest.TestCase):
   from map_interface_observation import detect_selected_floor
   from recognition_diagnostics import bounded_recognition
   with tempfile.TemporaryDirectory() as d:
-   read=detect_selected_floor(np.zeros((720,1280,3),np.uint8))
+   frame=np.random.default_rng(1).integers(0,100,(720,1280,3),dtype=np.uint8)
+   vertical={'regionTop':.1,'regionHeight':.1,'layoutFamily':'legacy-client-height','safeTop':0,'safeHeight':720,'filledFloor':1}
+   # Only layout is a fixture; production detector computes all three values.
+   with patch('map_interface_observation._locate_floor_button_layout',return_value=([.75,.85,.95],vertical)):
+    read=detect_selected_floor(frame)
    bounded=bounded_recognition({'floorRead':read})
    p=Path(d)/'events-floor.jsonl';w=AsyncEventLog(p)
    w.emit('capture-error',{'recognitionDiagnostics':bounded});self.assertTrue(w.flush(2));w.close();w.thread.join(1)
    row=json.loads(p.read_bytes())
-   self.assertEqual(row['recognitionDiagnostics']['floorRead']['scores'],read['scores'])
+   self.assertEqual(row['recognitionDiagnostics']['floorRead']['scores'],{k:round(v,5) for k,v in read['scores'].items()})
    self.assertEqual(set(read['scores']),{'-1','1','2'})
  def test_watchdog_progress_while_event_write_blocked(self):
   with tempfile.TemporaryDirectory() as d:
@@ -95,5 +99,3 @@ class RaceTests(unittest.TestCase):
    for p in files:self.assertNotIn(b'PRIVATE',p.read_bytes());json.loads(p.read_bytes())
    self.assertEqual(set(safe_diagnostic_log_files(root)),set(files))
 if __name__=='__main__':unittest.main()
-
-
