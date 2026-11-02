@@ -1,3 +1,34 @@
+## Windows bounded cross-session reuse (supersedes capacity-stop behavior)
+
+Windows producers now select reserved fixed pairs for Qt problems, recognition,
+Tk events, optional lifecycle and startup logs (each at most 2 x 1 MiB).
+Watchdog uses its separate directory and 2 x 64 KiB pair. Normal root remains
+16 MiB/32 owned files; watchdog root remains 256 KiB/4 files. Repeated normal
+sessions create no additional slot names. A generation integer in the existing
+ownership entry chooses the next slot; there is no additional journal.
+
+Only a slot with matching file identity and content may be recycled. The same
+Windows handle denies external write/delete sharing throughout verification,
+truncation and the complete-line write. No pathname delete/rename is performed.
+External changes, unknown files, ambiguous partial writes and failed journals
+fail closed. Old dated user files are neither migrated nor removed; an already
+full legacy root can still refuse new writes and requires explicit user handling.
+POSIX deliberately keeps non-recycling behavior: advisory locks cannot guarantee
+exclusion of noncooperating writers modifying an inode in place.
+
+Rows retain their real process sessionId/pid/stream/seq; new ring-only writers
+without an envelope receive the current process envelope, never an invented old
+session. Export manifest sessions are derived from retained rows. Failure-image
+metadata now carries the real session scope; fixed-slot matching requires that
+scope and its retained time window, including the other slot, not the filename
+alone. Image opt-in, admission, bounds and pixels are unchanged.
+
+Tests use temporary synthetic data only: 100 synthetic sessions, 40 actual child
+process restarts, both fixed-slot byte caps, changed files, denied second write
+handles at truncation, failed recycling writes, and cross-session export matching.
+Windows red baseline: 44e9434 / run 41402247173 (missing slot routing, 3 errors).
+Linux skips Windows recycling tests rather than claiming exclusive-handle proof.
+
 Latest replay analysis (2026-11-02): main is now
 `59bba3dcea90811964688960f0b8086e345f3c77`, after PRs 81 and 78.
 The baseline merge-base is unchanged; divergence is now 25 / 42 commits.

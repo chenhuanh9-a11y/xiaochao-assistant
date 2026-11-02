@@ -53,6 +53,7 @@ def safe_record(value):
             if key in ('invalidationOrigin','exceptionOrigin'):
                 parts=item.split(':')
                 if all(part in CODES or part in EXCEPTIONS for part in parts):return item
+            if key == 'logStream' and item in ('startup-error-ring.log','thread-stacks-ring.jsonl'):return item
             if key == 'logStream' and depth == 1 and re.fullmatch(r'(?:events-[A-Za-z0-9_.-]+\.jsonl|lifecycle-detail\.jsonl)',item):return item
             if key == 'installIdStatus' and item.startswith('unavailable:') and item.split(':',1)[1] in EXCEPTIONS:return item
             if key in ('buildFingerprint','runtimeBuildFingerprint') and re.fullmatch(r'[A-Z0-9]{1,64}',item):return item

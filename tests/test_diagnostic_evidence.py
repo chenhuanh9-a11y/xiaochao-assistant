@@ -34,7 +34,8 @@ def production_functions():
              'export_diagnostic_logs', 'diagnostic_runtime_context'}
     functions = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name in names]
     assert len(functions) == len(names)
-    ns = dict(Path=Path, datetime=datetime, json=json, os=os, re=re, sys=sys,
+    from diagnostic_identity import process_scope
+    ns = dict(process_scope=process_scope, Path=Path, datetime=datetime, json=json, os=os, re=re, sys=sys,
               tempfile=tempfile, zipfile=zipfile, hashlib=hashlib, copy=copy, time=time, threading=threading,
               np=np, NightmareMemoryStore=NightmareMemoryStore,
               DIAGNOSTIC_LOG_LIMIT=8, DIAGNOSTIC_FILE_BYTE_LIMIT=8*1024*1024,

@@ -22,6 +22,14 @@ def _moment():
     return datetime.now(timezone.utc).isoformat(timespec='milliseconds')
 
 
+def process_scope():
+    """Actual process identity without allocating a log sequence or disk IO."""
+    global _process
+    with _guard:
+        if _process[0] != os.getpid():_process=(os.getpid(),uuid4().hex)
+        return dict(sessionId=_process[1],pid=_process[0])
+
+
 class Installation:
     def __init__(self, settings_dir):
         self.path = Path(settings_dir) / 'diagnostic-identity.json'

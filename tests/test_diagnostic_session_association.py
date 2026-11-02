@@ -29,7 +29,7 @@ class DiagnosticSessionAssociationTests(unittest.TestCase):
         moment = datetime.fromisoformat(self.stamp).timestamp()
         self.windows = {self.log: (moment - 60, moment + 60)}
 
-    def export(self, diagnostic, windows=None, captured_at=None):
+    def export(self, diagnostic, windows=None, captured_at=None, session_windows=None):
         row = dict(event='alignment-failure-sample-written', recordedAt=self.stamp,
                    capturedAt=captured_at or self.stamp, diagnostic=diagnostic,
                    samplePath='failures/frame.png', sampleSha256=hashlib.sha256(self.image).hexdigest())
@@ -38,7 +38,7 @@ class DiagnosticSessionAssociationTests(unittest.TestCase):
         with zipfile.ZipFile(output, 'w') as archive:
             report = export_failure_evidence(archive, [self.root],
                 self.windows if windows is None else windows, lambda data: data,
-                build_fingerprint='SYNTHETIC')
+                build_fingerprint='SYNTHETIC',session_windows=session_windows)
         return report, zipfile.ZipFile(output)
 
     def assert_excluded(self, diagnostic, **kwargs):
@@ -48,6 +48,18 @@ class DiagnosticSessionAssociationTests(unittest.TestCase):
             self.assertEqual(report['imageCount'], 0)
             self.assertEqual(report['cases'], [])
             self.assertEqual(archive.namelist(), [])
+
+    def test_fixed_slot_requires_actual_session_and_uses_correct_backup(self):
+        ring='events-qt-ring.jsonl';previous='events-qt-ring-previous.jsonl'
+        moment=datetime.fromisoformat(self.stamp).timestamp();span=(moment-60,moment+60)
+        windows={ring:span,previous:span};sid='a'*32
+        scopes={(sid,123,previous):span,('b'*32,456,ring):span}
+        for wrong in ({},dict(sessionId='c'*32,pid=123),dict(sessionId=sid,pid=456)):
+            self.assert_excluded(dict(eventPath=ring,**wrong),windows=windows,session_windows=scopes)
+        report,archive=self.export(dict(eventPath=ring,sessionId=sid,pid=123),windows=windows,session_windows=scopes)
+        with archive:
+            self.assertEqual(report['imageCount'],1)
+            self.assertEqual(report['cases'][0]['logFile'],previous)
 
     def test_explicit_unexported_session_cannot_use_overlapping_same_build(self):
         for path in ('events-session-b.jsonl', r'C:\synthetic\events-session-b.jsonl'):

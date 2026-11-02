@@ -92,7 +92,7 @@ def _automatic_image(root, relative, limit, expected):
 def export_failure_evidence(archive, roots, log_windows, redact, *, build_fingerprint,
                             max_samples=12, max_bytes=24 * 1024 * 1024,
                             journal_bytes=8 * 1024 * 1024, automatic_only=False,
-                            include_automatic=True):
+                            include_automatic=True, session_windows=None):
     """Copy recent journal records and their exact saved frames, with omissions explicit."""
     report = dict(requested=bool(roots), cases=[], journals=[], imageCount=0,
                   imageBytes=0, matchingCases=0, omittedBySampleLimit=0,
@@ -148,6 +148,19 @@ def export_failure_evidence(archive, roots, log_windows, redact, *, build_finger
                 event_path = str(diagnostic.get('eventPath') or '')
                 source_log = event_path.replace('\\', '/').rsplit('/', 1)[-1]
                 window = log_windows.get(source_log)
+                # Fixed cross-session slots require the exact recorded process
+                # scope. Never assign an old/missing session to a reused slot.
+                if source_log in ('events-qt-ring.jsonl','events-tk-ring.jsonl',
+                                  'events-qt-ring-previous.jsonl','events-tk-ring-previous.jsonl'):
+                    sid,pid=diagnostic.get('sessionId'),diagnostic.get('pid')
+                    if not isinstance(sid,str) or type(pid) is not int:continue
+                    scoped=session_windows or {}
+                    base=source_log.replace('-previous.jsonl','.jsonl')
+                    candidates_for_scope=(base,base.removesuffix('.jsonl')+'-previous.jsonl')
+                    match=next(((name,scoped[(sid,pid,name)]) for name in candidates_for_scope
+                        if (sid,pid,name) in scoped and scoped[(sid,pid,name)][0]<=captured<=scoped[(sid,pid,name)][1]),None)
+                    if match is None:continue
+                    source_log,window=match
                 # ProblemsService rotates this exact Qt session to one named
                 # backup. Only included logs from that same session qualify.
                 if (event_path and (not window or not window[0] <= captured <= window[1])

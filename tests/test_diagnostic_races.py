@@ -96,7 +96,9 @@ class RaceTests(unittest.TestCase):
    files=list((root/'watchdog').glob('*.jsonl'))
    self.assertLessEqual(len(files),4);self.assertLessEqual(sum(p.stat().st_size for p in files),256*1024)
    self.assertTrue(files)
-   for p in files:self.assertNotIn(b'PRIVATE',p.read_bytes());json.loads(p.read_bytes())
+   for p in files:
+    self.assertNotIn(b'PRIVATE',p.read_bytes())
+    for line in p.read_bytes().splitlines():json.loads(line)
    self.assertEqual(set(safe_diagnostic_log_files(root)),set(files))
  def test_pinned_log_directory_does_not_block_sibling_identity_reset(self):
   from diagnostic_identity import installation

@@ -126,6 +126,8 @@ class ProblemsService(QObject):
         super().__init__(parent)
         stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
         self.log_path = Path(paths.work_root) / 'nightmare-live' / f'events-qt-{stamp}-{os.getpid()}.jsonl'
+        from diagnostic_storage import slot_path
+        self.log_path = slot_path(self.log_path, 'problem')
         settings = getattr(paths, "settings_path", Path(paths.work_root) / "nightmare-memory" / "ui-settings.json")
         self.identity = DiagnosticStream(self.log_path.name, Path(settings).parent)
         self.recognition_path = self.log_path.with_name(self.log_path.name.replace('events-qt-', 'events-qt-recognition-', 1))

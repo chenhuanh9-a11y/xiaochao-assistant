@@ -34,6 +34,49 @@ class WindowsRingTests(unittest.TestCase):
    before={p:p.read_bytes() for p in files}
    with self.assertRaises(OSError):storage.append_record(path,dict(event='capture-error'),file_limit=256)
    self.assertEqual(before,{p:p.read_bytes() for p in files})
+ def test_recycle_holds_exclusive_handle_and_failed_write_is_unconfirmed(self):
+  with tempfile.TemporaryDirectory() as d:
+   path=storage.slot_path(Path(d)/'events-any.jsonl','problem')
+   row=dict(event='capture-error',sessionId='a'*32,pid=1,logStream=path.name,seq=1)
+   storage.append_record(path,row,file_limit=256);storage.append_record(path,dict(row,seq=2),file_limit=256)
+   inode=path.stat().st_ino;original=storage.os.ftruncate;checked=[]
+   def truncate(fd,size):
+    if os.fstat(fd).st_ino==inode:
+     with self.assertRaises(OSError):
+      with path.open('wb') as external:external.write(b'USER REPLACEMENT')
+     checked.append(True)
+    return original(fd,size)
+   with patch.object(storage.os,'ftruncate',side_effect=truncate):
+    storage.append_record(path,dict(row,seq=3),file_limit=256)
+   self.assertTrue(checked)
+   original_write=storage.os.write
+   previous=path.with_name(path.stem+'-previous.jsonl');failed_inode=previous.stat().st_ino
+   def failed(fd,data):
+    if os.fstat(fd).st_ino==failed_inode:raise OSError('injected-write-denied')
+    return original_write(fd,data)
+   with patch.object(storage.os,'write',side_effect=failed):
+    with self.assertRaises(storage.BatchStorageError) as error:
+     storage.append_record(path,dict(row,seq=4),file_limit=256)
+   self.assertEqual(error.exception.completed,0)
+   with self.assertRaises(OSError):storage.append_record(path,dict(row,seq=5),file_limit=256)
+
+ def test_real_process_restarts_do_not_consume_new_slots(self):
+  import subprocess,sys
+  code="""import json,sys
+from pathlib import Path
+from diagnostic_storage import slot_path,append_record
+p=slot_path(Path(sys.argv[1])/'events-new-session.jsonl','problem')
+for i in range(4):append_record(p,{'event':'capture-error','actual':int(sys.argv[2])},file_limit=1024)
+"""
+  with tempfile.TemporaryDirectory() as d:
+   for session in range(40):subprocess.run([sys.executable,'-c',code,d,str(session)],check=True,capture_output=True)
+   files=list(Path(d).glob('*.jsonl'));self.assertEqual(len(files),2)
+   rows=[json.loads(line) for p in files for line in p.read_bytes().splitlines()]
+   self.assertTrue(any(r['actual']==39 for r in rows))
+   self.assertGreaterEqual(len({r['sessionId'] for r in rows}),2)
+   self.assertTrue(all(len(r['sessionId'])==32 and r['pid']>0 and r['seq']>0 for r in rows))
+   self.assertLessEqual(sum(p.stat().st_size for p in files),2048)
+
  def test_stream_and_watchdog_slots_are_disjoint(self):
   with tempfile.TemporaryDirectory() as d:
    logical=Path(d)/'events-any.jsonl'

@@ -299,6 +299,7 @@ def export_safe_diagnostic_bundle(
     logs = safe_diagnostic_log_files(live_root, limit=log_limit)
     included_logs: list[dict] = []
     log_windows = {}
+    session_windows = {}
     sessions = []
     included_bytes = 0
     fd, temporary_name = tempfile.mkstemp(
@@ -333,6 +334,11 @@ def export_safe_diagnostic_bundle(
                 included_sha256 = hashlib.sha256(payload).hexdigest().upper()
                 observed_sessions = _log_sessions(payload, path.name)
                 sessions.extend(observed_sessions)
+                for scope in observed_sessions:
+                    if scope['firstAt'] and scope['lastAt']:
+                        session_windows[(scope['sessionId'],scope['pid'],path.name)]=(
+                            datetime.fromisoformat(scope['firstAt']).timestamp(),
+                            datetime.fromisoformat(scope['lastAt']).timestamp())
                 included_logs.append({
                     "name": path.name,
                     "sourceBytes": path.stat().st_size,
@@ -359,6 +365,7 @@ def export_safe_diagnostic_bundle(
                 archive, failure_roots, log_windows, _redact_local_paths,
                 automatic_only=automatic_failure_only,
                 include_automatic=include_automatic_failure_evidence,
+                session_windows=session_windows,
                 build_fingerprint=build_fingerprint,
             )
             manifest = {

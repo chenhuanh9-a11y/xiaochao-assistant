@@ -38,6 +38,8 @@ def create_lifecycle_trace(paths):
 class LifecycleTrace:
     def __init__(self, paths):
         self.log_path = Path(paths.work_root) / "nightmare-live" / "lifecycle-detail.jsonl"
+        from diagnostic_storage import slot_path
+        self.log_path = slot_path(self.log_path, 'lifecycle')
         self._lock, self._queue = threading.Lock(), deque()
         self._accepting, self._inflight, self._dropped = True, 0, 0
         self._sequence, self._run_id, self._error = 0, uuid4().hex, ""

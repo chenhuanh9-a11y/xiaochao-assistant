@@ -1,7 +1,8 @@
 """Byte-bounded diagnostic storage with explicit verified ownership.
 
 One root has a 16 MiB / 32-file owned-log budget, in addition to each
-stream's two fixed 1 MiB slots. No automatic deletion or recycling. Unknown, changed, linked and external objects are
+stream's two fixed 1 MiB slots. Windows named ring slots recycle only through
+verified exclusive handles. POSIX and legacy names never recycle. Unknown, changed, linked and external objects are
 never removed/adopted. Interrupted writes fail closed rather than claiming
 ownership. Callers account unconfirmed writes as loss; this is not business IO.
 """
@@ -23,7 +24,22 @@ MAX_AGE=7*86400
 REGISTRY='.diagnostic-log-ownership.json'
 LOCK='.diagnostic-log.lock'
 _guard=threading.RLock()
-LOG_NAME=re.compile(r'(?:events(?:-[A-Za-z0-9_.-]+)?\.jsonl|startup-error-[A-Za-z0-9_.-]+\.log|thread-stacks-[0-9]+(?:-previous)?\.jsonl|lifecycle-detail(?:-previous)?\.jsonl)\Z')
+LOG_NAME=re.compile(r'(?:events(?:-[A-Za-z0-9_.-]+)?\.jsonl|startup-error-[A-Za-z0-9_.-]+\.log|thread-stacks-(?:[0-9]+|ring)(?:-previous)?\.jsonl|lifecycle-detail(?:-ring)?(?:-previous)?\.jsonl)\Z')
+
+SLOT_NAMES=dict(problem='events-qt-ring.jsonl',recognition='events-qt-recognition-ring.jsonl',
+    tk='events-tk-ring.jsonl',lifecycle='events-lifecycle-ring.jsonl',
+    startup='startup-error-ring.log',watchdog='thread-stacks-ring.jsonl')
+
+
+def slot_path(path,family):
+    """Only Windows opts into exclusive-handle reuse; never migrate old files."""
+    path=Path(path)
+    return path.with_name(SLOT_NAMES[family]) if os.name=='nt' else path
+
+
+def _cyclic(path):
+    return os.name=='nt' and path.name in SLOT_NAMES.values()
+
 
 class DiagnosticStorageError(OSError):pass
 
@@ -150,6 +166,7 @@ def _read(root):
             if not LOG_NAME.fullmatch(name) or len(name)>180 or not isinstance(r,dict):raise ValueError()
             if type(r['bytes']) is not int or not 0<=r['bytes']<=FILE_BYTES:raise ValueError()
             if not re.fullmatch(r'[a-f0-9]{64}',r['sha256']) or type(r['writtenAt']) not in (int,float):raise ValueError()
+            if type(r.get('generation',0)) is not int or not 0<=r.get('generation',0)<2**63:raise ValueError()
         return files
     except (ValueError,KeyError,TypeError):raise DiagnosticStorageError('diagnostic-registry-invalid') from None
 
@@ -186,10 +203,15 @@ def _append(path,data):
         before=_read_fd(fd)
         if expected and (_identity(fd)!=expected.get('identity') or len(before)!=expected['bytes'] or hashlib.sha256(before).hexdigest()!=expected['sha256']):
             raise DiagnosticStorageError('diagnostic-ownership-unavailable')
-        os.lseek(fd,0,os.SEEK_END)
+        if getattr(_local,'recycle',False):
+            # Windows handle denies all other writes/deletes for the entire
+            # verification/truncation/write. POSIX never enters this branch.
+            if not _cyclic(_local.logical):raise DiagnosticStorageError('diagnostic-recycle-unsupported')
+            os.ftruncate(fd,0);os.lseek(fd,0,os.SEEK_SET);before=b''
+        else:os.lseek(fd,0,os.SEEK_END)
         if os.write(fd,data)!=len(data):raise DiagnosticStorageError('diagnostic-short-write')
         return dict(bytes=len(before)+len(data),sha256=hashlib.sha256(before+data).hexdigest(),
-                    writtenAt=_local.now,identity=_identity(fd))
+                    writtenAt=_local.now,identity=_identity(fd),generation=_local.generation)
     finally:os.close(fd)
 
 
@@ -212,19 +234,25 @@ class BatchStorageError(DiagnosticStorageError):
 
 
 def _append_owned(root,path,previous,files,data,file_limit,root_limit,max_files,max_age,now):
-    # No pathname unlink/replace: retirement cannot safely prove a later
-    # pathname still denotes the verified file. Keep both fixed slots, then
-    # reject writes at capacity. No auto-adoption of pre-handle-era ledgers.
-    files=dict(files)
+    files=dict(files);cyclic=_cyclic(path);recycle=False;generation=0
     target=path
-    if path.name in files and files[path.name]['bytes']+len(data)>file_limit:target=previous
+    if cyclic:
+        present=[p for p in (path,previous) if p.name in files]
+        if present:
+            target=max(present,key=lambda p:(files[p.name].get('generation',0),files[p.name]['writtenAt']))
+            generation=files[target.name].get('generation',0)
+            if files[target.name]['bytes']+len(data)>file_limit:
+                target=previous if target==path else path
+                generation+=1;recycle=target.name in files
+    elif path.name in files and files[path.name]['bytes']+len(data)>file_limit:target=previous
     expected=files.get(target.name)
-    if expected and expected['bytes']+len(data)>file_limit:
+    if expected and not recycle and expected['bytes']+len(data)>file_limit:
         raise DiagnosticStorageError('diagnostic-stream-budget-exhausted')
-    total=sum(r['bytes'] for r in files.values())+len(data)
+    total=sum(r['bytes'] for r in files.values())+len(data)-(expected['bytes'] if recycle else 0)
     if total>root_limit or len(files)+(target.name not in files)>max_files:
         raise DiagnosticStorageError('diagnostic-root-budget-unavailable')
-    _local.expected=expected;_local.now=now
+    _local.expected=expected;_local.now=now;_local.recycle=recycle
+    _local.logical=path;_local.generation=generation
     files[target.name]=_append(target,data)
     return files
 
@@ -237,11 +265,27 @@ def append_records(path,rows,*,file_limit=FILE_BYTES,root_limit=ROOT_BYTES,max_f
     path=Path(path).absolute();root=path.parent
     if not 256<=file_limit<=FILE_BYTES:raise DiagnosticStorageError('diagnostic-file-budget-invalid')
     if not LOG_NAME.fullmatch(path.name) or len(path.name)>180:raise DiagnosticStorageError('diagnostic-file-name-invalid')
+    if _cyclic(path):
+        from diagnostic_identity import DiagnosticStream, _moment
+        stream=DiagnosticStream(path.name)
+        rows=[dict(dict(stream.stamp(),timestampUTC=_moment()),**row) if 'sessionId' not in row else row for row in rows]
     payloads=[encode_record(row,file_limit) for row in rows]
     now=time.time() if now is None else now
     previous=path.with_name(path.stem+'-previous'+path.suffix)
     with _transaction(root):
         files=_read(root);original=dict(files);completed=0
+        # Before using a cross-session pair, reject either changed/unknown slot.
+        # This check does not authorize mutation: _append revalidates its handle.
+        if _cyclic(path):
+            for slot in (path,previous):
+                if slot.name in files:
+                    if not _verified(root,slot.name,files[slot.name]):
+                        raise DiagnosticStorageError('diagnostic-ownership-unavailable')
+                else:
+                    try:fd=_open_fd(slot,os.O_RDONLY)
+                    except FileNotFoundError:continue
+                    else:
+                        os.close(fd);raise DiagnosticStorageError('diagnostic-ownership-unavailable')
         try:
             for data in payloads:
                 files=_append_owned(root,path,previous,files,data,file_limit,root_limit,max_files,max_age,now)

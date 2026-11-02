@@ -159,7 +159,7 @@ class FailureSampleRecorder:
                         pixels = encoded.tobytes()
                         missing = ''
             safe_diagnostic = {k: diagnostic[k] for k in (
-                'eventPath', 'buildFingerprint', 'sourceCommit', 'evidenceKind', 'mode',
+                'eventPath', 'sessionId', 'pid', 'buildFingerprint', 'sourceCommit', 'evidenceKind', 'mode',
                 'frameCapturedAtUtc', 'mapId', 'floor', 'cycleId', 'frameId',
                 'captureGeneration', 'sourceFrameGeneration', 'cropExtractor',
                 'observationBounds', 'cropPaddingRemoved', 'sampleRole') if k in diagnostic}
@@ -232,7 +232,8 @@ class FailureSampleRecorder:
             self.lock.release()
 
     def configure(self, *, event_path, build_fingerprint, source_commit):
-        self.metadata = dict(eventPath=str(event_path), buildFingerprint=str(build_fingerprint),
+        from diagnostic_identity import process_scope
+        self.metadata = dict(**process_scope(), eventPath=str(event_path), buildFingerprint=str(build_fingerprint),
                              sourceCommit=str(source_commit))
 
     def can_record(self, frame, key):

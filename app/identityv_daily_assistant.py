@@ -120,6 +120,7 @@ from session_state_machine import (
     verified_map_hotkey_frame,
 )
 from async_event_log import AsyncEventLog
+from diagnostic_identity import process_scope
 from native_resource_validation import NativeResourceValidationMixin
 from base_display_integration import BaseDisplayIntegrationMixin, display_source_guard
 from runtime_timeline import context as runtime_log_context
@@ -813,7 +814,8 @@ def report_unhandled_error(exc_type, exc_value, exc_traceback) -> None:
     try:
         LIVE_ROOT.mkdir(parents=True, exist_ok=True)
         path = LIVE_ROOT / f"startup-error-{datetime.now():%Y%m%d-%H%M%S}.log"
-        from diagnostic_storage import append_record
+        from diagnostic_storage import append_record, slot_path
+        path = slot_path(path, "startup")
         append_record(path, dict(event="startup-error", traceback="".join(
             traceback.format_exception(exc_type, exc_value, exc_traceback))))
         message = f"星图遇到错误，已保存诊断日志：\n{path}"
@@ -5819,6 +5821,8 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         self.optimistic_sheet_cycle_id: int | None = None
         self.optimistic_sheet_floor: str | None = None
         self.event_path = LIVE_ROOT / f"events-{datetime.now():%Y%m%d-%H%M%S}.jsonl"
+        from diagnostic_storage import slot_path
+        self.event_path = slot_path(self.event_path, "tk")
         self._event_log = AsyncEventLog(self.event_path, settings_dir=self.settings_path.parent)
         self.diagnostic_export_in_progress = False
         self.display_environment: dict | None = None
@@ -14063,7 +14067,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             observations = {name: value.astype(np.uint8, copy=True) for name, value in observations.items()}
             diagnostic = compact(dict(
                 version=APP_VERSION, buildFingerprint=BUILD_FINGERPRINT,
-                processId=os.getpid(), eventPath=str(getattr(self, 'event_path', '')),
+                **process_scope(), processId=os.getpid(), eventPath=str(getattr(self, 'event_path', '')),
                 profileId=event.get('routeProfileId'),
                 frameCapturedAtUtc=context.get('frameCapturedAtUtc'),
                 sourceFrameGeneration=event.get('sourceFrameGeneration'),
@@ -14435,7 +14439,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 map_evidence = self._mode_map_interface(frame, floor_read=floor_read)
             diagnostic = dict(stage=reason, failureKind=failure_kind, mode=self.game_mode, profileId=profile,
                 version=APP_VERSION, buildFingerprint=BUILD_FINGERPRINT,
-                processId=os.getpid(), eventPath=str(self.event_path),
+                **process_scope(), processId=os.getpid(), eventPath=str(self.event_path),
                 cycleId=cycle_id, captureGeneration=cycle_id,
                 frameCapturedAtUtc=captured_at,
                 captureStartFrameGeneration=capture_start_frame_generation,
@@ -14516,7 +14520,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             diagnostic = dict(stage='identity-rejection', mode=mode, profileId=profile,
                 version=APP_VERSION, buildFingerprint=BUILD_FINGERPRINT,
                 packageMetadata=copy.deepcopy(getattr(self, 'package_metadata', None)),
-                processId=os.getpid(), eventPath=str(getattr(self, 'event_path', '')),
+                **process_scope(), processId=os.getpid(), eventPath=str(getattr(self, 'event_path', '')),
                 cycleId=cycle_id, captureGeneration=event.get('token'),
                 rankStartedMonotonicAt=started,rankCompletedMonotonicAt=completed,
                 sampleQueuedMonotonicAt=now,
