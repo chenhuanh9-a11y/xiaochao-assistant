@@ -183,13 +183,7 @@ class ClientCaptureProvider:
             if not global_key_is_allowed(hwnd, foreground):
                 trace["foreground"] = "not-bound-game"
                 error = CaptureUnavailable("Bound game must own the foreground before capture")
-                error.capture_diagnostics = dict(expectedHwnd=hwnd, foregroundHwnd=foreground)
-                process_id = getattr(self._native, "window_process_id", None)
-                if callable(process_id) and foreground:
-                    try:
-                        error.capture_diagnostics["foregroundPid"] = process_id(foreground)
-                    except OSError:
-                        pass
+                error.capture_diagnostics = dict(expectedHwnd=hwnd, foregroundRole='other')
                 raise error
             trace["foreground"] = "verified-before-capture"
             trace["phase"] = "client-context"

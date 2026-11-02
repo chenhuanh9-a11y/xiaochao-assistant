@@ -168,10 +168,17 @@ class NoninterferenceTests(unittest.TestCase):
             self.assertFalse(results[0][2],kind)
 
     def test_capture_authorization_source_is_byte_identical_to_hotfix(self):
-        for relative in ('experiments/qt_quick/client_capture.py','app/client_region_capture.py',
+        for relative in ('app/client_region_capture.py',
                          'experiments/qt_quick/client_capture_exclusion.py'):
             self.assertEqual(hashlib.sha256((ROOT/relative).read_bytes()).hexdigest(),
                              MANIFEST['files'][relative]['sha256'], relative)
+
+    def test_capture_source_change_is_only_foreground_diagnostic_metadata(self):
+        original = (FIXTURES / MANIFEST['files']['experiments/qt_quick/client_capture.py']['fixture']).read_text('utf-8')
+        start = original.index('                error.capture_diagnostics = dict(expectedHwnd=hwnd, foregroundHwnd=foreground)')
+        end = original.index('                raise error', start)
+        expected = original[:start] + "                error.capture_diagnostics = dict(expectedHwnd=hwnd, foregroundRole='other')\n" + original[end:]
+        self.assertEqual(expected, (ROOT/'experiments/qt_quick/client_capture.py').read_text('utf-8'))
 
     def test_bad_diagnostic_sink_does_not_change_verdict(self):
         original=current.LiveRuntime._recognition_diagnostic
