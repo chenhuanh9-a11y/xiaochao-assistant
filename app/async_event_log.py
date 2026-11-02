@@ -122,6 +122,8 @@ class AsyncEventLog:
             except Exception:
                 with self.condition:
                     self.failed += 1
+                    self.dropped += 1
+                    self.identity.drop(row, "write-failed")
             finally:
                 with self.condition:
                     self.active = False

@@ -87,6 +87,12 @@ class _StrictHandler(RotatingFileHandler):
         raise  # Surface disk errors to the service instead of silently losing text.
 
 
+class _BatchFailure(Exception):
+    def __init__(self, failure, completed):
+        super().__init__(str(failure))
+        self.completed = completed
+
+
 def _write_batch(path, rows):
     from client_paths import _no_links
     _no_links(path.parent)
@@ -97,10 +103,14 @@ def _write_batch(path, rows):
     # Keep the single backup inside diagnostic_export's existing events-*.jsonl glob.
     handler.namer = lambda name: name.removesuffix('.jsonl.1') + '-previous.jsonl'
     handler.setFormatter(logging.Formatter('%(message)s'))
+    completed = 0
     try:
         for row in rows:
             message = json.dumps(dict({'event': 'qt-runtime-problem'}, **row), ensure_ascii=False)
             handler.emit(logging.LogRecord('xingtu.problems', logging.WARNING, '', 0, message, (), None))
+            completed += 1
+    except Exception as failure:
+        raise _BatchFailure(failure, completed) from failure
     finally:
         handler.close()
 
@@ -119,7 +129,7 @@ class _Write(QRunnable):
         try:
             _write_batch(self.path, self.rows)
         except Exception as failure:
-            error = _text(str(failure), 1024)
+            error = dict(message=_text(str(failure), 1024), completed=getattr(failure, 'completed', 0))
         self.signals.done.emit(error)
 
 
@@ -180,6 +190,7 @@ class ProblemsService(QObject):
                 rows.append({key: deepcopy(value) for key, value in row.items()
                              if not key.startswith('_')})
         return dict(recentProblems=rows, droppedWrites=self._dropped, diagnosticLoss=self.identity.loss(),
+                    recognitionDiagnosticLoss=self.recognition_identity.loss(),
                     pendingWrites=bool(self._job is not None or self._queue),
                     snapshotLimit=snapshot_limit)
 
@@ -297,7 +308,7 @@ class ProblemsService(QObject):
             lane = row['recognitionDiagnostics'].get('stage')
             now = time.monotonic()
             if now < self._recognition_next.get(lane, 0):
-                stream.drop(row, 'recognition-rate-limit')
+                stream.suppress(row, 'recognition-rate-limit')
                 return True
             self._recognition_next[lane] = now + .25
             self._recognition_next.move_to_end(lane)
@@ -306,7 +317,7 @@ class ProblemsService(QObject):
         if previous is not None and previous[0] == signature and 'recognitionDiagnostics' not in row:
             self._trace_states[key] = (signature, previous[1]+1)
             self._trace_states.move_to_end(key)
-            self.identity.drop(row, "unchanged-trace-coalesced")
+            self.identity.suppress(row, "unchanged-trace-coalesced")
             return True  # No per-refresh UI notification or disk append.
         limit = PENDING_LIMIT // 2 if 'recognitionDiagnostics' in row else PENDING_LIMIT
         if len(self._queue) + self._inflight_rows >= limit:
@@ -349,10 +360,19 @@ class ProblemsService(QObject):
 
     @Slot(object)
     def _finished(self, error):
+        rows = self._job.rows if self._job is not None else ()
         self._job = None
         self._inflight_rows = 0
         if error is not None:
-            self._write_error_raw = str(error)
+            completed = error.get('completed', 0) if isinstance(error, dict) else 0
+            completed = completed if type(completed) is int and 0 <= completed <= len(rows) else 0
+            # Confirmed prefix succeeded; the failing row may be partially
+            # written and is conservatively counted as unconfirmed/lost.
+            for row in rows[completed:]:
+                stream = self.recognition_identity if row.get('logStream') == self.recognition_identity.name else self.identity
+                stream.drop(row, 'write-failed')
+                self._dropped += 1
+            self._write_error_raw = str(error.get('message', '') if isinstance(error, dict) else error)
             self._write_error = '问题日志暂时无法保存，本次运行的列表仍可查看。请先复制问题的技术详情，避免关闭软件后丢失记录。'
         if not self._accepting:
             self.flushSummary()

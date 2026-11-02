@@ -92,6 +92,8 @@ class DiagnosticStream:
         self.lock = threading.RLock()
         self.sequence = 0
         self.dropped = 0
+        self.suppressed = 0
+        self.suppression_reasons = {}
         self.ranges = deque(maxlen=16)
         self.omitted_ranges = 0
         self._checkpoint_dropped = None
@@ -121,9 +123,16 @@ class DiagnosticStream:
                 self.ranges.append(dict(firstSeq=seq, lastSeq=seq, firstAt=stamp,
                                         lastAt=stamp, count=1, reason=reason))
 
+    def suppress(self, row, reason):
+        """Intentional sampling/coalescing is not a failed accepted write."""
+        with self.lock:
+            self.suppressed += 1
+            self.suppression_reasons[reason] = self.suppression_reasons.get(reason, 0) + 1
+
     def loss(self):
         with self.lock:
-            return dict(droppedTotal=self.dropped, ranges=[dict(row) for row in self.ranges],
+            return dict(droppedTotal=self.dropped, lostTotal=self.dropped,
+                        suppressedTotal=self.suppressed, suppressionReasons=dict(self.suppression_reasons), ranges=[dict(row) for row in self.ranges],
                         omittedRangeCount=self.omitted_ranges)
 
     def checkpoint(self, *, force=False):
