@@ -22,14 +22,17 @@ if str(ROOT / "app") not in sys.path:
     sys.path.insert(0, str(ROOT / "app"))
 from client_control_layout import load_layout, preset_layout, validate_layout
 from floor_control_region import normalized_region
+from client_manual_map import MANUAL_MAP_PICKER_DEFAULT_HOTKEY, MANUAL_PICKER_ACTION, SELECTION_MODES
 from hotkey_bindings import parse_chord, validate_unique
 from hotkey_keys import _primary_hotkey_to_vk, recorded_native_primary, NATIVE_ONLY_SHORTCUT_KEYS
 from opacity_controls import load_opacities
 
 ACTION_ORDER = ("toggle-panel", "candidate-prev", "candidate-next", "confirm-round",
-                "cycle-floor", "end-round", "toggle-sheet-visibility", "start-round", "toggle-round")
+                "cycle-floor", "end-round", "toggle-sheet-visibility", "start-round", "toggle-round",
+                MANUAL_PICKER_ACTION)
 LEGACY_ACTIONS = ["F5", "F6", "F7", "F8", "F9", "F10", "F11", "", ""]
-FRESH_ACTIONS = ["F9", "F6", "F7", "F8", "", "", "F11", "", "F10"]
+FRESH_ACTIONS = ["F9", "F6", "F7", "F8", "", "", "F11", "", "F10",
+                 MANUAL_MAP_PICKER_DEFAULT_HOTKEY]
 BOOL_DEFAULTS = {"referenceSheetVisible": True, "sheetVisibilityEnabled": True,
                  "orbVisible": True, "reduceMotion": False, "uiSoundEnabled": False,
                  "difficultGridEnabled": False, "onboardingCompleted": False}
@@ -37,6 +40,7 @@ RANGES = {"sheetOpacity": (0., 1.), "referenceOpacity": (0., 1.),
           "interfaceOpacity": (.65, .95), "sheetScale": (.5, 1.5)}
 DEFAULTS = {**BOOL_DEFAULTS, "sheetOpacity": .55, "referenceOpacity": .55,
             "interfaceOpacity": .82, "sheetScale": 1., "gameMode": "nightmare",
+            "mapSelectionMode": "auto",
             "routeProfileId": "wang-qingxin", "modeRouteProfiles": {},
             "zhan10CoffinVariantId": "variant-01", "hotkey": "G",
             "actionHotkeys": FRESH_ACTIONS, "gameControlLayout": preset_layout(),
@@ -59,6 +63,9 @@ def _validate(key, value):
     elif key == "gameMode":
         if value not in ("nightmare", "difficult"):
             raise ValueError("模式只能为 nightmare 或 difficult")
+    elif key == "mapSelectionMode":
+        if value not in SELECTION_MODES:
+            raise ValueError("选图方式只能为 auto 或 manual")
     elif key in ("routeProfileId", "zhan10CoffinVariantId"):
         if not isinstance(value, str) or not value or len(value) > 128 or any(ord(c) < 32 for c in value):
             raise ValueError("请输入有效的配置 ID（1–128 个字符）")
@@ -137,6 +144,15 @@ def _legacy_actions(value, map_name):
         # Matches the six-action migration in the legacy reader.
         names.append(next(name for name in ["F11", *(f"F{i}" for i in range(12, 25))]
                           if parse_chord(name, _primary_hotkey_to_vk).vk not in used))
+    if len(names) == 9:
+        # Same rule as the legacy reader: the new picker default is only
+        # applied when Alt+1 is free (including the map key), otherwise unbound.
+        default = parse_chord(MANUAL_MAP_PICKER_DEFAULT_HOTKEY, _primary_hotkey_to_vk)
+        taken = {parse_chord(name, _primary_hotkey_to_vk).identity for name in names if name}
+        map_chord = parse_chord(map_name, _primary_hotkey_to_vk)
+        if map_chord.vk:
+            taken.add(map_chord.identity)
+        names.append(default.name if default.identity not in taken and default.vk != map_chord.vk else "")
     return names + [""] * (len(ACTION_ORDER) - len(names))
 
 
@@ -534,6 +550,11 @@ class SettingsService(QObject):
                                    if key == "actionHotkeys" else _validate(key, raw[key]))
                 except (TypeError, ValueError) as error:
                     invalid[key] = str(error)
+        if len(values["actionHotkeys"]) != len(ACTION_ORDER):
+            # Reachable for an existing file that omits actionHotkeys: the
+            # load above starts such files from the nine-slot LEGACY_ACTIONS,
+            # not FRESH_ACTIONS, so they get the same one-time migration.
+            values["actionHotkeys"] = _legacy_actions(values["actionHotkeys"], values["hotkey"])
         try:
             _validate_hotkeys(values, raw.get("actionHotkeys"))
         except ValueError as error:

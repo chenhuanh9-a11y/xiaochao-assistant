@@ -132,7 +132,8 @@ class ClientInfoService(QObject):
         settings = getattr(coordinator, "settings", None)
         values = settings.persistedValues if settings is not None else {}
         order = ("toggle-panel", "candidate-prev", "candidate-next", "confirm-round", "cycle-floor",
-                 "end-round", "toggle-sheet-visibility", "start-round", "toggle-round")
+                 "end-round", "toggle-sheet-visibility", "start-round", "toggle-round",
+                 "manual-map-picker")
         actions = dict(zip(order, values.get("actionHotkeys", [])))
         actions["map"] = values.get("hotkey", "")
         for row in rows:

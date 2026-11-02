@@ -9,8 +9,8 @@ Item {
     readonly property var preferences: settingsService.values
     property var profileOptions: []
     property string profilesMode: ""
-    readonly property var actionNames: ["显示/隐藏面板", "上一个候选", "下一个候选", "确认本局", "切换楼层", "结束本局", "显示/隐藏小抄", "开始本局", "开始/结束本局"]
-    readonly property var actionIds: ["toggle-panel", "candidate-prev", "candidate-next", "confirm-round", "cycle-floor", "end-round", "toggle-sheet-visibility", "start-round", "toggle-round"]
+    readonly property var actionNames: ["显示/隐藏面板", "上一个候选", "下一个候选", "确认本局", "切换楼层", "结束本局", "显示/隐藏小抄", "开始本局", "开始/结束本局", "手动选图"]
+    readonly property var actionIds: ["toggle-panel", "candidate-prev", "candidate-next", "confirm-round", "cycle-floor", "end-round", "toggle-sheet-visibility", "start-round", "toggle-round", "manual-map-picker"]
     readonly property var moduleNames: ({display: "显示", mode: "游戏模式", manual_map: "选择地图与楼层", recognition: "候选与再识别", round: "本局动作"})
     property bool advancedShortcuts: false
     property bool advancedDisplay: false
@@ -228,7 +228,7 @@ Item {
                                 Layout.fillWidth: true
                                 spacing: 6
                                 Repeater {
-                                    model: [1, 2, 3, 4, 5, 7]
+                                    model: [1, 2, 3, 4, 5, 7, 9]
                                     delegate: ShortcutRow {
                                         required property int modelData
                                         actionIndex: modelData
@@ -312,6 +312,21 @@ Item {
                     Item { Layout.fillWidth: true }
                 }
                 Note { text: "保存默认工作模式与路线作者；可用作者来自当前模式的本地图包。" }
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label { text: "选图方式"; color: "#354f75"; font.pixelSize: 13; Layout.fillWidth: true }
+                    AppButton {
+                        objectName: "setting_mapSelectionMode_auto"
+                        text: "自动识别"; selected: root.preferences.mapSelectionMode !== "manual"
+                        onClicked: { settingsService.setValue("mapSelectionMode", "auto"); settingsService.saveFields(["mapSelectionMode"]) }
+                    }
+                    AppButton {
+                        objectName: "setting_mapSelectionMode_manual"
+                        text: "手动选图"; selected: root.preferences.mapSelectionMode === "manual"
+                        onClicked: { settingsService.setValue("mapSelectionMode", "manual"); settingsService.saveFields(["mapSelectionMode"]) }
+                    }
+                }
+                Note { text: "手动选图时不自动识别地图，按“手动选图”快捷键或游戏控件里的“选择本局地图”自己选；锁图后两种方式相同。" }
                 GridLayout {
                     columns: root.width < 560 ? 1 : 2
                     columnSpacing: 16; rowSpacing: 8

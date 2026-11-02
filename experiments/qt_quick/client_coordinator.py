@@ -18,6 +18,7 @@ if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 from reference_position_editor import ReferencePositionEdit
 from client_problem_messages import operation_problem
+from client_manual_map import MANUAL_PICKER_ACTION, normalize_selection_mode
 
 
 def _presentation_error_details(error):
@@ -196,6 +197,7 @@ class ClientCoordinator(QObject):
         self.backend, self.settings, self.resources = backend, settings, resources
         self.session, self.windows, self.input = session, windows, native_input
         self.capture, self.runtime, self.images = capture, runtime, images
+        self._manual_map_picker = None
         self._diagnostics = getattr(runtime, "_diagnostics", None)
         self._catalog = window_catalog
         self._window_rows = []
@@ -742,8 +744,40 @@ class ClientCoordinator(QObject):
     def requestManualMapSelection(self):
         if self._closing or self._closed:
             return
+        if (normalize_selection_mode(self.settings.persistedValues.get("mapSelectionMode")) == "manual"
+                and self._manual_map_picker is not None):
+            # Manual mode keeps the game in the foreground and offers the
+            # picker directly; no candidate reshuffle is needed.
+            self._manual_map_picker.open(source="map-button")
+            return
         self.session.dispatch("reselect_map")
         self.navigate("recognition")
+
+    @Slot(str)
+    def setMapSelectionMode(self, mode):
+        if mode not in ("auto", "manual"):
+            return
+        if self.settings.setValue("mapSelectionMode", mode):
+            self.settings.saveFields(["mapSelectionMode"])
+
+    @Slot(str, result=bool)
+    def confirmManualMap(self, map_id):
+        """Commit the picker choice through the existing confirm_route path."""
+        if self._closing or self._closed or not map_id:
+            return False
+        if self.session.busy or self.resources.busy:
+            self._message = "请等待当前操作完成后再选择本局地图"
+            self.changed.emit()
+            return False
+        # The picker has its own availability. It deliberately does not use
+        # the advertised confirm_route command: that command stays tied to a
+        # selected/floor-ready candidate for the existing confirm buttons.
+        if not self.runtime.snapshot().get("manualMapPickAvailable"):
+            self._message = "请先开始本局并等待地图资源就绪，再选择本局地图"
+            self.changed.emit()
+            return False
+        self.session.dispatchWithPayload("confirm_route", {"mapId": str(map_id)})
+        return True
 
     def _notification_geometry(self):
         from client_screen_geometry import project_client_geometry, ScreenGeometryError
@@ -776,6 +810,50 @@ class ClientCoordinator(QObject):
         return dict(x=area.x(), y=area.y(), width=area.width(), height=area.height(), diagnostics=diagnostics)
 
     notificationGeometry = Property("QVariantMap", _notification_geometry, notify=changed)
+
+    def manualMapPickerGeometry(self):
+        """Bound game client rectangle in Qt logical pixels; work-area fallback.
+
+        The catalog already carries the physical client bounds and DPI. The
+        picker only needs the existing verified projection, never a title or a
+        new native window query.
+        """
+        from client_screen_geometry import project_client_geometry, ScreenGeometryError
+        diagnostics = dict(placement="primary-fallback", gameClientMatched=False,
+                           reason="no-bound-client")
+        row = next((row for row in getattr(self, "_window_rows", ())
+                    if str(row.get("hwnd")) == self._bound), None) if self._bound else None
+        if row is not None and not row.get("minimized"):
+            try:
+                bounds = row.get("clientBounds")
+                if not isinstance(bounds, (list, tuple)) or len(bounds) != 4:
+                    raise ValueError("bound-client-bounds-unavailable")
+                x, y, right, bottom = (int(value) for value in bounds)
+                if right <= x or bottom <= y:
+                    raise ValueError("bound-client-bounds-invalid")
+                query = getattr(self._native_windows, "monitor_info", None)
+                if not callable(query):
+                    raise ValueError("native-monitor-info-unavailable")
+                info = query(int(self._bound))
+                monitor = info["monitorRect"]
+                projection = project_client_geometry((x, y), (right-x, bottom-y),
+                    info["device"], monitor, QGuiApplication.screens())
+                return dict(x=projection.origin_x, y=projection.origin_y,
+                            width=(right-x)/projection.device_scale,
+                            height=(bottom-y)/projection.device_scale,
+                            diagnostics=dict(placement="game-client", gameClientMatched=True,
+                                             projection=projection.diagnostics))
+            except ScreenGeometryError as error:
+                diagnostics.update(reason="client-projection-unverified", detail=str(error),
+                                   projection=error.diagnostics)
+            except (OSError, ValueError, TypeError, KeyError, AttributeError, RuntimeError) as error:
+                diagnostics.update(reason="bound-client-unavailable", detail=str(error)[:512])
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            return None
+        area = screen.availableGeometry()
+        return dict(x=area.x(), y=area.y(), width=area.width(), height=area.height(),
+                    diagnostics=diagnostics)
 
     @Slot()
     def returnToGame(self):
@@ -1619,6 +1697,10 @@ class ClientCoordinator(QObject):
             return
         if action == "toggle-sheet-visibility":
             self.toggleAlignedVisibility()
+            return
+        if action == MANUAL_PICKER_ACTION:
+            if self._manual_map_picker is not None:
+                self._manual_map_picker.toggle(source="hotkey")
             return
         aliases = {"map": "map", "escape": "close_map", "candidate-prev": "previous_candidate",
                    "candidate-next": "next_candidate", "confirm-round": "confirm_route",

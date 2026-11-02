@@ -509,3 +509,39 @@ No new Setup or real installation is implied by this source update.
 5. Original-AppId installation/adoption/uninstall and formal release remain separate from the isolated preservation evidence. Do not install into the user's product directory to close this checklist.
 
 Inspection basis: [repository rules](../../AGENTS.md), [development contracts](../../docs/development.md), actual [`GameControlView`](../../app/game_control_view.py) controls and its command map, [`DesktopMainUI`](../../app/desktop_main_ui.py), [`DailyAssistant`](../../app/identityv_daily_assistant.py), [`MapResourcesPage`](../../app/map_resources_page.py), [`MapResourceBrowser`](../../app/map_resource_browser.py), core/resource/package modules named above, and the existing Qt Python/QML files. This document changes no executable behavior.
+
+## Manual map selection (手动选图)
+
+The Qt entry points are `ClientSettings.qml` → “模式与路线” → “选图方式”, the
+`ClientControls.qml` “自动识别 / 手动选图” pair, the “选择本局地图” button, and
+the configurable `manual-map-picker` hotkey (default `Alt+1`; the default remains
+pending verification against the other developer's global-hotkey fix). Settings
+persist `mapSelectionMode` (`auto` / `manual`) at the top level. A saved nine-item
+`actionHotkeys` array is read as before and gains `Alt+1` only when that identity
+is free; the file is not rewritten until the user actually edits shortcuts.
+
+`client_manual_map.py` mirrors the Tk-pure grouping/paging rules from PR #70
+without tkinter. `client_manual_map_service.py` owns the non-activating
+`ClientMapPicker.qml` window, catalog generation checks and picker key routing.
+While the picker is visible the native input seam routes bare F1–F4, PgUp/PgDn,
+Backspace and Escape; configurable actions on those primaries are suppressed.
+Escape retains the existing fixed map-close edge. Picking dispatches the normal
+`confirm_route` command with a `mapId` payload, so identity commit, floor seed,
+fitting and round reset stay on the existing manual-confirmation path. The
+picker's availability is a separate `manualMapPickAvailable` snapshot flag (both
+selection modes, map open or closed), so it never advertises `confirm_route` to
+the existing confirm buttons. The catalog reads only the prepared engine; a
+missing pack returns “当前模式的地图资源未就绪，暂时不能选图” instead of building
+a factory on the picker thread. The window is centered over the bound game
+client rect (primary work area fallback) using the existing capture geometry.
+
+`LiveRuntime` skips only the automatic `rank` request while manual mode has no
+locked map; capture, map open/close, floor reading and later locked-map refreshes
+continue. End-round closes the picker, and an applied difficulty change reloads
+the catalog while invalidating in-flight results.
+
+Unverified on real Windows: global hotkey registration/foreground behavior,
+non-activating picker focus and key routing while the game is foreground, real
+in-game picker→confirm→fit latency, and thumbnail decoding (deliberately not
+implemented in this port). Offline tests use fake native input and synthetic
+capture, so they do not constitute a real GUI/game pass.

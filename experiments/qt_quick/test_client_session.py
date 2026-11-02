@@ -161,6 +161,19 @@ class SessionTests(unittest.TestCase):
         self.assertNotIn("roundActive", unattached.snapshot)
         unattached.shutdown()
 
+    def test_picker_commit_dispatches_confirm_route_under_its_own_availability(self):
+        self.runtime.state["availableCommands"] = []
+        self.runtime.state["manualMapPickAvailable"] = True
+        self.session.dispatchWithPayload("confirm_route", {"mapId": "fixture-map"})
+        until(lambda: not self.session.busy)
+        self.assertEqual(self.runtime.calls[-1][0], "confirm_route")
+        self.assertEqual(self.runtime.calls[-1][1].get("mapId"), "fixture-map")
+        count = len(self.runtime.calls)
+        self.runtime.state["manualMapPickAvailable"] = False
+        self.session.dispatchWithPayload("confirm_route", {"mapId": "other-map"})
+        self.assertEqual(len(self.runtime.calls), count)
+        self.assertIn("Unavailable", self.session.message)
+
     def test_worker_is_off_ui_thread_completion_is_on_ui_thread_and_coalesces(self):
         self.runtime.release.clear()
         threads = []

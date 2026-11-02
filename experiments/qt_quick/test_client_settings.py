@@ -16,7 +16,7 @@ from PySide6.QtQml import QQmlComponent, QQmlEngine
 from PySide6.QtQuick import QQuickView
 from PySide6.QtTest import QTest
 
-from client_settings import ACTION_ORDER, ROOT, SettingsService
+from client_settings import ACTION_ORDER, LEGACY_ACTIONS, ROOT, SettingsService
 from client_control_layout import preset_layout
 
 
@@ -205,12 +205,53 @@ class SettingsTests(unittest.TestCase):
             self.write({"actionHotkeys": keys, "hotkey": "F11"})
             service = self.service()
             expected = keys + (["F12"] if len(keys) == 6 else [])
-            expected += [""] * (9 - len(expected))
+            expected += [""] * (len(ACTION_ORDER) - len(expected))
             self.assertEqual(service.values["actionHotkeys"], expected)
             service.setValue("orbVisible", False)
             service.save()
             self.wait(lambda: not service.busy)
             self.assertEqual(json.loads(self.path.read_text())["actionHotkeys"], keys)
+
+    def test_nine_item_actions_gain_picker_default_only_when_free(self):
+        nine = ["F5", "F6", "F7", "F8", "F9", "F10", "F11", "", ""]
+        cases = [
+            (nine, "G", "Alt+1"),
+            (nine[:7] + ["Alt+1", ""], "G", ""),
+            (nine, "Alt+1", ""),
+            (nine, "1", ""),
+        ]
+        for keys, map_key, expected in cases:
+            with self.subTest(map=map_key, keys=keys):
+                self.write({"actionHotkeys": keys, "hotkey": map_key})
+                service = self.service()
+                self.assertEqual(len(service.values["actionHotkeys"]), len(ACTION_ORDER))
+                self.assertEqual(service.values["actionHotkeys"][-1], expected)
+                service.setValue("orbVisible", False)
+                service.save()
+                self.wait(lambda: not service.busy)
+                # Readable nine-slot arrays stay untouched until actually edited.
+                self.assertEqual(json.loads(self.path.read_text())["actionHotkeys"], keys)
+
+    def test_existing_file_without_action_array_migrates_the_picker_default(self):
+        # data is not None but the key is absent: load starts from the legacy
+        # nine slots, so the post-load length check is reachable and adds the
+        # picker default exactly as a stored nine-slot array does.
+        self.write({"hotkey": "G"})
+        service = self.service()
+        self.assertEqual(service.values["actionHotkeys"], [*LEGACY_ACTIONS, "Alt+1"])
+
+    def test_map_selection_mode_defaults_validates_and_preserves_unknown(self):
+        service = self.service()
+        self.assertEqual(service.values["mapSelectionMode"], "auto")
+        self.assertTrue(service.setValue("mapSelectionMode", "manual"))
+        self.assertFalse(service.setValue("mapSelectionMode", "Manual"))
+        service.save()
+        self.wait(lambda: not service.busy)
+        self.assertEqual(json.loads(self.path.read_text())["mapSelectionMode"], "manual")
+        self.write({"mapSelectionMode": "unknown"})
+        service = self.service()
+        self.assertEqual(service.values["mapSelectionMode"], "auto")
+        self.assertIn("mapSelectionMode", service.message)
 
     def test_duplicate_save_and_late_completion_preserve_new_draft(self):
         service = self.service()
@@ -506,6 +547,14 @@ class SettingsTests(unittest.TestCase):
         service.setValue("sheetOpacity", .8)
         self.app.processEvents()
         self.assertEqual(panel.property("preferences")["sheetOpacity"], .8)
+        panel.setProperty("modeExpanded", True)
+        self.app.processEvents()
+        manual = visual_item(panel, "setting_mapSelectionMode_manual")
+        self.assertIsNotNone(manual)
+        manual.clicked.emit()
+        self.wait(lambda: not service.busy)
+        self.assertEqual(service.values["mapSelectionMode"], "manual")
+        self.assertEqual(json.loads(self.path.read_text())["mapSelectionMode"], "manual")
         self.assertEqual(warnings, [])
         panel.deleteLater()
         self.app.processEvents()

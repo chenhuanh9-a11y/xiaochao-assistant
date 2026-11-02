@@ -12,6 +12,7 @@ from PySide6.QtCore import QTimer, QUrl, QThreadPool, Qt
 from PySide6.QtGui import QFont, QFontDatabase, QGuiApplication, QIcon, QWindow
 from PySide6.QtQml import QQmlApplicationEngine
 from client_paths import APP_ROOT, DEFAULT_SANDBOX, FROZEN, PRODUCTION, RESOURCE_ROOT, WORK_ROOT, owned_sandbox, runtime_paths
+from client_manual_map_service import ManualMapPickerService
 
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
@@ -134,6 +135,12 @@ class QtClient:
             resources=self.resources, session=self.session, windows=self.windows,
             native_input=self.input, capture=self.capture, runtime=self.runtime, images=self.images,
             **({"window_catalog": lambda: []} if probe_output else {}))
+        self.manual_map_picker = ManualMapPickerService(
+            settings=self.settings, windows=self.windows, input_backend=self.input,
+            session=self.session, catalog_provider=self.runtime.manual_map_catalog,
+            commit=self.coordinator.confirmManualMap,
+            geometry_provider=self.coordinator.manualMapPickerGeometry, parent=self.coordinator)
+        self.coordinator._manual_map_picker = self.manual_map_picker
         self.reference_preview = ReferencePreviewProvider(self.providers, parent=self.coordinator)
         self.coordinator.setReferencePreviewProvider(self.reference_preview)
         self._reference_screens = set()
@@ -212,12 +219,13 @@ class QtClient:
             customGalleryService=self.custom_galleries, onlinePackageService=self.online_packages,
             onboardingService=self.onboarding, chestAutoTapService=self.chest_auto_tap,
             previewService=self.preview, problemService=self.problems,
-            floorRegionService=self.floor_region).items():
+            floorRegionService=self.floor_region,
+            pickerService=self.manual_map_picker).items():
             context.setContextProperty(key, value)
         for name, file in (("main", "Client.qml"), ("controls", "ClientControls.qml"),
                            ("reference", "ClientReference.qml"), ("aligned", "ClientAligned.qml"),
                            ("replay", "Overlay.qml"), ("preview", "ClientPreview.qml"),
-                           ("toast", "ClientToast.qml")):
+                           ("toast", "ClientToast.qml"), ("map-picker", "ClientMapPicker.qml")):
             before = len(self.engine.rootObjects())
             self.engine.load(QUrl.fromLocalFile(str(HERE / file)))
             if len(self.engine.rootObjects()) != before + 1:
@@ -463,6 +471,7 @@ class QtClient:
         self.info.shutdown()
         self.custom_galleries.shutdown()
         self.online_packages.shutdown()
+        self.manual_map_picker.shutdown()
         self.windows.shutdown()
         self.lifecycle.record_event(dict(stage="shutdown-completed", closing=self.coordinator.closing,
                                          closeReady=self.coordinator.closeReady))
@@ -502,7 +511,8 @@ def main():
         from client_input import NativeShortcutBackend
         result = dict(ready=True, frozen=FROZEN, resourceRoot=str(RESOURCE_ROOT),
                       qml=all((HERE / name).is_file() for name in (
-                          "Client.qml", "ClientControls.qml", "ClientReference.qml", "ClientAligned.qml")),
+                          "Client.qml", "ClientControls.qml", "ClientReference.qml", "ClientAligned.qml",
+                          "ClientMapPicker.qml")),
                       tkLoaded="tkinter" in sys.modules,
                       nativeInputStarted=False)
         if args.verify_resources:
