@@ -25,4 +25,12 @@ class DiskPrivacyTests(unittest.TestCase):
             self.assertIn('client_live_runtime.py',raw)
             self.assertIn('12',raw)
 
+    def test_environment_versions_and_known_collection_failures_survive(self):
+        from diagnostic_privacy import safe_record
+        result=safe_record(dict(qtVersion='6.11.1',boundWindow=dict(status='unavailable',
+            reason='Windows window query unsupported on this platform')))
+        self.assertEqual(result['qtVersion'],'6.11.1')
+        self.assertEqual(result['boundWindow']['reason'],'Windows window query unsupported on this platform')
+        self.assertNotIn('AliceSecret',json.dumps(safe_record(dict(qtVersion='AliceSecret',reason='AliceSecret'))))
+
 if __name__=='__main__':unittest.main()

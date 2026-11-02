@@ -6,7 +6,7 @@ retain original problems in memory; persistence/export always uses this copy.
 """
 import math
 import re
-from diagnostic_schema import FIELDS, CODES, MODULES, EXCEPTIONS
+from diagnostic_schema import FIELDS, CODES, MODULES, EXCEPTIONS, ENVIRONMENT_TEXT
 
 PRIVATE = re.compile(r'username|nickname|playername|account|password|secret|tokenvalue|(?:window|process|program)(?:name|title|exe|path)|foreground(hwnd|pid|name)|executable|commandline|hostname',re.I)
 FREE = frozenset(('raw','summary','title','message','error','errorMessage','details','stateGetterError'))
@@ -48,6 +48,8 @@ def safe_record(value):
             if key in STACK:return stack_text(item[:32768])
             if key in FREE:return exception_text(item[:16384])
             if item in CODES or HEX.fullmatch(item) or CLOCK.fullmatch(item):return item
+            if key == 'reason' and item in ENVIRONMENT_TEXT:return item
+            if key.lower().endswith('version') and re.fullmatch(r'\d+(?:\.\d+){1,3}',item):return item
             if key in ('invalidationOrigin','exceptionOrigin'):
                 parts=item.split(':')
                 if all(part in CODES or part in EXCEPTIONS for part in parts):return item
