@@ -187,11 +187,17 @@ Item {
                             var ox=(width-art.paintedWidth)/2, oy=(height-art.paintedHeight)/2
                             ctx.translate(ox,oy); ctx.scale(scale,scale)
                             var lines=root.state.lines
-                            for (var i=0; i<lines.length; ++i) {
-                                var pts=lines[i].points; if (!pts.length) continue
-                                ctx.beginPath(); ctx.moveTo(pts[0].x,pts[0].y)
-                                for (var j=1; j<pts.length; ++j) ctx.lineTo(pts[j].x,pts[j].y)
-                                ctx.strokeStyle=lines[i].color; ctx.lineWidth=4/scale; ctx.lineJoin="round"; ctx.stroke()
+                            // Same as custom_maps.draw_route and the Android route: every
+                            // dark outline first, then the colours, so crossings keep colour.
+                            for (var pass=0; pass<2; ++pass) {
+                                for (var i=0; i<lines.length; ++i) {
+                                    var pts=lines[i].points; if (!pts.length) continue
+                                    ctx.beginPath(); ctx.moveTo(pts[0].x,pts[0].y)
+                                    for (var j=1; j<pts.length; ++j) ctx.lineTo(pts[j].x,pts[j].y)
+                                    ctx.strokeStyle=pass === 0 ? "#0f1b28" : lines[i].color
+                                    ctx.lineWidth=(pass === 0 ? 6.8 : 4)/scale
+                                    ctx.lineJoin="round"; ctx.lineCap="round"; ctx.stroke()
+                                }
                             }
                             for (var k=0; k<root.state.markers.length; ++k) {
                                 var marker=root.state.markers[k]
