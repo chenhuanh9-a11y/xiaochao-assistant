@@ -39,7 +39,7 @@ def stack_text(text):
 
 def safe_record(value):
     budget=[2048]
-    def visit(item,key='',depth=0):
+    def visit(item,key='',depth=0,parent=''):
         budget[0]-=1
         if budget[0]<0 or depth>10:return None
         if item is None or type(item) in (bool,int):return item
@@ -61,17 +61,18 @@ def safe_record(value):
             if key in ('occurrenceId',) and re.fullmatch(r'events-[A-Za-z0-9_.:-]{1,160}',item):return item
             return '<redacted-text>'
         if isinstance(item,(list,tuple)):
-            return [visit(v,key,depth+1) for v in item[:128]]
+            return [visit(v,key,depth+1,parent) for v in item[:128]]
         if isinstance(item,dict):
             if item.get('role')=='other':return {'role':'other'}
             result={}
             for k,v in list(item.items())[:256]:
                 if not isinstance(k,str) or PRIVATE.search(k) or k in ('name','path','filePath','localPath','imageSource','url'):continue
-                if k not in FIELDS and not (key == 'suppressionReasons' and k in CODES):continue
+                floor_score=(parent == 'floorRead' and key == 'scores' and k in ('-1','1','2') and type(v) in (int,float))
+                if k not in FIELDS and not (key == 'suppressionReasons' and k in CODES) and not floor_score:continue
                 # PID/HWND belongs only to our process envelope or explicitly
                 # identified Qt/bound-game window; no other-program identities.
                 if k in ('pid','processId','hwnd') and depth and item.get('role') not in ('qt','bound-game'):continue
-                result[k]=visit(v,k,depth+1)
+                result[k]=visit(v,k,depth+1,key)
             return result
         return None
     return visit(value)

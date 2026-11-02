@@ -54,4 +54,21 @@ class RaceTests(unittest.TestCase):
    self.assertEqual(len(w.path.read_bytes().splitlines()),1)
    self.assertEqual(w.status()['diagnosticLoss']['lostTotal'],0)
    self.assertEqual(w.status()['failed'],1)
+ def test_floor_score_context_only(self):
+  row=safe_record({'floorRead':{'scores':{'-1':.2,'1':.3,'2':.4,'99':.5,'Alice':.9}},'scores':{'-1':.8}})
+  self.assertEqual(row['floorRead']['scores'],{'-1':.2,'1':.3,'2':.4})
+  self.assertEqual(row['scores'],{})
+ def test_production_floor_read_bounded_writer_keeps_scores(self):
+  import numpy as np
+  from map_interface_observation import detect_selected_floor
+  from recognition_diagnostics import bounded_recognition
+  with tempfile.TemporaryDirectory() as d:
+   read=detect_selected_floor(np.zeros((720,1280,3),np.uint8))
+   bounded=bounded_recognition({'floorRead':read})
+   p=Path(d)/'events-floor.jsonl';w=AsyncEventLog(p)
+   w.emit('capture-error',{'recognitionDiagnostics':bounded});self.assertTrue(w.flush(2));w.close();w.thread.join(1)
+   row=json.loads(p.read_bytes())
+   self.assertEqual(row['recognitionDiagnostics']['floorRead']['scores'],read['scores'])
+   self.assertEqual(set(read['scores']),{'-1','1','2'})
 if __name__=='__main__':unittest.main()
+
