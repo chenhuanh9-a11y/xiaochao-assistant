@@ -73,11 +73,14 @@ class RawMouseObserver:
     REMOVE = 0x00000001
 
     def __init__(self, receive, relevant, *, user=None, cancel=None, clock=time.monotonic, ticks=None,
-                 receive_button=None, buttons_relevant=None):
+                 receive_button=None, buttons_relevant=None,
+                 modifier_activity=None, activity_relevant=None):
         self.user = user or ctypes.WinDLL("user32", use_last_error=True)
         self.receive, self.relevant = receive, relevant
         self.receive_button = receive_button
         self.buttons_relevant = buttons_relevant or (lambda foreground: False)
+        self.modifier_activity = modifier_activity
+        self.activity_relevant = activity_relevant or (lambda: False)
         self.cancel, self.clock = cancel or (lambda reason: None), clock
         if ticks is None:
             kernel = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -147,7 +150,8 @@ class RawMouseObserver:
             foreground = int(self.user.GetForegroundWindow() or 0)
             pointer_relevant = self.relevant(foreground)
             buttons_relevant = self.receive_button is not None and self.buttons_relevant(foreground)
-            if not pointer_relevant and not buttons_relevant:
+            activity_relevant = self.modifier_activity is not None and self.activity_relevant()
+            if not pointer_relevant and not buttons_relevant and not activity_relevant:
                 return True
             # MSG.time/pt describe enqueue time/location, not the later point
             # after Python resumes. Retain the existing input freshness budget.
@@ -173,6 +177,10 @@ class RawMouseObserver:
             if header.kind != 0 or header.size != read:
                 return True
             mouse = RawMouse.from_buffer(buffer, header_size)
+            if activity_relevant and mouse.buttonUnion.buttons.flags:
+                # Cancel solo-modifier interpretation for clicks/wheel without
+                # exposing coordinates/buttons as application actions or logs.
+                self.modifier_activity(int(mouse.buttonUnion.buttons.flags))
             if buttons_relevant:
                 for vk, down in shortcut_button_edges(mouse):
                     # A delayed release still clears held-state. An old press

@@ -332,6 +332,12 @@ class SettingsService(QObject):
         if key in modifier_names:
             if released and not self._shortcut_primary_seen:
                 remaining = modifiers & (Qt.ControlModifier.value | Qt.AltModifier.value | Qt.ShiftModifier.value)
+                # Qt may include the released modifier itself in KeyEvent.
+                # Only OTHER held modifiers make this an incomplete chord.
+                own = {Qt.Key_Control: Qt.ControlModifier.value,
+                       Qt.Key_Alt: Qt.AltModifier.value,
+                       Qt.Key_Shift: Qt.ShiftModifier.value}[key]
+                remaining &= ~own
                 if remaining:
                     self._shortcut_primary_seen = True
                     self._shortcut_ready = False

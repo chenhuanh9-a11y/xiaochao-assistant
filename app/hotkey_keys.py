@@ -100,7 +100,7 @@ NAMED_HOTKEYS.update({name: vk for vk, name in OEM_KEY_NAMES.items()})
 # These Win32 identities need not equal Qt's layout-dependent logical key. A
 # French ';' can be VK_M, and '&' VK_1; numpad punctuation also varies by layout.
 # One native owner avoids a foreground QML shortcut waiting for another symbol.
-NATIVE_ONLY_SHORTCUT_KEYS = frozenset((0x02, 0x04, 0x05, 0x06, *OEM_KEY_NAMES,
+NATIVE_ONLY_SHORTCUT_KEYS = frozenset((0x02, 0x04, 0x05, 0x06, 0x10, 0x11, 0x12, *OEM_KEY_NAMES,
     *range(0x30, 0x3A), *range(0x41, 0x5B), *range(0x60, 0x70)))
 
 

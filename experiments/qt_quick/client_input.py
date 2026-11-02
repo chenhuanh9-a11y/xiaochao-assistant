@@ -112,6 +112,7 @@ class NativeShortcutBackend(QObject):
         self._binding_suspended = False
         self._game_events_after = 0.0
         self._event_down = set()
+        self._modifier_presses = {}
         self._pointer_error = ""
         self._ordered_map_input = False
         self._map_input = OrderedMapInput()
@@ -147,6 +148,10 @@ class NativeShortcutBackend(QObject):
 
     enabled = Property(bool, lambda self: self._enabled, notify=changed)
     def _public_message(self):
+        if (self._source is not None and (self._enabled or self._management_enabled) and self._observer_ready()
+                and any(chord.vk in (0x10, 0x11, 0x12) for chord in self._bindings.values())
+                and not getattr(self._source, "pointer_installed", False)):
+            return "鼠标监听尚未就绪，单独 Alt、Shift、Ctrl 快捷键已暂停；其他快捷键仍可使用。"
         return input_message(self._status, self._message,
                              management=self._management_enabled, game=self._enabled)
 
@@ -168,6 +173,7 @@ class NativeShortcutBackend(QObject):
 
     def _stop(self, status, message):
         self._timer.stop()
+        self._cancel_modifier_taps()
         self._enabled = False
         update = getattr(self._source, "update_pointer_target", None)
         if callable(update):
@@ -176,6 +182,12 @@ class NativeShortcutBackend(QObject):
         self._prime, self._game_focus = True, None
         self._map_input.reset()
         self.changed.emit()
+
+    def _cancel_modifier_taps(self):
+        self._modifier_presses.clear()
+        cancel = getattr(self._source, "cancel_modifier_taps", None)
+        if callable(cancel):
+            cancel()
 
     @Slot(bool)
     def setOrderedMapInputEnabled(self, enabled):
@@ -435,11 +447,16 @@ class NativeShortcutBackend(QObject):
     def _key_event(self, event):
         if self._closed or self._source is None or event.get("generation") != self._source.generation:
             return
-        vk, down = event["vk"], event["down"]
-        previous = vk in self._event_down
-        if down:self._event_down.add(vk)
-        else:self._event_down.discard(vk)
-        if not down or previous or self._text or self._editing:
+        from client_native_keys import BARE_MODIFIERS, generic_modifier
+        vk, down = generic_modifier(event["vk"]), event["down"]
+        physical = event.get("physicalVk", event["vk"])
+        previous = physical in self._event_down
+        if down:self._event_down.add(physical)
+        else:self._event_down.discard(physical)
+        press = self._modifier_presses.pop(physical, None) if not down else None
+        modifier_release = (not down and vk in BARE_MODIFIERS and
+                            event.get("modifierTap") is True and press is not None)
+        if (not down and not modifier_release) or (down and previous) or self._text or self._editing:
             return
         # Native enqueue time survives the Qt queue. Always process releases
         # above, but never turn a delayed/invalid press into a fresh action.
@@ -480,6 +497,14 @@ class NativeShortcutBackend(QObject):
                 # The existing app-local QML shortcut owns F9 when this app is
                 # foreground. The hook owns it globally when hidden/background.
                 if action == "toggle-panel" and assistant and chord.vk not in NATIVE_ONLY_SHORTCUT_KEYS:allowed=False
+                if vk in BARE_MODIFIERS:
+                    if down:
+                        if allowed:
+                            self._modifier_presses[physical] = (foreground, created)
+                        continue  # A modifier is a tap only after a clean release.
+                    allowed = (allowed and press[0] == foreground
+                        and (action in MANAGEMENT_ACTIONS or not self._game_events_after
+                             or press[1] >= self._game_events_after))
                 if allowed:self._dispatch_action(action, event)
         except Exception as error:
             self._hook_failed(str(error))
@@ -492,12 +517,14 @@ class NativeShortcutBackend(QObject):
     @Slot(bool)
     def setTextEntryActive(self, active):
         if self._text != bool(active):
+            self._cancel_modifier_taps()
             self._text, self._prime = bool(active), True
             self.changed.emit()
 
     @Slot(bool)
     def setEditingBindings(self, active):
         if self._editing != bool(active):
+            self._cancel_modifier_taps()
             self._editing, self._prime = bool(active), True
             self.changed.emit()
 

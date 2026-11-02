@@ -15,6 +15,13 @@ from client_map_input import PointerEventMailbox
 
 MODIFIER_KEYS = frozenset((0x10,0x11,0x12,0x5b,0x5c,0xa0,0xa1,0xa2,0xa3,0xa4,0xa5))
 MOUSE_KEYS = frozenset((0x02, 0x04, 0x05, 0x06))
+BARE_MODIFIERS = frozenset((0x10, 0x11, 0x12))
+MODIFIER_TAP_MAX_SECONDS = 0.5
+
+
+def generic_modifier(vk):
+    return {0xa0: 0x10, 0xa1: 0x10, 0xa2: 0x11, 0xa3: 0x11,
+            0xa4: 0x12, 0xa5: 0x12}.get(vk, vk)
 
 
 def initial_pressed_keys(keys, read):
@@ -52,6 +59,8 @@ class PassThroughKeyboardSource(QObject):
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._keys, self._held = frozenset(), set()
+        self._bare_modifiers = frozenset()
+        self._modifier_taps, self._tap_pressed = {}, set()
         self._thread_id = 0
         self._user = None
         self._callback = None
@@ -80,8 +89,32 @@ class PassThroughKeyboardSource(QObject):
 
     def update_keys(self, keys):
         with self._lock:
-            self._keys = frozenset(keys) | MODIFIER_KEYS
+            primary_keys = frozenset(keys)
+            self._bare_modifiers = primary_keys & BARE_MODIFIERS
+            self._keys = primary_keys | MODIFIER_KEYS
             self.generation += 1
+            self._modifier_taps.clear()
+            # Only transient levels are kept to reject modifier+unsubscribed
+            # key combinations. Unsubscribed identities never leave this source.
+            self._tap_pressed = (initial_pressed_keys(range(1, 256), self._user.GetAsyncKeyState)
+                                 if self._bare_modifiers and self._user is not None else set(self._held))
+
+    def cancel_modifier_taps(self):
+        with self._lock:
+            self._modifier_taps.clear()
+
+    def _modifier_mouse_activity(self, flags):
+        with self._lock:
+            if not self._bare_modifiers:
+                return
+            for tap in self._modifier_taps.values():
+                tap["used"] = True
+            for down, up, vk in ((1, 2, 1), (4, 8, 2), (16, 32, 4),
+                                  (64, 128, 5), (256, 512, 6)):
+                if flags & down:
+                    self._tap_pressed.add(vk)
+                if flags & up:
+                    self._tap_pressed.discard(vk)
 
     def set_pointer_context_provider(self, provider):
         # The provider only stamps cached metadata and must never block/perform
@@ -195,6 +228,7 @@ class PassThroughKeyboardSource(QObject):
 
     def stop(self):
         self._stop.set()
+        self.cancel_modifier_taps()
         self.cancel_pointer("pointer-source-stopped")
         if self._thread_id and self._user is not None:
             self._user.PostThreadMessageW(self._thread_id, 0x0012, 0, 0)
@@ -204,17 +238,54 @@ class PassThroughKeyboardSource(QObject):
 
     def _transition_event(self, vk, scan, flags, down, foreground):
         with self._lock:
+            key = physical_key(vk, scan, flags)
+            tap, now = None, time.monotonic()
+            if self._bare_modifiers and 0 < key < 256:
+                previous = key in self._tap_pressed
+                if down:
+                    if not previous:
+                        if generic_modifier(key) in self._bare_modifiers and self._user is not None:
+                            # Secure desktop transitions can swallow key-ups.
+                            # Query only OTHER tracked keys: this callback runs
+                            # before the current key's async state is updated.
+                            # Commit the snapshot only if every query succeeds.
+                            try:
+                                released = {other for other in self._tap_pressed if other != key
+                                            and not self._user.GetAsyncKeyState(other) & 0x8000}
+                            except Exception:
+                                released = set()  # Unknown levels remain blockers.
+                                self._modifier_taps.clear()
+                            self._tap_pressed.difference_update(released)
+                            self._held.difference_update(released)
+                            for other in released:
+                                self._modifier_taps.pop(other, None)
+                        for pending in self._modifier_taps.values():
+                            pending["used"] = True
+                        if generic_modifier(key) in self._bare_modifiers:
+                            self._modifier_taps[key] = dict(used=bool(self._tap_pressed),
+                                foreground=foreground, startedAt=now)
+                    self._tap_pressed.add(key)
+                else:
+                    self._tap_pressed.discard(key)
+                    tap = self._modifier_taps.pop(key, None)
+            elif self._bare_modifiers:
+                for pending in self._modifier_taps.values():
+                    pending["used"] = True
             if vk not in self._keys:
                 return None
-            key = physical_key(vk, scan, flags)
             if down:
                 self._held.add(key)
             else:
                 self._held.discard(key)
             # Preserve the existing vk protocol; only held-state storage uses
             # one physical representation for either callback form.
-            return dict(vk=vk, down=down, held=frozenset(self._held), createdAt=time.monotonic(),
-                        foreground=foreground, generation=self.generation)
+            return dict(vk=vk, physicalVk=key, down=down, held=frozenset(self._held), createdAt=now,
+                        foreground=foreground, generation=self.generation,
+                        modifierTap=bool(self.pointer_installed and tap is not None and not tap["used"]
+                            # Compare source-clock deadlines (inclusive), not GUI
+                            # delivery time or a rounded millisecond duration.
+                            and tap["startedAt"] <= now <= tap["startedAt"] + MODIFIER_TAP_MAX_SECONDS
+                            and not self._tap_pressed and tap["foreground"] == foreground))
 
     def _handle_message(self, message):
         """Win32 thread-message extension seam; production has no commands."""
@@ -250,6 +321,8 @@ class PassThroughKeyboardSource(QObject):
             # Management shortcuts work without a game and while the assistant
             # is foreground. Backend action gates retain game-only scope.
             buttons_relevant=lambda foreground: not self._stop.is_set() and bool(self._keys & MOUSE_KEYS),
+            modifier_activity=self._modifier_mouse_activity,
+            activity_relevant=lambda: bool(self._bare_modifiers) and not self._stop.is_set(),
             user=user, cancel=self.cancel_pointer, **kwargs)
 
     def _run(self):
@@ -283,6 +356,9 @@ class PassThroughKeyboardSource(QObject):
             # key delivery thereafter is event-driven, never async-key polling.
             with self._lock:
                 self._held=initial_pressed_keys(self._keys, user.GetAsyncKeyState)
+                self._modifier_taps.clear()
+                self._tap_pressed = (initial_pressed_keys(range(1, 256), user.GetAsyncKeyState)
+                                     if self._bare_modifiers else set())
                 started_snapshot = dict(held=frozenset(self._held), generation=self.generation)
             @callback_type
             def callback(code, message_id, pointer):
@@ -313,6 +389,10 @@ class PassThroughKeyboardSource(QObject):
                     if self._mouse_observer is not None and self._mouse_observer.handle(message):
                         continue
                 except Exception as error:
+                    # This packet may have contained a click/wheel combination.
+                    # Invalidate taps on the native thread before a key release
+                    # can be queued, including after the diagnostic was emitted.
+                    self.cancel_modifier_taps()
                     if not self._pointer_failure_reported:
                         self._pointer_failure_reported = True
                         self.pointerFailed.emit(f"Raw mouse observation failed: {type(error).__name__}:{error}"[:512])
