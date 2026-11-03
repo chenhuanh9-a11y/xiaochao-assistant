@@ -133,12 +133,21 @@ class EditorUpgradeTests(fixture.CustomGalleryTests):
         choice = window.findChild(QQuickItem, 'customMapChoice')
         floors = window.findChild(QQuickItem, 'customFloorChoice')
         surface = window.findChild(QQuickItem, 'customMapDrawingSurface')
-        until(lambda: choice.width() > 0 and floors.width() > 0 and surface.height() > 300, timeout=10)
         self.assertTrue(QTest.qWaitForWindowExposed(window, 5000))
         def click(item):
             point = item.mapToScene(QPointF(item.width()/2, item.height()/2))
             QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, point.toPoint())
             APP.processEvents()
+        def find_visual(item, name):
+            if item.objectName() == name:
+                return item
+            return next((found for child in item.childItems()
+                         if (found := find_visual(child, name)) is not None), None)
+        until(lambda: find_visual(window.contentItem(), 'customMapCard_nightmare-03') is not None)
+        tile = find_visual(window.contentItem(), 'customMapCard_nightmare-03')
+        click(tile)
+        until(lambda: self.service.snapshot['editing'] and not self.service.busy)
+        until(lambda: choice.isVisible() and floors.isVisible() and surface.height() > 300, timeout=10)
         click(choice)
         QTest.keyClick(window, Qt.Key_Down)
         QTest.keyClick(window, Qt.Key_Return)
