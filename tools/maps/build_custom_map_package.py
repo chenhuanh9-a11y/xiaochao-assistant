@@ -238,6 +238,49 @@ def review_overlay(path: Path, rgba: np.ndarray, matrix: np.ndarray, native: np.
     cv2.imwrite(str(path), cv2.resize(canvas, None, fx=.4, fy=.4, interpolation=cv2.INTER_AREA))
 
 
+def add_submission_navigation(out, maps, navigation_root):
+    """Copy only navigation contracts from an explicitly supplied Android input.
+
+    No art, game unpack, author routes or account data is copied. Missing maps
+    keep an explicit capability gap; coordinates must match the template art.
+    """
+    catalog_path = navigation_root / "catalog.json"
+    catalog = json.loads(catalog_path.read_text("utf-8"))
+    templates = {row["id"]: row for row in catalog["templates"]}
+    for row in maps:
+        template = templates.get(row["templateId"])
+        if template is None:
+            continue
+        signature = template.get("navigationSignature")
+        if not isinstance(signature, str) or len(signature) != 64:
+            raise ValueError("submission navigation signature is missing")
+        floors = {}
+        for floor in template["floors"]:
+            key = FLOORS[floor["id"]]
+            if key not in row["floors"]:
+                raise ValueError("submission navigation floor is missing in native resource")
+            asset = row["floors"][key]
+            size = asset.get("template", {}).get("imageSize", asset["imageSize"])
+            path = (navigation_root / floor["navigation"]).resolve()
+            if not path.is_relative_to(navigation_root.resolve()):
+                raise ValueError("submission navigation path escapes input")
+            nav = json.loads(path.read_text("utf-8"))
+            if [nav["width"], nav["height"]] != size or nav.get("step") != 2:
+                raise ValueError("submission navigation and template coordinates differ")
+            floors[floor["id"]] = {k: nav[k] for k in
+                ("version", "width", "height", "step", "cols", "rows", "edges", "labels", "rooms")}
+            if "unitsPerPixel" in nav:
+                floors[floor["id"]]["unitsPerPixel"] = nav["unitsPerPixel"]
+        document = dict(templateId=template["id"], navigationSignature=signature,
+                        catalogSha256=sha256(catalog_path), floors=floors,
+                        stairs=template.get("stairs", []))
+        relative = f"submission-navigation/{row['mapId']}.json"
+        destination = out / relative
+        destination.parent.mkdir(exist_ok=True)
+        destination.write_text(json.dumps(document, ensure_ascii=False, separators=(",", ":")), "utf-8")
+        row["routeSubmission"] = dict(path=relative, sha256=sha256(destination))
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--legacy", required=True, type=Path)
@@ -252,6 +295,8 @@ def main(argv=None) -> int:
     parser.add_argument("--art", type=Path, help="clear redrawn floors to show instead of the legacy art")
     parser.add_argument("--art-label", help="name of the art set recorded in the manifest (default: folder name)")
     parser.add_argument("--increment", type=Path, help="extra maps in this package's format (e.g. 104026/104027)")
+    parser.add_argument("--submission-navigation", type=Path,
+                        help="authorized Android nightmare-route-editor root with current signatures/navigation")
     args = parser.parse_args(argv)
     if args.out.exists():
         parser.error("--out must be a new directory")
@@ -430,6 +475,9 @@ def main(argv=None) -> int:
     if increment_source:
         sources["increment"] = increment_source
     manifest = dict(schema=SCHEMA, version=args.version, mapCount=len(maps), sources=sources, maps=maps)
+    if args.submission_navigation:
+        add_submission_navigation(out, maps, args.submission_navigation)
+        sources["submissionCatalogSha256"] = sha256(args.submission_navigation / "catalog.json")
     if args.art:
         # The redraw already shows the exits; the app does not stamp its own icon on top.
         manifest["art"] = dict(source=args.art_label or args.art.name, includesExits=True)

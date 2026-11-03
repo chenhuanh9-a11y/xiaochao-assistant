@@ -147,6 +147,16 @@ class CustomMapLibrary:
         """Map id -> legacy Android template id, independent of display art."""
         return {mid: row["templateId"] for mid, row in self._maps.items() if isinstance(row.get("templateId"), str)}
 
+    def submission_navigation(self, map_id) -> dict:
+        """Authoritative Android cells/edges, separate from native editor roads."""
+        binding = self._maps.get(str(map_id), {}).get("routeSubmission")
+        if not isinstance(binding, dict):
+            raise RouteError(f"地图 {self.name(map_id)} 缺少投稿导航资源，请更新自定义地图资源后重试")
+        path = self._checked(binding["path"], binding["sha256"])
+        if path.stat().st_size > 6 * 1024 * 1024:
+            raise RouteError("投稿导航资源过大")
+        return json.loads(path.read_text("utf-8"))
+
     def has(self, map_id) -> bool:
         return str(map_id) in self._maps
 
