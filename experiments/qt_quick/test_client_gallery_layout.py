@@ -253,6 +253,25 @@ class GalleryLayoutTests(unittest.TestCase):
         self.assertFalse(self.item("galleryUseAuthor").isEnabled())
         self.assertFalse(self.warnings, "\n".join(self.warnings))
 
+    def test_wide_preview_reserves_actual_height_for_coverage_caption(self):
+        def coverage(item):
+            if str(item.property("text") or "").startswith("本地覆盖 "):
+                return item
+            for child in item.childItems():
+                found = coverage(child)
+                if found is not None:
+                    return found
+        for width, height in ((1000, 650), (1200, 900)):
+            with self.subTest(size=(width, height)):
+                self.resize(width, height)
+                scroll = self.item("galleryDetailScroll")
+                scroll.setProperty("contentY", 0)
+                caption = coverage(scroll)
+                self.assertIsNotNone(caption)
+                bottom = caption.mapToItem(scroll, QPointF()).y() + caption.height()
+                self.assertLessEqual(bottom, scroll.height() + .1)
+        self.assertFalse(self.warnings, "\n".join(self.warnings))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -198,10 +198,14 @@ Item {
                         ScrollBar.vertical: ScrollBar {}
                         ColumnLayout {
                             id: detailContents; width: detailScroll.width; spacing: 8
-                    AppButton { objectName: "galleryBackToList"; visible: page.compact && page.detailOpen; text: "返回列表"; onClicked: page.detailOpen = false }
-                    Label { text: page.selectedProfile.name + " · 预览"; color: "#142b4b"; font.pixelSize: 17; font.bold: true; Layout.fillWidth: true; elide: Text.ElideRight }
+                    AppButton { id: detailBack; objectName: "galleryBackToList"; visible: page.compact && page.detailOpen; text: "返回列表"; onClicked: page.detailOpen = false }
+                    Label { id: detailTitle; text: page.selectedProfile.name + " · 预览"; color: "#142b4b"; font.pixelSize: 17; font.bold: true; Layout.fillWidth: true; elide: Text.ElideRight }
                     Rectangle {
-                        Layout.fillWidth: true; Layout.preferredHeight: Math.max(140, detailScroll.height - (page.compact ? 140 : 100))
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: Math.max(140, detailScroll.height
+                            - detailTitle.implicitHeight - detailPickers.implicitHeight - detailCoverage.implicitHeight
+                            - detailContents.spacing * 3
+                            - (detailBack.visible ? detailBack.implicitHeight + detailContents.spacing : 0))
                         color: "#edf1f7"; radius: 8
                         Image {
                             id: preview; objectName: "galleryLargePreview"
@@ -215,6 +219,7 @@ Item {
                         }
                     }
                     RowLayout {
+                        id: detailPickers
                         Layout.fillWidth: true; spacing: 6
                         ComboBox {
                             id: layerPicker; objectName: "galleryLayerPicker"
@@ -239,7 +244,7 @@ Item {
                             onActivated: backend.setFloor(currentValue)
                         }
                     }
-                    Label { text: "本地覆盖 " + page.selectedProfile.availableMaps + " / " + page.selectedProfile.mapCount + " 份图"; color: "#526785"; font.pixelSize: 11 }
+                    Label { id: detailCoverage; text: "本地覆盖 " + page.selectedProfile.availableMaps + " / " + page.selectedProfile.mapCount + " 份图"; color: "#526785"; font.pixelSize: 11 }
                         }
                     }
                     AppButton { objectName: "galleryUseAuthor"; text: page.currentAuthor ? "正在使用此作者" : "使用此作者"; Layout.fillWidth: true; primary: true; enabled: page.canUseAuthor; onClicked: clientCoordinator.setRouteProfile(backend.profileId) }
