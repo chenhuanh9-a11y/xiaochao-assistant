@@ -62,6 +62,41 @@ class InfoTests(unittest.TestCase):
         service.checkUpdates()
         self.wait(lambda: not service.checking)
 
+    def test_default_export_requests_only_automatic_local_evidence(self):
+        import client_info
+        service = self.service()
+        self.assertTrue(service.includeAutomaticFailureEvidence)
+        self.assertFalse(service.includeFailureEvidence)
+        destination = self.root / 'default-local-evidence.zip'
+        with patch.object(client_info, 'export_safe_diagnostic_bundle',
+                          wraps=client_info.export_safe_diagnostic_bundle) as export:
+            service.exportDiagnosticsTo(QUrl.fromLocalFile(str(destination)).toString())
+            self.wait(lambda: not service.checking)
+        self.assertTrue(service.diagnosticsReceipt['success'])
+        self.assertEqual(len(export.call_args.kwargs['failure_roots']), 2)
+        self.assertTrue(export.call_args.kwargs['automatic_failure_only'])
+        self.assertTrue(export.call_args.kwargs['include_automatic_failure_evidence'])
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.opened, [])
+
+    def test_explicit_text_only_export_overrides_both_image_choices(self):
+        service = self.service()
+        service.setIncludeFailureEvidence(True)
+        service.setTextOnlyDiagnostics(True)
+        self.assertTrue(service.textOnlyDiagnostics)
+        self.assertFalse(service.includeFailureEvidence)
+        self.assertFalse(service.includeAutomaticFailureEvidence)
+        destination = self.root / 'text-only.zip'
+        service.exportDiagnosticsTo(QUrl.fromLocalFile(str(destination)).toString())
+        self.wait(lambda: not service.checking)
+        with zipfile.ZipFile(destination) as archive:
+            manifest = json.loads(archive.read('diagnostic-manifest.json'))
+            self.assertTrue(manifest['textOnly'])
+            self.assertEqual(manifest['failureEvidence']['status'], 'not-requested')
+        service.setTextOnlyDiagnostics(False)
+        self.assertTrue(service.includeAutomaticFailureEvidence)
+        self.assertFalse(service.includeFailureEvidence)
+
     def test_frozen_identity_uses_baked_profile_not_retained_data(self):
         import client_info
         baked = self.root / 'baked'
@@ -263,6 +298,7 @@ class InfoTests(unittest.TestCase):
 
     def test_diagnostics_receipt_selected_path_and_no_overwrite(self):
         service = self.service()
+        service.setTextOnlyDiagnostics(True)
         path = self.root / "chosen.zip"
         service.exportDiagnosticsTo(QUrl.fromLocalFile(str(path)).toString())
         self.wait(lambda: not service.checking)
@@ -326,6 +362,17 @@ ClientHelp { objectName: "helpPanel"; anchors.fill: parent } }
         window = component.create()
         self.assertIsNotNone(window, str(component.errors()))
         self.assertEqual(self.calls, [])
+        auto = window.findChild(QObject, "helpExportAutomaticFailureEvidence")
+        self.assertTrue(auto.property('checked'))
+        text_only = window.findChild(QObject, "helpTextOnlyDiagnostics")
+        self.assertIsNotNone(text_only)
+        self.assertFalse(text_only.property('checked'))
+        text_only.setProperty('checked', True)
+        self.assertTrue(QMetaObject.invokeMethod(text_only, 'toggled'))
+        self.app.processEvents()
+        self.assertTrue(service.textOnlyDiagnostics)
+        self.assertFalse(auto.property('checked'))
+        self.assertFalse(service.includeFailureEvidence)
         check = window.findChild(QObject, "helpCheckUpdates")
         self.assertTrue(QMetaObject.invokeMethod(check, "clicked"))
         self.wait(lambda: not service.checking)

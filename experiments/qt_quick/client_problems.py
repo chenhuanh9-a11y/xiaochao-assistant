@@ -30,6 +30,8 @@ def _feature_evidence(name, value):
     fields = {
         'fitReport': ('attemptCount', 'retryCount', 'firstReason', 'lastReason',
                       'firstAt', 'lastAt', 'firstDiagnostics', 'lastDiagnostics'),
+        'failureSample': ('saved', 'savedCount', 'missingReason', 'sampling', 'limits',
+            'recoveryRequired', 'controlBand', 'cleanup', 'error', 'frameCapturedAtUtc'),
         'preparationObservation': ('frameWidth', 'frameHeight', 'mode',
             'observationReason', 'mapDetected', 'floorReason', 'floorLayout',
             'shapeReason', 'aspectRatio', 'floorControlSizeEligible'),
@@ -37,6 +39,14 @@ def _feature_evidence(name, value):
     if not isinstance(value, dict):
         return {}
     selected = {key: value[key] for key in fields[name] if key in value}
+    if name == 'failureSample':
+        if 'controlBand' in selected:
+            child = selected['controlBand']
+            selected['controlBand'] = _feature_evidence('failureSample',
+                {k: v for k, v in child.items() if k != 'controlBand'} if isinstance(child, dict) else {})
+        if isinstance(selected.get('cleanup'), dict):
+            selected['cleanup'] = {key: selected['cleanup'][key] for key in
+                ('status', 'complete', 'removed') if key in selected['cleanup']}
     if name == 'fitReport':
         for key in ('firstDiagnostics', 'lastDiagnostics'):
             diagnostic = selected.get(key)
@@ -236,7 +246,7 @@ class ProblemsService(QObject):
         diagnostics = _metadata(event.get('captureDiagnostics', {}))
         encoded = json.dumps(diagnostics, ensure_ascii=False)
         row['captureDiagnostics'] = diagnostics if len(encoded.encode('utf-8')) <= 1024 else dict(summary=_text(encoded, 900), truncated=True)
-        for name in ('fitReport', 'preparationObservation'):
+        for name in ('fitReport', 'preparationObservation', 'failureSample'):
             if name in event:
                 row[name] = _feature_evidence(name, event[name])
         signature = tuple(row[name] for name in ('reason', 'title', 'summary', 'raw', 'action', 'phase', 'kind', 'mode', 'mapId', 'floor'))
@@ -306,7 +316,7 @@ class ProblemsService(QObject):
             value = _metadata(event[name])
             encoded_value = json.dumps(value, ensure_ascii=False)
             row[name] = value if len(encoded_value.encode('utf-8')) <= 2048 else dict(summary=_text(encoded_value, 1900), truncated=True)
-        for name in ('fitReport', 'preparationObservation'):
+        for name in ('fitReport', 'preparationObservation', 'failureSample'):
             if name in event:
                 row[name] = _feature_evidence(name, event[name])
         if 'recognitionDiagnostics' in event:

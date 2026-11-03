@@ -905,6 +905,17 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(self.runtime.configure_settings.call_args.args[0]["mapSelectionMode"],
                          "manual")
 
+    def test_failure_sampling_evidence_reaches_trace_without_presentation_side_effects(self):
+        rows = []
+        self.coordinator.traceReported.connect(rows.append)
+        evidence = dict(saved=False, missingReason='automatic-sampling-disabled',
+                        controlBand=dict(saved=False, missingReason='capture-not-current'))
+        self.coordinator._on_runtime_event(dict(event='automatic-failure-sample',
+            reason='metadata-only', failureSample=evidence))
+        self.assertEqual(rows[-1]['failureSample'], evidence)
+        self.assertEqual(rows[-1]['role'], 'diagnostics')
+        self.runtime.render_payload.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

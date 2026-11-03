@@ -65,6 +65,30 @@ class SettingsTests(unittest.TestCase):
             time.sleep(.002)
         self.assertTrue(predicate(), "worker completion timeout")
 
+    def test_failure_evidence_defaults_only_when_unconfigured(self):
+        service = self.service()
+        self.assertTrue(service.persistedValues['automaticFailureEvidence'])
+        self.assertFalse(self.path.exists())
+        for payload, expected in (({'unrelated': 1}, True),
+                                  ({'automaticFailureEvidence': False}, False),
+                                  ({'automaticFailureEvidence': True}, True),
+                                  ({'automaticFailureEvidence': 'false'}, False)):
+            with self.subTest(payload=payload):
+                self.write(payload)
+                self.assertTrue(service.reload())
+                self.assertIs(service.persistedValues['automaticFailureEvidence'], expected)
+                self.assertEqual(json.loads(self.path.read_text()), payload)
+
+    def test_unreadable_settings_do_not_enable_failure_sampling(self):
+        self.path.write_text('{broken', encoding='utf-8')
+        service = self.service()
+        self.assertTrue(service.loadFailed)
+        self.assertFalse(service.persistedValues['automaticFailureEvidence'])
+        self.write({})
+        self.assertTrue(service.reload())
+        self.assertFalse(service.loadFailed)
+        self.assertTrue(service.persistedValues['automaticFailureEvidence'])
+
     def test_capture_completion_preserves_newer_target_draft(self):
         from threading import Event
         service = self.service()

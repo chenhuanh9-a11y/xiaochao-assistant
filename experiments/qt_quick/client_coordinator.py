@@ -2005,6 +2005,10 @@ class ClientCoordinator(QObject):
         if self._closed or self._closing or not isinstance(event, dict):
             return
         name = event.get("event", "unknown")
+        if name in ('automatic-failure-sample', 'failure-sample'):
+            self._trace(name, payload=event, role='diagnostics', reason=event.get('reason', ''),
+                failureSample=event.get('failureSample', {}))
+            return  # Evidence delivery has no presentation or recognition authority.
         if name == 'recognition-diagnostic':
             self._trace(name, payload=event, role='recognition', reason=event.get('reason', ''),
                 recognitionDiagnostics=event.get('recognitionDiagnostics', {}))

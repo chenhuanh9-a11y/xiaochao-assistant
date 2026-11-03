@@ -58,7 +58,7 @@ class ClientInfoService(QObject):
             self._source_commit = (self._source_commit or self._package_metadata.get('releaseReportSourceCommit')
                                    or self._source_revision.get('commit') or '')
         self._include_failure_evidence = False
-        self._include_automatic_failure_evidence = False
+        self._include_automatic_failure_evidence = True
         self._automatic_sampling_pending = None
         self._automatic_sampling_applied = None
         self._service = UpdateService(self._version, self.paths.update_state_path,
@@ -102,6 +102,7 @@ class ClientInfoService(QObject):
     skippedVersion = Property(str, lambda s: s._service.skipped_version, notify=changed)
     historyMessage = Property(str, lambda s: s._history_message, notify=changed)
     includeFailureEvidence = Property(bool, lambda s: s._include_failure_evidence, notify=changed)
+    textOnlyDiagnostics = Property(bool, lambda s: not (s._include_failure_evidence or s._include_automatic_failure_evidence), notify=changed)
     includeAutomaticFailureEvidence = Property(bool, lambda s: s._include_automatic_failure_evidence, notify=changed)
     automaticFailureSampling = Property(bool, lambda s: s._automatic_sampling_enabled(), notify=changed)
     diagnosticsReceipt = Property("QVariantMap", lambda s: dict(s._diagnostics), notify=changed)
@@ -452,6 +453,15 @@ class ClientInfoService(QObject):
             self._include_automatic_failure_evidence = bool(include)
             self.changed.emit()
 
+    @Slot(bool)
+    def setTextOnlyDiagnostics(self, enabled):
+        if not self._closed and not self.checking:
+            # Selecting text-only also stops the separate, session-only full-frame capture.
+            self._include_failure_evidence = False
+            self._include_automatic_failure_evidence = not bool(enabled)
+            self._set_failure_sampling(False)
+            self.changed.emit()
+
     @Slot()
     def exportDiagnostics(self):
         destination = self.paths.installation_root / "outputs" / "诊断日志" / ("qt-client-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".zip")
@@ -461,7 +471,7 @@ class ClientInfoService(QObject):
     def exportDiagnosticsTo(self, value):
         url = QUrl(value)
         if not url.isLocalFile() or Path(url.toLocalFile()).suffix.lower() != ".zip":
-            self._message, self._action_error = "请选择本地 JSON 文件保存诊断", True
+            self._message, self._action_error = "请选择本地 ZIP 文件保存诊断", True
             self.changed.emit()
             return
         self._export_diagnostics(Path(url.toLocalFile()))
@@ -542,7 +552,7 @@ class ClientInfoService(QObject):
         self._diagnostics = {}
         def save():
             from failure_sampling import cleanup_automatic_failure_samples
-            report['automaticFailureCleanup'] = {mode: cleanup_automatic_failure_samples(self.paths.memory_root(mode))
+            report['automaticFailureCleanup'] = {mode: cleanup_automatic_failure_samples(self.paths.memory_root(mode), namespace='automatic-v2')
                 for mode in ('nightmare', 'difficult')}
             from client_problem_history import summarize_problem_history
             history = summarize_problem_history(log_dir, recent)

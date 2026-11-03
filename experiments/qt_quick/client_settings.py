@@ -33,7 +33,7 @@ ACTION_ORDER = ("toggle-panel", "candidate-prev", "candidate-next", "confirm-rou
 LEGACY_ACTIONS = ["F5", "F6", "F7", "F8", "F9", "F10", "F11", "", ""]
 FRESH_ACTIONS = ["F9", "F6", "F7", "F8", "", "", "F11", "", "F10",
                  MANUAL_MAP_PICKER_DEFAULT_HOTKEY]
-BOOL_DEFAULTS = {"automaticFailureEvidence": False, "referenceSheetVisible": True, "sheetVisibilityEnabled": True,
+BOOL_DEFAULTS = {"automaticFailureEvidence": True, "referenceSheetVisible": True, "sheetVisibilityEnabled": True,
                  "orbVisible": True, "qtControlsVisible": True, "reduceMotion": False, "uiSoundEnabled": False,
                  "difficultGridEnabled": False, "onboardingCompleted": False}
 RANGES = {"sheetOpacity": (0., 1.), "referenceOpacity": (0., 1.),
@@ -201,6 +201,9 @@ class SettingsService(QObject):
         self._disk_bytes = None
         self._baseline = deepcopy(DEFAULTS)
         self._draft = deepcopy(DEFAULTS)
+        # Fail closed until a valid settings read establishes an absent key or choice.
+        self._baseline["automaticFailureEvidence"] = False
+        self._draft["automaticFailureEvidence"] = False
         self._shortcut_native_event = None
         self._shortcut_target = ""
         self._shortcut_candidate = ""
@@ -226,6 +229,7 @@ class SettingsService(QObject):
 
     values = Property("QVariantMap", lambda s: deepcopy(s._draft), notify=changed)
     persistedValues = Property("QVariantMap", lambda s: deepcopy(s._baseline), notify=changed)
+    loadFailed = Property(bool, lambda s: bool(s._read_error), notify=changed)
     dirty = Property(bool, lambda s: s._draft != s._baseline or bool(s._repairs), notify=changed)
     controlLayoutDirty = Property(bool, lambda s: s._draft["gameControlLayout"] != s._baseline["gameControlLayout"]
                                   or "gameControlLayout" in s._repairs, notify=changed)
@@ -556,6 +560,8 @@ class SettingsService(QObject):
                                    if key == "actionHotkeys" else _validate(key, raw[key]))
                 except (TypeError, ValueError) as error:
                     invalid[key] = str(error)
+                    if key == "automaticFailureEvidence":
+                        values[key] = False
         if len(values["actionHotkeys"]) != len(ACTION_ORDER):
             # An existing file without actionHotkeys starts from the nine
             # legacy slots; like a stored nine-slot array, slot 10 is unbound.

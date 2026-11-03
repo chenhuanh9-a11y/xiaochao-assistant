@@ -1,5 +1,6 @@
 """Bounded export of existing failure evidence; never captures or runs recognition."""
 from datetime import datetime
+from contextlib import nullcontext
 import hashlib
 import json
 from pathlib import Path, PurePosixPath
@@ -71,22 +72,34 @@ def _image(root, relative, limit, expected=None, *, single_link=False):
 
 
 def _automatic_image(root, relative, limit, expected):
-    from failure_sampling import automatic_storage_transaction, automatic_storage_inventory
+    from failure_sampling import automatic_storage_transaction, automatic_storage_inventory, read_automatic_image
+    match = re.fullmatch(r'failures/(automatic(?:-v2)?)/auto-[0-9a-f]{32}\.png', str(relative))
+    if not match:
+        return None, 'invalid-automatic-sample-path'
+    namespace = match[1]
     if not expected or not re.fullmatch(r'[0-9a-fA-F]{64}', str(expected)):
         return None, 'automatic-image-hash-missing'
     try:
-        with automatic_storage_transaction(root) as status:
+        with (automatic_storage_transaction(root, namespace=namespace)
+              if namespace == 'automatic-v2' else nullcontext('ready')) as status:
             if status != 'ready':
                 return None, status
-            inventory = automatic_storage_inventory(root)
+            inventory = automatic_storage_inventory(root, namespace=namespace)
             if inventory['status'] != 'ready':
                 return None, inventory['status']
-            if not any(row.get('samplePath') == relative and row.get('sampleSha256') == expected
-                       for _, row in inventory['rows']):
+            row = next((row for _, row in inventory['rows']
+                        if row.get('samplePath') == relative and row.get('sampleSha256') == expected), None)
+            if row is None:
                 return None, 'automatic-image-ownership-unavailable'
+            if namespace == 'automatic-v2':
+                return read_automatic_image(root, row, limit=limit, namespace=namespace), 'included'
             return _image(root, relative, limit, expected, single_link=True)
     except OSError as error:
-        return None, type(error).__name__
+        code = str(error)
+        known = {'automatic-image-missing', 'automatic-image-read-unavailable',
+                 'automatic-safe-storage-unsupported', 'ownership-unavailable',
+                 'ownership-changed', 'automatic-image-byte-limit'}
+        return None, code if code in known else 'automatic-image-read-unavailable'
 
 
 def export_failure_evidence(archive, roots, log_windows, redact, *, build_fingerprint,
@@ -109,7 +122,7 @@ def export_failure_evidence(archive, roots, log_windows, redact, *, build_finger
         report['journals'].append(journal)
         from failure_sampling import cleanup_automatic_failure_samples
         try:
-            journal['automaticCleanup'] = cleanup_automatic_failure_samples(root)
+            journal['automaticCleanup'] = cleanup_automatic_failure_samples(root, namespace='automatic-v2')
         except OSError as error:
             journal['cleanupStatus'] = type(error).__name__
         try:
@@ -118,17 +131,22 @@ def export_failure_evidence(archive, roots, log_windows, redact, *, build_finger
         except OSError as error:
             journal['status'] = 'journal-missing' if isinstance(error, FileNotFoundError) else type(error).__name__
             data = b''
-        try:
+        if include_automatic:
             from failure_sampling import automatic_storage_transaction, automatic_storage_inventory
-            with automatic_storage_transaction(root) as status:
-                journal['automaticStatus'] = status
-                if include_automatic and status == 'ready':
-                    inventory = automatic_storage_inventory(root)
-                    journal['automaticStatus'] = inventory['status']
-                    if inventory['status'] == 'ready':
-                        data += b'\n' + b'\n'.join(line for line, _ in inventory['rows'])
-        except OSError as error:
-            journal['automaticStatus'] = type(error).__name__
+            # Legacy storage stays separate: a damaged old cache must not hide v2 evidence.
+            for namespace in ('automatic', 'automatic-v2'):
+                status_key = 'automaticStatus' if namespace == 'automatic' else 'automaticV2Status'
+                try:
+                    with (automatic_storage_transaction(root, namespace=namespace)
+                          if namespace == 'automatic-v2' else nullcontext('ready')) as status:
+                        journal[status_key] = status
+                        if status == 'ready':
+                            inventory = automatic_storage_inventory(root, namespace=namespace)
+                            journal[status_key] = inventory['status']
+                            if inventory['status'] == 'ready':
+                                data += b'\n' + b'\n'.join(line for line, _ in inventory['rows'])
+                except OSError as error:
+                    journal[status_key] = type(error).__name__
         for line in data.splitlines():
             try:
                 row = json.loads(line)
@@ -203,7 +221,7 @@ def export_failure_evidence(archive, roots, log_windows, redact, *, build_finger
             if not relative:
                 pixels, status = None, row.get('missingReason') or 'sample-file-missing'
             elif (row.get('event') == 'automatic-failure-sample' and not re.fullmatch(
-                    r'failures/automatic/auto-[0-9a-f]{32}\.png', str(relative))):
+                    r'failures/automatic(?:-v2)?/auto-[0-9a-f]{32}\.png', str(relative))):
                 pixels, status = None, 'invalid-automatic-sample-path'
             elif remaining <= 0:
                 pixels, status = None, 'export-image-budget-exhausted'
