@@ -194,6 +194,59 @@ class RuntimeBoundaries(unittest.TestCase):
         self.assertFalse(self.runtime.snapshot()["mapRecoveryPending"])
         self.assertTrue(self.runtime.snapshot()["displayAuthorized"])
 
+    def test_recovery_exact_probe_interval_count_and_expiry_budget(self):
+        self.now = 0.
+        self.runtime._monotonic = lambda: self.now
+        original_capture = self.backend.capture
+        captured_at = []
+        def capture(*args):
+            captured_at.append(self.now)
+            return original_capture(*args)
+        def arm():
+            self.assertTrue(self.runtime._arm_map_open_recovery(None, self.runtime._epoch))
+            self.session.refreshRuntime()
+            self.app.processEvents()
+        def tick(moment):
+            self.assertGreaterEqual(moment, self.now)
+            self.now = moment
+            self.coordinator._tracking_timer.timeout.emit()
+            self.settle()
+        with self.negative(), patch.object(self.backend, "capture", side_effect=capture):
+            arm()
+            self.assertEqual(self.runtime._map_recovery["remaining"], 8)
+            self.assertEqual(self.runtime._map_recovery["nextAt"], .2)
+            self.assertEqual(self.runtime._map_recovery["expiresAt"], 2.)
+            for moment in (0., .01, .05, .10, .15, .199999):
+                tick(moment)
+            self.assertEqual(captured_at, [], "dense early timer ticks must not capture")
+            for probe in range(8):
+                due = self.runtime._map_recovery["nextAt"]
+                remaining = due - self.now
+                for moment in (self.now, self.now + remaining * .25, self.now + remaining * .75):
+                    tick(moment)
+                    self.assertEqual(len(captured_at), probe)
+                tick(due)
+                self.assertEqual(len(captured_at), probe + 1)
+            self.assertLess(captured_at[-1], 2., "count cap must be reached before the time cap")
+            self.assertTrue(all(b - a >= .2 - 1e-12 for a, b in zip(captured_at, captured_at[1:])))
+            self.assertFalse(self.runtime.map_open_recovery_status()["pending"])
+            for moment in (1.7, 1.8, 1.9, 2., 2.01, 3.):
+                tick(moment)
+            self.assertEqual(len(captured_at), 8)
+            # Independently expire a ticket with seven probes still unused.
+            # Exhausting eight first would not prove the wall-clock boundary.
+            self.now = 10.
+            arm()
+            tick(10.2)
+            self.assertEqual(len(captured_at), 9)
+            self.assertEqual(self.runtime.map_open_recovery_status()["remaining"], 7)
+            for moment in (12., 12.001, 12.2, 13.):
+                tick(moment)
+            self.assertEqual(len(captured_at), 9)
+            self.assertFalse(self.runtime.map_open_recovery_status()["pending"])
+        self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
+        self.assertFalse(self.coordinator.alignedData)
+
     def test_binding_resume_black_then_ready_uses_bounded_foreground_return(self):
         self.keys.resetMapInput(True)
         self.coordinator._suspend_game_binding("fixture-minimized")
