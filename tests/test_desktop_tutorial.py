@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import time
 import tkinter as tk
 import unittest
 from unittest.mock import Mock
@@ -150,6 +151,13 @@ class TutorialWindowTests(unittest.TestCase):
         self.root.after(120)
         self.root.update()
 
+    def wait_for_image(self):
+        deadline = time.monotonic() + 3
+        while self.tutorial._photo is None and time.monotonic() < deadline:
+            self.root.update()
+            time.sleep(.005)
+        self.assertIsNotNone(self.tutorial._photo)
+
     def test_open_without_chapter_shows_index_and_one_window(self):
         self.tutorial.open()
         window = self.tutorial.window
@@ -239,7 +247,7 @@ class TutorialWindowTests(unittest.TestCase):
         self.tutorial.open("round")
         self.settle()
         self.assertAlmostEqual(self.tutorial.display.scale, 1.5)
-        self.assertIsNotNone(self.tutorial._photo)
+        self.wait_for_image()
         for chapter in CHAPTERS:
             self.tutorial.show_chapter(chapter["id"])
             for step in range(len(chapter["steps"])):
@@ -252,7 +260,7 @@ class TutorialWindowTests(unittest.TestCase):
         self.tutorial.close()
         self.tutorial.open()
         self.settle()
-        self.assertIsNotNone(self.tutorial._photo)
+        self.wait_for_image()
 
     def test_destroying_owner_drops_window_reference(self):
         self.tutorial.open("start")
