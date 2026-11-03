@@ -11,7 +11,8 @@ class BundledAuthorTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        # Match product paths after Windows expands short temporary-directory names.
+        self.root = Path(self.temp.name).resolve()
         self.local = self.root / 'user'
         self.default = self.root / 'program'
         self.relative = 'assets/zhan10-native/map/floor-1.webp'
@@ -68,7 +69,7 @@ class BundledAuthorTests(unittest.TestCase):
         pixels = context.display_pixels(path, 'full-reference')
         self.assertEqual(pixels.shape, (2, 3, 4))
         self.assertTrue((pixels[:,:,3] == 255).all())
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, 'requires real BGRA pixels'):
             context.display_pixels(path, 'aligned-overlay')
 
 

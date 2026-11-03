@@ -13,7 +13,8 @@ class RuntimePathTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        # Match product paths after Windows expands short temporary-directory names.
+        self.root = Path(self.temp.name).resolve()
         self.internal = self.root / "_internal"
         self.internal.mkdir()
         self.profile = dict(product="星图", installerInstance=dict(
