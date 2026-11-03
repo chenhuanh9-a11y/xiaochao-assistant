@@ -47,7 +47,7 @@ LIVE_AUTHOR_IMAGE_ROOTS = {
     "nightmare-lianghapi": ("_internal/assets/authors/lianghapi-single/",),
 }
 PACKAGE_IDS = {"nightmare-suju", "difficult-zhan10"} | set(AUTHOR_PACKAGES)
-SUPPORTED_DISPLAY_VERSIONS = {"1.0", "1.0.1", "1.0.2", "1.0.3", "1.0.4", "1.0.5", "1.0.6"}
+SUPPORTED_DISPLAY_VERSIONS = {"1.0", "1.0.1", "1.0.2", "1.0.3", "1.0.4", "1.0.5", "1.0.6", "1.0.7"}
 CLIENT_COMPATIBILITY = {"displayVersion": "1.0", "numericLine": "1.0.0.N",
                         "minimumBuild": 1, "maximumBuild": 65535}
 BASE_DEPENDENCIES = {

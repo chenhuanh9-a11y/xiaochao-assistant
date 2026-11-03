@@ -2118,32 +2118,6 @@ class LiveRuntime:
             self._notify('automatic-failure-sample', reason='metadata-only', failureSample=result)
             return result
 
-    def _record_automatic_failure_sample(self, reason, *, captured=None, current=None, diagnostic=None):
-        stamp = self._failure_capture_stamp
-        if captured is None and stamp is not None:
-            captured = stamp[0]
-        generation = stamp[3] if stamp is not None and len(stamp) > 3 else None
-        def valid():
-            return bool(self._active and (current is None or current()) and captured is not None
-                        and stamp is not None and stamp[0] is captured
-                        and self._capture_is_current(captured.context, generation))
-        # A missing legal frame is represented explicitly; no new capture is requested.
-        frame = self._full_frame(captured) if valid() else None
-        data = dict(diagnostic or {}, evidenceKind=self._evidence_kind, mode=self._mode,
-                    frameCapturedAtUtc=stamp[1] if stamp is not None else None,
-                    **self._failure_samples.metadata)
-        root = getattr(getattr(self._engine, 'memory_store', None), 'root', None)
-        result = self._failure_samples.record_automatic(root=root, reason=reason, frame=frame,
-            diagnostic=data, current=valid if captured is not None else lambda: bool(
-                self._active and (current is None or current())))
-        controls = getattr(self, '_failure_control_observation', None)
-        if controls is not None and controls[0] is captured and controls[1] is not None and frame is not None:
-            result['controlBand'] = self._failure_samples.record_automatic(root=root, reason=reason, frame=frame,
-                diagnostic=dict(data, sampleRole='detector-control-band'), current=valid,
-                crop_bounds=controls[1], crop_provenance='detector-control-band')
-        self._notify('automatic-failure-sample', reason='saved' if result['saved'] else 'metadata-only',
-                     failureSample=result)
-        return result
 
     def shutdown(self):
         self.set_automatic_failure_sampling_enabled(False)
