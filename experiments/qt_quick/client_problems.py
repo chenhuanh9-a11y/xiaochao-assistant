@@ -313,6 +313,15 @@ class ProblemsService(QObject):
             from recognition_diagnostics import bounded_recognition
             row['recognitionDiagnostics'] = bounded_recognition(event['recognitionDiagnostics'])
         raw_diagnostics = event.get('diag', event.get('diagnostics', {}))
+        if event.get('stage') == 'map-preparation':
+            # A preparation owns a finite trace budget. Keep only its producer
+            # contract, without admitting arbitrary capture/exception payloads.
+            fields = ('openingId', 'ordinal', 'phase', 'inputSequence', 'requestScope',
+                'probe', 'captureErrors', 'suppressed', 'deadlineSeconds', 'probePeriodSeconds',
+                'captureGeneration', 'capture', 'exception', 'elapsedMs', 'observation',
+                'beforeDeadline', 'lastProbeOutcome', 'loopStopReason', 'recoveryId')
+            raw_diagnostics = {key: raw_diagnostics[key] for key in fields
+                if isinstance(raw_diagnostics, dict) and key in raw_diagnostics}
         # Only stable origin fields affect dedup, never arbitrary per-frame
         # diagnostics. Keep independent origin lanes inside the existing 64-key
         # LRU so interleaved failures do not erase or repeatedly re-log each other.
