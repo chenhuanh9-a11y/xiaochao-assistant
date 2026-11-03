@@ -5,6 +5,7 @@ is replaced. DLL loading is forbidden on unsupported builds, and all windows,
 foreground checks and pixels are fixtures. No desktop/game/input IO occurs.
 """
 import json
+import ctypes
 from pathlib import Path
 import tempfile
 import time
@@ -153,6 +154,13 @@ measurements. The Qt queue, runtime, preparation and diagnostic consumers run.
     rows = preparation_fixtures.PreparationDiagnosticContracts.rows
     old_windows = CaptureCompatibilityTests.old_windows
 
+    def exclusion_dll(self):
+        # Keep diagnostic_storage kernel32 calls real; replace only the
+        # exclusion module dependency, never the shared ctypes module.
+        return patch("client_capture_exclusion.ctypes", SimpleNamespace(
+            WinDLL=Mock(side_effect=AssertionError("unsupported build loaded exclusion DLL")),
+            get_last_error=ctypes.get_last_error, WinError=ctypes.WinError))
+
     def setUp(self):
         preparation_fixtures.PreparationDiagnosticContracts.setUp(self)
         self.screen = Mock(side_effect=AssertionError("unsupported platform captured the screen"))
@@ -184,7 +192,7 @@ measurements. The Qt queue, runtime, preparation and diagnostic consumers run.
             self.coordinator.errorReported.connect(service.record)
             try:
                 with self.old_windows(17763), \
-                        patch("client_capture_exclusion.ctypes.WinDLL") as dll, \
+                        self.exclusion_dll() as exclusion_api, \
                         patch.object(self.backend, "capture", side_effect=OSError(5, "PRIVATE-DC-DETAIL")):
                     receipt = self.open_first_map()
                 self.assertFalse(receipt["success"])
@@ -204,7 +212,7 @@ measurements. The Qt queue, runtime, preparation and diagnostic consumers run.
                 self.assertTrue(self.capture.snapshot["enabled"])
                 self.assertFalse(self.helper.pendingWrites)
                 self.screen.assert_not_called()
-                dll.assert_not_called()
+                exclusion_api.WinDLL.assert_not_called()
                 self.assertTrue(service.recent)
                 self.assertEqual(service.recent[0]["title"], "当前系统不支持安全画面回退")
                 self.assertEqual(service.recent[0]["captureDiagnostics"]["captureCapability"]["safeFallback"], "unsupported")
@@ -231,7 +239,7 @@ measurements. The Qt queue, runtime, preparation and diagnostic consumers run.
                 self.assertNotIn("map-open-preparation-deadline", texts)
             # The failed opening retains the user's map intent. Close/reopen
             # through the same input path and round when ordinary DC recovers.
-            with self.old_windows(17763), patch("client_capture_exclusion.ctypes.WinDLL") as dll:
+            with self.old_windows(17763), self.exclusion_dll() as exclusion_api:
                 closed = self.press_map()
                 self.assertEqual(closed["action"], "close_map")
                 self.assertTrue(closed["success"])
@@ -241,7 +249,7 @@ measurements. The Qt queue, runtime, preparation and diagnostic consumers run.
             self.assertEqual(recovered["resultContext"]["roundId"], receipt["resultContext"]["roundId"])
             self.assertEqual(self.capture.snapshot["captureCapability"]["clientDc"], "captured", recovered)
             self.assertFalse(self.capture.snapshot["captureCapability"]["fallbackRequired"])
-            dll.assert_not_called()
+            exclusion_api.WinDLL.assert_not_called()
 
 
 class DifficultCaptureCompatibilityPreparationTests(CaptureCompatibilityPreparationTests):

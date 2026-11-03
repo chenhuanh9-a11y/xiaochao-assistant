@@ -111,6 +111,9 @@ class PartialClientCleanupTests(unittest.TestCase):
             if shutdown_error:
                 original_shutdown = instance.settings.shutdown
                 instance.settings.shutdown = Mock(side_effect=RuntimeError("fixture settings shutdown failure"))
+            instance.tutorial.dismissInvite()
+            instance.tutorial.markDone('start')
+            instance.tutorial.markDone('round')
             self.loaded.set()
             if not loop_error:
                 QTimer.singleShot(0, self.app.quit)
@@ -146,6 +149,12 @@ class PartialClientCleanupTests(unittest.TestCase):
                 else:
                     self.assertEqual(client._run_primary_client(self.app, self.args, self.guard), 0)
                 instance = self.instances[0]
+                import json
+                saved = json.loads(instance.tutorial.state_path.read_text(encoding='utf-8'))
+                self.assertEqual(saved['done'], ['start', 'round'])
+                self.assertTrue(saved['invited'])
+                self.assertTrue(instance.tutorial._closed)
+                self.assertFalse(instance.tutorial.pendingWrites)
                 self.assertEqual(instance.session._pool.activeThreadCount(), 0)
                 self.assertEqual(instance.resources.pool.activeThreadCount(), 0)
                 self.assertEqual(instance.backend.pool.activeThreadCount(), 0)

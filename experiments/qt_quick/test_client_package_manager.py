@@ -148,6 +148,7 @@ class PackageManagerQmlTests(unittest.TestCase):
         code = r'''
 import hashlib,json,sys,time,zipfile
 from pathlib import Path
+from unittest.mock import patch
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtCore import QUrl, QPointF, Qt
 from PySide6.QtQuick import QQuickView
@@ -167,6 +168,13 @@ with zipfile.ZipFile(archive,'w') as z:
 importer.install_author_package_live(archive,case.fixture.root,application_idle=True)
 case.fixture.service.recordImportReceipt(dict(success=True,requestId='fixture-helper-result',
     packageId='nightmare-suju',added=1,alreadyPresent=0))
+default=case.fixture.folder/'bundled-default'
+relative='assets/zhan10-native/fixture.png'
+image=default/relative;image.parent.mkdir(parents=True);image.write_bytes(b'bundled-fixture')
+(default/'inventory.json').write_text(json.dumps(dict(schema='xingtu-bundled-author-v1',packageId='difficult-zhan10',
+    files={relative:dict(bytes=image.stat().st_size,sha256=hashlib.sha256(image.read_bytes()).hexdigest())})))
+case.enterContext(patch('client_resources.bundled_author_root',return_value=default))
+case.fixture.service.refresh();case.settle()
 view=QQuickView();warnings=[]
 view.engine().warnings.connect(lambda rows:warnings.extend(str(r) for r in rows))
 view.rootContext().setContextProperty('resourceService',case.fixture.service)
@@ -188,6 +196,8 @@ def click(name):
     point=item.mapToScene(QPointF(item.width()/2,item.height()/2))
     assert 0<=point.x()<view.width() and 0<=point.y()<view.height(),(name,point)
     QTest.mouseClick(view,Qt.LeftButton,Qt.NoModifier,point.toPoint());QTest.qWait(30)
+assert find(view.contentItem(),'managedPackageList').property('count')==3
+assert not find(view.contentItem(),'removePackageButton-builtin-difficult-zhan10').isEnabled()
 click('removePackageButton-nightmare-suju');case.settle();QTest.qWait(30)
 assert case.service.pendingKind=='remove'
 click('resourceConfirmCancelButton')
@@ -198,6 +208,9 @@ assert not (case.fixture.root/'_internal/assets/suju/map-01-1.png').exists()
 click('clearManagedPackagesButton');case.settle();QTest.qWait(30)
 click('resourceConfirmAcceptButton');case.settle(lambda:len(case.service.packageRows)==0)
 assert not (case.fixture.root/second).exists()
+QTest.qWait(30)
+assert find(view.contentItem(),'managedPackageList').property('count')==1
+assert image.read_bytes()==b'bundled-fixture'
 assert len(case.completions)==2 and case.changes==[True,True],(case.completions,case.changes)
 assert not warnings,warnings
 view.setSource(QUrl());case.doCleanups()

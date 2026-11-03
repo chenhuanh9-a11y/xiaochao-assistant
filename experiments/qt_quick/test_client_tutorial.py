@@ -84,6 +84,9 @@ class TutorialDataTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             internal = Path(folder) / "_internal"
             internal.mkdir()
+            (internal / "installation-profile.json").write_text(json.dumps(dict(
+                product="星图", installerInstance=dict(id="production", product="星图",
+                appId="D04394A0-DACE-4FF9-874D-3DCB43EE53D1"))), encoding="utf-8")
             shutil.copy2(HERE / "client_tutorial.py", internal)
             shutil.copy2(CHAPTER_FILE, internal)
             shutil.copytree(TUTORIAL_ROOT, internal / "tutorial")
