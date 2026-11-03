@@ -6,7 +6,7 @@ days). Only the refresh token and the display name are kept between launches,
 encrypted with Windows DPAPI for the current Windows user; on other systems
 the session lasts until the app closes. Passwords are never stored.
 
-Every call blocks; the UI runs them on a worker thread.
+Account operations block on workers; UI-readable state never waits for I/O.
 """
 from __future__ import annotations
 
@@ -227,12 +227,14 @@ class AccountService:
         self._api = api
         self._lock = threading.RLock()
         self._refresh_lock = threading.Lock()
+        self._vault_lock = threading.Lock()
         self._generation = 0
         self._auth_pending = None
         self._closed = False
         self._pending_recovery_code = ""
         self._session = self._vault.load()
         self.revision = 0
+        self._vault_revision = 0
         self.installation_id = self._installation_id()
 
     def _installation_id(self) -> str:
@@ -275,32 +277,50 @@ class AccountService:
 
     def _set(self, session: Session | None) -> None:
         with self._lock:
-            self._generation += 1
-            self._auth_pending = None
-            self._pending_recovery_code = ""
-            self._store_session(session)
+            revision = self._replace_session(session)
+        self._persist_session(session, revision)
 
-    def _store_session(self, session: Session | None) -> None:
+    def _replace_session(self, session: Session | None) -> int:
+        # Caller owns _lock; no I/O here or in _store_session.
+        self._generation += 1
+        self._auth_pending = None
+        self._pending_recovery_code = ""
+        return self._store_session(session)
+
+    def _store_session(self, session: Session | None) -> int:
         # Caller owns _lock. Refresh rotates tokens without changing identity.
         self._session = session
         self.revision += 1
-        if session is None:
-            self._vault.clear()
-        else:
-            self._vault.save(session)
+        self._vault_revision = self.revision
+        return self.revision
 
-    def _begin_auth(self) -> int:
+    def _persist_session(self, session: Session | None, revision: int) -> None:
+        # Serialize disk writes separately from UI-readable state. Read the
+        # desired revision after acquiring this lock so an older worker cannot
+        # overwrite a newer login/logout. shutdown leaves the desired revision
+        # intact for accepted saves that are still draining.
+        with self._vault_lock:
+            with self._lock:
+                if revision != self._vault_revision:
+                    return
+            if session is None:
+                self._vault.clear()
+            else:
+                self._vault.save(session)
+
+    def _begin_auth(self, *, preserve_code=False) -> int:
         with self._lock:
             if self._closed:
                 raise AccountError("账号服务已关闭")
             self._generation += 1
-            self._pending_recovery_code = ""
+            if not preserve_code:
+                self._pending_recovery_code = ""
             self._auth_pending = self._generation
             return self._generation
 
     @contextmanager
-    def _auth_request(self):
-        generation = self._begin_auth()
+    def _auth_request(self, *, preserve_code=False):
+        generation = self._begin_auth(preserve_code=preserve_code)
         try:
             yield generation
         finally:
@@ -318,8 +338,12 @@ class AccountService:
             # Calls started against the previous session while auth was in
             # flight must also be invalidated when the new identity commits.
             self._generation += 1
-            self._store_session(session)
+            committed_generation = self._generation
+            revision = self._store_session(session)
             self._pending_recovery_code = code
+        self._persist_session(session, revision)
+        with self._lock:
+            self._check_generation(committed_generation)
 
     def shutdown(self) -> None:
         """Invalidate workers and discard secrets in memory, not the saved login."""
@@ -364,7 +388,7 @@ class AccountService:
             return code
 
     def recover(self, identifier: str, recovery_code: str, new_password: str) -> str:
-        """Reset the password with the recovery code; every session ends."""
+        """Reset the password; only clear a locally matching account identity."""
         identifier = str(identifier or "").strip().lower()
         code = str(recovery_code or "").strip().upper()
         if not identifier:
@@ -372,11 +396,20 @@ class AccountService:
         if not RECOVERY_CODE.match(code):
             raise AccountError("恢复码格式为 XXXX-XXXX-XXXX-XXXX")
         new_password = check_password(new_password)
-        with self._auth_request() as generation:
+        with self._auth_request(preserve_code=True) as generation:
             result = self._api("POST", "/v1/auth/password-recovery",
                                dict(identifier=identifier, recovery_code=code, new_password=new_password,
                                     preserve_recovery_code=True))
-            self._commit_auth(generation, None)
+            with self._lock:
+                self._check_generation(generation)
+                # Login may have used an email alias. Without a canonical
+                # server identity, do not guess which other account it names;
+                # a later authorized response can invalidate that session.
+                clear = self._session is not None and self._session.username == identifier
+                if clear:
+                    revision = self._replace_session(None)
+            if clear:
+                self._persist_session(None, revision)
             message = result.get("message") if isinstance(result, dict) else None
             return message if isinstance(message, str) and message else "密码已重置，请用新密码登录"
 
@@ -384,7 +417,8 @@ class AccountService:
         # Revoke locally before HTTP; a delayed logout must not clear a new login.
         with self._lock:
             session = self._session
-            self._set(None)
+            revision = self._replace_session(None)
+        self._persist_session(None, revision)
         if session is not None:
             try:
                 # A restored vault has only a refresh token. Refresh this detached
@@ -419,14 +453,24 @@ class AccountService:
             except AccountError as failure:
                 with self._lock:
                     self._check_generation(generation)
-                    if self._session is stale and failure.status in (400, 401, 403, 422):
-                        self._set(None)
-                        raise AccountError("登录已失效，请重新登录", failure.status, failure.code) from None
+                    clear = self._session is stale and failure.status in (400, 401, 403, 422)
+                    if clear:
+                        revision = self._replace_session(None)
+                if clear:
+                    self._persist_session(None, revision)
+                    if failure.code in BLOCKED_CODES:
+                        raise
+                    raise AccountError("登录已失效，请重新登录", failure.status, failure.code) from None
                 raise
             with self._lock:
                 self._check_generation(generation)
-                self._store_session(session)
-                return session
+                if self._session is not stale:
+                    raise AccountError("账号状态已变化，请重试", 401)
+                revision = self._store_session(session)
+            self._persist_session(session, revision)
+            with self._lock:
+                self._check_generation(generation)
+            return session
 
     def authorized(self, method: str, path: str, body=None):
         with self._lock:
@@ -438,17 +482,21 @@ class AccountService:
             raise AccountError("请先登录", 401)
         if session.access_expires - REFRESH_MARGIN_SECONDS <= time.time():
             session = self._refreshed(session, generation)
-        try:
-            result = self._api(method, path, body, token=session.access_token, installation=self.installation_id)
-        except AccountError as failure:
-            if failure.status == 401 and not failure.code:
-                session = self._refreshed(session, generation)
+        for attempt in range(2):
+            try:
                 result = self._api(method, path, body, token=session.access_token, installation=self.installation_id)
-            else:
+                break
+            except AccountError as failure:
+                if attempt == 0 and failure.status == 401 and not failure.code:
+                    session = self._refreshed(session, generation)
+                    continue
                 with self._lock:
                     self._check_generation(generation)
-                    if failure.code in BLOCKED_CODES and self._session is session:
-                        self._set(None)
+                    clear = failure.code in BLOCKED_CODES and self._session is session
+                    if clear:
+                        revision = self._replace_session(None)
+                if clear:
+                    self._persist_session(None, revision)
                 raise
         with self._lock:
             self._check_generation(generation)

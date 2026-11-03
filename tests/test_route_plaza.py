@@ -258,6 +258,16 @@ class RoutePlazaTests(unittest.TestCase):
         self.assertEqual(self.account.recover("bob_1", "abcd-efgh-jkmp-qrst", "secret2"), "密码已重置")
         self.assertIsNone(self.account.username)
 
+    def test_duplicate_template_bindings_fail_instead_of_selecting_last_map(self):
+        manifest_path = self.library.root / 'manifest.json'
+        resource = json.loads(manifest_path.read_text())
+        duplicate = dict(resource['maps'][0], mapId='other-map')
+        resource['maps'].append(duplicate)
+        manifest_path.write_text(json.dumps(resource))
+        library = CustomMapLibrary(self.library.root)
+        with self.assertRaisesRegex(AccountError, '资源缺口.*重复绑定'):
+            route_plaza.convert_manifest(library, dict(maps=[]))
+
     def test_without_dpapi_nothing_is_written(self):
         vault = SessionVault(self.root / "plain.bin", protect=None, unprotect=None)
         if sys.platform == "win32":
