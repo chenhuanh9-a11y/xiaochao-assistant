@@ -19,6 +19,7 @@ from client_paths import APP_ROOT, WORK_ROOT
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 from alignment_core_v2 import AlignmentCoreV2
+from season_context import normalize_season, context_key
 from client_engine import (EngineAdapter, clone_similarity_state, stage_similarity_rank, automatic_identity_candidates, registered_logical_family, ranked_entrance_kind, similarity_evidence_summary, initial_group_display_member, is_registered_identity_group,
                            INITIAL_IDENTITY_BUDGET_SECONDS)
 from floor_observation_policy import (MANUAL_FLOOR_HOLD_SECONDS,
@@ -371,6 +372,7 @@ class LiveRuntime:
         self._core = AlignmentCoreV2(clock=clock)
         self._lock, self._work = threading.RLock(), threading.RLock()
         self._epoch, self._round, self._cycle, self._frame_generation = 0, 0, 0, 0
+        self._season = "s0"
         self._mode, self._profile, self._map_id, self._floor = "nightmare", "shared-structure", "", ""
         self._frame_id = ""
         self._active, self._map_open = False, False
@@ -413,7 +415,7 @@ class LiveRuntime:
         return EngineAdapter._cancelled(cancelled)
 
     def _context(self):
-        return dict(mode=self._mode, profileId=self._profile, roundId=self._round, frameId=self._frame_id)
+        return dict(season=self._season, contextKey=context_key(self._mode, self._season), mode=self._mode, profileId=self._profile, roundId=self._round, frameId=self._frame_id)
 
     def _manual_selection_unlocked(self):
         """Manual mode waits for the player's pick instead of ranking identity."""
@@ -1014,7 +1016,7 @@ class LiveRuntime:
                 or observation["frame_id"] != self._frame_id or "floor_read" not in observation):
             return None
         captured = observation["captured"].context
-        return dict(epoch=self._epoch, mode=self._mode, profileId=self._profile,
+        return dict(epoch=self._epoch, season=self._season, mode=self._mode, profileId=self._profile,
             roundId=self._round, cycleId=self._cycle, frameId=self._frame_id,
             generation=self._frame_generation, captureGeneration=observation["capture_generation"],
             clientBounds=list(captured.client_screen_bounds), fullClientSize=list(captured.full_client_size),
@@ -1276,7 +1278,7 @@ class LiveRuntime:
                 game_intent=self._game_floor_intent, now=self._monotonic())
             self._last_floor_policy = policy.reason
             if self._diagnostics is not None:
-                self._diagnostics.record("floor-decision", reason=policy.reason, mode=self._mode,
+                self._diagnostics.record("floor-decision", reason=policy.reason, season=self._season, mode=self._mode,
                     floor=str(policy.target), accepted=bool(policy.apply_target),
                     frameId=self._frame_id, roundId=self._round, cycleId=self._cycle)
             if policy.clear_game_intent:
@@ -1478,11 +1480,11 @@ class LiveRuntime:
         if action in ("reselect_map", "map_reselection"):
             with self._work:
                 with self._lock:
-                    epoch, mode = self._epoch, self._mode
+                    epoch, mode, season = self._epoch, self._mode, self._season
                     engine = self._engine
-                engine = engine or self._factories[mode]()
+                engine = engine or self._get_engine(mode, season)
                 with self._lock:
-                    if self._cancelled(cancelled) or epoch != self._epoch or mode != self._mode:
+                    if self._cancelled(cancelled) or epoch != self._epoch or mode != self._mode or season != self._season:
                         return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
                     if self._gate is None:
                         from nightmare_candidate import RouteDisplayGate
@@ -1577,6 +1579,7 @@ class LiveRuntime:
                 self.invalidate("manual-action-error")
                 result = self._receipt(action, payload, success=False,
                     reason=f"{type(error).__name__}:{error}", error=True,
+                    unavailable=bool(getattr(error, "unavailable", False)),
                     **self._error_fields(error, action))
             else:
                 learning = self._learn_confirmation(confirmation, cancelled)
@@ -1611,13 +1614,14 @@ class LiveRuntime:
             # drains even if the round closes. Retain the immutable captured
             # pixels/context, never read replacement state during disk IO.
             frame = observation["frame"]
+            season = self._season
             bounds = tuple(captured.context.client_screen_bounds)
         # The existing worker/_work owns this one submission. Keep filesystem IO
         # and engine cache reload outside the hot state lock so snapshot/close
         # stay responsive. No later automatic result can retry this submission,
         # including after a partial write/reload failure.
         learning = persist_manual_confirmation(engine, map_id, floor, frame, bounds)
-        learning.update(mode=mode, roundId=round_id, mapId=map_id, floor=floor)
+        learning.update(season=season, mode=mode, roundId=round_id, mapId=map_id, floor=floor)
         self._notify("memory-saved" if learning["status"] == "saved" else "memory-error",
                      reason=learning.get("error", "human-confirmed"), learning=learning)
         return learning
@@ -1757,7 +1761,8 @@ class LiveRuntime:
                 displayFallback=metadata.get("fallback", False), fallbackReason=metadata.get("fallbackReason", ""),
                 engineConnected=True,
                 liveEngineAvailable=bool(ready and guarded and self._capture is not None),
-                liveUnavailableReason=("capture-context-recheck-unavailable" if not guarded else
+                liveUnavailableReason=("season-resources-unavailable:s1" if self._season != "s0" else
+                                       "capture-context-recheck-unavailable" if not guarded else
                                        "capture-provider-unavailable" if self._capture is None else
                                        capabilities[self._mode]["reason"] if not ready else ""),
                 roundActive=self._active, roundPreparing=self._round_preparing, mapOpen=self._map_open,
@@ -1814,7 +1819,7 @@ class LiveRuntime:
             self._map_recovery = None
             if self._diagnostics is not None:
                 self._diagnostics.record("invalidate", reason=str(reason), source=source, epoch=self._epoch,
-                    mode=self._mode, mapId=self._map_id, floor=str(self._floor), frameId=self._frame_id,
+                    season=self._season, mode=self._mode, mapId=self._map_id, floor=str(self._floor), frameId=self._frame_id,
                     roundId=self._round, cycleId=self._cycle, probeMisses=self._probe_misses)
             # Finalize only a real close. Other boundaries discard an incomplete
             # segment; they are not evidence that an opening failed.
@@ -1884,7 +1889,7 @@ class LiveRuntime:
             if self._diagnostics is not None:
                 packet["producedAt"] = time.monotonic()
                 self._diagnostics.record("runtime-event", eventName=event, reason=reason, token=token,
-                    producedAt=packet["producedAt"], mode=self._mode, mapId=self._map_id,
+                    producedAt=packet["producedAt"], season=self._season, mode=self._mode, mapId=self._map_id,
                     floor=str(self._floor), frameId=self._frame_id, epoch=self._epoch,
                     roundId=self._round, cycleId=self._cycle, generation=self._frame_generation)
         if callback is not None:
@@ -1944,16 +1949,16 @@ class LiveRuntime:
         # under that lock, then build the read-only rows without holding either
         # the state lock or the capture/solver work lock.
         with self._lock:
-            mode, profile, engine = self._mode, self._profile, self._engine
+            season, mode, profile, engine = self._season, self._mode, self._profile, self._engine
             pack = getattr(engine, "pack", None) if engine is not None else None
             if (pack is None or getattr(pack, "mode", mode) != mode
                     or not getattr(pack, "maps", None)):
-                return dict(mode=mode, profileId=profile, available=False,
+                return dict(season=season, mode=mode, profileId=profile, available=False,
                             message="当前模式的地图资源未就绪，暂时不能选图")
             items = list(pack.maps)
             default_entry_floor = str(getattr(pack, "default_entry_floor", "1"))
             native = getattr(engine, "qt_native_context", None)
-            scope = (mode, profile, tuple((str(item.id), str(getattr(item, "name", "") or ""),
+            scope = (season, mode, profile, tuple((str(item.id), str(getattr(item, "name", "") or ""),
                                            str(getattr(item, "direction", "") or ""))
                                           for item in items))
             cache = self._manual_map_thumbnail_cache
@@ -1976,7 +1981,7 @@ class LiveRuntime:
         if resolved:
             with self._lock:
                 cache = self._manual_map_thumbnail_cache
-                if (self._engine is engine and self._mode == mode and self._profile == profile
+                if (self._engine is engine and self._season == season and self._mode == mode and self._profile == profile
                         and cache.get("pack") is pack and cache.get("scope") == scope):
                     cache["rows"].update(resolved)
         maps = []
@@ -1995,9 +2000,9 @@ class LiveRuntime:
             maps.append(dict(id=map_id, name=str(getattr(item, "name", "") or ""),
                              direction=str(getattr(item, "direction", "") or ""),
                              thumbnailPath=path, thumbnailStamp=stamp))
-        identity = dict(mode=mode, profileId=profile,
+        identity = dict(season=season, mode=mode, profileId=profile,
                         maps=[(row["id"], row["name"], row["direction"]) for row in maps])
-        return dict(mode=mode, profileId=profile, available=True, identity=identity, maps=maps,
+        return dict(season=season, mode=mode, profileId=profile, available=True, identity=identity, maps=maps,
                     defaultEntryFloor=default_entry_floor)
 
     def _reproject_route_display(self, action, payload, cancelled):
@@ -2088,11 +2093,12 @@ class LiveRuntime:
         from client_route_preferences import coffin_variant_metadata
         with self._lock:
             context = (self._engine, self._mode, self._profile, self._map_id, self._floor)
-        return coffin_variant_metadata(*context)
+            season = self._season
+        return coffin_variant_metadata(*context, season=season)
 
     def route_preferences_context(self):
         with self._lock:
-            return dict(mode=self._mode, profileId=self._profile, mapId=self._map_id,
+            return dict(season=self._season, mode=self._mode, profileId=self._profile, mapId=self._map_id,
                         floor=str(self._floor), resourceIdentity=str(id(self._engine)))
 
     def configure_failure_sampling(self, *, event_path, build_fingerprint, source_commit=""):
@@ -2138,7 +2144,7 @@ class LiveRuntime:
 
     @staticmethod
     def _reference_owner_context(row):
-        return tuple(row.get(key) for key in ("mode", "roundId", "mapId", "floor",
+        return tuple(row.get(key) for key in ("season", "mode", "roundId", "mapId", "floor",
             "engineIdentity", "captureGeneration"))
 
     def _remember_provisional_reference(self):
@@ -2164,7 +2170,7 @@ class LiveRuntime:
                     or self._current_frame_floor_conflicts(self._floor)
                     or self._gate is None or self._gate.confirmed_id != self._map_id
                     or any(row.get(key) != expected for key, expected in (
-                        ("mode", self._mode), ("profileId", self._profile), ("mapId", self._map_id),
+                        ("season", self._season), ("mode", self._mode), ("profileId", self._profile), ("mapId", self._map_id),
                         ("floor", self._floor), ("roundId", self._round),
                         ("displayGeneration", getattr(self, "_display_generation", 0)),
                         ("engineIdentity", id(self._engine))))
@@ -2198,7 +2204,7 @@ class LiveRuntime:
                         and self._capture_is_current(captured.context, generation))
         # A missing legal frame is represented explicitly; no new capture is requested.
         frame = self._full_frame(captured) if valid() else None
-        data = dict(diagnostic or {}, evidenceKind=self._evidence_kind, mode=self._mode,
+        data = dict(diagnostic or {}, evidenceKind=self._evidence_kind, season=self._season, mode=self._mode,
                     frameCapturedAtUtc=stamp[1] if stamp is not None else None,
                     **self._failure_samples.metadata)
         root = getattr(getattr(self._engine, 'memory_store', None), 'root', None)
@@ -2306,7 +2312,8 @@ class LiveRuntime:
         return bool(self._active and self._map_open and row["epoch"] == self._epoch and observation
             and self._core.can_display(cycle_id=self._cycle, map_id=self._map_id, floor=self._floor,
                                       frame_generation=self._frame_generation)
-            and row["frameId"] == self._frame_id and row["mode"] == self._mode)
+            and row["frameId"] == self._frame_id and row["mode"] == self._mode
+            and row.get("season", "s0") == self._season)
 
     def map_input_observation_is_current(self, observation):
         """A visual receipt can synchronize intent, never revive an old epoch."""
@@ -2324,10 +2331,10 @@ class LiveRuntime:
         with self._lock:
             if self._diagnostics is not None:
                 self._diagnostics.record("runtime-result", action=action, success=success, reason=reason,
-                    mode=self._mode, mapId=self._map_id, floor=str(self._floor), frameId=self._frame_id,
+                    season=self._season, mode=self._mode, mapId=self._map_id, floor=str(self._floor), frameId=self._frame_id,
                     epoch=self._epoch, roundId=self._round, cycleId=self._cycle, generation=self._frame_generation)
             context = self._context()
-            request = {key: payload.get(key) for key in ("generation", "mode", "profileId", "roundId", "frameId")}
+            request = {key: payload.get(key) for key in ("generation", "season", "mode", "profileId", "roundId", "frameId")}
             self._message = reason
             visual = payload.get("_mapInputVisual")
             if (visual is not None and visual["epoch"] == self._epoch
@@ -2371,6 +2378,7 @@ class LiveRuntime:
                 self.invalidate("manual-action-error")
                 return self._receipt(action, payload, success=False,
                     reason=f"{type(error).__name__}:{error}", error=True,
+                    unavailable=bool(getattr(error, "unavailable", False)),
                     **self._error_fields(error, action))
         if action == "toggle_sheet_visibility":
             with self._lock:
@@ -2424,15 +2432,26 @@ class LiveRuntime:
                     if self._capture is not None:
                         self._capture.disable()
             return self._receipt(action, payload, success=True, reason=action)
-        if action in ("set_game_mode", "set_route_profile", "set_context"):
+        if action in ("set_game_mode", "set_season", "set_route_profile", "set_context"):
+            if self._cancelled(cancelled):
+                return self._receipt(action, payload, success=False, reason="cancelled", cancelled=True)
             mode = payload.get("mode", self._mode)
-            profile = str(payload.get("profileId", self._profile))
+            try:
+                season = normalize_season(payload.get("season", self._season))
+            except ValueError:
+                return self._receipt(action, payload, success=False, reason="unsupported-season")
+            # A convenience season change has no authority to carry another
+            # season's author preference; explicit target preferences still win.
+            profile = str(payload.get("profileId", self._profile if season == self._season else ""))
             if mode not in ("nightmare", "difficult"):
                 return self._receipt(action, payload, success=False, reason="unsupported-mode")
             with self._lock:
-                changed_mode = mode != self._mode
+                # Cancellation may arrive while this mutator waits for state ownership.
+                if self._cancelled(cancelled):
+                    return self._receipt(action, payload, success=False, reason="cancelled", cancelled=True)
+                changed_mode = mode != self._mode or season != self._season
                 changed_profile = profile != self._profile
-                if changed_mode and self._active:
+                if changed_mode and (self._active or self._round_preparing):
                     return self._receipt(action, payload, success=False,
                                          reason="end-round-before-changing-mode")
                 if changed_mode:
@@ -2449,9 +2468,10 @@ class LiveRuntime:
                     self._map_id, self._floor = "", ""
                     if self._capture is not None:
                         self._capture.disable()
+                self._season = season
                 self._mode, self._profile = mode, profile
                 self._publish_game_pointer_context_locked()
-                self._offline.dispatch("set_context", dict(mode=mode, profileId=profile))
+                self._offline.dispatch("set_context", dict(season=season, mode=mode, profileId=profile))
             if changed_profile and not changed_mode:
                 return self._reproject_route_display(action, payload, cancelled)
             return self._receipt(action, payload, success=True, reason="context-updated")
@@ -2508,7 +2528,16 @@ class LiveRuntime:
         except Exception as error:
             self.invalidate("runtime-error", source=f'execute:{action}:{type(error).__name__}')
             return self._receipt(action, payload, success=False, reason=f"{type(error).__name__}:{error}", error=True,
+                    unavailable=bool(getattr(error, "unavailable", False)),
                     **self._error_fields(error, action))
+
+    def _get_engine(self, mode, season="s0"):
+        season = normalize_season(season)
+        if season != "s0":
+            from client_providers import ProviderUnavailable
+            raise ProviderUnavailable("season-resources-unavailable:s1")
+        getter = getattr(self._factories, "get_engine", None)
+        return getter(mode, season) if callable(getter) else self._factories[mode]()
 
     def _start(self, payload, cancelled):
         if self._capture is None:
@@ -2516,7 +2545,7 @@ class LiveRuntime:
         if self._evidence_kind == "live-client-capture" and not callable(getattr(self._capture, "is_current", None)):
             raise RuntimeError("capture-context-recheck-unavailable")
         with self._lock:
-            epoch, mode = self._epoch, self._mode
+            epoch, mode, season = self._epoch, self._mode, self._season
             if self._active or (self._round_preparing and self._prepared_round_ready):
                 return self._receipt("start_round", payload, success=True,
                     reason="round-already-active" if self._active else "round-already-prepared")
@@ -2524,7 +2553,7 @@ class LiveRuntime:
             self._round_preparing = True
             self._prepared_round_ready = False
         try:
-            engine = self._factories[mode]()
+            engine = self._get_engine(mode, season)
         except Exception:
             with self._lock:
                 if epoch == self._epoch:
@@ -2536,7 +2565,7 @@ class LiveRuntime:
                     self._round_preparing = False
             return self._receipt("start_round", payload, success=False, reason="cancelled", cancelled=True)
         with self._lock:
-            if epoch != self._epoch or mode != self._mode:
+            if epoch != self._epoch or mode != self._mode or season != self._season:
                 return self._receipt("start_round", payload, success=False, reason="stale-context", stale=True)
             self._core.reset_round(reason="round-prepared")
             self._round += 1
@@ -3252,7 +3281,7 @@ class LiveRuntime:
                     or group is not self._group or cycle is not self._transient_cycle
                     or not self._capture_is_current(context,capture_generation)):
                 return None
-            metadata=dict(mode=self._mode,profileId=profile,preferredProfileId=profile,
+            metadata=dict(season=self._season, mode=self._mode,profileId=profile,preferredProfileId=profile,
                 effectiveProfileId=layer.get("effectiveProfileId","shared-structure"),mapId=map_id,floor=str(floor),
                 roundId=self._round,variantId=layer.get("variantId"),displayGeneration=getattr(self,"_display_generation",0),
                 resourceIdentity=layer["resourceIdentity"],engineIdentity=id(engine),captureGeneration=capture_generation,
@@ -3351,7 +3380,7 @@ class LiveRuntime:
             if capture_generation != self._capture_generation():
                 return self._receipt(action, payload, success=False, reason="capture-context-changed", stale=True)
             reference_sheet = dict(token=uuid4().hex, pixels=reference_pixels,
-                mode=self._mode, profileId=self._profile, mapId=map_id, floor=floor, roundId=self._round,
+                season=self._season, mode=self._mode, profileId=self._profile, mapId=map_id, floor=floor, roundId=self._round,
                 variantId=display.get("variantId"), displayGeneration=display_generation,
                 resourceIdentity=display["resourceIdentity"], captureGeneration=capture_generation, engineIdentity=id(engine),
                 referenceAuthorized=self._evidence_kind == "live-client-capture", evidenceKind=self._evidence_kind,
@@ -3414,7 +3443,7 @@ class LiveRuntime:
                     resource = dict(metadata=reference.metadata,
                         cleanMaskSha256=hashlib.sha256(reference.clean_mask.tobytes()).hexdigest(),
                         validationMaskSha256=hashlib.sha256(reference.validation_mask.tobytes()).hexdigest()) if reference is not None else None
-                    diagnostic = dict(mode=self._mode, profileId=self._profile, evidenceKind=self._evidence_kind,
+                    diagnostic = dict(season=self._season, mode=self._mode, profileId=self._profile, evidenceKind=self._evidence_kind,
                         frameId=frame_id, sourceFrameGeneration=frame_generation,
                         captureGeneration=capture_generation, requestGeneration=payload.get("generation"),
                         roundId=self._round, cycleId=cycle, epoch=epoch,
@@ -3517,7 +3546,7 @@ class LiveRuntime:
             rgba.setflags(write=False)
             live = self._evidence_kind == "live-client-capture"
             target_render = dict(token=uuid4().hex, epoch=epoch, authorizationId=token.authorization_id,
-                mode=self._mode, profileId=self._profile, mapId=map_id, floor=floor,
+                season=self._season, mode=self._mode, profileId=self._profile, mapId=map_id, floor=floor,
                 roundId=self._round, cycleId=cycle, frameId=frame_id, generation=frame_generation,
                 matrix=render_matrix.tolist(), canonicalMatrix=canonical.tolist(), pixels=rgba,
                 routeWidth=rgba.shape[1], routeHeight=rgba.shape[0], clientWidth=width, clientHeight=height,

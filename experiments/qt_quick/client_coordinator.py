@@ -20,6 +20,7 @@ from reference_position_editor import ReferencePositionEdit
 from client_problem_messages import operation_problem
 from client_input_diagnostics import InputDiagnostics
 from client_manual_map import MANUAL_PICKER_ACTION, normalize_selection_mode
+from season_context import normalize_season, context_key, selected_profile, CONTEXTS
 
 
 def _presentation_error_details(error):
@@ -30,7 +31,7 @@ def _presentation_error_details(error):
 def _aligned_material_scope(payload):
     """Content scope, deliberately separate from per-frame live authorization."""
     return tuple(deepcopy(payload.get(key)) for key in
-                 ("roundId", "mode", "profileId", "mapId", "floor", "resourceIdentity",
+                 ("roundId", "season", "mode", "profileId", "mapId", "floor", "resourceIdentity",
                   "routeWidth", "routeHeight"))
 
 
@@ -234,7 +235,7 @@ class ClientCoordinator(QObject):
         self._last_render_token = None
         values = settings.persistedValues
         mode = values.get("gameMode", "nightmare")
-        self._applied_context = (mode, values.get("modeRouteProfiles", {}).get(mode) or values.get("routeProfileId", ""))
+        self._applied_context = self._settings_context(values)
         self._pending_context = None
         self._binding_signature = (values.get("hotkey"), tuple(values.get("actionHotkeys", ())))
         from client_input import NativeWindowAPI
@@ -273,7 +274,7 @@ class ClientCoordinator(QObject):
         self._startup_timer.timeout.connect(self.startLiveServices)
         guard = getattr(settings, "setModeChangeGuard", None)
         if callable(guard):
-            guard(lambda: not self.session.snapshot.get("roundActive", False))
+            guard(lambda: not self._game_context_locked())
         settings.changed.connect(self._draft_changed)
         settings.saved.connect(self._settings_saved)
         controls_failure = getattr(settings, "controlsVisibilitySaveFailed", None)
@@ -335,7 +336,7 @@ class ClientCoordinator(QObject):
     def _trace(self, stage, *, state=None, payload=None, reason="", window=None, **extra):
         data = payload or state or {}
         row = dict(role="presentation", stage=stage, reason=reason,
-                   mode=data.get("mode"), groupid=data.get("groupId"),
+                   season=data.get("season", "s0"), mode=data.get("mode"), groupid=data.get("groupId"),
                    identityPhase=data.get("identityPhase"), provisional=data.get("provisional"),
                    durablemap=data.get("durableMapId", data.get("mapId")), floor=data.get("floor"),
                    round=data.get("roundId"), cycle=data.get("cycleId"), frame=data.get("frameId"),
@@ -399,10 +400,10 @@ class ClientCoordinator(QObject):
             return
         from route_display_notice import DisplayNoticeContext
         def context(payload):
-            return DisplayNoticeContext(payload.get("roundId"), payload.get("mode"),
+            return DisplayNoticeContext((payload.get("season", "s0"), payload.get("roundId")), payload.get("mode"),
                 payload.get("mapId"), payload.get("floor"), repr(payload.get("resourceIdentity")),
-                (payload.get("cycleId"), payload.get("frameId"), payload.get("generation")))
-        self._fallback_notices.begin_round(current.get("roundId"))
+                (payload.get("season", "s0"), payload.get("cycleId"), payload.get("frameId"), payload.get("generation")))
+        self._fallback_notices.begin_round((current.get("season", "s0"), current.get("roundId")))
         notice = self._fallback_notices.consume(context(data), context(current),
             display_kind=current.get("displayKind", ""), author_status=current.get("authorStatus", "none"),
             current_commit=True)
@@ -495,6 +496,9 @@ class ClientCoordinator(QObject):
         """Cached readiness only: never read or prepare resources on input/UI."""
         state = self.session.snapshot if state is None else state
         mode = state.get("mode", self._applied_context[0])
+        season = state.get("season", "s0")
+        if not CONTEXTS[context_key(mode, season)].registered:
+            return ((season, mode, "season-resources-unregistered"), f"{season.upper()} 地图资源尚未登记，暂不能开始识别")
         if self.resources.busy or self.resources.pendingKind or state.get("resourceLocked"):
             return ((mode, "resource-operation"), "正在更新地图资源，请等待资源操作完成后再打开地图")
         if self._pending_context or state.get("contextPending"):
@@ -773,7 +777,7 @@ class ClientCoordinator(QObject):
 
     def _action_requested(self, action, payload):
         if (action in {"end_round", "stop_round", "reset_round", "bind_capture"}
-                or (action == "set_context" and payload.get("mode") != self._applied_context[0])):
+                or (action == "set_context" and (payload.get("mode"), payload.get("season", "s0")) != (self._applied_context[0], self._applied_context[2]))):
             self._reset_map_input("action-" + action)
         if action in {"end_round", "stop_round", "reset_round", "set_floor", "cycle_floor"}:
             self._clear_reference()
@@ -955,7 +959,7 @@ class ClientCoordinator(QObject):
                 or "capture_now" not in self.session.snapshot.get("availableCommands", ())):
             return
         state = self.runtime.snapshot()
-        fields = ("mode", "profileId", "roundId", "roundActive", "roundPreparing")
+        fields = ("season", "mode", "profileId", "roundId", "roundActive", "roundPreparing")
         scope = tuple(state.get(key) for key in fields)
         binding, generation = self._bound, getattr(self.capture, "generation", None)
         session_generation = self.session.snapshot.get("generation")
@@ -1268,31 +1272,74 @@ class ClientCoordinator(QObject):
         self.notificationRequested.emit("控件偏好未保存", self._message, "warning")
         self.changed.emit()
 
+    def _game_context_locked(self):
+        state = self.session.snapshot
+        # The round worker can have started before its UI-thread receipt lands.
+        # Include both the queued start intent and the current runtime authority.
+        if state.get("pendingAction") in {"start_round", "toggle_round"}:
+            return True
+        runtime = getattr(self, "runtime", None)
+        actual = runtime.snapshot() if runtime is not None else {}
+        return any(source.get(key) for source in (state, actual)
+                   for key in ("roundActive", "roundPreparing", "roundWorkActive"))
+
+    @staticmethod
+    def _settings_context(values):
+        season = normalize_season(values.get("gameSeason", "s0"))
+        mode = values.get("gameMode", "nightmare")
+        profile = selected_profile(values, mode, season)
+        return mode, profile, season
+
     @Slot(str)
     def setMode(self, mode):
-        if mode not in {"nightmare", "difficult"} or self.settings.busy or self.resources.busy:
+        self.requestGameMode(mode)
+
+    @Slot(str)
+    def requestGameMode(self, mode):
+        self.requestGameContext(self.settings.persistedValues.get("gameSeason", "s0"), mode)
+
+    @Slot(str)
+    def requestGameSeason(self, season):
+        self.requestGameContext(season, self.settings.persistedValues.get("gameMode", "nightmare"))
+
+    @Slot(str, str)
+    def requestGameContext(self, season, mode):
+        if season not in {"s0", "s1"} or mode not in {"nightmare", "difficult"} or self.settings.busy or self.resources.busy:
             return
-        if mode != self.settings.persistedValues.get("gameMode") and self.session.snapshot.get("roundActive"):
-            self._message = "请先结束本局，再切换游戏模式"
-            self.notificationRequested.emit("暂不能切换模式", self._message, "warning")
+        current = self._settings_context(self.settings.persistedValues)
+        if (mode, season) == (current[0], current[2]):
+            return
+        if self._game_context_locked():
+            self._message = "请先结束本局，再切换赛季或难度"
+            self.notificationRequested.emit("暂不能切换", self._message, "warning")
             self.changed.emit()
             return
-        if mode == self.settings.persistedValues.get("gameMode"):
-            return
         self._clear_reference()
-        self._revoke_runtime("mode-preference-changed")
-        if self.settings.setValue("gameMode", mode):
-            self.settings.saveFields(["gameMode"])
+        self._revoke_runtime("game-context-preference-changed")
+        if self.settings.setValue("gameSeason", season) and self.settings.setValue("gameMode", mode):
+            self.settings.saveFields(["gameSeason", "gameMode"])
 
     @Slot(str)
     def setRouteProfile(self, profile):
         if self.settings.busy or self.resources.busy:
             return
         values = self.settings.values
-        choices = dict(values.get("modeRouteProfiles", {}))
-        choices[self.session.currentMode] = profile
-        if self.settings.setValue("routeProfileId", profile) and self.settings.setValue("modeRouteProfiles", choices):
-            self.settings.saveFields(["routeProfileId", "modeRouteProfiles"])
+        season = getattr(self.session, "currentSeason", "s0")
+        choices = dict(values.get("contextRouteProfiles", {}))
+        choices[context_key(self.session.currentMode, season)] = profile
+        fields = ["contextRouteProfiles"]
+        if not self.settings.setValue("contextRouteProfiles", choices):
+            return
+        if season == "s0":
+            if not self.settings.setValue("routeProfileId", profile):
+                return
+            fields.append("routeProfileId")
+            legacy = dict(values.get("modeRouteProfiles", {}))
+            legacy[self.session.currentMode] = profile
+            if not self.settings.setValue("modeRouteProfiles", legacy):
+                return
+            fields.append("modeRouteProfiles")
+        self.settings.saveFields(fields)
 
     def _sync_reference_payload(self, payload):
         if self._edit is not None and self._reference.get("previewOnly"):
@@ -1301,7 +1348,7 @@ class ClientCoordinator(QObject):
         if not payload or not payload.get("referenceAuthorized"):
             self._clear_reference()
             return
-        context = (payload.get("mode"), payload.get("roundId"), payload.get("mapId"),
+        context = (payload.get("season", "s0"), payload.get("mode"), payload.get("roundId"), payload.get("mapId"),
             payload.get("floor"), payload.get("profileId"), payload.get("variantId"),
             payload.get("displayGeneration"), repr(payload.get("resourceIdentity")))
         if tuple(self._reference.get("context", ())) != context:
@@ -1436,7 +1483,7 @@ class ClientCoordinator(QObject):
                 self._edit_generation += 1
                 context = (*self._applied_context, self._edit_generation)
                 self._reference_preview_context = context
-                provider.request(*self._applied_context, context=context,
+                provider.request(*self._applied_context[:2], season=self._applied_context[2], context=context,
                     variant_id=self.settings.values.get("zhan10CoffinVariantId", "variant-01"))
                 self._message = "正在准备位置预览，不参与本局识别"
                 self.changed.emit()
@@ -1464,7 +1511,7 @@ class ClientCoordinator(QObject):
         context = self._reference_preview_context
         if (self._closed or self._closing or context is None
                 or tuple(payload.get("context", ())) != context
-                or tuple(context[:2]) != self._applied_context
+                or tuple(context[:3]) != self._applied_context
                 or payload.get("previewOnly") is not True
                 or payload.get("referenceAuthorized") or payload.get("liveAuthorization")):
             return
@@ -1590,13 +1637,12 @@ class ClientCoordinator(QObject):
         configure = getattr(self.runtime, "configure_settings", None)
         if configure:
             configure(values)
-        mode = values.get("gameMode", "nightmare")
-        profile = values.get("modeRouteProfiles", {}).get(mode) or values.get("routeProfileId", "")
+        mode, profile, season = self._settings_context(values)
         # Mode and author reconfiguration is serialized by SessionService; don't
         # race two independent commands with different generation tokens.
-        if (mode, profile) != self._applied_context:
+        if (mode, profile, season) != self._applied_context:
             self._cancel_pointer_drag("preferences-committed")
-            if mode != self._applied_context[0]:
+            if (mode, season) != (self._applied_context[0], self._applied_context[2]):
                 self._clear_reference()
                 self._revoke_runtime("preferences-committed")
             else:
@@ -1604,7 +1650,7 @@ class ClientCoordinator(QObject):
                 # identity or the already verified canonical pose.
                 self.cancelReferenceEdit()
                 self._cancel_pending_material("route-preference-changed")
-            self._pending_context = (mode, profile)
+            self._pending_context = (mode, profile, season)
             self._context_timer.start()
             self._try_apply_context()
         if self._saving_position:
@@ -1618,11 +1664,12 @@ class ClientCoordinator(QObject):
             return
         if self.resources.busy or self.resources.pendingKind or self.session.snapshot.get("resourceLocked"):
             return
-        mode, profile = self._pending_context
-        if self.session.snapshot.get("roundActive") and mode != self._applied_context[0]:
+        mode, profile, season = self._pending_context
+        if (self._game_context_locked()
+                and (mode, season) != (self._applied_context[0], self._applied_context[2])):
             self._message = "请先结束本局，再切换游戏模式"
             return
-        if self.session.reconfigure(mode, profile):
+        if self.session.reconfigure(mode, profile, season):
             self._context_timer.stop()
             if not self.session.busy:
                 self._session_changed()
@@ -1689,7 +1736,8 @@ class ClientCoordinator(QObject):
         if self.session.busy:
             pending = self.session.snapshot.get("pendingAction")
             reprojecting = (pending == "set_context" and self._pending_context
-                            and self._pending_context[0] == self._applied_context[0])
+                            and self._pending_context[0] == self._applied_context[0]
+                            and self._pending_context[2] == self._applied_context[2])
             if not reprojecting and pending not in {
                     "refresh_map", "recover_map_open", "probe_map_after_drag", "reselect_map", "previous_candidate", "next_candidate",
                     "select_candidate", "confirm_route", "set_floor", "cycle_floor",
@@ -1699,7 +1747,7 @@ class ClientCoordinator(QObject):
         state = self.session.snapshot
         self._notify_session_transitions(state)
         actual_context = self.runtime.snapshot()
-        if self._pending_context and (actual_context.get("mode"), actual_context.get("profileId")) == self._pending_context:
+        if self._pending_context and (actual_context.get("mode"), actual_context.get("profileId"), actual_context.get("season", "s0")) == self._pending_context:
             self._applied_context = self._pending_context
             self._pending_context = None
             self._context_timer.stop()
@@ -1770,7 +1818,7 @@ class ClientCoordinator(QObject):
                 self.changed.emit()
                 return
             if current and current.get("liveAuthorization"):
-                scope = ("epoch", "mode", "profileId", "mapId", "floor", "roundId", "cycleId",
+                scope = ("epoch", "season", "mode", "profileId", "mapId", "floor", "roundId", "cycleId",
                          "captureGeneration", "displayGeneration", "variantId",
                          "resourceIdentity", "routeWidth", "routeHeight", "clientWidth", "clientHeight")
                 if any(current.get(key) != self._aligned.get(key) for key in scope):
@@ -1909,10 +1957,10 @@ class ClientCoordinator(QObject):
         current = self.runtime.snapshot()
         active = bool(current.get("roundActive", state.get("roundActive")))
         receipt = state.get("lastReceipt", {})
-        prepared = (current.get("mode", state.get("mode")), current.get("roundId", state.get("roundId")))
+        prepared = (current.get("season", "s0"), current.get("mode", state.get("mode")), current.get("roundId", state.get("roundId")))
         preparing = bool(current.get("roundPreparing", state.get("roundPreparing")))
         if (preparing and not active
-                and prepared == (state.get("mode"), state.get("roundId"))
+                and prepared == (state.get("season", "s0"), state.get("mode"), state.get("roundId"))
                 and receipt.get("action") == "start_round" and receipt.get("success")
                 and prepared != self._last_prepared_round):
             self._last_prepared_round = prepared
@@ -2146,7 +2194,7 @@ class ClientCoordinator(QObject):
         if name == "map-fit-incomplete":
             # A finalized historical segment is independent of the current open.
             # It cannot mutate current runtime/input/display state.
-            key = ("map-fit-incomplete", event.get("mode"), event.get("roundId"),
+            key = ("map-fit-incomplete", event.get("season", "s0"), event.get("mode"), event.get("roundId"),
                    event.get("cycleId"), event.get("epoch"))
             if key not in self._notified:
                 from client_fit_reporting import incomplete_problem
@@ -2155,7 +2203,7 @@ class ClientCoordinator(QObject):
         elif name == "map-fit-waiting":
             state = self.runtime.snapshot()
             if all(event.get(k) == state.get(k) for k in
-                   ("epoch", "mode", "roundId", "cycleId", "generation")) and state.get("mapOpen"):
+                   ("epoch", "season", "mode", "roundId", "cycleId", "generation")) and state.get("mapOpen"):
                 self._message = "正在继续核对地图位置，请保持地图打开"
                 self.changed.emit()
         elif name == "round-started":
@@ -2181,7 +2229,7 @@ class ClientCoordinator(QObject):
                 self.changed.emit()
         elif name in {"render-ready", "group-state", "pose-result", "identity-committed"}:
             state = self.runtime.snapshot()
-            context = (state.get("mode", self._applied_context[0]), state.get("profileId", self._applied_context[1]))
+            context = (state.get("mode", self._applied_context[0]), state.get("profileId", self._applied_context[1]), state.get("season", "s0"))
             if self._pending_context or context != self._applied_context:
                 self._trace("drop-event", payload=event, reason="presentation-context-pending")
                 return
@@ -2197,7 +2245,7 @@ class ClientCoordinator(QObject):
                     and event["inputSequence"] == self._map_input_sequence
                     and self._bound and event.get("inputWindow") == str(self._bound)):
                 state = self.runtime.snapshot()
-                fields = ("epoch", "mode", "profileId", "roundId", "frameId", "generation", "cycleId")
+                fields = ("epoch", "season", "mode", "profileId", "roundId", "frameId", "generation", "cycleId")
                 if (state.get("mapOpen") is False
                         and all(key in event and event[key] == state.get(key) for key in fields)
                         and str(state.get("capture", {}).get("hwnd", "")) == str(self._bound)):

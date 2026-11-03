@@ -21,6 +21,7 @@ if APP not in sys.path:
     sys.path.insert(0, APP)
 
 from alignment_core_v2 import AlignmentCoreV2
+from season_context import normalize_season, context_key
 
 
 INITIAL_IDENTITY_BUDGET_SECONDS = 1.85
@@ -202,7 +203,7 @@ class EngineAdapter:
 
     MODES = ("nightmare", "difficult")
     OFFLINE = ("load_saved_result", "saved_result", "load_saved_pose",
-               "set_game_mode", "set_route_profile", "set_context", "cancel",
+               "set_game_mode", "set_season", "set_route_profile", "set_context", "cancel",
                "stop_round", "reset_round")
     ALIASES = {"saved_frame": "rank_saved_frame", "recognize": "rank_saved_frame",
                "saved_result": "load_saved_result", "replay": "load_saved_result"}
@@ -220,21 +221,26 @@ class EngineAdapter:
         self._lock = threading.RLock()
         self._core = AlignmentCoreV2(clock=clock)
         self._revision = 0
-        self._context = dict(mode="nightmare", profileId="", mapId="", floor="1",
+        self._context = dict(season="s0", mode="nightmare", profileId="", mapId="", floor="1",
                              roundId=0, cycleId=0, frameId="", generation=0)
 
     def snapshot(self):
         with self._lock:
             commands = list(self.OFFLINE)
-            capabilities = (self._provider_registry.capabilities() if self._provider_registry is not None
+            capabilities = (self._provider_registry.capabilities(self._context["season"]) if self._provider_registry is not None
                             else {mode: dict(available=mode in self._factories,
                                              reason="configured-factory" if mode in self._factories else "factory-unavailable")
                                   for mode in self.MODES})
+            if self._context["season"] != "s0" and self._provider_registry is None:
+                capabilities = {mode: dict(available=False, reason="season-resources-unavailable:s1") for mode in self.MODES}
+            for mode, report in capabilities.items():
+                report.update(season=self._context["season"], mode=mode,
+                              contextKey=context_key(mode, self._context["season"]))
             if self._provider_registry is not None:
                 commands.append("inspect_engine_resources")
             if capabilities[self._context["mode"]]["available"]:
                 commands += ["rank_saved_frame", "saved_frame", "recognize"]
-            return dict(**copy.deepcopy(self._context), engineConnected=True,
+            return dict(**copy.deepcopy(self._context), contextKey=context_key(self._context["mode"], self._context["season"]), engineConnected=True,
                         adapterConnected=True, liveEngineAvailable=False,
                         savedFrameEngineAvailable=capabilities[self._context["mode"]]["available"],
                         savedFrameCapabilities=capabilities,
@@ -261,6 +267,9 @@ class EngineAdapter:
             context["roundId"] = supplied["cycleId"]
         if context["mode"] not in self.MODES:
             raise ValueError("unsupported mode")
+        context["season"] = normalize_season(context["season"])
+        if context["season"] != self._context["season"] and "profileId" not in supplied:
+            context["profileId"] = ""
         context["floor"] = str(context["floor"])
         if context["floor"] not in ("B1", "1", "2"):
             raise ValueError("unsupported floor")
@@ -268,7 +277,7 @@ class EngineAdapter:
 
     @staticmethod
     def _receipt(action, context, *, success=False, reason="", scope="none", **extra):
-        return dict(action=action, **copy.deepcopy(context), success=success,
+        return dict(action=action, **copy.deepcopy(context), contextKey=context_key(context["mode"], context["season"]), success=success,
                     reason=reason, message=reason, liveAuthorization=False,
                     authorization=dict(live=False, scope=scope), **extra)
 
@@ -304,8 +313,10 @@ class EngineAdapter:
         result = lambda **values: self._receipt(action, context, **values)
         if self._cancelled(cancelled):
             return result(reason="cancelled", cancelled=True)
-        if action in ("set_game_mode", "set_route_profile", "set_context"):
+        if action in ("set_game_mode", "set_season", "set_route_profile", "set_context"):
             with self._lock:
+                if self._cancelled(cancelled):
+                    return result(reason="cancelled", cancelled=True)
                 self._context = context
                 self._revision += 1
                 self._core.reset_round(reason=action)
@@ -320,7 +331,7 @@ class EngineAdapter:
                 return result(success=True, reason=action, snapshot=self.snapshot())
         try:
             if action == "inspect_engine_resources" and self._provider_registry is not None:
-                data = dict(capabilities=self._provider_registry.prepare(cancelled), diagnosticOnly=True)
+                data = dict(capabilities=self._provider_registry.prepare(cancelled, season=context["season"]), diagnosticOnly=True)
                 scope = "resource-inventory"
             elif action == "rank_saved_frame":
                 data = self._rank_saved_frame(payload, context, cancelled)
@@ -354,6 +365,10 @@ class EngineAdapter:
 
     def _rank_saved_frame(self, payload, context, cancelled):
         mode = context["mode"]
+        season = context["season"]
+        if season != "s0":
+            raise EngineUnavailable("season-resources-unavailable:s1")
+        key = context_key(mode, season)
         if mode not in self._factories:
             raise EngineUnavailable(f"saved-frame-engine-unavailable:{mode}")
         from PIL import Image
@@ -379,7 +394,7 @@ class EngineAdapter:
         with self._engine_locks[mode]:
             if self._cancelled(cancelled):
                 return {}
-            engine = self._engines.get(mode)
+            engine = self._engines.get(key)
             if engine is None:
                 try:
                     engine = self._factories[mode]()
@@ -389,7 +404,7 @@ class EngineAdapter:
                     raise
                 if getattr(getattr(engine, "pack", None), "mode", None) != mode:
                     raise ValueError("engine pack mode does not match requested mode")
-                self._engines[mode] = engine
+                self._engines[key] = engine
             if context["floor"] not in tuple(map(str, engine.identity_floors)):
                 raise EngineUnavailable(f"saved-frame-floor-unavailable:{mode}/{context['floor']}")
             if self._cancelled(cancelled):

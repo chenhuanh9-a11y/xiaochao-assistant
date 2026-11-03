@@ -42,6 +42,8 @@ class State(QObject):
             pendingAction='', commands={'set_game_mode':{'available':True}})
     snapshot = Property('QVariantMap', lambda self: deepcopy(self.data), notify=changed)
     busy = Property(bool, lambda self: self._busy, notify=changed)
+    currentSeason = Property(str, lambda self: "s0", notify=changed)
+    appliedSeason = Property(str, lambda self: "s0", notify=changed)
     currentMode = Property(str, lambda self: self._mode, notify=changed)
     appliedMode = Property(str, lambda self: self._applied, notify=changed)
     @Slot(str, 'QVariantMap')

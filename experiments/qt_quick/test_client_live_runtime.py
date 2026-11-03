@@ -566,7 +566,7 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertEqual(result["requestContext"]["generation"], 22)
         self.assertEqual(result["requestContext"]["frameId"], "")
         state = self.runtime.snapshot()
-        self.assertEqual(result["resultContext"], {key: state[key] for key in ("mode", "profileId", "roundId", "frameId")})
+        self.assertEqual(result["resultContext"], {key: state[key] for key in ("season", "contextKey", "mode", "profileId", "roundId", "frameId")})
         render = self.runtime.render_payload(result["renderToken"])
         self.assertEqual(render["originX"], 100)
         self.assertEqual(render["originY"], 200)

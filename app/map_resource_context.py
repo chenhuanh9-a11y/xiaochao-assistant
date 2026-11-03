@@ -73,9 +73,10 @@ class BrowseContext:
     path_stamps: Mapping[Path, tuple[int, int] | None]
     error: str = ""
     warnings: tuple[str, ...] = ()
+    season: str = "s0"
 
 
-def load_browse_context(resource_root: Path, mode: str, *, cancelled=lambda: False,
+def load_browse_context(resource_root: Path, mode: str, *, season="s0", cancelled=lambda: False,
                         display_fallback_root=None) -> BrowseContext:
     """Read installed declarations and stat preview files, on the caller's worker.
 
@@ -84,6 +85,11 @@ def load_browse_context(resource_root: Path, mode: str, *, cancelled=lambda: Fal
     paths are anchored to this exact resource root, including legacy source paths.
     """
     root = Path(resource_root).resolve()
+    if cancelled():
+        raise CancelledError()
+    if season != "s0":
+        return BrowseContext(mode, root, None, None, None, (), MappingProxyType({}),
+            error="S1 资源待补齐" if season == "s1" else "unknown browse season", season=season)
     stamps = {}
     warnings = []
     display_defaults = set()

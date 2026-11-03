@@ -9,6 +9,13 @@ Item {
     readonly property var preferences: settingsService.values
     property var profileOptions: []
     property string profilesMode: ""
+    property string profilesSeason: ""
+    property bool profilesBusy: false
+    readonly property string draftSeason: preferences.gameSeason || "s0"
+    readonly property string draftContextKey: draftSeason + ":" + preferences.gameMode
+    readonly property string draftProfile: (preferences.contextRouteProfiles || {})[draftContextKey]
+        || (draftSeason === "s0" ? ((preferences.modeRouteProfiles || {})[preferences.gameMode] || preferences.routeProfileId || "") : "")
+    readonly property bool profilesCurrent: !profilesBusy && profilesMode === preferences.gameMode && profilesSeason === draftSeason
     readonly property var actionNames: ["显示/隐藏面板", "上一个候选", "下一个候选", "确认本局", "切换楼层", "结束本局", "显示/隐藏小抄", "开始本局", "开始/结束本局", "手动选图"]
     readonly property var actionIds: ["toggle-panel", "candidate-prev", "candidate-next", "confirm-round", "cycle-floor", "end-round", "toggle-sheet-visibility", "start-round", "toggle-round", "manual-map-picker"]
     readonly property var moduleNames: ({display: "显示", mode: "游戏模式", manual_map: "选择地图与楼层", recognition: "候选与再识别", round: "本局动作"})
@@ -313,11 +320,20 @@ Item {
                         spacing: 10
                 RowLayout {
                     Layout.fillWidth: true
-                    AppButton { text: "噩梦"; selected: root.preferences.gameMode === "nightmare"; onClicked: settingsService.setValue("gameMode", "nightmare") }
-                    AppButton { text: "困难"; selected: root.preferences.gameMode === "difficult"; onClicked: settingsService.setValue("gameMode", "difficult") }
+                    ComboBox {
+                        objectName: "setting_gameContext"
+                        model: [{label:"S0 困难",season:"s0",mode:"difficult"},{label:"S0 噩梦",season:"s0",mode:"nightmare"},{label:"S1 困难",season:"s1",mode:"difficult"},{label:"S1 噩梦",season:"s1",mode:"nightmare"}]
+                        textRole: "label"
+                        currentIndex: (root.draftSeason === "s1" ? 2 : 0) + (root.preferences.gameMode === "nightmare" ? 1 : 0)
+                        enabled: !settingsService.busy
+                        onActivated: function(index) {
+                            settingsService.setValue("gameSeason", model[index].season)
+                            settingsService.setValue("gameMode", model[index].mode)
+                        }
+                    }
                     Item { Layout.fillWidth: true }
                 }
-                Note { text: "保存默认工作模式与路线作者；可用作者来自当前模式的本地图包。" }
+                Note { text: "保存默认赛季、难度与路线作者；可用作者来自对应赛季的本地图包。S1 资源待补齐。" }
                 RowLayout {
                     Layout.fillWidth: true
                     Label { text: "选图方式"; color: "#354f75"; font.pixelSize: 13; Layout.fillWidth: true }
@@ -343,15 +359,21 @@ Item {
                         objectName: "setting_routeProfileId"
                         Layout.fillWidth: true
                         model: root.profileOptions; textRole: "name"; valueRole: "id"
-                        enabled: count > 0 && root.profilesMode===root.preferences.gameMode && !settingsService.busy
-                        currentIndex: { for(var i=0;i<root.profileOptions.length;i++) if(root.profileOptions[i].id===root.preferences.routeProfileId)return i; return -1 }
-                        displayText: currentIndex < 0 ? "当前作者未安装" : currentText
+                        enabled: count > 0 && root.profilesCurrent && !settingsService.busy
+                        currentIndex: { for(var i=0;i<root.profileOptions.length;i++) if(root.profileOptions[i].id===root.draftProfile)return i; return -1 }
+                        displayText: !root.profilesCurrent ? "正在读取对应赛季作者…" : root.draftSeason === "s1" && count === 0 ? "S1 资源待补齐" : currentIndex < 0 ? "当前作者未安装" : currentText
                         Accessible.name: "默认路线作者"
                         onActivated: {
-                            var profiles = JSON.parse(JSON.stringify(root.preferences.modeRouteProfiles || {}))
-                            profiles[root.preferences.gameMode] = currentValue
-                            settingsService.setValue("modeRouteProfiles", profiles)
-                            settingsService.setValue("routeProfileId", currentValue)
+                            if (!root.profilesCurrent || !currentValue) return
+                            var profiles = JSON.parse(JSON.stringify(root.preferences.contextRouteProfiles || {}))
+                            profiles[root.draftContextKey] = currentValue
+                            settingsService.setValue("contextRouteProfiles", profiles)
+                            if (root.draftSeason === "s0") {
+                                var legacy = JSON.parse(JSON.stringify(root.preferences.modeRouteProfiles || {}))
+                                legacy[root.preferences.gameMode] = currentValue
+                                settingsService.setValue("modeRouteProfiles", legacy)
+                                settingsService.setValue("routeProfileId", currentValue)
+                            }
                         }
                     }
                     Label { text: "全棺路线版本"; color: "#354f75"; font.pixelSize: 13 }
@@ -362,7 +384,8 @@ Item {
                         currentIndex: { for (var i=0;i<settingsService.coffinVariantOptions.length;i++) if(settingsService.coffinVariantOptions[i].id===root.preferences.zhan10CoffinVariantId) return i; return -1 }
                         displayText: currentIndex < 0 ? "当前版本不可用（偏好保留）" : currentText
                         enabled: !settingsService.busy && root.preferences.gameMode===settingsService.coffinVariantContext.mode
-                                 && (root.preferences.modeRouteProfiles[root.preferences.gameMode] || root.preferences.routeProfileId)===settingsService.coffinVariantContext.profileId
+                                 && root.draftSeason === (settingsService.coffinVariantContext.season || "s0")
+                                 && root.draftProfile===settingsService.coffinVariantContext.profileId
                                  && settingsService.coffinVariantOptions.some(function(row) { return row.available })
                         delegate: ItemDelegate {
                             required property var modelData

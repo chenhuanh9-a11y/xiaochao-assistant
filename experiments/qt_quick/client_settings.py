@@ -20,6 +20,7 @@ from PySide6.QtGui import QGuiApplication, QKeyEvent
 from client_paths import RESOURCE_ROOT as ROOT, WORK_ROOT, runtime_paths
 if str(ROOT / "app") not in sys.path:
     sys.path.insert(0, str(ROOT / "app"))
+from season_context import CONTEXTS, MODES, context_key, normalize_season, selected_profile
 from client_control_layout import load_layout, preset_layout, validate_layout
 from floor_control_region import normalized_region
 from client_manual_map import MANUAL_MAP_PICKER_DEFAULT_HOTKEY, MANUAL_PICKER_ACTION, SELECTION_MODES
@@ -39,9 +40,9 @@ BOOL_DEFAULTS = {"automaticFailureEvidence": True, "referenceSheetVisible": True
 RANGES = {"sheetOpacity": (0., 1.), "referenceOpacity": (0., 1.),
           "interfaceOpacity": (.65, .95), "sheetScale": (.5, 1.5)}
 DEFAULTS = {**BOOL_DEFAULTS, "sheetOpacity": .55, "referenceOpacity": .55,
-            "interfaceOpacity": .82, "sheetScale": 1., "gameMode": "nightmare",
+            "interfaceOpacity": .82, "sheetScale": 1., "gameMode": "nightmare", "gameSeason": "s0",
             "mapSelectionMode": "auto",
-            "routeProfileId": "wang-qingxin", "modeRouteProfiles": {},
+            "routeProfileId": "wang-qingxin", "modeRouteProfiles": {}, "contextRouteProfiles": {},
             "zhan10CoffinVariantId": "variant-01", "hotkey": "G",
             "actionHotkeys": FRESH_ACTIONS, "gameControlLayout": preset_layout(),
             "sheetPosition": None, "sheetPositionSpace": "unknown", "compactPosition": None,
@@ -63,6 +64,13 @@ def _validate(key, value):
     elif key == "gameMode":
         if value not in ("nightmare", "difficult"):
             raise ValueError("模式只能为 nightmare 或 difficult")
+    elif key == "gameSeason":
+        value = normalize_season(value)
+    elif key == "contextRouteProfiles":
+        if not isinstance(value, dict) or not set(value) <= set(CONTEXTS):
+            raise ValueError("按赛季路线需要有效的 season:mode 配置表")
+        for profile in value.values():
+            _validate("routeProfileId", profile)
     elif key == "mapSelectionMode":
         if value not in SELECTION_MODES:
             raise ValueError("选图方式只能为 auto 或 manual")
@@ -280,9 +288,10 @@ class SettingsService(QObject):
     def selectCoffinVariant(self, variant):
         context = self._route_metadata["context"]
         mode = self._draft["gameMode"]
-        profile = self._draft["modeRouteProfiles"].get(mode) or self._draft["routeProfileId"]
+        profile = selected_profile(self._draft)
         if (self._route_runtime is None or self._route_runtime.route_preferences_context() != context
-                or context.get("mode") != mode or context.get("profileId") != profile
+                or context.get("mode") != mode or context.get("season", "s0") != self._draft["gameSeason"]
+                or context.get("profileId") != profile
                 or not any(row["id"] == variant and row["available"] for row in self._route_metadata["options"])):
             self._message = "当前地图/楼层没有该全棺版本的精确显示资源，请重新核对资源"
             self.changed.emit()
@@ -499,8 +508,8 @@ class SettingsService(QObject):
             raise TypeError("mode change guard must be callable")
         self._mode_change_guard = guard
 
-    def _mode_change_allowed(self, value):
-        if value == self._baseline.get("gameMode") or self._mode_change_guard():
+    def _mode_change_allowed(self, value, key="gameMode"):
+        if value == self._baseline.get(key) or self._mode_change_guard():
             return True
         self._message = "请先结束本局，再切换游戏模式"
         self.changed.emit()
@@ -512,7 +521,7 @@ class SettingsService(QObject):
             value = value.toVariant()
         try:
             value = _validate(key, value)
-            if key == "gameMode" and not self._mode_change_allowed(value):
+            if key in ("gameMode", "gameSeason") and not self._mode_change_allowed(value, key):
                 return False
             proposal = {**self._draft, key: value}
             if key in ("hotkey", "actionHotkeys"):
@@ -562,6 +571,12 @@ class SettingsService(QObject):
                     invalid[key] = str(error)
                     if key == "automaticFailureEvidence":
                         values[key] = False
+        # Snapshot legacy authors into S0 contexts in memory. Reading never
+        # rewrites the file; a later context edit persists both S0 identities,
+        # so updating the legacy global field cannot leak into another mode.
+        for mode in MODES:
+            values["contextRouteProfiles"].setdefault(context_key(mode, "s0"),
+                values["modeRouteProfiles"].get(mode) or values["routeProfileId"])
         if len(values["actionHotkeys"]) != len(ACTION_ORDER):
             # An existing file without actionHotkeys starts from the nine
             # legacy slots; like a stored nine-slot array, slot 10 is unbound.
@@ -699,7 +714,8 @@ class SettingsService(QObject):
             self._message = "没有需要保存的更改"
             self.changed.emit()
             return False
-        if "gameMode" in edits and not self._mode_change_allowed(edits["gameMode"]):
+        if any(key in edits and not self._mode_change_allowed(edits[key], key)
+               for key in ("gameMode", "gameSeason")):
             return False
         snapshot = {**deepcopy(self._baseline), **deepcopy(edits)}
         if set(edits) & {"hotkey", "actionHotkeys"}:

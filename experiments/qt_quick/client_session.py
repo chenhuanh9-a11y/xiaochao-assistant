@@ -21,6 +21,7 @@ if str(APP) not in sys.path:
     sys.path.insert(0, str(APP))
 from ui_action_state import ImmediateUiActionStateMachine
 from session_state_machine import ranked_event_is_current
+from season_context import normalize_season, context_key
 
 
 # Existing product control command names, plus the injected diagnostic protocol.
@@ -89,6 +90,7 @@ class SessionService(QObject):
         self._state = {}
         self._last_receipt = {}
         self._mode, self._profile = "nightmare", ""
+        self._season = "s0"
         self._message = "Live engine is not attached."
         self._generation = 0
         self._closed = False
@@ -112,7 +114,8 @@ class SessionService(QObject):
     def _snapshot(self):
         state = deepcopy(self._state)
         pending = self._jobs.get(self._pending)
-        if (state.get("mode", self._mode) != self._mode
+        if (state.get("season", "s0") != self._season
+                or state.get("mode", self._mode) != self._mode
                 or state.get("profileId", self._profile) != self._profile):
             # Desired author/mode can be pending without ending its actual
             # round. Keep lifecycle facts so guards cannot unlock mid-round;
@@ -123,6 +126,7 @@ class SessionService(QObject):
         available = self._available() if not self._closed else set()
         commands = set(COMMANDS) | available
         state.update(
+            season=self._season, contextKey=context_key(self._mode, self._season),
             mode=self._mode, profileId=self._profile,
             engineConnected=self._connected(), busy=self._pending is not None,
             pendingAction=pending[0].action if pending else "",
@@ -144,6 +148,8 @@ class SessionService(QObject):
     message = Property(str, lambda self: self._message, notify=changed)
     busy = Property(bool, lambda self: self._pending is not None, notify=changed)
     engineConnected = Property(bool, _connected, notify=changed)
+    currentSeason = Property(str, lambda self: self._season, notify=changed)
+    appliedSeason = Property(str, lambda self: str(self._state.get("season", "s0")), notify=changed)
     currentMode = Property(str, lambda self: self._mode, notify=changed)
     currentProfile = Property(str, lambda self: self._profile, notify=changed)
     # Desired context may change before its worker commits. Controls show the
@@ -152,7 +158,7 @@ class SessionService(QObject):
     appliedProfile = Property(str, lambda self: str(self._state.get("profileId", self._profile)), notify=changed)
 
     def _context(self):
-        return dict(generation=self._generation, mode=self._mode,
+        return dict(generation=self._generation, season=self._season, mode=self._mode,
                     profileId=self._profile, roundId=self._state.get("roundId", self._state.get("cycleId")),
                     frameId=self._state.get("frameId"))
 
@@ -174,14 +180,15 @@ class SessionService(QObject):
         try:
             state = dict(self._runtime.snapshot())
             old = self._context()
+            season = normalize_season(state.get("season", "s0"))
             mode = str(state.get("mode", self._mode))
             profile = str(state.get("profileId", self._profile))
-            new_context = dict(old, mode=mode, profileId=profile,
+            new_context = dict(old, season=season, mode=mode, profileId=profile,
                                roundId=state.get("roundId", state.get("cycleId")),
                                frameId=state.get("frameId"))
             if old != new_context:
                 self._invalidate("runtime-context-changed")
-            self._state, self._mode, self._profile = state, mode, profile
+            self._state, self._season, self._mode, self._profile = state, season, mode, profile
             self._message = str(state.get("message", "Runtime ready."))
         except Exception as error:
             self._state = {}
@@ -273,22 +280,31 @@ class SessionService(QObject):
             receipt, state = value
             receipt = receipt if isinstance(receipt, dict) else {}
             state = dict(state)
-            context_fields = ("mode", "profileId", "roundId", "frameId")
+            state.setdefault("season", "s0")
+            context_fields = ("season", "mode", "profileId", "roundId", "frameId")
             request_context = receipt.get("requestContext", receipt)
             result_context = receipt.get("resultContext")
+            # Legacy receipts can only describe S0, never the selected season.
+            if isinstance(request_context, dict):
+                request_context = dict(request_context, season=request_context.get("season", "s0"))
+            if isinstance(result_context, dict):
+                result_context = dict(result_context, season=result_context.get("season", "s0"))
             if "requestContext" in receipt:
                 request_mismatch = (not isinstance(request_context, dict)
                                     or any(name not in request_context or request_context[name] != expected
                                            for name, expected in context.items()))
             else:
-                request_mismatch = any(name in receipt and receipt[name] != expected
-                                       for name, expected in context.items())
+                request_mismatch = (receipt.get("season", "s0") != context["season"]
+                                    or any(name in receipt and receipt[name] != expected
+                                           for name, expected in context.items()))
             # An intentional round/frame transition requires an explicit pair:
             # the original request and the committed output context. A fresh
             # snapshot must still match that output; late unrelated transitions
             # cannot smuggle an old receipt onto a new frame.
             if result_context is not None:
                 state_drifted = ("requestContext" not in receipt or not isinstance(result_context, dict)
+                                 or any(state.get(name, "s0" if name == "season" else None) != context[name]
+                                        for name in ("season", "mode", "profileId"))
                                  or any(name not in result_context or name not in state
                                         or result_context[name] != state[name] for name in context_fields))
             else:
@@ -308,6 +324,7 @@ class SessionService(QObject):
             self._last_receipt = deepcopy(receipt)
             # Snapshot is runtime-owned, never inferred from a successful request.
             self._state = state
+            self._season = normalize_season(self._state.get("season", "s0"))
             self._mode = str(self._state.get("mode", self._mode))
             self._profile = str(self._state.get("profileId", self._profile))
             if receipt.get("success", True) is False:
@@ -347,7 +364,8 @@ class SessionService(QObject):
         # receipt or its error. The runtime retains its bounded diagnostics.
 
     @Slot(str, str, result=bool)
-    def reconfigure(self, mode, profile):
+    @Slot(str, str, str, result=bool)
+    def reconfigure(self, mode, profile, season="s0"):
         """Atomically enqueue one desired mode/profile context on the UI thread."""
         if self._closed:
             return False
@@ -359,34 +377,48 @@ class SessionService(QObject):
             self._message = f"Unknown mode: {mode}"
             self.changed.emit()
             return False
+        try:
+            season = normalize_season(season)
+        except ValueError as error:
+            self._message = str(error)
+            self.changed.emit()
+            return False
         profile = str(profile)
         if self._runtime is not None:
             actual = self._runtime.snapshot()
-            if actual.get("roundActive") and mode != actual.get("mode", self._mode):
+            pending = self._jobs.get(self._pending)
+            starting = pending is not None and pending[0].action in {"start_round", "toggle_round"}
+            if ((starting or any(actual.get(key) for key in ("roundActive", "roundPreparing", "roundWorkActive")))
+                    and (mode, season) != (actual.get("mode", self._mode), actual.get("season", "s0"))):
                 self._message = "请先结束本局，再切换游戏模式"
                 self.changed.emit()
                 return False
-        if mode == self._mode and profile == self._profile:
-            return True
+        if (season, mode, profile) == (self._season, self._mode, self._profile):
+            pending = self._jobs.get(self._pending)
+            if (self._runtime is None
+                    or (actual.get("season", "s0"), actual.get("mode"), actual.get("profileId")) == (season, mode, profile)
+                    or (pending is not None and pending[0].action == "set_context"
+                        and not pending[0].cancelled.is_set())):
+                return True
         if self._runtime is None or "set_context" not in self._available():
             self._message = "Unavailable command: set_context. Attach a runtime that supports it."
             self.changed.emit()
             return False
         self._invalidate("context-reconfigured")
-        self._mode, self._profile = mode, profile
+        self._season, self._mode, self._profile = season, mode, profile
         # dispatchWithPayload seals the context from these desired values, so
         # neither member can be replaced by the previous runtime snapshot.
-        self.dispatchWithPayload("set_context", {"mode": mode, "profileId": profile})
+        self.dispatchWithPayload("set_context", {"season": season, "mode": mode, "profileId": profile})
         pending = self._jobs.get(self._pending)
         return pending is not None and pending[0].action == "set_context"
 
     @Slot(str, result=bool)
     def setMode(self, mode):
-        return self.reconfigure(mode, self._profile)
+        return self.reconfigure(mode, self._profile, self._season)
 
     @Slot(str, result=bool)
     def setRouteProfile(self, profile):
-        return self.reconfigure(self._mode, profile)
+        return self.reconfigure(self._mode, profile, self._season)
 
     @Slot(result=str)
     def acquireResourceLease(self):

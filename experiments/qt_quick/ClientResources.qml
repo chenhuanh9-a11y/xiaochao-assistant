@@ -38,17 +38,17 @@ Item {
         spacing: 12
         RowLayout {
             Layout.fillWidth: true
-            Label { text: "管理本地资源"; color: "#142b4b"; font.pixelSize: 18; font.bold: true }
+            Label { text: "管理 S0 本地资源"; color: "#142b4b"; font.pixelSize: 18; font.bold: true }
             Item { Layout.fillWidth: true }
             AppButton { text: "恢复记录"; enabled: !panel.operationPending; onClicked: resourceService.inspectRecovery() }
             AppButton { text: "在线图包"; onClicked: clientCoordinator.navigate("downloads") }
             AppButton { text: "核对状态"; enabled: !panel.operationPending && !panel.recoveryPending; onClicked: panel.refreshPackages() }
             AppButton { objectName: "clearManagedPackagesButton"; text: "清理全部图包"; enabled: !!panel.packageManager && !panel.operationPending && !panel.recoveryPending; onClicked: panel.packageManager.requestClearAll() }
-            AppButton { text: "导入 ZIP"; primary: true; enabled: !panel.operationPending && !panel.recoveryPending; onClicked: archiveDialog.open() }
+            AppButton { text: "导入 ZIP"; primary: true; enabled: !panel.operationPending && !panel.recoveryPending; onClicked: { archiveDialog.targetSeason = backend.season; archiveDialog.open() } }
         }
         Label {
             Layout.fillWidth: true
-            text: "删除只清理已核对归属的图包和历史副本；成功后不保留包副本。官方基础资源、自定义路线与未知文件会保留。"
+            text: "此处管理已安装的 S0 资源。导入目标：" + backend.season.toUpperCase() + (backend.season === "s1" ? "（资源待补齐，暂不接受导入）。" : "。") + "删除只清理已核对归属的图包和历史副本；官方基础资源、自定义路线与未知文件会保留。"
             wrapMode: Text.Wrap; color: "#526785"; font.pixelSize: 12
         }
         ColumnLayout {
@@ -143,9 +143,10 @@ Item {
     FileDialog {
         id: archiveDialog
         objectName: "resourceArchiveDialog"
-        title: "选择本地地图资源包"
+        property string targetSeason: "s0"
+        title: "选择 " + targetSeason.toUpperCase() + " 本地地图资源包"
         nameFilters: ["地图资源包 (*.zip)"]
-        onAccepted: resourceService.importArchive(selectedFile.toString())
+        onAccepted: resourceService.importArchive(selectedFile.toString(), targetSeason)
     }
     Dialog {
         id: confirmation

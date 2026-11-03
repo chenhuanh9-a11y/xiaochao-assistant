@@ -24,7 +24,7 @@ from diagnostic_export import export_safe_diagnostic_bundle, diagnostic_package_
 class ClientInfoService(QObject):
     changed = Signal()
     startupAnnouncement = Signal("QVariantMap")
-    homePreviewRequested = Signal(str, str, str)
+    homePreviewRequested = Signal(str, str, str, str)
 
     def __init__(self, sandbox, *, fetch=None, open_url=None):
         super().__init__()
@@ -164,11 +164,11 @@ class ClientInfoService(QObject):
         if coordinator is not None and page in {"preferences", "maps"}:
             coordinator.navigate("settings" if page == "preferences" else "gallery")
 
-    def setHomeContext(self, mode, profile_id, *, force=False):
+    def setHomeContext(self, mode, profile_id, *, season="s0", force=False):
         """Receive the actual applied runtime context, never the browsing selection."""
         if self._closed or mode not in ("nightmare", "difficult"):
             return False
-        context = (str(mode), str(profile_id or ""))
+        context = (str(mode), str(profile_id or ""), str(season))
         if context == self._home_context and not force:
             return False
         self._home_context = context
@@ -179,9 +179,9 @@ class ClientInfoService(QObject):
         return True
 
     @staticmethod
-    def _home_rows(root, mode, profile_id):
+    def _home_rows(root, mode, profile_id, season="s0"):
         fallback = bundled_author_root()
-        context = load_browse_context(root, mode, **({"display_fallback_root": fallback} if fallback else {}))
+        context = load_browse_context(root, mode, season=season, **({"display_fallback_root": fallback} if fallback else {}))
         if context.error or context.pack is None:
             return []
         profile = next((p for p in context.profiles if p.profile_id == profile_id), None)
@@ -196,9 +196,9 @@ class ClientInfoService(QObject):
                     continue
                 variant, floor, path = chosen
                 stamp = context.path_stamps[path]
-                url = QUrl.fromLocalFile(str(path)); url.setQuery(f"v={stamp[0]}-{stamp[1]}")
-                rows.append(dict(key=f"{mode}/{profile_id}/{item.id}/{variant.id}/{floor}",
-                    title=item.name, floor=floor, mode=mode, profileId=profile_id,
+                url = QUrl.fromLocalFile(str(path)); url.setQuery(f"v={stamp[0]}-{stamp[1]}&season={season}")
+                rows.append(dict(key=f"{season}/{mode}/{profile_id}/{item.id}/{variant.id}/{floor}",
+                    title=item.name, floor=floor, mode=mode, season=season, profileId=profile_id,
                     structure=False, imageUrl=url.toString()))
                 if len(rows) == 3:
                     break
@@ -208,7 +208,7 @@ class ClientInfoService(QObject):
         for asset in structure_previews(context.pack):
             image = load_structure_preview(asset, (400, 250))
             stream = BytesIO(); image.save(stream, format="PNG")
-            rows.append(dict(key="", title=asset.name, floor=asset.floor, mode=mode,
+            rows.append(dict(key="", title=asset.name, floor=asset.floor, mode=mode, season=season,
                 profileId=profile_id, structure=True,
                 imageUrl="data:image/png;base64," + base64.b64encode(stream.getvalue()).decode("ascii")))
         return rows

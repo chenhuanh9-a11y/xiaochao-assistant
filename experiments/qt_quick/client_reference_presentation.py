@@ -175,7 +175,7 @@ class ReferencePreviewProvider(QObject):
     snapshot = Property("QVariantMap", lambda s: copy.deepcopy(s._state), notify=changed)
     busy = Property(bool, lambda s: s._state["busy"], notify=changed)
 
-    def request(self, mode, profile_id, *, map_id="", floor="", context=None,
+    def request(self, mode, profile_id, *, season="s0", map_id="", floor="", context=None,
                 variant_id="variant-01"):
         if self._closed:
             return None
@@ -190,6 +190,8 @@ class ReferencePreviewProvider(QObject):
             try:
                 if cancelled.is_set():
                     return
+                if season != "s0":
+                    raise ValueError("S1 资源待补齐" if season == "s1" else "Unknown reference season")
                 from contextlib import nullcontext
                 lease = (resource_read_lock(self._installation_root, wait=True, cancelled=cancelled.is_set)
                          if self._installation_root is not None else nullcontext())
@@ -225,7 +227,7 @@ class ReferencePreviewProvider(QObject):
                     if not cancelled.is_set():
                         self._completed.emit(dict(requestId=generation, context=captured_context,
                             previewOnly=True, referenceAuthorized=False, liveAuthorization=False,
-                            mode=mode, mapId=selected, floor=selected_floor, profileId=profile_id,
+                            season=season, mode=mode, mapId=selected, floor=selected_floor, profileId=profile_id,
                             resourceIdentity=layer.get("resourceIdentity"), pixels=rgba,
                             title="位置预览（不参与识别）"))
             except Exception as error:

@@ -30,10 +30,12 @@ class FakeBackend(QObject):
                           title=f"测试地图 {n}", mapId=f"map-{n}", floor=str(1+n%2),
                           variant="路线一", imageUrl=image, available=True) for n in range(40)]
         self.model.reconcile(deepcopy(self.rows))
+        self._season = "s0"
         self._mode, self._profile, self._floor, self._query = "nightmare", "author-a", "", ""
         self.selected = {}
         self.calls = []
 
+    season = Property(str, lambda self: self._season, notify=changed)
     mode = Property(str, lambda self: self._mode, notify=changed)
     profiles = Property("QVariantList", lambda self: [dict(id="author-a", name="作者甲", available=40, availableMaps=40, mapCount=40, previewUrl=self.image),
         dict(id="author-b", name="作者乙", available=12, availableMaps=12, mapCount=40, previewUrl=self.image)], notify=changed)
@@ -74,6 +76,11 @@ class FakeBackend(QObject):
         self.changed.emit()
         self.viewChanged.emit(self.viewKey)
 
+    @Slot(str, str)
+    def setContext(self, season, mode):
+        self.change("_season", season)
+        self.setMode(mode)
+
     @Slot(str)
     def setMode(self, value):
         self.calls.append(("mode", value))
@@ -101,6 +108,7 @@ class FakeBackend(QObject):
 
 class FakeState(QObject):
     changed = Signal()
+    currentSeason = Property(str, lambda self: "s0", notify=changed)
     currentMode = Property(str, lambda self: "nightmare", notify=changed)
     currentProfile = Property(str, lambda self: "shared-structure", notify=changed)
     busy = Property(bool, lambda self: False, notify=changed)
@@ -224,7 +232,11 @@ class GalleryLayoutTests(unittest.TestCase):
         self.resize(1000, 650)
         self.assertEqual(self.backend.selectedKey, key)
         self.assertTrue(self.item("galleryPreviewPane").isVisible())
-        self.click("galleryDifficultMode")
+        context_picker = self.item("galleryContext")
+        self.assertEqual(context_picker.property("count"), 4)
+        context_picker.forceActiveFocus(Qt.OtherFocusReason)
+        QTest.keyClick(self.window, Qt.Key_Up)
+        APP.processEvents()
         self.assertEqual(self.backend.calls[-1], ("mode", "difficult"))
         self.assertFalse(self.item("galleryUseAuthor").isEnabled())
         self.assertFalse(self.warnings, "\n".join(self.warnings))

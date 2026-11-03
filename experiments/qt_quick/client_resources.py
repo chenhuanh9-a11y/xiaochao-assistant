@@ -420,8 +420,13 @@ class ResourceService(QObject):
             self._start("refresh", self._snapshot, "正在核对本地资源…")
 
     @Slot(str)
-    def importArchive(self, file_url):
+    @Slot(str, str)
+    def importArchive(self, file_url, season="s0"):
         if not self._available() or self._recovery:
+            return
+        if season != "s0":
+            self._message = "S1 资源待补齐，不能向 S1 导入 S0 图包"
+            self.changed.emit()
             return
         url = QUrl(file_url)
         path = Path(url.toLocalFile()) if url.isLocalFile() else Path(file_url)
@@ -429,7 +434,7 @@ class ResourceService(QObject):
             self._message = self._report_problem("non-local-archive", "inspect")
             self.changed.emit()
             return
-        self._start("inspect", lambda cancel: (str(path), importer.inspect_package(path, self.sandbox)),
+        self._start("inspect", lambda cancel: (str(path), importer.inspect_package(path, self.sandbox, season="s0")),
                     "正在检查图包文件…")
 
     @Slot(str)
@@ -466,7 +471,7 @@ class ResourceService(QObject):
             importer._no_links(path)
             if path.stat().st_size != expected["bytes"]:
                 raise importer.ImportRejected("online-archive-size-mismatch")
-            result = importer.inspect_package(path, self.sandbox)
+            result = importer.inspect_package(path, self.sandbox, season="s0")
             if (result.get("packageId") != expected["packageId"]
                     or result.get("archiveSha256") != expected["sha256"]
                     or path.stat().st_size != expected["bytes"]):
@@ -481,7 +486,7 @@ class ResourceService(QObject):
             launcher = self._import_launcher
             def launch(_cancel):
                 with importer._writer_locked_installation(self.sandbox, require_closed=False) as (root, _state):
-                    current = importer.inspect_package(path, root)
+                    current = importer.inspect_package(path, root, season="s0")
                     if _confirmation_fingerprint(current) != _confirmation_fingerprint(result):
                         raise importer.ImportRejected("resource-plan-changed-reinspect-required")
                     request_id = launcher(path, dict(result))
@@ -496,18 +501,18 @@ class ResourceService(QObject):
                 # consent under the same OS writer lock as the shared live
                 # transaction, including the previous receipt fingerprint.
                 with importer._writer_locked_installation(self.sandbox, require_closed=False) as (root, state):
-                    current = importer.inspect_package(path, root)
+                    current = importer.inspect_package(path, root, season="s0")
                     if _confirmation_fingerprint(current) != _confirmation_fingerprint(result):
                         raise importer.ImportRejected("resource-plan-changed-reinspect-required")
-                    return importer._install_staged(path, root, state, live=True,
+                    return importer._install_staged(path, root, state, season="s0", live=True,
                         expected_archive_sha256=result["archiveSha256"], cancelled=cancel.is_set)
             # Hold the same writer lock between confirmation recheck and the
             # existing staging/upgrade transaction; never expand an old consent.
             with importer._locked_installation(self.sandbox, True) as (root, state):
-                current = importer.inspect_package(path, root)
+                current = importer.inspect_package(path, root, season="s0")
                 if _confirmation_fingerprint(current) != _confirmation_fingerprint(result):
                     raise importer.ImportRejected("resource-plan-changed-reinspect-required")
-                return importer._install_staged(path, root, state,
+                return importer._install_staged(path, root, state, season="s0",
                     expected_archive_sha256=result["archiveSha256"])
         self._start("install", install, "正在安装图包，请等待完成…",
                     cancellable=live)

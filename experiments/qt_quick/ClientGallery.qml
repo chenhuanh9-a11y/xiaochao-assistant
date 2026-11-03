@@ -15,7 +15,7 @@ Item {
             if (backend.profiles[n].id === backend.profileId) return backend.profiles[n]
         return ({id: "", name: "选择一个图包", available: 0, availableMaps: 0, mapCount: 0})
     }
-    readonly property bool sameMode: backend.mode === session.currentMode
+    readonly property bool sameMode: backend.mode === session.currentMode && backend.season === session.currentSeason
     readonly property bool currentAuthor: sameMode && backend.profileId === session.currentProfile
     readonly property bool canUseAuthor: sameMode && selectedProfile.available > 0 && !currentAuthor
         && !session.busy && !settingsService.busy && !resourceService.busy
@@ -56,8 +56,13 @@ Item {
         }
         RowLayout {
             Layout.fillWidth: true; spacing: 8
-            AppButton { objectName: "galleryNightmareMode"; text: "噩梦"; implicitWidth: 64; selected: backend.mode === "nightmare"; onClicked: backend.setMode("nightmare") }
-            AppButton { objectName: "galleryDifficultMode"; text: "困难"; implicitWidth: 64; selected: backend.mode === "difficult"; onClicked: backend.setMode("difficult") }
+            ComboBox {
+                objectName: "galleryContext"
+                model: [{label:"S0 困难",season:"s0",mode:"difficult"},{label:"S0 噩梦",season:"s0",mode:"nightmare"},{label:"S1 困难",season:"s1",mode:"difficult"},{label:"S1 噩梦",season:"s1",mode:"nightmare"}]
+                textRole: "label"
+                currentIndex: (backend.season === "s1" ? 2 : 0) + (backend.mode === "nightmare" ? 1 : 0)
+                onActivated: function(index) { backend.setContext(model[index].season, model[index].mode) }
+            }
             Label { objectName: "galleryMapCount"; text: "仅浏览 · " + backend.mapCount + " 份图"; color: "#526785"; font.pixelSize: 12 }
             Item { Layout.fillWidth: true }
             AppButton { objectName: "galleryManagePackages"; text: "图库管理"; onClicked: clientCoordinator.navigate("resources") }
@@ -120,7 +125,7 @@ Item {
                         }
                         Label {
                             width: parent.width
-                            text: backend.busy ? "正在读取地图资源…" : "暂无地图资源，可在图库管理中导入。"
+                            text: backend.busy ? "正在读取地图资源…" : backend.season === "s1" ? "S1 资源待补齐" : "暂无地图资源，可在图库管理中导入。"
                             color: "#526785"; wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter
                         }
                     }

@@ -19,9 +19,11 @@ ApplicationWindow {
     function section(name) { return name === "resources" || name === "downloads" ? "gallery" : name === "recognition" ? "home" : name === "replay" ? "help" : name }
     function heading(name) { return ({home:"主页面",gallery:"地图资源",resources:"图包管理",downloads:"在线图包",settings:"设置",replay:"识别回放",help:"帮助与公告",recognition:"地图识别",custom:"自定义路线",plaza:"路线广场"})[name] || "星图" }
     readonly property var routeOptions: {
+        if (routeChoices.busy || routeChoices.season !== (settingsService.values.gameSeason || "s0")
+                || routeChoices.mode !== settingsService.values.gameMode) return []
         var options = routeChoices.profiles.slice()
         var custom = customGalleryService.snapshot
-        if (routeChoices.mode === "nightmare" && custom.available)
+        if (!routeChoices.busy && routeChoices.season === "s0" && routeChoices.mode === "nightmare" && custom.available)
             for (var i = 0; i < custom.galleries.length; i++)
                 options.push({id: "custom:" + custom.galleries[i].id, name: custom.galleries[i].name})
         return options
@@ -144,7 +146,7 @@ ApplicationWindow {
             ClientHome {}
             ClientGallery {}
             ClientResources {}
-            ClientSettings { profileOptions: root.routeOptions; profilesMode: routeChoices.mode }
+            ClientSettings { profileOptions: root.routeOptions; profilesMode: routeChoices.mode; profilesSeason: routeChoices.season; profilesBusy: routeChoices.busy }
             ColumnLayout {
                 spacing: 16
                 RowLayout {

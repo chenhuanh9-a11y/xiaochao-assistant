@@ -101,6 +101,7 @@ class Backend(QObject):
         self.model = ResourceRows()
         self.preview_model = ResourceRows()
         self.context = None
+        self._season = "s0"
         self._mode, self._profile, self._floor, self._query = "nightmare", "", "", ""
         self._busy, self._importing, self._message = False, False, "正在读取实验资源…"
         self._click_through = False
@@ -121,6 +122,7 @@ class Backend(QObject):
         self.stale_results = 0
         self.refresh()
 
+    season = Property(str, lambda s: s._season, notify=changed)
     mode = Property(str, lambda s: s._mode, notify=changed)
     profiles = Property("QVariantList", lambda s: s._profiles, notify=changed)
     profileId = Property(str, lambda s: s._profile, notify=changed)
@@ -144,7 +146,7 @@ class Backend(QObject):
     # Floors and route variants stay browseable rows, but do not add maps.
     mapCount = Property(int, lambda s: len({row["mapId"] for row in s.model.rows if row["available"]}), notify=changed)
     previewModel = Property(QObject, lambda s: s.preview_model, constant=True)
-    viewKey = Property(str, lambda s: f"{s._mode}/{s._profile}/{s._floor}/{s._query}", notify=changed)
+    viewKey = Property(str, lambda s: f"{s._season}/{s._mode}/{s._profile}/{s._floor}/{s._query}", notify=changed)
 
     def _submit(self, function, callback):
         job = Work(function)
@@ -161,11 +163,11 @@ class Backend(QObject):
         self._cancel.set()
         self._cancel = cancel = threading.Event()
         self._generation += 1
-        generation, mode, initial_view = self._generation, self._mode, self.viewKey
+        generation, mode, season, initial_view = self._generation, self._mode, self._season, self.viewKey
         self._busy = True
         self.changed.emit()
         def loaded(context, error):
-            if generation != self._generation:
+            if generation != self._generation or (mode, season) != (self._mode, self._season):
                 self.stale_results += 1
                 return
             self._busy = False
@@ -181,7 +183,7 @@ class Backend(QObject):
                 self._profiles = [{"id": p.profile_id, "name": p.name,
                                    "available": p.available_layers,
                                    "availableMaps": p.available_maps, "mapCount": p.map_count,
-                                   "previewUrl": self._preview_url(p.first_preview[2], context.path_stamps)
+                                   "previewUrl": self._preview_url(p.first_preview[2], context.path_stamps, self._season)
                                        if p.first_preview else ""} for p in context.profiles]
                 if self._profile not in {p["id"] for p in self._profiles}:
                     self._profile = next((p["id"] for p in self._profiles if p["available"]),
@@ -196,17 +198,17 @@ class Backend(QObject):
             # transaction. Never cache the intermediate on-disk removal state.
             with resource_read_lock(self.sandbox, wait=True, cancelled=cancel.is_set):
                 assert_resources_ready(self.sandbox)
-                return load_browse_context(self.paths.resource_root, mode, cancelled=cancel.is_set,
+                return load_browse_context(self.paths.resource_root, mode, season=season, cancelled=cancel.is_set,
                                            display_fallback_root=bundled_author_root())
         self._submit(read, loaded)
 
     @staticmethod
-    def _preview_url(path, stamps):
+    def _preview_url(path, stamps, season="s0"):
         stamp = stamps.get(Path(path))
         if not stamp:
             return ""
         url = QUrl.fromLocalFile(str(path))
-        url.setQuery(f"v={stamp[0]}-{stamp[1]}")
+        url.setQuery(f"v={stamp[0]}-{stamp[1]}&season={season}")
         return url.toString()
 
     def _apply_rows(self):
@@ -225,8 +227,8 @@ class Backend(QObject):
                         # File version is part of the cache URL: owned upgrades cannot show old art.
                         url = QUrl.fromLocalFile(str(path))
                         if stamp:
-                            url.setQuery(f"v={stamp[0]}-{stamp[1]}")
-                        rows.append(dict(key=f"{self._mode}/{self._profile}/{item.id}/{variant.id}/{floor}",
+                            url.setQuery(f"v={stamp[0]}-{stamp[1]}&season={self._season}")
+                        rows.append(dict(key=f"{self._season}/{self._mode}/{self._profile}/{item.id}/{variant.id}/{floor}",
                                          title=item.name, mapId=item.id, floor=str(floor),
                                          variant=variant.name, imageUrl=url.toString() if stamp else "",
                                          available=bool(stamp)))
@@ -251,30 +253,44 @@ class Backend(QObject):
             return
         self.viewChanging.emit(self.viewKey)
         self._selections[self.viewKey] = self._selected
-        self._mode_profiles[self._mode] = self._profile
         setattr(self, field, value)
-        if field == "_mode":
-            # Clear immediately: a late nightmare worker cannot populate difficult.
-            self.context = None
-            self._profiles = []
-            self.model.reconcile([])
-            self.preview_model.reconcile([])
-            self._profile = self._mode_profiles.get(value, "")
-            self._selection = {}
-            self._selected = self._selections.get(self.viewKey, "")
-            self.refresh()
-        else:
-            self._selected = self._selections.get(self.viewKey, "")
-            self._apply_rows()
-            if self._message.startswith("已读取"):
-                self._message = f"已读取 {self.mapCount} 份图"
+        self._selected = self._selections.get(self.viewKey, "")
+        self._apply_rows()
+        if self._message.startswith("已读取"):
+            self._message = f"已读取 {self.mapCount} 份图"
+        self.changed.emit()
+        self.viewChanged.emit(self.viewKey)
+
+    @Slot(str)
+    def setSeason(self, value):
+        self.setContext(value, self._mode)
+
+    @Slot(str, str)
+    def setContext(self, season, mode):
+        if season not in {"s0", "s1"} or mode not in {"nightmare", "difficult"}:
+            return
+        if (season, mode) == (self._season, self._mode):
+            return
+        # A combined selection is one transition, not a visit to an intermediate
+        # season/difficulty. Preserve only the real view being left.
+        self.viewChanging.emit(self.viewKey)
+        self._selections[self.viewKey] = self._selected
+        self._mode_profiles[(self._season, self._mode)] = self._profile
+        self._season, self._mode = season, mode
+        self.context = None
+        self._profiles = []
+        self.model.reconcile([])
+        self.preview_model.reconcile([])
+        self._profile = self._mode_profiles.get((season, mode), "")
+        self._selection = {}
+        self._selected = self._selections.get(self.viewKey, "")
+        self.refresh()
         self.changed.emit()
         self.viewChanged.emit(self.viewKey)
 
     @Slot(str)
     def setMode(self, value):
-        if value in {"nightmare", "difficult"}:
-            self._change("_mode", value)
+        self.setContext(self._season, value)
 
     @Slot(str)
     def setProfile(self, value):
@@ -354,6 +370,10 @@ class Backend(QObject):
     def importArchive(self, value):
         if self._importing or self._pending:
             return
+        if self._season != "s0":
+            self._message = "S1 资源待补齐，不能向 S1 导入 S0 图包"
+            self.changed.emit()
+            return
         path = Path(QUrl(value).toLocalFile())
         self._importing = True
         self._import_notice = ""
@@ -367,7 +387,7 @@ class Backend(QObject):
                 self.confirmReplacement.emit(f"将覆盖实验副本中的 {len(result['replaceFiles'])} 个文件。继续？")
             else:
                 self._install(path, result["archiveSha256"])
-        self._submit(lambda: inspect_package(path, self.sandbox), inspected)
+        self._submit(lambda: inspect_package(path, self.sandbox, season="s0"), inspected)
 
     @Slot(bool)
     def confirmImport(self, accepted):
@@ -382,7 +402,7 @@ class Backend(QObject):
                 self.changed.emit()
 
     def _install(self, path, digest):
-        self._submit(lambda: install_package(path, self.sandbox, application_stopped=True,
+        self._submit(lambda: install_package(path, self.sandbox, season="s0", application_stopped=True,
                                             expected_archive_sha256=digest), self._finish_import)
 
     def _finish_import(self, result, error):

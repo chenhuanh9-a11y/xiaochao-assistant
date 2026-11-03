@@ -17,6 +17,8 @@ from client_manual_map_service import ManualMapPickerService
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
+from season_context import selected_profile, context_key
+
 HERE = Path(__file__).resolve().parent
 
 
@@ -112,16 +114,15 @@ class QtClient:
                                    diagnostics=self.lifecycle_trace)
         values = self.settings.persistedValues
         self.runtime.configure_settings(values)
-        mode = values.get("gameMode", "nightmare")
-        profile = values.get("modeRouteProfiles", {}).get(mode) or values.get("routeProfileId", "shared-structure")
+        mode, profile, season = ClientCoordinator._settings_context(values)
         self._previous_author_profiles = {
-            key: value for key, value in values.get("modeRouteProfiles", {}).items()
+            key: value for key, value in values.get("contextRouteProfiles", {}).items()
             if value and not str(value).startswith("custom:")}
         if not str(profile).startswith("custom:"):
-            self._previous_author_profiles[mode] = profile
+            self._previous_author_profiles[context_key(mode, season)] = profile
         # Context initialization is a bounded state-only operation. Resource
         # preparation/recognition starts later on SessionService's worker.
-        self.runtime.dispatch("set_context", {"mode": mode, "profileId": profile})
+        self.runtime.dispatch("set_context", {"season": season, "mode": mode, "profileId": profile})
         self.session = SessionService(self.runtime)
         self.resources = ResourceService(self.sandbox)
         self.resources.setLeaseProvider(self.session)
@@ -136,8 +137,8 @@ class QtClient:
         self.resources.resourcesChanged.connect(self.route_choices.refresh)
         self.resources.resourcesChanged.connect(self._schedule_resource_preparation)
         self.resources.resourcesChanged.connect(self.custom_galleries.refresh)
-        self.settings.changed.connect(lambda: self.route_choices.setMode(self.settings.values.get("gameMode", "nightmare")))
-        self.route_choices.setMode(mode)
+        self.settings.changed.connect(lambda: self.route_choices.setContext(self.settings.values.get("gameSeason", "s0"), self.settings.values.get("gameMode", "nightmare")))
+        self.route_choices.setContext(season, mode)
         self.windows = WindowController()
         self.windows.setBeforeShow(self.capture_exclusion.protectWindow)
         self.preview = PreviewService(self.backend, self.windows)
@@ -293,11 +294,11 @@ class QtClient:
     def _refresh_home_context(self, *, force=False):
         if self._closed or self.coordinator.closing:
             return
-        mode, profile = self.session.appliedMode, self.session.appliedProfile
+        mode, profile, season = self.session.appliedMode, self.session.appliedProfile, self.session.appliedSeason
         request = self._home_preview_request
-        if request is not None and request[:2] != (mode, profile):
+        if request is not None and request[:3] != (mode, profile, season):
             self._home_preview_request = None
-        self.info.setHomeContext(mode, profile, force=force)
+        self.info.setHomeContext(mode, profile, season=season, force=force)
 
     def _cancel_home_preview(self, _view_key=None):
         if not self._applying_home_preview:
@@ -307,18 +308,18 @@ class QtClient:
         if page != "gallery":
             self._cancel_home_preview()
 
-    def _open_home_preview(self, mode, profile, key):
+    def _open_home_preview(self, mode, profile, season, key):
         if (self._closed or self.coordinator.closing
-                or (mode, profile) != (self.session.appliedMode, self.session.appliedProfile)
-                or not key.startswith(f"{mode}/{profile}/")):
+                or (mode, profile, season) != (self.session.appliedMode, self.session.appliedProfile, self.session.appliedSeason)
+                or not key.startswith(f"{season}/{mode}/{profile}/")):
             return
         # Explicit user navigation happens first; normal gallery initialization
         # cannot cancel the request that is installed immediately afterwards.
         self.coordinator.navigate("gallery")
-        self._home_preview_request = (mode, profile, key)
+        self._home_preview_request = (mode, profile, season, key)
         self._applying_home_preview = True
         try:
-            self.backend.setMode(mode)
+            self.backend.setContext(season, mode)
         finally:
             self._applying_home_preview = False
         self._finish_home_preview()
@@ -328,9 +329,9 @@ class QtClient:
         if (request is None or self._applying_home_preview or self._closed
                 or self.coordinator.closing or self.backend.busy):
             return
-        mode, profile, key = request
+        mode, profile, season, key = request
         context = self.backend.context
-        if context is None or context.mode != mode or self.backend.mode != mode:
+        if context is None or context.mode != mode or self.backend.mode != mode or context.season != season or self.backend.season != season:
             self._home_preview_request = None
             return
         # setMode loads asynchronously; profiles/rows belong to the new context
@@ -423,25 +424,31 @@ class QtClient:
                 or getattr(self.resources, "pendingKind", "")):
             return dict(success=False, applied=False, message="请等待当前操作完成后再使用图集")
         values = self.settings.persistedValues
+        season = values.get("gameSeason", "s0")
         mode = values.get("gameMode", "nightmare")
-        previous = values.get("modeRouteProfiles", {}).get(mode) or values.get("routeProfileId", "")
+        if season != "s0":
+            return dict(success=False, applied=False, message="S1 资源待补齐，不能使用 S0 自定义路线")
+        previous = selected_profile(values, mode, season)
         remembered = getattr(self, "_previous_author_profiles", {})
         if previous and not str(previous).startswith("custom:"):
-            remembered[mode] = previous
+            remembered[context_key(mode, season)] = previous
         self._previous_author_profiles = remembered
         current_options = (self.route_choices.profiles
-                           if getattr(self.route_choices, "mode", mode) == mode else ())
-        fallback = remembered.get(mode) or next((row["id"] for row in current_options
+                           if (self.route_choices.season, self.route_choices.mode) == (season, mode) else ())
+        fallback = remembered.get(context_key(mode, season)) or next((row["id"] for row in current_options
                          if not row["id"].startswith("custom:")), "shared-structure")
         proposal = self.custom_display.use_request(gallery_id, mode, fallback_profile=fallback)
         if not proposal.get("success"):
             return proposal
         profile = proposal["profileId"]
-        profiles = dict(values.get("modeRouteProfiles", {}))
-        profiles[mode] = profile
+        profiles = dict(values.get("contextRouteProfiles", {}))
+        profiles[context_key(mode, season)] = profile
+        legacy_profiles = dict(values.get("modeRouteProfiles", {}))
+        legacy_profiles[mode] = profile
         if not (self.settings.setValue("routeProfileId", profile)
-                and self.settings.setValue("modeRouteProfiles", profiles)
-                and self.settings.saveFields(["routeProfileId", "modeRouteProfiles"])):
+                and self.settings.setValue("contextRouteProfiles", profiles)
+                and self.settings.setValue("modeRouteProfiles", legacy_profiles)
+                and self.settings.saveFields(["routeProfileId", "modeRouteProfiles", "contextRouteProfiles"])):
             return dict(success=False, applied=False, message=self.settings.message)
         return dict(success=True, applied=False, message="正在保存并应用图集，完成后更新使用状态")
 
@@ -450,10 +457,11 @@ class QtClient:
             return
         state = self.runtime.snapshot()
         values = self.settings.persistedValues
+        season = values.get("gameSeason", "s0")
         mode = values.get("gameMode", "nightmare")
-        profile = values.get("modeRouteProfiles", {}).get(mode) or values.get("routeProfileId", "")
+        profile = selected_profile(values, mode, season)
         applied = (state.get("mode"), state.get("profileId")) == (mode, profile)
-        active = self.custom_display.active_gallery(profile, mode) if applied else ""
+        active = self.custom_display.active_gallery(profile, mode) if applied and season == "s0" and state.get("season", "s0") == season else ""
         if self.custom_galleries.snapshot.get("inUse") != active:
             self.custom_galleries.setActiveGallery(active)
 

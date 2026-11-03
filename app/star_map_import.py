@@ -64,7 +64,10 @@ DIFFICULT_AUTHOR_DEPENDENCIES = {
 }
 
 
-def author_profiles_for_mode(mode):
+def author_profiles_for_mode(mode, season="s0"):
+    from season_context import normalize_season
+    if normalize_season(season) != "s0":
+        return ()
     return tuple(profile for package, profile in AUTHOR_PACKAGES.items()
                  if package.startswith(str(mode) + "-"))
 
@@ -405,6 +408,7 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None) -
     if info is None or info.filename != MANIFEST or info.file_size > 2 * 1024 * 1024:
         raise ImportRejected("manifest-missing-or-too-large")
     metadata = _json(archive.read(info))
+    _require_s0(metadata.get("season", "s0"))
     if (type(metadata.get("schemaVersion")) is not int or metadata["schemaVersion"] != 1
             or type(metadata.get("revision")) is not int or metadata["revision"] != 1
             or metadata.get("packageId") not in PACKAGE_IDS):
@@ -521,8 +525,14 @@ def _open_archive(zip_path, expected_sha256=None):
             yield archive, digest
 
 
-def inspect_package(zip_path, install_root) -> dict:
+def _require_s0(season):
+    if season != "s0":
+        raise ImportRejected("unsupported-package-season")
+
+
+def inspect_package(zip_path, install_root, *, season="s0") -> dict:
     """Validate bytes/CRC/dependencies under the coordination lock; no resource writes."""
+    _require_s0(season)
     root = Path(os.path.abspath(install_root))
     _no_links(root)
     try:
@@ -531,6 +541,7 @@ def inspect_package(zip_path, install_root) -> dict:
             with _open_archive(zip_path) as (archive, digest):
                 result = _validate(archive, root)
                 result["archiveSha256"] = digest
+                result["season"] = "s0"
                 return result
     except ResourceTransactionError as error:
         raise ImportRejected(str(error), code=error.code, details=error.details) from error
@@ -765,7 +776,8 @@ def _commit_additions(root, result, stage, *, live=False, cancelled=None):
         raise
 
 
-def _install_staged(zip_path, root, state, *, expected_archive_sha256=None, live=False, cancelled=None):
+def _install_staged(zip_path, root, state, *, expected_archive_sha256=None, live=False, cancelled=None, season="s0"):
+    _require_s0(season)
     _pending_upgrade(root)
     _check_cancelled(cancelled)
     stage = Path(tempfile.mkdtemp(prefix='staging-', dir=state))
@@ -774,6 +786,7 @@ def _install_staged(zip_path, root, state, *, expected_archive_sha256=None, live
         with _open_archive(zip_path, expected_archive_sha256) as (archive, digest):
             result = _validate(archive, root, stage)
             result["archiveSha256"] = digest
+            result["season"] = "s0"
         if live and not supports_live_author_import(result):
             raise ImportRejected("live-import-requires-restart")
         _check_cancelled(cancelled)
@@ -802,19 +815,20 @@ def _install_staged(zip_path, root, state, *, expected_archive_sha256=None, live
             shutil.rmtree(stage)
 
 
-def install_package(zip_path, install_root, *, application_stopped=False, expected_archive_sha256=None) -> dict:
+def install_package(zip_path, install_root, *, application_stopped=False, expected_archive_sha256=None, season="s0") -> dict:
     """Append data, or transactionally upgrade unchanged files owned by this package.
 
     UI must run this off its Tk thread with the application closed. Unknown or
     edited files remain conflicts. A failed owned upgrade rolls back; interruption
     retains its journal/backups for explicit recovery before the next inspection.
     """
+    _require_s0(season)
     with _locked_installation(install_root, application_stopped) as (root, state):
         return _install_staged(zip_path, root, state, expected_archive_sha256=expected_archive_sha256)
 
 
 def install_author_package_live(zip_path, install_root, *, application_idle=False,
-                                expected_archive_sha256=None, cancelled=None) -> dict:
+                                expected_archive_sha256=None, cancelled=None, season="s0") -> dict:
     """Install optional author art while the caller owns an idle application.
 
     The caller must keep its idle/generation token valid until completion and
@@ -823,6 +837,7 @@ def install_author_package_live(zip_path, install_root, *, application_idle=Fals
     unchanged author pixels/sidecars may use the journaled upgrade transaction;
     core repair/replacement and interrupted-transaction recovery remain closed-only.
     """
+    _require_s0(season)
     if application_idle is not True:
         raise ImportRejected("live-import-requires-idle")
     with _writer_locked_installation(install_root, require_closed=False) as (root, state):

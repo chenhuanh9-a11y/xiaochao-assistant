@@ -40,11 +40,13 @@ def _coffin_binding(engine, map_id, floor, profile, variant_id):
     return dict(path=path, matrix=matrix, usable=True, optionalPixels=False), ""
 
 
-def coffin_variant_metadata(engine, mode, profile, map_id, floor):
-    context = dict(mode=str(mode), profileId=str(profile), mapId=map_id,
+def coffin_variant_metadata(engine, mode, profile, map_id, floor, season="s0"):
+    from season_context import normalize_season
+    season = normalize_season(season)
+    context = dict(season=season, mode=str(mode), profileId=str(profile), mapId=map_id,
                    floor=str(floor), resourceIdentity=str(id(engine)))
     result = dict(context=context, options=[], message="全棺版本适用于噩梦 · 展十全棺 · 一号地图一楼")
-    if mode != "nightmare" or (profile, map_id, str(floor)) != COFFIN_CONTEXT:
+    if season != "s0" or mode != "nightmare" or (profile, map_id, str(floor)) != COFFIN_CONTEXT:
         return result
     catalog = getattr(engine, "qt_catalog", None)
     names = {row.id: row.display_name for row in catalog.variants(profile, map_id, include_inactive=True)} if catalog else {}

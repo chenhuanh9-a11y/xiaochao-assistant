@@ -18,6 +18,9 @@ if APP not in sys.path:
     sys.path.insert(0, APP)
 
 
+from season_context import SEASONS, context_key, normalize_season
+
+
 class ProviderUnavailable(RuntimeError):
     unavailable = True
 
@@ -125,18 +128,32 @@ class EngineFactories(dict):
     def __init__(self, resource_root):
         self.root = Path(resource_root).resolve()
         self._lock = threading.RLock()
-        self._build_locks = {mode: threading.Lock() for mode in self.MODES}
+        self._build_locks = {context_key(mode, season): threading.Lock()
+                             for season in SEASONS for mode in self.MODES}
         self._engines = {}
         self._custom_display = None
         self._base_display = None
         self._revision = 0
-        self._reports = {mode: dict(available=False, prepared=False,
-                                   reason="resource-validation-pending") for mode in self.MODES}
+        self._reports = self._initial_reports()
         super().__init__({mode: lambda mode=mode: self._get(mode) for mode in self.MODES})
 
-    def capabilities(self):
+    def _initial_reports(self):
+        return {context_key(mode, season): dict(available=False, prepared=season != "s0",
+                    season=season, mode=mode, contextKey=context_key(mode, season),
+                    reason="resource-validation-pending" if season == "s0" else "season-resources-unavailable:s1")
+                for season in SEASONS for mode in self.MODES}
+
+    def capabilities(self, season="s0"):
+        season = normalize_season(season)
+        with self._lock:
+            return {mode: copy.deepcopy(self._reports[context_key(mode, season)]) for mode in self.MODES}
+
+    def context_capabilities(self):
         with self._lock:
             return copy.deepcopy(self._reports)
+
+    def get_engine(self, mode, season="s0"):
+        return self._get(mode, season)
 
     def set_custom_display(self, provider, *, base_provider=None):
         """Attach a display-only source; identity and geometry remain untouched."""
@@ -146,10 +163,14 @@ class EngineFactories(dict):
             raise TypeError("base display provider must be callable")
         with self._lock:
             self._custom_display, self._base_display = provider, base_provider
-            for mode, engine in self._engines.items():
-                self._attach_custom_display(engine, mode)
+            for key, engine in self._engines.items():
+                season, mode = key.split(":", 1)
+                self._attach_custom_display(engine, mode, season)
 
-    def _attach_custom_display(self, engine, mode):
+    def _attach_custom_display(self, engine, mode, season="s0"):
+        if normalize_season(season) != "s0":
+            engine.qt_custom_display = engine.qt_base_display = None
+            return
         provider = self._custom_display
         engine.qt_custom_display = (lambda profile, map_id, floor, reference:
             provider(profile, map_id, floor, reference, mode)) if provider is not None else None
@@ -157,31 +178,32 @@ class EngineFactories(dict):
         engine.qt_base_display = (lambda map_id, floor, reference:
             base(map_id, floor, reference, mode)) if base is not None else None
 
-    def prepare(self, cancelled=None):
+    def prepare(self, cancelled=None, *, season="s0"):
         for mode in self.MODES:
             if cancelled and (cancelled.is_set() if hasattr(cancelled, "is_set") else cancelled()):
                 break
             try:
-                self._get(mode)
+                self._get(mode, season)
             except ProviderUnavailable:
                 pass
-        return self.capabilities()
+        return self.capabilities(season)
 
     def invalidate(self):
         """Nonblocking resource-lifetime boundary; old worker builds cannot publish."""
         with self._lock:
             self._revision += 1
             self._engines.clear()
-            self._reports = {mode: dict(available=False, prepared=False,
-                                       reason="resource-validation-pending") for mode in self.MODES}
+            self._reports = self._initial_reports()
 
-    def _get(self, mode):
-        with self._build_locks[mode]:
+    def _get(self, mode, season="s0"):
+        season = normalize_season(season)
+        key = context_key(mode, season)
+        with self._build_locks[key]:
             with self._lock:
-                if mode in self._engines:
-                    return self._engines[mode]
-                if self._reports[mode]["prepared"]:
-                    raise ProviderUnavailable(self._reports[mode]["reason"])
+                if key in self._engines:
+                    return self._engines[key]
+                if self._reports[key]["prepared"]:
+                    raise ProviderUnavailable(self._reports[key]["reason"])
                 revision = self._revision
             try:
                 engine = self._build(mode)
@@ -189,14 +211,17 @@ class EngineFactories(dict):
                 reason = f"{mode}:{type(error).__name__}:{error}"
                 with self._lock:
                     if revision == self._revision:
-                        self._reports[mode] = dict(available=False, prepared=True, reason=reason)
+                        self._reports[key] = dict(available=False, prepared=True, reason=reason, season=season, mode=mode, contextKey=key)
                 raise ProviderUnavailable(reason) from error
             with self._lock:
                 if revision != self._revision:
                     raise ProviderUnavailable("resource-context-superseded")
-                self._engines[mode] = engine
-                self._attach_custom_display(engine, mode)
-                self._reports[mode] = dict(available=True, prepared=True, reason="saved-frame-rank-ready",
+                engine.qt_season = season
+                engine.qt_context_key = key
+                self._engines[key] = engine
+                self._attach_custom_display(engine, mode, season)
+                self._reports[key] = dict(available=True, prepared=True, reason="saved-frame-rank-ready",
+                                       season=season, mode=mode, contextKey=key,
                                        mapCount=len(engine.pack.maps), floors=list(engine.identity_floors),
                                        liveAuthorization=False, resourceRoot=str(self.root),
                                        inventory=getattr(engine, "qt_resource_inventory", {}))

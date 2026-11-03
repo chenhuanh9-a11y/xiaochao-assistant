@@ -361,10 +361,12 @@ Window {
         id: modeModule
         ColumnLayout {
             spacing: 4
-            RowLayout {
-                Layout.fillWidth: true; Layout.topMargin: 8; spacing: 4
-                ControlButton { objectName: "controlModeNightmare"; text: panel.appliedMode === "nightmare" ? "噩梦 · 已选" : "噩梦"; primary: panel.appliedMode === "nightmare"; selected: panel.appliedMode === "nightmare"; enabled: panel.modeAvailable(); Layout.fillWidth: true; onClicked: clientCoordinator.setMode("nightmare") }
-                ControlButton { objectName: "controlModeDifficult"; text: panel.appliedMode === "difficult" ? "困难 · 已选" : "困难"; primary: panel.appliedMode === "difficult"; selected: panel.appliedMode === "difficult"; enabled: panel.modeAvailable(); Layout.fillWidth: true; onClicked: clientCoordinator.setMode("difficult") }
+            GridLayout {
+                columns: 2; Layout.fillWidth: true; Layout.topMargin: 8; columnSpacing: 4; rowSpacing: 4
+                ControlButton { objectName: "controlModeDifficult"; text: "S0 困难"; primary: selected; selected: session.appliedSeason === "s0" && panel.appliedMode === "difficult"; enabled: panel.modeAvailable(); Layout.fillWidth: true; onClicked: clientCoordinator.requestGameContext("s0", "difficult") }
+                ControlButton { objectName: "controlModeNightmare"; text: "S0 噩梦"; primary: selected; selected: session.appliedSeason === "s0" && panel.appliedMode === "nightmare"; enabled: panel.modeAvailable(); Layout.fillWidth: true; onClicked: clientCoordinator.requestGameContext("s0", "nightmare") }
+                ControlButton { objectName: "controlContext_s1_difficult"; text: "S1 困难"; primary: selected; selected: session.appliedSeason === "s1" && panel.appliedMode === "difficult"; enabled: panel.modeAvailable(); Layout.fillWidth: true; onClicked: clientCoordinator.requestGameContext("s1", "difficult") }
+                ControlButton { objectName: "controlContext_s1_nightmare"; text: "S1 噩梦"; primary: selected; selected: session.appliedSeason === "s1" && panel.appliedMode === "nightmare"; enabled: panel.modeAvailable(); Layout.fillWidth: true; onClicked: clientCoordinator.requestGameContext("s1", "nightmare") }
             }
         }
     }
