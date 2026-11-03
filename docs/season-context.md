@@ -39,7 +39,16 @@ PYTHONPATH=experiments/qt_quick:app QT_QPA_PLATFORM=offscreen python -m unittest
 PYTHONPATH=tests:experiments/qt_quick:app QT_QPA_PLATFORM=offscreen python -m unittest test_map_package_upgrade test_live_author_import
 ```
 
-逐模块运行的 Qt 回归：`test_client_settings`、`test_client_paths`、`test_client_session`、`test_client_engine`、`test_client_providers`、`test_client_info`、`test_client_coordinator`、`test_client_custom_display`、`test_client_resources`、`test_client_manual_map_integration`、`test_client_live_runtime`、`test_client_control_actions`、`test_client_manual_map`、`test_client_gallery_count`、`test_client_gallery_layout`、`test_client_route_preferences`、`test_client_custom_gallery`、`test_client_material_identity`、`test_client_reference_presentation`、`test_client_composition`、`test_client_control_stability`。另运行 `tests/test_map_resource_context.py`。
+第一组，逐模块运行的 Qt 回归（21 个模块、335 项：331 通过、1 跳过、3 项既有失败；包含 `test_season_settings` 的 7 项）：`test_client_settings`、`test_client_paths`、`test_client_session`、`test_client_engine`、`test_client_providers`、`test_client_info`、`test_client_coordinator`、`test_client_custom_display`、`test_client_resources`、`test_client_manual_map_integration`、`test_client_live_runtime`、`test_client_control_actions`、`test_client_manual_map`、`test_client_gallery_count`、`test_client_gallery_layout`、`test_client_route_preferences`、`test_client_custom_gallery`、`test_client_material_identity`、`test_client_reference_presentation`、`test_client_composition`、`test_season_settings`。
+
+其余互不重复的独立分组：
+
+- `tests/test_season_gallery.py`、`tests/test_season_resources.py`、`tests/test_season_session.py`：38 项全部通过（分别 12、14、12 项）。不包含第一组的 `test_season_settings`。
+- `test_map_package_upgrade`、`test_live_author_import`：38 项，37 通过、1 跳过。
+- `tests/test_map_resource_context.py`：11 项，10 通过、1 项既有失败。
+- `test_client_control_stability`：9 项既有失败，单独运行，未计入第一组 335 项。
+
+以上既有失败共 13 项（第一组 3 项、浏览资源 1 项、控件稳定性 9 项）。重复执行的验证批次不再累计；将四个赛季测试模块合并复核时是 45 项（7 + 38），并非额外新增 45 项。
 
 与未改动基线 `9d7fa8024f1f5adf27fb664e2fcd1788d4dc883a` 在同环境逐模块对照，已知失败单列，不宣称全绿：
 
