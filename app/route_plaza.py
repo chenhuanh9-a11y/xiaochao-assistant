@@ -100,6 +100,16 @@ def _download_url_allowed(url: str) -> bool:
     return parts.scheme == "https" and bool(parts.hostname) and parts.hostname.endswith(DOWNLOAD_HOST_SUFFIX)
 
 
+class _DownloadRedirect(request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # Validate each hop before urllib can issue its next request. Checking
+        # response.geturl() alone is too late: the other host was already called.
+        if not _download_url_allowed(newurl):
+            fp.close()
+            raise AccountError("下载地址被转到了其他站点")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def fetch_archive(url: str, expected_bytes: int, expected_sha256: str) -> bytes:
     """The signed object, checked against the server's package record. No token is sent."""
     if not _download_url_allowed(url):
@@ -108,7 +118,7 @@ def fetch_archive(url: str, expected_bytes: int, expected_sha256: str) -> bytes:
         raise AccountError("路线包大小超出上限")
     req = request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
-        with request.urlopen(req, timeout=TIMEOUT_SECONDS) as response:
+        with request.build_opener(_DownloadRedirect).open(req, timeout=TIMEOUT_SECONDS) as response:
             if not _download_url_allowed(response.geturl()):
                 raise AccountError("下载地址被转到了其他站点")
             data = response.read(expected_bytes + 1)
