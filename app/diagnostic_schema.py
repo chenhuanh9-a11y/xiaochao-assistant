@@ -1454,3 +1454,5 @@ CODES = CODES | frozenset({'automatic-image-retired', 'automatic-image-missing',
     'automatic-storage-operation-failed', 'automatic-legacy-read-only',
     'automatic-namespace-invalid', 'automatic-journal-changed',
     'automatic-journal-short-write'})
+# Classified safe-fallback failure; retain its type without free exception text.
+EXCEPTIONS = EXCEPTIONS | frozenset({'CaptureFallbackUnsupported'})

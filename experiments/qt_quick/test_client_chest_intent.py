@@ -22,7 +22,13 @@ class IntentTests(unittest.TestCase):
         from client_session import SessionService
         self.owner.session = SessionService()
         self.syncs = []
-        self.patch = mock.patch.object(ChestAutoTap, 'sync', lambda s: self.syncs.append(s.snapshot()['enabled']))
+        def sync_without_native_worker(service):
+            enabled = (not service._closed and service.settings['enabled']
+                       and service.available and not service._runtime_error
+                       and not any(service._pending_releases.values()))
+            (service._stop.clear if enabled else service._stop.set)()
+            self.syncs.append(enabled)
+        self.patch = mock.patch.object(ChestAutoTap, 'sync', sync_without_native_worker)
         self.patch.start()
         self.addCleanup(self.patch.stop)
         self.restart()
@@ -34,6 +40,40 @@ class IntentTests(unittest.TestCase):
         self.adapter._service.available = True
         self.addCleanup(self.adapter.shutdown)
         self.service = self.adapter._service
+
+    def test_focus_resume_preserves_explicit_intent_without_resaving(self):
+        self.assertTrue(self.enable()['success'])
+        self.focus = 99
+        self.adapter.pollOnce()
+        self.assertTrue(self.adapter.snapshot['enabled'])
+        self.assertFalse(self.adapter.snapshot['running'])
+        with mock.patch.object(self.service, '_save', side_effect=OSError('fixture readonly')) as save:
+            self.focus = 42
+            self.adapter.pollOnce()
+        save.assert_not_called()
+        self.assertTrue(self.adapter.snapshot['running'])
+
+    def test_compiled_binding_change_without_save_stops_conflicting_worker(self):
+        self.assertTrue(self.enable()['success'])
+        self.input.snapshot['bindings']['confirm-round'] = 'F12'
+        self.input.changed.emit()
+        self.assertFalse(self.adapter.snapshot['enabled'])
+        self.assertFalse(self.adapter.snapshot['running'])
+        self.assertIn('confirm-round', self.adapter.snapshot['error'])
+
+    def test_pending_normal_release_waits_without_revoking_explicit_intent(self):
+        self.assertTrue(self.enable()['success'])
+        self.focus = 99
+        self.adapter.pollOnce()
+        self.service._pending_releases[ord('F')] = 0
+        self.focus = 42
+        self.adapter.pollOnce()
+        self.assertTrue(self.adapter.snapshot['enabled'])
+        self.assertFalse(self.adapter.snapshot['running'])
+        self.assertIn('等待上次按键释放', self.adapter.snapshot['message'])
+        self.service._pending_releases.clear()
+        self.adapter.pollOnce()
+        self.assertTrue(self.adapter.snapshot['running'])
 
     def test_real_restart_restores_only_explicit_qt_intent(self):
         self.assertFalse(self.adapter.snapshot['enabled'])

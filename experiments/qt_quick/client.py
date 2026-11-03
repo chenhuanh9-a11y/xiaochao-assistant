@@ -190,6 +190,7 @@ class QtClient:
             self.lifecycle_trace.record("startup", buildFingerprint=self.info._build_fingerprint,
                 sourceCommit=self.problems._source_commit)
         self.coordinator.errorReported.connect(self.problems.record)
+        self.chest_auto_tap.errorReported.connect(self.problems.record)
         self.resources.errorReported.connect(self._resource_problem)
         self.package_manager.errorReported.connect(self._resource_problem)
         self.package_manager.removalCompleted.connect(
