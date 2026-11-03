@@ -17,6 +17,10 @@ class CaptureUnavailable(RuntimeError):
     pass
 
 
+class CaptureForegroundUnavailable(CaptureUnavailable):
+    """Only a foreground refusal before any pixels were requested."""
+
+
 class ClientCaptureProvider:
     """Worker-safe provider returning the existing RegionCapture contract.
 
@@ -155,7 +159,14 @@ class ClientCaptureProvider:
             return False
         return bool(cancelled.is_set() if hasattr(cancelled, "is_set") else cancelled())
 
+    def preflight(self, cancelled=None):
+        """Run the same guards/metadata checks without requesting any pixels."""
+        return self._capture(cancelled, preflight_only=True)
+
     def capture(self, cancelled=None):
+        return self._capture(cancelled, preflight_only=False)
+
+    def _capture(self, cancelled=None, *, preflight_only):
         with self._lock:
             if not self._enabled or self._closed:
                 raise CaptureUnavailable("Client capture requires explicit enable")
@@ -169,14 +180,17 @@ class ClientCaptureProvider:
                 raise CaptureUnavailable("Bound game window is unavailable; rebind explicitly")
             foreground = self._native.foreground_window()
             if not global_key_is_allowed(hwnd, foreground):
-                error = CaptureUnavailable("Bound game must own the foreground before capture")
-                error.capture_diagnostics = dict(expectedHwnd=hwnd, foregroundHwnd=foreground)
-                process_id = getattr(self._native, "window_process_id", None)
-                if callable(process_id) and foreground:
-                    try:
-                        error.capture_diagnostics["foregroundPid"] = process_id(foreground)
-                    except OSError:
-                        pass
+                error = CaptureForegroundUnavailable("Bound game must own the foreground before capture")
+                error.capture_diagnostics = dict(expectedHwnd=hwnd, foregroundRole='other')
+                # Metadata only: let the runtime distinguish an unchanged,
+                # still-valid prior observation from a lost/rebound context.
+                from client_region_capture import client_capture_context
+                error.capture_context = client_capture_context(hwnd, _backend=self._backend)
+                error.capture_generation = generation
+                with self._lock:
+                    if (generation != self._generation or not self._enabled or self._closed
+                            or self._cancelled(cancelled)):
+                        raise CaptureUnavailable("Capture request was superseded or cancelled")
                 raise error
             from client_region_capture import capture_client_region, client_capture_context
             context = client_capture_context(hwnd, _backend=self._backend)
@@ -187,6 +201,12 @@ class ClientCaptureProvider:
                 region = (0, 0, width, height)
             if region[2] > context.full_client_size[0] or region[3] > context.full_client_size[1]:
                 raise CaptureUnavailable("Bound client rectangle exceeds the current client; rebind explicitly")
+            if preflight_only:
+                with self._lock:
+                    if (generation != self._generation or not self._enabled or self._closed
+                            or self._cancelled(cancelled)):
+                        raise CaptureUnavailable("Capture preflight was superseded or cancelled")
+                return
             frame = capture_client_region(hwnd, region, expected_context=expected or context,
                                           full_capture=self._full_capture, _backend=self._backend,
                                           reject_blank_full_client=full_client)

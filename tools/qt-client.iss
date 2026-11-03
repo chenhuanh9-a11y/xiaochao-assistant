@@ -42,7 +42,8 @@ AppName={#InstallerAppName}
 AppVersion={#DisplayVersion}
 AppVerName={#InstallerAppName} {#DisplayVersion}
 VersionInfoVersion={#NumericVersion}
-VersionInfoProductVersion={#DisplayVersion}
+VersionInfoProductVersion={#NumericVersion}
+VersionInfoProductTextVersion={#DisplayVersion}
 VersionInfoDescription={#InstallerAppName} 安装程序
 #ifdef ProductionInstaller
 DefaultDirName={localappdata}\Programs\{#InstallerFolder}
@@ -57,8 +58,8 @@ AllowNoIcons=yes
 #else
 AppPublisher=Xingtu project (private Qt test)
 DefaultDirName={autopf}\{#InstallerFolder}
-UsePreviousAppDir=no
-DisableDirPage=yes
+UsePreviousAppDir=yes
+DisableDirPage=no
 DisableProgramGroupPage=yes
 UninstallDisplayName={#InstallerAppName}
 UninstallDisplayIcon={app}\{#InstallerExeName}
@@ -539,6 +540,136 @@ begin
     SuppressibleMsgBox('星图正在运行，或安装目录不可写。请自行退出助手后再卸载。个人设置、日志与截图将保留。', mbError, MB_OK, IDOK)
   else
     Result := BackupUninstallResources;
+end;
+
+
+#else
+; Private directory selection never converts a test product into production.
+[Code]
+const
+  ProductionUninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{D04394A0-DACE-4FF9-874D-3DCB43EE53D1}_is1';
+function InstallerFileAttributes(lpFileName: String): LongWord;
+  external 'GetFileAttributesW@kernel32.dll stdcall';
+function NormalizedDirectory(Path: String): String;
+begin
+  Result := RemoveBackslashUnlessRoot(ExpandFileName(Path));
+end;
+function RegisteredProductionDirectory(RootKey: Integer; Target: String): Boolean;
+var
+  Previous: String;
+begin
+  Result := False;
+  if RegQueryStringValue(RootKey, ProductionUninstallKey, 'InstallLocation', Previous) and
+    (Previous <> '') then
+    Result := CompareText(NormalizedDirectory(Previous), Target) = 0;
+end;
+function RegisteredPrivateDirectory(Target: String): Boolean;
+var
+  Previous, Key: String;
+begin
+  Result := False;
+  { Private installers have always been admin/x64. Only this native uninstall
+    registration, not editable profile text, authorizes a nonempty target. }
+  Key := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' +
+    ExpandConstant('{#InstallerAppId}_is1');
+  if RegQueryStringValue(HKLM64, Key, 'InstallLocation', Previous) and
+    (Previous <> '') then
+    Result := CompareText(NormalizedDirectory(Previous), Target) = 0;
+end;
+function LastDirectoryError: LongWord;
+  external 'GetLastError@kernel32.dll stdcall';
+function SafePrivateTree(Path: String; Depth: Integer; var Entries: Integer): Boolean;
+var
+  Find: TFindRec;
+  Error: LongWord;
+begin
+  Result := False;
+  if Depth > 32 then Exit;
+  if not FindFirst(Path + '\*', Find) then begin
+    Error := LastDirectoryError;
+    Result := Error = 2; { ERROR_FILE_NOT_FOUND: empty directory, not access denied }
+    Exit;
+  end;
+  try
+    repeat
+      if (Find.Name <> '.') and (Find.Name <> '..') then begin
+        Entries := Entries + 1;
+        if Entries > 50000 then Exit;
+        { Inspect attributes BEFORE recursion; never follow a child junction or
+          file symlink. Include old files too: recursive copying can hit them. }
+        if (Find.Attributes and $400) <> 0 then Exit;
+        if (Find.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
+          if not SafePrivateTree(Path + '\' + Find.Name, Depth + 1, Entries) then Exit;
+      end;
+      if not FindNext(Find) then begin
+        Error := LastDirectoryError;
+        Result := Error = 18; { ERROR_NO_MORE_FILES only; other errors fail closed }
+        Break;
+      end;
+    until False;
+  finally
+    FindClose(Find);
+  end;
+end;
+function PrivateDirectoryError(Target: String): String;
+var
+  Path, Parent: String;
+  Entries: Integer;
+  Attributes, Error: LongWord;
+begin
+  Result := '';
+  Target := NormalizedDirectory(Target);
+  Path := Target;
+  repeat
+    Attributes := InstallerFileAttributes(Path);
+    if Attributes = $FFFFFFFF then begin
+      Error := LastDirectoryError;
+      if (Error <> 2) and (Error <> 3) then begin
+        Result := '无法读取安装路径，请选择可访问的新目录。';
+        Exit;
+      end;
+    end else if (Attributes and $400) <> 0 then begin
+      Result := '请选择不含目录链接或联接点的安装位置。';
+      Exit;
+    end;
+    Parent := ExtractFileDir(Path);
+    if Parent = Path then Break;
+    Path := Parent;
+  until Path = '';
+  if FileExists(Target + '\第五人格小抄助手.exe') or
+    FileExists(Target + '\星图.exe') or
+    RegisteredProductionDirectory(HKCU64, Target) or
+    RegisteredProductionDirectory(HKLM64, Target) or
+    RegisteredProductionDirectory(HKCU32, Target) or
+    RegisteredProductionDirectory(HKLM32, Target) then begin
+    Result := '此目录属于正式版。覆盖正式版请使用正式身份的升级安装包；测试包请选择其他目录。';
+    Exit;
+  end;
+  if DirExists(Target) then begin
+    Entries := 0;
+    if not SafePrivateTree(Target, 0, Entries) then begin
+      Result := '目录包含链接、无法完整读取或超过安全检查上限，请选择新的空目录。';
+      Exit;
+    end;
+    if (Entries > 0) and not RegisteredPrivateDirectory(Target) then
+      Result := '非空目录不是本测试渠道登记的安装位置。请选择新的空目录或本测试版原目录；不会自动迁移已有资料。';
+  end;
+end;
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  Error: String;
+begin
+  Result := True;
+  if CurPageID = wpSelectDir then begin
+    Error := PrivateDirectoryError(ExpandConstant('{app}'));
+    Result := Error = '';
+    if not Result then SuppressibleMsgBox(Error, mbError, MB_OK, IDOK);
+  end;
+end;
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  { Also covers silent /DIR installs and changes since directory selection. }
+  Result := PrivateDirectoryError(ExpandConstant('{app}'));
 end;
 
 #endif

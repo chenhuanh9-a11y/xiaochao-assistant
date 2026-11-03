@@ -44,6 +44,16 @@ python tools/preview_windows_notice.py --installer "D:\发布\星图-1.0.1-Setup
 
 路径只是示例，1.0.1 真实包尚未准备时不能用 1.0 包或测试 fixture 对线上做预览。fixture 测试只使用本地替身。预览不会读取 `UPDATE_ADMIN_TOKEN`；加 `--yes` 本身也不会让原始脚本发布。
 
+Qt 构建直接使用 `tools/build_qt_client.py` 生成的原始 `xingtu-qt-setup-build-v1`
+记录，不改写成旧格式。额外传入 `--source-commit <冻结安装包的完整源码SHA>`；
+工具所在仓库须有该 commit 对象，工具 HEAD 可以是后续工具修复提交，但当前版本字段须一致。
+预览核对该 commit 的 tree 与版本、记录的 clean/buildCompleted、正式升级身份，
+以及原始 `output/setup/fileName` 路径上的真实安装包大小和 SHA256。只接受正式 production，
+拒绝 test/layout-preview、未完成构建或不匹配来源。保留构建目录及原始记录，不能手工改记录配合移动后的文件。
+这些核查不代表签名、安装、GUI/游戏验收或远端来源认证；发布前仍须完成上述人工上传门槛。
+正式发布仍使用原有 `publish_windows_notice.py --publish --yes`，不新增发布入口；
+先完成严格预览，再确认待发布包和公告未被替换。
+
 原始入口仍保留，要求维护者先完成同样的构建匹配核查：
 
 ```powershell

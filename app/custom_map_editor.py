@@ -201,8 +201,10 @@ class CustomMapEditor(tk.Frame):
         if signature == self._signature:
             return
         self._signature = signature
-        if not snapshot.get("available"):
-            self.notice.configure(text=snapshot.get("message") or "自定义地图暂不可用")
+        problem = ((snapshot.get("message") or "自定义地图暂不可用") if not snapshot.get("available")
+                   else getattr(store, "load_error", ""))
+        if problem:
+            self.notice.configure(text=problem)
             if not self.notice.winfo_manager():
                 self.notice.pack(fill="x", padx=self.ui._px(24), pady=(0, 8), after=self.heading)
         else:
@@ -248,13 +250,15 @@ class CustomMapEditor(tk.Frame):
         self.use_button.configure(text="停止使用" if using else "在游戏中使用",
                                   bg=BUTTON_BG if using else PRIMARY, fg=BUTTON_TEXT if using else "white")
         note = f"已画 {len(drawn)} / {len(self._maps)} 张。"
-        note += "默认图库只读；复制一份后就能编辑。" if store.readonly(self.gallery_id) else "点一张地图开始编辑，改动会自动保存。"
+        source = store.source(self.gallery_id)
+        note += (f"来自路线广场（作者 {source.get('author') or '匿名'}），只读；复制一份后就能编辑。" if source else
+                 "默认图库只读；复制一份后就能编辑。" if store.readonly(self.gallery_id) else "点一张地图开始编辑，改动会自动保存。")
         if using:
             note += " 游戏内正在使用这个图库。"
         self.gallery_note.configure(text=note)
         readonly = store.readonly(self.gallery_id)
-        for name_ in ("_gallery__rename_gallery", "_gallery__delete_gallery"):
-            getattr(self, name_).configure(state="disabled" if readonly else "normal")
+        self._gallery__rename_gallery.configure(state="disabled" if readonly else "normal")
+        self._gallery__delete_gallery.configure(state="disabled" if readonly and not source else "normal")
         self._layout_tiles(drawn)
 
     def _grid_resized(self, event):
@@ -328,7 +332,11 @@ class CustomMapEditor(tk.Frame):
     def _new_gallery(self):
         name = self._ask_name("新建图库", "我的路线")
         if name:
-            self.gallery_id = self._galleries().create(name)
+            try:
+                self.gallery_id = self._galleries().create(name)
+            except OSError as error:
+                self._note(f"新建失败：{error}", error=True)
+                return
             self._signature = None
             self.refresh()
 
@@ -337,7 +345,11 @@ class CustomMapEditor(tk.Frame):
         source = self.gallery_id
         name = self._ask_name("复制图库", f"{store.name(source) or '图库'}（副本）")
         if name:
-            self.gallery_id = store.create(name, copy_from=source)
+            try:
+                self.gallery_id = store.create(name, copy_from=source)
+            except OSError as error:
+                self._note(f"复制失败：{error}", error=True)
+                return
             self._signature = None
             if self.map_id is not None and self.editor_view.winfo_manager():
                 self._load_map()
@@ -353,13 +365,16 @@ class CustomMapEditor(tk.Frame):
 
     def _delete_gallery(self):
         store = self._galleries()
-        if store.readonly(self.gallery_id):
+        if store.readonly(self.gallery_id) and not store.source(self.gallery_id):
             return
         if not self._confirm(f"删除图库「{store.name(self.gallery_id)}」？里面的路线会一起删除。"):
             return
-        if self.gallery_id == self._in_use:
+        in_use = self.gallery_id == self._in_use
+        if not store.delete(self.gallery_id):
+            self._note("删除失败：图库没有保存，请检查软件目录是否可写。", error=True)
+            return
+        if in_use:
             self.assistant.use_custom_gallery(None)
-        store.delete(self.gallery_id)
         self.gallery_id = None
         self._signature = None
         self.refresh()
@@ -464,14 +479,16 @@ class CustomMapEditor(tk.Frame):
         if self._past:
             self._future.append(self.points)
             self.points = self._past.pop()
-            self._galleries().set_route(self.gallery_id, self.map_id, self.points)
+            if not self._galleries().set_route(self.gallery_id, self.map_id, self.points):
+                self._message = ("保存失败，请检查软件目录是否可写。", True)
             self._replan()
 
     def _redo(self):
         if self._future:
             self._past.append(self.points)
             self.points = self._future.pop()
-            self._galleries().set_route(self.gallery_id, self.map_id, self.points)
+            if not self._galleries().set_route(self.gallery_id, self.map_id, self.points):
+                self._message = ("保存失败，请检查软件目录是否可写。", True)
             self._replan()
 
     def _clear(self):
@@ -644,7 +661,7 @@ class CustomMapEditor(tk.Frame):
         ox, oy = (width - size[0]) / 2, (height - size[1]) / 2
         self._view = (scale, ox, oy)
         picture = art.resize(size, Image.Resampling.LANCZOS)
-        icon = library.exit_icon()
+        icon = None if library.art_includes_exits else library.exit_icon()
         if icon is not None:
             side = max(14, round(max(art.size) * .025 * scale))
             icon = icon.resize((side, side), Image.Resampling.LANCZOS)

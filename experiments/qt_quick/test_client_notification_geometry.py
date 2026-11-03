@@ -59,6 +59,20 @@ class NotificationGeometryTests(unittest.TestCase):
         result = self.geometry([],None,bound="")
         self.assertEqual(result["diagnostics"]["placement"],"default-fallback")
 
+    def test_manual_picker_geometry_uses_bound_client_rect_in_logical_pixels(self):
+        primary = workarea(screen("Q27G4S",0,0,2560,1440), (0,0,2560,1400))
+        owner = SimpleNamespace(_bound="42", _window_rows=[
+            dict(hwnd="42", minimized=False, clientBounds=(100,200,1380,920))],
+            _native_windows=SimpleNamespace(monitor_info=Mock(return_value=dict(
+                device=r"\\.\DISPLAY1", monitorRect=(0,0,2560,1440)))))
+        app = SimpleNamespace(screens=lambda:[primary], primaryScreen=lambda:primary)
+        with patch("client_coordinator.QGuiApplication", app):
+            result = ClientCoordinator.manualMapPickerGeometry(owner)
+        self.assertEqual(tuple(result[k] for k in ("x","y","width","height")),
+                         (100,200,1280,720))
+        self.assertEqual(result["diagnostics"]["placement"],"game-client")
+        self.assertTrue(result["diagnostics"]["gameClientMatched"])
+
     def test_legacy_device_query_delegates_monitor_info_without_native_access(self):
         native = NativeWindowAPI()
         native.monitor_info = Mock(return_value=dict(device=r"\\.\DISPLAY2",monitorRect=(0,0,2560,1440)))

@@ -74,7 +74,7 @@ Item {
                         AppButton { text: "新建"; Layout.fillWidth: true; implicitWidth: 74; enabled: !root.state.busy && !root.state.dataError; onClicked: root.askName("create", "我的路线") }
                         AppButton { text: "复制"; Layout.fillWidth: true; implicitWidth: 74; enabled: !root.state.busy && !root.state.dataError; onClicked: root.askName("copy", (root.state.galleryName || "我的路线") + "副本") }
                         AppButton { text: "改名"; Layout.fillWidth: true; implicitWidth: 74; enabled: !root.state.busy && !root.state.readonly; onClicked: root.askName("rename", root.state.galleryName) }
-                        AppButton { text: "删除"; Layout.fillWidth: true; implicitWidth: 74; enabled: !root.state.busy && !root.state.readonly; onClicked: customGalleryService.requestDeleteGallery() }
+                        AppButton { text: "删除"; Layout.fillWidth: true; implicitWidth: 74; enabled: !root.state.busy && !!root.state.canDelete; onClicked: customGalleryService.requestDeleteGallery() }
                         AppButton { text: "导入"; Layout.fillWidth: true; implicitWidth: 74; enabled: !root.state.busy; onClicked: importPicker.open() }
                         AppButton { objectName: "customExportGallery"; text: "导出"; Layout.fillWidth: true; implicitWidth: 74; enabled: !root.state.busy && !root.state.pendingKind; onClicked: exportPicker.open() }
                     }
@@ -94,7 +94,7 @@ Item {
                             onClicked: customGalleryService.useGallery()
                         }
                     }
-                    Label { text: "已绘制 " + (root.state.drawnCount || 0) + " / " + (root.state.mapCount || 0) + " 张地图" + (root.state.readonly ? " · 默认图库只读，复制后即可编辑" : " · 选择地图继续编辑"); color: "#526785"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                    Label { text: "已绘制 " + (root.state.drawnCount || 0) + " / " + (root.state.mapCount || 0) + " 张地图" + (root.state.source ? " · 来自路线广场（作者 " + (root.state.source.author || "匿名") + "），只读，复制后即可编辑" : root.state.readonly ? " · 默认图库只读，复制后即可编辑" : " · 选择地图继续编辑"); color: "#526785"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                     GridView {
                         id: maps
                         objectName: "customMapGrid"
@@ -187,11 +187,17 @@ Item {
                             var ox=(width-art.paintedWidth)/2, oy=(height-art.paintedHeight)/2
                             ctx.translate(ox,oy); ctx.scale(scale,scale)
                             var lines=root.state.lines
-                            for (var i=0; i<lines.length; ++i) {
-                                var pts=lines[i].points; if (!pts.length) continue
-                                ctx.beginPath(); ctx.moveTo(pts[0].x,pts[0].y)
-                                for (var j=1; j<pts.length; ++j) ctx.lineTo(pts[j].x,pts[j].y)
-                                ctx.strokeStyle=lines[i].color; ctx.lineWidth=4/scale; ctx.lineJoin="round"; ctx.stroke()
+                            // Same as custom_maps.draw_route and the Android route: every
+                            // dark outline first, then the colours, so crossings keep colour.
+                            for (var pass=0; pass<2; ++pass) {
+                                for (var i=0; i<lines.length; ++i) {
+                                    var pts=lines[i].points; if (!pts.length) continue
+                                    ctx.beginPath(); ctx.moveTo(pts[0].x,pts[0].y)
+                                    for (var j=1; j<pts.length; ++j) ctx.lineTo(pts[j].x,pts[j].y)
+                                    ctx.strokeStyle=pass === 0 ? "#0f1b28" : lines[i].color
+                                    ctx.lineWidth=(pass === 0 ? 6.8 : 4)/scale
+                                    ctx.lineJoin="round"; ctx.lineCap="round"; ctx.stroke()
+                                }
                             }
                             for (var k=0; k<root.state.markers.length; ++k) {
                                 var marker=root.state.markers[k]

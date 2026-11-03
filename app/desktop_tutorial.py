@@ -70,7 +70,8 @@ CHAPTERS = (
               "进入对局后，按地图键（默认 G）打开游戏地图，把地图完整打开。",
               "round-2.webp", keys=("map",), sketch=True),
         _step("自动识别并贴合",
-              "星图会自动认出地图和楼层，把作者路线小抄贴到地图上，不需要手动选图。",
+              "使用自动识别时，星图会认出地图和楼层，把作者路线小抄贴到地图上。"
+              "也可以在设置页切换为手动选图，通过游戏控件的“选择地图”自己选。",
               "round-3.webp", sketch=True,
               tips=("楼层显示“待确认”时，把地图完整打开稍等一下", "一直认不出来，看“排查与反馈”一章")),
         _step("关图再开、换楼层都会跟上",
@@ -195,7 +196,7 @@ class TutorialProgress:
         if isinstance(data, dict):
             done = data.get("done")
             if isinstance(done, list):
-                self.done = {value for value in done if value in CHAPTER_IDS}
+                self.done = {value for value in done if isinstance(value, str) and value in CHAPTER_IDS}
             self.invited = data.get("invited") is True
 
     def mark_done(self, chapter_id) -> bool:
@@ -262,6 +263,7 @@ class TutorialWindow:
         if self.window is None:
             return
         self._release_image()
+        self._shown = None
         self.window.withdraw()
 
     def _px(self, value):

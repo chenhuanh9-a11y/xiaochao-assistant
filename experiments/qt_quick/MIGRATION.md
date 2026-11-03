@@ -463,7 +463,7 @@ The coffin selector now follows the original catalog and coordinate-adapter cont
 
 | Additional original action | Existing service | Current Qt consumer (included in 248) |
 | --- | --- | --- |
-| Enable chest auto-tap; select hold/repeat key and interval; show state and stop | `chest_auto_tap.ChestAutoTap`, original `chest-auto-tap.json` | `ClientChestAutoTap.qml` / `ChestAutoTapService`; one owner, explicit per-launch arming, existing conflict checks, validated foreground binding, text/recording/focus/close suspension |
+| Enable chest auto-tap; select hold/repeat key and interval; show state and stop | `chest_auto_tap.ChestAutoTap`, original `chest-auto-tap.json` | `ClientChestAutoTap.qml` / `ChestAutoTapService`; one owner, Qt-specific explicit opt-in restored across launches (legacy enabled is not consent), release-before-press, existing conflict checks, validated foreground binding, text/recording/focus/close suspension |
 
 The authorized editor input now contains 26 maps / 78 typed layers, prepared by `tools/prepare_qt_editor_base.py`. It contains no optional author images. Production uses the old outer editor directory when present, otherwise the baked base. Production installer projection preserves an existing resource plane as a whole; only a fresh installation receives the whole baseline. The editor base is a separate all-or-nothing family. Program/version identity still updates. Synthetic checks pass; no actual installation is inferred.
 
@@ -509,3 +509,128 @@ No new Setup or real installation is implied by this source update.
 5. Original-AppId installation/adoption/uninstall and formal release remain separate from the isolated preservation evidence. Do not install into the user's product directory to close this checklist.
 
 Inspection basis: [repository rules](../../AGENTS.md), [development contracts](../../docs/development.md), actual [`GameControlView`](../../app/game_control_view.py) controls and its command map, [`DesktopMainUI`](../../app/desktop_main_ui.py), [`DailyAssistant`](../../app/identityv_daily_assistant.py), [`MapResourcesPage`](../../app/map_resources_page.py), [`MapResourceBrowser`](../../app/map_resource_browser.py), core/resource/package modules named above, and the existing Qt Python/QML files. This document changes no executable behavior.
+
+## Manual map selection (手动选图)
+
+The Qt entry points are `ClientSettings.qml` → “模式与路线” → “选图方式”, the
+`ClientControls.qml` “自动识别 / 手动选图” pair, the “选择本局地图” button, and
+the configurable `manual-map-picker` hotkey (slot 10 of `actionHotkeys`; fresh
+installs default to `Alt+1`). Settings persist `mapSelectionMode` (`auto` /
+`manual`) at the top level. Qt owns slot 10 as a regular action and validates it
+once (no separate opaque-tail check). A saved nine-item `actionHotkeys` array never
+gains an invented `Alt+1` (it could collide with a bare `ALT` binding and disable
+every native shortcut): slot 10 loads unbound and the file stays nine items until
+the user binds slot 10. A ten-item file keeps its trailing chord when the first
+nine are edited; an unreadable tail stays on disk and blocks shortcut writes until
+slot 10 is rebound.
+
+`client_manual_map.py` imports the grouping/paging rules from
+`app/manual_map_picker_core.py`, the toolkit-free half of PR #70's picker shared
+with the Tk UI (the Qt build excludes tkinter). `client_manual_map_service.py` owns the non-activating
+`ClientMapPicker.qml` window, catalog generation checks and picker key routing.
+While the picker is visible the native input seam routes bare F1–F4, PgUp/PgDn,
+Backspace and Escape; configurable actions on those primaries are suppressed.
+Escape retains the existing fixed map-close edge. Picking dispatches the normal
+`confirm_route` command with a `mapId` payload, so identity commit, floor seed,
+fitting and round reset stay on the existing manual-confirmation path. The
+picker's availability is a separate `manualMapPickAvailable` snapshot flag (both
+selection modes, map open or closed), so it never advertises `confirm_route` to
+the existing confirm buttons. The catalog reads only the prepared engine; a
+missing pack returns “当前模式的地图资源未就绪，暂时不能选图” instead of building
+a factory on the picker thread. The window is centered over the bound game
+client rect (primary work area fallback) using the existing capture geometry.
+
+`LiveRuntime` skips only the automatic `rank` request while manual mode has no
+locked map; capture, map open/close, floor reading and later locked-map refreshes
+continue. End-round closes the picker, and an applied difficulty change reloads
+the catalog while invalidating in-flight results.
+
+`LiveRuntime.manual_map_catalog` also resolves each map's display thumbnail on
+its worker thread, using the same rules as the Tk picker: difficult maps use the
+native context's `full_reference(mapId)` (or the pack's `manualReference`
+metadata), while nightmare maps use the first existing layer in entry-floor /
+`1` / `2` / `B1` order. Only resolved local paths and a file stamp are returned;
+no image bytes are copied. The small path cache is keyed by the exact pack object
+plus catalog identity (mode, profile and map list), so a mode/resource change
+cannot reuse the previous pack's thumbnails. Map cards in `ClientMapPicker.qml`
+show a 200×116, aspect-fit, centered `Image` above the existing “F1 · name”
+label. QML decodes it asynchronously with `sourceSize` bounded to that size;
+group cards remain text-only. A missing/unreadable file yields no image URL (or
+an `Image.Error` that is hidden) and the card remains clickable/F1–F4
+selectable. Offline tests write temporary PNGs with Pillow and cover nightmare
+layer fallback, difficult native/manual reference, missing files, stale catalog
+generations and the QML image presence/absence; no binary assets are added.
+
+Unverified on real Windows: global hotkey registration/foreground behavior,
+non-activating picker focus and key routing while the game is foreground, real
+in-game picker→confirm→fit latency, and real-Pack thumbnail decoding/display
+timing. Offline tests use fake native input, temporary images and synthetic
+capture, so they do not constitute a real GUI/game pass.
+
+
+### Qt chest auto-tap: explicit opt-in persistence (2026-11-02)
+
+Production path: `client.py` → `ChestAutoTapService` → `QtChestAutoTap` → the existing
+single native input owner. Only an accepted manual enable in the new Qt UI writes
+`qt-chest-intent.json` with schema `xingtu-qt-chest-explicit-intent-v1` and boolean
+`enabled: true`. The shared Tk/early-Qt `chest-auto-tap.json` remains the key/interval
+source, but its `enabled` bit never authorizes Qt restoration. The separate intent
+file avoids needing a Tk passthrough patch: legacy Tk writes cannot erase it.
+Launch does not migrate/write files or repeatedly show a migration dialog.
+
+Startup explicitly stops the native service. Restored readiness waits for a valid
+binding, matching native identity, enabled input and game foreground. Both the Qt
+adapter and native owner require an observed trigger release before a fresh press;
+focus loss resets this gate, including losses observed between UI polls. A loss
+observed inside the press-duration loop is latched even if foreground returns
+before key-up completes. The native
+owner's new `require_release` option defaults false for legacy Tk. It does not
+replace the existing release ledger or bounded failure retries.
+
+Saved preference, per-session arming and native running are distinct. Conflicts,
+OS/input errors, binding identity loss and end/stop/reset-round pause/disarm input
+without saving false. Binding loss/end-round still require explicit re-arming in
+that session; restarting may restore readiness, never a held-key gesture. The UI
+switch represents the saved preference even while paused (toggle off/on to re-arm).
+Explicit off stops before validation/I/O and saves false even when other entered
+fields are invalid. Shutdown stops without writing false. Save failures are reported
+and fail closed; a failed off-save cannot promise persistence across restart.
+
+Qt writes merge unknown JSON fields and use atomic replacement. Invalid JSON,
+foreign schemas and malformed existing key parameters are retained rather than
+silently replaced; repair the file before enabling. No user configuration or logs
+are checked in. This branch does not implement the separate control-visibility fix.
+
+Validation on Linux/offscreen (native window/key/SendInput boundaries mocked):
+- Baseline `59bba3d`: 109 existing chest/coordinator/session/input-recovery tests pass.
+- Before implementation, new real-file restart and corrupt-file preservation tests
+  fail on baseline (restored readiness false; corrupt shared JSON overwritten).
+- Updated branch (including review regression): 128 tests pass using `PYTHONPATH=app:tests:tools:experiments/qt_quick
+  QT_QPA_PLATFORM=offscreen python -m unittest -v test_client_chest_auto_tap
+  test_client_chest_intent test_chest_auto_tap test_client_coordinator
+  test_client_session test_client_input_recovery`.
+- Coverage includes separate Python-process restarts with real temp JSON, legacy
+  enabled rejection, schema/type checks, unknown/corrupt fields, explicit off,
+  conflicts/faults, first binding and recycled HWND/PID, end-round signal, real
+  worker gesture/release-ledger behavior with mocked native calls, and QML switch.
+- No Windows desktop/game input, installed build, packaging or release was tested.
+  The feature-branch Windows workflow runs offscreen tests only, with read-only
+  repository permissions; it neither builds nor releases anything.
+
+
+## 路线广场与账号登录（Qt）
+
+`Client.qml` 侧栏 → `ClientRoutePlaza.qml`；页内账号状态/登录按钮 → 所属主窗口的
+`ClientAccount.qml`。新增 `RoutePlazaService` 复用 PR #23 (`0d3c394`) 的 toolkit-free
+账号/广场服务；该 PR 尚未合并，因此此次窄移植了业务模块和合成 HTTP 测试，未整树合并。
+
+| 原 Tk 契约（PR #23） | 当前 Qt 入口/消费者 | 离线证据 |
+| --- | --- | --- |
+| 公开浏览、搜索、刷新、已下载/更新、去使用 | 常驻广场页，版本 ID 增量模型，原导航器到 `custom` | 本机 HTTP、模型不变刷新、版本替换、完整客户端鼠标点击 |
+| 登录/注册/恢复码重置/注销、失效提示 | `ClientAccount`、公共账号状态；原 `AccountService` 令牌/DPAPI 契约 | 账号错误/恢复码、关闭迟到结果、输入保护、空白登录截图；DPAPI 未测 |
+| 校验包并转换为只读图库、复制后编辑、删除/导出 | 原 `CustomGalleryService` 单写者/磁盘摘要/committed snapshot/显示失效链路 | 真实临时图库、复制/删除/更新/失败回滚、旧 Qt 图库与导出测试 |
+| 切页、取消与退出 | 隐藏页收取任务，可见再同步；原 `close_writers` 排空 | 本机阻塞下载取消/资源撤销；完整客户端退出子进程正常返回 |
+
+原 Tk 主入口未替换；Tk 图库页仅补齐下载图库来源/只读/可删除语义。
+调用链、参考文档、截图和未测项见 [路线广场文档](../../docs/route-plaza.md)。
+测试使用合成图包、本机 HTTP 和原 native/capture/engine fixture；不是线上或游戏验收。

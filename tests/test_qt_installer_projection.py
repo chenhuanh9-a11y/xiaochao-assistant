@@ -1,5 +1,6 @@
 """Synthetic stage -> actual generated Inno projection; no compiler/install/EXE."""
 from pathlib import Path
+import json
 import re
 import shutil
 import sys
@@ -12,6 +13,24 @@ import build_qt_client as build
 
 
 class InstallerProjectionTests(unittest.TestCase):
+    def test_setup_numeric_and_display_versions_remain_separate(self):
+        # Source contract only: this does not compile Inno or inspect a PE.
+        source = (ROOT / "tools/qt-client.iss").read_text(encoding="utf-8-sig")
+        fields = dict(re.findall(r"^(\w+)=([^\r\n]+)$", source, re.MULTILINE))
+        version = json.loads((ROOT / "version.json").read_text(encoding="utf-8"))
+        for name, instance in build.INSTANCES.items():
+            with self.subTest(instance=name):
+                numeric = version["numericVersion"]
+                display = version["displayVersion"] + instance["versionSuffix"]
+                def resolve(field):
+                    return fields[field].replace("{#NumericVersion}", numeric).replace(
+                        "{#DisplayVersion}", display)
+                for field in ("VersionInfoVersion", "VersionInfoProductVersion"):
+                    self.assertEqual(resolve(field), numeric)
+                    self.assertRegex(resolve(field), r"^[0-9]+(?:\.[0-9]+){3}$")
+                self.assertEqual(resolve("VersionInfoProductTextVersion"), display)
+                self.assertEqual(resolve("AppVersion"), display)
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

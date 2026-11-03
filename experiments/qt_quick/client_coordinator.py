@@ -18,6 +18,7 @@ if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 from reference_position_editor import ReferencePositionEdit
 from client_problem_messages import operation_problem
+from client_manual_map import MANUAL_PICKER_ACTION, normalize_selection_mode
 
 
 def _presentation_error_details(error):
@@ -121,6 +122,8 @@ def game_window_rows():
     user = ctypes.WinDLL("user32", use_last_error=True)
     user.IsWindowVisible.argtypes = [wintypes.HWND]
     user.IsWindowVisible.restype = wintypes.BOOL
+    user.IsIconic.argtypes = [wintypes.HWND]
+    user.IsIconic.restype = wintypes.BOOL
     user.GetWindowTextLengthW.argtypes = [wintypes.HWND]
     user.GetWindowTextLengthW.restype = ctypes.c_int
     user.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
@@ -144,9 +147,16 @@ def game_window_rows():
                 return True
             if not identityv_window_identity_is_allowed(buffer.value, process.exe()):
                 return True
+            row = dict(hwnd=str(int(hwnd)), title=buffer.value, pid=int(pid.value),
+                       processCreateTime=process.create_time(), executable=process.exe())
+            if user.IsIconic(hwnd):
+                # A minimized game is still the same game: keep it listed so an
+                # existing binding and round survive; geometry is read once it is
+                # restored (a minimized window has no client area to read).
+                rows.append(dict(row, minimized=True, width=0, height=0, dpi=0, clientBounds=None))
+                return True
             context = client_capture_context(int(hwnd))
-            rows.append(dict(hwnd=str(int(hwnd)), title=buffer.value, pid=int(pid.value),
-                             processCreateTime=process.create_time(), executable=process.exe(),
+            rows.append(dict(row, minimized=False,
                              width=context.full_client_size[0], height=context.full_client_size[1],
                              dpi=context.dpi, clientBounds=list(context.client_screen_bounds)))
         except (OSError, ValueError, psutil.Error):
@@ -187,6 +197,7 @@ class ClientCoordinator(QObject):
         self.backend, self.settings, self.resources = backend, settings, resources
         self.session, self.windows, self.input = session, windows, native_input
         self.capture, self.runtime, self.images = capture, runtime, images
+        self._manual_map_picker = None
         self._diagnostics = getattr(runtime, "_diagnostics", None)
         self._catalog = window_catalog
         self._window_rows = []
@@ -228,11 +239,13 @@ class ClientCoordinator(QObject):
         self._shortcut_recording = bool(getattr(settings, "shortcutRecording", False))
         self._requested_action = ""
         self._map_input_sequence = 0
+        self._map_resource_notified = set()
         self._focus_loss_map_sequence = None
         self._pointer_drag = None
         self._pointer_sequence = 0
         self._waiting_foreground = False
         self._map_was_open = False
+        self._main_recapture_active = False
         self._closing = False
         self._close_ready = False
         self._last_close_wait = None
@@ -258,12 +271,16 @@ class ClientCoordinator(QObject):
             guard(lambda: not self.session.snapshot.get("roundActive", False))
         settings.changed.connect(self._draft_changed)
         settings.saved.connect(self._settings_saved)
+        controls_failure = getattr(settings, "controlsVisibilitySaveFailed", None)
+        if controls_failure is not None:
+            controls_failure.connect(self._controls_save_failed)
         recording_signal = getattr(settings, "shortcutRecordingChanged", None)
         if recording_signal is not None:
             recording_signal.connect(self._set_shortcut_recording)
         session.changed.connect(self._session_changed)
         session.actionRequested.connect(self._action_requested)
         resources.resourcesChanged.connect(self._resources_changed)
+        resources.changed.connect(self._resource_readiness_changed)
         native_input.actionTriggered.connect(self._native_action)
         map_signal = getattr(native_input, "mapInputRequested", None)
         ordered_setter = getattr(native_input, "setOrderedMapInputEnabled", None)
@@ -469,20 +486,58 @@ class ClientCoordinator(QObject):
             finish(token, committed)
         self.changed.emit()
 
+    def _map_resource_problem(self, state=None):
+        """Cached readiness only: never read or prepare resources on input/UI."""
+        state = self.session.snapshot if state is None else state
+        mode = state.get("mode", self._applied_context[0])
+        if self.resources.busy or self.resources.pendingKind or state.get("resourceLocked"):
+            return ((mode, "resource-operation"), "正在更新地图资源，请等待资源操作完成后再打开地图")
+        if self._pending_context or state.get("contextPending"):
+            return ((mode, "context-pending"), "正在切换地图资源，请稍后再打开地图")
+        report = (state.get("savedFrameCapabilities") or {}).get(mode) or {}
+        reason = str(report.get("reason") or state.get("liveUnavailableReason") or "")
+        if reason == "resource-validation-pending" or state.get("pendingAction") == "inspect_engine_resources":
+            return ((mode, "resource-validation-pending"), "正在校验地图识别资源，请稍后再打开地图")
+        if report.get("available") is False:
+            label = "困难模式" if mode == "difficult" else "噩梦模式"
+            if "difficult-map-ui-template-missing:" in reason:
+                summary = "困难模式缺少楼层识别模板，请到地图资源页补齐或重新导入资源"
+            elif "difficult-map-ui-template-unavailable:" in reason:
+                summary = "困难模式楼层识别模板未通过校验或无法读取，请到地图资源页检查并重新导入资源"
+            else:
+                summary = f"{label}缺少地图识别资源或资源未通过校验，请到地图资源页检查并重新导入"
+            return ((mode, reason), summary)
+        return None
+
+    @Slot()
+    def _resource_readiness_changed(self):
+        if self._closing or self._closed:
+            return
+        # A ready interval rearms an identical later reason. Repeated reads or
+        # key presses within the same unavailable interval cannot spam toasts.
+        if self._map_resource_problem() is None:
+            self._map_resource_notified.clear()
+        self.changed.emit()
+
     def _status_text(self):
         if self._focus_notice:
             return self._focus_notice
         state = self.session.snapshot
+        resource_problem = self._map_resource_problem(state)
+        if resource_problem is not None:
+            return resource_problem[1]
         if self.session.busy and state.get("pendingAction") != "refresh_map":
             return {"inspect_engine_resources": "正在准备识别资源…", "start_round": "正在准备本局…"}.get(self._requested_action, "正在核对地图与位置…")
         receipt = state.get("lastReceipt", {})
-        if receipt.get("success") is False:
+        if receipt.get("success") is False and not receipt.get("fitReportingDeferred"):
             reason = str(receipt.get("reason", ""))
             if "capture" in reason:
                 return "截图暂不可用，请检查游戏前台与窗口尺寸后重新连接"
             if "map" in reason:
                 return "尚未看到稳定的地图画面，打开地图后可重试"
             return "本次核对未完成，可查看诊断信息后重试"
+        if state.get("fitReportingWaiting"):
+            return "正在继续核对地图位置，请保持地图打开"
         if state.get("roundActive"):
             return "当前地图位置已核对" if state.get("displayAuthorized") else "本局已开始，切回游戏并打开地图"
         return "已准备本局，等待游戏窗口并打开地图" if state.get("roundPreparing") else "游戏窗口已连接，可以开始本局" if self._bound else "可先准备本局，启动游戏并打开地图后开始"
@@ -553,12 +608,20 @@ class ClientCoordinator(QObject):
                        inputCreatedAt=created, inputSource=event.get("source", "hotkey"))
         if not opening:
             self._close_map_from_input(payload)
-        elif (self.resources.busy or self.resources.pendingKind or self._pending_context
-              or self.session.snapshot.get("resourceLocked")):
-            self._reset_map_input("map-input-resources-busy")
-            self._message = "正在准备地图资源，请稍后再打开地图"
-            self.changed.emit()
         else:
+            problem = self._map_resource_problem()
+            if problem is not None:
+                # Reject this opening edge before dispatch, while preserving
+                # sequence identity. The next physical edge must retry opening,
+                # not close a map that was never accepted.
+                self._reset_map_input("map-input-resources-unready")
+                key, self._message = problem
+                if key not in self._map_resource_notified:
+                    self._map_resource_notified.add(key)
+                    self.notificationRequested.emit("地图资源未就绪", self._message, "warning")
+                self.changed.emit()
+                return
+            self._map_resource_notified.clear()
             self._cancel_pointer_drag("map-key-open")
             self._revoke_runtime("map-key-open")
             # Runtime owns atomic ensure-start + original map preparation.
@@ -718,23 +781,72 @@ class ClientCoordinator(QObject):
                 self._invalidate_display()
         self.changed.emit()
 
+    def _show_main(self):
+        self.windows.show("main")
+        window = self.windows._windows.get("main")
+        if window is not None:
+            window.showNormal()
+            window.raise_()
+            window.requestActivate()
+
     @Slot(str)
     def navigate(self, name):
-        if name in {"home", "recognition", "gallery", "resources", "downloads", "custom", "settings", "replay", "help"}:
+        if name in {"home", "recognition", "gallery", "resources", "downloads", "custom", "settings", "replay", "help", "plaza"}:
             self.pageRequested.emit(name)
-            self.windows.show("main")
-            window = self.windows._windows.get("main")
-            if window is not None:
-                window.showNormal()
-                window.raise_()
-                window.requestActivate()
+            if name == "recognition" and self.runtime.snapshot().get("roundActive"):
+                # Even show()/showNormal() may activate a normal QQuickWindow.
+                # Do not mutate its visibility/z-order from in-round routing.
+                self._message = "候选页已就绪；控制面板中点击“打开候选列表（切到主界面）”可查看，重新识别会切回游戏"
+                self.changed.emit()
+                return
+            self._show_main()
+
+    @Slot()
+    def openRecognitionDetails(self):
+        """Explicit controls click, labelled as switching to the main window."""
+        if self._closing or self._closed:
+            return
+        self.pageRequested.emit("recognition")
+        self._show_main()
 
     @Slot()
     def requestManualMapSelection(self):
         if self._closing or self._closed:
             return
+        if (normalize_selection_mode(self.settings.persistedValues.get("mapSelectionMode")) == "manual"
+                and self._manual_map_picker is not None):
+            # Manual mode keeps the game in the foreground and offers the
+            # picker directly; no candidate reshuffle is needed.
+            self._manual_map_picker.open(source="map-button")
+            return
         self.session.dispatch("reselect_map")
         self.navigate("recognition")
+
+    @Slot(str)
+    def setMapSelectionMode(self, mode):
+        if mode not in ("auto", "manual"):
+            return
+        if self.settings.setValue("mapSelectionMode", mode):
+            self.settings.saveFields(["mapSelectionMode"])
+
+    @Slot(str, result=bool)
+    def confirmManualMap(self, map_id):
+        """Commit the picker choice through the existing confirm_route path."""
+        if self._closing or self._closed or not map_id:
+            return False
+        if self.session.busy or self.resources.busy:
+            self._message = "请等待当前操作完成后再选择本局地图"
+            self.changed.emit()
+            return False
+        # The picker has its own availability. It deliberately does not use
+        # the advertised confirm_route command: that command stays tied to a
+        # selected/floor-ready candidate for the existing confirm buttons.
+        if not self.runtime.snapshot().get("manualMapPickAvailable"):
+            self._message = "请先开始本局并等待地图资源就绪，再选择本局地图"
+            self.changed.emit()
+            return False
+        self.session.dispatchWithPayload("confirm_route", {"mapId": str(map_id)})
+        return True
 
     def _notification_geometry(self):
         from client_screen_geometry import project_client_geometry, ScreenGeometryError
@@ -768,11 +880,102 @@ class ClientCoordinator(QObject):
 
     notificationGeometry = Property("QVariantMap", _notification_geometry, notify=changed)
 
+    def manualMapPickerGeometry(self):
+        """Bound game client rectangle in Qt logical pixels; work-area fallback.
+
+        The catalog already carries the physical client bounds and DPI. The
+        picker only needs the existing verified projection, never a title or a
+        new native window query.
+        """
+        from client_screen_geometry import project_client_geometry, ScreenGeometryError
+        diagnostics = dict(placement="primary-fallback", gameClientMatched=False,
+                           reason="no-bound-client")
+        row = next((row for row in getattr(self, "_window_rows", ())
+                    if str(row.get("hwnd")) == self._bound), None) if self._bound else None
+        if row is not None and not row.get("minimized"):
+            try:
+                bounds = row.get("clientBounds")
+                if not isinstance(bounds, (list, tuple)) or len(bounds) != 4:
+                    raise ValueError("bound-client-bounds-unavailable")
+                x, y, right, bottom = (int(value) for value in bounds)
+                if right <= x or bottom <= y:
+                    raise ValueError("bound-client-bounds-invalid")
+                query = getattr(self._native_windows, "monitor_info", None)
+                if not callable(query):
+                    raise ValueError("native-monitor-info-unavailable")
+                info = query(int(self._bound))
+                monitor = info["monitorRect"]
+                projection = project_client_geometry((x, y), (right-x, bottom-y),
+                    info["device"], monitor, QGuiApplication.screens())
+                return dict(x=projection.origin_x, y=projection.origin_y,
+                            width=(right-x)/projection.device_scale,
+                            height=(bottom-y)/projection.device_scale,
+                            diagnostics=dict(placement="game-client", gameClientMatched=True,
+                                             projection=projection.diagnostics))
+            except ScreenGeometryError as error:
+                diagnostics.update(reason="client-projection-unverified", detail=str(error),
+                                   projection=error.diagnostics)
+            except (OSError, ValueError, TypeError, KeyError, AttributeError, RuntimeError) as error:
+                diagnostics.update(reason="bound-client-unavailable", detail=str(error)[:512])
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            return None
+        area = screen.availableGeometry()
+        return dict(x=area.x(), y=area.y(), width=area.width(), height=area.height(),
+                    diagnostics=diagnostics)
+
     @Slot()
     def returnToGame(self):
         result = self._game_focus.requestFocus()
         self._message = str(result.get("message", ""))
         self._focus_notice = self._message
+        self.changed.emit()
+
+    @Slot()
+    def recaptureFromMain(self):
+        """Explicit main-page click only; never called by polling/background IO."""
+        if (self._main_recapture_active or self._closing or self._closed or self.session.busy or self.resources.busy
+                or self.resources.pendingKind or self._pending_context
+                or self.session.snapshot.get("resourceLocked")
+                or "capture_now" not in self.session.snapshot.get("availableCommands", ())):
+            return
+        state = self.runtime.snapshot()
+        fields = ("mode", "profileId", "roundId", "roundActive", "roundPreparing")
+        scope = tuple(state.get(key) for key in fields)
+        binding, generation = self._bound, getattr(self.capture, "generation", None)
+        session_generation = self.session.snapshot.get("generation")
+        self._main_recapture_active = True
+        try:
+            result = self._game_focus.requestFocus()
+        finally:
+            self._main_recapture_active = False
+        self._message = str(result.get("message", ""))
+        self._focus_notice = self._message
+        if result.get("success"):
+            current = self.runtime.snapshot()
+            try:
+                same_foreground = bool(binding and self._native_windows.foreground_window() == int(binding))
+            except (OSError, ValueError, TypeError):
+                same_foreground = False
+            if (not self._closing and not self._closed and not self.session.busy
+                    and binding == self._bound and type(generation) is int
+                    and generation == getattr(self.capture, "generation", None)
+                    and str(self.capture.snapshot.get("hwnd", "")) == binding
+                    and scope == tuple(current.get(key) for key in fields)
+                    and session_generation == self.session.snapshot.get("generation")
+                    and not self.resources.busy and not self.resources.pendingKind
+                    and not self._pending_context and not self.session.snapshot.get("resourceLocked")
+                    and same_foreground):
+                # Consume an old focus-return plan so polling cannot enqueue a
+                # duplicate recapture after this explicit request completes.
+                if self._waiting_foreground and self._focus_loss_map_sequence == self._map_input_sequence:
+                    reset = getattr(self.input, "resetMapInput", None)
+                    if callable(reset):
+                        reset(bool(self._map_was_open))
+                self._clear_focus_return_plan()
+                self.session.dispatch("capture_now")
+            else:
+                self._message = self._focus_notice = "识别环境已变化，未截图；请确认游戏地图已打开后重试"
         self.changed.emit()
 
     @Slot()
@@ -831,6 +1034,9 @@ class ClientCoordinator(QObject):
             return
         if self._automatic_live and not self._input_enable_allowed():
             return
+        recover = getattr(self.input, "recoverListening", None)
+        if callable(recover):
+            recover()
         try:
             rows = list(self._catalog())
         except Exception as error:
@@ -843,8 +1049,11 @@ class ClientCoordinator(QObject):
         if self._bound and self._binding_identity is not None and self._binding_identity not in identities:
             self._drop_binding("game-window-lost")
         if not self._bound:
-            if len(rows) == 1 and not self.session.busy and not self.resources.busy and not self.resources.pendingKind:
+            if (len(rows) == 1 and not rows[0].get("minimized") and not self.session.busy
+                    and not self.resources.busy and not self.resources.pendingKind):
                 self.bindGameWindow(rows[0]["hwnd"])
+            elif len(rows) == 1 and rows[0].get("minimized"):
+                self._message = "游戏窗口已最小化，恢复后自动连接"
             elif len(rows) > 1:
                 self._message = "发现多个游戏窗口，请明确选择要连接的窗口"
             elif not rows:
@@ -871,6 +1080,9 @@ class ClientCoordinator(QObject):
         row = next((row for row in self._window_rows if row["hwnd"] == str(hwnd)), None)
         if not row:
             self._message = "请刷新并选择一个有效的游戏窗口"
+            self.changed.emit(); return
+        if row.get("minimized"):
+            self._message = "游戏窗口已最小化，请先恢复游戏窗口再连接"
             self.changed.emit(); return
         self._reset_map_input("binding-changed")
         self.input.disable()
@@ -919,7 +1131,7 @@ class ClientCoordinator(QObject):
         # capture/input authority. A later G opens/starts atomically in runtime.
         if self._bound:
             self.setInputEnabled(True)
-        self.windows.show("controls")
+        self._apply_controls_visibility(self.settings.values.get("qtControlsVisible", True))
         self.session.dispatch("start_round")
 
     @Slot(bool)
@@ -943,18 +1155,42 @@ class ClientCoordinator(QObject):
     def toggleControlsKeyboard(self):
         self._toggle_controls("keyboard")
 
+    @Slot()
+    def showControls(self):
+        self._set_controls_visible(True, "mouse")
+
+    @Slot()
+    def hideControls(self):
+        self._set_controls_visible(False, "mouse")
+
+    def _apply_controls_visibility(self, visible):
+        # WindowController retains its normal before-show protection. Showing
+        # controls grants no capture, session, or live-render authorization.
+        (self.windows.show if visible else self.windows.hide)("controls")
+
     def _toggle_controls(self, source):
+        self._set_controls_visible(not bool(self.windows.snapshot.get("controls", {}).get("visible")), source)
+
+    def _set_controls_visible(self, visible, source):
         if self._closing or self._closed or self._shortcut_recording:
             return
         before = bool(self.windows.snapshot.get("controls", {}).get("visible"))
-        if before:
-            self.windows.hide("controls")
-        else:
-            self.settings.setValue("orbVisible", True)
-            self.windows.show("controls")
+        self._apply_controls_visibility(visible)
         after = bool(self.windows.snapshot.get("controls", {}).get("visible"))
         if before != after:
             self.controlVisibilityChanged.emit(after, source)
+        if not visible:
+            actions = self.settings.persistedValues.get("actionHotkeys") or []
+            binding = actions[0] if actions else ""
+            restore = f"按 {binding} 或在主页点击“打开游戏控件”恢复。" if binding else "在主页点击“打开游戏控件”恢复。"
+            self.notificationRequested.emit("控件已隐藏", restore, "info")
+        self.settings.persistControlsVisibility(visible)
+        self.changed.emit()
+
+    def _controls_save_failed(self, reason):
+        self._message = "控件显示选择仅在本次生效，未保存；下次启动可能恢复默认。" + reason
+        self.notificationRequested.emit("控件偏好未保存", self._message, "warning")
+        self.changed.emit()
 
     @Slot(str)
     def setMode(self, mode):
@@ -1257,8 +1493,8 @@ class ClientCoordinator(QObject):
             self.hideReference()
         if not values.get("sheetVisibilityEnabled", True):
             self.windows.hide("aligned")
-        if not values.get("orbVisible", True):
-            self.windows.hide("controls")
+        if not values.get("qtControlsVisible", True):
+            self._apply_controls_visibility(False)
         self.changed.emit()
 
     def _settings_saved(self):
@@ -1372,6 +1608,8 @@ class ClientCoordinator(QObject):
     def _session_changed(self):
         if self._closing or self._closed:
             return
+        if self._map_resource_problem() is None:
+            self._map_resource_notified.clear()
         if self.session.busy:
             pending = self.session.snapshot.get("pendingAction")
             reprojecting = (pending == "set_context" and self._pending_context
@@ -1389,6 +1627,11 @@ class ClientCoordinator(QObject):
             self._applied_context = self._pending_context
             self._pending_context = None
             self._context_timer.stop()
+            # Readiness at callback entry still included the pending context.
+            # Rearm now that the applied, ready mode is actually observable,
+            # even if no map key or later runtime refresh occurs in this mode.
+            if self._map_resource_problem(state) is None:
+                self._map_resource_notified.clear()
         receipt = state.get("lastReceipt", {})
         if receipt.get("action") == "bind_capture":
             if receipt.get("success") and self._bound:
@@ -1583,7 +1826,7 @@ class ClientCoordinator(QObject):
                 self.notificationRequested.emit("本局已结束", "本局显示与识别已停止", "info")
         receipt = state.get("lastReceipt", {})
         reason = receipt.get("reason", "")
-        if receipt.get("success") is False:
+        if receipt.get("success") is False and not receipt.get("fitReportingDeferred"):
             key = ("failure", state.get("roundId"), state.get("cycleId"), receipt.get("action"), reason)
             if key not in self._notified:
                 self._notified.add(key)
@@ -1601,6 +1844,10 @@ class ClientCoordinator(QObject):
             return
         if action == "toggle-sheet-visibility":
             self.toggleAlignedVisibility()
+            return
+        if action == MANUAL_PICKER_ACTION:
+            if self._manual_map_picker is not None:
+                self._manual_map_picker.toggle(source="hotkey")
             return
         aliases = {"map": "map", "escape": "close_map", "candidate-prev": "previous_candidate",
                    "candidate-next": "next_candidate", "confirm-round": "confirm_route",
@@ -1717,7 +1964,7 @@ class ClientCoordinator(QObject):
                 if self._map_was_open:
                     self._map_was_open = False
                     self._invalidate_display("foreground-return-recapture")
-                    self.session.dispatch("capture_now")
+                    self.session.dispatchWithPayload("capture_now", dict(foregroundReturn=True))
                 else:
                     self.showReference()
             elif self._aligned:
@@ -1758,6 +2005,10 @@ class ClientCoordinator(QObject):
         if self._closed or self._closing or not isinstance(event, dict):
             return
         name = event.get("event", "unknown")
+        if name == 'recognition-diagnostic':
+            self._trace(name, payload=event, role='recognition', reason=event.get('reason', ''),
+                recognitionDiagnostics=event.get('recognitionDiagnostics', {}))
+            return  # Diagnostics never enter presentation transitions.
         if self._diagnostics is not None:
             produced = event.get("producedAt")
             self._diagnostics.record("runtime-event-received", eventName=name, reason=event.get("reason"),
@@ -1773,8 +2024,24 @@ class ClientCoordinator(QObject):
         self._trace(name, payload=payload, reason=event.get("reason", ""),
                     role="runtime", status=event.get("status"),
                     diag={key: event.get(key) for key in ("poseResult", "poseAttempt", "groupMemberIds") if key in event},
+                    **({'fitReport': event['fitReport']} if 'fitReport' in event else {}),
                     **decision)
-        if name == "round-started":
+        if name == "map-fit-incomplete":
+            # A finalized historical segment is independent of the current open.
+            # It cannot mutate current runtime/input/display state.
+            key = ("map-fit-incomplete", event.get("mode"), event.get("roundId"),
+                   event.get("cycleId"), event.get("epoch"))
+            if key not in self._notified:
+                from client_fit_reporting import incomplete_problem
+                self._notified.add(key)
+                self.errorReported.emit(incomplete_problem(event))
+        elif name == "map-fit-waiting":
+            state = self.runtime.snapshot()
+            if all(event.get(k) == state.get(k) for k in
+                   ("epoch", "mode", "roundId", "cycleId", "generation")) and state.get("mapOpen"):
+                self._message = "正在继续核对地图位置，请保持地图打开"
+                self.changed.emit()
+        elif name == "round-started":
             # This event is emitted only after capture activation succeeds,
             # before the first recognition/fit worker can finish.
             self._notify_session_transitions(self.runtime.snapshot())
@@ -1805,6 +2072,19 @@ class ClientCoordinator(QObject):
             # continues. Present it without changing Session's request/frame ID.
             self._present_runtime_state(state, trigger=name)
         elif name == "render-revoked":
+            # Runtime may close after preparation/probe failure without a key
+            # edge. Reconcile only that exact input and still-current lifetime;
+            # a queued old close must never flip a newer open back to closed.
+            if (event.get("mapClosed") is True
+                    and type(event.get("inputSequence")) is int
+                    and event["inputSequence"] == self._map_input_sequence
+                    and self._bound and event.get("inputWindow") == str(self._bound)):
+                state = self.runtime.snapshot()
+                fields = ("epoch", "mode", "profileId", "roundId", "frameId", "generation", "cycleId")
+                if (state.get("mapOpen") is False
+                        and all(key in event and event[key] == state.get(key) for key in fields)
+                        and str(state.get("capture", {}).get("hwnd", "")) == str(self._bound)):
+                    self._reset_map_input("runtime-map-closed")
             getter = getattr(self.runtime, "render_payload", None)
             if getter is None or not self._last_render_token or getter(self._last_render_token) is None:
                 self._withdraw_expired_source(event.get("reason") or "render-revoked")
@@ -1877,7 +2157,8 @@ class ClientCoordinator(QObject):
             if pool is not None:
                 pools[type(writer).__name__ + str(index)] = pool.activeThreadCount()
         hook_running = bool(getattr(self.input, "snapshot", {}).get("hookRunning", False))
-        writes = any(bool(getattr(writer, "pendingWrites", False)) for writer in self.close_writers)
+        writes = (bool(getattr(self.settings, "pendingWrites", False))
+                  or any(bool(getattr(writer, "pendingWrites", False)) for writer in self.close_writers))
         wait_state = (tuple(pools.values()), hook_running, writes)
         if wait_state != self._last_close_wait:
             self._last_close_wait = wait_state
@@ -1886,6 +2167,7 @@ class ClientCoordinator(QObject):
         if getattr(self.input, "snapshot", {}).get("hookRunning", False):
             return
         if (self.resources.pool.activeThreadCount() or self.settings.pool.activeThreadCount()
+                or bool(getattr(self.settings, "pendingWrites", False))
                 or self.session._pool.activeThreadCount()):
             return
         for writer in self.close_writers:

@@ -63,7 +63,7 @@ Popup {
                 ColumnLayout {
                     Layout.fillWidth: true; spacing: 2
                     Label { objectName: "tutorialTitle"; text: root.chapter ? root.chapter.title : "使用教程"; color: "#142b4b"; font.pixelSize: 24; font.bold: true }
-                    Note { text: root.chapter ? root.chapter.summary : "跟着图一步步上手，看完的章节会标上“已看完”。" }
+                    Note { text: root.chapter ? root.chapter.summary : root.chapters.length ? "跟着图一步步上手，看完的章节会标上“已看完”。" : "教程数据暂不可用，请到帮助页查看操作说明。" }
                 }
                 Label { visible: !!root.chapter; text: root.chapter ? (root.step + 1) + " / " + root.chapter.steps.length : ""; color: "#8a95a8"; font.pixelSize: 13 }
             }
@@ -93,7 +93,7 @@ Popup {
                                         }
                                     }
                                 }
-                                AppButton { objectName: "tutorialStart"; text: "开始学习"; primary: true; onClicked: root.openChapter("start") }
+                                AppButton { objectName: "tutorialStart"; text: "开始学习"; primary: true; enabled: root.chapters.length > 0; onClicked: root.openChapter("start") }
                             }
                         }
                         Label { text: "按功能学习"; color: "#142b4b"; font.pixelSize: 17; font.bold: true; Layout.topMargin: 4 }
@@ -187,7 +187,9 @@ Popup {
                                 sourceSize.width: 1120; smooth: true; mipmap: true
                             }
                             Label {
-                                anchors.centerIn: parent; visible: stepImage.status === Image.Error
+                                objectName: "tutorialImageFallback"
+                                anchors.centerIn: parent; width: parent.width - 24; wrapMode: Text.WordWrap
+                                horizontalAlignment: Text.AlignHCenter; visible: stepImage.status === Image.Error
                                 text: "这一步的配图暂不可用，按下方文字操作即可。"; color: "#526785"
                             }
                         }

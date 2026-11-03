@@ -5,6 +5,9 @@ import json
 import threading
 import time
 
+from diagnostic_identity import DiagnosticStream
+from diagnostic_privacy import safe_record
+
 
 def snapshot(value, budget=None, depth=0):
     if budget is None:
@@ -46,8 +49,9 @@ class AsyncEventLog:
     NOISY = frozenset(('runtime-stage-completed', 'map-probe-observed',
                        'ui-event-poll-slow', 'hotkey-listener-health'))
 
-    def __init__(self, path, capacity=1024):
+    def __init__(self, path, capacity=1024, *, settings_dir=None):
         self.path = path
+        self.identity = DiagnosticStream(path.name, settings_dir)
         self.capacity = capacity
         self.pending = deque()
         self.condition = threading.Condition()
@@ -74,16 +78,20 @@ class AsyncEventLog:
             row = {'diagnosticSnapshotError': type(error).__name__}
         row.update(time=datetime.now().astimezone().isoformat(timespec='milliseconds'), event=kind)
         with self.condition:
+            row.update(self.identity.stamp())
             if 'diagnosticSnapshotError' in row:
                 self.snapshot_failed += 1
             if self.closing:
                 self.dropped += 1
+                self.identity.drop(row, "writer-closed")
                 return
             if len(self.pending) >= self.capacity:
                 victim = next((i for i, r in enumerate(self.pending) if r['event'] in self.NOISY), None)
                 if victim is None or kind in self.NOISY:
                     self.dropped += 1
+                    self.identity.drop(row, "queue-capacity")
                     return
+                self.identity.drop(self.pending[victim], "queue-displaced")
                 del self.pending[victim]
                 self.dropped += 1
             self.sequence += 1
@@ -93,9 +101,8 @@ class AsyncEventLog:
             self.condition.notify()
 
     def _write(self, row):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open('a', encoding='utf-8', newline='\n') as handle:
-            handle.write(json.dumps(row, ensure_ascii=False, separators=(',', ':')) + '\n')
+        from diagnostic_storage import append_record
+        append_record(self.path, row)
 
     def _run(self):
         while True:
@@ -105,13 +112,19 @@ class AsyncEventLog:
                     return
                 row = self.pending.popleft()
                 self.active = True
+                checkpoint = self.identity.checkpoint()
+                if checkpoint is not None:
+                    row['diagnosticLoss'] = checkpoint
                 row['diagnosticDroppedTotal'] = self.dropped
                 row['diagnosticWriteFailuresTotal'] = self.failed
             try:
                 self._write(row)
-            except Exception:
+            except Exception as error:
                 with self.condition:
                     self.failed += 1
+                    if getattr(error, "completed", 0) < 1:
+                        self.dropped += 1
+                        self.identity.drop(row, "write-failed")
             finally:
                 with self.condition:
                     self.active = False
@@ -130,4 +143,5 @@ class AsyncEventLog:
         with self.condition:
             return dict(pending=len(self.pending), active=self.active,
                         dropped=self.dropped, failed=self.failed,
-                        snapshotFailed=self.snapshot_failed, startError=self.start_error)
+                        snapshotFailed=self.snapshot_failed, startError=self.start_error,
+                        diagnosticLoss=self.identity.loss())

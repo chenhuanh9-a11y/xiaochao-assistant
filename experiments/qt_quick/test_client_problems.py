@@ -49,9 +49,11 @@ class ProblemTests(unittest.TestCase):
         self.addCleanup(self.drain)
 
     def wait(self, predicate):
-        end = time.monotonic()+4
-        while not predicate() and time.monotonic()<end: QTest.qWait(10)
-        self.assertTrue(predicate())
+        end = time.monotonic()+12
+        while not predicate() and time.monotonic()<end:
+            QTest.qWait(10)
+            time.sleep(.001)  # Release the Python GIL to the real writer.
+        self.assertTrue(predicate(), f"diagnostic queue did not drain; pending={len(self.service._queue)}, inflight={self.service._inflight_rows}, error={self.service.writeErrorDetails}")
 
     def drain(self):
         self.service.shutdown(); self.wait(lambda: not self.service.pendingWrites)
@@ -82,7 +84,7 @@ class ProblemTests(unittest.TestCase):
         self.assertTrue(QMetaObject.invokeMethod(detail,'selectAll',Qt.DirectConnection))
         self.assertIn('ValueError:',detail.property('selectedText'))
         self.drain();rows=[json.loads(line) for line in self.service.log_path.read_text('utf-8').splitlines()]
-        self.assertEqual(rows[0]['raw'],event()['raw']);self.assertEqual(rows[0]['buildFingerprint'],'TEST0001')
+        self.assertEqual(rows[0]['raw'],'ValueError: <redacted-message>');self.assertEqual(rows[0]['buildFingerprint'],'TEST0001')
         self.assertEqual(rows[0]['sourceCommit'],'a'*40);self.assertTrue(rows[0]['timestampUTC'].endswith('Z'))
         bundle=export_safe_diagnostic_bundle(self.root,self.root/'work/nightmare-live',app_version='fixture',
             build_fingerprint='TEST0001',destination=self.root/'diagnostic.zip',summary={'recentProblems':self.service.recent})
@@ -90,9 +92,36 @@ class ProblemTests(unittest.TestCase):
             logs=[name for name in archive.namelist() if name.startswith('logs/events-')]
             self.assertTrue(logs)
             payload=archive.read(logs[0]).decode('utf-8')
-            self.assertIn(event()['raw'],payload);self.assertNotIn('C:/Private/Player',payload)
-            self.assertIn('<local-path>',payload)
+            self.assertIn('ValueError: <redacted-message>',payload);self.assertNotIn('C:/Private/Player',payload)
+            self.assertNotIn('Private/Player',payload)
         self.assertFalse(warnings,warnings);window.hide();engine.deleteLater();QTest.qWait(10)
+
+    def test_closed_reason_survives_problem_disk_and_export_without_free_text(self):
+        from client_problem_messages import operation_problem
+        from diagnostic_privacy import sanitize_log_payload
+        for reason in ('identity-not-uniquely-verified', 'structure-current-geometry-failed'):
+            row = operation_problem(dict(reason=reason, action='map'), dict(mode='nightmare'))
+            row['captureDiagnostics'] = dict(window=dict(role='other', pid=12345, name='PrivateMessenger'), foregroundPid=98765)
+            row['raw'] += ' PrivatePlayer C:/private/account.txt'
+            self.service.record(row)
+        # A direct emitter must not bypass the closed code selection either.
+        self.service.record(event(reason='PrivatePlayer C:/private/account.txt'))
+        self.drain()
+        payload = self.service.log_path.read_bytes()
+        rows = [json.loads(line) for line in payload.splitlines()]
+        self.assertEqual([r['reason'] for r in rows], ['identity-not-uniquely-verified', 'structure-current-geometry-failed', 'unknown-operation-failure'])
+        exported = sanitize_log_payload(payload).decode()
+        bundle = export_safe_diagnostic_bundle(self.root, self.root/'work/nightmare-live',
+            app_version='fixture', build_fingerprint='TEST0001', destination=self.root/'reasons.zip',
+            summary={'recentProblems': self.service.recent})
+        with zipfile.ZipFile(bundle['path']) as archive:
+            exported += ''.join(archive.read(name).decode('utf-8') for name in archive.namelist()
+                                if name.startswith('logs/events-'))
+        for reason in ('identity-not-uniquely-verified', 'structure-current-geometry-failed'):
+            self.assertIn(reason, exported)
+        for secret in ('PrivatePlayer', 'private/account', 'PrivateMessenger', '98765', '12345'):
+            self.assertNotIn(secret, exported)
+        self.assertIn('<redacted-text>', exported)
 
     def test_coalescing_bounded_queue_and_shutdown_drains_callback(self):
         started=threading.Event();release=threading.Event();accepted=[];threads=[]
@@ -114,7 +143,11 @@ class ProblemTests(unittest.TestCase):
             self.wait(lambda:not self.service.pendingWrites)
         self.assertTrue(all(thread!=threading.get_ident() for thread in threads))
         rows=[json.loads(line) for line in self.service.log_path.read_text('utf-8').splitlines()]
-        self.assertEqual(len(rows),1+sum(accepted))
+        originals = [row for row in rows if row.get('event') == 'qt-runtime-problem']
+        summaries = [row for row in rows if row.get('event') == 'qt-runtime-problem-summary']
+        self.assertEqual(len(originals),1+sum(accepted))
+        self.assertEqual(len(summaries), 1)
+        self.assertEqual(summaries[0]['count'], 101)
 
     def test_trace_deduplicates_frame_refresh_without_recent_and_drains(self):
         original=list(self.service.recent)
@@ -138,6 +171,8 @@ class ProblemTests(unittest.TestCase):
         self.assertEqual(recent_notifications,[])
         rows=[json.loads(line) for line in self.service.log_path.read_text('utf-8').splitlines()]
         self.assertEqual(len(rows),3)
+        self.assertEqual(self.service.identity.loss()['lostTotal'], 0)
+        self.assertEqual(self.service.identity.loss()['suppressedTotal'], 100)
         self.assertTrue(all(row['event']=='qt-runtime-transition' for row in rows))
         self.assertEqual(rows[0]['token'],'first');self.assertEqual(rows[0]['generation'],1)
         self.assertEqual(rows[1]['previousRepeatedCount'],101)

@@ -1,0 +1,56 @@
+name: Qt route plaza account lifecycle Windows regression
+
+on:
+  push:
+    branches: [feat/qt-route-plaza-account-login]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  plaza:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [candidate, original-head, main-baseline]
+    env:
+      PYTHONPATH: 'app;tests;tools;experiments/qt_quick'
+      QT_QPA_PLATFORM: offscreen
+      QT_QUICK_BACKEND: software
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ matrix.source == 'original-head' && '3188d30182e329f20cb02c85821173a540b3a152' || matrix.source == 'main-baseline' && 'c06a3f2eb8e0a3a5f3b904fffb8ef0c0a33b6962' || github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13.3'
+          architecture: x64
+      - name: Pinned dependencies (no build, credentials, or release)
+        run: python -m pip install --disable-pip-version-check -r experiments/qt_quick/requirements-client.txt
+      - name: Exact source and relevant suites (offline synthetic fixtures)
+        shell: pwsh
+        run: |
+          git rev-parse HEAD
+          $modules = @('test_custom_maps', 'test_custom_map_editor', 'test_client_custom_gallery', 'test_client_composition', 'test_client_custom_display', 'test_client_gallery_export_dialog', 'test_client_downloads', 'test_client_shutdown', 'test_client_coordinator', 'test_client_resources', 'test_client_import_upgrade_parity', 'test_client_recapture_composition')
+          if ('${{ matrix.source }}' -ne 'main-baseline') {
+            $modules += @('test_client_route_plaza', 'test_route_plaza')
+          }
+          if ('${{ matrix.source }}' -eq 'candidate') {
+            $modules += @('test_account_concurrency', 'test_client_account_lifecycle', 'test_route_plaza_redirect')
+          }
+          $failed = @()
+          foreach ($module in $modules) {
+            python -B -X utf8 -m unittest -v $module
+            if ($LASTEXITCODE -ne 0) { $failed += $module }
+          }
+          if ($failed.Count -gt 0) {
+            Write-Error ('Failed modules: ' + ($failed -join ', '))
+            exit 1
+          }

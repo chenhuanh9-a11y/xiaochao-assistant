@@ -1,0 +1,51 @@
+name: Qt resource readiness feedback Windows regression
+
+on:
+  push:
+    branches: [fix/resource-unready-feedback]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  resource-feedback:
+    name: Resource feedback (${{ matrix.source }})
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [candidate, main-baseline]
+    env:
+      PYTHONPATH: 'app;tests;tools;experiments/qt_quick'
+      QT_QPA_PLATFORM: offscreen
+      QT_QUICK_BACKEND: software
+      PYTHONUTF8: '1'
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Pin the current main so both results remain comparable after pushes.
+          ref: ${{ matrix.source == 'main-baseline' && '59bba3dcea90811964688960f0b8086e345f3c77' || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13.3'
+          architecture: x64
+      - name: Install pinned test dependencies (no build or release)
+        run: |
+          python -m pip install --disable-pip-version-check -r experiments/qt_quick/requirements-client.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Shared session, provider, ordered input and runtime regressions
+        run: |
+          python -B -X utf8 -m unittest -v test_client_map_intent_reset test_client_map_input test_client_coordinator test_client_session test_client_providers test_client_live_runtime test_client_floor_region test_client_input_event_freshness test_client_input_recovery
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Real Session lease and resource readiness feedback regressions
+        # Preserve shared failures, but still execute the new focused coverage.
+        if: ${{ always() && matrix.source == 'candidate' }}
+        run: |
+          python -B -X utf8 -m unittest -v test_client_resource_feedback
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

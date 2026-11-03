@@ -41,6 +41,8 @@ dist/
 *.p12
 credentials*
 secrets*
+account-session.bin
+account-installation-id.txt
 .aws/
 .codex/
 .agents/

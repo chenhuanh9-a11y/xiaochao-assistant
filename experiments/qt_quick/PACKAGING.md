@@ -13,7 +13,7 @@ All pinned runtime/build packages are now installed in `.venv-qt-isolated`; the 
 | Entry | `experiments/qt_quick/client.py`; QML uses `Path(__file__).parent` |
 | Frozen program | `XingtuQtClientTest.exe`, onedir staging tree used only as an intermediate |
 | Installer identity | `AF19AFD9-3016-44C9-9D20-6F216C5D8C51`, “Xingtu Qt Test Client” |
-| Default destination | `{autopf}\XingtuQtClientTest`; separate from the installed Tk product; previous installer paths are not adopted |
+| Default destination | `{autopf}\XingtuQtClientTest`; selectable in Setup; the same AppId adopts its previous directory. nonempty targets require this channel’s native uninstall registration. Formal installs, linked or unreadable trees and scans over 32 levels/50,000 entries are rejected; selecting a new empty directory does not migrate old data |
 | Frozen resources | `sys._MEIPASS` (standard onedir `_internal`); client QML/Python helpers at its root; analyzed shared sources under `app/` |
 | Writable data | EXE-adjacent `work/qt-client-runtime`, created on first run with the existing ownership marker |
 | First-run seed | Copy only this product's bundled `_internal/assets`, `references`, optional `recognition`, native manifest and metadata into its new owned runtime sandbox; never adopt Tk installation/config/data |

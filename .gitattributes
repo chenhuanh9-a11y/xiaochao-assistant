@@ -7,3 +7,6 @@
 *.manifest text eol=lf
 # Preserve the frozen mixed-line-ending module byte for byte.
 app/single_map_structure.py -text
+
+# Frozen diagnostic source fixtures must retain their provenance hash on Windows.
+experiments/qt_quick/fixtures/diagnostic_main/*.baseline -text

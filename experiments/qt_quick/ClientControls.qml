@@ -20,6 +20,7 @@ Window {
     readonly property bool effectiveCollapsed: collapsed && !editing
     readonly property real naturalExpandedHeight: header.height + 24 + scrollContent.implicitHeight + (editing ? 76 : 0)
     readonly property var preferences: settingsService.values
+    readonly property var committedShortcuts: settingsService.persistedValues.actionHotkeys || []
     readonly property var layout: preferences.gameControlLayout || ({order: [], enabled: [], display: {}})
     readonly property var snapshot: session.snapshot
     property var groupChoices: []
@@ -38,7 +39,8 @@ Window {
     readonly property bool groupPending: snapshot.groupMemberSelectionPending === true
     readonly property string appliedMode: session.appliedMode || session.currentMode
     readonly property var activeModules: layout.order.filter(function(key) { return layout.enabled.indexOf(key) >= 0 })
-    readonly property var actionOrder: ["toggle-panel", "candidate-prev", "candidate-next", "confirm-round", "cycle-floor", "end-round", "toggle-sheet-visibility", "start-round", "toggle-round"]
+    readonly property var actionOrder: ["toggle-panel", "candidate-prev", "candidate-next", "confirm-round", "cycle-floor", "end-round", "toggle-sheet-visibility", "start-round", "toggle-round", "manual-map-picker"]
+    readonly property bool manualSelection: preferences.mapSelectionMode === "manual"
     Component.onCompleted: syncGroupChoices()
     onSnapshotChanged: syncGroupChoices()
     function syncGroupChoices() {
@@ -105,6 +107,7 @@ Window {
     }
     function statusText() {
         if (snapshot.contextPending) return "正在切换模式或路线"
+        if (snapshot.manualSelectionPending) return "手动选图 · 等待选择本局地图"
         if (session.busy && snapshot.pendingAction === "start_round") return "正在准备本局"
         if (snapshot.roundPreparing) return "已准备 · 打开游戏地图后开始"
         if (groupDesired && groupAwaiting) return groupChoiceStatus === "awaiting-material" ? "已选地图 · 等待素材" : "已选地图 · 等待定位"
@@ -123,7 +126,7 @@ Window {
     }
     function shortcut(action) {
         var index = actionOrder.indexOf(action)
-        return index >= 0 && preferences.actionHotkeys ? preferences.actionHotkeys[index] || "" : ""
+        return index >= 0 ? committedShortcuts[index] || "" : ""
     }
     function commit(key) { settingsService.saveFields([key]) }
     function savePosition() {
@@ -237,11 +240,11 @@ Window {
                         y: moreButton.height
                         MenuItem { text: "主页"; onTriggered: clientCoordinator.navigate("home") }
                         MenuItem { text: "自定义控件"; onTriggered: clientCoordinator.navigate("settings") }
-                        MenuItem { text: "隐藏控件"; onTriggered: windows.hide("controls") }
+                        MenuItem { objectName: "controlHideControls"; text: "隐藏控件"; onTriggered: clientCoordinator.hideControls() }
                         MenuSeparator {}
-                        MenuItem { text: "选择地图"; enabled: panel.available("reselect_map"); onTriggered: clientCoordinator.requestManualMapSelection() }
+                        MenuItem { text: panel.manualSelection ? "选择本局地图" : "选择地图"; enabled: panel.available("reselect_map"); onTriggered: clientCoordinator.requestManualMapSelection() }
                         MenuItem { text: "重新识别"; enabled: panel.available("capture_now"); onTriggered: session.dispatch("capture_now") }
-                        MenuItem { text: "候选与识别"; onTriggered: clientCoordinator.navigate("recognition") }
+                        MenuItem { objectName: "controlsRecognitionMenu"; text: "打开候选列表（切到主界面）"; onTriggered: clientCoordinator.openRecognitionDetails() }
                     }
                 }
             }
@@ -369,7 +372,32 @@ Window {
         id: manualMapModule
         ColumnLayout {
             spacing: 4
-            ControlButton { objectName: "controlReselectMap"; text: "选择地图"; icon.source: "icons/map.png"; Layout.fillWidth: true; enabled: panel.available("reselect_map"); hint: panel.available("reselect_map") ? "手动选择待确认地图，不改变作者路线" : "正在准备地图资源"; onClicked: clientCoordinator.requestManualMapSelection() }
+            RowLayout {
+                Layout.fillWidth: true; spacing: 4
+                ControlButton {
+                    objectName: "controlMapSelectionAuto"
+                    text: "自动识别"; selected: !panel.manualSelection
+                    enabled: !settingsService.busy; Layout.fillWidth: true
+                    hint: "打开地图后自动识别本局地图"
+                    onClicked: clientCoordinator.setMapSelectionMode("auto")
+                }
+                ControlButton {
+                    objectName: "controlMapSelectionManual"
+                    text: "手动选图"; selected: panel.manualSelection
+                    enabled: !settingsService.busy; Layout.fillWidth: true
+                    hint: "不自动识别，由玩家选择本局地图"
+                    onClicked: clientCoordinator.setMapSelectionMode("manual")
+                }
+            }
+            ControlButton {
+                objectName: "controlReselectMap"
+                text: panel.manualSelection ? "选择本局地图" : "选择地图"
+                icon.source: "icons/map.png"; Layout.fillWidth: true
+                enabled: panel.available("reselect_map")
+                hint: panel.manualSelection ? "打开选图窗，选好后按这张图贴合和显示" : "手动选择待确认地图，不改变作者路线"
+                onClicked: clientCoordinator.requestManualMapSelection()
+            }
+            KeyHint { visible: panel.manualSelection && panel.shortcut("manual-map-picker") !== ""; text: "手动选图快捷键 " + panel.shortcut("manual-map-picker") }
             KeyHint { visible: !panel.available("reselect_map"); text: panel.snapshot.resourceLocked ? "等待资源操作完成" : "正在准备地图资源" }
             RowLayout {
                 visible: (panel.snapshot.availableFloors || []).length > 0
@@ -410,7 +438,7 @@ Window {
             ControlButton { text: "确认地图"; enabled: panel.available("confirm_route"); Layout.fillWidth: true; onClicked: session.dispatch("confirm_route") }
             KeyHint { text: panel.shortcut("confirm-round") }
             ControlButton { text: "重新识别"; enabled: panel.available("capture_now"); Layout.fillWidth: true; onClicked: session.dispatch("capture_now") }
-            ControlButton { text: "查看候选列表"; Layout.fillWidth: true; onClicked: clientCoordinator.navigate("recognition") }
+            ControlButton { objectName: "controlsRecognitionDetails"; text: "打开候选列表（切到主界面）"; Layout.fillWidth: true; onClicked: clientCoordinator.openRecognitionDetails() }
         }
     }
     Component {
@@ -430,7 +458,7 @@ Window {
                     else session.dispatch(roundControls.action)
                 }
             }
-            KeyHint { text: panel.shortcut("toggle-round") || panel.shortcut(roundControls.active ? "end-round" : "start-round") }
+            KeyHint { objectName: "controlRoundKeyHint"; text: panel.shortcut("toggle-round") || panel.shortcut(roundControls.active ? "end-round" : "start-round") }
             KeyHint { visible: !panel.available(roundControls.action); text: session.busy ? "正在处理当前操作" : panel.snapshot.resourceLocked ? "等待资源操作完成" : "等待地图资源准备就绪" }
         }
     }

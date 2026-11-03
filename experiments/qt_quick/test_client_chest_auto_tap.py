@@ -84,7 +84,7 @@ class ChestTests(unittest.TestCase):
         return self.adapter.update(True, "F12", "F", "90")
 
     def test_loading_enabled_preference_never_arms_or_starts(self):
-        self.assertTrue(self.adapter.snapshot["savedEnabled"])
+        self.assertFalse(self.adapter.snapshot["savedEnabled"])
         self.assertFalse(self.adapter.snapshot["enabled"])
         self.owner.changed.emit()
         self.settings.saved.emit()

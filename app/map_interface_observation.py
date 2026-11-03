@@ -342,6 +342,9 @@ def detect_map_interface(frame: np.ndarray, *, floor_read: dict | None = None) -
         "detectionMode": "damage-tint" if damage else "neutral",
         "tintedControlsLocalized": tinted_controls_present if damage else None,
         "requiredBackdropRatio": required_backdrop,
+        "decisionThresholds": dict(anchorRatios={name: values[4] for name, values in MAP_REGIONS.items()},
+            darkRatioMin=.84, grayStdMax=22.5, strongBackdropMin=.80,
+            matchedAnchorsMin=3, requiredBackdropRatio=required_backdrop),
         "clientCoordinatePolicies": dict(CLIENT_COMPONENT_POLICIES),
     }
 
@@ -399,6 +402,8 @@ def detect_selected_floor(frame: np.ndarray) -> dict:
     filled_highlight = bool(filled_floor == top and scores[top] >= 3.0 * scores[second])
     selected = top if margin >= 8.0 and (scores[top] >= 25.0 or filled_highlight) else None
     return {
+        "decisionThresholds": dict(marginMin=8.0, absoluteScoreMin=25.0, relativeScoreMultiplier=3.0),
+        "topScore": scores[top], "secondScore": scores[second], "filledHighlight": filled_highlight,
         "selectedFloor": selected,
         "scores": {str(key): value for key, value in scores.items()},
         "margin": margin,
@@ -412,4 +417,24 @@ def detect_selected_floor(frame: np.ndarray) -> dict:
         "layoutFamily": vertical["layoutFamily"],
         "safeTop": vertical["safeTop"],
         "safeHeight": vertical["safeHeight"],
+        "regionTop": vertical["regionTop"],
+        "regionHeight": vertical["regionHeight"],
     }
+
+
+def map_preparation_diagnostic(frame, observation, floor_read, *, mode):
+    """Describe observed geometry only; never participate in detector decisions.
+
+    The height limit belongs to nightmare floor localization, not map shape.
+    Difficult has its own observation contract: do not apply nightmare limits.
+    """
+    h, w = frame.shape[:2]
+    result = dict(frameWidth=int(w), frameHeight=int(h), mode=mode,
+        observationReason=observation.get("reason", ""),
+        mapDetected=observation.get("mapOpen" if mode == "difficult" else "detected") is True,
+        floorReason=floor_read.get("reason", ""), floorLayout=floor_read.get("layout", ""))
+    if mode == "nightmare":
+        shape = map_interface_shape(w, h)
+        result.update(shapeReason=shape["reason"], aspectRatio=shape["aspectRatio"],
+            floorControlSizeEligible=w >= 1000 and h >= 600)
+    return result

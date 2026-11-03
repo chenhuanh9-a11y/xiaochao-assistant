@@ -1,0 +1,41 @@
+{
+  "sourceCommit": "59bba3dcea90811964688960f0b8086e345f3c77",
+  "files": {
+    "app/difficult_map_ui.py": {
+      "sha256": "69b565185858c6f3146a3b73725cea6948b97b8f99b82e6a54488af40d0e53f4",
+      "fixture": "difficult_map_ui.py.baseline"
+    },
+    "app/map_interface_observation.py": {
+      "sha256": "e048c525bd60775d16ec7338355acdb7118b2c18c9e2fc04119ea28872636464",
+      "fixture": "map_interface_observation.py.baseline"
+    },
+    "experiments/qt_quick/client_live_runtime.py": {
+      "sha256": "a1c773ff9232a3625f7cefbdb4465d352a04e7e96d78dd6a5148c1b9b7279bd6",
+      "fixture": "client_live_runtime.py.baseline"
+    },
+    "experiments/qt_quick/client_capture.py": {
+      "sha256": "4175d5531c18a5ec7a25e47150e3db2175b29adbc12bb82081bcfc4f8bafe478",
+      "fixture": "client_capture.py.baseline"
+    },
+    "app/client_region_capture.py": {
+      "sha256": "e0327beff4bc0553789f4160aef0f617fe3b5cfc193cac64e28c127d97b21dec"
+    },
+    "experiments/qt_quick/client_capture_exclusion.py": {
+      "sha256": "f506688c828c97379b74150a539d378c083d8f3b5304cd83587d2366b12b28ef"
+    }
+  },
+  "approvedCaptureBaselines": {
+    "capture_diagnostic_only": {
+      "sourceCommit": "76546adebacdb90a334128837a5f749fa92a680b",
+      "sourcePath": "experiments/qt_quick/client_capture.py",
+      "fixture": "capture_diagnostic_only.py.baseline",
+      "sha256": "d6878b191f84ce36b64a81ccb53365eeec6b420582b1f38d681c17fdad5aa70c"
+    },
+    "capture_focus_feature": {
+      "sourceCommit": "382d705ab8cf570755f6c346a6b9e35eed1947e7",
+      "sourcePath": "experiments/qt_quick/client_capture.py",
+      "fixture": "capture_focus_feature.py.baseline",
+      "sha256": "ff8caa733507613a6d073bee0e45d665a3d8daa418f534f5cbd7ff870aa250a5"
+    }
+  }
+}

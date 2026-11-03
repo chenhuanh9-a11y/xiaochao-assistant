@@ -98,10 +98,16 @@ class OnboardingService(QObject):
         if not self._active or self.settings.busy or self.coordinator.closing:
             return
         if self.settings.shortcutRecording:
-            if not self.settings.confirmShortcutCapture():
-                self._message = "请先完成录制，或取消本次修改。"
+            if self._step == 1 and not self.settings.shortcutCandidate:
+                self._message = "请先确认地图键，再继续。"
                 self.changed.emit()
                 return
+            self._pending = "next" if self._step == 1 else "bindings"
+            if not self.settings.confirmShortcutCapture():
+                self._pending = ""
+                self._message = self.settings.message
+            self.changed.emit()
+            return
         fields = ["hotkey", "actionHotkeys"]
         values, persisted = self.settings.values, self.settings.persistedValues
         if not values.get("hotkey") or (self._step == 2 and not (values.get("actionHotkeys") or [""])[0]):

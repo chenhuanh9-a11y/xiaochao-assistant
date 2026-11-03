@@ -6,11 +6,13 @@ import os
 from pathlib import Path
 import shutil
 import sys
+import traceback
 from uuid import uuid4
 from PySide6.QtCore import QTimer, QUrl, QThreadPool, Qt
 from PySide6.QtGui import QFont, QFontDatabase, QGuiApplication, QIcon, QWindow
 from PySide6.QtQml import QQmlApplicationEngine
 from client_paths import APP_ROOT, DEFAULT_SANDBOX, FROZEN, PRODUCTION, RESOURCE_ROOT, WORK_ROOT, owned_sandbox, runtime_paths
+from client_manual_map_service import ManualMapPickerService
 
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
@@ -61,6 +63,7 @@ class QtClient:
         from client_custom_gallery import CustomGalleryService
         from client_custom_display import CustomGalleryDisplay
         from client_downloads import OnlinePackagesService
+        from client_route_plaza import RoutePlazaService
         from client_coordinator import ClientCoordinator, LiveImages
         from client_ui_feedback import UiFeedback
         from client_onboarding import OnboardingService
@@ -71,6 +74,16 @@ class QtClient:
         from client_reference_presentation import ReferencePreviewProvider
         self.app, self.sandbox = app, owned_sandbox(sandbox)
         self.paths = runtime_paths(self.sandbox)
+        # Startup housekeeping shared with the Tk client, before this session
+        # opens its own logs: earlier logs beyond the diagnostic export window,
+        # and download archives whose exact package is already installed.
+        try:
+            from diagnostic_export import DIAGNOSTIC_LOG_LIMIT, prune_diagnostic_logs
+            from star_map_download import prune_installed_downloads
+            prune_diagnostic_logs(self.paths.work_root / "nightmare-live", DIAGNOSTIC_LOG_LIMIT - 1)
+            prune_installed_downloads(self.sandbox / "work/map-packages/downloads", self.sandbox)
+        except Exception:
+            pass  # Housekeeping never blocks startup; the files simply remain.
         from client_lifecycle_trace import create_lifecycle_trace
         self.lifecycle_trace = create_lifecycle_trace(self.paths)
         from client_lifecycle import LifecycleJournal
@@ -79,6 +92,7 @@ class QtClient:
         self._closed = False
         self.settings = SettingsService(self.sandbox)
         self.custom_galleries = CustomGalleryService(self.sandbox)
+        self.route_plaza = RoutePlazaService(self.sandbox, self.custom_galleries)
         self.custom_display = CustomGalleryDisplay(self.custom_galleries)
         from client_capture_exclusion import QtCaptureExclusion
         self.capture_exclusion = QtCaptureExclusion(parent=app,
@@ -123,6 +137,12 @@ class QtClient:
             resources=self.resources, session=self.session, windows=self.windows,
             native_input=self.input, capture=self.capture, runtime=self.runtime, images=self.images,
             **({"window_catalog": lambda: []} if probe_output else {}))
+        self.manual_map_picker = ManualMapPickerService(
+            settings=self.settings, windows=self.windows, input_backend=self.input,
+            session=self.session, catalog_provider=self.runtime.manual_map_catalog,
+            commit=self.coordinator.confirmManualMap,
+            geometry_provider=self.coordinator.manualMapPickerGeometry, parent=self.coordinator)
+        self.coordinator._manual_map_picker = self.manual_map_picker
         self.reference_preview = ReferencePreviewProvider(self.providers, parent=self.coordinator)
         self.coordinator.setReferencePreviewProvider(self.reference_preview)
         self._reference_screens = set()
@@ -154,7 +174,7 @@ class QtClient:
         from client_tutorial import TutorialService
         self.tutorial = TutorialService(self.paths.tutorial_state_path, settings=self.settings, parent=self.coordinator)
         self.problems = ProblemsService(self.paths, build_fingerprint=self.info._build_fingerprint,
-            source_commit=self.info._package_metadata.get('qtSourceCommit') or self.info._package_metadata.get('releaseReportSourceCommit') or '')
+            source_commit=self.info._source_commit)
         if self.lifecycle_trace is not None:
             self.lifecycle_trace.record("startup", buildFingerprint=self.info._build_fingerprint,
                 sourceCommit=self.problems._source_commit)
@@ -165,8 +185,9 @@ class QtClient:
         self.info.setProviders(session=self.session, resources=self.resources, input=self.input,
                                coordinator=self.coordinator, problems=self.problems)
         self.coordinator.close_writers = (self.custom_galleries, self.info, self.online_packages,
+                                         self.route_plaza,
                                          self.backend, self.route_choices, self.problems, self.reference_preview,
-                                         self.capture_exclusion)
+                                         self.capture_exclusion, self.manual_map_picker)
         if self.lifecycle_trace is not None:
             self.coordinator.close_writers += (self.lifecycle_trace,)
         self.custom_galleries.setUseHandler(self._use_custom_gallery)
@@ -188,8 +209,12 @@ class QtClient:
         self.session.changed.connect(self._refresh_home_context)
         self.resources.resourcesChanged.connect(lambda: self._refresh_home_context(force=True))
         self._refresh_home_context()
+        from client_floor_region import FloorRegionImages, FloorRegionService
+        self.floor_region_images = FloorRegionImages()
+        self.floor_region = FloorRegionService(self.runtime, self.settings, self.floor_region_images)
         self.engine = QQmlApplicationEngine()
         self.engine.addImageProvider("live", self.images)
+        self.engine.addImageProvider("floorregion", self.floor_region_images)
         self.warnings = []
         self.engine.warnings.connect(lambda rows: self.warnings.extend(str(row) for row in rows))
         context = self.engine.rootContext()
@@ -199,13 +224,16 @@ class QtClient:
             settingsService=self.settings, resourceService=self.resources, session=self.session,
             windows=self.windows, clientCoordinator=self.coordinator, infoService=self.info,
             customGalleryService=self.custom_galleries, onlinePackageService=self.online_packages,
+            routePlazaService=self.route_plaza,
             onboardingService=self.onboarding, chestAutoTapService=self.chest_auto_tap,
-            previewService=self.preview, problemService=self.problems).items():
+            previewService=self.preview, problemService=self.problems,
+            floorRegionService=self.floor_region,
+            pickerService=self.manual_map_picker).items():
             context.setContextProperty(key, value)
         for name, file in (("main", "Client.qml"), ("controls", "ClientControls.qml"),
                            ("reference", "ClientReference.qml"), ("aligned", "ClientAligned.qml"),
                            ("replay", "Overlay.qml"), ("preview", "ClientPreview.qml"),
-                           ("toast", "ClientToast.qml")):
+                           ("toast", "ClientToast.qml"), ("map-picker", "ClientMapPicker.qml")):
             before = len(self.engine.rootObjects())
             self.engine.load(QUrl.fromLocalFile(str(HERE / file)))
             if len(self.engine.rootObjects()) != before + 1:
@@ -427,6 +455,7 @@ class QtClient:
         self.lifecycle.record_event(dict(stage="shutdown-entered", closing=self.coordinator.closing,
                                          closeReady=self.coordinator.closeReady))
         self._closed = True
+        self.route_plaza.cancel()
         self.problems.shutdown()
         if self.lifecycle_trace is not None:
             self.lifecycle_trace.shutdown()
@@ -452,9 +481,29 @@ class QtClient:
         self.tutorial.shutdown()
         self.custom_galleries.shutdown()
         self.online_packages.shutdown()
+        self.route_plaza.shutdown()
+        self.manual_map_picker.shutdown()
         self.windows.shutdown()
         self.lifecycle.record_event(dict(stage="shutdown-completed", closing=self.coordinator.closing,
                                          closeReady=self.coordinator.closeReady))
+
+
+def report_startup_failure(details: str) -> Path | None:
+    """Keep the traceback beside the windowed entry's own startup record."""
+    path = WORK_ROOT / "qt-client-startup-error.txt"
+    try:
+        WORK_ROOT.mkdir(parents=True, exist_ok=True)
+        path.write_text(details, encoding="utf-8")
+    except OSError:
+        return None
+    return path
+
+
+def show_startup_failure(message: str) -> None:
+    """The windowed build has no console; a failed start must not look like nothing happened."""
+    if os.name == "nt":
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, message, "星图启动提示", 0x10)
 
 
 def main():
@@ -473,7 +522,8 @@ def main():
         from client_input import NativeShortcutBackend
         result = dict(ready=True, frozen=FROZEN, resourceRoot=str(RESOURCE_ROOT),
                       qml=all((HERE / name).is_file() for name in (
-                          "Client.qml", "ClientControls.qml", "ClientReference.qml", "ClientAligned.qml")),
+                          "Client.qml", "ClientControls.qml", "ClientReference.qml", "ClientAligned.qml",
+                          "ClientMapPicker.qml")),
                       tkLoaded="tkinter" in sys.modules,
                       nativeInputStarted=False)
         if args.verify_resources:
@@ -558,9 +608,11 @@ def main():
                 run_client_probe(client, args.probe_output)
         except Exception as error:
             print(f"Qt client startup failed: {type(error).__name__}: {error}", file=sys.stderr)
+            record = report_startup_failure(traceback.format_exc())
             if "boot" in holder:
                 holder["boot"].rootObjects()[0].setProperty("statusText", f"准备失败：{error}")
             else:
+                show_startup_failure(f"星图启动失败：{error}" + (f"\n\n详细信息已保存到：\n{record}" if record else ""))
                 app.exit(1)
     if args.sandbox.exists():
         QTimer.singleShot(0, lambda: open_client(owned_sandbox(args.sandbox)))

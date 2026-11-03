@@ -4,6 +4,7 @@ os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
+import time
 import unittest
 from unittest.mock import Mock, patch
 import numpy as np
@@ -31,9 +32,91 @@ class EventSource(QObject):
     def send(self,vk,down=True,foreground=77,held=None,generation=None):
         self.eventReceived.emit(dict(vk=vk,down=down,foreground=foreground,
             held=frozenset(held if held is not None else ([vk] if down else [])),
+            createdAt=time.monotonic(),
             generation=self.generation if generation is None else generation))
 
 class EventInputTests(unittest.TestCase):
+    def test_raw_decoded_buttons_keep_age_release_state_and_action_scope(self):
+        from ctypes import wintypes as W
+        from client_native_keys import PassThroughKeyboardSource
+        from test_client_native_mouse import Native as RawNative
+        source = PassThroughKeyboardSource()
+        native, raw = native_seams.Native(), RawNative()
+        clock, ticks = [10.], [1000]
+        events, emitted = [], []
+        # Model the asynchronous native lifecycle without starting a Windows hook.
+        # A successful start alone does not mean the observer is installed.
+        def start():
+            if not source.running:
+                source._stop.clear()
+                source.generation += 1
+                source._thread = SimpleNamespace(is_alive=lambda: True)
+            return True
+        def stop():
+            source._stop.set()
+            source.installed = False
+            source._thread = None
+            return True
+        with patch.object(source, 'start', side_effect=start), patch.object(source, 'stop', side_effect=stop):
+            keys = NativeShortcutBackend(native, source=source)
+            keys.configure({'toggle-panel':'MOUSE4', 'toggle-sheet-visibility':'MOUSE5', 'map':'MOUSE2'})
+            keys.actionTriggered.connect(events.append)
+            source.eventReceived.connect(emitted.append)
+            keys.enableManagement(); keys.bindWindow(42); keys.enable()
+            observer = source._make_mouse_observer(raw, clock=lambda:clock[0], ticks=lambda:ticks[0])
+            observer.start()
+            raw.GetForegroundWindow.function = lambda:native.foreground
+            def packet(flags, stamp=980):
+                raw.mouse.buttonUnion.buttons.flags = flags
+                observer.handle(W.MSG(hWnd=321,message=0xff,wParam=1,lParam=999,time=stamp))
+                with patch('time.monotonic',return_value=clock[0]):
+                    APP.processEvents()
+            try:
+                self.assertTrue(source.running)
+                self.assertFalse(source.installed)
+                native.foreground=42
+                packet(0x0040); packet(0x0080)
+                packet(0x0004); packet(0x0008)
+                self.assertEqual(events, [])  # Neither scope is ready before installation.
+                emitted.clear()
+                source.installed = True
+                source.started.emit(dict(held=source.held, generation=source.generation))
+                APP.processEvents()
+                self.assertTrue(keys._observer_ready())
+                native.foreground=77
+                packet(0x0040); packet(0x0080)
+                self.assertEqual(events,['toggle-panel'])
+                self.assertEqual(emitted[0]['createdAt'],9.98)
+                packet(0x0004); packet(0x0008)
+                self.assertEqual(events,['toggle-panel'])  # Game action off foreground.
+                native.foreground=42
+                packet(0x0004)
+                self.assertEqual(events[-1],'map')
+                ticks[0]=5000; clock[0]=14.
+                packet(0x0008)  # Expired release must clear both held-state sets.
+                self.assertNotIn(0x02,source.held)
+                self.assertNotIn(0x02,keys._event_down)
+                packet(0x0004)  # Expired press is not re-stamped/forwarded.
+                self.assertEqual(events.count('map'),1)
+                packet(0x0004,4980); packet(0x0008,4980)
+                self.assertEqual(events.count('map'),2)
+                native.foreground=77; native.process=os.getpid()
+                packet(0x0040,4980); packet(0x0080,4980)
+                self.assertEqual(events.count('toggle-panel'),2)  # Mouse chords have one native owner; QML cannot handle them.
+                packet(0x0100,4980); packet(0x0200,4980)
+                self.assertEqual(events[-1],'toggle-sheet-visibility')
+                accepted = list(events)
+                keys.shutdown()
+                self.assertFalse(source.running)
+                self.assertFalse(source.installed)
+                self.assertFalse(keys._observer_ready())
+                native.foreground=42
+                packet(0x0040,4980); packet(0x0080,4980)
+                packet(0x0004,4980); packet(0x0008,4980)
+                self.assertEqual(events, accepted)  # Late packets cannot act after shutdown.
+            finally:
+                observer.stop(); keys.shutdown()
+
     def setUp(self):
         self.native=native_seams.Native();self.source=EventSource()
         self.keys=NativeShortcutBackend(self.native,source=self.source)
@@ -47,6 +130,12 @@ class EventInputTests(unittest.TestCase):
         self.assertEqual(self.events,['toggle-panel'])
         self.assertFalse(self.keys._timer.isActive())
         self.assertEqual(self.native.reads,[])
+    def test_mouse_side_button_shortcut_fires_like_a_key(self):
+        self.keys.configure({'toggle-panel':'MOUSE4','map':'G'})
+        self.assertIn(0x05,self.source.keys)
+        self.assertTrue(self.keys.enableManagement());self.flush()
+        self.source.send(0x05);self.source.send(0x05,False);self.flush()
+        self.assertEqual(self.events,['toggle-panel'])
     def test_management_survives_bind_start_reconfigure_and_game_disable(self):
         self.keys.enableManagement();self.flush()
         self.keys.bindWindow(42);self.keys.configure({'toggle-panel':'F24','map':'G'})
@@ -90,6 +179,10 @@ class EventInputTests(unittest.TestCase):
 
 class CoordinatorLiveTests(unittest.TestCase):
     def setUp(self):
+        # The fixture catalog must not depend on a real installed client running
+        # on the host; no process discovery belongs in these coordinator tests.
+        other_client = patch('client_coordinator.another_assistant_running', return_value=False)
+        other_client.start(); self.addCleanup(other_client.stop)
         coordinator_seams.CoordinatorTests.setUpClass()
         self.f=coordinator_seams.CoordinatorTests();self.f.setUp();self.addCleanup(self.f.tearDown)
         self.c=self.f.coordinator
@@ -121,6 +214,34 @@ class CoordinatorLiveTests(unittest.TestCase):
         self.f.runtime.invalidate.assert_any_call('game-window-lost')
         self.assertEqual(self.f.session.dispatchWithPayload.call_count,2)
         self.assertEqual(self.c._binding_identity[2],2)
+    def test_minimized_game_keeps_its_binding_and_round(self):
+        self.c._catalog.return_value=[self.row()];self.c.startLiveServices()
+        minimized=dict(self.row(),minimized=True,width=0,height=0)
+        self.c._catalog.return_value=[minimized];self.c._discover_game()
+        self.f.session.stop.assert_not_called();self.f.session.dispatch.assert_not_called()
+        self.assertEqual(self.c.boundWindow,'42')
+        self.c._catalog.return_value=[self.row()];self.c._discover_game()
+        self.assertEqual(self.f.session.dispatchWithPayload.call_count,1)
+    def test_minimized_game_is_not_bound_until_restored(self):
+        self.c._catalog.return_value=[dict(self.row(),minimized=True,width=0,height=0)]
+        self.c.startLiveServices()
+        self.f.session.dispatchWithPayload.assert_not_called();self.assertEqual(self.c.boundWindow,'')
+        self.c.bindGameWindow('42');self.f.session.dispatchWithPayload.assert_not_called()
+        self.c._catalog.return_value=[self.row()];self.c._discover_game()
+        self.f.session.dispatchWithPayload.assert_called_once_with('bind_capture',dict(hwnd=42,region=[0,0,100,80]))
+    def test_busy_unique_restored_window_is_not_reported_as_minimized(self):
+        self.c._catalog.return_value=[self.row()]
+        for target, field, value in ((self.f.session,'busy',True),
+                                     (self.f.resources,'busy',True),
+                                     (self.f.resources,'pendingKind','import')):
+            with self.subTest(field=field, target=type(target).__name__):
+                previous=getattr(target,field)
+                setattr(target,field,value)
+                self.c._message='busy fixture'
+                self.c._discover_game()
+                self.assertNotIn('最小化',self.c._message)
+                self.f.session.dispatchWithPayload.assert_not_called()
+                setattr(target,field,previous)
     def test_mode_is_guarded_during_round_but_resource_browsing_is_independent(self):
         self.f.session.snapshot['roundActive']=True
         self.c.setMode('difficult');self.f.settings.setValue.assert_not_called()
@@ -165,6 +286,7 @@ class CoordinatorLiveTests(unittest.TestCase):
         self.assertEqual(len(notices),3)
     def test_reference_uses_runtime_pixels_not_browse_selection_and_is_independent(self):
         self.c.images=LiveImages();self.c._convert_client_geometry=lambda payload:None
+        self.c._bound='123'  # Match the fixture's foreground; production focus gate stays active.
         self.f.settings.persistedValues['referenceSheetVisible']=True
         self.f.settings.values['sheetVisibilityEnabled']=False
         urls=[]
@@ -273,10 +395,12 @@ class SharedRuntimeDeliveryTests(unittest.TestCase):
         fixture.settings.setValue = Mock(return_value=True)
         fixture.settings.saveFields = Mock(return_value=True)
         images = LiveImages()
-        coordinator = ClientCoordinator(backend=fixture.backend, settings=fixture.settings,
-            resources=fixture.resources, session=session, windows=fixture.windows,
-            native_input=fixture.input, capture=capture, runtime=runtime, images=images,
-            window_catalog=lambda: [])
+        fixture.native.foreground_window.return_value = 42
+        with patch('client_input.NativeWindowAPI', return_value=fixture.native):
+            coordinator = ClientCoordinator(backend=fixture.backend, settings=fixture.settings,
+                resources=fixture.resources, session=session, windows=fixture.windows,
+                native_input=fixture.input, capture=capture, runtime=runtime, images=images,
+                window_catalog=lambda: [])
         coordinator._foreground_timer.stop();coordinator._tracking_timer.stop()
         coordinator._convert_client_geometry = lambda payload: None
         fit = dict(success=True, matrixSourceToClient=np.eye(3),
@@ -285,9 +409,14 @@ class SharedRuntimeDeliveryTests(unittest.TestCase):
                 validationBasis="shared-canonical-geometry-current-frame"))
         def complete():
             import time
-            deadline=time.monotonic()+2
+            # This integration fixture includes cold lazy algorithm imports;
+            # its deadline bounds completion, not a gameplay latency claim.
+            deadline=time.monotonic()+10
             while session.busy and time.monotonic()<deadline:
-                QTest.qWait(5)
+                APP.processEvents()
+                # Yield the GIL to the real Python worker during cold imports;
+                # native Qt waits alone can consume its completion budget.
+                time.sleep(.005)
             APP.processEvents();APP.processEvents()
             self.assertFalse(session.busy,session.snapshot)
         try:
@@ -298,8 +427,9 @@ class SharedRuntimeDeliveryTests(unittest.TestCase):
                 coordinator._window_rows=[dict(hwnd="42",width=1280,height=720)]
                 coordinator.bindGameWindow("42");complete()
                 coordinator.startRound();complete()
-                self.assertTrue(session.snapshot["roundActive"])
+                self.assertTrue(session.snapshot["roundPreparing"])
                 session.dispatch("capture_now");complete()
+                self.assertTrue(session.snapshot["roundActive"])
                 self.assertEqual(coordinator.alignedData["mapId"],"fixture-map")
                 self.assertEqual(coordinator.referenceData["mapId"],"fixture-map")
                 self.assertEqual(coordinator.referenceData["floor"],"1")

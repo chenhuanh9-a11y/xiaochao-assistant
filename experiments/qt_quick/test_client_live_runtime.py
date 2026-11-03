@@ -162,7 +162,7 @@ class LiveRuntimeContracts(unittest.TestCase):
         steady = self.runtime._steady = Mock()
         steady.try_alignment.side_effect = lambda *a, **kw: copy.deepcopy(self.fit)
         steady.remember_committed.return_value = True
-        events = []; self.runtime.set_event_callback(events.append)
+        events = []; self.runtime.set_event_callback(lambda row: events.append(row) if row["event"] != "recognition-diagnostic" else None)
         with patch.object(_AlignmentHost, "fit", self.original_fit), \
              patch.object(_AlignmentHost, "_reverify_entry", side_effect=AssertionError("0059 must precede entry")), \
              patch("fast_structure_alignment.try_alignment", side_effect=AssertionError("0059 must precede fast")):
@@ -802,6 +802,29 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertEqual(self.engine.rank_count, 0)
         self.assertFalse(self.runtime.snapshot()["core"]["displayAuthorized"])
 
+    def test_foreground_return_preparation_cancels_on_lifetime_boundaries(self):
+        for reason in ('map-closed', 'foreground-lost', 'capture-context-changed',
+                       'end_round', 'mode-changed', 'resource-changed', 'game-floor-control-intent'):
+            with self.subTest(reason=reason):
+                self.dispatch('start_round')
+                self.dispatch('capture_now')
+                old = self.runtime.snapshot()['pendingRenderToken']
+                self.runtime.invalidate('foreground-lost')
+                capture = self.capture.capture
+                def invalidate_on_probe(cancelled=None):
+                    frame = capture(cancelled)
+                    self.runtime.invalidate(reason)
+                    return frame
+                self.capture.capture = invalidate_on_probe
+                try:
+                    result = self.dispatch('capture_now', foregroundReturn=True)
+                finally:
+                    self.capture.capture = capture
+                self.assertFalse(result['success'], result)
+                self.assertTrue(result['stale'], result)
+                self.assertIsNone(self.runtime.render_payload(old))
+                self.assertFalse(self.runtime.snapshot()['displayAuthorized'])
+
     def test_capture_context_change_after_solver_rejects_commit(self):
         self.capture.generation = 5
         self.capture.is_current = lambda context, generation=None: False
@@ -836,7 +859,7 @@ class LiveRuntimeContracts(unittest.TestCase):
         before = self.runtime.render_payload(first["renderToken"])
         poses = self.runtime.snapshot()["core"]["poses"]
         events = []
-        self.runtime.set_event_callback(events.append)
+        self.runtime.set_event_callback(lambda row: events.append(row) if row["event"] != "recognition-diagnostic" else None)
         with patch.object(_AlignmentHost, "_canonical_geometry_current_frame_residual",
                           return_value=(self.fit["selectedRouteCurrentFrameResidual"], None)), \
              patch.object(_AlignmentHost, "fit", side_effect=AssertionError("steady refresh must not solve again")):
@@ -857,7 +880,7 @@ class LiveRuntimeContracts(unittest.TestCase):
     def test_floor_refresh_revokes_before_blocked_solver_and_publishes_new_floor(self):
         first = self.begin_and_capture()
         events = []
-        self.runtime.set_event_callback(events.append)
+        self.runtime.set_event_callback(lambda row: events.append(row) if row["event"] != "recognition-diagnostic" else None)
         entered, release = threading.Event(), threading.Event()
         output = []
         def slow(*args):
@@ -884,7 +907,7 @@ class LiveRuntimeContracts(unittest.TestCase):
     def test_failed_current_residual_hides_before_recovery_and_cancellation(self):
         first = self.begin_and_capture()
         events = []
-        self.runtime.set_event_callback(events.append)
+        self.runtime.set_event_callback(lambda row: events.append(row) if row["event"] != "recognition-diagnostic" else None)
         entered, release, cancelled = threading.Event(), threading.Event(), threading.Event()
         def slow(*args):
             entered.set()
@@ -907,7 +930,7 @@ class LiveRuntimeContracts(unittest.TestCase):
     def test_unknown_floor_and_closed_frame_revoke_without_solver(self):
         first = self.begin_and_capture()
         events = []
-        self.runtime.set_event_callback(events.append)
+        self.runtime.set_event_callback(lambda row: events.append(row) if row["event"] != "recognition-diagnostic" else None)
         with patch("map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=None)), \
              patch.object(_AlignmentHost, "fit", side_effect=AssertionError("unknown must not solve")):
             unknown = self.dispatch("refresh_map")
@@ -925,7 +948,7 @@ class LiveRuntimeContracts(unittest.TestCase):
     def test_cancel_steady_verification_discards_old_authority_and_coalesces_duplicates(self):
         first = self.begin_and_capture()
         events = []
-        self.runtime.set_event_callback(events.append)
+        self.runtime.set_event_callback(lambda row: events.append(row) if row["event"] != "recognition-diagnostic" else None)
         entered, release, cancelled = threading.Event(), threading.Event(), threading.Event()
         def slow(*args, **kwargs):
             entered.set()
@@ -983,7 +1006,7 @@ class LiveRuntimeContracts(unittest.TestCase):
         first = self.begin_and_capture()
         pose = self.runtime.snapshot()["core"]["poses"]
         events = []
-        self.runtime.set_event_callback(events.append)
+        self.runtime.set_event_callback(lambda row: events.append(row) if row["event"] != "recognition-diagnostic" else None)
         self.dispatch("toggle_sheet_visibility")
         self.assertFalse(self.runtime.snapshot()["alignedVisible"])
         self.assertIsNotNone(self.runtime.render_payload(first["renderToken"]))

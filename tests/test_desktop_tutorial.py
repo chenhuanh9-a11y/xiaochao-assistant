@@ -75,6 +75,11 @@ class TutorialProgressTests(unittest.TestCase):
         self.assertEqual((again.done, again.invited), ({"round"}, True))
         self.assertFalse(self.path.with_name(self.path.name + ".tmp").exists())
 
+    def test_malformed_done_entries_do_not_break_startup(self):
+        self.path.parent.mkdir(parents=True)
+        self.path.write_text(json.dumps(dict(done=[{}, [], None, 1, "round", ["start"], "round", "unknown"])), encoding="utf-8")
+        self.assertEqual(TutorialProgress(self.path).done, {"round"})
+
     def test_unwritable_location_never_raises(self):
         blocker = Path(self.folder.name) / "file"
         blocker.write_text("x", encoding="utf-8")
@@ -122,13 +127,20 @@ class TutorialWindowTests(unittest.TestCase):
         except tk.TclError as error:
             self.skipTest(f"Real Tk unavailable: {error}")
         self.root.withdraw()
-        self.addCleanup(self.root.destroy)
+        self.addCleanup(self.destroy_root)
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.progress = TutorialProgress(Path(folder.name) / "tutorial-state.json")
         self.ui = FakeUI(self.root)
         self.changed = Mock()
         self.tutorial = TutorialWindow(self.ui, self.progress, IMAGE_ROOT, on_progress=self.changed)
+
+    def destroy_root(self):
+        # Each test owns a Tcl interpreter; cancel its queued timers before
+        # deleting callback commands and creating the next test interpreter.
+        for job in self.root.tk.splitlist(self.root.tk.call("after", "info")):
+            self.root.tk.call("after", "cancel", job)
+        self.root.destroy()
 
     def settle(self):
         for _ in range(4):
@@ -201,6 +213,9 @@ class TutorialWindowTests(unittest.TestCase):
         self.tutorial.open()
         self.assertEqual(self.tutorial.chapter["id"], "start")
         self.assertEqual(self.tutorial.step, 1)
+        self.settle()
+        self.assertIsNotNone(self.tutorial._photo)
+        self.assertEqual(self.tutorial._source[0], "start-2.webp")
 
     def test_missing_image_falls_back_to_text(self):
         tutorial = TutorialWindow(self.ui, self.progress, ROOT / "missing-tutorial-images")
@@ -217,6 +232,27 @@ class TutorialWindowTests(unittest.TestCase):
         self.assertIsNone(self.tutorial.chapter)
         self.tutorial._escape()
         self.assertEqual(self.tutorial.window.state(), "withdrawn")
+
+    def test_150_percent_dpi_navigation_and_reopen(self):
+        area = RectPx(0, 0, 1920, 1440)
+        self.ui.assistant.context = UiDpiContext(MonitorContext("test-150", area, area, 144), 144)
+        self.tutorial.open("round")
+        self.settle()
+        self.assertAlmostEqual(self.tutorial.display.scale, 1.5)
+        self.assertIsNotNone(self.tutorial._photo)
+        for chapter in CHAPTERS:
+            self.tutorial.show_chapter(chapter["id"])
+            for step in range(len(chapter["steps"])):
+                self.tutorial.go(step)
+                self.root.update()
+                next_button = self.tutorial.next_button
+                self.assertTrue(next_button.winfo_ismapped())
+                self.assertLessEqual(next_button.winfo_rooty() + next_button.winfo_height(),
+                                     self.tutorial.window.winfo_rooty() + self.tutorial.window.winfo_height())
+        self.tutorial.close()
+        self.tutorial.open()
+        self.settle()
+        self.assertIsNotNone(self.tutorial._photo)
 
     def test_destroying_owner_drops_window_reference(self):
         self.tutorial.open("start")

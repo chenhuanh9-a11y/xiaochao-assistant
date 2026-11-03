@@ -14,7 +14,7 @@ from client_problems import LOG_MAX_BYTES, PENDING_LIMIT
 ENVIRONMENT_FLAG = "XINGTU_LIFECYCLE_TRACE"
 # Codes/identities only. In particular no arbitrary error text or nested payload.
 TEXT_FIELDS = frozenset(("action", "source", "reason", "mode", "mapId", "floor", "frameId",
-    "token", "eventName", "status", "imageStatus", "buildFingerprint", "sourceCommit"))
+    "token", "eventName", "status", "imageStatus", "buildFingerprint", "sourceCommit", "floorSource"))
 NUMBER_FIELDS = frozenset(("inputAt", "producedAt", "elapsedMs", "floorMs", "deliveryMs",
     "jobId", "sequence", "epoch", "roundId", "cycleId", "generation", "probeMisses"))
 BOOL_FIELDS = frozenset(("success", "accepted", "cancelled", "mapDetected", "openIntent",
@@ -25,26 +25,9 @@ STATE_CODE = re.compile(r"[a-z][a-z0-9_-]{0,95}\Z")
 
 
 def _write_batch(path, rows):
-    # A logging.Handler would register for atexit flush/close and could make
-    # optional daemon IO block interpreter shutdown. Keep this sink independent.
-    from client_paths import _no_links
-    previous = path.with_name(path.stem + "-previous.jsonl")
-    _no_links(path.parent)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _no_links(path); _no_links(previous)
-    stream = path.open("ab")
-    try:
-        for row in rows:
-            data = (json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8")
-            if len(data) > LOG_MAX_BYTES:
-                continue
-            if stream.tell() + len(data) > LOG_MAX_BYTES:
-                stream.close()
-                path.replace(previous)
-                stream = path.open("ab")
-            stream.write(data)
-    finally:
-        stream.close()
+    from diagnostic_storage import append_records
+    for start in range(0,len(rows),16):
+        append_records(path, rows[start:start+16], file_limit=LOG_MAX_BYTES)
 
 
 def create_lifecycle_trace(paths):
@@ -55,6 +38,8 @@ def create_lifecycle_trace(paths):
 class LifecycleTrace:
     def __init__(self, paths):
         self.log_path = Path(paths.work_root) / "nightmare-live" / "lifecycle-detail.jsonl"
+        from diagnostic_storage import slot_path
+        self.log_path = slot_path(self.log_path, 'lifecycle')
         self._lock, self._queue = threading.Lock(), deque()
         self._accepting, self._inflight, self._dropped = True, 0, 0
         self._sequence, self._run_id, self._error = 0, uuid4().hex, ""

@@ -16,7 +16,7 @@ from PySide6.QtQml import QQmlComponent, QQmlEngine
 from PySide6.QtQuick import QQuickView
 from PySide6.QtTest import QTest
 
-from client_settings import ACTION_ORDER, ROOT, SettingsService
+from client_settings import ACTION_ORDER, LEGACY_ACTIONS, ROOT, SettingsService
 from client_control_layout import preset_layout
 
 
@@ -65,6 +65,60 @@ class SettingsTests(unittest.TestCase):
             time.sleep(.002)
         self.assertTrue(predicate(), "worker completion timeout")
 
+    def test_capture_completion_preserves_newer_target_draft(self):
+        from threading import Event
+        service = self.service()
+        entered, release = Event(), Event()
+        original_write = service._write
+        def blocked_write(payload, expected):
+            entered.set()
+            release.wait(3)
+            return original_write(payload, expected)
+        service._write = blocked_write
+        service.beginShortcutCapture("hotkey")
+        service.captureShortcutKey(Qt.Key_F20, 0, "", False)
+        self.assertTrue(service.confirmShortcutCapture())
+        self.assertTrue(entered.wait(2))
+        try:
+            self.assertTrue(service.setValue("hotkey", "F21"))
+        finally:
+            release.set()
+        self.wait(lambda: not service.busy)
+        self.assertEqual(service.persistedValues["hotkey"], "F20")
+        self.assertEqual(service.values["hotkey"], "F21")
+        self.assertTrue(service.dirty)
+
+    def test_capture_commit_isolates_action_index_and_preserves_failed_state(self):
+        from PySide6.QtCore import Qt
+        from unittest.mock import patch
+        service = self.service()
+        baseline = service.persistedValues
+        actions = service.values["actionHotkeys"]
+        actions[1] = "F22"
+        service.setValue("actionHotkeys", actions)
+        service.setValue("hotkey", "F21")
+        service.beginShortcutCapture("toggle-panel")
+        service.captureShortcutKey(Qt.Key_F20, 0, "", False)
+        self.assertTrue(service.confirmShortcutCapture())
+        self.assertFalse(service.confirmShortcutCapture())
+        self.assertFalse(service.beginShortcutCapture("hotkey"))
+        self.wait(lambda: not service.busy)
+        self.assertEqual(service.persistedValues["hotkey"], baseline["hotkey"])
+        self.assertEqual(service.persistedValues["actionHotkeys"][1], baseline["actionHotkeys"][1])
+        self.assertEqual(service.values["actionHotkeys"][1], "F22")
+        self.assertEqual(service.values["hotkey"], "F21")
+        self.assertEqual(self.service().persistedValues["actionHotkeys"][0], "F20")
+        before = service.persistedValues
+        service.beginShortcutCapture("hotkey")
+        service.captureShortcutKey(Qt.Key_F19, 0, "", False)
+        with patch.object(service, "_write", side_effect=OSError("fixture failure")):
+            self.assertTrue(service.confirmShortcutCapture())
+            service.cancelShortcutCapture()
+            self.wait(lambda: not service.busy)
+        self.assertEqual(service.persistedValues, before)
+        self.assertEqual(self.service().persistedValues, before)
+        self.assertIn("fixture failure", service.message)
+
     def test_new_file_has_no_boot_write_and_legacy_serialization(self):
         service = self.service()
         self.assertFalse(self.path.exists())
@@ -75,7 +129,7 @@ class SettingsTests(unittest.TestCase):
         service.saved.connect(lambda: emitted.append(True))
         self.assertTrue(service.save())
         self.wait(lambda: not service.busy)
-        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8")), {"sheetOpacity": .73, "hotkey": "Ctrl+G"})
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8")), {"sheetOpacity": .73, "hotkey": "Ctrl+G", "actionHotkeys": service.persistedValues["actionHotkeys"]})
         self.assertEqual(emitted, [True])
         self.assertFalse(service.dirty)
         self.assertTrue(service.reload())
@@ -151,12 +205,98 @@ class SettingsTests(unittest.TestCase):
             self.write({"actionHotkeys": keys, "hotkey": "F11"})
             service = self.service()
             expected = keys + (["F12"] if len(keys) == 6 else [])
-            expected += [""] * (9 - len(expected))
+            expected += [""] * (len(ACTION_ORDER) - len(expected))
             self.assertEqual(service.values["actionHotkeys"], expected)
             service.setValue("orbVisible", False)
             service.save()
             self.wait(lambda: not service.busy)
             self.assertEqual(json.loads(self.path.read_text())["actionHotkeys"], keys)
+
+    def test_nine_item_actions_never_gain_an_invented_picker_chord(self):
+        nine = ["F5", "F6", "F7", "F8", "F9", "F10", "F11", "", ""]
+        cases = [
+            (nine, "G"),
+            (nine[:7] + ["ALT", ""], "G"),  # bare ALT bound: Alt+1 would disable shortcuts
+            (nine[:7] + ["Alt+1", ""], "G"),
+            (nine, "Alt+1"),
+            (nine, "1"),
+        ]
+        for keys, map_key in cases:
+            with self.subTest(map=map_key, keys=keys):
+                self.write({"actionHotkeys": keys, "hotkey": map_key})
+                service = self.service()
+                self.assertEqual(service.values["actionHotkeys"], [*keys, ""])
+                self.assertNotIn("hotkey/actionHotkeys", service.message)
+                service.setValue("orbVisible", False)
+                service.save()
+                self.wait(lambda: not service.busy)
+                # Readable nine-slot arrays stay untouched until actually edited.
+                self.assertEqual(json.loads(self.path.read_text())["actionHotkeys"], keys)
+                service.shutdown()
+
+    def test_bare_alt_file_keeps_every_native_shortcut_registrable(self):
+        from client_input import NativeShortcutBackend
+        from test_client_input import Native
+        keys = ["ALT", "F6", "F7", "F8", "F9", "F10", "F11", "", ""]
+        self.write({"actionHotkeys": keys, "hotkey": "G"})
+        service = self.service()
+        backend = NativeShortcutBackend(Native())
+        self.addCleanup(backend.shutdown)
+        self.assertTrue(backend.configureSettings(service.values))
+
+    def test_fresh_picker_unbound_allows_bare_alt_map_and_action_keys(self):
+        service = self.service()
+        self.assertEqual(service.values["actionHotkeys"][9], "")
+        self.assertTrue(service.setValue("hotkey", "ALT"), service.message)
+        self.assertTrue(service.save())
+        self.wait(lambda: not service.busy)
+        restored = self.service()
+        self.assertEqual(restored.persistedValues["hotkey"], "ALT")
+        self.assertEqual(restored.persistedValues["actionHotkeys"][9], "")
+        self.assertTrue(restored.setValue("hotkey", "G"))
+        actions = restored.values["actionHotkeys"]
+        actions[1] = "ALT"
+        self.assertTrue(restored.setValue("actionHotkeys", actions), restored.message)
+        self.assertTrue(restored.save())
+        self.wait(lambda: not restored.busy)
+        restarted = self.service()
+        self.assertEqual(restarted.persistedValues["actionHotkeys"], actions)
+        from client_input import NativeShortcutBackend
+        from test_client_input import Native
+        backend = NativeShortcutBackend(Native())
+        self.addCleanup(backend.shutdown)
+        self.assertTrue(backend.configureSettings(restarted.persistedValues))
+
+    def test_binding_slot_ten_on_a_nine_slot_file_appends_it(self):
+        keys = ["F5", "F6", "F7", "F8", "F9", "F10", "F11", "", ""]
+        self.write({"actionHotkeys": keys})
+        service = self.service()
+        edited = service.values["actionHotkeys"]
+        edited[9] = "Ctrl+Alt+M"
+        self.assertTrue(service.setValue("actionHotkeys", edited))
+        self.assertTrue(service.save())
+        self.wait(lambda: not service.busy)
+        self.assertEqual(json.loads(self.path.read_text())["actionHotkeys"], [*keys, "Ctrl+Alt+M"])
+
+    def test_existing_file_without_action_array_leaves_picker_unbound(self):
+        # data is not None but the key is absent: load starts from the legacy
+        # nine slots; slot 10 stays unbound like a stored nine-slot array.
+        self.write({"hotkey": "G"})
+        service = self.service()
+        self.assertEqual(service.values["actionHotkeys"], [*LEGACY_ACTIONS, ""])
+
+    def test_map_selection_mode_defaults_validates_and_preserves_unknown(self):
+        service = self.service()
+        self.assertEqual(service.values["mapSelectionMode"], "auto")
+        self.assertTrue(service.setValue("mapSelectionMode", "manual"))
+        self.assertFalse(service.setValue("mapSelectionMode", "Manual"))
+        service.save()
+        self.wait(lambda: not service.busy)
+        self.assertEqual(json.loads(self.path.read_text())["mapSelectionMode"], "manual")
+        self.write({"mapSelectionMode": "unknown"})
+        service = self.service()
+        self.assertEqual(service.values["mapSelectionMode"], "auto")
+        self.assertIn("mapSelectionMode", service.message)
 
     def test_duplicate_save_and_late_completion_preserve_new_draft(self):
         service = self.service()
@@ -300,6 +440,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(service.shortcutCandidate, "Ctrl+Shift+K")
         self.assertEqual(service.values, original, "recording must not edit the draft")
         self.assertTrue(service.confirmShortcutCapture())
+        self.wait(lambda: not service.busy)
         self.assertEqual(service.values["hotkey"], "Ctrl+Shift+K")
         self.assertEqual(guard, [True, False])
         service.beginShortcutCapture("toggle-panel")
@@ -317,8 +458,9 @@ class SettingsTests(unittest.TestCase):
         service.beginShortcutCapture("hotkey")
         service.clearShortcutCandidate()
         self.assertTrue(service.confirmShortcutCapture())
+        self.wait(lambda: not service.busy)
         self.assertEqual(service.values["hotkey"], "")
-        self.assertFalse(self.path.exists())
+        self.assertTrue(self.path.exists())
 
     def test_future_layout_requires_explicit_preset_before_local_repair(self):
         future = {"schemaVersion": 200, "unknown": "preserve"}
@@ -386,10 +528,36 @@ class SettingsTests(unittest.TestCase):
             self.app.processEvents()
             self.assertEqual(service.shortcutCandidate, "Ctrl+Shift+K")
             self.assertEqual(service.values["hotkey"], "G")
+            service.setValue("hotkey", "F21")
+            self.app.processEvents()
+            self.assertEqual(visual_item(panel, "setting_hotkey").property("text"), "G")
+            shortcut_field = visual_item(panel, "setting_hotkey")
+            self.assertTrue(shortcut_field.property("readOnly"))
+            shortcut_field.forceActiveFocus()
+            shortcut_field.editingFinished.emit()
+            visual_item(panel, "shortcutCaptureArea").forceActiveFocus()
+            self.app.processEvents()
+            self.assertEqual(shortcut_field.property("text"), "G")
+            self.assertEqual(service.values["hotkey"], "F21")
             visual_item(panel, "shortcutCaptureConfirm").clicked.emit()
+            self.wait(lambda: not service.busy)
             self.assertFalse(service.shortcutRecording)
             self.assertEqual(service.values["hotkey"], "Ctrl+Shift+K")
-            self.assertNotIn("hotkey", json.loads(self.path.read_text()))
+            self.assertEqual(json.loads(self.path.read_text())["hotkey"], "Ctrl+Shift+K")
+            from unittest.mock import patch
+            visual_item(panel, "record_hotkey").clicked.emit()
+            self.app.processEvents()
+            QTest.keyClick(view, Qt.Key_F19)
+            with patch.object(service, "_write", side_effect=OSError("qml save failure")):
+                visual_item(panel, "shortcutCaptureConfirm").clicked.emit()
+                self.assertTrue(service.busy)
+                for name in ("shortcutCaptureConfirm", "shortcutCaptureAgain", "shortcutCaptureClear", "shortcutCaptureCancel"):
+                    self.assertFalse(visual_item(panel, name).property("enabled"), name)
+                self.wait(lambda: not service.busy)
+            self.app.processEvents()
+            self.assertEqual(visual_item(panel, "setting_hotkey").property("text"), "Ctrl+Shift+K")
+            self.assertIn("qml save failure", service.shortcutMessage)
+            self.assertEqual(json.loads(self.path.read_text())["hotkey"], "Ctrl+Shift+K")
             self.assertEqual(warnings, [])
         finally:
             service.cancelShortcutCapture()
@@ -424,6 +592,14 @@ class SettingsTests(unittest.TestCase):
         service.setValue("sheetOpacity", .8)
         self.app.processEvents()
         self.assertEqual(panel.property("preferences")["sheetOpacity"], .8)
+        panel.setProperty("modeExpanded", True)
+        self.app.processEvents()
+        manual = visual_item(panel, "setting_mapSelectionMode_manual")
+        self.assertIsNotNone(manual)
+        manual.clicked.emit()
+        self.wait(lambda: not service.busy)
+        self.assertEqual(service.values["mapSelectionMode"], "manual")
+        self.assertEqual(json.loads(self.path.read_text())["mapSelectionMode"], "manual")
         self.assertEqual(warnings, [])
         panel.deleteLater()
         self.app.processEvents()

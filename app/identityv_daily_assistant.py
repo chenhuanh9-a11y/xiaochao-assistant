@@ -120,8 +120,11 @@ from session_state_machine import (
     verified_map_hotkey_frame,
 )
 from async_event_log import AsyncEventLog
+from diagnostic_identity import process_scope
 from native_resource_validation import NativeResourceValidationMixin
 from base_display_integration import BaseDisplayIntegrationMixin, display_source_guard
+from manual_map_picker import normalize_selection_mode
+from manual_map_selection import MANUAL_PICKER_ACTION, ManualMapSelectionMixin
 from runtime_timeline import context as runtime_log_context
 from runtime_timeline import (RuntimeTimeline, observe as observe_runtime,
                               observe_function, floor_vote_evidence, context as runtime_trace_context)
@@ -208,6 +211,7 @@ ACTION_HOTKEYS = {
     "toggle-sheet-visibility": ("F11", 0x7A),
     "start-round": ("", 0),
     "toggle-round": ("", 0),
+    "manual-map-picker": ("Alt+1", 0x31),
 }
 ACTION_ORDER = tuple(ACTION_HOTKEYS)
 MANAGEMENT_HOTKEY_ACTIONS = frozenset({
@@ -813,10 +817,10 @@ def report_unhandled_error(exc_type, exc_value, exc_traceback) -> None:
     try:
         LIVE_ROOT.mkdir(parents=True, exist_ok=True)
         path = LIVE_ROOT / f"startup-error-{datetime.now():%Y%m%d-%H%M%S}.log"
-        path.write_text(
-            "".join(traceback.format_exception(exc_type, exc_value, exc_traceback)),
-            encoding="utf-8",
-        )
+        from diagnostic_storage import append_record, slot_path
+        path = slot_path(path, "startup")
+        append_record(path, dict(event="startup-error", traceback="".join(
+            traceback.format_exception(exc_type, exc_value, exc_traceback))))
         message = f"星图遇到错误，已保存诊断日志：\n{path}"
     except OSError:
         message = f"星图遇到错误：\n{exc_value}"
@@ -992,43 +996,27 @@ def _bounded_log_tail(path: Path, byte_limit: int) -> tuple[bytes, bool]:
         handle.readline()  # Drop a partial JSON/text line at the truncation edge.
         payload = handle.read(byte_limit)
         if not payload:
-            # One abnormally long line is still more useful than an empty log.
-            handle.seek(max(0, size - byte_limit))
-            payload = handle.read(byte_limit)
+            # Never invent a malformed JSONL suffix when a single row exceeds
+            # the export budget. The manifest records this truncated empty tail.
+            payload = b""
     return payload, True
 
 
 def _redact_local_paths(payload: bytes) -> bytes:
-    """Remove local Windows paths while preserving surrounding diagnostic text."""
-    text = payload.decode("utf-8", errors="replace")
-    redacted = re.sub(
-        r'(?i)(?:[A-Z]:[\\/]|\\\\)[^"\r\n]*',
-        "<local-path>",
-        text,
-    )
-    return redacted.encode("utf-8")
+    from diagnostic_export import _redact_local_paths as redact
+    return redact(payload)
 
 
 def _event_log_session_id(path: Path) -> str | None:
-    """Derive a stable, non-identifying session id from the startup event."""
-    if not path.name.startswith("events-"):
-        return None
+    """Read a recorded session only; legacy files have no process session ID."""
+    from diagnostic_export import _bounded_log_tail, _log_sessions
     try:
-        with path.open("r", encoding="utf-8", errors="replace") as handle:
-            for _index, line in zip(range(32), handle):
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if row.get("event") != "assistant-started":
-                    continue
-                seed = "|".join(str(row.get(key, "")) for key in (
-                    "time", "processId", "buildFingerprint",
-                ))
-                return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
+        payload, _ = _bounded_log_tail(path, DIAGNOSTIC_FILE_BYTE_LIMIT)
+        groups = _log_sessions(payload, path.name)
+        sessions = {row['sessionId'] for row in groups}
+        return next(iter(sessions)) if len(sessions) == 1 else None
     except OSError:
         return None
-    return None
 
 
 def diagnostic_package_metadata(app_root: Path) -> dict:
@@ -1172,13 +1160,14 @@ def export_safe_diagnostic_bundle(
     runtime_context: dict | None = None,
     package_metadata: dict | None = None,
     failure_roots: tuple[Path, ...] = (),
+    export_id: str | None = None,
 ) -> dict:
     """Use the shared bounded exporter with this process's original identity."""
     from diagnostic_export import export_safe_diagnostic_bundle as export_bundle
     return export_bundle(app_root, live_root, exported_at=exported_at,
         log_limit=log_limit, file_byte_limit=file_byte_limit, total_byte_limit=total_byte_limit,
         window_environment=window_environment, runtime_context=runtime_context,
-        package_metadata=package_metadata, failure_roots=failure_roots,
+        package_metadata=package_metadata, failure_roots=failure_roots, export_id=export_id,
         app_version=APP_VERSION, build_fingerprint=BUILD_FINGERPRINT,
         process_integrity=process_integrity_level())
 
@@ -1541,7 +1530,7 @@ def parse_action_hotkeys(value: str, map_hotkey_vk: int | None = None,
                          map_hotkey_name: str | None = None) -> dict[str, tuple[str, int]]:
     names = ([part.strip() for part in re.split(r"[,，/]", value)]
              if re.search(r"[,，/]", value) else value.split())
-    if len(names) not in {6, 7, 8, len(ACTION_ORDER)}:
+    if len(names) not in {6, 7, 8, 9, len(ACTION_ORDER)}:
         raise ValueError("功能键项目不完整；未绑定项可以留空")
     parsed = [hotkey_to_vk(name) for name in names]
     if len(parsed) == 6:
@@ -1562,6 +1551,13 @@ def parse_action_hotkeys(value: str, map_hotkey_vk: int | None = None,
         parsed.append(("", 0))  # New start has no chosen default; explicit empty stays unbound.
     if len(parsed) == 8:
         parsed.append(("", 0))  # Existing end stays one-way; toggle has no migrated default.
+    if len(parsed) == 9:
+        # The manual picker gets its default only when no saved key already uses it.
+        default = ACTION_HOTKEYS["manual-map-picker"]
+        taken = {parse_chord(name, _primary_hotkey_to_vk).identity
+                 for name in (*(name for name, _vk in parsed), map_hotkey_name or "") if name}
+        free = parse_chord(default[0], _primary_hotkey_to_vk).identity not in taken
+        parsed.append(default if free and default[1] != map_hotkey_vk else ("", 0))
     compiled = {target: parse_chord(pair[0], _primary_hotkey_to_vk)
                 for target, pair in zip(ACTION_ORDER, parsed)}
     if map_hotkey_name is not None:
@@ -1576,7 +1572,7 @@ def recover_action_hotkeys(configured, defaults: dict, map_name: str) -> dict[st
     """Keep readable legacy choices; unbind invalid/conflicting items, never reassign."""
     if configured is None:
         names = [defaults[action][0] for action in ACTION_ORDER]
-    elif isinstance(configured, list) and len(configured) in {6, 7, 8, len(ACTION_ORDER)}:
+    elif isinstance(configured, list) and len(configured) in {6, 7, 8, 9, len(ACTION_ORDER)}:
         names = [*configured, *([""] * (len(ACTION_ORDER) - len(configured)))]
     else:
         names = [""] * len(ACTION_ORDER)
@@ -4776,7 +4772,7 @@ def display_presentation(surface_name):
     return decorate
 
 
-class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin):
+class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin, ManualMapSelectionMixin):
     @staticmethod
     def display_version_label():
         return APP_DISPLAY_VERSION
@@ -5266,8 +5262,10 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         previous_profile=self.preferred_route_profile_id
         # Validate before publishing the target. A failed requested mode also
         # ends the old round; it must not keep recognizing as the previous mode.
+        # Any resource failure (including a truncated npz: EOFError/BadZipFile)
+        # keeps the previous mode instead of escaping into Tk's error handler.
         try:self._install_map_mode(mode, before_publish=lambda: self.end_round(notify=False))
-        except (OSError,ValueError,KeyError,TypeError,cv2.error) as error:
+        except Exception as error:
             self.mode_resource_error = str(error)
             self.startup_resource_error = self.mode_resource_error
             self.resource_preload_pending = False
@@ -5307,6 +5305,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             return dict(success=False, reason='editing-hotkey', message='请先确认或取消快捷键修改')
         self.game_mode_var.set('困难' if mode == 'difficult' else '噩梦')
         self._apply_game_mode_setting()
+        refresh_picker = getattr(self, '_refresh_manual_map_picker', None)
+        if callable(refresh_picker):
+            refresh_picker()
         success = self.game_mode == mode
         return dict(success=success, reason='mode-selected' if success else 'mode-resources-unavailable',
                     message=self.active_mode_var.get())
@@ -5653,10 +5654,13 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         self.settings = self._load_settings()
         self.control_layout = load_layout(self.settings.get('gameControlLayout'))
         self.mode_route_profiles=dict(self.settings.get('modeRouteProfiles') or {})
+        self.map_selection_mode = normalize_selection_mode(self.settings.get('mapSelectionMode'))
         self.mode_resource_error=None
         if self.settings.get('gameMode')=='difficult':
+            # A damaged difficult resource must not stop startup; the app
+            # opens in nightmare mode and reports the resource problem.
             try:self._install_map_mode('difficult')
-            except (OSError,ValueError,KeyError,TypeError,cv2.error) as error:
+            except Exception as error:
                 self.mode_resource_error=str(error)
                 self.startup_resource_error=self.mode_resource_error
         self.onboarding_completed = self.settings.get("onboardingCompleted") is True
@@ -5728,6 +5732,15 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         except ValueError as error:
             self.action_hotkeys = recover_action_hotkeys(configured_actions, default_actions, self.hotkey_name)
             self.hotkey_settings_warning = f"部分快捷键无法读取或冲突，相关项已暂时解绑；请在设置中重新确认。{error}"
+        if isinstance(configured_actions, list) and len(configured_actions) < len(ACTION_ORDER):
+            # A migrated picker default must not disable an existing chest key on the same primary.
+            try:
+                chest = json.loads((self.settings_path.parent / 'chest-auto-tap.json').read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                chest = {}
+            picker_primary = self.action_hotkeys[MANUAL_PICKER_ACTION][0].rsplit('+', 1)[-1]
+            if picker_primary and isinstance(chest, dict) and picker_primary in (chest.get('tapKey'), chest.get('holdKey')):
+                self.action_hotkeys[MANUAL_PICKER_ACTION] = ("", 0)
         compiled_hotkeys = {
             target: parse_chord(name, _primary_hotkey_to_vk)
             for target, (name, _vk) in {"map": (self.hotkey_name, self.hotkey_vk), **self.action_hotkeys}.items()
@@ -5834,8 +5847,20 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         self.sheet_photo_cache: dict[tuple, np.ndarray] = {}
         self.optimistic_sheet_cycle_id: int | None = None
         self.optimistic_sheet_floor: str | None = None
+        # Startup housekeeping: earlier sessions' logs beyond the export window
+        # and download caches of packages already installed from them.
+        from diagnostic_export import prune_diagnostic_logs
+        prune_diagnostic_logs(LIVE_ROOT, DIAGNOSTIC_LOG_LIMIT - 1)
+        try:
+            from star_map_download import prune_installed_downloads
+            install_root = Path(ROOT).resolve()
+            prune_installed_downloads(install_root / 'work' / 'map-packages' / 'downloads', install_root)
+        except Exception:
+            pass
         self.event_path = LIVE_ROOT / f"events-{datetime.now():%Y%m%d-%H%M%S}.jsonl"
-        self._event_log = AsyncEventLog(self.event_path)
+        from diagnostic_storage import slot_path
+        self.event_path = slot_path(self.event_path, "tk")
+        self._event_log = AsyncEventLog(self.event_path, settings_dir=self.settings_path.parent)
         self.diagnostic_export_in_progress = False
         self.display_environment: dict | None = None
         self.process_integrity = process_integrity_level()
@@ -6460,6 +6485,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 "capture_now": self.capture_now,
                 "_open_desktop_main_ui": self._open_desktop_main_ui,
                 "set_game_mode": self.set_game_mode,
+                "set_map_selection_mode": self.set_map_selection_mode,
                 "toggle_round": self.toggle_round,
                 "collapse_control": self.collapse_control,
                 "expand_control": self.expand_control,
@@ -6917,6 +6943,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             "toggle-sheet-visibility": "显示/隐藏小抄",
             "start-round": "开始本局",
             "toggle-round": "开始/结束本局",
+            "manual-map-picker": "手动选图",
         }
         self.action_hotkey_var = tk.StringVar(
             value=",".join(self.action_hotkeys[action][0] for action in ACTION_ORDER),
@@ -8836,6 +8863,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             self.floor_control_row.pack_forget()
 
     def _start_map_reselection(self) -> None:
+        if getattr(self, 'map_selection_mode', 'auto') == 'manual':
+            self.open_manual_map_picker(source="map-button")
+            return
         self.candidate_edit_mode = True
         self._refresh_candidates(preserve_confirmation=True)
         self.set_expanded(True)
@@ -10091,7 +10121,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             return
         self.diagnostic_export_in_progress = True
         self._set_diagnostic_export_buttons(False, "正在导出…")
-        self._log("diagnostic-export-requested")
+        from uuid import uuid4
+        export_id = uuid4().hex
+        self._log("diagnostic-export-requested", exportId=export_id)
         runtime_context = diagnostic_runtime_context(
             getattr(self, "display_environment", None),
             game_window_bound=self.game_hwnd is not None,
@@ -10119,10 +10151,10 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                     window_environment=environment,
                     runtime_context=runtime_context,
                     package_metadata=package_metadata,
-                    failure_roots=failure_roots,
+                    failure_roots=failure_roots, export_id=export_id,
                 )
                 self._log(
-                    "diagnostic-exported",
+                    "diagnostic-exported", exportId=export_id,
                     fileName=result["path"].name,
                     includedLogCount=result["includedLogCount"],
                     windowCandidateCount=result["windowCandidateCount"],
@@ -10134,7 +10166,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 self.events.put({"kind": "diagnostic-exported", **result})
             except Exception as error:
                 self._log(
-                    "diagnostic-export-error",
+                    "diagnostic-export-error", exportId=export_id,
                     errorType=type(error).__name__, message=str(error),
                 )
                 self.events.put({
@@ -10158,7 +10190,8 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         return {"map": "游戏地图键", "toggle-panel": "呼出/收起控件", "candidate-prev": "上一个候选",
                 "candidate-next": "下一个候选", "confirm-round": "确认路线", "cycle-floor": "楼层纠错",
                 "end-round": "结束本局", "toggle-sheet-visibility": "显示/隐藏小抄",
-                "start-round": "开始本局", "toggle-round": "开始/结束本局"}.get(target, target)
+                "start-round": "开始本局", "toggle-round": "开始/结束本局",
+                "manual-map-picker": "手动选图"}.get(target, target)
 
     def _refresh_hotkey_editor_views(self) -> None:
         if tk_widget_exists(getattr(self, 'game_control_view', None)):
@@ -10667,16 +10700,28 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
 
     def _load_settings(self) -> dict:
         self.settings_read_error = ""
+        self._settings_write_blocked = False
         try:
             payload = json.loads(self.settings_path.read_text(encoding="utf-8")) if self.settings_path.is_file() else {}
             if not isinstance(payload, dict):
                 raise ValueError("settings must be an object")
             return payload
         except (OSError, ValueError):
-            self.settings_read_error = "本地设置无法读取，快捷键已暂时解绑；请在设置中重新确认。"
+            # Startup saves right after loading, so set the unreadable file
+            # aside first; if that fails, never overwrite it this session.
+            backup = self.settings_path.with_name(f"ui-settings.unreadable-{datetime.now():%Y%m%d-%H%M%S}.json")
+            try:
+                os.replace(self.settings_path, backup)
+                kept = f"原文件已另存为 {backup.name}"
+            except OSError:
+                self._settings_write_blocked = True
+                kept = "本次不会改写设置文件，修改将不会保存"
+            self.settings_read_error = f"本地设置无法读取（{kept}），快捷键已暂时解绑；请在设置中重新确认。"
             return {}
 
     def _save_settings(self, *, hotkey_proposal: dict | None = None) -> bool:
+        if getattr(self, "_settings_write_blocked", False):
+            return False
         try:
             self.settings_path.parent.mkdir(parents=True, exist_ok=True)
             payload = {
@@ -10708,6 +10753,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 "gameMode": (self.settings.get('gameMode', 'nightmare') if getattr(self, 'mode_resource_error', None)
                     else getattr(self,'game_mode','nightmare')),
                 "difficultGridEnabled": bool(self.settings.get('difficultGridEnabled', False)),
+                "mapSelectionMode": getattr(self, 'map_selection_mode', 'auto'),
                 "modeRouteProfiles": getattr(self,'mode_route_profiles',{}),
                 "zhan10CoffinVariantId": self.zhan10_coffin_variant_id,
                 "onboardingCompleted": self.onboarding_completed,
@@ -10726,6 +10772,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                     self, "drag_boundary_environment_signature", (),
                 )),
             }
+            qt_controls_visible = self.settings.get("qtControlsVisible")
+            if type(qt_controls_visible) is bool:
+                payload["qtControlsVisible"] = qt_controls_visible
             if hotkey_proposal is not None:
                 payload.update(hotkey=hotkey_proposal["hotkey"], actionHotkeys=hotkey_proposal["actionHotkeys"])
             atomic_write_text(
@@ -14077,7 +14126,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             observations = {name: value.astype(np.uint8, copy=True) for name, value in observations.items()}
             diagnostic = compact(dict(
                 version=APP_VERSION, buildFingerprint=BUILD_FINGERPRINT,
-                processId=os.getpid(), eventPath=str(getattr(self, 'event_path', '')),
+                **process_scope(), processId=os.getpid(), eventPath=str(getattr(self, 'event_path', '')),
                 profileId=event.get('routeProfileId'),
                 frameCapturedAtUtc=context.get('frameCapturedAtUtc'),
                 sourceFrameGeneration=event.get('sourceFrameGeneration'),
@@ -14449,7 +14498,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 map_evidence = self._mode_map_interface(frame, floor_read=floor_read)
             diagnostic = dict(stage=reason, failureKind=failure_kind, mode=self.game_mode, profileId=profile,
                 version=APP_VERSION, buildFingerprint=BUILD_FINGERPRINT,
-                processId=os.getpid(), eventPath=str(self.event_path),
+                **process_scope(), processId=os.getpid(), eventPath=str(self.event_path),
                 cycleId=cycle_id, captureGeneration=cycle_id,
                 frameCapturedAtUtc=captured_at,
                 captureStartFrameGeneration=capture_start_frame_generation,
@@ -14530,7 +14579,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             diagnostic = dict(stage='identity-rejection', mode=mode, profileId=profile,
                 version=APP_VERSION, buildFingerprint=BUILD_FINGERPRINT,
                 packageMetadata=copy.deepcopy(getattr(self, 'package_metadata', None)),
-                processId=os.getpid(), eventPath=str(getattr(self, 'event_path', '')),
+                **process_scope(), processId=os.getpid(), eventPath=str(getattr(self, 'event_path', '')),
                 cycleId=cycle_id, captureGeneration=event.get('token'),
                 rankStartedMonotonicAt=started,rankCompletedMonotonicAt=completed,
                 sampleQueuedMonotonicAt=now,
@@ -17937,6 +17986,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             was_down = False
             escape_was_down = False
             action_was_down = {action: False for action in ACTION_ORDER}
+            picker_was_down: dict[str, bool] | None = None
             left_was_down = False
             predictive_mouse_drag = False
             drag_cursor_allowed = False
@@ -18106,11 +18156,25 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 escape_down = bool(
                     ctypes.windll.user32.GetAsyncKeyState(0x1B) & 0x8000
                 )
+                picker_keys = getattr(self, '_manual_picker_key_codes', None)
                 if escape_down and not escape_was_down:
                     self.map_open_intent = False
                     self._suppress_map_surfaces_immediately()
                     self._queue_urgent_event({"kind": "map-closed", "source": "escape", 'intentApplied': True})
+                    if picker_keys:
+                        self.events.put({"kind": "manual-picker-key", "key": "Escape"})
                 escape_was_down = escape_down
+                if picker_keys:
+                    # Keys held while the picker opens (or while the game
+                    # regains focus) are not fresh picker choices.
+                    picker_down = {name: bool(read_key(vk) & 0x8000) for name, vk in picker_keys.items()}
+                    if picker_was_down is not None and not suppress_key_edges:
+                        for name, down in picker_down.items():
+                            if down and not picker_was_down.get(name, True):
+                                self.events.put({"kind": "manual-picker-key", "key": name})
+                    picker_was_down = picker_down
+                else:
+                    picker_was_down = None
                 for action in ACTION_ORDER:
                     if action in MANAGEMENT_HOTKEY_ACTIONS:
                         continue
@@ -18120,6 +18184,8 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                     action_triggered, action_down, action_edge_source = async_key_edge(
                         action_state, action_was_down[action],
                     )
+                    if picker_keys and not chord.modifiers and chord.vk in picker_keys.values():
+                        action_triggered = False  # The open picker owns F1–F4 and paging keys.
                     if not suppress_key_edges and action_triggered and modifiers_match(chord, read_key, reject_released=True):
                         self.events.put({"kind": "action-hotkey", "action": action, "key": key_name,
                                          "hotkeyGeneration": binding_epoch})
@@ -18766,6 +18832,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
         if action == "toggle-round":
             self.toggle_round()
             return
+        if action == "manual-map-picker":
+            self.toggle_manual_map_picker(source="hotkey")
+            return
         round_lock = self._round_identity_lock_context()
         if action == "end-round":
             self.end_round()
@@ -19102,6 +19171,8 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
     def _rerank_current(self, floor: str, floor_source: str, *, recovery_context=None):
         if self.current_frame is None:
             return
+        if getattr(self, 'map_selection_mode', 'auto') == 'manual' and self._round_identity_lock_context() is None:
+            return  # 手动选图: the player's pick is the identity; no reranking.
         scope = self._rerank_scope(floor)
         active = getattr(self, '_identity_rank_request', None)
         if active is not None:
@@ -28720,16 +28791,21 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             if token is not None and token != self.capture_generation:
                 return
             started = time.perf_counter()
-            preload_status = self.engine.preload_status(floor)
+            # Manual selection keeps capture and floor reading but leaves the
+            # identity to the player's pick: no ranking, seeds or diagnostics.
+            identity_skipped = getattr(self, 'map_selection_mode', 'auto') == 'manual' and not round_identity_locked
+            preload_status = None if identity_skipped else self.engine.preload_status(floor)
             rank_started = time.perf_counter()
-            group_prior = self._established_group_prior()
-            ranked = (self.engine.rank_established_group(best, floor, prior=group_prior,
+            group_prior = None if identity_skipped else self._established_group_prior()
+            ranked = ([] if identity_skipped else
+                self.engine.rank_established_group(best, floor, prior=group_prior,
                 budget_seconds=AUTO_IDENTITY_BUDGET_SECONDS) if group_prior else self.engine.rank(
                 best, floor=floor, limit=len(self.pack.maps),
                 budget_seconds=AUTO_IDENTITY_BUDGET_SECONDS))
             rank_completed = time.perf_counter()
             source_structure_candidate=None
-            source_diagnostics=(getattr(self.engine,'last_difficult_evidence',{}) or {}).get('sourceStructureCandidates') or {}
+            source_diagnostics=({} if identity_skipped else
+                (getattr(self.engine,'last_difficult_evidence',{}) or {}).get('sourceStructureCandidates') or {})
             raw_source_candidate=source_diagnostics.get('automaticCandidate')
             if (isinstance(raw_source_candidate,dict)
                 and raw_source_candidate.get('identityVerified') is True
@@ -28745,6 +28821,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 self.engine.last_front_diagnostics
                 if isinstance(self.engine, FrontDoorLiveTestEngine)
                 and isinstance(self.engine.last_front_diagnostics, dict)
+                and not identity_skipped
                 else None
             )
             if isinstance(front_diagnostics, dict):
@@ -28812,6 +28889,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                 "frontPoseSeed": front_pose_seed,
                 "sourceStructureCandidate": source_structure_candidate,
                 "nativeSimilarityRecheck": bool((round_lock or {}).get('nativeSimilarity')),
+                "identitySkipped": identity_skipped,
                 "seconds": time.perf_counter()-started,
                 "stageTimingsMs": {
                     "screenshot": round(screenshot_ms, 2),
@@ -34533,6 +34611,8 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             phase, severity, title, message = 'recovering', 'normal', '路线待核对', '路线暂不可用，等待新画面核对'
         elif pending and prior_fit:
             phase, severity, title, message = 'tracking', 'normal', '路线跟踪中', '地图已确认，自动核对当前路线'
+        elif pending and not locked and getattr(self, 'map_selection_mode', 'auto') == 'manual':
+            phase, severity, title, message = 'working', 'normal', '正在读取地图', '手动选图：正在读取地图画面和楼层'
         elif pending:
             phase, severity, title = 'working', 'normal', '正在核对路线' if locked else '正在识别地图'
             message = '已锁定地图，正在核对路线位置' if locked else '正在识别地图'
@@ -34557,6 +34637,8 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             candidate = self.pack.by_id.get(self.similarity_group_snapshot().get('provisionalMemberId'))
             phase, severity, title = 'needs-user', 'normal', '相似地图待区分'
             message = f"组内候选：{getattr(candidate, 'name', '待确认')} · 继续探索可见差异；当前尚未锁图"
+        elif getattr(self, 'map_selection_mode', 'auto') == 'manual':
+            phase, severity, title, message = 'needs-user', 'normal', '等待手动选图', self._manual_selection_hint()
         else:
             phase, severity, title, message = 'needs-user', 'normal', '地图待确认', '地图尚未确认，可查看候选地图'
         display = self._current_display_descriptor(map_id, floor)
@@ -34587,6 +34669,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
             controlVisible=tk_widget_is_viewable(getattr(self, "assistant_shell", None)),
             controlCollapsed=bool(getattr(self, 'control_collapsed', False)),
             mode=getattr(self, 'game_mode', 'nightmare'), sheetOpacityPercent=round(self.sheet_opacity * 100),
+            mapSelectionMode=getattr(self, 'map_selection_mode', 'auto'),
             referenceOpacityPercent=round(getattr(self, 'reference_opacity', self.sheet_opacity) * 100),
             referenceEnabled=bool(getattr(self, 'reference_sheet_visibility_enabled', True)),
             referenceAdjusting=bool(getattr(self, 'sheet_move_mode', False)),
@@ -36219,6 +36302,10 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                         self._handle_action_hotkey(str(event.get("action", "")))
                 elif kind == 'round-start-check':
                     self._service_round_start_intent()
+                elif kind == "manual-picker-key":
+                    self._handle_manual_picker_key(str(event.get("key", "")))
+                elif kind == "manual-picker-thumbnail":
+                    self._receive_manual_picker_thumbnail(event)
                 elif kind == "game-floor-control-intent":
                     self._handle_game_floor_control_intent(event)
                 elif kind == "mouse-drag-start":
@@ -37250,6 +37337,8 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                                 f"{event['floor']}层素材正在后台预热；请继续探索地图",
                                 "#f6c453",
                             )
+                        elif event.get("identitySkipped"):
+                            self._set_status(self._manual_selection_hint(), "#f6c453")
                         else:
                             self._set_status(
                                 "正在识别中，请继续探索地图",
@@ -38695,8 +38784,12 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin)
                         self._log("capture-error-stale-ignored", token=event.get("token"), currentToken=self.capture_generation)
                         continue
                     if event.get("silentHint"):
+                        # A map-key wake check still leaves the UI untouched,
+                        # but the player must see why nothing appeared.
                         self.active_map_cycle_id = None
                         self._log("map-key-visual-check-error", message=event.get("message"))
+                        self._record_route_issue('recognition', 'capture-failed', f"识别失败：{event['message']}")
+                        self._set_status(f"识别失败：{event['message']}", "#ff8a65")
                         continue
                     self.map_is_open = False
                     self.alignment_in_progress = False

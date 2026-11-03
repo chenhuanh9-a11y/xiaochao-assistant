@@ -1,0 +1,38 @@
+name: Qt map intent Windows regression
+
+on:
+  push:
+    branches: [fix/qt-map-intent-reset]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  map-intent:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: 'app;tests;tools;experiments/qt_quick'
+      QT_QPA_PLATFORM: offscreen
+      QT_QUICK_BACKEND: software
+      PYTHONUTF8: '1'
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13.3'
+          architecture: x64
+      - name: Install pinned test dependencies (no build or release)
+        run: |
+          python -m pip install --disable-pip-version-check -r experiments/qt_quick/requirements-client.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Input, coordinator, runtime and asynchronous close regressions
+        run: |
+          python -B -X utf8 -m unittest -v test_client_map_intent_reset test_client_map_input test_client_coordinator test_client_live_runtime test_client_floor_region test_client_input_event_freshness test_client_input_recovery
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

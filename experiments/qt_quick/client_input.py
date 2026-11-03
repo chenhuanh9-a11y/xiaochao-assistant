@@ -10,6 +10,7 @@ import ctypes
 from ctypes import wintypes
 import os
 import sys
+import time
 
 from PySide6.QtCore import QObject, Property, QTimer, Qt, Signal, Slot
 
@@ -18,13 +19,21 @@ APP = APP_ROOT
 if str(APP) not in sys.path:
     sys.path.insert(0, str(APP))
 from hotkey_bindings import Chord, modifiers_match, parse_chord, primary_state, validate_unique
-from hotkey_keys import _primary_hotkey_to_vk
+from hotkey_keys import _primary_hotkey_to_vk, NATIVE_ONLY_SHORTCUT_KEYS
 from session_state_machine import global_key_is_allowed
+from floor_observation_policy import MANUAL_FLOOR_HOLD_SECONDS
 from client_map_input import OrderedMapInput
+from client_native_keys import MOUSE_SHORTCUT_VKS
+from client_manual_map import MANUAL_PICKER_ACTION, PICKER_KEY_NAMES, PICKER_KEY_VKS
+
+# Shift/Ctrl/Alt/Win (generic and left/right): any held one means the press is
+# a chord for someone else, not a picker choice.
+PICKER_MODIFIER_VKS = (0x10, 0x11, 0x12, 0x5B, 0x5C, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5)
 
 
 ACTION_ORDER = ("toggle-panel", "candidate-prev", "candidate-next", "confirm-round",
-                "cycle-floor", "end-round", "toggle-sheet-visibility", "start-round", "toggle-round")
+                "cycle-floor", "end-round", "toggle-sheet-visibility", "start-round", "toggle-round",
+                MANUAL_PICKER_ACTION)
 MANAGEMENT_ACTIONS = frozenset({"toggle-panel", "toggle-sheet-visibility", "start-round",
                                 "toggle-round", "end-round"})
 KNOWN_ACTIONS = frozenset(("map", "escape", *ACTION_ORDER))
@@ -91,6 +100,7 @@ class NativeWindowAPI:
 class NativeShortcutBackend(QObject):
     changed = Signal()
     actionTriggered = Signal(str)
+    pickerKeyRequested = Signal(str)
     gamePointerPressed = Signal(object)
     gamePointerEvent = Signal(object)
     mapInputRequested = Signal(object)
@@ -103,10 +113,18 @@ class NativeShortcutBackend(QObject):
             source = PassThroughKeyboardSource(self)
         self._source = source
         self._management_enabled = False
+        self._management_requested = self._game_requested = False
+        self._binding_suspended = False
+        self._game_events_after = 0.0
+        self._modifier_presses = {}
         self._event_down = set()
         self._pointer_error = ""
         self._ordered_map_input = False
         self._map_input = OrderedMapInput()
+        # Empty unless the picker is visible. Names are kept for diagnostics;
+        # the values are the only keys routed to the picker.
+        self._picker_keys = {}
+        self._picker_down = None
         if source is not None:
             source.eventReceived.connect(self._key_event, Qt.QueuedConnection)
             source.started.connect(self._hook_started, Qt.QueuedConnection)
@@ -135,13 +153,22 @@ class NativeShortcutBackend(QObject):
         self._timer.timeout.connect(self.pollOnce)
 
     enabled = Property(bool, lambda self: self._enabled, notify=changed)
-    message = Property(str, lambda self: self._message, notify=changed)
+    def _public_message(self):
+        if (self._source is not None and (self._enabled or self._management_enabled) and self._observer_ready()
+                and any(chord.vk in (0x10, 0x11, 0x12) for chord in self._bindings.values())
+                and not getattr(self._source, "pointer_installed", False)):
+            return "鼠标监听尚未就绪，单独 Alt、Shift、Ctrl 快捷键已暂停；其他快捷键仍可使用。"
+        return self._message
+
+    message = Property(str, _public_message, notify=changed)
     snapshot = Property("QVariantMap", lambda self: dict(
-        enabled=self._enabled, status=self._status, message=self._message,
+        enabled=self._enabled, status=self._status, message=self._public_message(),
         hwnd=str(self._hwnd), bindings={name: chord.name for name, chord in self._bindings.items()},
         textEntryActive=self._text, editingBindings=self._editing,
         readPermission="unknown", passThrough=True, globalRegistration=False,
         closed=self._closed, managementEnabled=self._management_enabled,
+        managementRequested=self._management_requested, gameRequested=self._game_requested,
+        bindingSuspended=self._binding_suspended,
         hookRunning=bool(self._source and self._source.running),
         floorClickObserverInstalled=bool(self._source and getattr(self._source, "pointer_installed", False)),
         floorClickObserverError=self._pointer_error,
@@ -150,6 +177,7 @@ class NativeShortcutBackend(QObject):
 
     def _stop(self, status, message):
         self._timer.stop()
+        self._cancel_modifier_taps()
         self._enabled = False
         update = getattr(self._source, "update_pointer_target", None)
         if callable(update):
@@ -189,18 +217,20 @@ class NativeShortcutBackend(QObject):
         if self._closed:
             return
         self._hwnd = int(hwnd)
+        self._binding_suspended = False
         if self._hwnd <= 0:
             self._hwnd = 0
-            self._stop("unknown", "An explicit game HWND is required.")
+            self._stop("waiting", "Waiting for a verified game window.")
 
     @Slot("QVariantMap", result=bool)
     def configure(self, bindings):
         self.disable()
         if self._closed:
             return False
-        management_requested = self._management_enabled
+        management_requested = self._management_requested
         self._bindings, self._down = {}, {}
         self._management_enabled = False
+        self._management_requested = False
         if set(bindings) - KNOWN_ACTIONS:
             self._stop("unknown", "Unknown shortcut actions: " + ", ".join(sorted(set(bindings) - KNOWN_ACTIONS)))
             return False
@@ -216,9 +246,13 @@ class NativeShortcutBackend(QObject):
             self._stop("conflict", str(error))
             return False
         self._bindings = chords
-        self._management_enabled = management_requested
+        self._management_requested = management_requested
+        self._management_enabled = management_requested and self._observer_ready()
         if self._source is not None:
-            self._source.update_keys(chord.vk for chord in chords.values() if chord.vk)
+            # Picker keys stay subscribed even while hidden; setPickerKeys()
+            # controls whether a press is routed, not the hook's key filter.
+            self._source.update_keys((*(chord.vk for chord in chords.values() if chord.vk),
+                                      *PICKER_KEY_VKS.values()))
             self._event_down = set(self._source.held)
         self._down = {name: False for name in chords}
         self._status, self._message = "disabled", "Bindings validated; native shortcuts remain disabled."
@@ -229,6 +263,8 @@ class NativeShortcutBackend(QObject):
     def configureSettings(self, settings):
         actions = settings.get("actionHotkeys", [])
         if len(actions) != len(ACTION_ORDER):
+            self.disable()
+            self._management_requested = self._management_enabled = False
             self._bindings, self._down = {}, {}
             self._stop("conflict", "Shortcut action count does not match the product contract.")
             return False
@@ -250,35 +286,40 @@ class NativeShortcutBackend(QObject):
         except Exception as error:
             self._stop("failed", f"Native shortcuts unavailable: {error}")
             return False
+        self._game_requested = True
         self._prime, self._game_focus = True, None
-        self._enabled, self._status = True, "ready"
-        update = getattr(self._source, "update_pointer_target", None)
-        if callable(update):
-            update(self._hwnd)
-        self._message = "Pass-through native observer enabled; input permission is unknown."
         if self._source is None:
             self._timer.start()  # Injected diagnostic API only; never production.
         elif not self._source.start():
             self._stop("failed", "Native keyboard events are unavailable.")
             return False
-        self.changed.emit()
+        self._publish_listener_state()
         return True
 
     @Slot(result=bool)
     def enableManagement(self):
-        if self._closed or not self._bindings or self._status in ("conflict", "unknown"):
+        if self._closed or not self._bindings or self._status == "conflict":
             return False
         if self._source is None:
             return False  # No production polling fallback.
-        self._management_enabled = bool(self._source.start())
-        self.changed.emit()
-        return self._management_enabled
+        self._management_requested = True
+        accepted = bool(self._source.start())
+        self._publish_listener_state()
+        return accepted
 
-    def _hook_started(self, held):
-        self._event_down.update(held)
+    def _hook_started(self, snapshot):
+        if self._closed or not self._observer_ready():
+            return
+        if isinstance(snapshot, dict):
+            if snapshot.get("generation") == self._source.generation:
+                self._event_down = set(snapshot.get("held", ()))
+        else:
+            # Older injected fixtures have no generation authority to erase
+            # held keys seeded by a later configure. Production is versioned.
+            self._event_down.update(snapshot)
         if getattr(self._source, "pointer_installed", False):
             self._pointer_error = ""
-        self.changed.emit()
+        self._publish_listener_state()
 
     def setGamePointerContextProvider(self, provider):
         setter = getattr(self._source, "set_pointer_context_provider", None)
@@ -315,18 +356,40 @@ class NativeShortcutBackend(QObject):
             self.gamePointerPressed.emit(event)
 
     def _hook_failed(self, error):
+        if self._closed:
+            return
+        # A failure queued by the previous native thread must not disable its
+        # replacement after start() has cleared that thread's error.
+        if hasattr(self._source, "last_error") and self._source.last_error != error:
+            return
         self._management_enabled = False
         self._stop("failed", "Native keyboard observer failed: " + error)
 
     def _key_event(self, event):
         if self._closed or self._source is None or event.get("generation") != self._source.generation:
             return
-        vk, down = event["vk"], event["down"]
-        previous = vk in self._event_down
-        if down:self._event_down.add(vk)
-        else:self._event_down.discard(vk)
-        if not down or previous or self._text or self._editing:
+        from client_native_keys import BARE_MODIFIERS, generic_modifier
+        vk, down = generic_modifier(event["vk"]), event["down"]
+        physical = event.get("physicalVk", event["vk"])
+        previous = physical in self._event_down
+        if down:self._event_down.add(physical)
+        else:self._event_down.discard(physical)
+        press = self._modifier_presses.pop(physical, None) if not down else None
+        modifier_release = (not down and vk in BARE_MODIFIERS and
+                            event.get("modifierTap") is True and press is not None)
+        if (not down and not modifier_release) or (down and previous) or self._text or self._editing:
             return
+        # Native enqueue time survives the Qt queue. Always process releases
+        # above, but never turn a delayed/invalid press into a fresh action.
+        created = event.get("createdAt")
+        if type(created) not in (int, float):
+            return
+        try:
+            age = time.monotonic() - created
+        except OverflowError:
+            return
+        if not 0 <= age <= MANUAL_FLOOR_HOLD_SECONDS:
+            return  # Also rejects future timestamps and NaN/infinities.
         held = event["held"]
         def read(key):
             pairs={0x10:(0x10,0xa0,0xa1),0x11:(0x11,0xa2,0xa3),0x12:(0x12,0xa4,0xa5)}
@@ -339,37 +402,84 @@ class NativeShortcutBackend(QObject):
         except OSError:
             game = False  # A lost game must not disable global management keys.
         try:
-            assistant = bool(foreground and self._native.window_process_id(foreground) == os.getpid())
+            assistant = bool(foreground and self._native.foreground_window() == foreground
+                             and self._native.window_process_id(foreground) == os.getpid())
         except OSError:
             assistant = False
+        # The picker only consumes fresh bare presses while the game or this
+        # assistant is foreground; other apps and modifier chords keep their keys.
+        picker_keys = self._picker_keys
+        picker_vks = frozenset(picker_keys.values())
+        picker_name = (next((name for name, key in picker_keys.items() if key == vk), None)
+                       if down else None)
+        if picker_name is not None and (not (game or assistant)
+                                        or any(read(key) & 0x8000 for key in PICKER_MODIFIER_VKS)):
+            picker_name = None
+        if picker_name is not None:
+            # A receiver may close the picker synchronously (clearing the live
+            # key set), so consumption below uses this pre-emit snapshot.
+            self.pickerKeyRequested.emit(picker_name)
         try:
             for action,chord in self._bindings.items():
                 if chord.vk != vk or not modifiers_match(chord,read):continue
                 if action in MANAGEMENT_ACTIONS:
                     allowed=self._management_enabled
                 else:
-                    allowed=self._enabled and game
+                    created = event.get("createdAt")
+                    after_resume = (not self._game_events_after or
+                        type(created) in (int, float) and created >= self._game_events_after)
+                    allowed=self._enabled and game and after_resume
                 # The existing app-local QML shortcut owns F9 when this app is
                 # foreground. The hook owns it globally when hidden/background.
-                if action == "toggle-panel" and assistant:allowed=False
+                if action == "toggle-panel" and assistant and chord.vk not in NATIVE_ONLY_SHORTCUT_KEYS:allowed=False
+                if vk in BARE_MODIFIERS:
+                    if down:
+                        if allowed:
+                            self._modifier_presses[physical] = (foreground, created)
+                        continue  # A modifier is a tap only after a clean release.
+                    allowed = (allowed and press[0] == foreground
+                        and (action in MANAGEMENT_ACTIONS or not self._game_events_after
+                             or press[1] >= self._game_events_after))
+                # The open picker owns bare F1-F4/PgUp/PgDn/Backspace; configurable
+                # actions on those primaries must not also fire.
+                if (picker_name is not None and action != "escape"
+                        and not chord.modifiers and chord.vk in picker_vks):
+                    allowed=False
                 if allowed:self._dispatch_action(action, event)
         except Exception as error:
             self._hook_failed(str(error))
 
     @Slot()
     def disable(self):
+        self._game_requested = False
         self._stop("disabled", "Native shortcuts are disabled.")
 
     @Slot(bool)
     def setTextEntryActive(self, active):
         if self._text != bool(active):
+            self._cancel_modifier_taps()
             self._text, self._prime = bool(active), True
             self.changed.emit()
 
     @Slot(bool)
     def setEditingBindings(self, active):
         if self._editing != bool(active):
+            self._cancel_modifier_taps()
             self._editing, self._prime = bool(active), True
+            self.changed.emit()
+
+    @Slot("QVariantList")
+    def setPickerKeys(self, keys):
+        """Route picker keys only while its window is visible.
+
+        The native source always subscribes to these VKs so opening the picker
+        cannot miss a fresh press; this switch decides whether they act.
+        """
+        names = [str(name) for name in (keys or []) if str(name) in PICKER_KEY_VKS]
+        mapping = {name: PICKER_KEY_VKS[name] for name in names}
+        if mapping != self._picker_keys:
+            self._picker_keys = mapping
+            self._picker_down = None  # A key already held at open is not fresh.
             self.changed.emit()
 
     @Slot(result="QVariantList")
@@ -393,6 +503,30 @@ class NativeShortcutBackend(QObject):
             emitted = []
             suppress = self._prime or self._text or self._editing
             game_rearm = game_focus != self._game_focus
+            picker_consumed = set()
+            picker_keys = dict(self._picker_keys)
+            if picker_keys:
+                if self._picker_down is None:
+                    # First sample after opening only establishes held state.
+                    self._picker_down = {name: bool(read(vk) & 0x8000)
+                                         for name, vk in picker_keys.items()}
+                else:
+                    picker_owner = bool(game_focus or assistant_focus) and not any(
+                        read(key) & 0x8000 for key in PICKER_MODIFIER_VKS)
+                    for name, vk in picker_keys.items():
+                        state = read(vk)
+                        down = bool(state & 0x8000)
+                        edge = not self._picker_down.get(name, False) and bool(state & 0x8001)
+                        self._picker_down[name] = down
+                        if edge and not suppress and picker_owner:
+                            picker_consumed.add(vk)
+                            self.pickerKeyRequested.emit(name)
+                            if self._picker_keys != picker_keys:
+                                # A receiver closed (or replaced) the picker during
+                                # the emit; do not route stale keys from this tick.
+                                break
+            else:
+                self._picker_down = None
             for action, chord in self._bindings.items():
                 state = primary_state(chord, read)
                 down = bool(state & 0x8000)
@@ -402,10 +536,15 @@ class NativeShortcutBackend(QObject):
                 edge = not previous and bool(state & 0x8001)
                 self._down[action] = down
                 allowed = action in MANAGEMENT_ACTIONS or game_focus
-                if action == "toggle-panel" and assistant_focus:
+                if action == "toggle-panel" and assistant_focus and chord.vk not in NATIVE_ONLY_SHORTCUT_KEYS:
                     allowed = False  # Application-local shortcut owns this edge.
                 if action not in MANAGEMENT_ACTIONS and game_rearm:
                     allowed = False  # Held keys cannot fire on game focus return.
+                # The open picker owns bare F1-F4/PgUp/PgDn/Backspace. Escape
+                # keeps its separate fixed map-close edge, as in the Tk client.
+                if (action != "escape" and not chord.modifiers
+                        and chord.vk in picker_consumed):
+                    allowed = False
                 if (allowed and not suppress and edge
                         and modifiers_match(chord, read, reject_released=True)):
                     emitted.append(action)
@@ -423,9 +562,75 @@ class NativeShortcutBackend(QObject):
     def shutdown(self):
         self.disable()
         self._management_enabled = False
+        self._management_requested = False
         self._closed = True
         self._hwnd = 0
         self.setGamePointerContextProvider(None)
         if self._source is not None:
             self._source.stop()
         self.changed.emit()
+
+    def _cancel_modifier_taps(self):
+        self._modifier_presses.clear()
+        cancel = getattr(self._source, "cancel_modifier_taps", None)
+        if callable(cancel):
+            cancel()
+
+    @Slot()
+    def suspendGameBinding(self):
+        """Uncertain identity/geometry pauses input without revoking user intent."""
+        if self._closed or self._binding_suspended:
+            return
+        self._binding_suspended = True
+        self._stop("suspended", "Game window verification is temporarily unavailable.")
+
+    @Slot()
+    def resumeGameBinding(self):
+        """Only the owner can confirm the same binding; explicit disable wins."""
+        if self._closed or not self._binding_suspended:
+            return
+        self._game_events_after = time.monotonic()
+        self._binding_suspended = False
+        self._publish_listener_state()
+
+    def _observer_ready(self):
+        return self._source is None or (self._source.running
+            and bool(getattr(self._source, "installed", True)))
+
+    def _publish_listener_state(self):
+        ready = self._observer_ready()
+        game_valid = False
+        if self._game_requested and self._hwnd and not self._binding_suspended:
+            try:
+                game_valid = self._native.is_window(self._hwnd)
+            except Exception:
+                pass
+        self._enabled = bool(ready and self._game_requested and game_valid)
+        self._management_enabled = bool(ready and self._management_requested)
+        update = getattr(self._source, "update_pointer_target", None)
+        if callable(update):
+            update(self._hwnd if self._enabled else 0)
+        if self._binding_suspended:
+            self._status, self._message = "suspended", "Game window verification is temporarily unavailable."
+        elif self._enabled or self._management_enabled:
+            self._status, self._message = "ready", "Pass-through native observer enabled; input permission is unknown."
+        elif self._source is not None and self._source.running:
+            self._status, self._message = "starting", "Native keyboard observer is starting."
+        self.changed.emit()
+
+    @Slot(result=bool)
+    def recoverListening(self):
+        """Reconcile requested listening on the owner's bounded discovery tick.
+
+        No new input intent is granted. Game disable/unbind, invalid bindings
+        and shutdown revoke their intent; management may survive a lost game.
+        This checks thread/installation state, never polls keyboard levels.
+        """
+        if (self._closed or self._source is None or not self._bindings
+                or not (self._management_requested or self._game_requested)):
+            return False
+        if self._source.running:
+            return self._observer_ready()
+        accepted = bool(self._source.start())
+        self._publish_listener_state()
+        return accepted

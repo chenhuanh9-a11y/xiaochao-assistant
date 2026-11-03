@@ -131,8 +131,9 @@ class ChestAutoTap:
     After the bounded retry budget, the ledger stays visible for diagnosis.
     """
 
-    def __init__(self, path: Path, *, target_window, reserved=lambda: {}):
+    def __init__(self, path: Path, *, target_window, reserved=lambda: {}, require_release=False):
         self.path = Path(path)
+        self._require_release = require_release
         self._target_window = target_window  # Callable returning the game HWND or None.
         self._reserved = reserved
         self._lock = threading.Lock()
@@ -143,9 +144,16 @@ class ChestAutoTap:
         self._pending_releases = {}  # VK -> number of key-up attempts.
         self.status = "未开启"
         self.holding = False
-        self.error = ""
+        self._runtime_error = ""
+        self._configuration_error = ""
         self.available = _user32 is not None
         self.settings = self._load()
+
+    @property
+    def error(self):
+        # Configuration can be repaired; native faults remain sticky. Never
+        # clear a release failure merely because the player chose another key.
+        return " ".join(filter(None, (self._runtime_error, self._configuration_error)))
 
     def _defaults(self) -> dict:
         taken = self._reserved()
@@ -161,7 +169,7 @@ class ChestAutoTap:
                 try:
                     return validate(settings, self._reserved())
                 except ValueError as error:
-                    self.error = self.status = f"开箱连点已停用：{error}"
+                    self._configuration_error = self.status = f"开箱连点已停用：{error}"
                     return dict(settings, enabled=False)
         except (OSError, ValueError):
             pass
@@ -202,7 +210,9 @@ class ChestAutoTap:
                 self._save(disabled)
             except OSError:
                 message += " 停用状态保存失败，请检查软件目录是否可写。"
-            self._set_status(message, holding=False, error=message)
+            with self._lock:
+                self._configuration_error = message
+            self._set_status(message, holding=False)
             return dict(success=False, message=message)
         return dict(success=True, message="开箱连点按键检查通过。")
 
@@ -232,6 +242,8 @@ class ChestAutoTap:
         if normalised["enabled"] and not self.available:
             return dict(success=False, message="开箱连点只能在 Windows 上使用。")
         with self._lock:
+            if normalised["enabled"] and self._runtime_error:
+                return dict(success=False, message=self._runtime_error)
             if (normalised["enabled"] and self._pending_releases
                     and (self._stop.is_set() or any(self._pending_releases.values()))):
                 return dict(success=False, message="仍有按键未确认释放，开箱连点保持停用；请检查状态。")
@@ -248,6 +260,12 @@ class ChestAutoTap:
                 current = dict(self.settings)
             else:
                 self.settings = normalised
+                if not validation_error:
+                    # Only a validated, persisted, committed update may
+                    # acknowledge a repaired configuration. No input intent is
+                    # granted here; sync and the Qt foreground/release gate own it.
+                    self._configuration_error = ""
+                    self.status = self.error or "未开启"
                 self._generation += 1
         if interrupted:
             # A worker failure/stop during disk I/O takes priority over enabling.
@@ -274,7 +292,7 @@ class ChestAutoTap:
     def sync(self) -> None:
         """Wake the single worker; never join it or replace a live thread."""
         with self._lock:
-            enabled = (self.settings["enabled"] and self.available
+            enabled = (self.settings["enabled"] and self.available and not self._runtime_error
                        and not any(self._pending_releases.values()))
             if enabled:
                 self._stop.clear()
@@ -305,8 +323,8 @@ class ChestAutoTap:
             if holding is not None:
                 self.holding = holding
             if error is not None:
-                if error and error not in self.error:
-                    self.error = f"{self.error} {error}".strip()
+                if error and error not in self._runtime_error:
+                    self._runtime_error = f"{self._runtime_error} {error}".strip()
             self.status = self.error or text
 
     def _fault(self, message):
@@ -343,6 +361,8 @@ class ChestAutoTap:
 
     def _run(self):
         next_tap = 0.0
+        release_generation = None
+        released = False
         while True:
             self._wake.clear()
             with self._lock:
@@ -372,14 +392,24 @@ class ChestAutoTap:
                 continue
             try:
                 hold_vk, tap_vk = TRIGGER_VKS[settings["holdKey"]], KEY_NAMES[settings["tapKey"]]
+                if generation != release_generation:
+                    release_generation, released = generation, False
+                # Qt restores opt-in, not a physical key gesture. Observe release
+                # in the native owner too: UI polling can miss a short focus loss.
+                if not self._in_game():
+                    released = False
+                    self._set_status("游戏窗口不在前台，暂不连发", holding=False)
+                    next_tap = 0.0
+                    self._wake.wait(POLL_SECONDS)
+                    continue
                 if not key_down(hold_vk):
+                    released = True
                     self._set_status(f"等待按住 {settings['holdKey']}", holding=False)
                     next_tap = 0.0
                     self._wake.wait(POLL_SECONDS)
                     continue
-                if not self._in_game():
-                    self._set_status("游戏窗口不在前台，暂不连发", holding=False)
-                    next_tap = 0.0
+                if self._require_release and not released:
+                    self._set_status("请松开触发键后再按住", holding=False)
                     self._wake.wait(POLL_SECONDS)
                     continue
                 now = time.perf_counter()
@@ -401,11 +431,18 @@ class ChestAutoTap:
                 try:
                     deadline = now + min(PRESS_MS, settings["intervalMs"] / 2) / 1000
                     while (time.perf_counter() < deadline and self._active(generation)
-                           and key_down(hold_vk) and self._in_game()):
+                           and key_down(hold_vk)):
+                        if not self._in_game():
+                            # Latch the observation itself. Focus may return before
+                            # key-up completes or before the adapter polls again.
+                            released = False
+                            break
                         self._wake.wait(min(POLL_SECONDS, max(0, deadline - time.perf_counter())))
                         self._wake.clear()
                 finally:
                     self._release_pending()
+                if not self._in_game():
+                    released = False
                 next_tap = now + settings["intervalMs"] / 1000 if self._active(generation) else 0.0
                 self._set_status(f"正在连发 {settings['tapKey']}，松开 {settings['holdKey']} 停止",
                                  holding=self._active(generation))

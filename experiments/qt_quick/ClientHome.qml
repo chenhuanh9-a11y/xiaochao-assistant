@@ -60,7 +60,7 @@ Item {
                         Label { text: "先打开游戏控件，再回到游戏按地图键查看小抄。"; color: "#5c677d"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                         RowLayout {
                             Layout.topMargin: 10; spacing: 10
-                            AppButton { text: "打开游戏控件"; icon.source: "icons/panel.png"; icon.color: "transparent"; primary: false; implicitHeight: 44; onClicked: windows.show("controls") }
+                            AppButton { objectName: "homeShowControls"; text: "打开游戏控件"; icon.source: "icons/panel.png"; icon.color: "transparent"; primary: false; implicitHeight: 44; onClicked: clientCoordinator.showControls() }
                             AppButton { text: "返回游戏"; implicitHeight: 44; enabled: clientCoordinator.boundWindow !== ""; onClicked: clientCoordinator.returnToGame() }
                         }
                     }

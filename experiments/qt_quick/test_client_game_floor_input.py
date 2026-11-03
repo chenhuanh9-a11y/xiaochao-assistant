@@ -24,11 +24,13 @@ class Source(PassThroughKeyboardSource):
         return self.active
 
     def start(self):
-        self.active = True
+        # This test source installs no native hook. Explicitly model the ready
+        # observer contract rather than merely a running-but-uninstalled thread.
+        self.active = self.installed = True
         return True
 
     def stop(self):
-        self.active = False
+        self.active = self.installed = False
         return True
 
 

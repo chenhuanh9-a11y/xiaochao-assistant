@@ -10,6 +10,7 @@ from copy import deepcopy
 import sys
 import threading
 import time
+import traceback
 from uuid import uuid4
 
 from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, Qt, Signal, Slot
@@ -46,18 +47,31 @@ class _RuntimeWork(QRunnable):
         self.context, self.cancelled = context, cancelled
         self.diagnostics = getattr(runtime, "_diagnostics", None)
         self.signals = _ResultSignals()
+        self.failure_diagnostics = {}
 
     def run(self):
         started = time.monotonic() if self.diagnostics is not None else 0
         if self.diagnostics is not None:
             self.diagnostics.record("worker-start", jobId=id(self), action=self.action,
                 cancelled=self.cancelled.is_set(), frameId=self.context.get("frameId"))
+        operation = "runtime-dispatch"
         try:
             receipt = self.runtime.dispatch(self.action, self.payload, self.cancelled)
+            operation = "runtime-snapshot"
             state = self.runtime.snapshot()
             self.signals.done.emit(id(self), self.context, (receipt, state), None)
         except Exception as error:
-            self.signals.done.emit(id(self), self.context, None, f"{type(error).__name__}: {error}")
+            # Preserve main's original error signal/string before optional evidence.
+            message = f"{type(error).__name__}: {error}"
+            self.failure_diagnostics = dict(exceptionType=type(error).__name__,
+                exceptionOrigin='session-worker:' + operation, exceptionAction=self.action)
+            try:
+                # Format frames only: do not evaluate a stateful __str__ twice.
+                self.failure_diagnostics['traceback'] = ("".join(
+                    traceback.format_tb(error.__traceback__)) + message)[-8192:]
+            except Exception:
+                self.failure_diagnostics['traceback'] = message
+            self.signals.done.emit(id(self), self.context, None, message)
         finally:
             if self.diagnostics is not None:
                 self.diagnostics.record("worker-end", jobId=id(self), action=self.action,
@@ -184,7 +198,19 @@ class SessionService(QObject):
         action = str(action)
         if self._closed:
             return
-        if self._runtime is None or action not in self._available():
+        available = self._available()
+        manual_pick = False
+        if self._runtime is not None and action == "confirm_route" and action not in available:
+            # The picker's commit is gated by its own snapshot flag, not the
+            # advertised confirm_route command that the existing buttons use.
+            # Runtime _manual_action still validates mapId and round state.
+            map_id = payload.get("mapId") if isinstance(payload, dict) else None
+            if isinstance(map_id, str) and map_id:
+                try:
+                    manual_pick = bool(self._runtime.snapshot().get("manualMapPickAvailable"))
+                except Exception:
+                    manual_pick = False
+        if self._runtime is None or (action not in available and not manual_pick):
             self._message = f"Unavailable command: {action}. Attach a runtime that supports it."
             self.changed.emit()
             return
@@ -241,7 +267,8 @@ class SessionService(QObject):
             self._actions.fail(token, fallback_state="failed", reason=error)
             self._message = error
             self._last_receipt = dict(action=work.action, success=False, reason=error,
-                                      message=error, error=True, errorPhase="operation")
+                                      message=error, error=True, errorPhase="operation",
+                                      **work.failure_diagnostics)
         else:
             receipt, state = value
             receipt = receipt if isinstance(receipt, dict) else {}

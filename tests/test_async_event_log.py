@@ -26,13 +26,13 @@ class WriterTests(unittest.TestCase):
             writer = SlowWriter(Path(folder) / 'events.jsonl', capacity=4)
             writer.emit('first', {})
             self.assertTrue(entered.wait(1))
-            data = {'nested': [1]}
+            data = {'actual': [1]}
             started = time.perf_counter()
             for _ in range(1000):
                 writer.emit('map-probe-observed', data)
             writer.emit('capture-error', data)
             self.assertLess(time.perf_counter() - started, .5)
-            data['nested'][0] = 999
+            data['actual'][0] = 999
             self.assertEqual(writer.status()['pending'], 4)
             self.assertFalse(writer.flush(.01))
             release.set()
@@ -41,7 +41,7 @@ class WriterTests(unittest.TestCase):
             writer.thread.join(1)
             rows = [json.loads(s) for s in writer.path.read_text('utf-8').splitlines()]
             self.assertIn('capture-error', [r['event'] for r in rows])
-            self.assertEqual(rows[-1]['nested'], [1])
+            self.assertEqual(rows[-1]['actual'], [1])
             self.assertGreater(rows[-1]['diagnosticDroppedTotal'], 0)
 
     def test_snapshot_does_not_retain_frames_or_call_arbitrary_str(self):
@@ -66,7 +66,15 @@ class WriterTests(unittest.TestCase):
             writer.emit('good', {})
             self.assertTrue(writer.flush(2))
             self.assertEqual(writer.status()['failed'], 1)
+            loss = writer.status()['diagnosticLoss']
+            self.assertEqual(loss['lostTotal'], 1)
+            self.assertEqual(loss['suppressedTotal'], 0)
+            self.assertEqual(loss['ranges'][0]['reason'], 'write-failed')
+            rows = [json.loads(line) for line in writer.path.read_text().splitlines()]
+            self.assertEqual(rows[0]['seq'], loss['ranges'][0]['lastSeq'] + 1)
+            self.assertEqual(rows[0]['diagnosticLoss']['lostTotal'], 1)
             writer.close()
+            writer.thread.join(1)
 
     def test_nonstring_keys_and_snapshot_failure_are_bounded(self):
         value = snapshot(dict.fromkeys(range(100000)))

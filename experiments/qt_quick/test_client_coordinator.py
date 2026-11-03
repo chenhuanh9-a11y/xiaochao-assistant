@@ -528,7 +528,7 @@ class CoordinatorTests(unittest.TestCase):
         self.session.dispatch.assert_not_called()
         self.session.busy = False
         self.coordinator._watch_foreground()
-        self.session.dispatch.assert_called_once_with("capture_now")
+        self.session.dispatchWithPayload.assert_called_once_with("capture_now", dict(foregroundReturn=True))
 
     def test_position_preview_is_display_only_and_late_reply_is_cancelled(self):
         class Provider(QObject):
@@ -872,6 +872,38 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertEqual(errors[0]["action"], "game-floor-control")
         self.assertNotIn("快捷键暂不可用", errors[0]["title"])
+
+    def test_manual_picker_hotkey_button_and_confirm_share_the_existing_command(self):
+        picker = Mock()
+        self.coordinator._manual_map_picker = picker
+        self.settings.values["mapSelectionMode"] = "manual"
+        self.settings.persistedValues["mapSelectionMode"] = "manual"
+        self.settings.setValue = Mock(return_value=True)
+        self.settings.saveFields = Mock()
+        self.coordinator._native_action("manual-map-picker")
+        picker.toggle.assert_called_once_with(source="hotkey")
+        self.coordinator.requestManualMapSelection()
+        picker.open.assert_called_once_with(source="map-button")
+        self.session.dispatch.assert_not_called()
+        self.session.snapshot["availableCommands"] = ["reselect_map"]
+        self.runtime_state["manualMapPickAvailable"] = True
+        self.assertTrue(self.coordinator.confirmManualMap("map-a"))
+        self.session.dispatchWithPayload.assert_called_once_with("confirm_route", {"mapId": "map-a"})
+        self.runtime_state["manualMapPickAvailable"] = False
+        self.session.dispatchWithPayload.reset_mock()
+        self.assertFalse(self.coordinator.confirmManualMap("map-b"))
+        self.session.dispatchWithPayload.assert_not_called()
+        self.assertIn("地图资源就绪", self.coordinator.message)
+        self.coordinator.setMapSelectionMode("auto")
+        self.settings.setValue.assert_called_with("mapSelectionMode", "auto")
+        self.settings.saveFields.assert_called_with(["mapSelectionMode"])
+
+    def test_map_selection_mode_save_is_pushed_to_runtime_settings(self):
+        self.settings.persistedValues["mapSelectionMode"] = "manual"
+        self.settings.saved.emit()
+        self.runtime.configure_settings.assert_called_once_with(self.settings.persistedValues)
+        self.assertEqual(self.runtime.configure_settings.call_args.args[0]["mapSelectionMode"],
+                         "manual")
 
 
 if __name__ == "__main__":

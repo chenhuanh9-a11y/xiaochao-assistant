@@ -124,11 +124,9 @@ class HangWatchdog:
             "threads": stacks,
         }
         try:
-            self.output_dir.mkdir(parents=True, exist_ok=True)
-            path = self.output_dir / f"thread-stacks-{self.process_id}.jsonl"
-            with path.open("a", encoding="utf-8", newline="\n") as handle:
-                handle.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
-                handle.flush()
+            path = self.output_dir / "watchdog" / f"thread-stacks-{self.process_id}.jsonl"
+            from diagnostic_storage import append_record, slot_path
+            append_record(slot_path(path, "watchdog"), row, file_limit=64*1024, root_limit=256*1024, max_files=4)
         except OSError:
             # The watchdog must not feed a second failure back into the UI.
             return

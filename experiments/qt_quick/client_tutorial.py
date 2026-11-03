@@ -5,20 +5,23 @@ import os
 from pathlib import Path
 from PySide6.QtCore import QObject, Property, QThreadPool, QUrl, Qt, Signal, Slot
 from backend import Work
+from client_settings import ACTION_ORDER
 
 TUTORIAL_ROOT = Path(__file__).resolve().with_name("tutorial")
 CHAPTER_FILE = Path(__file__).resolve().with_name("tutorial-chapters.json")
-ACTION_ORDER = ("toggle-panel", "candidate-prev", "candidate-next", "confirm-round", "cycle-floor",
-                "end-round", "toggle-sheet-visibility", "start-round", "toggle-round")
 ACTION_NAMES = {"map": "游戏地图键", "toggle-panel": "游戏控件", "toggle-round": "本局开始 / 结束",
-                "toggle-sheet-visibility": "小抄显影"}
+                "toggle-sheet-visibility": "小抄显影", "manual-map-picker": "手动选图"}
 PAGES = {"home": "回到主页面", "settings": "去设置页", "gallery": "去地图资源", "custom": "去自定义路线",
          "help": "去帮助页"}
 
 
 def load_chapters(path=CHAPTER_FILE):
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
-    return data["chapters"], data["faq"]
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        return data["chapters"], data["faq"]
+    except (OSError, ValueError, KeyError, TypeError):
+        # Optional help content must not prevent the client from starting.
+        return [], []
 
 
 def _write_state(path, payload):
@@ -52,7 +55,7 @@ class TutorialService(QObject):
         if isinstance(data, dict):
             done = data.get("done")
             if isinstance(done, list):
-                self._done = [value for value in dict.fromkeys(done) if value in self._ids]
+                self._done = list(dict.fromkeys(value for value in done if isinstance(value, str) and value in self._ids))
             self._invited = data.get("invited") is True
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(1)
@@ -100,13 +103,13 @@ class TutorialService(QObject):
 
     @Slot(str)
     def markDone(self, chapter):
-        if chapter in self._ids and chapter not in self._done:
+        if not self._closed and chapter in self._ids and chapter not in self._done:
             self._done.append(chapter)
             self._save()
 
     @Slot()
     def dismissInvite(self):
-        if not self._invited:
+        if not self._closed and not self._invited:
             self._invited = True
             self._save()
 
@@ -117,6 +120,9 @@ class TutorialService(QObject):
         if self._jobs:
             self._dirty = True
             return
+        self._start_write()
+
+    def _start_write(self):
         self._dirty = False
         payload = dict(version=1, done=list(self._done), invited=self._invited)
         job = Work(lambda: _write_state(self.state_path, payload))
@@ -133,5 +139,13 @@ class TutorialService(QObject):
         self._pool.start(job)
 
     def shutdown(self):
+        if self._closed:
+            return
         self._closed = True
-        self._pool.waitForDone(2000)
+        # Normal window close drains via pendingWrites with the event loop live.
+        # Direct shutdown cannot rely on queued done callbacks to flush _dirty.
+        if self._dirty:
+            self._start_write()
+        self._pool.waitForDone()
+        self._jobs.clear()
+        self.changed.emit()

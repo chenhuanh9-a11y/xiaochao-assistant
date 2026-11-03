@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import sys
 import threading
 import queue
@@ -37,10 +38,11 @@ DEFAULT_CROSS_FLOOR_ATLAS = RESOURCE_ROOT / "references" / "nightmare-cross-floo
 DEFAULT_PORTABLE_LAYOUT_SEEDS = (
     RESOURCE_ROOT / "references" / "nightmare-portable-layout-seeds.json"
 )
-DEFAULT_MEMORY_ROOT = Path(os.environ.get(
+_DEFAULT_MEMORY_RAW_ROOT = Path(os.path.abspath(os.environ.get(
     "IDENTITYV_NIGHTMARE_MEMORY_ROOT",
     str(USER_ROOT / "work" / "nightmare-memory"),
-)).resolve()
+)))
+DEFAULT_MEMORY_ROOT = _DEFAULT_MEMORY_RAW_ROOT.resolve()
 SOURCE_STRUCTURE_PROFILE_ID = 'source-structure'
 ZHAN10_STRUCTURAL_PROFILE_IDS = frozenset({
     "zhan10-speed", "zhan10-coffin",
@@ -1364,6 +1366,90 @@ class NightmarePack:
         )]
 
 
+# Per map floor. Recognition reads at most the newest 6 usable crops.
+CONFIRMATION_SAMPLES_ON_DISK = 12
+SUCCESS_SAMPLES_PER_FLOOR = 6
+
+
+def _retention_stat(path: Path, root: Path):
+    """Fail closed for links/reparse points, including any ancestor of root.
+
+    Only housekeeping uses this guard; recognition and user-owned evidence
+    are unchanged. Recheck before deletion as a tree may change after listing.
+    This is not an atomic defense against a hostile concurrent filesystem.
+    """
+    try:
+        path_abs = Path(os.path.abspath(path))
+        root_abs = Path(os.path.abspath(root))
+        path_abs.relative_to(root_abs)
+        result = None
+        for item in (path_abs, *path_abs.parents):
+            info = item.lstat()
+            if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+                return None
+            if result is None:
+                result = info
+        path_abs.resolve(strict=True).relative_to(root_abs.resolve(strict=True))
+        return result
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+
+def _retention_files(directory: Path, root: Path | None = None):
+    """Enumerate regular owned files without traversing symlinks/junctions."""
+    root = directory if root is None else root
+    pending = [directory]
+    while pending:
+        parent = pending.pop()
+        info = _retention_stat(parent, root)
+        if info is None or not stat.S_ISDIR(info.st_mode):
+            continue
+        try:
+            children = list(parent.iterdir())
+        except OSError:
+            continue
+        for path in children:
+            info = _retention_stat(path, root)
+            if info is None:
+                continue
+            if stat.S_ISDIR(info.st_mode):
+                pending.append(path)
+            elif stat.S_ISREG(info.st_mode):
+                yield path, info
+
+
+def _retention_identity(info):
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_size,
+            info.st_mtime_ns, info.st_ctime_ns)
+
+
+@dataclass(frozen=True)
+class _RetentionCandidate:
+    path: Path
+    identity: tuple
+
+
+def _oldest_first(directory: Path, root: Path | None = None) -> list[_RetentionCandidate]:
+    """Finished owned files (not in-flight dot files), oldest first."""
+    files = [(info.st_mtime_ns, path.name, path, _retention_identity(info))
+             for path, info in _retention_files(directory, root)
+             if not path.name.startswith('.')]
+    return [_RetentionCandidate(path, identity) for _mtime, _name, path, identity in sorted(files)]
+
+
+def _delete_quietly(paths, root: Path) -> None:
+    for entry in paths:
+        path = entry.path
+        try:
+            info = _retention_stat(path, root)
+            if (info is None or not stat.S_ISREG(info.st_mode)
+                    or _retention_identity(info) != entry.identity):
+                continue
+            path.unlink()
+        except OSError:
+            pass
+
+
 class NightmareMemoryStore:
     """Append-only human labels plus game-map crops used as future exemplars."""
 
@@ -1376,6 +1462,10 @@ class NightmareMemoryStore:
     ) -> None:
         self.pack = pack
         self.root = Path(root)
+        # Keep the unresolved default only for cleanup admission. Recognition
+        # and persistence retain their existing resolved resource-path semantics.
+        self._retention_root = Path(os.path.abspath(
+            _DEFAULT_MEMORY_RAW_ROOT if root is DEFAULT_MEMORY_ROOT else root))
         self.log_path = self.root / "confirmations.jsonl"
         self.alignment_acceptance_path = self.root / "alignment-acceptances.jsonl"
         self.alignment_rejection_path = self.root / "alignment-rejections.jsonl"
@@ -1949,14 +2039,48 @@ class NightmareMemoryStore:
                 del task
 
     def _reserve_failure_bytes(self, size):
-        """Writer-only accounting includes old samples and the JSONL journal."""
+        """Writer-only accounting includes old samples and the JSONL journal.
+
+        Over budget, the oldest failure images are deleted first so the
+        newest evidence is kept; their JSONL rows remain as the audit trail.
+        """
+        if not self._retention_root_allowed():
+            raise OSError('alignment-failure-unsafe-cleanup-root; existing evidence preserved')
         if self._failure_disk_bytes is None:
-            self._failure_disk_bytes = sum(p.stat().st_size for p in (self.root / 'failures').rglob('*') if p.is_file())
-            if self.alignment_failure_path.is_file():
-                self._failure_disk_bytes += self.alignment_failure_path.stat().st_size
-        if self._failure_disk_bytes + size > self._failure_sampling.max_disk_bytes:
+            self._failure_disk_bytes = sum(info.st_size for _, info in _retention_files(self.root / 'failures'))
+            journal = _retention_stat(self.alignment_failure_path, self.root)
+            if journal is not None and stat.S_ISREG(journal.st_mode):
+                self._failure_disk_bytes += journal.st_size
+        budget = self._failure_sampling.max_disk_bytes
+        if self._failure_disk_bytes + size > budget:
+            for entry in _oldest_first(self.root / 'failures'):
+                path = entry.path
+                if self._failure_disk_bytes + size <= budget:
+                    break
+                try:
+                    info = _retention_stat(path, self.root / 'failures')
+                    if (info is None or not stat.S_ISREG(info.st_mode)
+                            or _retention_identity(info) != entry.identity):
+                        continue
+                    freed = info.st_size
+                    path.unlink()
+                except OSError:
+                    continue
+                self._failure_disk_bytes -= freed
+        if self._failure_disk_bytes + size > budget:
             raise OSError('alignment-failure-budget-exhausted; existing evidence preserved')
         self._failure_disk_bytes += size
+
+    def _retention_root_allowed(self):
+        # Missing roots are safe only if all existing ancestors are safe;
+        # first-write callers may reserve their journal before mkdir.
+        root = self._retention_root
+        while not root.exists() and not root.is_symlink():
+            if root == root.parent:
+                return False
+            root = root.parent
+        info = _retention_stat(root, root)
+        return info is not None and stat.S_ISDIR(info.st_mode)
 
     def alignment_failure_sampling_status(self):
         """In-memory status for a consumer to report on change, never disk I/O."""
@@ -2176,6 +2300,10 @@ class NightmareMemoryStore:
                 ) + "\n")
                 handle.flush()
                 os.fsync(handle.fileno())
+            # Diagnostic-only frames: keep the newest few per map floor.
+            cleanup_root = self.root / 'runtime-successes'
+            if self._retention_root_allowed():
+                _delete_quietly(_oldest_first(path.parent, cleanup_root)[:-SUCCESS_SAMPLES_PER_FLOOR], cleanup_root)
         return row
 
     def record_confirmation(
@@ -2243,7 +2371,30 @@ class NightmareMemoryStore:
                 handle.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
                 handle.flush()
                 os.fsync(handle.fileno())
+            if sample_rel is not None:
+                self._prune_samples(map_id, floor)
             return row
+
+    def _prune_samples(self, map_id: str, floor: str) -> None:
+        """Bound one map floor's crops without changing what recognition reads.
+
+        Recognition uses the newest usable crops (``exemplar_paths``) and its
+        reliability saturates well below that count. Those files and the
+        newest few on disk are kept; older crops are deleted while the JSONL
+        labels stay, so a missing file simply reads as an unusable sample.
+        """
+        directory = self.root / "samples" / map_id / floor
+        if not self._retention_root_allowed():
+            return
+        keep = {path.resolve() for path in self.exemplar_paths(floor).get(map_id, ())}
+        cleanup_root = self.root / 'samples'
+        files = _oldest_first(directory, cleanup_root)
+        keep.update(entry.path.resolve() for entry in files[-CONFIRMATION_SAMPLES_ON_DISK:])
+        stale = [entry for entry in files if entry.path.resolve() not in keep]
+        _delete_quietly(stale, cleanup_root)
+        for entry in stale:
+            path = entry.path
+            self._sample_validation_cache.pop(path.relative_to(self.root).as_posix(), None)
 
     def exemplar_paths(self, floor: str, limit_per_map: int = 6) -> dict[str, list[Path]]:
         grouped: dict[str, list[Path]] = {item.id: [] for item in self.pack.maps}

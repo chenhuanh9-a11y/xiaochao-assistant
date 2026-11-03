@@ -9,8 +9,8 @@ Item {
     readonly property var preferences: settingsService.values
     property var profileOptions: []
     property string profilesMode: ""
-    readonly property var actionNames: ["显示/隐藏面板", "上一个候选", "下一个候选", "确认本局", "切换楼层", "结束本局", "显示/隐藏小抄", "开始本局", "开始/结束本局"]
-    readonly property var actionIds: ["toggle-panel", "candidate-prev", "candidate-next", "confirm-round", "cycle-floor", "end-round", "toggle-sheet-visibility", "start-round", "toggle-round"]
+    readonly property var actionNames: ["显示/隐藏面板", "上一个候选", "下一个候选", "确认本局", "切换楼层", "结束本局", "显示/隐藏小抄", "开始本局", "开始/结束本局", "手动选图"]
+    readonly property var actionIds: ["toggle-panel", "candidate-prev", "candidate-next", "confirm-round", "cycle-floor", "end-round", "toggle-sheet-visibility", "start-round", "toggle-round", "manual-map-picker"]
     readonly property var moduleNames: ({display: "显示", mode: "游戏模式", manual_map: "选择地图与楼层", recognition: "候选与再识别", round: "本局动作"})
     property bool advancedShortcuts: false
     property bool advancedDisplay: false
@@ -85,16 +85,12 @@ Item {
         Field {
             objectName: keyRow.actionIndex < 0 ? "setting_hotkey" : "setting_action_" + keyRow.actionIndex
             Layout.preferredWidth: 104; Layout.maximumWidth: 132
+            readOnly: true
             enabled: !settingsService.shortcutRecording
-            text: keyRow.actionIndex < 0 ? root.preferences.hotkey : root.preferences.actionHotkeys[keyRow.actionIndex]
+            text: keyRow.actionIndex < 0 ? settingsService.persistedValues.hotkey : settingsService.persistedValues.actionHotkeys[keyRow.actionIndex]
             placeholderText: "未绑定"
             horizontalAlignment: Text.AlignHCenter
             Accessible.name: keyRow.title + "快捷键"
-            onEditingFinished: {
-                if (keyRow.actionIndex < 0) settingsService.setValue("hotkey", text)
-                else root.setAction(keyRow.actionIndex, text)
-                text = Qt.binding(function() { return keyRow.actionIndex < 0 ? root.preferences.hotkey : root.preferences.actionHotkeys[keyRow.actionIndex] })
-            }
         }
         AppButton {
             objectName: keyRow.actionIndex < 0 ? "record_hotkey" : "record_action_" + keyRow.actionIndex
@@ -146,6 +142,7 @@ Item {
         }
         Rectangle {
             visible: settingsService.shortcutRecording
+            z: 1  // Keep the recorder above scroll content before the next layout pass.
             Layout.fillWidth: true
             implicitHeight: captureContents.implicitHeight + 24
             radius: 8; color: "#e7effc"
@@ -183,10 +180,10 @@ Item {
                 Note { text: settingsService.shortcutMessage }
                 Flow {
                     Layout.fillWidth: true; spacing: 8
-                    AppButton { id: captureConfirm; objectName: "shortcutCaptureConfirm"; text: "确认到草稿"; primary: true; enabled: settingsService.shortcutCandidateReady; onClicked: settingsService.confirmShortcutCapture() }
-                    AppButton { objectName: "shortcutCaptureAgain"; text: "重新录入"; onClicked: root.recordShortcut(settingsService.shortcutTarget) }
-                    AppButton { objectName: "shortcutCaptureClear"; text: "解绑"; onClicked: settingsService.clearShortcutCandidate() }
-                    AppButton { objectName: "shortcutCaptureCancel"; text: "取消"; onClicked: settingsService.cancelShortcutCapture() }
+                    AppButton { id: captureConfirm; objectName: "shortcutCaptureConfirm"; text: settingsService.busy ? "正在保存…" : "保存并生效"; primary: true; enabled: settingsService.shortcutCandidateReady && !settingsService.busy; onClicked: settingsService.confirmShortcutCapture() }
+                    AppButton { objectName: "shortcutCaptureAgain"; enabled: !settingsService.busy; text: "重新录入"; onClicked: root.recordShortcut(settingsService.shortcutTarget) }
+                    AppButton { objectName: "shortcutCaptureClear"; enabled: !settingsService.busy; text: "解绑"; onClicked: settingsService.clearShortcutCandidate() }
+                    AppButton { objectName: "shortcutCaptureCancel"; enabled: !settingsService.busy; text: "取消"; onClicked: settingsService.cancelShortcutCapture() }
                 }
             }
         }
@@ -232,7 +229,7 @@ Item {
                                 Layout.fillWidth: true
                                 spacing: 6
                                 Repeater {
-                                    model: [1, 2, 3, 4, 5, 7]
+                                    model: [1, 2, 3, 4, 5, 7, 9]
                                     delegate: ShortcutRow {
                                         required property int modelData
                                         actionIndex: modelData
@@ -284,7 +281,7 @@ Item {
                                 Repeater {
                                     model: [
                                         {key: "referenceSheetVisible", title: "显示定点地图"},
-                                        {key: "orbVisible", title: "显示悬浮球"},
+                                        {key: "qtControlsVisible", title: "显示游戏控件"},
                                         {key: "reduceMotion", title: "减弱动态效果"},
                                         {key: "uiSoundEnabled", title: "界面提示音"}
                                     ]
@@ -294,7 +291,12 @@ Item {
                                         text: modelData.title
                                         font.family: "Microsoft YaHei UI"; font.pixelSize: 13
                                         checked: root.preferences[modelData.key]
-                                        onToggled: settingsService.setValue(modelData.key, checked)
+                                        onToggled: {
+                                            if (modelData.key === "qtControlsVisible") {
+                                                if (checked) clientCoordinator.showControls()
+                                                else clientCoordinator.hideControls()
+                                            } else settingsService.setValue(modelData.key, checked)
+                                        }
                                     }
                                 }
                             }
@@ -302,6 +304,8 @@ Item {
                     }
                     Rectangle { Layout.fillWidth: true; height: 1; color: "#edf2fa" }
                     ClientChestAutoTap { Layout.fillWidth: true }
+                    Rectangle { Layout.fillWidth: true; height: 1; color: "#edf2fa" }
+                    ClientFloorRegion { Layout.fillWidth: true }
                     Disclosure { objectName: "modeSettingsToggle"; text: root.modeExpanded ? "收起模式与路线" : "模式与路线"; expanded: root.modeExpanded; onClicked: root.modeExpanded = !root.modeExpanded }
                     ColumnLayout {
                         visible: root.modeExpanded
@@ -314,6 +318,21 @@ Item {
                     Item { Layout.fillWidth: true }
                 }
                 Note { text: "保存默认工作模式与路线作者；可用作者来自当前模式的本地图包。" }
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label { text: "选图方式"; color: "#354f75"; font.pixelSize: 13; Layout.fillWidth: true }
+                    AppButton {
+                        objectName: "setting_mapSelectionMode_auto"
+                        text: "自动识别"; selected: root.preferences.mapSelectionMode !== "manual"
+                        onClicked: { settingsService.setValue("mapSelectionMode", "auto"); settingsService.saveFields(["mapSelectionMode"]) }
+                    }
+                    AppButton {
+                        objectName: "setting_mapSelectionMode_manual"
+                        text: "手动选图"; selected: root.preferences.mapSelectionMode === "manual"
+                        onClicked: { settingsService.setValue("mapSelectionMode", "manual"); settingsService.saveFields(["mapSelectionMode"]) }
+                    }
+                }
+                Note { text: "手动选图时不自动识别地图，按“手动选图”快捷键或游戏控件里的“选择本局地图”自己选；锁图后两种方式相同。" }
                 GridLayout {
                     columns: root.width < 560 ? 1 : 2
                     columnSpacing: 16; rowSpacing: 8

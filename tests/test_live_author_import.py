@@ -81,6 +81,9 @@ class LiveAuthorImportTests(unittest.TestCase):
     def test_105_main_and_helper_share_strict_import_contract(self):
         self._check_version_import_contract('1.0.5', '1.0.0.9')
 
+    def test_106_main_and_helper_share_strict_import_contract(self):
+        self._check_version_import_contract('1.0.6', '1.0.0.10')
+
     def _check_version_import_contract(self, display, numeric):
         import star_map_import_helper as helper
         self.write('_internal/version.json', json.dumps(dict(
@@ -110,10 +113,13 @@ class LiveAuthorImportTests(unittest.TestCase):
 
     def test_unknown_client_version_remains_rejected(self):
         package = self.package('nightmare-suju', {SUJU: b'image'})
-        self.write('_internal/version.json', json.dumps(dict(
-            displayVersion='99.0', numericVersion='1.0.0.7')).encode())
-        with self.assertRaisesRegex(importer.ImportRejected, 'unsupported-client-version'):
-            importer.inspect_package(package, self.root)
+        for display, numeric in (('99.0', '1.0.0.7'), ('1.0.7', '1.0.0.11'),
+                                 ('1.0.6', '1.0.1.10')):
+            with self.subTest(display=display, numeric=numeric):
+                self.write('_internal/version.json', json.dumps(dict(
+                    displayVersion=display, numericVersion=numeric)).encode())
+                with self.assertRaisesRegex(importer.ImportRejected, 'unsupported-client-version'):
+                    importer.inspect_package(package, self.root)
 
     def test_readonly_support_hint_classifies_four_roles_without_filesystem_access(self):
         paths = {'nightmare-suju': SUJU, 'difficult-zhan10': NATIVE,
