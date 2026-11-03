@@ -42,7 +42,7 @@ class ResourceFeedbackTests(unittest.TestCase):
                     resources=owner.resources, session=session, windows=owner.windows,
                     native_input=keys, capture=capture, runtime=runtime, images=owner.images,
                     window_catalog=Mock(side_effect=AssertionError("discovery forbidden")))
-            c._bound = "123"; c._applied_context = (mode, "profile-one")
+            c._bound = "123"; c._applied_context = (mode, "profile-one", "s0")
             c._foreground_timer.stop(); c._tracking_timer.stop()
             notices, actions = [], []
             c.notificationRequested.connect(lambda *args: notices.append(args))
