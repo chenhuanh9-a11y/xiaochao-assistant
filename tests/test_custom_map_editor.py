@@ -10,6 +10,34 @@ from custom_map_editor import CustomMapEditor
 
 
 class GalleryIdentityTests(unittest.TestCase):
+    def test_plaza_gallery_is_readonly_but_can_be_deleted_in_tk(self):
+        store = Mock()
+        store.name.return_value = "下载路线"
+        store.drawn_maps.return_value = {"m"}
+        store.readonly.return_value = True
+        store.source.return_value = dict(author="fixture")
+        editor = SimpleNamespace(_galleries=lambda: store, gallery_id="downloaded", _in_use="",
+            gallery_title=Mock(), use_button=Mock(), gallery_note=Mock(), _maps=["m"],
+            _gallery__rename_gallery=Mock(), _gallery__delete_gallery=Mock(), _layout_tiles=Mock(),
+            _confirm=Mock(return_value=True), _note=Mock(), refresh=Mock(), ui=Mock())
+        CustomMapEditor._render_gallery(editor)
+        editor._gallery__rename_gallery.configure.assert_called_once_with(state="disabled")
+        editor._gallery__delete_gallery.configure.assert_called_once_with(state="normal")
+        self.assertIn("路线广场", editor.gallery_note.configure.call_args.kwargs["text"])
+        store.delete.return_value = True
+        CustomMapEditor._delete_gallery(editor)
+        store.delete.assert_called_once_with("downloaded")
+        self.assertIsNone(editor.gallery_id)
+
+    def test_default_gallery_still_cannot_be_deleted_in_tk(self):
+        store = Mock()
+        store.readonly.return_value = True
+        store.source.return_value = None
+        editor = SimpleNamespace(_galleries=lambda: store, gallery_id="default", _confirm=Mock())
+        CustomMapEditor._delete_gallery(editor)
+        editor._confirm.assert_not_called()
+        store.delete.assert_not_called()
+
     def test_same_label_gallery_rows_bind_their_own_stable_ids(self):
         callbacks = []
 

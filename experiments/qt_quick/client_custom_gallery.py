@@ -69,6 +69,7 @@ class CustomGalleryService(QObject):
         self._job = None
         self._closed = False
         self._busy = False
+        self._refresh_pending = False
         self._pending = None
         self._gallery = "default"
         self._map = ""
@@ -189,8 +190,8 @@ class CustomGalleryService(QObject):
             if result is False:
                 raise OSError("图集保存失败")
             data = json.loads(self.path.read_text(encoding="utf-8"))
-            expected = [{k: v for k, v in self._store.export(gid).items() if k != "schema"}
-                        for gid, _name, readonly in self._store.galleries() if not readonly]
+            expected = [{k: v for k, v in self._store.export(gid, include_source=True).items() if k != "schema"}
+                        for gid, _name, _readonly in self._store.galleries() if gid != "default"]
             if data.get("schema") != GALLERY_SCHEMA or data.get("galleries") != expected:
                 raise OSError("图集保存未完成，已恢复已保存内容")
             self._digest = _file_digest(self.path)
@@ -204,7 +205,7 @@ class CustomGalleryService(QObject):
 
     def _state_for_selection(self):
         store = self._store
-        galleries = [dict(id=gid, name=name, readonly=ro, drawnCount=len(store.drawn_maps(gid)))
+        galleries = [dict(id=gid, name=name, readonly=ro, source=store.source(gid), drawnCount=len(store.drawn_maps(gid)))
                      for gid, name, ro in store.galleries()]
         if self._gallery not in [g["id"] for g in galleries]:
             self._gallery = galleries[0]["id"]
@@ -216,6 +217,7 @@ class CustomGalleryService(QObject):
             galleryName=store.name(self._gallery), mapName=self.library.name(self._map),
             drawnCount=len(drawn), mapCount=len(maps),
             selectedFloor=self._floor, floors=[], points=[], lines=[], markers=[], readonly=bool(self._data_error) or store.readonly(self._gallery),
+            source=store.source(self._gallery), canDelete=not self._data_error and self._gallery != "default",
             imageUrl="", imageWidth=0, imageHeight=0, planError="", available=self.library.available,
             libraryMessage=self.library.error, dataError=self._data_error, canUndo=bool(self._past), canRedo=bool(self._future))
         if not self._map:
@@ -247,7 +249,7 @@ class CustomGalleryService(QObject):
             imageHeight=int(asset.image_size[1]), points=points, lines=lines, markers=markers)
         return state
 
-    def _run(self, function, message="", *, galleries_changed=False):
+    def _run(self, function, message="", *, galleries_changed=False, on_done=None):
         if self._closed or self._busy or self._pending:
             return False
         self._busy = True
@@ -269,12 +271,20 @@ class CustomGalleryService(QObject):
             self.changed.emit()
             if galleries_changed and not error:
                 self.galleriesChanged.emit()
+            if on_done is not None:
+                on_done(error)
+            if self._refresh_pending:
+                self._refresh_pending = False
+                self.refresh()
         job.signals.done.connect(done, Qt.QueuedConnection)
         self.pool.start(job)
         return True
 
     @Slot()
     def refresh(self):
+        if self._busy:
+            self._refresh_pending = True
+            return
         def reload():
             if not self._injected_library:
                 paths = runtime_paths(self.sandbox)
@@ -338,7 +348,7 @@ class CustomGalleryService(QObject):
 
     @Slot()
     def requestDeleteGallery(self):
-        if self._busy or self._pending or self._state.get("readonly"):
+        if self._busy or self._pending or not self._state.get("canDelete"):
             return
         self._pending = dict(kind="delete", gallery=self._gallery, digest=self._digest)
         self.changed.emit()
@@ -568,6 +578,27 @@ class CustomGalleryService(QObject):
     def setUseHandler(self, callback):
         self._use_handler = callback
         self.changed.emit()
+
+    def plazaVersions(self):
+        """Read only the last UI snapshot; the store belongs to its single worker."""
+        return {row["source"]["workId"]: row["source"]["versionId"]
+                for row in self._state["galleries"] if row.get("source")}
+
+    def installPlaza(self, account, route, cancelled, done):
+        """Use the same queue, digest guard and committed-cache invalidation as edits."""
+        from account_service import AccountError
+        from route_plaza import prepare_install
+        result = {}
+        def install():
+            revoked = lambda: cancelled() or self._refresh_pending
+            name, maps, source, report = prepare_install(account, self.library, route, cancelled=revoked)
+            if revoked():
+                raise AccountError("已取消下载，未导入路线")
+            gid = self._write(lambda: self._store.install_plaza(name, maps, source))
+            result.update(gallery=gid, report=report)
+            self._past, self._future = [], []
+        return self._run(install, "路线已下载，可在自定义图库中选用", galleries_changed=True,
+                         on_done=lambda error: done(result, error))
 
     def setActiveGallery(self, gid):
         self._in_use = str(gid or "")
