@@ -20,7 +20,7 @@ from PySide6.QtGui import QGuiApplication, QKeyEvent
 from client_paths import RESOURCE_ROOT as ROOT, WORK_ROOT, runtime_paths
 if str(ROOT / "app") not in sys.path:
     sys.path.insert(0, str(ROOT / "app"))
-from season_context import CONTEXTS, MODES, context_key, normalize_season, selected_profile
+from season_context import CONTEXTS, MODES, context_key, normalize_season, selected_profile, season_options
 from client_control_layout import load_layout, preset_layout, validate_layout
 from floor_control_region import normalized_region
 from client_manual_map import MANUAL_MAP_PICKER_DEFAULT_HOTKEY, MANUAL_PICKER_ACTION, SELECTION_MODES
@@ -235,6 +235,7 @@ class SettingsService(QObject):
 
     applicationPanelShortcut = Property(str, _application_panel_shortcut, notify=changed)
 
+    seasonOptions = Property("QVariantList", lambda s: season_options(), constant=True)
     values = Property("QVariantMap", lambda s: deepcopy(s._draft), notify=changed)
     persistedValues = Property("QVariantMap", lambda s: deepcopy(s._baseline), notify=changed)
     loadFailed = Property(bool, lambda s: bool(s._read_error), notify=changed)

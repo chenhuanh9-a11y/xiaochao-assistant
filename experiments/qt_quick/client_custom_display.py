@@ -16,7 +16,7 @@ if str(APP_ROOT) not in sys.path:
 from custom_maps import (RouteError, gallery_of, profile_id as custom_profile_id,
                          mask_sha256, render_game_layer)
 from shared_structure_reference import SharedStructureReference
-from season_context import normalize_season
+from season_context import normalize_season, season_label
 
 
 def _route_hash(points):
@@ -41,7 +41,7 @@ class CustomGalleryDisplay:
     def eligibility(self, gallery_id, mode, season="s0"):
         """Prepare a preference request; this does not apply it or mark it active."""
         if normalize_season(season) != "s0":
-            return dict(allowed=False, reason="season-resources-unavailable:s1", message="S1 自定义地图资源尚不可用")
+            return dict(allowed=False, reason=f"season-resources-unavailable:{season}", message=f"{season_label(season)} 自定义地图资源尚不可用")
         if mode != "nightmare":
             return dict(allowed=False, message="切换到噩梦模式后才能使用自定义图集")
         try:
@@ -57,7 +57,7 @@ class CustomGalleryDisplay:
 
     def use_request(self, gallery_id, mode, season="s0", *, fallback_profile="wang-qingxin"):
         if normalize_season(season) != "s0":
-            return dict(success=False, applied=False, reason="season-resources-unavailable:s1", message="S1 资源尚不可用")
+            return dict(success=False, applied=False, reason=f"season-resources-unavailable:{season}", message=f"{season_label(season)} 资源尚不可用")
         if not gallery_id:
             return dict(success=True, applied=False, galleryId="", profileId=fallback_profile,
                         message="正在恢复作者路线")
@@ -90,7 +90,7 @@ class CustomGalleryDisplay:
         """Return BGRA for the runtime's existing single BGRA→RGBA conversion."""
         if normalize_season(season) != "s0":
             with self._lock:
-                self._last_error = "season-resources-unavailable:s1"
+                self._last_error = f"season-resources-unavailable:{season}"
             return None
         gallery_id = gallery_of(profile)
         if gallery_id is None:

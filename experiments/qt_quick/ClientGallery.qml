@@ -56,12 +56,12 @@ Item {
         }
         RowLayout {
             Layout.fillWidth: true; spacing: 8
-            ComboBox {
-                objectName: "galleryContext"
-                model: [{label:"S0 困难",season:"s0",mode:"difficult"},{label:"S0 噩梦",season:"s0",mode:"nightmare"},{label:"S1 困难",season:"s1",mode:"difficult"},{label:"S1 噩梦",season:"s1",mode:"nightmare"}]
-                textRole: "label"
-                currentIndex: (backend.season === "s1" ? 2 : 0) + (backend.mode === "nightmare" ? 1 : 0)
-                onActivated: function(index) { backend.setContext(model[index].season, model[index].mode) }
+            SeasonSelector {
+                id: galleryContextSelector; objectName: "galleryContext"
+                seasons: settingsService.seasonOptions
+                season: backend.season; mode: backend.mode
+                enabled: true
+                onContextRequested: function(season, mode) { backend.setContext(season, mode) }
             }
             Label { objectName: "galleryMapCount"; text: "仅浏览 · " + backend.mapCount + " 份图"; color: "#526785"; font.pixelSize: 12 }
             Item { Layout.fillWidth: true }
@@ -125,7 +125,7 @@ Item {
                         }
                         Label {
                             width: parent.width
-                            text: backend.busy ? "正在读取地图资源…" : backend.season === "s1" ? "S1 资源待补齐" : "暂无地图资源，可在图库管理中导入。"
+                            text: backend.busy ? "正在读取地图资源…" : !galleryContextSelector.registeredContext(backend.season, backend.mode) ? galleryContextSelector.seasonLabel(backend.season) + " 资源待补齐" : "暂无地图资源，可在图库管理中导入。"
                             color: "#526785"; wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter
                         }
                     }

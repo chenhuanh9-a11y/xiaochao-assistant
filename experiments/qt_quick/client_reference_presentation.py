@@ -191,7 +191,8 @@ class ReferencePreviewProvider(QObject):
                 if cancelled.is_set():
                     return
                 if season != "s0":
-                    raise ValueError("S1 资源待补齐" if season == "s1" else "Unknown reference season")
+                    from season_context import season_label
+                    raise ValueError(f"{season_label(season)} 资源待补齐")
                 from contextlib import nullcontext
                 lease = (resource_read_lock(self._installation_root, wait=True, cancelled=cancelled.is_set)
                          if self._installation_root is not None else nullcontext())

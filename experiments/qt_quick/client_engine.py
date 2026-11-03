@@ -232,7 +232,7 @@ class EngineAdapter:
                                              reason="configured-factory" if mode in self._factories else "factory-unavailable")
                                   for mode in self.MODES})
             if self._context["season"] != "s0" and self._provider_registry is None:
-                capabilities = {mode: dict(available=False, reason="season-resources-unavailable:s1") for mode in self.MODES}
+                capabilities = {mode: dict(available=False, reason=f"season-resources-unavailable:{self._context['season']}") for mode in self.MODES}
             for mode, report in capabilities.items():
                 report.update(season=self._context["season"], mode=mode,
                               contextKey=context_key(mode, self._context["season"]))
@@ -367,7 +367,7 @@ class EngineAdapter:
         mode = context["mode"]
         season = context["season"]
         if season != "s0":
-            raise EngineUnavailable("season-resources-unavailable:s1")
+            raise EngineUnavailable(f"season-resources-unavailable:{season}")
         key = context_key(mode, season)
         if mode not in self._factories:
             raise EngineUnavailable(f"saved-frame-engine-unavailable:{mode}")

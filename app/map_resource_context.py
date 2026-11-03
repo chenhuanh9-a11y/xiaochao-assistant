@@ -13,6 +13,7 @@ import stat
 from types import MappingProxyType, SimpleNamespace
 from typing import Mapping
 
+from season_context import SEASONS, season_label
 from author_route_catalog import AuthorRouteCatalog, AuthorRouteProfile, AuthorRouteVariant
 from map_resource_model import MapResourceModel, ResourceMap
 from star_map_import import AUTHOR_PACKAGES, author_profiles_for_mode
@@ -89,7 +90,7 @@ def load_browse_context(resource_root: Path, mode: str, *, season="s0", cancelle
         raise CancelledError()
     if season != "s0":
         return BrowseContext(mode, root, None, None, None, (), MappingProxyType({}),
-            error="S1 资源待补齐" if season == "s1" else "unknown browse season", season=season)
+            error=f"{season_label(season)} 资源待补齐" if season in SEASONS else "unknown browse season", season=season)
     stamps = {}
     warnings = []
     display_defaults = set()

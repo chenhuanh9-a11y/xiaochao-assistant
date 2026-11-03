@@ -425,7 +425,7 @@ class ResourceService(QObject):
         if not self._available() or self._recovery:
             return
         if season != "s0":
-            self._message = "S1 资源待补齐，不能向 S1 导入 S0 图包"
+            self._message = f"{str(season).upper()} 资源待补齐，不能向该赛季导入 S0 图包"
             self.changed.emit()
             return
         url = QUrl(file_url)

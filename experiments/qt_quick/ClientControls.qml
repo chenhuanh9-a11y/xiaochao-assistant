@@ -361,12 +361,15 @@ Window {
         id: modeModule
         ColumnLayout {
             spacing: 4
-            GridLayout {
-                columns: 2; Layout.fillWidth: true; Layout.topMargin: 8; columnSpacing: 4; rowSpacing: 4
-                ControlButton { objectName: "controlModeDifficult"; text: "S0 困难"; primary: selected; selected: session.appliedSeason === "s0" && panel.appliedMode === "difficult"; enabled: panel.modeAvailable(); Layout.fillWidth: true; onClicked: clientCoordinator.requestGameContext("s0", "difficult") }
-                ControlButton { objectName: "controlModeNightmare"; text: "S0 噩梦"; primary: selected; selected: session.appliedSeason === "s0" && panel.appliedMode === "nightmare"; enabled: panel.modeAvailable(); Layout.fillWidth: true; onClicked: clientCoordinator.requestGameContext("s0", "nightmare") }
-                ControlButton { objectName: "controlContext_s1_difficult"; text: "S1 困难"; primary: selected; selected: session.appliedSeason === "s1" && panel.appliedMode === "difficult"; enabled: panel.modeAvailable(); Layout.fillWidth: true; onClicked: clientCoordinator.requestGameContext("s1", "difficult") }
-                ControlButton { objectName: "controlContext_s1_nightmare"; text: "S1 噩梦"; primary: selected; selected: session.appliedSeason === "s1" && panel.appliedMode === "nightmare"; enabled: panel.modeAvailable(); Layout.fillWidth: true; onClicked: clientCoordinator.requestGameContext("s1", "nightmare") }
+            SeasonSelector {
+                objectName: "controlGameContext"
+                Layout.fillWidth: true; Layout.topMargin: 8
+                seasons: settingsService.seasonOptions
+                season: session.appliedSeason; mode: panel.appliedMode
+                nightmareObjectName: "controlModeNightmare"
+                difficultObjectName: "controlModeDifficult"
+                enabled: panel.modeAvailable()
+                onContextRequested: function(season, mode) { clientCoordinator.requestGameContext(season, mode) }
             }
         }
     }

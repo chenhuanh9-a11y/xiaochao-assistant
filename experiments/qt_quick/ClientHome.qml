@@ -114,13 +114,12 @@ Item {
                         RowLayout {
                             Layout.fillWidth: true
                             Label { text: "本局"; color: "#17365e"; font.pixelSize: 19; font.bold: true }
-                            ComboBox {
-                                objectName: "homeGameContext"
-                                model: [{label:"S0 困难",season:"s0",mode:"difficult"},{label:"S0 噩梦",season:"s0",mode:"nightmare"},{label:"S1 困难",season:"s1",mode:"difficult"},{label:"S1 噩梦",season:"s1",mode:"nightmare"}]
-                                textRole: "label"
-                                currentIndex: (session.currentSeason === "s1" ? 2 : 0) + (session.currentMode === "nightmare" ? 1 : 0)
+                            SeasonSelector {
+                                id: homeContextSelector; objectName: "homeGameContext"
+                                seasons: settingsService.seasonOptions
+                                season: session.currentSeason; mode: session.currentMode
                                 enabled: !session.busy && !resourceService.busy && !settingsService.busy && !session.snapshot.roundActive && !session.snapshot.roundPreparing
-                                onActivated: function(index) { clientCoordinator.requestGameContext(model[index].season, model[index].mode) }
+                                onContextRequested: function(season, mode) { clientCoordinator.requestGameContext(season, mode) }
                             }
                             Item { Layout.fillWidth: true }
                             AppButton { text: "识别详情"; implicitHeight: 32; onClicked: clientCoordinator.navigate("recognition") }
@@ -182,7 +181,7 @@ Item {
                                 }
                             }
                         }
-                        Label { visible: infoService.homePreviews.length === 0; text: session.appliedSeason === "s1" ? "S1 资源待补齐" : "导入本地图包后，可在这里快速查看已安装地图。"; color: "#567096"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                        Label { visible: infoService.homePreviews.length === 0; text: !homeContextSelector.registeredContext(session.appliedSeason, session.appliedMode) ? homeContextSelector.seasonLabel(session.appliedSeason) + " 资源待补齐" : "导入本地图包后，可在这里快速查看已安装地图。"; color: "#567096"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                     }
                 }
             }

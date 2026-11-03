@@ -177,6 +177,7 @@ if QT:
     from test_client_control_actions import Settings, Coordinator
     class CommittedSettings(QObject):
         changed = Signal()
+        seasonOptions = Property("QVariantList", lambda self: [{"id":"s0","label":"S0","capabilities":{"nightmare":{"registered":True},"difficult":{"registered":True}}},{"id":"s1","label":"S1","capabilities":{"nightmare":{"registered":False},"difficult":{"registered":False}}}], constant=True)
         def __init__(self):
             super().__init__()
             self.data = dict(interfaceOpacity=1.0, sheetVisibilityEnabled=True, referenceSheetVisible=True,
@@ -196,6 +197,7 @@ if QT:
         currentMode = Property(str, lambda s: 'nightmare', constant=True)
         currentSeason = Property(str, lambda s: 's0', constant=True)
         appliedSeason = Property(str, lambda s: 's0', constant=True)
+        appliedMode = Property(str, lambda s: 'nightmare', constant=True)
         snapshot = Property('QVariantMap', lambda s: dict(commands={'start_round':{'available':False}}, roundActive=False, roundPreparing=False), constant=True)
         homePreviews = Property('QVariantList', lambda s: [], constant=True)
         gameWindows = Property('QVariantList', lambda s: [], constant=True)
@@ -218,7 +220,7 @@ class SeasonSelectorLayout(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QGuiApplication.instance() or QGuiApplication([])
 
-    def test_controls_four_contexts_fit_real_two_row_layout(self):
+    def test_controls_season_dropdown_and_difficulties_fit_real_layout(self):
         from copy import deepcopy
         from PySide6.QtCore import Property, QObject, QUrl, QPointF, QPoint, Qt, Slot
         from PySide6.QtQml import QQmlApplicationEngine
@@ -247,7 +249,7 @@ class SeasonSelectorLayout(unittest.TestCase):
                 for child in item.childItems():
                     yield from walk(child)
             items = {item.objectName(): item for item in walk(window.contentItem())}
-            names = ['controlModeDifficult', 'controlModeNightmare', 'controlContext_s1_difficult', 'controlContext_s1_nightmare']
+            names = ['controlGameContextSeason', 'controlModeDifficult', 'controlModeNightmare']
             buttons = [items[name] for name in names]
             for button in buttons:
                 self.assertTrue(button.isVisible())
@@ -258,10 +260,46 @@ class SeasonSelectorLayout(unittest.TestCase):
                 self.assertGreaterEqual(top.y(), 0)
                 self.assertLessEqual(bottom.x(), window.width())
                 self.assertLessEqual(bottom.y(), window.height())
-                point = button.mapToScene(QPointF(button.width()/2, button.height()/2))
+            button = items['controlModeDifficult']
+            point = button.mapToScene(QPointF(button.width()/2, button.height()/2))
+            QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, QPoint(round(point.x()), round(point.y())))
+            self.assertEqual(coordinator.requests, [('s0','difficult')])
+            picker = items['controlGameContextSeason']
+            self.assertEqual(picker.property('count'), 2)
+            def click_inside_window(item):
+                point = item.mapToScene(QPointF(item.width()/2, item.height()/2))
+                self.assertGreaterEqual(point.x(), 0)
+                self.assertGreaterEqual(point.y(), 0)
+                self.assertLess(point.x(), window.width())
+                self.assertLess(point.y(), window.height())
                 QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, QPoint(round(point.x()), round(point.y())))
-            self.assertEqual(coordinator.requests, [('s0','difficult'),('s0','nightmare'),('s1','difficult'),('s1','nightmare')])
-            self.assertGreater(buttons[2].mapToScene(QPointF()).y(), buttons[0].mapToScene(QPointF()).y())
+                QTest.qWait(20)
+            def popup_visible():
+                from PySide6.QtQml import QQmlExpression
+                expression = QQmlExpression(engine.rootContext(), picker, "popup.visible")
+                result = expression.evaluate()
+                self.assertFalse(expression.hasError())
+                return result[0] if isinstance(result, tuple) else result
+            # Use this production WindowDoesNotAcceptFocus tool window, not
+            # a normal-window surrogate of the shared selector.
+            self.assertTrue(window.flags() & Qt.WindowDoesNotAcceptFocus)
+            click_inside_window(picker)
+            self.assertTrue(popup_visible())
+            option = next(item for item in walk(window.contentItem())
+                          if item.objectName() == 'controlGameContextSeasonOption_s1')
+            click_inside_window(option)
+            self.assertEqual(coordinator.requests[-1], ('s1','nightmare'))
+            self.assertFalse(popup_visible())
+            # The stub owner has not acknowledged the request, so S0 remains.
+            self.assertEqual(picker.property('displayText'), 'S0')
+            state.data['roundActive'] = True
+            state.changed.emit()
+            self.app.processEvents()
+            count = len(coordinator.requests)
+            self.assertFalse(picker.isEnabled())
+            click_inside_window(picker)
+            self.assertFalse(popup_visible())
+            self.assertEqual(len(coordinator.requests), count)
             self.assertFalse(window.grabWindow().isNull())
             window.grabWindow().save('/tmp/season-controls-offscreen.png')
             self.assertFalse(warnings, '\n'.join(warnings))
@@ -313,7 +351,7 @@ class SeasonSelectorLayout(unittest.TestCase):
             engine.deleteLater()
             QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
-    def test_home_selector_renders_four_combinations_at_narrow_and_wide_widths(self):
+    def test_home_season_selector_renders_at_narrow_and_wide_widths(self):
         from PySide6.QtCore import Property, QObject, Signal, Slot, QUrl, QPointF, QPoint, Qt
         from PySide6.QtQml import QQmlEngine, QQmlComponent
         from PySide6.QtQuick import QQuickWindow
@@ -334,9 +372,9 @@ class SeasonSelectorLayout(unittest.TestCase):
         page.setParentItem(window.contentItem())
         try:
             window.show()
-            selector = page.findChild(QObject, 'homeGameContext')
+            selector = page.findChild(QObject, 'homeGameContextSeason')
             self.assertIsNotNone(selector)
-            self.assertEqual(selector.property('count'), 4)
+            self.assertEqual(selector.property('count'), 2)
             for width in (540, 1100):
                 window.resize(width, 900)
                 page.setWidth(width)
@@ -352,7 +390,7 @@ class SeasonSelectorLayout(unittest.TestCase):
             selector.forceActiveFocus(Qt.OtherFocusReason)
             QTest.keyClick(window, Qt.Key_Down)
             self.app.processEvents()
-            self.assertEqual(service.requests[-1], ('s1', 'difficult'))
+            self.assertEqual(service.requests[-1], ('s1', 'nightmare'))
             self.assertFalse(warnings, '\n'.join(warnings))
         finally:
             window.close()

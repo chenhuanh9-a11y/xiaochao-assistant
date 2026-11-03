@@ -17,7 +17,7 @@ from client_manual_map_service import ManualMapPickerService
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
-from season_context import selected_profile, context_key
+from season_context import selected_profile, context_key, season_label
 
 HERE = Path(__file__).resolve().parent
 
@@ -427,7 +427,7 @@ class QtClient:
         season = values.get("gameSeason", "s0")
         mode = values.get("gameMode", "nightmare")
         if season != "s0":
-            return dict(success=False, applied=False, message="S1 资源待补齐，不能使用 S0 自定义路线")
+            return dict(success=False, applied=False, message=f"{season_label(season)} 资源待补齐，不能使用 S0 自定义路线")
         previous = selected_profile(values, mode, season)
         remembered = getattr(self, "_previous_author_profiles", {})
         if previous and not str(previous).startswith("custom:"):

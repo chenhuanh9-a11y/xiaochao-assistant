@@ -20,7 +20,7 @@ from reference_position_editor import ReferencePositionEdit
 from client_problem_messages import operation_problem
 from client_input_diagnostics import InputDiagnostics
 from client_manual_map import MANUAL_PICKER_ACTION, normalize_selection_mode
-from season_context import normalize_season, context_key, selected_profile, CONTEXTS
+from season_context import SEASONS, season_label, normalize_season, context_key, selected_profile, CONTEXTS
 
 
 def _presentation_error_details(error):
@@ -498,7 +498,7 @@ class ClientCoordinator(QObject):
         mode = state.get("mode", self._applied_context[0])
         season = state.get("season", "s0")
         if not CONTEXTS[context_key(mode, season)].registered:
-            return ((season, mode, "season-resources-unregistered"), f"{season.upper()} 地图资源尚未登记，暂不能开始识别")
+            return ((season, mode, "season-resources-unregistered"), f"{season_label(season)} 地图资源尚未登记，暂不能开始识别")
         if self.resources.busy or self.resources.pendingKind or state.get("resourceLocked"):
             return ((mode, "resource-operation"), "正在更新地图资源，请等待资源操作完成后再打开地图")
         if self._pending_context or state.get("contextPending"):
@@ -1304,7 +1304,7 @@ class ClientCoordinator(QObject):
 
     @Slot(str, str)
     def requestGameContext(self, season, mode):
-        if season not in {"s0", "s1"} or mode not in {"nightmare", "difficult"} or self.settings.busy or self.resources.busy:
+        if season not in SEASONS or mode not in {"nightmare", "difficult"} or self.settings.busy or self.resources.busy:
             return
         current = self._settings_context(self.settings.persistedValues)
         if (mode, season) == (current[0], current[2]):

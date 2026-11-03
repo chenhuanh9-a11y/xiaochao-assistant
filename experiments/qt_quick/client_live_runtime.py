@@ -1761,7 +1761,7 @@ class LiveRuntime:
                 displayFallback=metadata.get("fallback", False), fallbackReason=metadata.get("fallbackReason", ""),
                 engineConnected=True,
                 liveEngineAvailable=bool(ready and guarded and self._capture is not None),
-                liveUnavailableReason=("season-resources-unavailable:s1" if self._season != "s0" else
+                liveUnavailableReason=(f"season-resources-unavailable:{self._season}" if self._season != "s0" else
                                        "capture-context-recheck-unavailable" if not guarded else
                                        "capture-provider-unavailable" if self._capture is None else
                                        capabilities[self._mode]["reason"] if not ready else ""),
@@ -2535,7 +2535,7 @@ class LiveRuntime:
         season = normalize_season(season)
         if season != "s0":
             from client_providers import ProviderUnavailable
-            raise ProviderUnavailable("season-resources-unavailable:s1")
+            raise ProviderUnavailable(f"season-resources-unavailable:{season}")
         getter = getattr(self._factories, "get_engine", None)
         return getter(mode, season) if callable(getter) else self._factories[mode]()
 

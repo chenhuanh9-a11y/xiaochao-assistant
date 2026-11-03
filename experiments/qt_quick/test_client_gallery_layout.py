@@ -108,6 +108,7 @@ class FakeBackend(QObject):
 
 class FakeState(QObject):
     changed = Signal()
+    seasonOptions = Property("QVariantList", lambda self: [{"id":"s0","label":"S0"},{"id":"s1","label":"S1"}], constant=True)
     currentSeason = Property(str, lambda self: "s0", notify=changed)
     currentMode = Property(str, lambda self: "nightmare", notify=changed)
     currentProfile = Property(str, lambda self: "shared-structure", notify=changed)
@@ -232,10 +233,9 @@ class GalleryLayoutTests(unittest.TestCase):
         self.resize(1000, 650)
         self.assertEqual(self.backend.selectedKey, key)
         self.assertTrue(self.item("galleryPreviewPane").isVisible())
-        context_picker = self.item("galleryContext")
-        self.assertEqual(context_picker.property("count"), 4)
-        context_picker.forceActiveFocus(Qt.OtherFocusReason)
-        QTest.keyClick(self.window, Qt.Key_Up)
+        context_picker = self.item("galleryContextSeason")
+        self.assertEqual(context_picker.property("count"), 2)
+        self.click("galleryContextDifficult")
         APP.processEvents()
         self.assertEqual(self.backend.calls[-1], ("mode", "difficult"))
         self.assertFalse(self.item("galleryUseAuthor").isEnabled())

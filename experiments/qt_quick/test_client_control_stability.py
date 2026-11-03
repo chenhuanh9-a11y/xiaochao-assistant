@@ -20,6 +20,7 @@ if Path('C:/Windows/Fonts/msyh.ttc').is_file():
 
 
 class StableSettings(Settings):
+    seasonOptions = Property("QVariantList", lambda self: [{"id":"s0","label":"S0"},{"id":"s1","label":"S1"}], constant=True)
     def __init__(self):
         super().__init__()
         self.data['gameControlLayout']['enabled'] = ['mode']

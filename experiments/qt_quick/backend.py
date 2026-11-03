@@ -10,6 +10,7 @@ from PySide6.QtCore import (QAbstractListModel, QObject, Property, QRunnable,
 
 from client_paths import RESOURCE_ROOT as ROOT, WORK_ROOT, runtime_paths, bundled_author_root
 sys.path.insert(0, str(ROOT / "app"))
+from season_context import SEASONS, season_label
 from map_resource_context import load_browse_context
 from star_map_import import inspect_package, install_package
 from resource_transaction import assert_resources_ready, resource_read_lock
@@ -267,7 +268,7 @@ class Backend(QObject):
 
     @Slot(str, str)
     def setContext(self, season, mode):
-        if season not in {"s0", "s1"} or mode not in {"nightmare", "difficult"}:
+        if season not in SEASONS or mode not in {"nightmare", "difficult"}:
             return
         if (season, mode) == (self._season, self._mode):
             return
@@ -371,7 +372,7 @@ class Backend(QObject):
         if self._importing or self._pending:
             return
         if self._season != "s0":
-            self._message = "S1 资源待补齐，不能向 S1 导入 S0 图包"
+            self._message = f"{season_label(self._season)} 资源待补齐，不能向该赛季导入 S0 图包"
             self.changed.emit()
             return
         path = Path(QUrl(value).toLocalFile())

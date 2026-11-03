@@ -48,7 +48,7 @@ Item {
         }
         Label {
             Layout.fillWidth: true
-            text: "此处管理已安装的 S0 资源。导入目标：" + backend.season.toUpperCase() + (backend.season === "s1" ? "（资源待补齐，暂不接受导入）。" : "。") + "删除只清理已核对归属的图包和历史副本；官方基础资源、自定义路线与未知文件会保留。"
+            text: "此处管理已安装的 S0 资源。导入目标：" + backend.season.toUpperCase() + (backend.season !== "s0" ? "（资源待补齐，暂不接受导入）。" : "。") + "删除只清理已核对归属的图包和历史副本；官方基础资源、自定义路线与未知文件会保留。"
             wrapMode: Text.Wrap; color: "#526785"; font.pixelSize: 12
         }
         ColumnLayout {

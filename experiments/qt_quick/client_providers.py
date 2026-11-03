@@ -18,7 +18,7 @@ if APP not in sys.path:
     sys.path.insert(0, APP)
 
 
-from season_context import SEASONS, context_key, normalize_season
+from season_context import CONTEXTS, SEASONS, context_key, normalize_season
 
 
 class ProviderUnavailable(RuntimeError):
@@ -138,9 +138,9 @@ class EngineFactories(dict):
         super().__init__({mode: lambda mode=mode: self._get(mode) for mode in self.MODES})
 
     def _initial_reports(self):
-        return {context_key(mode, season): dict(available=False, prepared=season != "s0",
+        return {context_key(mode, season): dict(available=False, prepared=not CONTEXTS[context_key(mode, season)].registered,
                     season=season, mode=mode, contextKey=context_key(mode, season),
-                    reason="resource-validation-pending" if season == "s0" else "season-resources-unavailable:s1")
+                    reason="resource-validation-pending" if CONTEXTS[context_key(mode, season)].registered else f"season-resources-unavailable:{season}")
                 for season in SEASONS for mode in self.MODES}
 
     def capabilities(self, season="s0"):

@@ -13,7 +13,7 @@ APP_ROOT = RESOURCE_ROOT / "app"
 INSTALL_ROOT = Path(sys.executable).resolve().parent
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
-from season_context import SeasonContext
+from season_context import SeasonContext, SEASONS, MODES
 from packaged_product_identity import PRODUCTION_APP_ID, PRODUCTION_PRODUCT, baked_identity
 
 
@@ -147,7 +147,7 @@ def runtime_paths(root=None):
     paths = RuntimePaths(validate_installation_root(DEFAULT_SANDBOX if root is None else root), PRODUCTION)
     for path in (paths.settings_path, paths.custom_galleries_path, paths.update_state_path, paths.tutorial_state_path,
                  paths.editor_base_root, paths.resource_root, paths.work_root,
-                 *(paths.memory_root(mode, season) for season in ("s0", "s1")
-                   for mode in ("nightmare", "difficult"))):
+                 *(paths.memory_root(mode, season) for season in SEASONS
+                   for mode in MODES)):
         _no_links(path)
     return paths
