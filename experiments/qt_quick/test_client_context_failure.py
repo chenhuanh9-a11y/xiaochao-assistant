@@ -23,6 +23,10 @@ class ContextFailureTests(unittest.TestCase):
         self.assertEqual(self.session.appliedMode, 'difficult')
 
     def test_context_error_with_unreadable_snapshot_fails_closed(self):
+        self.runtime.state.update(render={'liveAuthorization': True, 'token': 'old-render'},
+                                  displayAuthorized=True, identityPhase='MEMBER_VERIFIED',
+                                  reference={'key': 'old-reference'})
+        self.session.refreshRuntime()
         original = self.runtime.snapshot
         def dispatch(action, payload, cancelled):
             def unavailable():
@@ -38,7 +42,29 @@ class ContextFailureTests(unittest.TestCase):
         self.assertFalse(self.session.snapshot['liveEngineAvailable'])
         self.assertFalse(self.session.snapshot['liveAuthorization'])
         self.assertEqual(self.session.snapshot['availableCommands'], [])
+        self.assertNotIn('render', self.session.snapshot)
+        self.assertNotIn('reference', self.session.snapshot)
+        self.assertNotIn('identityPhase', self.session.snapshot)
+        self.assertFalse(self.session.snapshot.get('displayAuthorized'))
         self.assertIn('original dispatch failure', self.session.message)
+        self.runtime.snapshot = original
+
+    def test_superseding_action_rechecks_permissions_after_snapshot_failure(self):
+        self.runtime.release.clear()
+        self.runtime.fail = True
+        self.session.reconfigure('difficult', 'other')
+        until(self.runtime.started.is_set)
+        original = self.runtime.snapshot
+        def unavailable():
+            raise RuntimeError('snapshot unavailable')
+        self.runtime.snapshot = unavailable
+        self.session.dispatch('capture_now')
+        self.assertFalse(self.session.busy)
+        self.assertEqual(self.session.snapshot['availableCommands'], [])
+        self.assertIn('Unavailable command after context cancellation', self.session.message)
+        self.runtime.release.set()
+        until(lambda: not self.session._jobs)
+        self.assertEqual([call[0] for call in self.runtime.calls], ['set_context'])
         self.runtime.snapshot = original
 
     def test_context_rejection_preserves_reason_and_actual_state(self):

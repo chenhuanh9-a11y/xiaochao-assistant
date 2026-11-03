@@ -173,6 +173,16 @@ class SessionService(QObject):
             job.cancelled.set()
         self._pending = None
 
+    def _unavailable_runtime_state(self):
+        # Retain observed context and round locks, never identity/display grants
+        # from a snapshot we can no longer validate (including nested render).
+        state = {key: self._state[key] for key in (
+            "season", "mode", "profileId", "roundActive", "roundPreparing",
+            "roundWorkActive", "roundId", "cycleId") if key in self._state}
+        state.update(engineConnected=False, liveEngineAvailable=False,
+                     liveAuthorization=False, availableCommands=[])
+        return state
+
     def _restore_applied_context(self):
         """Reconcile a terminal context attempt, without erasing its receipt/error."""
         try:
@@ -180,9 +190,7 @@ class SessionService(QObject):
         except Exception:
             # The last observed applied context is safer than the failed intent.
             # Do not grant authority when fresh runtime state is unavailable.
-            self._state = dict(self._state, liveAuthorization=False,
-                               engineConnected=False, liveEngineAvailable=False,
-                               availableCommands=[], message="Runtime snapshot unavailable.")
+            self._state = self._unavailable_runtime_state()
         self._season = normalize_season(self._state.get("season", "s0"))
         self._mode = str(self._state.get("mode", "nightmare"))
         self._profile = str(self._state.get("profileId", ""))
@@ -211,8 +219,7 @@ class SessionService(QObject):
             self._state, self._season, self._mode, self._profile = state, season, mode, profile
             self._message = str(state.get("message", "Runtime ready."))
         except Exception as error:
-            self._state = dict(self._state, engineConnected=False, liveEngineAvailable=False,
-                               liveAuthorization=False, availableCommands=[])
+            self._state = self._unavailable_runtime_state()
             self._season = normalize_season(self._state.get("season", "s0"))
             self._mode = str(self._state.get("mode", "nightmare"))
             self._profile = str(self._state.get("profileId", ""))
@@ -259,6 +266,13 @@ class SessionService(QObject):
             self._invalidate("context-superseded")
             self._restore_applied_context()
             self._context_finished(pending[0], pending[0].context)
+            # Permission was checked before reconciliation. Never reuse that
+            # cached grant if the fresh runtime snapshot failed closed.
+            if (action not in self._available()
+                    and not (manual_pick and self._state.get("manualMapPickAvailable"))):
+                self._message = f"Unavailable command after context cancellation: {action}."
+                self.changed.emit()
+                return
         context = self._context()
         target = (context, deepcopy(dict(payload)))
         existing = self._actions.snapshot(action)
