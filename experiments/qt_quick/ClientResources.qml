@@ -10,10 +10,11 @@ Item {
 
     function stateLabel(status) {
         const labels = {"installed": "已安装并校验", "not-installed": "未安装", "incomplete": "文件缺失或有改动",
-            "unmanaged": "已有文件，尚未登记", "unverified": "尚未完成校验", "recovery-required": "需要恢复事务"}
+            "unmanaged": "已有文件，尚未登记", "unverified": "尚未完成校验", "recovery-required": "需要恢复事务", "bundled": "内置默认资源"}
         return labels[status] || status
     }
     function stateDetail(row) {
+        if (row.status === "bundled") return "安装包自带，已导入的资源和当前选择保持优先。"
         if (row.status === "unmanaged") return "现有文件没有可验证的登记记录，将保留原文件。"
         if (row.status === "incomplete") return "请核对本地改动；移除时会备份实际文件。"
         if (row.status === "unverified") return "暂时无法完成核对，请重新检查状态。"

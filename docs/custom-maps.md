@@ -53,6 +53,8 @@ python tools/maps/install_custom_maps.py --archive xingtu-custom-maps-VERSION.zi
 
 资源包含 `manifest.json`（对应关系、矩阵、入口、楼梯与逐文件 SHA-256）、`images/`、`topology/` 和入口图标，安装到 `assets/custom-maps`（不进 Git，可用 `XINGTU_CUSTOM_MAPS_ROOT` 指定）。软件读取每个文件前都会核对 SHA-256。
 
+Qt 私测 Setup 同样收集已锁定的编辑器基础包到程序拥有的 `_internal/qt-editor-base`。已存在的隔离目录不重新 seed：优先读取旧目录内完整且通过哈希检查的地图库，缺失或损坏时只读使用程序默认库；旧库、账号、设置和玩家图库均不覆盖。仅把资源补进普通安装目录不能修复已有隔离目录，必须同时验证这条回退路径。
+
 为节省空间，底图存为 WebP（颜色质量 90，透明通道无损；`--quality 0` 改为全无损），道路网只保留软件用到的点、房间和连线；门、房间轮廓等来源信息留在游戏数据交接包里。旧版 PNG 资源包仍可读取。
 
 ## 路线与图库

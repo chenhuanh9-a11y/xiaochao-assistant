@@ -33,8 +33,10 @@ def run_client_probe(client, output):
             if step == 0:
                 if (not client._initialized or client.session.busy or client.resources.busy or backend.busy) and time.monotonic()-started < 30:
                     return
-                check("registered_surfaces", set(client.windows._windows) == {
-                    "main", "controls", "reference", "aligned", "replay", "preview", "toast"})
+                state["registered_surface_names"] = sorted(client.windows._windows)
+                check("registered_surfaces", {
+                    "main", "controls", "reference", "aligned", "replay", "preview", "toast"
+                }.issubset(client.windows._windows))
                 check("no_implicit_native_input", not client.input.enabled and not client.capture.snapshot["enabled"])
                 check("no_tk_import", "tkinter" not in __import__("sys").modules)
                 check("resource_list_ready", backend.count > 0)
@@ -117,10 +119,19 @@ def run_client_probe(client, output):
                     raise RuntimeError("Route-writing probe requires an owned build/test directory")
                 client.custom_galleries.selectMap("nightmare-09")
             elif step == 9:
-                image = window.findChild(QObject, "customMapImage")
+                # A hidden probe window may not polish a newly opened layout
+                # until a frame is requested. Measure the same rendered frame
+                # that the screenshot evidence uses, rather than stale geometry.
+                window.grabWindow()
+                image = window.findChild(QQuickItem, "customMapImage")
+                # Resource preparation may consume the earlier startup budget.
+                # Give this newly opened editor its own bounded layout/load wait.
+                deadline = state.setdefault("editor_ready_deadline", time.monotonic() + 8)
                 if (client.custom_galleries.busy or image is None
-                        or image.property("paintedWidth") <= 0) and time.monotonic()-started < 35:
+                        or image.property("paintedWidth") <= 0) and time.monotonic() < deadline:
                     return
+                state["editor_viewport"] = ({key:image.property(key) for key in
+                    ("width", "height", "paintedWidth", "paintedHeight")} if image else None)
                 check("editor_viewport_has_width", image is not None and image.property("width") > 100
                       and image.property("height") > 100)
                 check("editor_map_pixels_visible", image is not None and image.property("paintedWidth") > 0

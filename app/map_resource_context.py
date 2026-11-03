@@ -75,7 +75,8 @@ class BrowseContext:
     warnings: tuple[str, ...] = ()
 
 
-def load_browse_context(resource_root: Path, mode: str, *, cancelled=lambda: False) -> BrowseContext:
+def load_browse_context(resource_root: Path, mode: str, *, cancelled=lambda: False,
+                        display_fallback_root=None) -> BrowseContext:
     """Read installed declarations and stat preview files, on the caller's worker.
 
     Missing mode/bad metadata returns an explicit error context; cancellation raises
@@ -85,6 +86,7 @@ def load_browse_context(resource_root: Path, mode: str, *, cancelled=lambda: Fal
     root = Path(resource_root).resolve()
     stamps = {}
     warnings = []
+    display_defaults = set()
 
     def check():
         if cancelled():
@@ -93,7 +95,7 @@ def load_browse_context(resource_root: Path, mode: str, *, cancelled=lambda: Fal
     def local(relative, base=None):
         check()
         path = ((base or root) / str(relative)).resolve()
-        if not path.is_relative_to(root):
+        if not path.is_relative_to(root) and path not in display_defaults:
             raise ValueError("resource path escapes browse root")
         return path
 
@@ -134,7 +136,9 @@ def load_browse_context(resource_root: Path, mode: str, *, cancelled=lambda: Fal
                         raise ValueError("author variant layers must be an object")
         # AuthorRouteCatalog's resource-root base is catalog.parent.parent;
         # validate the final path, including sidecar catalogs, before exposure.
-        catalog = AuthorRouteCatalog(path, asset_base=root)
+        catalog = AuthorRouteCatalog(path, asset_base=root,
+            fallback_root=display_fallback_root if mode == "difficult" else None)
+        display_defaults.update(catalog._fallback_paths)
         if len(catalog.profiles) != len(raw.get("profiles", [])):
             raise ValueError("duplicate author profile")
         for profile in catalog.profiles.values():

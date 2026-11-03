@@ -15,7 +15,7 @@ from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtCore import qVersion
 from backend import ROOT, Work
 from map_resource_context import load_browse_context
-from client_paths import PRODUCTION, WORK_ROOT, runtime_paths
+from client_paths import PRODUCTION, WORK_ROOT, runtime_paths, bundled_author_root
 from PySide6.QtCore import QThreadPool, Qt
 from update_service import UpdateService, DOWNLOAD_HOSTS
 from diagnostic_export import export_safe_diagnostic_bundle, diagnostic_package_metadata
@@ -180,7 +180,8 @@ class ClientInfoService(QObject):
 
     @staticmethod
     def _home_rows(root, mode, profile_id):
-        context = load_browse_context(root, mode)
+        fallback = bundled_author_root()
+        context = load_browse_context(root, mode, **({"display_fallback_root": fallback} if fallback else {}))
         if context.error or context.pack is None:
             return []
         profile = next((p for p in context.profiles if p.profile_id == profile_id), None)

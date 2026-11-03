@@ -78,12 +78,16 @@ class EditorUpgradeTests(fixture.CustomGalleryTests):
         self.assertFalse(self.service.snapshot['dataError'])
 
     def test_synthetic_map_drawing_surface_has_usable_width_in_real_window(self):
+        # The default state is the gallery browser; its hidden editor has no
+        # layout width. Measure only after the real map-selection transition.
+        self.call('selectMap', 'synthetic-map')
         engine = QQmlApplicationEngine()
         engine.rootContext().setContextProperty('customGalleryService', self.service)
         engine.loadData(b'import QtQuick\nimport QtQuick.Window\nWindow { width: 1000; height: 720; visible: true; ClientCustomGallery { anchors.fill: parent; anchors.margins: 24 } }', QUrl.fromLocalFile(str(Path(__file__).with_name('EditorEvidence.qml'))))
         window = engine.rootObjects()[0]
         APP.processEvents()
         image = window.findChild(QQuickItem, 'customMapImage')
+        until(lambda: image.width() > 400 and image.height() > 250)
         self.assertGreater(image.width(), 400)
         self.assertGreater(image.height(), 250)
         window.close()

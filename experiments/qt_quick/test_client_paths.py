@@ -80,6 +80,21 @@ class RuntimePathTests(unittest.TestCase):
         outer.mkdir(parents=True)
         self.assertEqual(module.runtime_paths().editor_base_root, outer)
 
+    def test_existing_test_sandbox_can_read_program_editor_default_without_reseeding(self):
+        module = self.load(profile=self.isolated)
+        sandbox = module.DEFAULT_SANDBOX
+        sandbox.mkdir(parents=True)
+        (sandbox/'.qt-lab-owner').write_text('qt-quick-isolated-v1', encoding='utf8')
+        settings = sandbox/'ui-settings.json'
+        settings.write_bytes(b'{"selected":"custom:mine"}')
+        baseline = self.internal/'qt-editor-base'
+        baseline.mkdir()
+        paths = module.runtime_paths()
+        self.assertEqual(paths.resource_root, sandbox/'_internal')
+        self.assertIn(baseline, paths.editor_base_candidates)
+        self.assertEqual(paths.editor_base_root, baseline)
+        self.assertEqual(settings.read_bytes(), b'{"selected":"custom:mine"}')
+
 
 if __name__ == "__main__":
     unittest.main()

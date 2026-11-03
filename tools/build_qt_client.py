@@ -427,7 +427,7 @@ def _local_file(root, name):
     return path
 
 
-def validate_resources(root, inventory):
+def validate_resources(root, inventory, *, bundled_packages=()):
     root, inventory = Path(root).resolve(), Path(inventory).resolve()
     if not root.is_dir() or root == ROOT or root == ROOT / "work":
         raise ValueError("Pass the exact isolated resource root, not the source/work directory")
@@ -453,7 +453,7 @@ def validate_resources(root, inventory):
     actual = {path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()}
     if actual != set(rows):
         raise ValueError("Inventory must cover the exact resource root; undeclared/missing files exist")
-    retained, omitted = partition_resources(rows)
+    retained, omitted = partition_resources(rows, bundled_packages=bundled_packages)
     # The source version describes this client; the input's resourceVersion is
     # retained independently in the profile/record. Never ship an old EXE version.
     replaced = {"version.json": retained.pop("version.json")} if "version.json" in retained else {}
@@ -466,12 +466,12 @@ def validate_resources(root, inventory):
     return declaration, retained, omitted, replaced, contract
 
 
-def verify_frozen(stage, resources, qml_names, product=PRODUCT):
+def verify_frozen(stage, resources, qml_names, product=PRODUCT, *, bundled_author_paths=()):
     internal = stage / "_internal"
     executable = stage / (product + ".exe")
     manifests = verify_administrator_manifest(executable)
     for name, row in resources.items():
-        path = internal / name
+        path = internal / ("qt-author-base/" + name if name in bundled_author_paths else name)
         if not path.is_file() or path.stat().st_size != row["bytes"] or sha256(path) != row["sha256"].lower():
             raise ValueError(f"Frozen resource mismatch: {name}")
     for name in qml_names:
@@ -612,6 +612,8 @@ def main(argv=None):
     parser.add_argument("--source-commit")
     parser.add_argument("--resource-root", type=Path, help="Exact isolated assets/references root, not its parent")
     parser.add_argument("--resource-inventory", type=Path)
+    parser.add_argument("--bundled-package", action="append", choices=("difficult-zhan10",), default=[],
+                        help="Include this explicitly authorized display default in the private test Setup")
     parser.add_argument("--iscc", type=Path)
     parser.add_argument("--output-dir", type=Path, help="NEW directory within this checkout's work/ or dist/")
     args = parser.parse_args(argv)
@@ -627,7 +629,13 @@ def main(argv=None):
     qt = ROOT / "experiments/qt_quick"
     if not (qt / "client.py").is_file() or not (qt / "Client.qml").is_file():
         raise ValueError("Integrated Qt entrypoint is not present")
-    declaration, resources, omitted, replaced, contract = validate_resources(args.resource_root, args.resource_inventory)
+    if args.bundled_package and args.instance != "client":
+        raise ValueError("Bundled author defaults currently support only the isolated client Setup")
+    declaration, resources, omitted, replaced, contract = validate_resources(args.resource_root, args.resource_inventory,
+                                                                         bundled_packages=args.bundled_package)
+    author_paths = sorted(name for name in resources if name.startswith(("assets/zhan10-native/", "assets/zhan10-legacy-clean/")))
+    if args.bundled_package and not author_paths:
+        raise ValueError("Selected bundled author package has no display assets")
     if BRAND_ICON not in resources or resources[BRAND_ICON]["sha256"].lower() != BRAND_ICON_SHA256:
         raise ValueError("The existing supplied Xingtu ICO must be present in the locked resource inventory")
     notices = notice_inputs()
@@ -695,8 +703,8 @@ def main(argv=None):
                    resourceInstallationPolicy=RESOURCE_INSTALLATION_POLICY if args.instance == "production" else None,
                    recoveryHelper=dict(included=args.instance == "production", executable="star-map-recovery-helper.exe"),
                    importHelper=dict(included=args.instance == "production", executable="star-map-import-helper.exe"),
-                   resourceVersion=declaration["resourceVersion"], authorDisplayPackagesIncluded=[],
-                   authorDisplayFilesIncluded=0, omittedAuthorDisplayFiles=len(omitted),
+                   resourceVersion=declaration["resourceVersion"], authorDisplayPackagesIncluded=args.bundled_package,
+                   authorDisplayFilesIncluded=len(author_paths), omittedAuthorDisplayFiles=len(omitted),
                    omittedAuthorDisplayBytes=sum(row["bytes"] for row in omitted.values()),
                    publicDownloadConfigured=False, localMapImportPreserved=True)
     profile.update(fingerprint)
@@ -708,7 +716,8 @@ def main(argv=None):
     version_path.write_text(version_info_text(product, numeric), encoding="utf-8")
     inputs = dict(sourceRoot=str(ROOT), product=product, resourceStage=str(resource_stage),
                   resources=resources, profilePath=str(profile_path), manifestPath=str(manifest_path),
-                  versionInfoPath=str(version_path), iconPath=str(resource_stage / BRAND_ICON))
+                   versionInfoPath=str(version_path), iconPath=str(resource_stage / BRAND_ICON),
+                   bundledAuthorPaths=author_paths)
     input_path = output / "freeze-inputs.json"
     input_path.write_text(json.dumps(inputs, indent=2), encoding="utf-8")
     plan["resources"], plan["omittedAuthorResources"] = resources, omitted
@@ -724,7 +733,14 @@ def main(argv=None):
         plan["importHelper"] = assemble_recovery_helper(output, stage, environment_vars, kind="import")
     plan["qtClosure"] = prune_unneeded_qt(stage)
     plan["notices"] = collect_notices(stage, plan["qtClosure"])
-    plan["frozenVerification"] = verify_frozen(stage, resources, [p.name for p in qt.glob("*.qml")], product)
+    plan["frozenVerification"] = verify_frozen(stage, resources, [p.name for p in qt.glob("*.qml")], product,
+                                             bundled_author_paths=author_paths)
+    if author_paths:
+        defaults = dict(schema="xingtu-bundled-author-v1", packageId="difficult-zhan10",
+                        files={name:resources[name] for name in author_paths})
+        (stage / "_internal/qt-author-base/inventory.json").write_text(json.dumps(defaults, indent=2), encoding="utf-8")
+        plan["bundledAuthorDefaults"] = defaults
+    plan["editorBaseline"] = stage_editor_baseline(stage, resources)
     # Root metadata is consumed by first-run sandbox seeding; source version is
     # authoritative. No user work/config, screenshots or import receipts copied.
     shutil.copy2(ROOT / "version.json", stage / "version.json")
@@ -735,7 +751,6 @@ def main(argv=None):
     if args.instance == "production":
         # Relative program ownership drives the existing exact-file backup and
         # failed-upgrade rollback. No work/settings/imports are frozen or owned.
-        plan["editorBaseline"] = stage_editor_baseline(stage, resources)
         ownership = stage / "_installer-owned-files.txt"
         owned_files = sorted(p.relative_to(stage).as_posix().replace("/", "\\")
                              for p in stage.rglob("*") if p.is_file())

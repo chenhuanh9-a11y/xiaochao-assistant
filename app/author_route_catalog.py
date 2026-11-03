@@ -51,7 +51,8 @@ class AuthorRouteCatalog:
 
     _PROFILE_ASSET_CACHE_LIMIT = 64
 
-    def __init__(self, catalog_path: Path = DEFAULT_CATALOG, asset_base: Path | None = None) -> None:
+    def __init__(self, catalog_path: Path = DEFAULT_CATALOG, asset_base: Path | None = None,
+                 *, fallback_root: Path | None = None) -> None:
         self.catalog_path = Path(catalog_path)
         raw = json.loads(self.catalog_path.read_text(encoding="utf-8"))
         if int(raw.get("schemaVersion", 0)) != 1:
@@ -66,6 +67,7 @@ class AuthorRouteCatalog:
         else:
             root = USER_ROOT
         self.profiles: dict[str, AuthorRouteProfile] = {}
+        self._fallback_paths = set()
         for profile_raw in raw.get("profiles", []):
             profile_id = str(profile_raw["id"])
             maps: dict[str, tuple[AuthorRouteVariant, ...]] = {}
@@ -76,15 +78,21 @@ class AuthorRouteCatalog:
                     if resource_base not in {"asset-root", "resource-root"}:
                         raise ValueError(f"unsupported author resource base: {resource_base}")
                     variant_root = self.catalog_path.parent.parent if resource_base == "resource-root" else root
+                    layers = {floor: variant_root / Path(relative)
+                              for floor, relative in variant_raw["layers"].items()}
+                    if fallback_root is not None and profile_id == "zhan10-speed":
+                        from bundled_author_resources import display_path
+                        for floor, path in layers.items():
+                            metadata = variant_raw.get("layerMeta", {}).get(floor, {})
+                            layers[floor] = display_path(path, variant_root, fallback_root, metadata.get("sha256"))
+                            if layers[floor] != path:
+                                self._fallback_paths.add(layers[floor].resolve())
                     variants.append(AuthorRouteVariant(
                         profile_id=profile_id,
                         map_id=map_id,
                         id=str(variant_raw["id"]),
                         display_name=str(variant_raw["displayName"]),
-                        layers={
-                            floor: variant_root / Path(relative)
-                            for floor, relative in variant_raw["layers"].items()
-                        },
+                        layers=layers,
                         identity_status=str(variant_raw["identityStatus"]),
                         display_policy=str(variant_raw["displayPolicy"]),
                     ))

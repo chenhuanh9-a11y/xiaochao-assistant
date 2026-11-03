@@ -254,7 +254,8 @@ class EngineFactories(dict):
                     _local(root, value)
             from difficult_native_context import DifficultNativeContext
             from difficult_native_identity import NativeDifficultPack, NativeDifficultCandidateEngine
-            native = DifficultNativeContext(root)
+            from client_paths import bundled_author_root
+            native = DifficultNativeContext(root, display_fallback_root=bundled_author_root())
             pack = NativeDifficultPack(root, interfaces["identityPack"], display_context=native)
             native.validate_identity_pack(pack)
             resources, adapters, catalog = native.resources, native.adapters, native.catalog
