@@ -106,9 +106,12 @@ assert not s.pendingWrites and not s.writeError
    logical=Path(d)/'events-any.jsonl'
    paths={storage.slot_path(logical,f) for f in ('problem','recognition','tk','lifecycle','startup','watchdog')}
    self.assertEqual(len(paths),6)
+   # The current identity/session envelope no longer fits in 256 bytes.
+   # Keep a small bound that can hold one valid record and still rotates.
+   limit=512
    for p in paths:
-    for seq in range(30):storage.append_record(p,dict(event='capture-error',seq=seq),file_limit=256)
+    for seq in range(30):storage.append_record(p,dict(event='capture-error',seq=seq),file_limit=limit)
    self.assertEqual(len([p for p in Path(d).iterdir() if not p.name.startswith('.')]),12)
-   self.assertLessEqual(sum(p.stat().st_size for p in Path(d).iterdir() if not p.name.startswith('.')),12*256)
+   self.assertLessEqual(sum(p.stat().st_size for p in Path(d).iterdir() if not p.name.startswith('.')),12*limit)
 
 if __name__=='__main__':unittest.main()

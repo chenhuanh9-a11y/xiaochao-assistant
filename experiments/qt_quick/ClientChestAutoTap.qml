@@ -13,7 +13,7 @@ ColumnLayout {
     }
     Label { text: "开箱连点"; font.pixelSize: 18; font.bold: true; color: "#142b4b" }
     Label { text: "在游戏里按住触发键，连发开箱按键；松开立即停止。"; color: "#526785"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-    Switch { objectName: "chestAutoTapEnabled"; text: "开启开箱连点"; checked: root.state.savedEnabled || false; onClicked: root.apply(checked) }
+    AppSwitch { objectName: "chestAutoTapEnabled"; text: "开启开箱连点"; checked: root.state.savedEnabled || false; onClicked: root.apply(checked) }
     GridLayout {
         columns: width < 420 ? 1 : 3; Layout.fillWidth: true; columnSpacing: 12
         ColumnLayout {

@@ -50,15 +50,20 @@ def render_case(mode, output):
     gallery.page.setParentItem(window_host.contentItem())
     gallery.window.hide()
     QTest.qWait(30)
-    search = gallery.page.findChild(QObject, 'clientGallerySearch')
+    # Gallery now uses author cards and a floor picker; the removed search
+    # field is no longer a production surface to test.
+    picker = gallery.page.findChild(QObject, 'galleryFloorPicker')
+    assert picker is not None
     shot = window_host.grabWindow()
     if shot.isNull():
         raise AssertionError('Gallery screenshot is empty')
     shot.save(str(output / (mode + '-gallery.png')))
-    point = search.mapToScene(QPointF(search.width()-12, search.height()/2))
-    search_pixel = shot.pixelColor(round(point.x()), round(point.y())).name()
-    expected = '#000000' if mode == 'dark-unfixed' else '#ffffff'
-    assert search_pixel == expected, (mode, search_pixel, expected)
+    point = picker.mapToScene(QPointF(picker.width()/2, 3))
+    picker_pixel = shot.pixelColor(round(point.x()), round(point.y())).name()
+    expected = picker.property('background').property('color').name()
+    assert picker_pixel == expected, (mode, picker_pixel, expected)
+    if mode != 'dark-unfixed':
+        assert QColor(picker_pixel).lightnessF() > .85, (mode, picker_pixel)
     assert not gallery.warnings, gallery.warnings
     gallery.tearDown()
     window_host.close()
@@ -100,13 +105,15 @@ ApplicationWindow {
     assert not shot.isNull()
     shot.save(str(output / (mode + '-controls.png')))
     report = dict(mode=mode, scheme=app.styleHints().colorScheme().name,
-                  gallerySearchPixel=search_pixel, simulatedPlatformPalette=dark, controls={})
+                  galleryFloorPickerPixel=picker_pixel, simulatedPlatformPalette=dark, controls={})
     for name in ('input', 'placeholder', 'disabled', 'combo', 'popup', 'dialog'):
         obj = window.findChild(QObject, name)
         bg = obj.property('background')
         report['controls'][name] = dict(background=bg.property('color').name())
         if name in ('input', 'placeholder', 'disabled'):
             report['controls'][name]['text'] = obj.property('color').name()
+    if mode == 'dark-unfixed':
+        assert report['controls']['input']['background'] == '#000000', report
     if mode != 'dark-unfixed':
         assert app.styleHints().colorScheme() in (Qt.ColorScheme.Light, Qt.ColorScheme.Unknown)
         for name, state in report['controls'].items():

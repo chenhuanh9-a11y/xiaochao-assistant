@@ -51,7 +51,7 @@ Item {
             Layout.fillWidth: true; Layout.fillHeight: true; spacing: 12
             Rectangle {
                 Layout.preferredWidth: 180; Layout.minimumWidth: 180; Layout.maximumWidth: 180; Layout.fillHeight: true
-                color: "white"; radius: 12; border.color: "#d6e0ef"
+                color: "white"; radius: 16; border.width: 1; border.color: "#e3e9f3"
                 ColumnLayout {
                     anchors.fill: parent; anchors.margins: 10; spacing: 10
                     Label { text: "图库"; color: "#183a73"; font.pixelSize: 15; font.bold: true; padding: 4 }
@@ -82,7 +82,7 @@ Item {
             }
             Rectangle {
                 Layout.fillWidth: true; Layout.fillHeight: true
-                color: "white"; radius: 12; border.color: "#d6e0ef"
+                color: "white"; radius: 16; border.width: 1; border.color: "#e3e9f3"
                 ColumnLayout {
                     anchors.fill: parent; anchors.margins: 16; spacing: 10
                     RowLayout {
@@ -130,7 +130,7 @@ Item {
             Layout.fillWidth: true; Layout.fillHeight: true; spacing: 12
             Rectangle {
                 Layout.fillWidth: true; Layout.fillHeight: true
-                color: "white"; radius: 12; border.color: "#d6e0ef"
+                color: "white"; radius: 16; border.width: 1; border.color: "#e3e9f3"
                 ColumnLayout {
                     anchors.fill: parent; anchors.margins: 12; spacing: 10
                     RowLayout {
@@ -226,7 +226,7 @@ Item {
             }
             Rectangle {
                 Layout.preferredWidth: root.width < 1000 ? 200 : 230; Layout.minimumWidth: 190; Layout.maximumWidth: 230
-                Layout.fillHeight: true; color: "white"; radius: 12; border.color: "#d6e0ef"
+                Layout.fillHeight: true; color: "white"; radius: 16; border.width: 1; border.color: "#e3e9f3"
                 ColumnLayout {
                     anchors.fill: parent; anchors.margins: 12; spacing: 8
                     Label { text: "目标顺序"; color: "#183a73"; font.pixelSize: 15; font.bold: true }

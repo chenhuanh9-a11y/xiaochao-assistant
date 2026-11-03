@@ -192,11 +192,13 @@ class AnimationScheduling(unittest.TestCase):
         ui._brand_images = Mock()
         ui.brand_icon = Mock()
         ui._close_help_images = Mock()
+        ui._commit_display_opacity = Mock()
         ui._scroll_pages = {}
         ui._place_nav_mark()
         ui._rise_page()
         callbacks = list(clock.jobs.values())
         ui._destroy(SimpleNamespace(widget=ui.window))
+        ui._commit_display_opacity.assert_called_once_with()
         before = ui._nav_mark.place.call_count, ui.body.pack_configure.call_count
         for _, callback, args in callbacks:
             callback(*args)

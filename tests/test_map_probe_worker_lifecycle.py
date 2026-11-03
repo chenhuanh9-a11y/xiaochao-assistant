@@ -19,12 +19,54 @@ def subject():
     s = SimpleNamespace(capture_lock=threading.Lock(), map_probe_worker_lock=threading.Lock(),
                         capture_generation=1, _runtime_trace_context=lambda: {},
                         _capture_source_frame=lambda h: (bytearray(1024*1024), None),
-                        _mode_map_interface=lambda f: {}, _mode_selected_floor=lambda f: {},
+                        _mode_map_interface=lambda f, **kw: {}, _mode_selected_floor=lambda f, **kw: {},
                         _log=lambda *a, **k: None, _queue_latest_map_probe=lambda e: None)
     return s, lambda **kw: ns['_begin_map_probe'](s, 1, **kw)
 
 
 class ProbeWorkerTests(unittest.TestCase):
+    def test_capture_mode_switch_keeps_dispatched_decoder_and_mode_together(self):
+        s, begin = subject()
+        entered, release, published = threading.Event(), threading.Event(), threading.Event()
+        s.game_mode = 'difficult'
+        observer = s.difficult_map_ui = object()
+        calls, events = [], []
+        def capture(_hwnd):
+            entered.set()
+            release.wait(3)
+            return b'frame', (0, 0, 1, 1)
+        def read(frame, **context):
+            calls.append(context)
+            return dict(selectedFloor=2)
+        def publish(event):
+            events.append(event)
+            published.set()
+        s._capture_source_frame = capture
+        s._mode_selected_floor = read
+        s._mode_map_interface = read
+        s._queue_latest_map_probe = publish
+        try:
+            self.assertTrue(begin())
+            self.assertTrue(entered.wait(2))
+            s.game_mode, s.difficult_map_ui = 'nightmare', object()
+        finally:
+            release.set()
+        self.assertTrue(published.wait(2))
+        self.assertEqual(calls, [dict(mode='difficult', observer=observer)] * 2)
+        self.assertEqual(events[0]['floorReadMode'], 'difficult')
+        self.assertEqual(events[0]['floorRead'], dict(selectedFloor=2))
+
+    def test_mismatched_probe_mode_is_rejected_before_any_state_consumer(self):
+        path = Path(__file__).parents[1] / 'app/identityv_daily_assistant.py'
+        tree = ast.parse(path.read_text(encoding='utf-8-sig'))
+        method = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == '_handle_map_probe_event')
+        ns = {}
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[method], type_ignores=[])), str(path), 'exec'), ns)
+        # No controller attributes or policy substitutes: reaching a consumer
+        # would fail, so this proves the mismatched event is dropped at entry.
+        ns['_handle_map_probe_event'](SimpleNamespace(game_mode='nightmare'),
+            dict(floorReadMode='difficult', floorRead=dict(selectedFloor=2), open=True))
+
     def test_blocked_log_and_publish_keep_single_physical_worker(self):
         for endpoint in ('_log', '_queue_latest_map_probe'):
             with self.subTest(endpoint=endpoint):

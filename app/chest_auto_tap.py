@@ -24,6 +24,9 @@ MIN_INTERVAL_MS = 20
 MAX_INTERVAL_MS = 500
 PRESS_MS = 90  # Maximum hold; shorter periods use a 50% duty cycle.
 POLL_SECONDS = .005
+# Waiting for the hold key: check every 20 ms. This is a polling interval,
+# not a guarantee of input-to-visible response time.
+IDLE_POLL_SECONDS = .02
 RELEASE_RETRIES = 3  # In addition to the first key-up attempt.
 RELEASE_RETRY_SECONDS = .05
 
@@ -406,7 +409,7 @@ class ChestAutoTap:
                     released = True
                     self._set_status(f"等待按住 {settings['holdKey']}", holding=False)
                     next_tap = 0.0
-                    self._wake.wait(POLL_SECONDS)
+                    self._wake.wait(IDLE_POLL_SECONDS)
                     continue
                 if self._require_release and not released:
                     self._set_status("请松开触发键后再按住", holding=False)

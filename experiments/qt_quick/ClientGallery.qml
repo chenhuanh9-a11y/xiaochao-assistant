@@ -110,10 +110,19 @@ Item {
                             }
                         }
                     }
-                    Label {
-                        anchors.centerIn: parent; width: parent.width - 24; visible: backend.profiles.length === 0
-                        text: backend.busy ? "正在读取地图资源…" : "暂无地图资源，可在图库管理中导入。"
-                        color: "#526785"; wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter
+                    Column {
+                        anchors.centerIn: parent; width: parent.width - 24; spacing: 12
+                        visible: backend.profiles.length === 0
+                        Rectangle {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            width: 64; height: 64; radius: 20; color: "#eaf0fd"
+                            Image { anchors.centerIn: parent; width: 30; height: 30; source: "icons/map.png"; sourceSize.width: 60; sourceSize.height: 60; opacity: .8 }
+                        }
+                        Label {
+                            width: parent.width
+                            text: backend.busy ? "正在读取地图资源…" : "暂无地图资源，可在图库管理中导入。"
+                            color: "#526785"; wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter
+                        }
                     }
                 }
             }
@@ -121,7 +130,7 @@ Item {
                 objectName: "galleryPreviewPane"
                 visible: !page.compact || page.detailOpen
                 Layout.preferredWidth: page.compact ? page.width : Math.round((page.width - 12) * 4 / 9)
-                Layout.fillWidth: true; Layout.fillHeight: true; radius: 12; color: "white"
+                Layout.fillWidth: true; Layout.fillHeight: true; radius: 16; color: "white"; border.width: 1; border.color: "#e3e9f3"
                 ColumnLayout {
                     anchors.fill: parent; anchors.margins: 16; spacing: 8
                     Flickable {

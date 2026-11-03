@@ -12,10 +12,22 @@ import threading
 import tkinter as tk
 
 from desktop_rounded import RoundedCombobox, RoundedFrame
-from desktop_theme import BG, CARD, LINE, TEXT, MUTED, PRIMARY, BUTTON_BG
+from desktop_theme import BG, CARD, LINE, TEXT, MUTED, PRIMARY, BUTTON_BG, BUTTON_TEXT, IMAGE_BG
 from map_resource_browser import MapResourceBrowser, _label, _button
 from map_resource_context import load_browse_context
 from map_resource_model import choose_resource, floor_label
+
+
+def _autohide(scrollbar, canvas):
+    """Scroll command that shows the bar only while the content overflows."""
+    def update(first, last):
+        overflow = float(first) > 0 or float(last) < 1
+        if overflow and not scrollbar.winfo_manager():
+            scrollbar.pack(side='right', fill='y', before=canvas)
+        elif not overflow and scrollbar.winfo_manager():
+            scrollbar.pack_forget()
+        scrollbar.set(first, last)
+    return update
 
 
 class MapResourcesPage(MapResourceBrowser):
@@ -55,18 +67,25 @@ class MapResourcesPage(MapResourceBrowser):
         toolbar = tk.Frame(self, bg=BG)
         toolbar.pack(fill='x', padx=20, pady=(0, 8))
         self.resource_mode_buttons = {}
+        # Both choices read as segmented tracks: the current one is a raised white block.
+        mode_track = RoundedFrame(toolbar, bg=IMAGE_BG, radius=12, padx=3, pady=3, highlightthickness=0)
+        mode_track.pack(side='left')
         for mode, title in (('nightmare', '噩梦'), ('difficult', '困难')):
-            button = _button(toolbar, title, lambda value=mode: self._select_resource_mode(value))
-            button.pack(side='left', padx=(0, 6))
+            button = _button(mode_track, title, lambda value=mode: self._select_resource_mode(value))
+            button.configure(bg=IMAGE_BG, radius=9, padx=16)
+            button.pack(side='left')
             self.resource_mode_buttons[mode] = button
         self.mode_label = _label(toolbar, size=9, color=MUTED)
         self.mode_label.pack(side='left', padx=8)
         tabs = tk.Frame(self, bg=BG)
         tabs.pack(fill='x', padx=20, pady=(0, 8))
         self.tab_buttons = {}
+        tab_track = RoundedFrame(tabs, bg=IMAGE_BG, radius=12, padx=3, pady=3, highlightthickness=0)
+        tab_track.pack(side='left')
         for key, title in (('discover', '发现'), ('installed', '已安装')):
-            button = _button(tabs, title, lambda value=key: self._select_tab(value))
-            button.pack(side='left', padx=(0, 8))
+            button = _button(tab_track, title, lambda value=key: self._select_tab(value))
+            button.configure(bg=IMAGE_BG, radius=9, padx=16)
+            button.pack(side='left')
             self.tab_buttons[key] = button
         self.catalog_refresh_button = _button(tabs, '刷新本机', self._refresh_catalog)
         self.catalog_refresh_button.pack(side='right')
@@ -83,7 +102,7 @@ class MapResourcesPage(MapResourceBrowser):
         self.list_host.grid(row=0, column=0, sticky='nsew', padx=(0, 12))
         self.list_canvas = tk.Canvas(self.list_host, bg=BG, highlightthickness=0, width=220, height=1)
         self.list_scroll = tk.Scrollbar(self.list_host, command=self.list_canvas.yview)
-        self.list_canvas.configure(yscrollcommand=self.list_scroll.set)
+        self.list_canvas.configure(yscrollcommand=_autohide(self.list_scroll, self.list_canvas))
         self.list_scroll.pack(side='right', fill='y')
         self.list_canvas.pack(side='left', fill='both', expand=True)
         self.cards_host = tk.Frame(self.list_canvas, bg=BG)
@@ -95,13 +114,15 @@ class MapResourcesPage(MapResourceBrowser):
         self._list_window = self.list_canvas.create_window(0, 0, window=self.cards_host, anchor='nw')
         self.cards_host.bind('<Configure>', lambda _e: self.list_canvas.configure(scrollregion=self.list_canvas.bbox('all')))
         self.list_canvas.bind('<Configure>', self._list_width)
-        self.detail_host = tk.Frame(self.content, bg=BG)
+        # The detail pane reads as one white card: preview, selectors and the
+        # pinned actions share its background and border.
+        self.detail_host = tk.Frame(self.content, bg=CARD, highlightthickness=1, highlightbackground=LINE)
         self.detail_host.grid(row=0, column=1, sticky='nsew')
         self.detail_actions = tk.Frame(self.detail_host, bg=CARD)
-        self.detail_actions.pack(side='bottom', fill='x')
-        self.detail_canvas = tk.Canvas(self.detail_host, bg=BG, highlightthickness=0, width=300, height=1)
+        self.detail_actions.pack(side='bottom', fill='x', pady=(4, 6))
+        self.detail_canvas = tk.Canvas(self.detail_host, bg=CARD, highlightthickness=0, width=300, height=1)
         self.detail_scroll = tk.Scrollbar(self.detail_host, command=self.detail_canvas.yview)
-        self.detail_canvas.configure(yscrollcommand=self.detail_scroll.set)
+        self.detail_canvas.configure(yscrollcommand=_autohide(self.detail_scroll, self.detail_canvas))
         self.detail_scroll.pack(side='right', fill='y')
         self.detail_canvas.pack(side='left', fill='both', expand=True)
         self.detail_body = tk.Frame(self.detail_canvas, bg=CARD)
@@ -112,7 +133,7 @@ class MapResourcesPage(MapResourceBrowser):
         self.detail_title = _label(self.detail_body, '选择一个图包', size=14, bold=True, anchor='w')
         self.detail_title.pack(fill='x', padx=16, pady=(14, 8))
         self.detail_image = _label(self.detail_body, '导入后可预览作者地图', color=MUTED, anchor='center', justify='center')
-        self.detail_image.configure(height=10, bg='#edf1f7')
+        self.detail_image.configure(height=10, bg='#eef2f8')
         self.detail_image.pack(fill='x', padx=16, pady=(0, 8))
         selectors = tk.Frame(self.detail_body, bg=CARD)
         selectors.pack(fill='x', padx=16, pady=(0, 8))
@@ -418,12 +439,11 @@ class MapResourcesPage(MapResourceBrowser):
             if display and getattr(self, '_cards_need_metrics', False):
                 display.apply_widgets(self.cards_host)
                 self._cards_need_metrics = False
-        for mode, button in self.resource_mode_buttons.items():
-            button.configure(bg=PRIMARY if mode == self.browse_mode else BUTTON_BG,
-                             fg='white' if mode == self.browse_mode else TEXT)
-        for tab, button in self.tab_buttons.items():
-            button.configure(bg=PRIMARY if tab == self._tab else BUTTON_BG,
-                             fg='white' if tab == self._tab else TEXT)
+        for buttons, current in ((self.resource_mode_buttons, self.browse_mode), (self.tab_buttons, self._tab)):
+            for key, button in buttons.items():
+                selected = key == current
+                button.configure(bg=CARD if selected else IMAGE_BG, activebackground=CARD if selected else LINE,
+                                 fg=BUTTON_TEXT if selected else MUTED)
         count = len(self._browse_context.pack.maps) if self._browse_context and self._browse_context.pack else None
         self.mode_label.configure(text='仅浏览' + (f' · {count} 张' if count is not None else ''))
         self._show_selected()
@@ -472,6 +492,9 @@ class MapResourcesPage(MapResourceBrowser):
         row = self._row_data.get(self._selected_package)
         if row is None:
             self._selected_detail_signature = None
+            # Empty-state writes disable the actions. Returning to the same
+            # package must repaint them even if its data signature is equal.
+            self._selected_actions_signature = None
             self._map_items = self._map_ids = self._floor_keys = ()
             self.detail_title.configure(text='选择一个图包')
             self.detail_image.configure(image='', text='作者地图将在这里预览', height=10)
