@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [features, core, diagnostics, packaging, main-baseline, released-baseline]
+        group: [features, core, diagnostics, packaging, tutorials, main-baseline, released-baseline]
     env:
       PYTHONPATH: 'app;tests;tools;experiments/qt_quick'
       QT_QPA_PLATFORM: offscreen
@@ -51,6 +51,7 @@ jobs:
         run: |
           $core = @('test_client_settings', 'test_hotkey_layout_compat', 'test_client_manual_map', 'test_client_manual_map_integration', 'test_client_session', 'test_client_shutdown', 'test_client_coordinator', 'test_client_live_runtime', 'test_client_map_input', 'test_client_map_intent_reset', 'test_client_shortcut_delivery', 'test_client_input', 'test_client_capture_full', 'test_client_capture_exclusion')
           switch ('${{ matrix.group }}') {
+            'tutorials' { $env:QT_SCALE_FACTOR = '1.5'; $modules = @('test_client_tutorial', 'test_desktop_tutorial', 'test_client_paths', 'test_client_shutdown', 'test_client_shared_controls', 'test_client_control_layout', 'test_desktop_controls', 'test_settings_independent_opacity') }
             'features' { $modules = @('test_client_recapture_focus', 'test_client_recapture_composition', 'test_client_controls_visibility', 'test_client_chest_intent', 'test_chest_auto_tap', 'test_client_resource_feedback', 'test_client_window_feedback', 'test_client_fit_reporting', 'test_diagnostic_noninterference', 'test_client_floor_ready_policy', 'test_client_floor_ready_foreground_return', 'test_client_live_controls', 'test_client_floor_region', 'test_client_game_floor_input') }
             'core' { $modules = $core }
             'released-baseline' { $modules = $core }

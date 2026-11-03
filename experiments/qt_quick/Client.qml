@@ -41,6 +41,7 @@ ApplicationWindow {
         onActivated: clientCoordinator.toggleControlsKeyboard()
     }
     ClientOnboarding {}
+    ClientTutorial {}
     ClientAccount {}
     onClosing: function(event) {
         if (clientCoordinator.closeReady) {

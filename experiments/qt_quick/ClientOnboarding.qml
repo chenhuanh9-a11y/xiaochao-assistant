@@ -29,7 +29,7 @@ Popup {
             id: content
             width: parent.width; spacing: 16
             Label { text: "准备快捷键"; color: "#142b4b"; font.pixelSize: 22; font.bold: true }
-            Note { text: "先核对地图键，再试用游戏控件。完成后即可开始使用。" }
+            Note { text: "先核对地图键，再试用游戏控件。完成后即可开始使用，帮助页里有完整的使用教程。" }
             Label { text: onboardingService.step === 1 ? "1 / 2  游戏地图键" : "2 / 2  试用游戏控件"; color: "#183a73"; font.pixelSize: 16; font.bold: true }
             Note { text: onboardingService.step === 1 ? "和游戏地图按键保持一致；点击修改后按键，再确认保存。" : "用当前快捷键显示一次，再隐藏一次。鼠标按钮也可兜底，来源会单独记录。" }
             RowLayout {

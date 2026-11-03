@@ -186,6 +186,22 @@ Item {
                 Layout.maximumWidth: page.wide ? Math.max(250, Math.round(page.width * .261 / 8) * 8) : Infinity
                 Layout.alignment: Qt.AlignTop; spacing: 12
                 Rectangle {
+                    objectName: "homeTutorialInvite"
+                    visible: tutorialService.inviteVisible && !onboardingService.active
+                    Layout.fillWidth: true; implicitHeight: inviteContents.implicitHeight + 36; radius: 12; color: "#13214a"
+                    ColumnLayout {
+                        id: inviteContents
+                        anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 18; spacing: 8
+                        Label { text: "第一次用星图？"; color: "#f1f5fd"; font.pixelSize: 16; font.bold: true }
+                        Label { text: "花几分钟，跟着图学会选路线、开图贴合。"; color: "#aebddf"; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                        RowLayout {
+                            spacing: 8
+                            AppButton { objectName: "homeTutorialOpen"; text: "看看教程"; implicitHeight: 34; onClicked: { tutorialService.dismissInvite(); tutorialService.open("start") } }
+                            AppButton { objectName: "homeTutorialDismiss"; text: "不用了"; implicitHeight: 34; onClicked: tutorialService.dismissInvite() }
+                        }
+                    }
+                }
+                Rectangle {
                     Layout.fillWidth: true; implicitHeight: shortcutContents.implicitHeight + 40; radius: 16; color: "white"; border.width: 1; border.color: "#e3e9f3"
                     ColumnLayout {
                         id: shortcutContents
@@ -220,12 +236,13 @@ Item {
                         id: helpContents
                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 20; spacing: 12
                         Repeater {
-                            model: [{title:"使用帮助", note:"地图键、显隐与常见问题", icon:"help"},
-                                    {title:"排查与反馈", note:"查看运行信息，导出排查文件", icon:"note"}]
+                            model: [{key:"tutorial", title:"使用教程", note:"跟着图一步步上手，附常见问题", icon:"help"},
+                                    {key:"help", title:"排查与反馈", note:"查看运行信息，导出排查文件", icon:"note"}]
                             delegate: ToolButton {
                                 required property var modelData
+                                objectName: "homeEntry-" + modelData.key
                                 Layout.fillWidth: true; implicitHeight: 56
-                                onClicked: clientCoordinator.navigate("help")
+                                onClicked: modelData.key === "tutorial" ? tutorialService.open("") : clientCoordinator.navigate("help")
                                 contentItem: RowLayout {
                                     spacing: 12
                                     Image { source: "icons/" + modelData.icon + ".png"; sourceSize.width: 60; sourceSize.height: 60; Layout.preferredWidth: 30; Layout.preferredHeight: 30 }

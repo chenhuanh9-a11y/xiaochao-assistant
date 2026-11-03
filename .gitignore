@@ -55,6 +55,8 @@ account-installation-id.txt
 !/assets/support/
 !/assets/support/wechat.png
 !/assets/support/alipay.png
+!/assets/tutorial/
+!/assets/tutorial/*.webp
 /references/**
 !/references/README.md
 /resources-private/

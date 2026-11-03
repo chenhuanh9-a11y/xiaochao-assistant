@@ -171,6 +171,8 @@ class QtClient:
             self.resources.recoveryCloseRequested.connect(self.coordinator.requestClose)
             self._read_recovery_receipt()
         self.info = ClientInfoService(self.sandbox, fetch=info_fetch)
+        from client_tutorial import TutorialService
+        self.tutorial = TutorialService(self.paths.tutorial_state_path, settings=self.settings, parent=self.coordinator)
         self.problems = ProblemsService(self.paths, build_fingerprint=self.info._build_fingerprint,
             source_commit=self.info._source_commit)
         if self.lifecycle_trace is not None:
@@ -189,6 +191,7 @@ class QtClient:
         if self.lifecycle_trace is not None:
             self.coordinator.close_writers += (self.lifecycle_trace,)
         self.custom_galleries.setUseHandler(self._use_custom_gallery)
+        self.coordinator.close_writers += (self.tutorial,)
         self.custom_galleries.galleriesChanged.connect(self._custom_gallery_changed)
         self.custom_galleries.changed.connect(self._sync_custom_gallery_active)
         self.session.changed.connect(self._sync_custom_gallery_active)
@@ -216,6 +219,7 @@ class QtClient:
         self.engine.warnings.connect(lambda rows: self.warnings.extend(str(row) for row in rows))
         context = self.engine.rootContext()
         context.setContextProperty("productionProduct", PRODUCTION)
+        context.setContextProperty("tutorialService", self.tutorial)
         for key, value in dict(backend=self.backend, resourceModel=self.backend.model, routeChoices=self.route_choices,
             settingsService=self.settings, resourceService=self.resources, session=self.session,
             windows=self.windows, clientCoordinator=self.coordinator, infoService=self.info,
@@ -474,6 +478,7 @@ class QtClient:
         self.backend.shutdown()
         self.route_choices.shutdown()
         self.info.shutdown()
+        self.tutorial.shutdown()
         self.custom_galleries.shutdown()
         self.online_packages.shutdown()
         self.route_plaza.shutdown()

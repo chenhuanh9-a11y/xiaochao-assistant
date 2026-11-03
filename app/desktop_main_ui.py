@@ -446,8 +446,6 @@ class DesktopMainUI:
     """A normal desktop window, not an always-on-top game overlay."""
 
     PAGES = ("home", "preferences", "maps", "custom", "help")
-    HELP_IMAGE_FILES = {"quick-start": "home.png", "shortcuts-visibility": "settings.png",
-                        "resources-opacity": "resources.png", "check-feedback": "help.png"}
 
     def __init__(self, assistant) -> None:
         self.assistant = assistant
@@ -469,6 +467,9 @@ class DesktopMainUI:
         self._shell_layout = None
         self._close_choice_window = None
         self._support_window = None
+        from desktop_tutorial import TutorialProgress
+        self._tutorial = None
+        self._tutorial_progress = TutorialProgress(self._update_state_path().with_name("tutorial-state.json"))
         self._icons = DesktopIcons(self.root) if DesktopIcons is not None else None
         if self._icons is not None:
             self._icons._masks.setdefault("route", _route_mask())
@@ -495,7 +496,6 @@ class DesktopMainUI:
         return round(value * self._scale)
 
     def _display_changed(self, scale):
-        self._close_help_images()
         self._scale = scale
         set_rounded_scale(self.window, scale)
         self._apply_icons()
@@ -1012,7 +1012,21 @@ class DesktopMainUI:
             caption.pack(fill="x", pady=(8, 0))
             self.home_thumbnails.append((image, caption))
 
-        # Side column: shortcuts and help.
+        # Side column: a one-time tutorial invite, shortcuts and help.
+        self.home_invite = self._card(self.home_side, padx=20, pady=16, bg=NIGHT, line=False)
+        self._label(self.home_invite, "第一次用星图？", size=12, bold=True, color=NIGHT_TEXT, anchor="w").pack(fill="x")
+        self._label(self.home_invite, "花几分钟，跟着图学会选路线、开图贴合。", size=9, color=NIGHT_MUTED,
+                    anchor="w", justify="left", wraplength=220).pack(fill="x", pady=(4, 12))
+        invite_actions = tk.Frame(self.home_invite, bg=NIGHT)
+        invite_actions.pack(fill="x")
+        RoundedButton(invite_actions, text="看看教程", command=lambda: self.open_tutorial("start"), bg=SURFACE, fg=NIGHT,
+                      activebackground=BUTTON_BG, activeforeground=NIGHT, highlightthickness=0,
+                      font=(FONT, 10, "bold"), padx=14, pady=7, cursor="hand2").pack(side="left")
+        RoundedButton(invite_actions, text="不用了", command=self._dismiss_tutorial_invite, bg=NIGHT, fg=NIGHT_MUTED,
+                      activebackground=NIGHT_HOVER, activeforeground=NIGHT_TEXT, highlightthickness=0,
+                      font=(FONT, 9, "bold"), padx=10, pady=7, cursor="hand2").pack(side="left", padx=(6, 0))
+        if not self._tutorial_progress.invited:
+            self.home_invite.pack(fill="x", pady=(0, 2))
         self.home_keys = self._card(self.home_side)
         self.home_keys.pack(fill="x", pady=(0, 2))
         self._label(self.home_keys, "快捷键", size=13, bold=True).pack(anchor="w")
@@ -1034,8 +1048,9 @@ class DesktopMainUI:
 
         self.home_support = self._card(self.home_side, pady=8)
         self.home_support.pack(fill="x", pady=(0, 2))
-        for index, (title, note, icon) in enumerate((("使用帮助", "地图键、显影与常见问题", "help"),
-                                                   ("排查与反馈", "查看运行信息，导出排查文件", "note"))):
+        for index, (title, note, icon, command) in enumerate((
+                ("使用教程", "跟着图一步步上手，附常见问题", "help", self.open_tutorial),
+                ("排查与反馈", "查看运行信息，导出排查文件", "note", lambda: self.show_page("help")))):
             if index:
                 tk.Frame(self.home_support, bg=LINE, height=1).pack(fill="x")
             row = tk.Frame(self.home_support, bg=SURFACE, cursor="hand2")
@@ -1048,7 +1063,7 @@ class DesktopMainUI:
             self._label(words, title, size=10, bold=True, anchor="w").pack(fill="x")
             self._label(words, note, size=9, color=SUBTLE, anchor="w").pack(fill="x", pady=(2, 0))
             self._label(row, "›", size=14, color=SUBTLE).pack(side="right")
-            self._clickable(row, lambda: self.show_page("help"))
+            self._clickable(row, command)
             self._icon_tiles.append(tile)
         self.home_grid.bind("<Configure>", self._schedule_home_layout, add="+")
         self._finish_scroll_page("home")
@@ -1590,7 +1605,8 @@ class DesktopMainUI:
         content = self._scroll_page("help")
         content.configure(bg=BG)
         self._scroll_pages["help"][0].configure(bg=BG)
-        self._heading(content, "排查与帮助", "先看当前状态，再按需要展开步骤或导出排查信息。")
+        self._heading(content, "排查与帮助", "跟着教程上手；遇到问题先看运行信息，再导出排查信息。")
+        self._build_tutorial_card(content)
         self._build_update_card(content)
         state = self._card(content, padx=24, pady=20)
         state.pack(fill="x", pady=(0, 2))
@@ -1614,23 +1630,6 @@ class DesktopMainUI:
                 self.help_status = value
         facts.columnconfigure(1, weight=1)
         topics = (
-            ("quick-start", "快速开始", "先核对模式与资源，再看本局状态；地图和楼层默认自动识别。", "play", (
-                ("点一次“开始本局”。显示“已准备”时，切回游戏并打开地图，等待实际开始状态。", ("map", "toggle-round"), None),
-                ("不继续时点“取消准备”，或使用当前“开始/结束本局”绑定。准备不等于已开始，取消准备不等于结束一局。", ("toggle-round",), None),
-                ("楼层待确认时，先完整打开游戏地图等待自动确认；仍未确认时查看当前状态提示，再记录问题反馈。", ("map",), None),
-                ("“结束本局”停止本局定位与贴图；设置、日志和作者图保留。", ("toggle-round",), None),
-            )),
-            ("shortcuts-visibility", "快捷键与显隐", "以当前键帽为准；控件显隐、收成球和小抄显隐各有作用。", "keyboard", (
-                ("在设置点击键帽录入新组合；核对候选后点“确认”。冲突就重录，取消保留原绑定。", (), "preferences"),
-                ("使用当前“呼出/收起控件”绑定，显示或隐藏整个游戏控件。", ("toggle-panel",), None),
-                ("“收成球”仅折叠控件，球上的“展开”恢复面板；这与整个控件隐藏不同。录入地图键时收成球，会取消本次录入，已保存的地图键不变。", (), None),
-                ("使用当前“显示/隐藏小抄”绑定改变贴图显隐；隐藏后识别、锁图和后台贴合继续。", ("toggle-sheet-visibility",), None),
-                ("定点地图在设置中单独显示或隐藏，不受“显示/隐藏小抄”影响。点击“编辑位置”开始编辑，移动后仍保持编辑状态，点击“完成”恢复鼠标穿透。", (), None),
-            )),
-            ("resources-opacity", "资源与透明度", "先看当前模式的资源状态；不透明度越高，小抄越实。", "map", (
-                ("噩梦作者路线未安装时，结构底图仍可独立浏览；资源未就绪时先查看当前模式的缺失提示。", (), "maps"),
-                ("“不透明度”0%为完全透明，100%为完全不透明；看不见时同时检查小抄显影是否开启。", ("toggle-sheet-visibility",), None),
-            )),
             ("check-feedback", "检查与反馈", "先看状态，再提供发生步骤、版本和排查信息。", "help", (
                 ("记录发生时间、模式、地图或楼层、具体动作、当前绑定及等待时间；附帮助页的版本与构建指纹。", (), None),
                 ("“导出排查信息”会附上最近失败的游戏画面和识别证据；请先检查内容，再分享给反馈接收方。", (), "export"),
@@ -1640,7 +1639,6 @@ class DesktopMainUI:
         self._step_badges = []
         self._help_binding_labels = []
         self._help_binding_texts = {}
-        self._help_images = {}
         for topic, title, summary, icon, steps in topics:
             card = self._card(content, padx=24, pady=18)
             card.pack(fill="x", pady=(0, 2))
@@ -1679,14 +1677,6 @@ class DesktopMainUI:
                         anchor="w", justify="left", wraplength=510)
                     self.export_feedback = self._label(body, size=9, color=SUBTLE, anchor="w", justify="left", wraplength=510)
                     self.export_feedback.pack(fill="x", pady=(6, 0))
-            image_toggle = self._ghost(details, "查看操作图", lambda topic=topic: self._toggle_help_image(topic), size=9)
-            image_toggle.pack(anchor="w", padx=(30, 0))
-            holder = tk.Frame(details, bg=SURFACE)
-            image_label = self._label(holder, anchor="center", justify="center")
-            image_label.pack(fill="x")
-            self._help_images[topic] = dict(toggle=image_toggle, holder=holder, label=image_label,
-                opened=False, source=None, photo=None, job=None, generation=0, size=None)
-            holder.bind("<Configure>", lambda event, topic=topic: self._queue_help_image(topic), add="+")
         support = self._card(content, padx=24, pady=18)
         support.pack(fill="x", pady=(14, 2))
         self._label(support, "支持开发", size=13, bold=True, anchor="w").pack(fill="x")
@@ -1696,83 +1686,56 @@ class DesktopMainUI:
         tk.Frame(content, bg=BG, height=14).pack(fill="x")
         self._finish_scroll_page("help")
 
-    def _help_image_path(self, topic):
-        module = sys.modules.get(type(self.assistant).__module__)
-        resource_root = Path(getattr(module, "RESOURCE_ROOT", Path(__file__).resolve().parents[1]))
-        return resource_root / "assets" / "help" / self.HELP_IMAGE_FILES[topic]
+    def _build_tutorial_card(self, content):
+        from desktop_tutorial import CHAPTERS
+        card = self._card(content, padx=24, pady=20)
+        card.pack(fill="x", pady=(0, 2))
+        heading, _ = self._card_heading(card, "使用教程", "按实际流程讲：选路线、开局贴合、游戏控件到排查。", "play")
+        heading.pack(fill="x", pady=(0, 14))
+        _button(heading, "开始学习", lambda: self.open_tutorial("start"), primary=True).pack(side="right")
+        grid = tk.Frame(card, bg=SURFACE)
+        grid.pack(fill="x")
+        grid.columnconfigure((0, 1), weight=1, uniform="tutorial")
+        self._tutorial_marks = {}
+        for index, chapter in enumerate(CHAPTERS):
+            tile = RoundedFrame(grid, bg=INPUT_BG, radius=12, padx=14, pady=10, highlightthickness=0)
+            tile.grid(row=index // 2, column=index % 2, sticky="nsew",
+                      padx=(0, 5) if index % 2 == 0 else (5, 0), pady=(0, 10))
+            self._label(tile, "›", size=13, color=SUBTLE).pack(side="right")
+            mark = self._label(tile, "已看完", size=8, bold=True, color=GREEN)
+            self._tutorial_marks[chapter["id"]] = mark
+            words = tk.Frame(tile, bg=INPUT_BG)
+            words.pack(side="left", fill="x", expand=True)
+            self._label(words, chapter["title"], size=10, bold=True, anchor="w").pack(fill="x")
+            self._label(words, f"{chapter['summary']} · {len(chapter['steps'])} 步", size=8, color=SUBTLE,
+                        anchor="w", justify="left", wraplength=220).pack(fill="x", pady=(2, 0))
+            self._clickable(tile, lambda chapter_id=chapter["id"]: self.open_tutorial(chapter_id))
+        self._sync_tutorial_marks()
 
-    def _toggle_help_image(self, topic):
-        entry = self._help_images[topic]
-        if entry["opened"]:
-            self._close_help_image(topic)
-            return
-        entry["opened"] = True
-        entry["toggle"].configure(text="收起操作图")
-        entry["holder"].pack(fill="x", pady=(0, 12))
-        self._queue_help_image(topic)
+    def _sync_tutorial_marks(self):
+        done = self._tutorial_progress.done
+        for chapter_id, mark in getattr(self, "_tutorial_marks", {}).items():
+            if chapter_id in done and not mark.winfo_manager():
+                mark.pack(side="right", padx=(0, self._px(8)))
+            elif chapter_id not in done and mark.winfo_manager():
+                mark.pack_forget()
 
-    def _queue_help_image(self, topic):
-        entry = self._help_images[topic]
-        if self._closed or not entry["opened"]:
+    def open_tutorial(self, chapter_id=None):
+        if self._closed:
             return
-        if entry["job"] is not None:
-            self.root.after_cancel(entry["job"])
-        entry["generation"] += 1
-        generation = entry["generation"]
-        def render():
-            if self._closed or not entry["opened"] or generation != entry["generation"]:
-                return
-            entry["job"] = None
-            self._render_help_image(topic)
-        entry["job"] = self.root.after(80, render)
+        self._dismiss_tutorial_invite()
+        if self._tutorial is None:
+            from desktop_tutorial import TutorialWindow
+            module = sys.modules.get(type(self.assistant).__module__)
+            resource_root = Path(getattr(module, "RESOURCE_ROOT", Path(__file__).resolve().parents[1]))
+            self._tutorial = TutorialWindow(self, self._tutorial_progress, resource_root / "assets" / "tutorial",
+                                            on_progress=self._sync_tutorial_marks)
+        self._tutorial.open(chapter_id)
 
-    def _render_help_image(self, topic):
-        entry = self._help_images[topic]
-        if self._closed or not entry["opened"]:
-            return
-        width = entry["holder"].winfo_width()
-        if width <= 1:
-            return
-        box = min(max(1, width - self._px(8)), self._px(880)), max(1, self._px(520))
-        if entry["size"] == box:
-            return
-        try:
-            if entry["source"] is None:
-                with Image.open(self._help_image_path(topic)) as source:
-                    entry["source"] = source.convert("RGBA")
-            with ImageOps.contain(entry["source"], box, Image.Resampling.LANCZOS) as preview:
-                photo = ImageTk.PhotoImage(preview, master=self.window)
-            entry["label"].configure(image=photo, text="")
-            entry["photo"] = photo
-            entry["size"] = box
-        except (OSError, ValueError, tk.TclError):
-            entry["label"].configure(image="", text="操作图暂不可用，仍可按上方步骤操作。")
-
-    def _close_help_image(self, topic):
-        entry = self._help_images[topic]
-        entry["opened"] = False
-        entry["generation"] += 1
-        if entry["job"] is not None:
-            try:
-                self.root.after_cancel(entry["job"])
-            except tk.TclError:
-                pass
-            entry["job"] = None
-        try:
-            entry["holder"].pack_forget()
-            entry["label"].configure(image="", text="")
-            entry["toggle"].configure(text="查看操作图")
-        except tk.TclError:
-            pass
-        entry["photo"] = None
-        entry["size"] = None
-        if entry["source"] is not None:
-            entry["source"].close()
-            entry["source"] = None
-
-    def _close_help_images(self):
-        for topic in getattr(self, "_help_images", {}):
-            self._close_help_image(topic)
+    def _dismiss_tutorial_invite(self):
+        self._tutorial_progress.mark_invited()
+        if self.home_invite.winfo_manager():
+            self.home_invite.pack_forget()
 
     def _display_version_text(self):
         getter = getattr(self.assistant, "display_version_label", None)
@@ -1830,7 +1793,6 @@ class DesktopMainUI:
     def _toggle_help_topic(self, topic):
         chevron, details = self._help_topics[topic]
         if details.winfo_manager():
-            self._close_help_image(topic)
             details.pack_forget()
             chevron.configure(text="›")
         else:
@@ -1910,7 +1872,6 @@ class DesktopMainUI:
     def _unmap(self, event):
         # Owner-level focus policy and edit generation stay in the controller.
         if event.widget is self.window and not self._closed:
-            self._close_help_images()
             self._cancel_map_key()
 
     def _save_shortcuts(self):
@@ -2179,7 +2140,6 @@ class DesktopMainUI:
         self._brand_images.close()
         self._window_brand_icons = ()
         self.brand_icon._desktop_icon = None
-        self._close_help_images()
         for variable, token in getattr(self, "_preference_traces", ()):
             variable.trace_remove("write", token)
         self._preference_traces = []
@@ -2220,8 +2180,6 @@ class DesktopMainUI:
         if active is target and target.winfo_manager() == 'pack':
             if getattr(self, '_view_ready', False): self._sync_view()
             return
-        if self._page == "help" and page != "help":
-            self._close_help_images()
         if self._page == "preferences" and page != "preferences":
             self._commit_display_opacity()
             self._cancel_map_key()
@@ -2608,7 +2566,6 @@ class DesktopMainUI:
             return
         self._commit_display_opacity()
         self._cancel_map_key()
-        self._close_help_images()
         # The controller directly withdraws/iconifies the existing window;
         # it must not call this view's hide again.
         self.assistant._hide_desktop_main_ui()

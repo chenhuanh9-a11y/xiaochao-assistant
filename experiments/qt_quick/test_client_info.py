@@ -312,6 +312,10 @@ class InfoTests(unittest.TestCase):
         engine = QQmlEngine()
         engine.rootContext().setContextProperty("infoService", service)
         engine.rootContext().setContextProperty("problemService", problems)
+        from client_tutorial import TutorialService
+        tutorial = TutorialService(self.root / "qt-tutorial-state.json", parent=service)
+        self.addCleanup(tutorial.shutdown)
+        engine.rootContext().setContextProperty("tutorialService", tutorial)
         warnings = []
         engine.warnings.connect(lambda rows: warnings.extend(str(row) for row in rows))
         component = QQmlComponent(engine)
@@ -333,6 +337,10 @@ ClientHelp { objectName: "helpPanel"; anchors.fill: parent } }
         self.assertTrue(QMetaObject.invokeMethod(toggle, "clicked"))
         self.app.processEvents()
         self.assertTrue(window.findChild(QObject, "helpPanel").property("historyOpen"))
+        requested = []
+        tutorial.openRequested.connect(requested.append)
+        self.assertTrue(QMetaObject.invokeMethod(window.findChild(QObject, "helpTutorialStart"), "clicked"))
+        self.assertEqual(requested, ["start"])
         self.assertEqual(self.opened, [])
         self.assertEqual(warnings, [])
         window.deleteLater()

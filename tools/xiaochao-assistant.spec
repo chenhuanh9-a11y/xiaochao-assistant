@@ -14,6 +14,8 @@ for name in ("THIRD_PARTY_LUCIDE_LICENSE.txt", "THIRD_PARTY_FLUENT_LICENSE.txt",
     datas.append((str(root / name), "."))
 if (root / "assets" / "support").is_dir():
     datas.append((str(root / "assets" / "support"), "assets/support"))
+if (root / "assets" / "tutorial").is_dir():
+    datas.append((str(root / "assets" / "tutorial"), "assets/tutorial"))
 
 a = Analysis(
     [str(root / "app" / "identityv_daily_assistant.py")],

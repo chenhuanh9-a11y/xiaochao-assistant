@@ -35,7 +35,20 @@ def scenario(mode, destination):
             release.wait(2)
             if mode in ("settings", "resources"):
                 Path(destination).write_text("accepted-write-completed", encoding="utf-8")
-    if mode != "idle":
+    tutorial = None
+    if mode == "tutorial":
+        import client_tutorial
+        tutorial = client_tutorial.TutorialService(Path(destination))
+        write = client_tutorial._write_state
+        def delayed_write(path, payload):
+            if not release.wait(2):
+                raise TimeoutError("test tutorial writer not released")
+            write(path, payload)
+        client_tutorial._write_state = delayed_write
+        coordinator.close_writers = (tutorial,)
+        tutorial.markDone("round")
+        tutorial.dismissInvite()
+    elif mode != "idle":
         owner = fixture.session if mode == "cancellable" else getattr(fixture, mode)
         setattr(owner, "_pool" if mode == "cancellable" else "pool", pool)
         pool.start(Worker())
@@ -53,7 +66,7 @@ def scenario(mode, destination):
     window = engine.rootObjects()[0]
     heartbeat = QTimer(); heartbeat.timeout.connect(lambda: beats.append(1)); heartbeat.start(10)
     # Measure draining while this event loop is running, not while QML loads.
-    if mode in ("settings", "resources"):
+    if mode in ("settings", "resources", "tutorial"):
         QTimer.singleShot(240, release.set)
     QTimer.singleShot(30, window.close)
     chosen = []
@@ -75,6 +88,11 @@ def scenario(mode, destination):
         beats=len(beats), inputStopped=fixture.input.disable.called,
         captureStopped=coordinator.capture.disable.called,
         writerFinished=Path(destination).exists(), activeWorkers=pool.activeThreadCount(), exitChoiceClicked=bool(chosen))
+    if tutorial is not None:
+        tutorial.shutdown()
+        result["tutorialState"] = json.loads(Path(destination).read_text(encoding="utf-8"))
+        result["tutorialPending"] = tutorial.pendingWrites
+        client_tutorial._write_state = write
     fixture.tearDown()
     print(json.dumps(result))
 
@@ -110,6 +128,12 @@ class ShutdownTests(unittest.TestCase):
 
     def test_accepted_resource_writer_drains_before_quit(self):
         self.assertTrue(self.run_case("resources")["writerFinished"])
+
+    def test_tutorial_progress_drains_through_actual_window_close_choice(self):
+        result = self.run_case("tutorial")
+        self.assertEqual(result["tutorialState"], dict(version=1, done=["round"], invited=True))
+        self.assertFalse(result["tutorialPending"])
+        self.assertGreater(result["beats"], 10)
 
 
 if __name__ == "__main__":

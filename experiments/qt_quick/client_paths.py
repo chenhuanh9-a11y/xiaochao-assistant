@@ -88,6 +88,10 @@ class RuntimePaths:
         return self.settings_path.with_name("update-state.json") if self.production else self.installation_root / "qt-update-state.json"
 
     @property
+    def tutorial_state_path(self):
+        return self.settings_path.with_name("tutorial-state.json") if self.production else self.installation_root / "qt-tutorial-state.json"
+
+    @property
     def editor_base_candidates(self):
         candidates = ([self.installation_root / "assets/custom-maps"] if self.production else [])
         return candidates + [self.resource_root / "assets/custom-maps", self.resource_root / "qt-editor-base"]
@@ -128,7 +132,7 @@ def editor_library_usable(root):
 
 def runtime_paths(root=None):
     paths = RuntimePaths(validate_installation_root(DEFAULT_SANDBOX if root is None else root), PRODUCTION)
-    for path in (paths.settings_path, paths.custom_galleries_path, paths.update_state_path,
+    for path in (paths.settings_path, paths.custom_galleries_path, paths.update_state_path, paths.tutorial_state_path,
                  paths.editor_base_root, paths.resource_root, paths.work_root,
                  paths.memory_root("nightmare"), paths.memory_root("difficult")):
         _no_links(path)
