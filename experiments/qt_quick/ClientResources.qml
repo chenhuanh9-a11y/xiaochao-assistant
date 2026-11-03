@@ -59,17 +59,22 @@ Item {
                 }
             }
         }
+        // The package list sits on one white card like the other pages.
+        Rectangle {
+            Layout.fillWidth: true; Layout.fillHeight: true
+            Layout.minimumHeight: 150
+            radius: 16; color: "white"; border.width: 1; border.color: "#e3e9f3"
         ListView {
             id: packages
             objectName: "managedPackageList"
-            Layout.fillWidth: true; Layout.fillHeight: true
-            Layout.minimumHeight: 150
+            anchors.fill: parent; anchors.margins: 4; anchors.leftMargin: 18; anchors.rightMargin: 12
             clip: true; spacing: 0
             model: resourceService.packageRows
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar {}
             delegate: Item {
                 required property var modelData
+                required property int index
                 width: packages.width; height: Math.max(70, info.implicitHeight + 22)
                 RowLayout {
                     anchors.fill: parent; anchors.topMargin: 10; anchors.bottomMargin: 10; spacing: 18
@@ -93,7 +98,7 @@ Item {
                         onClicked: resourceService.requestRemove(modelData.packageId)
                     }
                 }
-                Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#d6e0ef" }
+                Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#edf1f7"; visible: index < packages.count - 1 }
             }
             Label {
                 anchors.centerIn: parent; width: Math.min(parent.width, 440); horizontalAlignment: Text.AlignHCenter
@@ -101,6 +106,7 @@ Item {
                 text: resourceService.busy ? "正在核对本地资源…" : resourceService.recoveryRequired ? "资源事务需要恢复，请先核对保留的备份与日志。" : "尚无资源状态。点击“核对状态”，或导入本地 ZIP 资源包。"
                 wrapMode: Text.Wrap; color: "#526785"; font.pixelSize: 13
             }
+        }
         }
         RowLayout {
             Layout.fillWidth: true

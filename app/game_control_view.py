@@ -10,6 +10,7 @@ import tkinter as tk
 from tkinter import font as tkfont
 
 from desktop_rounded import RoundedButton
+from desktop_controls import PillSlider
 from desktop_lucide import LucideIcons
 from star_brand import BrandImages
 from opacity_controls import OpacityUpdates, opacity_percent
@@ -45,7 +46,7 @@ def identity_summary(snapshot, map_name):
 class GameControlView(tk.Frame):
     """One host, two internal layouts. Controller facts decide every action."""
 
-    OPACITY_WIDTH_DIP = 24
+    OPACITY_WIDTH_DIP = 24  # Slider height (the pill canvas) in DIP.
     OPACITY_SLIDER_LENGTH_DIP = 32
     EXPANDED_WIDTH_DIP = 352
     EXPANDED_HEIGHT_DIP = 250
@@ -139,13 +140,12 @@ class GameControlView(tk.Frame):
             self.opacity_values[surface] = self._label(heading, "", bold=True)
             self.opacity_values[surface].pack(side="right")
             self._opacity_updates.sync(surface, variable.get())
-            slider = tk.Scale(cell, from_=0, to=100, orient="horizontal", showvalue=False,
-                variable=variable, command=lambda value, key=surface: self._opacity_changed(key, value),
-                state="normal" if self._has(command) else "disabled", bg=SURFACE, fg=TEXT,
-                troughcolor=LINE, activebackground=PRIMARY, bd=0, highlightthickness=0,
-                width=self.OPACITY_WIDTH_DIP, sliderlength=self.OPACITY_SLIDER_LENGTH_DIP, length=1, resolution=1)
-            slider.pack(fill="x")
-            slider.bind("<ButtonRelease-1>", lambda _event: self._opacity_updates.commit())
+            slider = PillSlider(cell, from_=0, to=100, variable=variable,
+                command=lambda value, key=surface: self._opacity_changed(key, value),
+                state="normal" if self._has(command) else "disabled", bg=SURFACE,
+                height=self.OPACITY_WIDTH_DIP, width=1)
+            slider.pack(fill="x", pady=(2, 0))
+            slider.bind("<ButtonRelease-1>", lambda _event: self._opacity_updates.commit(), add="+")
             slider.bind("<KeyRelease>", self._opacity_key_released)
             self.opacity_scales[surface] = slider
         self.quick_opacity_scale = self.opacity_scales['overlay']
@@ -323,6 +323,7 @@ class GameControlView(tk.Frame):
         else:
             self.scrollbar.grid_remove()
             self.content_canvas.yview_moveto(0)
+
 
     def _scroll_content(self, event):
         if self.scrollbar.winfo_manager():
@@ -604,8 +605,7 @@ class GameControlView(tk.Frame):
         self._reference_edit_icon = self._icons.get("settings", round(15*self._scale), BUTTON_TEXT)
         self.reference_adjust_button.configure(image=self._reference_edit_icon, compound="left")
         for slider in self.opacity_scales.values():
-            slider.configure(width=max(1, round(self.OPACITY_WIDTH_DIP*self._scale)),
-                             sliderlength=max(1, round(self.OPACITY_SLIDER_LENGTH_DIP*self._scale)))
+            slider.configure(height=max(1, round(self.OPACITY_WIDTH_DIP*self._scale)))
         self._queue_geometry()
 
     def _destroy_brand(self, event):
@@ -641,9 +641,16 @@ class GameControlView(tk.Frame):
                                     fg=status_color(snapshot))
         floor = snapshot.get("controlFloorText") or "楼层待核对"
         self.identity_label.configure(text=f"{map_name} · {floor}" if map_name else floor)
-        self.summary_label.configure(text=" · ".join((
-            "贴合已显示" if snapshot.get("overlayVisible") is True else "贴合暂不可见",
-            "定点已显示" if snapshot.get("referenceVisible") is True else "定点暂不可见")))
+        # While the player has something to do, the summary line says what;
+        # otherwise it reports what is actually visible.
+        hint = str(snapshot.get("message") or "").strip()
+        if (hint and snapshot.get("phase") in {"needs-user", "failed", "recovering"}
+                and hint != snapshot.get("controlStatusText")):
+            self.summary_label.configure(text=hint, fg=status_color(snapshot))
+        else:
+            self.summary_label.configure(fg=MUTED, text=" · ".join((
+                "贴合已显示" if snapshot.get("overlayVisible") is True else "贴合暂不可见",
+                "定点已显示" if snapshot.get("referenceVisible") is True else "定点暂不可见")))
         mode = snapshot.get("mode")
         for value, button in self.mode_buttons.items():
             selected = mode == value

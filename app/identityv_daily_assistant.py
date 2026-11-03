@@ -1606,7 +1606,7 @@ def sheet_visibility_status_text(text: str, enabled: bool) -> str:
     if enabled or not any(fragment in value for fragment in SHEET_VISIBLE_STATUS_FRAGMENTS):
         return value
     for fragment in SHEET_VISIBLE_STATUS_FRAGMENTS:
-        value = value.replace(fragment, "定点地图按设置隐藏")
+        value = value.replace(fragment, "贴合小抄按设置隐藏")
     return value
 
 
@@ -4839,7 +4839,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
         self.startup_resource_error = None
         self.route_profile_var.set(self._route_profile_label(self._shown_route_profile()))
         self.current_floor = str(self.pack.default_entry_floor)
-        self._update_floor_buttons(); self._refresh_candidates(); self._sync_route_settings_ui(); self._sync_active_mode_ui()
+        self._update_floor_buttons(); self._refresh_candidates(defer_thumbnails=True); self._sync_route_settings_ui(); self._sync_active_mode_ui()
         for name in ('route_profile_box', 'onboarding_route_box'):
             box = getattr(self, name, None)
             if tk_widget_exists(box):
@@ -5160,17 +5160,17 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
         self._shared_structure_route_identities = {}
         self._shared_structure_display_cache = {}
 
-    def _mode_map_interface(self,frame, *, floor_read=None):
-        if getattr(self,'game_mode','nightmare')!='difficult':return detect_map_interface(frame, floor_read=floor_read)
-        result=self.difficult_map_ui.observe(frame)
+    def _mode_map_interface(self,frame, *, floor_read=None, mode=None, observer=None):
+        if (mode if mode is not None else getattr(self,'game_mode','nightmare'))!='difficult':return detect_map_interface(frame, floor_read=floor_read)
+        result=(observer if observer is not None else self.difficult_map_ui).observe(frame)
         opened=result.get('mapOpen') is True
         return dict(detected=opened,flatMapCanvas=opened,shapeAccepted=opened,
             matchedAnchors=2 if opened else 0,backdropRatio=0.,reason=result['reason'],
             frameWidth=frame.shape[1],frameHeight=frame.shape[0],difficultObservation=result)
 
-    def _mode_selected_floor(self,frame):
-        if getattr(self,'game_mode','nightmare')!='difficult':return detect_selected_floor(frame)
-        result=self.difficult_map_ui.observe(frame)
+    def _mode_selected_floor(self,frame, *, mode=None, observer=None):
+        if (mode if mode is not None else getattr(self,'game_mode','nightmare'))!='difficult':return detect_selected_floor(frame)
+        result=(observer if observer is not None else self.difficult_map_ui).observe(frame)
         selected=int(result['floor']) if result.get('floor') in {'1','2'} else None
         return dict(selectedFloor=selected,scores={},margin=result.get('highlightDifference',0.),
             confidence=1. if selected else 0.,reason=result['reason'],layout='difficult-two-buttons',
@@ -5289,7 +5289,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
             if tk_widget_exists(box):box.configure(values=list(allowed.values()))
         self.current_floor=str(self.pack.default_entry_floor)
         self.auto_scores={};self.recognition_rank_history=[]
-        self._update_floor_buttons();self._refresh_candidates();self._sync_route_settings_ui()
+        self._update_floor_buttons();self._refresh_candidates(defer_thumbnails=True);self._sync_route_settings_ui()
         self._save_settings()
         self._sync_active_mode_ui()
         self._log('game-mode-changed',previousMode=previous,gameMode=mode,sourceRoot=str(self.pack.source_root))
@@ -5914,7 +5914,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
         self._place_window(False)
         if not self.onboarding_active:
             self.root.after(0, self.desktop_main_ui.show)
-        self._refresh_candidates()
+        # Thumbnails decode when the candidate surface is first shown, not
+        # during startup before the main window can paint.
+        self._refresh_candidates(defer_thumbnails=True)
         if self.mode_resource_error:
             self._log('mode-resource-load-failed',requestedMode='difficult',retainedMode=self.game_mode,
                 resourceRoot=str(RESOURCE_ROOT),assetOverride=os.environ.get('IDENTITYV_DIFFICULT_MAPS'),
@@ -6934,7 +6936,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
         shortcut_grid = tk.Frame(shortcuts_section, bg=floating_theme.SURFACE)
         shortcut_grid.pack(fill="x")
         shortcut_labels = {
-            "toggle-panel": "打开/收起候选",
+            "toggle-panel": "呼出/收起游戏控件",
             "candidate-prev": "上一个候选",
             "candidate-next": "下一个候选",
             "confirm-round": "确认当前地图",
@@ -8328,7 +8330,8 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
         if mode not in {"quick", "recognition", "settings"}:
             return
         if mode == "recognition" and not bool(getattr(self, "game_foreground", False)):
-            self.quick_connection_var.set("请先打开第五人格")
+            self.quick_connection_var.set("第五人格在后台 · 先切回游戏" if getattr(self, "game_hwnd", None)
+                                          else "请先打开第五人格")
             mode = "quick"
         if mode == 'recognition':
             self._ensure_candidate_thumbnails()
@@ -9221,7 +9224,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
     def _open_recognition_details(self) -> None:
         if not getattr(self, "game_foreground", False):
             self.quick_connection_var.set(
-                "请先打开第五人格",
+                "第五人格在后台 · 先切回游戏" if getattr(self, "game_hwnd", None) else "请先打开第五人格",
             )
             return
         self._sync_recognition_ui()
@@ -18422,6 +18425,10 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
             probe_captured_at = time.monotonic()
             probe_trace = self._runtime_trace_context()
             probe_trace.update(sourceFrameGeneration=None, probeGeneration=probe_generation)
+            # A mode switch may happen while capture blocks. Bind the parser
+            # and its observer to the dispatched request, not mutable UI state.
+            probe_mode = getattr(self, 'game_mode', 'nightmare')
+            probe_observer = getattr(self, 'difficult_map_ui', None)
         except Exception:
             if capture_lock.locked():
                 capture_lock.release()
@@ -18431,6 +18438,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
             raise
 
         def probe() -> None:
+            floor_read = None
             probe_open: bool | None = None
             frame_captured_at = None
             probe_frame = probe_bounds = None
@@ -18442,9 +18450,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
                 frame, bounds = self._capture_source_frame(hwnd)
                 trace_captured_at = time.perf_counter()
                 frame_captured_at = datetime.now(timezone.utc).isoformat(timespec='milliseconds')
-                evidence = self._mode_map_interface(frame)
+                evidence = self._mode_map_interface(frame, mode=probe_mode, observer=probe_observer)
                 trace_floor_started_at = time.perf_counter()
-                floor_read = self._mode_selected_floor(frame)
+                floor_read = self._mode_selected_floor(frame, mode=probe_mode, observer=probe_observer)
                 trace_finished_at = time.perf_counter()
                 probe_open = bool(
                     probable_map_interface(evidence)
@@ -18483,6 +18491,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
                 "frame": probe_frame, "bounds": probe_bounds,
                 "frameCapturedAtUtc": frame_captured_at,
                 "probeError": probe_error, "probeEvidence": probe_evidence,
+                # The worker already read the floor of this exact frame.
+                "floorRead": floor_read if probe_frame is not None else None,
+                "floorReadMode": probe_mode,
                 "displayEpoch": probe_display_epoch,
                 "capturedAt": probe_captured_at,
             })
@@ -28046,6 +28057,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
         cycle_id: int | None,
         *,
         explicit_floor: int | None = None,
+        floor_read: dict | None = None,
     ) -> None:
         from floor_observation_policy import read_floor_evidence, decide_floor_transition
         if (
@@ -28055,7 +28067,8 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
         ):
             return
         floor_started = time.perf_counter()
-        floor_read = self._mode_selected_floor(frame)
+        if not isinstance(floor_read, dict):
+            floor_read = self._mode_selected_floor(frame)
         observed = floor_read.get("selectedFloor")
         if (observed not in (-1, 1, 2) and getattr(self, 'floor_required', False)
                 and frame is getattr(self, 'current_frame', None)):
@@ -29070,11 +29083,22 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
         except tk.TclError:
             pass
 
+    SHEET_SCALE_PREVIEW_MS = 50
+
     def change_sheet_scale(self, value: str) -> None:
         percent = max(50, min(150, round(float(value))))
         self.sheet_scale = percent / 100.0
         self.size_label.configure(text=f"小抄大小 {percent}%")
-        self._refresh_visible_sheet_after_route_setting()
+        # A drag emits one value per pixel; redraw the sheet at most once per
+        # preview period with the latest size instead of once per step.
+        if getattr(self, '_sheet_scale_preview_job', None) is None:
+            self._sheet_scale_preview_job = self.root.after(
+                self.SHEET_SCALE_PREVIEW_MS, self._flush_sheet_scale_preview)
+
+    def _flush_sheet_scale_preview(self) -> None:
+        self._sheet_scale_preview_job = None
+        if not self.closed:
+            self._refresh_visible_sheet_after_route_setting()
 
     def clear_filters(self) -> None:
         self.direction_var.set("全部")
@@ -34599,7 +34623,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
             phase, severity, title, message = 'hidden', 'normal', '路线按设置隐藏', '路线按设置隐藏，识别和后台贴合继续'
         elif not foreground or (not opened and not (getattr(self, 'capture_in_progress', False)
                                                      and getattr(self, 'active_map_cycle_id', None) is not None)):
-            phase, severity, title, message = 'waiting', 'normal', '路线状态', ('静态定点地图保留 · 等待开图核验当前楼层' if reference_visible else '等待打开地图')
+            phase, severity, title, message = 'waiting', 'normal', '等待打开地图', ('定点地图保持显示 · 打开游戏地图后自动核对楼层' if reference_visible else '等待打开地图')
         elif getattr(self, 'floor_required', False):
             if pending:
                 phase, severity, title, message = 'working', 'normal', '正在确认楼层', '正在自动确认当前楼层，路线暂时隐藏'
@@ -35832,6 +35856,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
         # Mark the UI event boundary so cached-image refiners can be routed to
         # the single V2 sensor worker rather than blocking Tk's poll loop.
         event = {**event, "_fromPoll": True}
+        if ("floorReadMode" in event
+                and event["floorReadMode"] != getattr(self, 'game_mode', 'nightmare')):
+            return
         if not ranked_event_is_current(
             event.get("token"), self.capture_generation,
         ):
@@ -35970,6 +35997,8 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
                 cycleId=self.active_map_cycle_id, sourceFrameGeneration=self.current_frame_generation)
             self._consider_floor_observation(
                 event.get("frame"), event.get("bounds"), event.get("token"),
+                floor_read=(event.get("floorRead")
+                            if event.get("floorReadMode") == getattr(self, 'game_mode', 'nightmare') else None),
             )
             if self._retry_unconfirmed_changed_frame():
                 return
@@ -36266,7 +36295,9 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
                         0x10,
                     )
                 elif kind == "waiting-game":
-                    self._set_status("等待第五人格启动；不抓屏", "#94a3b8")
+                    # The listener retries every 1.5 s; repaint only on a change.
+                    if self.status.cget("text") != "等待第五人格启动；不抓屏":
+                        self._set_status("等待第五人格启动；不抓屏", "#94a3b8")
                 elif kind == "game-bound":
                     environment = event.get("displayEnvironment") or {}
                     self._apply_display_environment(environment, announce=False)
@@ -38892,6 +38923,8 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
             urgent_depth = self.urgent_events.qsize()
             # Keep FIFO and urgent-input ordering. If a budget-limited batch
             # left work pending, yield to Tk without adding a full idle period.
+            # New input can arrive just after this queue check. Preserve the
+            # normal input polling bound even when the game is not foreground.
             delay = 1 if ordinary_depth or urgent_depth else self.EVENT_POLL_MS
             late_ms = max(0.0,(callback_started-scheduled_at)*1000.0)
             elapsed_ms = (finished_at-callback_started)*1000.0

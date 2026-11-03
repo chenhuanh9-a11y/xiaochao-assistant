@@ -199,7 +199,7 @@ Item {
                 width: scroll.availableWidth
                 implicitHeight: cardContents.implicitHeight + (root.width < 680 ? 40 : 64)
                 height: implicitHeight
-                radius: 16; color: "white"
+                radius: 16; color: "white"; border.width: 1; border.color: "#e3e9f3"
                 ColumnLayout {
                     id: cardContents
                     anchors.top: parent.top; anchors.topMargin: root.width < 680 ? 20 : 32

@@ -77,19 +77,54 @@ class SettingsIndependentOpacityTests(unittest.TestCase):
         self.root.update_idletasks()
         self.root.tk.call(scale.cget('command'), str(value))
 
-    def release(self, surface, *, key=None):
-        scale = self.scale(surface)
+    def release(self, surface, *, key=None, widget=None, pattern=None, x=0):
+        scale = widget if widget is not None else self.scale(surface)
         # Execute the widget's installed binding with Tk's normal substitutions;
         # do not call the save coordinator directly in the test.
-        pattern = '<KeyRelease>' if key else '<ButtonRelease-1>'
+        pattern = pattern or ('<KeyRelease>' if key else '<ButtonRelease-1>')
         script = scale.bind(pattern)
         values = {'%W': str(scale), '%K': key or '??', '%k': '0', '%N': '0',
-                  '%b': '1', '%s': '0', '%t': '0', '%x': '0', '%y': '0',
+                  '%b': '1', '%s': '0', '%t': '0', '%x': str(x), '%y': '0',
                   '%X': '0', '%Y': '0', '%A': '{}', '%E': '0', '%D': '0',
                   '%f': '0', '%h': '0', '%w': '0', '%T': '5', '%#': '0'}
         for token, value in values.items():
             script = script.replace(token, value)
-        self.root.tk.eval(script)
+        # Tk's event dispatcher consumes a binding's `break` result. Mirror
+        # that here while retaining every real Tcl/Python callback error.
+        result = int(self.root.tk.call('catch', script, 'bindingResult'))
+        self.assertIn(result, (0, 3), self.root.tk.getvar('bindingResult'))
+
+    def test_press_release_and_next_operation_reset_both_views_and_commit(self):
+        for widget in (self.scale('overlay'), self.game_view.opacity_scales['overlay']):
+            with self.subTest(widget=str(widget)):
+                self.ui.assistant.change_sheet_opacity(20)
+                self.saved.clear()
+                self.release('overlay', widget=widget, pattern='<ButtonPress-1>', x=80)
+                self.assertTrue(widget._dragging)
+                self.release('overlay', widget=widget)
+                self.assertFalse(widget._dragging)
+                self.assertEqual(len(self.saved), 1)
+                released = widget.get()
+                self.release('overlay', widget=widget, pattern='<B1-Motion>', x=0)
+                self.assertEqual(widget.get(), released)
+                self.release('overlay', widget=widget, pattern='<KeyPress>', key='Home')
+                self.release('overlay', widget=widget, key='Home')
+                self.assertEqual(widget.get(), 0)
+                self.assertEqual(self.saved[-1]['overlay'], 0)
+
+    def test_disabled_slider_cancels_drag_and_ignores_pointer_and_keyboard(self):
+        for widget in (self.scale('overlay'), self.game_view.opacity_scales['overlay']):
+            with self.subTest(widget=str(widget)):
+                self.release('overlay', widget=widget, pattern='<ButtonPress-1>', x=80)
+                widget.configure(state='disabled')
+                self.assertFalse(widget._dragging)
+                value = widget.get()
+                for pattern, key in (('<ButtonPress-1>', None), ('<B1-Motion>', None), ('<KeyPress>', 'End')):
+                    self.release('overlay', widget=widget, pattern=pattern, key=key, x=0)
+                    self.assertEqual(widget.get(), value)
+                widget.configure(state='normal')
+                self.release('overlay', widget=widget, pattern='<B1-Motion>', x=0)
+                self.assertEqual(widget.get(), value)
 
     def pump(self, milliseconds):
         self.root.after(milliseconds, self.root.quit)
