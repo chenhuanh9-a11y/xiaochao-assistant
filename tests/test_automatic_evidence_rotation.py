@@ -73,6 +73,20 @@ class RotationContracts(unittest.TestCase):
             os.link(image, root / 'second-link')
             self.assertNotEqual(sampling.automatic_storage_inventory(root, namespace='automatic-v2')['status'], 'ready')
 
+    def test_hardlinked_journal_has_ownership_reason_without_mutating_sentinel(self):
+        for namespace in ('automatic', 'automatic-v2'):
+            with self.subTest(namespace=namespace), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary) / 'root'
+                directory = root / 'failures' / namespace
+                directory.mkdir(parents=True)
+                sentinel = Path(temporary) / 'external-sentinel'
+                sentinel.write_bytes(b'unchanged external sentinel')
+                os.link(sentinel, directory / 'automatic-failures.jsonl')
+                report = sampling.automatic_storage_inventory(root, namespace=namespace)
+                self.assertEqual(report['status'], 'ownership-unavailable')
+                self.assertEqual(sentinel.read_bytes(), b'unchanged external sentinel')
+                self.assertEqual(sentinel.stat().st_nlink, 2)
+
     def test_legacy_cleanup_is_read_only_even_if_expired(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

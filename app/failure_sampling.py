@@ -256,6 +256,8 @@ def automatic_storage_inventory(root, *, namespace='automatic'):
         return result
     except OSError as error:
         reason = str(error)
+        if reason == 'diagnostic-storage-hardlinked':
+            reason = 'ownership-unavailable'
         return dict(result, status=reason if reason in (
             'ownership-unavailable', 'ownership-changed', 'automatic-image-byte-limit') else 'storage-redirected')
 
