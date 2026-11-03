@@ -3,11 +3,12 @@ from copy import deepcopy
 import os
 from pathlib import Path
 import tempfile
+import time
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_QUICK_BACKEND", "software")
-from PySide6.QtCore import QObject, Property, QPoint, QPointF, Qt, QUrl, Signal, Slot
+from PySide6.QtCore import QObject, Property, QPoint, QPointF, Qt, QUrl, Signal, Slot, QCoreApplication, QEvent
 from PySide6.QtGui import QGuiApplication, QImage
 from PySide6.QtQml import QQmlComponent, QQmlEngine
 from PySide6.QtQuick import QQuickWindow
@@ -161,6 +162,8 @@ class GalleryLayoutTests(unittest.TestCase):
         self.page.setParentItem(None)
         self.page.deleteLater()
         self.window.deleteLater()
+        self.engine.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
         APP.processEvents()
         self.temp.cleanup()
 
@@ -186,7 +189,16 @@ class GalleryLayoutTests(unittest.TestCase):
 
     def click(self, name):
         item = self.item(name)
+        self.assertTrue(item.isVisible() and item.isEnabled(), name)
+        # Layout changes from list/detail or resize can be queued one frame.
+        for _ in range(100):
+            APP.processEvents()
+            point = item.mapToScene(QPointF(item.width()/2, item.height()/2))
+            if 0 <= point.x() < self.window.width() and 0 <= point.y() < self.window.height():
+                break
+            time.sleep(.01)
         point = item.mapToScene(QPointF(item.width()/2, item.height()/2))
+        self.assertTrue(0 <= point.x() < self.window.width() and 0 <= point.y() < self.window.height(), (name, point))
         QTest.mouseClick(self.window, Qt.LeftButton, Qt.NoModifier, QPoint(round(point.x()), round(point.y())))
         APP.processEvents()
         QTest.qWait(10)

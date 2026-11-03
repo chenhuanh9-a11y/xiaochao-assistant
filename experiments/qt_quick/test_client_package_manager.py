@@ -150,7 +150,7 @@ import hashlib,json,sys,time,zipfile
 from pathlib import Path
 from unittest.mock import patch
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtCore import QUrl, QPointF, Qt
+from PySide6.QtCore import QUrl, QPointF, Qt, QObject, Property
 from PySide6.QtQuick import QQuickView
 from PySide6.QtTest import QTest
 app=QGuiApplication([])
@@ -179,6 +179,10 @@ view=QQuickView();warnings=[]
 view.engine().warnings.connect(lambda rows:warnings.extend(str(r) for r in rows))
 view.rootContext().setContextProperty('resourceService',case.fixture.service)
 view.rootContext().setContextProperty('packageManagerService',case.service)
+class BrowseContext(QObject):
+    season=Property(str,lambda self:'s0',constant=True)
+browse=BrowseContext()
+view.rootContext().setContextProperty('backend',browse)
 view.setSource(QUrl.fromLocalFile(str(Path('experiments/qt_quick/ClientResources.qml').resolve())))
 assert view.status()==QQuickView.Ready, view.errors()
 view.setResizeMode(QQuickView.SizeRootObjectToView);view.resize(1100,680);view.show()

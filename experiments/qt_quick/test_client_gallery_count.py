@@ -35,12 +35,13 @@ class GalleryMapCountTests(unittest.TestCase):
                 ResourceMap('map-b', 'Map B', (ResourceVariant('v1', 'Route 1', {'1': missing, '2': b}),)),
                 ResourceMap('map-c', 'Map C', (ResourceVariant('v1', 'Route 1', {'1': missing}),)),
             )
-            profile = SimpleNamespace(profile_id='author', name='Author', available_layers=5, available_maps=2, maps=maps, map_count=3, first_preview=('map-a','1',a))
+            profile = SimpleNamespace(profile_id='author', name='Author', package_id='nightmare-suju', available_layers=5, available_maps=2, maps=maps, map_count=3, first_preview=('map-a','1',a))
             context = SimpleNamespace(error='', profiles=[profile], path_stamps={a:(1,1),b:(1,1),missing:None})
             with patch('backend.load_browse_context', return_value=context):
                 backend = Backend(root)
                 until(lambda: not backend.busy)
                 self.assertEqual(backend.profiles[0]['availableMaps'], 2)
+                self.assertEqual(backend.profiles[0]['packageId'], 'nightmare-suju')
                 self.assertEqual(backend.profiles[0]['available'], 5)
                 self.assertEqual(backend.count, 7)
                 self.assertEqual(backend.mapCount, 2)

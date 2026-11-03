@@ -144,8 +144,8 @@ ApplicationWindow {
             Layout.leftMargin: root.workspaceMargin; Layout.rightMargin: root.workspaceMargin; Layout.bottomMargin: 24
             currentIndex: root.pages.indexOf(root.page)
             ClientHome {}
-            ClientGallery {}
-            ClientResources {}
+            ClientGallery { packageActions: resourcePage }
+            ClientResources { id: resourcePage }
             ClientSettings { profileOptions: root.routeOptions; profilesMode: routeChoices.mode; profilesSeason: routeChoices.season; profilesBusy: routeChoices.busy }
             ColumnLayout {
                 spacing: 16

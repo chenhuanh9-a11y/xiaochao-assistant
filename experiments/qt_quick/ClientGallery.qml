@@ -8,12 +8,35 @@ Item {
     property bool detailOpen: false
     property var scrollPositions: ({})
     property var detailViews: ({})
+    property var packageActions: null
+    property var packageStatusOwner: null
+    readonly property bool packageOperationPending: !packageActions || packageActions.operationPending || packageActions.recoveryPending
+    // Non-S0 resources are deliberately not accepted by the current importer.
+    readonly property bool canImportPackage: backend.season === "s0" && !packageOperationPending
     Component.onCompleted: { backend.clearGallerySearch(); backend.selectFirstLayer() }
     onVisibleChanged: if (visible) { backend.clearGallerySearch(); backend.selectFirstLayer() }
     readonly property var selectedProfile: {
         for (var n = 0; n < backend.profiles.length; n++)
             if (backend.profiles[n].id === backend.profileId) return backend.profiles[n]
-        return ({id: "", name: "选择一个图包", available: 0, availableMaps: 0, mapCount: 0})
+        return ({id: "", name: "选择一个图包", packageId: "", available: 0, availableMaps: 0, mapCount: 0})
+    }
+    readonly property var selectedPackage: {
+        if (!packageActions || !packageActions.packageManager || backend.busy || backend.season !== "s0" || !selectedProfile.packageId) return null
+        var rows = packageActions.packageManager.packageRows
+        for (var n = 0; n < rows.length; n++)
+            if (rows[n].packageId === selectedProfile.packageId && rows[n].mode === backend.mode) return rows[n]
+        return null
+    }
+    readonly property bool canRemovePackage: !!selectedPackage && !!selectedPackage.canRemove && !packageOperationPending
+    function importPackage() {
+        if (!canImportPackage) return
+        packageStatusOwner = resourceService
+        packageActions.openImport(backend.season)
+    }
+    function removeSelectedPackage() {
+        if (!canRemovePackage) return
+        packageStatusOwner = packageActions.packageManager
+        packageActions.removePackage(selectedPackage.packageId)
     }
     readonly property bool sameMode: backend.mode === session.currentMode && backend.season === session.currentSeason
     readonly property bool currentAuthor: sameMode && backend.profileId === session.currentProfile
@@ -37,13 +60,23 @@ Item {
     Connections {
         target: backend
         function onChanged() {
+            if (backend.hasError && !backend.busy) page.packageStatusOwner = null
             if (page.visible && !backend.busy && !backend.selectedKey) backend.selectFirstLayer()
         }
-        function onViewChanging(key) { page.scrollPositions[key] = authors.contentY; page.detailViews[key] = page.detailOpen }
+        function onViewChanging(key) {
+            page.packageStatusOwner = null
+            page.scrollPositions[key] = authors.contentY; page.detailViews[key] = page.detailOpen
+        }
         function onViewChanged(key) {
             if (page.visible) backend.selectFirstLayer()
             page.detailOpen = !!page.detailViews[key]
             Qt.callLater(function() { authors.contentY = Math.min(page.scrollPositions[key] || 0, Math.max(0, authors.contentHeight - authors.height)) })
+        }
+    }
+    Connections {
+        target: page.packageActions
+        function onImportSelectionCancelled() {
+            if (page.packageStatusOwner === resourceService) page.packageStatusOwner = null
         }
     }
     ColumnLayout {
@@ -52,7 +85,7 @@ Item {
             Layout.fillWidth: true
             Label { text: "地图资源"; font.pixelSize: 26; font.bold: true; color: "#142b4b" }
             Item { Layout.fillWidth: true }
-            AppButton { objectName: "galleryRefresh"; text: "刷新本机"; enabled: !backend.busy && !resourceService.busy; onClicked: backend.refresh() }
+            AppButton { objectName: "galleryRefresh"; text: "刷新本机"; enabled: !backend.busy && !resourceService.busy; onClicked: { page.packageStatusOwner = null; backend.refresh() } }
         }
         RowLayout {
             Layout.fillWidth: true; spacing: 8
@@ -79,7 +112,8 @@ Item {
                     anchors.fill: parent
                     readonly property int columns: width >= 420 ? 2 : 1
                     cellWidth: width / columns; cellHeight: 250
-                    clip: true; reuseItems: true; model: backend.profiles
+                    clip: true; reuseItems: true
+                    model: backend.profiles.concat([{importCard: true, id: "", name: "", availableMaps: 0, mapCount: 0, previewUrl: ""}])
                     boundsBehavior: Flickable.StopAtBounds
                     ScrollBar.vertical: ScrollBar {}
                     delegate: Item {
@@ -87,6 +121,7 @@ Item {
                         required property var modelData
                         width: authors.cellWidth; height: authors.cellHeight
                         Rectangle {
+                            visible: !author.modelData.importCard
                             anchors.fill: parent; anchors.rightMargin: authors.columns === 2 ? 8 : 0; anchors.bottomMargin: 10
                             radius: 12; color: backend.profileId === author.modelData.id ? "#e7effc" : "white"
                             border.width: backend.profileId === author.modelData.id || authorTap.activeFocus ? 2 : 1
@@ -114,19 +149,36 @@ Item {
                                 Accessible.onPressAction: page.chooseAuthor(author.modelData.id)
                             }
                         }
-                    }
-                    Column {
-                        anchors.centerIn: parent; width: parent.width - 24; spacing: 12
-                        visible: backend.profiles.length === 0
-                        Rectangle {
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            width: 64; height: 64; radius: 20; color: "#eaf0fd"
-                            Image { anchors.centerIn: parent; width: 30; height: 30; source: "icons/map.png"; sourceSize.width: 60; sourceSize.height: 60; opacity: .8 }
-                        }
-                        Label {
-                            width: parent.width
-                            text: backend.busy ? "正在读取地图资源…" : !galleryContextSelector.registeredContext(backend.season, backend.mode) ? galleryContextSelector.seasonLabel(backend.season) + " 资源待补齐" : "暂无地图资源，可在图库管理中导入。"
-                            color: "#526785"; wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter
+                        Button {
+                            id: importCard; objectName: author.modelData.importCard ? "galleryImportCard" : ""
+                            visible: !!author.modelData.importCard
+                            anchors.fill: parent; anchors.rightMargin: authors.columns === 2 ? 8 : 0; anchors.bottomMargin: 10
+                            enabled: page.canImportPackage
+                            hoverEnabled: true; focusPolicy: Qt.StrongFocus
+                            Accessible.name: "导入 " + galleryContextSelector.seasonLabel(backend.season) + " ZIP 图包"
+                            onClicked: page.importPackage()
+                            HoverHandler { cursorShape: importCard.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor }
+                            background: Rectangle {
+                                radius: 12
+                                color: importCard.down ? "#e0e9fd" : importCard.hovered ? "#f0f5ff" : "#f8faff"
+                                border.width: importCard.activeFocus ? 2 : 1
+                                border.color: importCard.activeFocus ? "#2f66eb" : "#c3d2eb"
+                            }
+                            contentItem: Item {
+                                Column {
+                                    anchors.centerIn: parent; width: parent.width; spacing: 8
+                                    Label { width: parent.width; text: "+"; font.pixelSize: 46; color: importCard.enabled ? "#2f66eb" : "#8797b1"; horizontalAlignment: Text.AlignHCenter }
+                                    Label { width: parent.width; text: "导入 ZIP 图包"; font.bold: true; color: "#354f75"; horizontalAlignment: Text.AlignHCenter }
+                                    Label {
+                                        width: parent.width; leftPadding: 12; rightPadding: 12
+                                        text: backend.season !== "s0" ? galleryContextSelector.seasonLabel(backend.season) + " 资源待补齐，暂不可导入"
+                                            : backend.busy && backend.profiles.length === 0 ? "正在读取地图资源…"
+                                            : page.packageActions && page.packageActions.recoveryPending ? "请先在图库管理中完成上次操作"
+                                            : "点击选择本地 ZIP 文件"
+                                        color: "#526785"; font.pixelSize: 11; wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -191,7 +243,18 @@ Item {
                         }
                     }
                     AppButton { objectName: "galleryUseAuthor"; text: page.currentAuthor ? "正在使用此作者" : "使用此作者"; Layout.fillWidth: true; primary: true; enabled: page.canUseAuthor; onClicked: clientCoordinator.setRouteProfile(backend.profileId) }
-                    AppButton { objectName: "galleryShowReference"; text: "打开独立预览"; enabled: backend.selectedImage !== ""; onClicked: clientCoordinator.showReference() }
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 8
+                        AppButton { objectName: "galleryShowReference"; text: "打开独立预览"; enabled: backend.selectedImage !== ""; onClicked: clientCoordinator.showReference() }
+                        Item { Layout.fillWidth: true }
+                        AppButton {
+                            objectName: "galleryRemovePackage"; text: "删除此图包"; enabled: page.canRemovePackage
+                            Accessible.name: "删除图包 " + page.selectedProfile.name
+                            ToolTip.visible: hovered
+                            ToolTip.text: page.selectedPackage ? "核对并确认后删除此图包；未知或改动过的文件会保留。" : "内置资源或未登记归属的图包不可删除。"
+                            onClicked: page.removeSelectedPackage()
+                        }
+                    }
                     Label { text: "预览不会自动更换作者。"; color: "#526785"; font.pixelSize: 11; Layout.fillWidth: true; wrapMode: Text.WordWrap }
                 }
             }
@@ -200,7 +263,7 @@ Item {
             objectName: "gallerySelectionFooter"
             Layout.fillWidth: true; spacing: 6
             Label { text: "当前游戏路线：" + page.activeAuthorName(); color: "#354f75"; Layout.fillWidth: true; elide: Text.ElideRight }
-            Label { text: backend.message; color: backend.hasError ? "#b8364a" : "#526785"; Layout.fillWidth: true; elide: Text.ElideRight; font.pixelSize: 11 }
+            Label { objectName: "galleryOperationMessage"; text: page.packageStatusOwner ? page.packageStatusOwner.message : backend.message; color: backend.hasError ? "#b8364a" : "#526785"; Layout.fillWidth: true; elide: Text.ElideRight; font.pixelSize: 11 }
         }
     }
 }

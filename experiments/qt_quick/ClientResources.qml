@@ -10,8 +10,22 @@ Item {
     property var packageManager: typeof packageManagerService !== "undefined" ? packageManagerService : null
     property var confirmationOwner: resourceService
     property bool managerRefreshPending: false
-    readonly property bool operationPending: resourceService.busy || resourceService.pendingKind !== "" || (packageManager && (packageManager.busy || packageManager.pendingKind !== ""))
+    signal importSelectionCancelled()
+    readonly property bool operationPending: archiveDialog.visible || resourceService.busy || resourceService.pendingKind !== "" || (packageManager && (packageManager.busy || packageManager.pendingKind !== ""))
     readonly property bool recoveryPending: resourceService.recoveryRequired || (packageManager && packageManager.recoveryRequired)
+
+    // Both persistent pages share this single chooser and confirmation owner.
+    // Capture the browsing season before opening, never the running game season.
+    function openImport(season) {
+        if (panel.operationPending || panel.recoveryPending) return
+        archiveDialog.targetSeason = season
+        archiveDialog.open()
+    }
+
+    function removePackage(packageId) {
+        if (!panel.packageManager || !packageId || panel.operationPending || panel.recoveryPending) return
+        panel.packageManager.requestRemove(packageId)
+    }
 
     function refreshPackages() {
         managerRefreshPending = !!packageManager
@@ -44,7 +58,7 @@ Item {
             AppButton { text: "在线图包"; onClicked: clientCoordinator.navigate("downloads") }
             AppButton { text: "核对状态"; enabled: !panel.operationPending && !panel.recoveryPending; onClicked: panel.refreshPackages() }
             AppButton { objectName: "clearManagedPackagesButton"; text: "清理全部图包"; enabled: !!panel.packageManager && !panel.operationPending && !panel.recoveryPending; onClicked: panel.packageManager.requestClearAll() }
-            AppButton { text: "导入 ZIP"; primary: true; enabled: !panel.operationPending && !panel.recoveryPending; onClicked: { archiveDialog.targetSeason = backend.season; archiveDialog.open() } }
+            AppButton { text: "导入 ZIP"; primary: true; enabled: !panel.operationPending && !panel.recoveryPending; onClicked: panel.openImport(backend.season) }
         }
         Label {
             Layout.fillWidth: true
@@ -115,7 +129,7 @@ Item {
                         objectName: "removePackageButton-" + modelData.packageId
                         text: "删除图包"; enabled: !!panel.packageManager && !!modelData.canRemove && !panel.operationPending && !panel.recoveryPending
                         Accessible.name: "删除图包 " + modelData.title
-                        onClicked: panel.packageManager.requestRemove(modelData.packageId)
+                        onClicked: panel.removePackage(modelData.packageId)
                     }
                 }
                 Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#edf1f7"; visible: index < packages.count - 1 }
@@ -147,6 +161,7 @@ Item {
         title: "选择 " + targetSeason.toUpperCase() + " 本地地图资源包"
         nameFilters: ["地图资源包 (*.zip)"]
         onAccepted: resourceService.importArchive(selectedFile.toString(), targetSeason)
+        onRejected: panel.importSelectionCancelled()
     }
     Dialog {
         id: confirmation

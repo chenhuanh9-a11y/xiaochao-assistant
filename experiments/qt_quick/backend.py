@@ -181,7 +181,7 @@ class Backend(QObject):
                 self._message = f"资源读取失败：{error or context.error}"
             else:
                 self.context = context
-                self._profiles = [{"id": p.profile_id, "name": p.name,
+                self._profiles = [{"id": p.profile_id, "name": p.name, "packageId": p.package_id or "",
                                    "available": p.available_layers,
                                    "availableMaps": p.available_maps, "mapCount": p.map_count,
                                    "previewUrl": self._preview_url(p.first_preview[2], context.path_stamps, self._season)
