@@ -413,7 +413,10 @@ class SharedRuntimeDeliveryTests(unittest.TestCase):
             # its deadline bounds completion, not a gameplay latency claim.
             deadline=time.monotonic()+10
             while session.busy and time.monotonic()<deadline:
-                QTest.qWait(5)
+                APP.processEvents()
+                # Yield the GIL to the real Python worker during cold imports;
+                # native Qt waits alone can consume its completion budget.
+                time.sleep(.005)
             APP.processEvents();APP.processEvents()
             self.assertFalse(session.busy,session.snapshot)
         try:
