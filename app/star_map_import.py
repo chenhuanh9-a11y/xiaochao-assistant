@@ -362,11 +362,11 @@ def _rows(rows, *, dependencies=False):
     return found
 
 
-def _owned_inventory(root: Path, package_id: str):
-    """Only an installed receipt proves ownership; incoming archives cannot claim it."""
+def _installed_inventory(root: Path, package_id: str):
+    """Read ownership and dependency constraints from the same receipt bytes."""
     path = _target(root, f"work/map-packages/{package_id}.json")
     if not path.exists():
-        return {}, None
+        return {}, {}, None
     if not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
         raise ImportRejected("invalid-installed-package-receipt")
     raw = path.read_bytes()
@@ -378,7 +378,35 @@ def _owned_inventory(root: Path, package_id: str):
     rows = _rows(receipt.get("files"))
     if any(not _allowed(package_id, row["path"]) for row in rows.values()):
         raise ImportRejected("invalid-installed-package-receipt")
-    return rows, hashlib.sha256(raw).hexdigest()
+    dependency_records = receipt.get("requiresFiles", [])
+    dependencies = {} if dependency_records == [] else _rows(dependency_records, dependencies=True)
+    return rows, dependencies, hashlib.sha256(raw).hexdigest()
+
+
+def _owned_inventory(root: Path, package_id: str):
+    """Only an installed receipt proves ownership; dependencies never grant it."""
+    rows, _dependencies, digest = _installed_inventory(root, package_id)
+    return rows, digest
+
+
+def _check_other_package_constraints(root, package_id, incoming, replacements):
+    """Preserve other packages' ownership and exact dependency contracts.
+
+    Call under the resource lock during inspection and again before any commit
+    or legacy adoption. A dependency is a constraint, not ownership: keeping
+    its bytes unchanged must not prevent updating unrelated author images.
+    """
+    replaced = {row["path"].casefold() for row in replacements}
+    for other in PACKAGE_IDS - {package_id}:
+        owned, dependencies, _digest = _installed_inventory(root, other)
+        shared = replaced & owned.keys()
+        if shared:
+            path = owned[min(shared)]["path"]
+            raise ImportRejected(f"shared-package-ownership-conflict: {path}")
+        for key in incoming.keys() & dependencies.keys():
+            new, required = incoming[key], dependencies[key]
+            if (new["bytes"], new["sha256"]) != (required["bytes"], required["sha256"]):
+                raise ImportRejected(f"shared-package-dependency-conflict: {new['path']}")
 
 
 def _pending_upgrade(root: Path):
@@ -485,10 +513,6 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None) -
                 if (old is None or not target.is_file() or target.stat().st_size != old["bytes"]
                         or _sha(target) != old["sha256"]):
                     raise ImportRejected(f"existing-data-conflict: {path}")
-                for other in PACKAGE_IDS - {package_id}:
-                    other_rows, _ = _owned_inventory(root, other)
-                    if path.casefold() in other_rows:
-                        raise ImportRejected(f"shared-package-ownership-conflict: {path}")
                 replacements.append(old)
             else:
                 existing += 1
@@ -516,6 +540,7 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None) -
         # Reading through EOF also performs zipfile's CRC check.
         if count != row["bytes"] or digest.hexdigest() != row["sha256"]:
             raise ImportRejected(f"file-integrity-mismatch: {path}")
+    _check_other_package_constraints(root, package_id, rows, replacements)
     return {"packageId": package_id, "revision": 1, "files": list(rows.values()),
             "requiresFiles": list(dependencies.values()),
             "fileCount": len(rows), "bytes": total, "alreadyPresent": existing,
@@ -807,6 +832,8 @@ def _install_staged(zip_path, root, state, *, expected_archive_sha256=None, live
         _check_cancelled(cancelled)
         preflight_hardlinks(root, [r['path'] for r in result['files']]
                             + [f"work/map-packages/{result['packageId']}.json"])
+        _check_other_package_constraints(root, result['packageId'],
+                                         _rows(result['files']), result['replaceFiles'])
         if result.get('legacyReceiptSha256'):
             # Every ZIP entry and dependency has now passed validation and the
             # writer/idle lease still holds. Register only this proven old set,
