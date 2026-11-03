@@ -2,7 +2,7 @@ name: Qt next candidate joint Windows regression
 
 on:
   push:
-    branches: [integration/qt-next-20261102]
+    branches: [integration/qt-next-20261102, integration/qt-pr84-88-20261103]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [features, core, diagnostics, packaging, released-baseline]
+        group: [features, core, diagnostics, packaging, main-baseline, released-baseline]
     env:
       PYTHONPATH: 'app;tests;tools;experiments/qt_quick'
       QT_QPA_PLATFORM: offscreen
@@ -26,12 +26,19 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Exact released baseline (comparison, never candidate evidence)
         if: matrix.group == 'released-baseline'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           ref: 76dfa533b1249754148e388ab5c9a3b78ea96767
+          persist-credentials: false
+      - name: Exact pre-integration main (comparison only)
+        if: matrix.group == 'main-baseline'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: 8b147149d32262070ebeb7560a845d3400b740d2
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
@@ -44,9 +51,10 @@ jobs:
         run: |
           $core = @('test_client_settings', 'test_hotkey_layout_compat', 'test_client_manual_map', 'test_client_manual_map_integration', 'test_client_session', 'test_client_shutdown', 'test_client_coordinator', 'test_client_live_runtime', 'test_client_map_input', 'test_client_map_intent_reset', 'test_client_shortcut_delivery', 'test_client_input', 'test_client_capture_full', 'test_client_capture_exclusion')
           switch ('${{ matrix.group }}') {
-            'features' { $modules = @('test_client_recapture_focus', 'test_client_recapture_composition', 'test_client_controls_visibility', 'test_client_chest_intent', 'test_chest_auto_tap', 'test_client_resource_feedback', 'test_client_window_feedback', 'test_client_fit_reporting', 'test_diagnostic_noninterference') }
+            'features' { $modules = @('test_client_recapture_focus', 'test_client_recapture_composition', 'test_client_controls_visibility', 'test_client_chest_intent', 'test_chest_auto_tap', 'test_client_resource_feedback', 'test_client_window_feedback', 'test_client_fit_reporting', 'test_diagnostic_noninterference', 'test_client_floor_ready_policy', 'test_client_floor_ready_foreground_return', 'test_client_live_controls', 'test_client_floor_region', 'test_client_game_floor_input') }
             'core' { $modules = $core }
             'released-baseline' { $modules = $core }
+            'main-baseline' { $modules = $core }
             'diagnostics' { $modules = @('test_diagnostic_log_budget', 'test_client_problems', 'test_client_problem_history', 'test_client_info', 'test_client_diagnostic_integration', 'test_client_joint_diagnostic_schema', 'test_field_failure_samples', 'test_async_event_log', 'test_automatic_failure_samples', 'test_storage_retention', 'test_memory_retention_links', 'test_runtime_environment_diagnostics'); $modules += @(Get-ChildItem tests/test_diagnostic*.py | ForEach-Object { $_.BaseName }) }
             'packaging' { $modules = @('test_preview_windows_notice', 'test_qt_installer_directory', 'test_live_author_import') }
           }

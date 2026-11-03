@@ -2,7 +2,7 @@ name: Qt chest opt-in Windows regression
 
 on:
   push:
-    branches: [fix/qt-chest-explicit-intent]
+    branches: [fix/qt-chest-explicit-intent, fix/chest-conflict-recovery]
   workflow_dispatch:
 
 permissions:

@@ -1964,7 +1964,7 @@ class ClientCoordinator(QObject):
                 if self._map_was_open:
                     self._map_was_open = False
                     self._invalidate_display("foreground-return-recapture")
-                    self.session.dispatch("capture_now")
+                    self.session.dispatchWithPayload("capture_now", dict(foregroundReturn=True))
                 else:
                     self.showReference()
             elif self._aligned:

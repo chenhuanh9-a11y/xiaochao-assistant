@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import threading
+import logging
 from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, Qt, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 
 from backend import ResourceRows
 from client_paths import runtime_paths
-from account_service import AccountError, AccountService
+from account_service import AccountError, AccountService, BLOCKED_CODES
 import route_plaza
 
 
@@ -29,9 +30,12 @@ class _Work(QRunnable):
         try:
             result, error = self.function(), None
         except AccountError as failure:
-            result, error = None, str(failure)
-        except Exception:
+            # Preserve status/code without carrying credential-bearing frames
+            # or transport context across the queued signal.
+            result, error = None, AccountError(str(failure), failure.status, failure.code)
+        except Exception as failure:
             # Exception reprs may contain request bodies/URLs. Never log or expose them.
+            logging.getLogger(__name__).warning("Plaza worker failed (%s)", type(failure).__name__)
             result, error = None, "操作失败，请稍后重试"
         finally:
             self.function = None  # Release submitted credentials promptly.
@@ -100,11 +104,12 @@ class RoutePlazaService(QObject):
     def _refresh_rows(self):
         if not self._active or self._closed or self._closing:
             return
-        installed = self.galleries.plazaVersions()
+        installed = self.galleries.plazaSources()
         self.model.reconcile([dict(key=r.version_id, title=r.title, description=r.description, author=r.author,
             mapCount=r.map_count, downloadCount=r.download_count, updatedDate=r.updated_date,
-            installed=installed.get(r.work_id) == r.version_id,
-            updateAvailable=r.work_id in installed and installed[r.work_id] != r.version_id)
+            installed=installed.get(r.work_id, {}).get("versionId") == r.version_id,
+            updateAvailable=r.work_id in installed and installed[r.work_id]["versionId"] != r.version_id
+                and r.revision > installed[r.work_id].get("revision", 0))
             for r in self._routes.values()])
 
     def _run(self, operation, function):
@@ -132,6 +137,19 @@ class RoutePlazaService(QObject):
     def _complete(self, result, error):
         generation, dialog = self._request
         self._job = None
+        if self._operation == "download":
+            if self._closed or self._closing or generation != self._generation:
+                self._busy, self._operation, self._download = False, "", ""
+                return
+            route, context, cancel = self._download_request
+            if cancel.is_set() or not self.galleries.plazaContextCurrent(context):
+                error = AccountError("已取消下载，未导入路线")
+            if error:
+                self._download_complete(route, generation, None, error)
+            elif not self.galleries.installPlaza(result, context, cancel.is_set,
+                    lambda result, error: self._download_complete(route, generation, result, error)):
+                self._download_complete(route, generation, None, "自定义图库正忙，请完成当前操作后重试。")
+            return
         self._busy = False
         operation, self._operation = self._operation, ""
         if self._closed or self._closing or generation != self._generation:
@@ -139,7 +157,7 @@ class RoutePlazaService(QObject):
         if operation == "list":
             self._loaded = True
             if error:
-                self._note("路线广场加载失败：" + error, True)
+                self._note("路线广场加载失败：" + str(error), True)
             else:
                 self._routes = {r.version_id: r for r in result}
                 self._refresh_rows()
@@ -149,7 +167,7 @@ class RoutePlazaService(QObject):
             self._note("已退出登录。")
         elif self._account_open and dialog == self._dialog_generation:
             if error:
-                self._account_message = error
+                self._account_message = str(error)
                 self.changed.emit()
             elif operation == "找回密码":
                 self._account_mode, self._account_message = "登录", result
@@ -157,7 +175,7 @@ class RoutePlazaService(QObject):
                 self.changed.emit()
             elif operation == "注册" and self.account.pending_recovery_code:
                 self._recovery_code = self.account.pending_recovery_code
-                self._account_message = "注册成功。请妥善保存恢复码，确认保存后不再显示。"
+                self._account_message = "注册成功。请保存恢复码；确认保存后，本机不再显示。"
                 self.changed.emit()
             else:
                 self.finishSignIn()
@@ -174,7 +192,7 @@ class RoutePlazaService(QObject):
         self._account_open = True
         self._account_mode = "登录"
         self._recovery_code = self.account.pending_recovery_code
-        self._account_message = ("请保存本次注册的恢复码，确认保存后不再显示；退出软件后不再保留。"
+        self._account_message = ("请保存账号恢复码；确认保存后，本机不再显示。退出软件后，本机不再保留。"
                                  if self._recovery_code else "")
         self.changed.emit()
 
@@ -228,7 +246,7 @@ class RoutePlazaService(QObject):
         code = self._visible_recovery_code()
         if code:
             QGuiApplication.clipboard().setText(code)
-            self._account_message = "已复制恢复码，请妥善保存。"
+            self._account_message = "已复制恢复码，请妥善保存，保存后请清空剪贴板。"
             self.changed.emit()
 
     @Slot()
@@ -249,32 +267,40 @@ class RoutePlazaService(QObject):
             self.openAccount()
             self._pending_download = route
             return
-        self._cancel = cancel = threading.Event()
-        self._generation += 1
-        generation = self._generation
-        self._busy, self._operation, self._download = True, "download", version_id
-        def done(result, error):
-            self._busy, self._operation, self._download = False, "", ""
-            if self._closed or self._closing or generation != self._generation:
-                return
-            self._refresh_rows()
-            if error:
-                self._note("登录已失效，请重新登录后再下载。" if not self.account.username else
-                           f"「{route.title}」下载失败：{error}", True)
-            else:
-                report = result["report"]
-                lost = []
-                if report["missingMaps"]:
-                    lost.append(f"{report['missingMaps']} 张图本软件没有")
-                if report["droppedPoints"]:
-                    lost.append(f"{report['droppedPoints']} 个点不在道路上")
-                self._note(f"已下载「{route.title}」：{report['maps']} 张图的路线" +
-                           (f"（{'，'.join(lost)}，已跳过）" if lost else "") + "。到「自定义地图」里选用。")
-        if not self.galleries.installPlaza(self.account, route, cancel.is_set, done):
-            self._busy, self._operation, self._download = False, "", ""
+        context = self.galleries.plazaInstallContext()
+        if context is None:
             self._note("自定义图库正忙，请完成当前操作后重试。", True)
+            return
+        self._cancel = cancel = threading.Event()
+        self._download_request = (route, context, cancel)
+        self._download = version_id
+        library, _generation = context
+        self._run("download", lambda: route_plaza.prepare_install(self.account, library, route,
+                                                                 cancelled=cancel.is_set))
+        self._note(f"正在下载并校验「{route.title}」…")
+
+    def _download_complete(self, route, generation, result, error):
+        self._busy, self._operation, self._download = False, "", ""
+        if self._closed or self._closing or generation != self._generation:
+            return
+        self._refresh_rows()
+        if error:
+            self._note(f"「{route.title}」下载失败：{error}", True)
+            if (isinstance(error, AccountError) and error.status in (400, 401, 403, 422)
+                    and error.code not in BLOCKED_CODES and not self.account.username and self._active):
+                self.openAccount()
+                self._account_message = "登录已失效，请重新登录后继续下载。"
+                self._pending_download = route
+                self.changed.emit()
         else:
-            self._note(f"正在下载并校验「{route.title}」…")
+            report = result["report"]
+            lost = []
+            if report["missingMaps"]:
+                lost.append(f"{report['missingMaps']} 张图本软件没有")
+            if report["droppedPoints"]:
+                lost.append(f"{report['droppedPoints']} 个点不在道路上")
+            self._note(f"已下载「{route.title}」：{report['maps']} 张图的路线" +
+                       (f"（{'，'.join(lost)}，已跳过）" if lost else "") + "。到「自定义地图」里选用。")
 
     @Slot()
     def cancelDownload(self):

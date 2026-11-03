@@ -44,7 +44,20 @@ class EventInputTests(unittest.TestCase):
         native, raw = native_seams.Native(), RawNative()
         clock, ticks = [10.], [1000]
         events, emitted = [], []
-        with patch.object(source, 'start', return_value=True), patch.object(source, 'stop', return_value=True):
+        # Model the asynchronous native lifecycle without starting a Windows hook.
+        # A successful start alone does not mean the observer is installed.
+        def start():
+            if not source.running:
+                source._stop.clear()
+                source.generation += 1
+                source._thread = SimpleNamespace(is_alive=lambda: True)
+            return True
+        def stop():
+            source._stop.set()
+            source.installed = False
+            source._thread = None
+            return True
+        with patch.object(source, 'start', side_effect=start), patch.object(source, 'stop', side_effect=stop):
             keys = NativeShortcutBackend(native, source=source)
             keys.configure({'toggle-panel':'MOUSE4', 'toggle-sheet-visibility':'MOUSE5', 'map':'MOUSE2'})
             keys.actionTriggered.connect(events.append)
@@ -59,6 +72,17 @@ class EventInputTests(unittest.TestCase):
                 with patch('time.monotonic',return_value=clock[0]):
                     APP.processEvents()
             try:
+                self.assertTrue(source.running)
+                self.assertFalse(source.installed)
+                native.foreground=42
+                packet(0x0040); packet(0x0080)
+                packet(0x0004); packet(0x0008)
+                self.assertEqual(events, [])  # Neither scope is ready before installation.
+                emitted.clear()
+                source.installed = True
+                source.started.emit(dict(held=source.held, generation=source.generation))
+                APP.processEvents()
+                self.assertTrue(keys._observer_ready())
                 native.foreground=77
                 packet(0x0040); packet(0x0080)
                 self.assertEqual(events,['toggle-panel'])
@@ -81,6 +105,15 @@ class EventInputTests(unittest.TestCase):
                 self.assertEqual(events.count('toggle-panel'),2)  # Mouse chords have one native owner; QML cannot handle them.
                 packet(0x0100,4980); packet(0x0200,4980)
                 self.assertEqual(events[-1],'toggle-sheet-visibility')
+                accepted = list(events)
+                keys.shutdown()
+                self.assertFalse(source.running)
+                self.assertFalse(source.installed)
+                self.assertFalse(keys._observer_ready())
+                native.foreground=42
+                packet(0x0040,4980); packet(0x0080,4980)
+                packet(0x0004,4980); packet(0x0008,4980)
+                self.assertEqual(events, accepted)  # Late packets cannot act after shutdown.
             finally:
                 observer.stop(); keys.shutdown()
 

@@ -7,7 +7,7 @@ import threading
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'app'))
-from account_service import AccountError, AccountService, Session, SessionVault
+from account_service import AccountError, AccountService, BLOCKED_CODES, Session, SessionVault
 
 
 def tokens(name='new'):
@@ -79,6 +79,138 @@ class AccountConcurrencyTests(unittest.TestCase):
         self.drain()
         self.assertEqual(sum(path == '/v1/auth/refresh' for path, _, _ in self.calls), 1)
         self.assertFalse(any(isinstance(x, Exception) for x in second))
+
+    def slow_vault(self, operation=None):
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        def protect(data):
+            entered.set()
+            if not release.wait(3):
+                raise AssertionError('test vault not released')
+            return data[::-1]
+        vault = SessionVault(Path(self.folder.name) / 'session', protect=protect,
+                             unprotect=lambda data: data[::-1])
+        self.account._vault = vault
+        self.release.set()  # Only storage is gated in these tests.
+        output, done = self.start(operation or (lambda: self.account.authorized('GET', '/protected')))
+        self.assertTrue(entered.wait(1))
+        return vault, release, output
+
+    def test_snapshot_reads_do_not_wait_for_refresh_encryption_and_disk(self):
+        _vault, release, _output = self.slow_vault()
+        output, done = self.start(lambda: (self.account.username, self.account.pending_recovery_code))
+        self.assertTrue(done.wait(.3), 'UI snapshot blocked behind session persistence')
+        self.assertEqual(output, [('alice', '')])
+        release.set()
+
+    def test_logout_during_slow_save_is_visible_and_disk_finishes_cleared(self):
+        vault, release, _output = self.slow_vault()
+        # Signal the exact local transition without waiting for the disk worker.
+        original = self.account._persist_session
+        locally_out = threading.Event()
+        def persist(session, revision):
+            if session is None:
+                locally_out.set()
+            original(session, revision)
+        self.account._persist_session = persist
+        self.start(self.account.logout)
+        self.assertTrue(locally_out.wait(.3), 'logout waited on the UI state lock')
+        output, done = self.start(lambda: self.account.username)
+        self.assertTrue(done.wait(.3))
+        self.assertEqual(output, [None])
+        release.set()
+        self.drain()
+        self.assertIsNone(vault.load())
+        self.assertFalse(vault.path.exists())
+
+    def test_new_login_during_slow_save_wins_in_memory_and_on_disk(self):
+        vault, release, _output = self.slow_vault()
+        original = self.account._persist_session
+        committed = threading.Event()
+        def persist(session, revision):
+            if session is not None and session.username == 'bob':
+                committed.set()
+            original(session, revision)
+        self.account._persist_session = persist
+        self.start(lambda: self.account.login('bob', 'secret1'))
+        self.assertTrue(committed.wait(.3), 'new login held by old persistence')
+        self.assertEqual(self.account.username, 'bob')
+        release.set()
+        self.drain()
+        self.assertEqual(vault.load().username, 'bob')
+        self.assertEqual(vault.load().refresh_token, 'bob-refresh')
+
+    def test_shutdown_keeps_accepted_rotated_token_save_without_restoring_memory(self):
+        vault, release, _output = self.slow_vault()
+        self.account.shutdown()
+        self.assertIsNone(self.account.username)
+        release.set()
+        self.drain()
+        self.assertIsNone(self.account.username)
+        self.assertEqual(vault.load().refresh_token, 'refreshed-refresh')
+
+    def test_login_finishing_persistence_after_shutdown_is_not_reported_as_success(self):
+        vault, release, output = self.slow_vault(lambda: self.account.login('bob', 'secret1'))
+        self.assertEqual(self.account.username, 'bob')
+        self.account.shutdown()
+        release.set()
+        self.drain()
+        self.assertIsInstance(output[0], AccountError)
+        self.assertIsNone(self.account.username)
+        self.assertEqual(vault.load().username, 'bob')
+
+    def test_blocked_codes_after_401_retry_clear_session_and_preserve_error(self):
+        for code in BLOCKED_CODES:
+            with self.subTest(code=code):
+                self.account._set(Session('alice', 'old', 'old-refresh', 9999999999, 9999999999))
+                calls = []
+                failure = AccountError('账号被停用', 403, code)
+                def api(method, path, body=None, **kwargs):
+                    calls.append(path)
+                    if path == '/v1/auth/refresh':
+                        return tokens('refreshed')
+                    if calls.count('/protected') == 1:
+                        raise AccountError('expired', 401)
+                    raise failure
+                self.account._api = api
+                with self.assertRaises(AccountError) as raised:
+                    self.account.authorized('GET', '/protected')
+                self.assertIs(raised.exception, failure)
+                self.assertIsNone(self.account.username)
+                self.assertEqual(calls, ['/protected', '/v1/auth/refresh', '/protected'])
+
+    def test_late_blocked_retry_does_not_clear_new_login(self):
+        self.account._session.access_expires = 9999999999
+        attempts = []
+        def api(method, path, body=None, **kwargs):
+            if path == '/protected':
+                attempts.append(path)
+                if len(attempts) == 1:
+                    raise AccountError('expired', 401)
+                self.entered.set()
+                self.release.wait(3)
+                raise AccountError('blocked', 403, 'ACCOUNT_BLOCKED')
+            return tokens((body or {}).get('username', 'refreshed'))
+        self.account._api = api
+        self.start(lambda: self.account.authorized('GET', '/protected'))
+        self.assertTrue(self.entered.wait(1))
+        self.account.login('bob', 'secret1')
+        self.release.set()
+        self.drain()
+        self.assertEqual(self.account.username, 'bob')
+
+    def test_recover_other_account_preserves_login_vault_and_pending_code(self):
+        self.account._vault = SessionVault(Path(self.folder.name) / 'session',
+            protect=lambda data: data[::-1], unprotect=lambda data: data[::-1])
+        code = self.account.register('bob', 'secret1', 'bob@example.test')
+        before = self.account._vault.path.read_bytes()
+        self.account.recover('alice', 'ABCD-EFGH-JKMP-QRST', 'secret2')
+        self.assertEqual(self.account.username, 'bob')
+        self.assertEqual(self.account._vault.path.read_bytes(), before)
+        self.assertEqual(self.account.pending_recovery_code, code)
+        self.account.recover(' BOB ', 'ABCD-EFGH-JKMP-QRST', 'secret2')
+        self.assertIsNone(self.account.username)
+        self.assertFalse(self.account._vault.path.exists())
 
     def test_old_refresh_cannot_replace_new_login(self):
         old, _ = self.refresh()

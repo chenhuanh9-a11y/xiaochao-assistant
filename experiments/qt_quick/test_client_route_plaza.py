@@ -1,5 +1,6 @@
 """Offscreen Qt events + real shared services against the existing local HTTP fixture."""
 import json
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import tempfile
@@ -14,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_QUICK_BACKEND", "software")
 from PySide6.QtCore import QObject, QUrl, QPoint, QPointF, Qt, Slot, QCoreApplication, QEvent
-from PySide6.QtGui import QGuiApplication, QKeyEvent
+from PySide6.QtGui import QAccessible, QGuiApplication, QKeyEvent
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtTest import QTest
@@ -182,7 +183,13 @@ class PlazaTests(unittest.TestCase):
         self.service.submitAccount("", "bob_1", "bob@example.com", "", "secret1", "secret1")
         until(lambda: not self.service.snapshot["busy"])
         self.assertTrue(self.service.snapshot["hasRecoveryCode"])
+        self.assertEqual(self.service.snapshot["accountMessage"],
+                         "注册成功。请保存恢复码；确认保存后，本机不再显示。")
         self.assertNotIn(self.service.recoveryCode, json.dumps(self.service.snapshot))
+        self.service.closeAccount()
+        self.service.openAccount()
+        self.assertEqual(self.service.snapshot["accountMessage"],
+                         "请保存账号恢复码；确认保存后，本机不再显示。退出软件后，本机不再保留。")
         self.service.finishSignIn()
         self.assertEqual(self.service.recoveryCode, "")
         self.service.logout()
@@ -235,6 +242,159 @@ class PlazaTests(unittest.TestCase):
         self.assertFalse(self.service.model.rows[0]["installed"])
         self.assertEqual(sum("/download" in call[1] for call in self.server.calls), 1)
 
+    @contextmanager
+    def slow_download(self):
+        gate, entered = threading.Event(), threading.Event()
+        original = route_plaza.fetch_archive
+        def blocked(*args):
+            entered.set()
+            if not gate.wait(4):
+                raise AssertionError('download gate not released')
+            return original(*args)
+        with patch.object(route_plaza, 'fetch_archive', side_effect=blocked):
+            self.service.downloadRoute('ver-2')
+            self.assertTrue(entered.wait(2))
+            try:
+                yield gate
+            finally:
+                gate.set()
+                until(lambda: not self.service.snapshot['busy'] and not self.galleries.busy)
+
+    def test_slow_download_allows_selection_edit_use_and_preserves_undo_redo(self):
+        self.load()
+        self.sign_in()
+        self.galleries.createGallery('编辑中')
+        until(lambda: not self.galleries.busy)
+        first = self.galleries.snapshot['selectedGallery']
+        self.galleries.createGallery('另一套')
+        until(lambda: not self.galleries.busy)
+        second = self.galleries.snapshot['selectedGallery']
+        used = []
+        self.galleries.setUseHandler(lambda gid: used.append(gid) or dict(success=True, applied=True))
+        ui_thread = threading.get_ident()
+        prepare_threads, write_threads = [], []
+        original_prepare, original_write = route_plaza.prepare_install, self.galleries._write
+        def prepare(*args, **kwargs):
+            prepare_threads.append(threading.get_ident())
+            return original_prepare(*args, **kwargs)
+        def write(operation):
+            write_threads.append(threading.get_ident())
+            return original_write(operation)
+        with patch.object(route_plaza, 'prepare_install', side_effect=prepare), \
+                patch.object(self.galleries, '_write', side_effect=write):
+            with self.slow_download():
+                self.assertFalse(self.galleries.busy)
+                self.assertEqual(self.galleries.pool.activeThreadCount(), 0)
+                self.galleries.useGallery()
+                self.galleries.selectGallery(first)
+                until(lambda: not self.galleries.busy)
+                self.galleries.useGallery()
+                self.assertEqual(used, [second, first])
+                self.galleries.selectMap('m')
+                until(lambda: not self.galleries.busy)
+                self.assertTrue(self.galleries.snapshot['editing'])
+                self.galleries.addPoint(45., 45.)
+                until(lambda: not self.galleries.busy)
+                self.galleries.addPoint(75., 15.)
+                until(lambda: not self.galleries.busy)
+                self.assertEqual(len(self.galleries.snapshot['points']), 2)
+                self.galleries.undo()
+                until(lambda: not self.galleries.busy)
+                before = self.galleries.snapshot
+                self.assertTrue(before['canUndo'])
+                self.assertTrue(before['canRedo'])
+        after = self.galleries.snapshot
+        for field in ('selectedGallery', 'selectedMap', 'selectedFloor', 'editing', 'inUse',
+                      'points', 'canUndo', 'canRedo'):
+            self.assertEqual(after[field], before[field], field)
+        self.assertTrue(self.service.model.rows[0]['installed'])
+        self.galleries.redo()
+        until(lambda: not self.galleries.busy)
+        self.assertEqual(len(self.galleries.snapshot['points']), 2)
+        self.assertNotEqual(prepare_threads[0], ui_thread)
+        self.assertNotIn(prepare_threads[0], write_threads)
+        self.assertNotIn(ui_thread, write_threads)
+
+    def prepared_while_writing(self, during):
+        self.load()
+        self.sign_in()
+        writer_entered, writer_release = threading.Event(), threading.Event()
+        original = self.galleries._write
+        def blocked(operation):
+            writer_entered.set()
+            if not writer_release.wait(4):
+                raise AssertionError('writer gate not released')
+            return original(operation)
+        with patch.object(self.galleries, '_write', side_effect=blocked):
+            with self.slow_download() as download_release:
+                try:
+                    self.galleries.createGallery('下载时创建')
+                    self.assertTrue(writer_entered.wait(1))
+                    download_release.set()
+                    until(lambda: self.galleries.pendingWrites)
+                    self.assertTrue(self.service.snapshot['busy'])
+                    during()
+                finally:
+                    writer_release.set()
+
+    def test_prepared_download_waits_for_short_writer_then_commits(self):
+        self.prepared_while_writing(lambda: None)
+        self.assertTrue(self.service.model.rows[0]['installed'])
+        self.assertEqual(self.galleries.snapshot['galleryName'], '下载时创建')
+        self.assertEqual(len(self.galleries.snapshot['galleries']), 3)
+        self.assertFalse(self.galleries.pendingWrites)
+
+    def test_refresh_while_prepared_save_is_queued_revokes_before_write(self):
+        self.prepared_while_writing(self.galleries.refresh)
+        self.assertFalse(self.service.model.rows[0]['installed'])
+        self.assertFalse(any(row.get('source') for row in self.galleries.snapshot['galleries']))
+        self.assertFalse(self.galleries._refresh_pending)
+        self.assertFalse(self.galleries.pendingWrites)
+
+    def test_cancel_while_prepared_save_is_queued_revokes_before_write(self):
+        self.prepared_while_writing(self.service.cancelDownload)
+        self.assertFalse(self.service.model.rows[0]['installed'])
+        self.assertFalse(any(row.get('source') for row in self.galleries.snapshot['galleries']))
+
+    def test_close_while_prepared_save_is_queued_does_not_import(self):
+        self.prepared_while_writing(self.service.cancel)
+        self.assertFalse(self.service.model.rows[0]['installed'])
+        self.assertFalse(any(row.get('source') for row in self.galleries.snapshot['galleries']))
+        self.assertFalse(self.galleries.pendingWrites)
+
+    def test_cancelled_refresh_error_does_not_reopen_login_or_resume_download(self):
+        self.load()
+        self.sign_in()
+        self.service.account._session.access_expires = 0
+        self.server.fail_refresh = True
+        entered, release = threading.Event(), threading.Event()
+        original = self.service.account._api
+        def blocked(*args, **kwargs):
+            entered.set()
+            if not release.wait(3):
+                raise AssertionError('refresh gate not released')
+            return original(*args, **kwargs)
+        with patch.object(self.service.account, '_api', side_effect=blocked):
+            self.service.downloadRoute('ver-2')
+            try:
+                self.assertTrue(entered.wait(1))
+                self.service.cancelDownload()
+            finally:
+                release.set()
+            until(lambda: not self.service.snapshot['busy'])
+        self.assertFalse(self.service.snapshot['accountOpen'])
+        self.assertIsNone(self.service._pending_download)
+        self.assertIn('已取消', self.service.snapshot['message'])
+
+    def test_unexpected_worker_failure_logs_only_type(self):
+        with self.assertLogs('client_route_plaza', level='WARNING') as logs:
+            with patch.object(self.service, 'listing', side_effect=RuntimeError('private-request-value')):
+                self.service.search('')
+                until(lambda: not self.service.snapshot['busy'])
+        self.assertIn('RuntimeError', logs.output[0])
+        self.assertNotIn('private-request-value', ''.join(logs.output))
+        self.assertNotIn('private-request-value', self.service.snapshot['message'])
+
     def test_cancel_then_retry_does_not_import_late_result(self):
         self.blocked_download(self.service.cancelDownload)
         self.assertTrue(self.service.snapshot["error"])
@@ -264,6 +424,30 @@ class PlazaTests(unittest.TestCase):
         until(lambda: not self.service.snapshot["busy"])
         self.assertEqual(self.service.snapshot["username"], "")
         self.assertIn("重新登录", self.service.snapshot["message"])
+        self.assertTrue(self.service.snapshot['accountOpen'])
+        self.assertIsNotNone(self.service._pending_download)
+        self.server.fail_refresh = False
+        self.server.served = None
+        self.service.submitAccount('alice', '', '', '', 'secret1', '')
+        until(lambda: not self.service.snapshot['busy'])
+        self.assertTrue(self.service.model.rows[0]['installed'])
+
+    def test_blocked_download_keeps_server_message_without_relogin_dialog(self):
+        self.load()
+        self.sign_in()
+        original = self.service.account._api
+        def blocked(method, path, body=None, **kwargs):
+            if path.endswith('/download'):
+                raise route_plaza.AccountError('账号被封禁，请联系管理员', 403, 'ACCOUNT_BLOCKED')
+            return original(method, path, body, **kwargs)
+        with patch.object(self.service.account, '_api', side_effect=blocked):
+            self.service.downloadRoute('ver-2')
+            until(lambda: not self.service.snapshot['busy'])
+        self.assertEqual(self.service.snapshot['username'], '')
+        self.assertIn('账号被封禁', self.service.snapshot['message'])
+        self.assertNotIn('登录已失效', self.service.snapshot['message'])
+        self.assertFalse(self.service.snapshot['accountOpen'])
+        self.assertIsNone(self.service._pending_download)
 
     def test_store_save_failure_rolls_back_source_and_revision(self):
         store = GalleryStore(self.root / "store.json", self.root / "none.json")
@@ -309,6 +493,11 @@ class PlazaTests(unittest.TestCase):
         self.sign_in()
         installed = self.download()
         current = self.service._routes["ver-2"]
+        for revision in (1, 2):
+            rollback = replace(current, version_id='other-version', revision=revision)
+            self.service._routes = {rollback.version_id: rollback}
+            self.service._refresh_rows()
+            self.assertFalse(self.service.model.rows[0]['updateAvailable'])
         newer = replace(current, version_id="ver-3", revision=3)
         self.service._routes = {newer.version_id: newer}
         self.service._refresh_rows()
@@ -353,6 +542,18 @@ ClientAccount {}
             until(lambda: self.service.snapshot["loaded"] and not self.service.snapshot["busy"])
             click("plazaLogin")
             until(lambda: item(window, "accountDialog").property("opened"))
+            self.service.setAccountMode("注册")
+            APP.processEvents()
+            self.assertEqual(item(window, "accountHelpText").property("text"),
+                "用户名 3–32 位英文小写、数字或下划线；密码 6–128 位。注册后请保存恢复码；确认保存后，本机不再显示。")
+            accessible = QAccessible.queryAccessibleInterface(item(window, "accountRecoveryCode"))
+            self.assertIsNotNone(accessible)
+            self.assertEqual(accessible.text(QAccessible.Name), "账号恢复码")
+            self.service.setAccountMode("找回密码")
+            APP.processEvents()
+            self.assertEqual(item(window, "accountHelpText").property("text"), "用账号恢复码重设密码。")
+            self.service.setAccountMode("登录")
+            APP.processEvents()
             click("accountIdentifier")
             type_text("alice")
             click("accountPassword")
@@ -414,6 +615,7 @@ def composition():
     gate, entered = threading.Event(), threading.Event()
     server = FakeServer()
     try:
+        WORK_ROOT.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="qt-plaza-composition-", dir=WORK_ROOT) as directory, \
              patch.dict(os.environ, XINGTU_ACCOUNT_API_URL=server.url):
             root = Path(directory)

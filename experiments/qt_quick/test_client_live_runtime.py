@@ -802,6 +802,29 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertEqual(self.engine.rank_count, 0)
         self.assertFalse(self.runtime.snapshot()["core"]["displayAuthorized"])
 
+    def test_foreground_return_preparation_cancels_on_lifetime_boundaries(self):
+        for reason in ('map-closed', 'foreground-lost', 'capture-context-changed',
+                       'end_round', 'mode-changed', 'resource-changed', 'game-floor-control-intent'):
+            with self.subTest(reason=reason):
+                self.dispatch('start_round')
+                self.dispatch('capture_now')
+                old = self.runtime.snapshot()['pendingRenderToken']
+                self.runtime.invalidate('foreground-lost')
+                capture = self.capture.capture
+                def invalidate_on_probe(cancelled=None):
+                    frame = capture(cancelled)
+                    self.runtime.invalidate(reason)
+                    return frame
+                self.capture.capture = invalidate_on_probe
+                try:
+                    result = self.dispatch('capture_now', foregroundReturn=True)
+                finally:
+                    self.capture.capture = capture
+                self.assertFalse(result['success'], result)
+                self.assertTrue(result['stale'], result)
+                self.assertIsNone(self.runtime.render_payload(old))
+                self.assertFalse(self.runtime.snapshot()['displayAuthorized'])
+
     def test_capture_context_change_after_solver_rejects_commit(self):
         self.capture.generation = 5
         self.capture.is_current = lambda context, generation=None: False

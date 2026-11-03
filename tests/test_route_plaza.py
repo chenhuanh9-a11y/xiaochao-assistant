@@ -248,7 +248,7 @@ class RoutePlazaTests(unittest.TestCase):
         self.assertIsNone(self.account.username)
         self.assertFalse((self.root / "settings/session.bin").exists())
 
-    def test_register_returns_recovery_code_and_recovery_signs_out(self):
+    def test_register_returns_recovery_code_and_recovery_clears_matching_local_login(self):
         self.assertEqual(self.account.register("bob_1", "secret1", "Bob@Example.com"), "ABCD-EFGH-JKMP-QRST")
         self.assertEqual(self.account.username, "bob_1")
         register = next(call[2] for call in self.server.calls if call[1] == "/v1/auth/register")
@@ -257,6 +257,25 @@ class RoutePlazaTests(unittest.TestCase):
             self.account.recover("bob_1", "nope", "secret2")
         self.assertEqual(self.account.recover("bob_1", "abcd-efgh-jkmp-qrst", "secret2"), "密码已重置")
         self.assertIsNone(self.account.username)
+
+    def test_recovery_preserves_existing_request_fields_without_server_semantic_claims(self):
+        # The local fixture acknowledges the request; it does not implement or
+        # establish code reuse, rotation, or revocation on other devices.
+        self.account.recover(" BOB_1 ", "abcd-efgh-jkmp-qrst", "secret2")
+        requests = [body for method, path, body in self.server.calls
+                    if method == "POST" and path == "/v1/auth/password-recovery"]
+        self.assertEqual(requests, [dict(identifier="bob_1", recovery_code="ABCD-EFGH-JKMP-QRST",
+                                         new_password="secret2", preserve_recovery_code=True)])
+
+    def test_duplicate_template_bindings_fail_instead_of_selecting_last_map(self):
+        manifest_path = self.library.root / 'manifest.json'
+        resource = json.loads(manifest_path.read_text())
+        duplicate = dict(resource['maps'][0], mapId='other-map')
+        resource['maps'].append(duplicate)
+        manifest_path.write_text(json.dumps(resource))
+        library = CustomMapLibrary(self.library.root)
+        with self.assertRaisesRegex(AccountError, '资源缺口.*重复绑定'):
+            route_plaza.convert_manifest(library, dict(maps=[]))
 
     def test_without_dpapi_nothing_is_written(self):
         vault = SessionVault(self.root / "plain.bin", protect=None, unprotect=None)

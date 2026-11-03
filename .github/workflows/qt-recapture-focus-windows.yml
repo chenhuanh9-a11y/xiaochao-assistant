@@ -2,7 +2,7 @@ name: Qt recapture focus Windows regression
 
 on:
   push:
-    branches: [fix/qt-recapture-focus-flow]
+    branches: [fix/qt-recapture-focus-flow, fix/foreground-return-multiframe]
   workflow_dispatch:
 
 permissions:
