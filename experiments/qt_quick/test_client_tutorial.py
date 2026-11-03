@@ -304,6 +304,8 @@ ClientTutorial { objectName: "tutorialPopup" } }
         self.assertEqual(self.warnings, [])
 
     def test_missing_image_has_visible_text_fallback(self):
+        self.window.show()
+        self.app.processEvents()
         self.service.image_root = Path(self.temp.name) / "missing"
         self.service.changed.emit()
         self.service.open("keys")

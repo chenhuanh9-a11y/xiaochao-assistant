@@ -133,6 +133,8 @@ class EditorUpgradeTests(fixture.CustomGalleryTests):
         choice = window.findChild(QQuickItem, 'customMapChoice')
         floors = window.findChild(QQuickItem, 'customFloorChoice')
         surface = window.findChild(QQuickItem, 'customMapDrawingSurface')
+        until(lambda: choice.width() > 0 and floors.width() > 0 and surface.height() > 300, timeout=10)
+        self.assertTrue(QTest.qWaitForWindowExposed(window, 5000))
         def click(item):
             point = item.mapToScene(QPointF(item.width()/2, item.height()/2))
             QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, point.toPoint())
