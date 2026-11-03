@@ -46,8 +46,9 @@ class FailureSampleRecorder:
     """Reuse store's lossless writer/disk budget and shared cooldown policy.
 
     A write is part of the existing Session job and therefore its drain. There
-    is no daemon to outlive shutdown. At most 12 successful samples per process
-    are admitted; enabling diagnostics does not reset cooldown or this limit.
+    is no daemon to outlive shutdown. Manual full frames keep the 12-per-process
+    limit. Automatic cropped evidence uses bounded disk rotation and cooldown,
+    so a long-running process can retain new failures after its first six images.
     """
     def __init__(self):
         self.enabled = False
@@ -69,7 +70,7 @@ class FailureSampleRecorder:
             return dict(saved=False, missingReason='capture-not-current', sampling='automatic')
         from failure_sampling import automatic_storage_transaction
         try:
-            with automatic_storage_transaction(root, create=True) as status:
+            with automatic_storage_transaction(root, create=True, namespace='automatic-v2') as status:
                 if status != 'ready':
                     return dict(saved=False, missingReason=status, sampling='automatic')
                 return self._record_automatic_locked(root=root, reason=reason, frame=frame,
@@ -112,7 +113,7 @@ class FailureSampleRecorder:
                 return dict(result, missingReason=self.policy.last_status)
             admitted = True
             base = Path(root).absolute()
-            directory = base / 'failures' / 'automatic'
+            directory = base / 'failures' / 'automatic-v2'
             # Refuse redirected storage: cleanup must only touch our own namespace.
             from diagnostic_storage import _safe
             try: _safe(directory)
@@ -120,11 +121,12 @@ class FailureSampleRecorder:
                 return dict(result, missingReason='automatic-storage-redirected')
             directory.mkdir(parents=True, exist_ok=True)
             from failure_sampling import (_cleanup_automatic_failure_samples_locked,
-                automatic_storage_inventory, replace_automatic_journal)
-            cleanup = _cleanup_automatic_failure_samples_locked(base)
+                automatic_storage_inventory, replace_automatic_journal,
+                ensure_automatic_capacity, create_automatic_image)
+            cleanup = _cleanup_automatic_failure_samples_locked(base, namespace='automatic-v2')
             if not cleanup['complete']:
                 return dict(result, missingReason=cleanup['status'], cleanup=cleanup)
-            inventory = automatic_storage_inventory(base)
+            inventory = automatic_storage_inventory(base, namespace='automatic-v2')
             if inventory['status'] != 'ready':
                 return dict(result, missingReason=inventory['status'])
             now = time.time()
@@ -133,7 +135,7 @@ class FailureSampleRecorder:
             missing = 'map-crop-unproven'
             # The production path derives bounds from the shared current-frame
             # map extractor, never a fixed ROI, source pose, or remembered map.
-            if (self.automatic_saved_count < 6 and crop_bounds is None and frame is not None
+            if (crop_bounds is None and frame is not None
                     and diagnostic.get('evidenceKind') == 'live-client-capture'):
                 from map_observation import structure_current_map_evidence
                 evidence = structure_current_map_evidence(frame)
@@ -144,9 +146,7 @@ class FailureSampleRecorder:
                     diagnostic = dict(diagnostic, cropExtractor='structure_current_map_evidence',
                                       observationBounds=list(evidence['observationBounds']),
                                       cropPaddingRemoved=8)
-            if self.automatic_saved_count >= 6:
-                missing = 'automatic-process-image-limit'
-            elif frame is None:
+            if frame is None:
                 missing = 'legal-captured-frame-unavailable'
             elif diagnostic.get('evidenceKind') != 'live-client-capture':
                 missing = 'not-live-bound-game-capture'
@@ -157,9 +157,17 @@ class FailureSampleRecorder:
                 x, y, width, height = crop_bounds
                 if x >= 0 and y >= 0 and width > 0 and height > 0 and x+width <= frame.shape[1] and y+height <= frame.shape[0]:
                     ok, encoded = cv2.imencode('.png', frame[y:y+height, x:x+width])
-                    if ok and encoded.nbytes <= 12*1024*1024:
+                    if not ok:
+                        missing = 'sample-encode-failed'
+                    elif encoded.nbytes > 12*1024*1024:
+                        missing = 'image-byte-limit'
+                    else:
                         pixels = encoded.tobytes()
                         missing = ''
+                else:
+                    missing = 'sample-crop-invalid'
+            elif crop_bounds is not None:
+                missing = 'sample-crop-invalid'
             safe_diagnostic = {k: diagnostic[k] for k in (
                 'eventPath', 'sessionId', 'pid', 'buildFingerprint', 'sourceCommit', 'evidenceKind', 'mode',
                 'frameCapturedAtUtc', 'mapId', 'floor', 'cycleId', 'frameId',
@@ -170,19 +178,21 @@ class FailureSampleRecorder:
                        capturedAt=diagnostic.get('frameCapturedAtUtc'), diagnostic=bounded_evidence(safe_diagnostic)[0],
                        samplePath=None, missingReason=missing, sampling='automatic')
             if pixels is not None and current() and self.automatic_enabled:
-                latest = automatic_storage_inventory(base)
+                capacity = ensure_automatic_capacity(base, len(pixels), namespace='automatic-v2')
+                if not capacity['complete']:
+                    return dict(result, missingReason=capacity['status'], cleanup=capacity)
+                latest = automatic_storage_inventory(base, namespace='automatic-v2')
                 if latest['status'] != 'ready':
                     return dict(result, missingReason=latest['status'])
                 images = sorted(latest['images'], key=lambda p: p.stat().st_mtime)
-                if len(images) >= 6 or sum(p.stat().st_size for p in images)+len(pixels) > 12*1024*1024:
-                    return dict(result, missingReason='automatic-safe-retirement-unavailable')
+                inventory = latest  # Rotation may retire rows; never resurrect its pre-rotation journal.
                 path = directory / ('auto-' + uuid.uuid4().hex + '.png')
                 row.update(samplePath=path.relative_to(base).as_posix(),
                            sampleSha256=hashlib.sha256(pixels).hexdigest(),
                            sampleBytes=len(pixels),
                            cropBounds=list(crop_bounds), cropProvenance=crop_provenance)
-                # Durable prepare/commit: recovery can prove which complete PNG
-                # belongs to this interrupted write without trusting its name.
+                # Durable prepare/commit: an interrupted image remains pending.
+                # Recovery never adopts or deletes an uncommitted PNG.
                 intent = dict(row, event='automatic-failure-image-intent',
                               imageTransactionSchema='automatic-image-intent-v1')
                 intent_line = json.dumps(intent, ensure_ascii=False).encode('utf-8')
@@ -194,12 +204,8 @@ class FailureSampleRecorder:
                     if removable is None:
                         return dict(result, missingReason='automatic-image-intent-budget')
                     prepared.pop(removable)
-                replace_automatic_journal(directory, b'\n'.join(prepared+[intent_line])+b'\n')
-                with path.open('xb') as image_stream:
-                    image_stream.write(pixels)
-                    image_stream.flush()
-                    import os
-                    os.fsync(image_stream.fileno())
+                replace_automatic_journal(directory, b'\n'.join(prepared+[intent_line])+b'\n', namespace='automatic-v2')
+                row.update(create_automatic_image(base, row['samplePath'], pixels, namespace='automatic-v2'))
                 result['saved'] = True
                 self.automatic_saved_count += 1
             elif not missing:
@@ -224,7 +230,7 @@ class FailureSampleRecorder:
             rows = pinned + unpinned[-(24-len(pinned)):]
             while len(rows) > 1 and sum(map(len, rows)) + len(rows) > 256*1024:
                 rows.pop(0)
-            replace_automatic_journal(directory, b'\n'.join(rows) + b'\n')
+            replace_automatic_journal(directory, b'\n'.join(rows) + b'\n', namespace='automatic-v2')
             result['missingReason'] = row['missingReason']
             return result
         except Exception as error:

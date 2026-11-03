@@ -2071,7 +2071,8 @@ class LiveRuntime:
             result['controlBand'] = self._failure_samples.record_automatic(root=root, reason=reason, frame=frame,
                 diagnostic=dict(data, sampleRole='detector-control-band'), current=valid,
                 crop_bounds=controls[1], crop_provenance='detector-control-band')
-        self._notify('automatic-failure-sample', reason='saved' if result['saved'] else 'metadata-only',
+        saved_any = result['saved'] or result.get('controlBand', {}).get('saved', False)
+        self._notify('automatic-failure-sample', reason='saved' if saved_any else 'metadata-only',
                      failureSample=result)
         return result
 

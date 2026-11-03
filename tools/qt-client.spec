@@ -17,7 +17,9 @@ if (Path(inputs["sourceRoot"]).resolve() != root
     raise ValueError("Build input identity does not match this source checkout")
 qt_root = root / "experiments" / "qt_quick"
 resource_stage = Path(inputs["resourceStage"])
-datas = [(str(resource_stage / name), str(Path(name).parent)) for name in inputs["resources"]]
+bundled_author_paths = set(inputs.get("bundledAuthorPaths", []))
+datas = [(str(resource_stage / name), str(Path("qt-author-base" if name in bundled_author_paths else ".") / Path(name).parent))
+         for name in inputs["resources"]]
 for path in qt_root.glob("*.qml"):
     datas.append((str(path), "."))
 for path in (qt_root / "icons").glob("*.png"):

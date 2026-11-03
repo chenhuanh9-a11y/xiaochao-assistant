@@ -33,6 +33,16 @@ class PackageProfileTests(unittest.TestCase):
     def test_software_delivery_is_setup(self):
         self.assertEqual(profiles.SOFTWARE_DELIVERY_FORMAT, "setup")
 
+    def test_explicit_difficult_default_does_not_include_other_authors(self):
+        names = ['assets/zhan10-native/a.webp', 'assets/zhan10-legacy-clean/a.png',
+                 'assets/suju/a.png', 'assets/authors/nightingale/a.png']
+        rows = {name: {} for name in names}
+        retained, omitted = profiles.partition_resources(rows, bundled_packages=['difficult-zhan10'])
+        self.assertEqual(set(retained), set(names[:2]))
+        self.assertEqual(set(omitted), set(names[2:]))
+        with self.assertRaises(ValueError):
+            profiles.partition_resources(rows, bundled_packages=['other'])
+
 
 if __name__ == "__main__":
     unittest.main()

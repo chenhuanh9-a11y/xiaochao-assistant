@@ -94,7 +94,10 @@ class RuntimePaths:
     @property
     def editor_base_candidates(self):
         candidates = ([self.installation_root / "assets/custom-maps"] if self.production else [])
-        return candidates + [self.resource_root / "assets/custom-maps", self.resource_root / "qt-editor-base"]
+        candidates += [self.resource_root / "assets/custom-maps", self.resource_root / "qt-editor-base"]
+        if FROZEN and not self.production:
+            candidates.append(RESOURCE_ROOT / "qt-editor-base")
+        return candidates
 
     @property
     def editor_base_root(self):
@@ -128,6 +131,12 @@ def editor_library_usable(root):
         return True
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return False
+
+
+def bundled_author_root():
+    # Source tools never discover installed resources; frozen defaults stay
+    # beside program code and are never seeded into user-owned directories.
+    return RESOURCE_ROOT / "qt-author-base" if FROZEN else None
 
 
 def runtime_paths(root=None):

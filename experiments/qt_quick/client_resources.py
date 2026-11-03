@@ -17,7 +17,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, QTimer, QUrl, Qt, Signal, Slot
 
-from client_paths import RESOURCE_ROOT as ROOT, validate_installation_root
+from client_paths import RESOURCE_ROOT as ROOT, validate_installation_root, bundled_author_root
 sys.path.insert(0, str(ROOT / "app"))
 import star_map_import as importer
 import author_package_management as manager
@@ -347,7 +347,10 @@ class ResourceService(QObject):
 
     def _snapshot(self, cancel):
         importer._pending_upgrade(self.sandbox)
-        return manager.managed_author_packages_snapshot(self.sandbox, cancelled=cancel.is_set)
+        rows = manager.managed_author_packages_snapshot(self.sandbox, cancelled=cancel.is_set)
+        from bundled_author_resources import bundled_summary
+        bundled = bundled_summary(bundled_author_root())
+        return rows + ([bundled] if bundled else [])
 
     @Slot()
     def refresh(self):

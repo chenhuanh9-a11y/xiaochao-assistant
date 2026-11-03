@@ -17,13 +17,15 @@ AUTHOR_DISPLAY_PREFIXES = (
 SOFTWARE_DELIVERY_FORMAT = "setup"
 
 
-def partition_resources(inventory):
+def partition_resources(inventory, *, bundled_packages=()):
     """Return retained/omitted rows without changing hashes or resource IDs.
 
     Input paths are relative to _internal, as in the authorized resource lock.
     Only image directories are omitted; catalogs, pure structure, registration
     metadata, native-similarity resources and precomputed data stay unchanged.
     """
+    if set(bundled_packages) - {"difficult-zhan10"}:
+        raise ValueError("Unsupported bundled author package")
     retained, omitted = {}, {}
     for name, row in inventory.items():
         path = PurePosixPath(name)
@@ -31,6 +33,8 @@ def partition_resources(inventory):
                 or path.is_absolute() or ".." in path.parts
                 or path.as_posix() != name or name in ("", ".")):
             raise ValueError("Expected a normalized relative resource path")
-        target = omitted if name.startswith(AUTHOR_DISPLAY_PREFIXES) else retained
+        bundled = ("difficult-zhan10" in bundled_packages
+                   and name.startswith(("assets/zhan10-native/", "assets/zhan10-legacy-clean/")))
+        target = omitted if name.startswith(AUTHOR_DISPLAY_PREFIXES) and not bundled else retained
         target[name] = row
     return retained, omitted

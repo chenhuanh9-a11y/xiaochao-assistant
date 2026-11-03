@@ -56,6 +56,22 @@ class DiagnosticIntegrationTests(unittest.TestCase):
             session=SimpleNamespace(snapshot=dict(mode='nightmare', mapOpen=False)),
             coordinator=SimpleNamespace(runtime=self.runtime, boundWindow='0', gameWindows=[], _binding_identity=None))
 
+    def test_invalid_settings_fail_closed_and_shutdown_disables_sampling(self):
+        self.assertTrue(self.runtime.automatic)
+        self.assertFalse(self.runtime.manual)
+        self.settings.path.write_text('{broken', encoding='utf-8')
+        self.assertFalse(self.settings.reload())
+        self.assertFalse(self.info.automaticFailureSampling)
+        self.assertFalse(self.runtime.automatic)
+        self.settings.path.write_text('{}', encoding='utf-8')
+        self.assertTrue(self.settings.reload())
+        self.assertTrue(self.runtime.automatic)
+        self.info.shutdown()
+        self.assertFalse(self.runtime.automatic)
+        self.assertFalse(self.runtime.manual)
+        self.settings.changed.emit()
+        self.assertFalse(self.runtime.automatic)
+
     def test_help_switch_persists_only_sampling_choice_and_restart_keeps_it(self):
         self.settings.setValue('interfaceOpacity', .7)
         engine = QQmlEngine()
@@ -72,8 +88,8 @@ ClientHelp { anchors.fill: parent } }
         self.assertIsNotNone(window, str(component.errors()))
         try:
             switch = window.findChild(QQuickItem, 'helpAutomaticFailureSampling')
-            self.assertFalse(switch.property('checked'))
-            self.assertFalse(self.runtime.automatic)
+            self.assertTrue(switch.property('checked'))
+            self.assertTrue(self.runtime.automatic)
             window.show()
             parents, item = [], switch
             while item is not None:
@@ -87,21 +103,21 @@ ClientHelp { anchors.fill: parent } }
             QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier,
                 switch.mapToScene(switch.boundingRect().center()).toPoint())
             self.fixture.wait(lambda: not self.info.checking and not self.settings.busy)
-            self.assertTrue(self.info.automaticFailureSampling)
-            self.assertTrue(self.runtime.automatic)
+            self.assertFalse(self.info.automaticFailureSampling)
+            self.assertFalse(self.runtime.automatic)
             disk = json.loads(self.settings.path.read_text('utf-8'))
-            self.assertTrue(disk['automaticFailureEvidence'])
+            self.assertFalse(disk['automaticFailureEvidence'])
             self.assertNotIn('interfaceOpacity', disk)
             self.assertEqual(self.settings.values['interfaceOpacity'], .7)
             export_choice = window.findChild(QQuickItem, 'helpExportAutomaticFailureEvidence')
-            self.assertFalse(export_choice.property('checked'))
-            self.assertFalse(self.info.includeAutomaticFailureEvidence)
+            self.assertTrue(export_choice.property('checked'))
+            self.assertTrue(self.info.includeAutomaticFailureEvidence)
             QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier,
                 export_choice.mapToScene(export_choice.boundingRect().center()).toPoint())
-            self.fixture.wait(lambda: self.info.includeAutomaticFailureEvidence)
+            self.fixture.wait(lambda: not self.info.includeAutomaticFailureEvidence)
             restarted = SettingsService(self.fixture.root)
             try:
-                self.assertTrue(restarted.persistedValues['automaticFailureEvidence'])
+                self.assertFalse(restarted.persistedValues['automaticFailureEvidence'])
             finally:
                 restarted.shutdown()
         finally:
@@ -159,20 +175,20 @@ ClientHelp { anchors.fill: parent } }
 
     def test_failed_sampling_save_keeps_effective_choice(self):
         with patch.object(self.settings, '_write', side_effect=OSError('fixture denied')):
-            self.assertTrue(self.info.setAutomaticFailureSampling(True))
+            self.assertTrue(self.info.setAutomaticFailureSampling(False))
             self.fixture.wait(lambda: not self.info.checking and not self.settings.busy)
-        self.assertFalse(self.info.automaticFailureSampling)
-        self.assertFalse(self.runtime.automatic)
+        self.assertTrue(self.info.automaticFailureSampling)
+        self.assertTrue(self.runtime.automatic)
         self.assertIn('fixture denied', self.info.message)
-        self.assertTrue(self.settings.values['automaticFailureEvidence'])
-        self.assertFalse(self.settings.persistedValues['automaticFailureEvidence'])
+        self.assertFalse(self.settings.values['automaticFailureEvidence'])
+        self.assertTrue(self.settings.persistedValues['automaticFailureEvidence'])
 
-    def test_sampling_and_export_require_separate_choices(self):
+    def test_sampling_and_export_allow_independent_choices(self):
         import client_info
         exporter = client_info.export_safe_diagnostic_bundle
-        self.assertFalse(self.info.automaticFailureSampling)
-        self.assertFalse(self.info.includeAutomaticFailureEvidence)
-        self.assertTrue(self.info.setAutomaticFailureSampling(True))
+        self.assertTrue(self.info.automaticFailureSampling)
+        self.assertTrue(self.info.includeAutomaticFailureEvidence)
+        self.assertTrue(self.info.setAutomaticFailureSampling(False))
         self.fixture.wait(lambda: not self.info.checking)
         for manual, automatic in ((False, False), (False, True), (True, False), (True, True)):
             with self.subTest(manual=manual, automatic=automatic):
@@ -188,10 +204,10 @@ ClientHelp { anchors.fill: parent } }
                 self.assertEqual(arguments['automatic_failure_only'], not manual)
                 self.assertEqual(arguments['include_automatic_failure_evidence'], automatic)
         restarted = fixtures.InfoTests.service(self.fixture)
-        self.assertFalse(restarted.includeAutomaticFailureEvidence)
+        self.assertTrue(restarted.includeAutomaticFailureEvidence)
 
     @unittest.skipUnless(os.name == 'nt', 'automatic mutation requires Windows exclusive handles')
-    def test_saved_automatic_image_is_only_exported_after_explicit_export_choice(self):
+    def test_saved_automatic_image_is_exported_by_default_and_text_only_excludes_it(self):
         import numpy as np
         from client_failure_samples import FailureSampleRecorder
         self.problems.record(dict(title='sample failure', summary='fixture', kind='error'))
@@ -207,8 +223,9 @@ ClientHelp { anchors.fill: parent } }
                 buildFingerprint='FIXTURE'), current=lambda: True,
             crop_bounds=(0, 0, 8, 8), crop_provenance='color-component-unvalidated')
         self.assertTrue(sample['saved'], sample)
-        for index, include in enumerate((False, True, False)):
-            self.info.setIncludeAutomaticFailureEvidence(include)
+        for index, include in enumerate((True, False, True)):
+            if index:
+                self.info.setTextOnlyDiagnostics(not include)
             destination = self.fixture.root / ('picture-%s-%s.zip' % (index, include))
             self.info.exportDiagnosticsTo(QUrl.fromLocalFile(str(destination)).toString())
             self.fixture.wait(lambda: not self.info.checking)
