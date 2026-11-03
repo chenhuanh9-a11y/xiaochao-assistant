@@ -50,24 +50,63 @@ Item {
                     id: hero
                     objectName: "homeHero"
                     Layout.fillWidth: true; implicitHeight: Math.max(279, heroContents.implicitHeight + 48)
-                    radius: 12; color: "#e9effd"
+                    radius: 16
+                    // Brand hero: deep-to-bright blue, white type, a star chart on the right.
+                    gradient: Gradient {
+                        orientation: Gradient.Horizontal
+                        GradientStop { position: 0; color: "#1f4fd1" }
+                        GradientStop { position: 1; color: "#4c86ff" }
+                    }
+                    // A faint star chart on the right, echoing the Tk hero: decoration only.
+                    Canvas {
+                        objectName: "homeHeroStars"
+                        visible: hero.width >= 560
+                        anchors.right: parent.right; anchors.top: parent.top; anchors.bottom: parent.bottom
+                        width: Math.min(260, hero.width * .38)
+                        onWidthChanged: requestPaint(); onHeightChanged: requestPaint()
+                        onPaint: {
+                            var ctx = getContext("2d"); ctx.reset()
+                            var w = width, h = height
+                            var pts = [[.12,.70],[.32,.52],[.50,.60],[.70,.34],[.86,.22]]
+                            ctx.strokeStyle = "rgba(255,255,255,0.55)"; ctx.lineWidth = 2
+                            ctx.beginPath(); ctx.moveTo(pts[0][0]*w, pts[0][1]*h)
+                            for (var i = 1; i < pts.length; ++i) ctx.lineTo(pts[i][0]*w, pts[i][1]*h)
+                            ctx.stroke()
+                            ctx.strokeStyle = "rgba(255,255,255,0.18)"; ctx.lineWidth = 1
+                            ctx.beginPath(); ctx.arc(.55*w, .55*h, .42*Math.min(w, h), 0, Math.PI*2); ctx.stroke()
+                            ctx.beginPath(); ctx.arc(.55*w, .55*h, .26*Math.min(w, h), 0, Math.PI*2); ctx.stroke()
+                            for (var j = 0; j < pts.length - 1; ++j) {
+                                ctx.beginPath(); ctx.arc(pts[j][0]*w, pts[j][1]*h, 5, 0, Math.PI*2)
+                                ctx.fillStyle = "#3a6ff0"; ctx.fill()
+                                ctx.strokeStyle = "white"; ctx.lineWidth = 2; ctx.stroke()
+                            }
+                            var sx = pts[4][0]*w, sy = pts[4][1]*h, r = 14
+                            ctx.fillStyle = "#f2b544"; ctx.beginPath()
+                            ctx.moveTo(sx, sy - r); ctx.quadraticCurveTo(sx, sy, sx + r, sy)
+                            ctx.quadraticCurveTo(sx, sy, sx, sy + r); ctx.quadraticCurveTo(sx, sy, sx - r, sy)
+                            ctx.quadraticCurveTo(sx, sy, sx, sy - r); ctx.fill()
+                            var dots = [[.20,.20],[.42,.14],[.62,.82],[.82,.66],[.28,.88],[.92,.48]]
+                            ctx.fillStyle = "rgba(255,255,255,0.6)"
+                            for (var k = 0; k < dots.length; ++k) { ctx.beginPath(); ctx.arc(dots[k][0]*w, dots[k][1]*h, 1.6, 0, Math.PI*2); ctx.fill() }
+                        }
+                    }
                     ColumnLayout {
                         id: heroContents
                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
                         anchors.leftMargin: 28; anchors.rightMargin: 28; anchors.topMargin: 24; spacing: 10
-                        Label { text: "YOUR ROUTE, YOUR WAY"; color: "#526785"; font.pixelSize: 11; font.bold: true }
-                        Label { objectName: "homeHeroTitle"; text: "地图与路线，\n随手查看。"; color: "#142035"; font.pixelSize: page.width >= 1200 ? 34 : hero.width >= 560 ? 30 : 26; font.bold: true; lineHeight: 1.15 }
-                        Label { text: "先打开游戏控件，再回到游戏按地图键查看小抄。"; color: "#5c677d"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                        Label { text: "✦  YOUR ROUTE, YOUR WAY"; color: "#cddbff"; font.pixelSize: 11; font.bold: true; font.letterSpacing: 1 }
+                        Label { objectName: "homeHeroTitle"; text: "地图与路线，\n随手查看。"; color: "white"; font.pixelSize: page.width >= 1200 ? 34 : hero.width >= 560 ? 30 : 26; font.bold: true; lineHeight: 1.15 }
+                        Label { text: "先打开游戏控件，再回到游戏按地图键查看小抄。"; color: "#e3ebff"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                         RowLayout {
                             Layout.topMargin: 10; spacing: 10
-                            AppButton { objectName: "homeShowControls"; text: "打开游戏控件"; icon.source: "icons/panel.png"; icon.color: "transparent"; primary: false; implicitHeight: 44; onClicked: clientCoordinator.showControls() }
-                            AppButton { text: "返回游戏"; implicitHeight: 44; enabled: clientCoordinator.boundWindow !== ""; onClicked: clientCoordinator.returnToGame() }
+                            AppButton { objectName: "homeShowControls"; text: "打开游戏控件"; icon.source: "icons/panel.png"; icon.color: "transparent"; inverse: true; implicitHeight: 44; onClicked: clientCoordinator.showControls() }
+                            AppButton { text: "返回游戏"; onColor: true; implicitHeight: 44; enabled: clientCoordinator.boundWindow !== ""; onClicked: clientCoordinator.returnToGame() }
                         }
                     }
                 }
                 Rectangle {
                     Layout.fillWidth: true; implicitHeight: roundContents.implicitHeight + 40
-                    radius: 12; color: "white"
+                    radius: 16; color: "white"; border.width: 1; border.color: "#e3e9f3"
                     ColumnLayout {
                         id: roundContents
                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
@@ -110,7 +149,7 @@ Item {
                 }
                 Rectangle {
                     Layout.fillWidth: true; implicitHeight: previewContents.implicitHeight + 40
-                    radius: 12; color: "white"
+                    radius: 16; color: "white"; border.width: 1; border.color: "#e3e9f3"
                     ColumnLayout {
                         id: previewContents
                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
@@ -147,7 +186,7 @@ Item {
                 Layout.maximumWidth: page.wide ? Math.max(250, Math.round(page.width * .261 / 8) * 8) : Infinity
                 Layout.alignment: Qt.AlignTop; spacing: 12
                 Rectangle {
-                    Layout.fillWidth: true; implicitHeight: shortcutContents.implicitHeight + 40; radius: 12; color: "white"
+                    Layout.fillWidth: true; implicitHeight: shortcutContents.implicitHeight + 40; radius: 16; color: "white"; border.width: 1; border.color: "#e3e9f3"
                     ColumnLayout {
                         id: shortcutContents
                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 20; spacing: 8
@@ -176,7 +215,7 @@ Item {
                     }
                 }
                 Rectangle {
-                    Layout.fillWidth: true; implicitHeight: helpContents.implicitHeight + 40; radius: 12; color: "white"
+                    Layout.fillWidth: true; implicitHeight: helpContents.implicitHeight + 40; radius: 16; color: "white"; border.width: 1; border.color: "#e3e9f3"
                     ColumnLayout {
                         id: helpContents
                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 20; spacing: 12
@@ -247,7 +286,7 @@ Item {
                 AppButton { text: "连接窗口"; enabled: gameWindow.currentIndex >= 0 && !session.busy; onClicked: clientCoordinator.bindGameWindow(gameWindow.currentValue) }
                 Item { Layout.fillWidth: true }
             }
-            CheckBox { text: "启用游戏内操作快捷键"; checked: clientCoordinator.inputEnabled; onClicked: clientCoordinator.setInputEnabled(checked) }
+            AppCheckBox { text: "启用游戏内操作快捷键"; checked: clientCoordinator.inputEnabled; onClicked: clientCoordinator.setInputEnabled(checked) }
             Label { text: clientCoordinator.message; color: "#567096"; wrapMode: Text.WordWrap; Layout.fillWidth: true; font.pixelSize: 12 }
         }
     }

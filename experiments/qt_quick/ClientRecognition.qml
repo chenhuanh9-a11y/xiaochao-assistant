@@ -97,7 +97,7 @@ Item {
         }
         Rectangle {
             Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 150
-            color: "white"; radius: 12; border.color: "#d6e0ef"
+            color: "white"; radius: 16; border.width: 1; border.color: "#e3e9f3"
             ListView {
                 id: candidateList
                 objectName: "recognitionCandidateList"
