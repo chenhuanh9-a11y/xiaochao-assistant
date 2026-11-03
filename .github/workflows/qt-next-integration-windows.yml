@@ -57,8 +57,8 @@ jobs:
             'released-baseline' { $modules = $core }
             'main-baseline' { $modules = $core }
             'diagnostics' { $modules = @('test_diagnostic_log_budget', 'test_client_problems', 'test_client_problem_history', 'test_client_info', 'test_client_diagnostic_integration', 'test_client_joint_diagnostic_schema', 'test_field_failure_samples', 'test_async_event_log', 'test_automatic_failure_samples', 'test_storage_retention', 'test_memory_retention_links', 'test_runtime_environment_diagnostics'); $modules += @(Get-ChildItem tests/test_diagnostic*.py | ForEach-Object { $_.BaseName }) }
-            'packaging' { $modules = @('test_preview_windows_notice', 'test_qt_installer_directory', 'test_live_author_import', 'test_legacy_import_recovery', 'test_package_dependency_upgrade', 'test_map_package_removal', 'test_client_resources') }
-            'season-ui' { $modules = @('test_season_settings', 'test_season_catalog', 'test_season_selector', 'test_season_gallery', 'test_season_resources', 'test_season_session', 'test_settings_accessibility', 'test_client_gallery_actions', 'test_client_gallery_layout', 'test_client_gallery_resource_refresh') }
+            'packaging' { $modules = @('test_preview_windows_notice', 'test_qt_installer_directory', 'test_live_author_import', 'test_legacy_import_recovery', 'test_package_dependency_upgrade', 'test_receipt_dependency_contract', 'test_map_package_removal', 'test_client_resources') }
+            'season-ui' { $modules = @('test_season_settings', 'test_season_catalog', 'test_season_selector', 'test_season_gallery', 'test_season_resources', 'test_season_session', 'test_client_season_preparation', 'test_client_context_failure', 'test_settings_accessibility', 'test_client_gallery_actions', 'test_client_gallery_layout', 'test_client_gallery_resource_refresh') }
             # Synthetic contracts only; unittest -v preserves each genuine skip reason.
             'map-defaults' { $modules = @('test_bundled_author_resources', 'test_package_profiles', 'test_client_paths', 'test_client_editor_upgrade', 'test_map_resource_context', 'test_qt_installer_projection') }
           }
