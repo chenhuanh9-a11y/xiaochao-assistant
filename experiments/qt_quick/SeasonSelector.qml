@@ -73,12 +73,14 @@ RowLayout {
         objectName: root.nightmareObjectName
         text: "噩梦"; implicitWidth: 64; implicitHeight: 34
         selected: root.mode === "nightmare"
+        Accessible.name: text + (selected ? " · 已选" : "")
         onClicked: root.requestContext(root.season, "nightmare")
     }
     AppButton {
         objectName: root.difficultObjectName
         text: "困难"; implicitWidth: 64; implicitHeight: 34
         selected: root.mode === "difficult"
+        Accessible.name: text + (selected ? " · 已选" : "")
         onClicked: root.requestContext(root.season, "difficult")
     }
 }

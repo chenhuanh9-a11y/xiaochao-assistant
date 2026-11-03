@@ -10,7 +10,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 os.environ.setdefault('QT_QUICK_BACKEND', 'software')
 try:
     from PySide6.QtCore import QUrl, QPoint, QPointF, Qt, QCoreApplication, QEvent
-    from PySide6.QtGui import QGuiApplication
+    from PySide6.QtGui import QAccessible, QGuiApplication
     from PySide6.QtQml import QQmlEngine, QQmlComponent
     from PySide6.QtQuick import QQuickWindow
     from PySide6.QtTest import QTest
@@ -106,6 +106,30 @@ class SeasonSelectorTests(unittest.TestCase):
         self.root.setProperty('enabled', False)
         self.root.requestContext('s0', 'nightmare')
         self.assertEqual(self.requests, [('s0', 'nightmare')])
+
+    def test_accessible_selection_follows_applied_mode_when_enabled_or_locked(self):
+        was_active = QAccessible.isActive()
+        QAccessible.setActive(True)
+        self.addCleanup(QAccessible.setActive, was_active)
+        for enabled in (True, False):
+            self.root.setProperty('enabled', enabled)
+            for applied_mode in ('nightmare', 'difficult', 'nightmare'):
+                self.root.setProperty('mode', applied_mode)
+                self.app.processEvents()
+                for mode, name, label in (
+                        ('nightmare', 'selectorNightmare', '噩梦'),
+                        ('difficult', 'selectorDifficult', '困难')):
+                    with self.subTest(enabled=enabled, applied_mode=applied_mode, mode=mode):
+                        button = self.item(name)
+                        accessible = QAccessible.queryAccessibleInterface(button)
+                        self.assertIsNotNone(accessible)
+                        selected = mode == applied_mode
+                        self.assertEqual(accessible.text(QAccessible.Text.Name),
+                                         label + (' · 已选' if selected else ''))
+                        self.assertEqual(button.property('selected'), selected)
+                        self.assertEqual(button.isEnabled(), enabled)
+                        self.assertEqual(button.property('text'), label)
+        self.assertFalse(self.warnings, '\n'.join(self.warnings))
 
     def test_rejected_or_pending_request_keeps_authoritative_season_visible(self):
         self.root.contextRequested.disconnect()
