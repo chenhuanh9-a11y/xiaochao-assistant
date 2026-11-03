@@ -87,6 +87,91 @@ class RuntimeBoundaries(unittest.TestCase):
     def test_cancel_refresh_exception_tail_preserves_new_drag_revision(self):
         self.refresh_tail(fail=True, drag=True)
 
+    def assert_current_fallback_exception(self, boundary):
+        original_start = self.session._pool.start
+        workers, failures, checkpoints = [], [], []
+        self.coordinator.errorReported.connect(failures.append)
+        epoch = self.runtime._epoch
+        initial_owner = self.runtime._refresh_render_owner()
+        self.assertIsNotNone(initial_owner)
+        def start(work):
+            workers.append(work)
+            return original_start(work)
+        def fail(*args, **kwargs):
+            # The cheap residual path already withdrew the old pixels. This
+            # is the current worker's fallback, with no newer drag or cancel.
+            checkpoints.append(dict(owner=self.runtime._refresh_render_owner(),
+                epoch=self.runtime._epoch, cancelled=workers[0].cancelled.is_set()))
+            raise ValueError("controlled current fallback " + boundary + " failure")
+        target = (patch.object(_AlignmentHost, "fit", side_effect=fail) if boundary == "fit"
+            else patch.object(self.runtime, "_display_layer", side_effect=fail))
+        with patch.object(self.session._pool, "start", side_effect=start), \
+                patch.object(_AlignmentHost, "_canonical_geometry_current_frame_residual",
+                    return_value=(dict(verified=False), None)) as residual, target as failed:
+            self.session.dispatch("refresh_map")
+            self.settle()
+        self.assertEqual(residual.call_count, 1)
+        self.assertEqual(failed.call_count, 1)
+        self.assertEqual(checkpoints, [dict(owner=None, epoch=epoch, cancelled=False)])
+        receipt = self.session.snapshot["lastReceipt"]
+        self.assertEqual(receipt["action"], "refresh_map")
+        self.assertFalse(receipt["success"])
+        self.assertTrue(receipt.get("error"), receipt)
+        self.assertFalse(receipt.get("stale"), receipt)
+        self.assertEqual(receipt.get("exceptionType"), "ValueError")
+        self.assertEqual(receipt.get("exceptionOrigin"), "runtime-dispatch")
+        self.assertIn("controlled current fallback " + boundary + " failure", receipt["traceback"])
+        self.assertTrue(any(row.get("action") == "refresh_map" and
+            row.get("exceptionType") == "ValueError" for row in failures))
+        self.assertIsNone(self.runtime._refresh_render_owner())
+        self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
+        self.assertFalse(self.coordinator.alignedData)
+
+    def test_current_fallback_fit_exception_after_own_revoke_keeps_error_diagnostics(self):
+        self.assert_current_fallback_exception("fit")
+
+    def test_current_fallback_display_exception_after_own_revoke_keeps_error_diagnostics(self):
+        self.assert_current_fallback_exception("display")
+
+    def test_old_capture_exception_after_new_drag_is_stale_and_keeps_current_pixels(self):
+        entered, release = threading.Event(), threading.Event()
+        original_capture, original_start = self.runtime._capture_frame, self.session._pool.start
+        workers, completions, failures = [], [], []
+        self.coordinator.errorReported.connect(failures.append)
+        def start(work):
+            workers.append(work)
+            work.signals.done.connect(lambda *args: completions.append(args))
+            return original_start(work)
+        def delayed_failure(cancelled):
+            original_capture(cancelled)  # Real provider, controlled native/pixels.
+            entered.set()
+            if not release.wait(3):
+                raise AssertionError("capture failure release missing")
+            raise ValueError("controlled obsolete capture tail failure")
+        with patch.object(self.session._pool, "start", side_effect=start), \
+                patch.object(self.runtime, "_capture_frame", side_effect=delayed_failure):
+            try:
+                self.session.dispatch("refresh_map")
+                self.assertTrue(entered.wait(2))
+                old_owner = self.runtime._refresh_render_owner()
+                self.pointer("down", 500, 500)
+                self.pointer("move", 530, 515)
+                self.assertTrue(workers[0].cancelled.is_set())
+                current_owner = self.runtime._refresh_render_owner()
+                self.assertNotEqual(current_owner, old_owner)
+                token = self.runtime.snapshot()["render"]["token"]
+            finally:
+                release.set()
+                self.settle()
+        receipt = completions[0][2][0]
+        self.assertTrue(receipt.get("stale"), receipt)
+        self.assertFalse(receipt.get("error"), receipt)
+        self.assertEqual(self.runtime._refresh_render_owner(), current_owner)
+        self.assertIsNotNone(self.runtime.render_payload(token))
+        self.assertEqual(self.coordinator.alignedData.get("token"), token)
+        self.assertTrue(self.runtime.snapshot()["displayAuthorized"])
+        self.assertFalse(failures)
+
     def test_recovery_retains_budget_while_main_floor_policy_defers_conflicting_sample(self):
         self.runtime._monotonic = lambda: self.now
         self.now = 1.
