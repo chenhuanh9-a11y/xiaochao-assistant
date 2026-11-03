@@ -184,12 +184,14 @@ def main():
             fixedSimplifiedChinese=True, wizardLaunched=False))
     record["installerInstance"].update(build.INSTANCES["production"])
     refresh_release_identity(stage, record, runtime_commit)
+    author_paths = sorted(record.get("bundledAuthorDefaults", {}).get("files", {}))
     record["frozenVerification"] = build.verify_frozen(stage, record["resources"],
-        [p.name for p in (ROOT / "experiments/qt_quick").glob("*.qml")], record["product"])
+        [p.name for p in (ROOT / "experiments/qt_quick").glob("*.qml")], record["product"],
+        bundled_author_paths=author_paths)
     for kind in ("recovery", "import"):
         build.verify_invoker_manifest(stage / ("star-map-" + kind + "-helper.exe"))
     include, record["fileProjection"] = build.write_production_files_include(stage, record["resources"], output,
-        resource_version=record["resourceVersion"])
+        resource_version=record["resourceVersion"], bundled_author_paths=author_paths)
     record_path = output / "build-record.json"
     record_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
     instance = record["installerInstance"]

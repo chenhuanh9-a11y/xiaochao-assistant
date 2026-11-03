@@ -64,3 +64,26 @@ payload 清完后，大 journal 原子压缩为最多 1 KiB 的摘要，仅保�
 定向测试执行真实投影生成器与真实修复函数，文件内容为隔离合成 fixture。
 Windows 测试验证真实 share=0/CRT 锁互斥及文件回滚原语；中断由异常注入模拟。
 未执行 Inno 编译、Setup 安装/卸载、发布成品、真实进程强杀或断电测试。
+
+### Explicit bundled author defaults in a production build
+
+`--instance production --bundled-package difficult-zhan10` uses the same locked,
+individually hashed input inventory as the isolated client build. This explicit
+selection is a build input, not a grant to obtain or distribute third-party
+material. Preserve the authorized source and attribution records.
+
+The two allowlisted display directories are relocated to
+`_internal/qt-author-base/assets/`. Their exact manifest and every byte count and
+SHA256 are verified by the production projection; undeclared, duplicate, linked,
+changed, or additionally copied active-resource paths stop the build. These files
+are program-owned read-only defaults, never managed-base candidates or imported
+package receipts. Existing user display objects continue to win. Other base
+resources still use the complete candidate transaction and fail closed on
+unknown ownership; editor user families and settings retain their protections.
+
+Installer-only reuse must retain the same relocation and manifest validation.
+Adding this runtime or changing resource inputs requires a fresh production
+freeze and both helper freezes, not relabeling an older Setup. Projection tests
+are byte-fixture evidence, not Windows installation/upgrade/rollback or real-game
+acceptance. The final Setup still needs its actual PE permissions, source and
+input locks, installer projection, signature status, and SHA256 verified.
