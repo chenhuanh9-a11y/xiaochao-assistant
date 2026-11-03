@@ -10,7 +10,7 @@ os.environ.setdefault('QT_QUICK_BACKEND','software')
 from PySide6.QtCore import QObject, Property, Signal, Slot, QUrl, QCoreApplication, QEvent, QPoint, QPointF, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtGui import QGuiApplication, QFontDatabase
-from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQml import QQmlApplicationEngine, QQmlProperty
 import shiboken6
 from test_client_control_actions import Settings, Coordinator
 
@@ -104,7 +104,9 @@ class ControlStabilityTests(unittest.TestCase):
             current = self.item('controlModeNightmare')
             self.assertEqual(shiboken6.getCppPointer(current)[0],pointer)
             self.assertTrue(current.property('selected'))
-            self.assertTrue(current.property('primary'))
+            # The shared selector marks selection with an outline, not the
+            # old floating-only primary fill. Check the visible contract.
+            self.assertEqual(QQmlProperty.read(current, 'background.border.width'), 1)
             self.assertFalse(current.isEnabled())
             self.assertEqual(current.property('background').property('color'),color)
         for _ in range(3):
@@ -122,6 +124,26 @@ class ControlStabilityTests(unittest.TestCase):
         self.assertIn('地图已核对',self.item('controlStatusText').property('text'))
         self.assertNotIn('暂用',self.item('controlMapFloorText').property('text'))
         self.assertFalse(self.warnings,'\n'.join(self.warnings))
+
+    def test_mode_selection_remains_distinct_when_idle_or_locked(self):
+        names = {'nightmare': 'controlModeNightmare', 'difficult': 'controlModeDifficult'}
+        pointers = {mode: shiboken6.getCppPointer(self.item(name))[0] for mode, name in names.items()}
+        for mode in names:
+            self.session._mode = self.session._applied = mode
+            for locked in (False, True):
+                self.session.data['roundActive'] = locked
+                self.session.changed.emit()
+                QTest.qWait(150)  # Settle the production color animation.
+                for identity, name in names.items():
+                    button = self.item(name)
+                    selected = identity == mode
+                    self.assertEqual(shiboken6.getCppPointer(button)[0], pointers[identity])
+                    self.assertEqual(button.property('selected'), selected)
+                    self.assertEqual(button.isEnabled(), not locked)
+                    self.assertEqual(QQmlProperty.read(button, 'background.border.width'), 1 if selected else 0)
+                    color = button.property('background').property('color').name()
+                    self.assertEqual(color, '#eef1f6' if locked else '#dce8ff' if selected else '#eaf0fd')
+        self.assertFalse(self.warnings, '\n'.join(self.warnings))
 
     def test_manual_member_header_only_follows_committed_phase_not_pending_target(self):
         self.session.data.update(groupMemberSelectionPending=True, pendingGroupMemberId='nightmare-09',
@@ -170,6 +192,7 @@ class ControlStabilityTests(unittest.TestCase):
     def test_idle_passive_refresh_is_stable_but_preparation_resource_and_pending_context_block_mode(self):
         self.session.data.update(roundActive=False,mapOpen=False,identityPhase='UNLOCKED',groupLocked=False,provisionalMapId='',observedFloor='')
         self.session.changed.emit();APP.processEvents()
+        QTest.qWait(150)  # Exclude the preceding disabled-to-enabled transition.
         mode = self.item('controlModeNightmare')
         pointer = shiboken6.getCppPointer(mode)[0]
         color = mode.property('background').property('color')
