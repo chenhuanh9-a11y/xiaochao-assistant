@@ -53,19 +53,18 @@ def _package_id(package_id):
     return package_id
 
 
-def adopt_legacy_author_package(install_root, package_id, *, cancelled=None) -> dict:
-    """Register an entire approved legacy display set, without changing assets.
+def _legacy_receipt_bytes(receipt):
+    return json.dumps(receipt, ensure_ascii=False, indent=2).encode('utf-8')
 
-    This runs in the existing local-state worker. A release ZIP hash and its
-    independently generated inventory authorize ownership, never folder presence.
-    Publication is exclusive under the same lock as import/removal. Existing
-    receipts, unknown files and core dependencies are never overwritten/claimed.
+
+def _legacy_author_plan_locked(root, package_id, cancelled=None):
+    """Read-only exact legacy proof; caller holds the shared resource lock.
+
+    The approved release, never the incoming ZIP or directory contents, supplies
+    ownership. A partial set, changed byte, or existing receipt cannot acquire
+    replacement authority through this fallback.
     """
-    package_id = _package_id(package_id)
-    root = Path(os.path.abspath(install_root))
-    _no_links(root)
-    _pending_upgrade(root)
-    owned, digest = _owned_inventory(root, package_id)
+    _, digest = _owned_inventory(root, package_id)
     if digest is not None:
         return dict(status='already-managed')
     release = LEGACY_AUTHOR_INVENTORY.get(package_id)
@@ -78,53 +77,73 @@ def adopt_legacy_author_package(install_root, package_id, *, cancelled=None) -> 
         raise ImportRejected('invalid-legacy-author-inventory')
     if not any(_target(root, row['path']).exists() for row in rows.values()):
         return dict(status='not-installed')
-    with _writer_locked_installation(root, require_closed=False) as (root, state):
-        _pending_upgrade(root)
-        _, digest = _owned_inventory(root, package_id)
-        if digest is not None:
-            return dict(status='already-managed')
-        for other in PACKAGE_IDS - {package_id}:
-            other_rows, _ = _owned_inventory(root, other)
-            if rows.keys() & other_rows.keys():
-                raise ImportRejected('shared-author-file-ownership')
-        witnesses = {}
-        for row in rows.values():
+    for other in PACKAGE_IDS - {package_id}:
+        other_rows, _ = _owned_inventory(root, other)
+        if rows.keys() & other_rows.keys():
+            raise ImportRejected('shared-author-file-ownership')
+    witnesses = {}
+    for row in rows.values():
+        _check_cancelled(cancelled)
+        path = _target(root, row['path'])
+        before = path.stat() if path.is_file() else None
+        if (before is None or before.st_size != row['bytes'] or _sha(path) != row['sha256']):
+            return dict(status='legacy-unverified', reason='legacy-display-set-not-exact',
+                        path=row['path'])
+        info = path.stat()
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns):
+            raise ImportRejected('legacy-author-file-changed')
+        witnesses[row['path']] = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    receipt = dict(packageId=package_id, revision=1, files=list(rows.values()),
+                   archiveSha256=release['archiveSha256'],
+                   legacyAdoption=dict(schemaVersion=1, scope='author-display-only',
+                                       sourceArchive=release['archiveName'],
+                                       completeDisplaySet=True))
+    return dict(status='legacy-verified', receipt=receipt, witnesses=witnesses,
+                receiptSha256=hashlib.sha256(_legacy_receipt_bytes(receipt)).hexdigest())
+
+
+def _adopt_legacy_author_package_locked(root, state, package_id, *, cancelled=None,
+                                       expected_receipt_sha256=None):
+    """Publish metadata only, after rechecking the exact read-only legacy plan."""
+    plan = _legacy_author_plan_locked(root, package_id, cancelled)
+    if expected_receipt_sha256 is not None and plan.get('receiptSha256') != expected_receipt_sha256:
+        raise ImportRejected('legacy-author-plan-changed-reinspect-required')
+    if plan['status'] != 'legacy-verified':
+        return plan
+    target = _target(root, f'work/map-packages/{package_id}.json')
+    fd, temporary_name = tempfile.mkstemp(prefix='legacy-receipt-', suffix='.tmp', dir=state)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(_legacy_receipt_bytes(plan['receipt']))
+            stream.flush()
+            os.fsync(stream.fileno())
+        for relative, before in plan['witnesses'].items():
             _check_cancelled(cancelled)
-            path = _target(root, row['path'])
-            before = path.stat() if path.is_file() else None
-            if (before is None or before.st_size != row['bytes'] or _sha(path) != row['sha256']):
-                return dict(status='legacy-unverified', reason='legacy-display-set-not-exact',
-                            path=row['path'])
-            stat = path.stat()
-            if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
-                    stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns):
+            info = _target(root, relative).stat()
+            if before != (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns):
                 raise ImportRejected('legacy-author-file-changed')
-            witnesses[row['path']] = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
-        receipt = dict(packageId=package_id, revision=1, files=list(rows.values()),
-                       archiveSha256=release['archiveSha256'],
-                       legacyAdoption=dict(schemaVersion=1, scope='author-display-only',
-                                           sourceArchive=release['archiveName'],
-                                           completeDisplaySet=True))
-        target = _target(root, f'work/map-packages/{package_id}.json')
-        fd, temporary_name = tempfile.mkstemp(prefix='legacy-receipt-', suffix='.tmp', dir=state)
-        temporary = Path(temporary_name)
-        try:
-            with os.fdopen(fd, 'w', encoding='utf-8') as stream:
-                json.dump(receipt, stream, ensure_ascii=False, indent=2)
-                stream.flush()
-                os.fsync(stream.fileno())
-            for relative, before in witnesses.items():
-                _check_cancelled(cancelled)
-                stat = _target(root, relative).stat()
-                if before != (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns):
-                    raise ImportRejected('legacy-author-file-changed')
-            _check_cancelled(cancelled)
-            _no_links(target)
-            # Complete same-volume publication; never replace a raced receipt.
-            os.link(temporary, target)
-        finally:
-            temporary.unlink(missing_ok=True)
-        return dict(status='legacy-adopted', fileCount=len(rows), restartRequired=False)
+        _check_cancelled(cancelled)
+        _no_links(target)
+        # Complete same-volume publication; never replace a raced receipt.
+        os.link(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return dict(status='legacy-adopted', fileCount=len(plan['receipt']['files']), restartRequired=False)
+
+
+def adopt_legacy_author_package(install_root, package_id, *, cancelled=None) -> dict:
+    """Register an entire approved legacy display set, without changing assets.
+
+    Existing receipts, unknown files and core dependencies are never claimed.
+    Import uses the same read-only proof before offering its normal upgrade;
+    registration then waits until all incoming bytes have passed validation.
+    """
+    package_id = _package_id(package_id)
+    with _writer_locked_installation(install_root, require_closed=False) as (root, state):
+        _pending_upgrade(root)
+        return _adopt_legacy_author_package_locked(root, state, package_id, cancelled=cancelled)
 
 
 def inspect_author_package_removal(install_root, package_id) -> dict:
