@@ -125,7 +125,7 @@ def scenario(name, root):
                 assert not release.is_set()
                 assert "start_round" not in client.session.snapshot.get("availableCommands", [])
                 QTimer.singleShot(40, release.set)
-                wait(lambda: idle() and client.session.pool.activeThreadCount() == 0,
+                wait(lambda: idle() and client.session._pool.activeThreadCount() == 0,
                      "cancelled S0 completion drained")
                 state = client.session.snapshot
                 assert state["season"] == "s1", state
@@ -179,6 +179,15 @@ def scenario(name, root):
                 assert len(calls) == 1, ("preparation exception must not spin", calls)
                 assert not client.providers.capabilities()["nightmare"]["prepared"]
                 assert "start_round" not in client.session.snapshot["availableCommands"]
+                select("s1")
+                select("s0")
+                wait(lambda: idle() and len(calls) == 2, "new context permits a bounded retry")
+                QTest.qWait(400)
+                assert len(calls) == 2, calls
+                client.resources.resourcesChanged.emit()
+                wait(lambda: idle() and len(calls) == 3, "explicit resource change permits retry")
+                QTest.qWait(400)
+                assert len(calls) == 3, calls
             elif name == "failed-close":
                 wait(lambda: idle() and all(x["prepared"] for x in client.providers.capabilities().values()), "failed preparation complete")
                 assert "start_round" not in client.session.snapshot["availableCommands"]
@@ -186,6 +195,12 @@ def scenario(name, root):
                 QTest.qWait(500)
                 assert len(calls) == count == 1, calls
                 assert len(builds) == 2, builds
+            before_close = len(calls)
+            client.coordinator.requestClose()
+            client.resources.resourcesChanged.emit()
+            client.session.changed.emit()
+            QTest.qWait(300)
+            assert len(calls) == before_close, calls
             client.shutdown()
             before_close = len(calls)
             client.resources.resourcesChanged.emit()
