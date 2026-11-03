@@ -334,6 +334,89 @@ r.remove_packages(root,'nightmare-suju',application_idle=True,expected_plan_sha2
         self.assertEqual(list((self.root / "work/map-packages").glob("removals/*/objects/*")), [])
         self.assertEqual(self.remove(None)["status"], "already-removed")
 
+    def rolled_back_with_pending_cleanup(self, *, partial=False):
+        """Fail before commit, finish durable rollback, then interrupt pin cleanup."""
+        self.install()
+        before = self.snapshot()
+        write = upgrade._write_journal
+        delete = importer._rollback_published
+        failed = []
+        def fail_commit(directory, journal):
+            if directory.parent.name == "removals" and journal["status"] == "committed":
+                raise OSError("injected-before-removal-commit")
+            return write(directory, journal)
+        def fail_cleanup(path, identity, digest):
+            if path.parent.name == "objects" and (not partial or path.name == "1") and not failed:
+                failed.append(True)
+                return False
+            return delete(path, identity, digest)
+        with patch.object(upgrade, "_write_journal", side_effect=fail_commit), \
+                patch.object(importer, "_rollback_published", side_effect=fail_cleanup):
+            with self.assertRaisesRegex(ValueError, "removal-temporary-cleanup-failed"):
+                self.remove()
+        self.assertEqual(self.snapshot(), before)
+        directory, journal = removal._load_pending(self.root)
+        self.assertEqual(journal["status"], "rolled-back")
+        self.assertTrue((self.root / removal.PENDING).exists())
+        return directory, journal
+
+    def test_rolled_back_cleanup_never_resurrects_later_user_deleted_payload_or_receipt(self):
+        directory, _ = self.rolled_back_with_pending_cleanup()
+        (self.root / SUJU).unlink()
+        self.f.receipt().unlink()
+        with resource_write_lock(self.root):
+            plan = recovery.inspect_locked(self.root)
+            result = recovery.execute_locked(self.root, plan, "recover")
+        self.assertEqual(result["status"], "removal-rolled-back")
+        self.assertFalse((self.root / SUJU).exists(), "Terminal cleanup must not restore a later user deletion")
+        self.assertFalse(self.f.receipt().exists(), "Terminal cleanup must not restore obsolete package ownership")
+        self.assertFalse((self.root / removal.PENDING).exists())
+        self.assertFalse(directory.exists())
+        self.f.assert_base_preserved()
+
+    def test_rolled_back_cleanup_preserves_later_user_replacement_and_identity(self):
+        self.rolled_back_with_pending_cleanup()
+        path = self.root / SUJU
+        path.unlink()  # A new object, not an in-place change to the retained hardlink.
+        path.write_bytes(b"later-user-replacement")
+        identity = upgrade._identity(path.stat())
+        receipt = self.f.receipt().read_bytes()
+        with resource_write_lock(self.root):
+            result = removal.recover_pending_removal_locked(self.root)
+        self.assertEqual(result["status"], "removal-rolled-back")
+        self.assertEqual(path.read_bytes(), b"later-user-replacement")
+        self.assertEqual(upgrade._identity(path.stat()), identity)
+        self.assertEqual(self.f.receipt().read_bytes(), receipt)
+        self.assertFalse((self.root / removal.PENDING).exists())
+
+    def test_rolled_back_partial_cleanup_never_requires_already_retired_pin_for_user_deletion(self):
+        directory, journal = self.rolled_back_with_pending_cleanup(partial=True)
+        removed = [row for number, row in enumerate(journal["entries"])
+                   if not (directory / "objects" / str(number)).exists()]
+        self.assertTrue(removed)
+        for row in removed:
+            (self.root / row["path"]).unlink()
+        before = self.snapshot()
+        with resource_write_lock(self.root):
+            result = removal.recover_pending_removal_locked(self.root)
+        self.assertEqual(result["status"], "removal-rolled-back")
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse((self.root / removal.PENDING).exists())
+        self.assertFalse(directory.exists())
+
+    def test_rolled_back_in_place_user_edit_preserves_changed_pin_and_pending_gate(self):
+        directory, _ = self.rolled_back_with_pending_cleanup()
+        path = self.root / SUJU
+        identity = upgrade._identity(path.stat())
+        path.write_bytes(b"later-in-place-edit-also-changes-hardlink")
+        with resource_write_lock(self.root):
+            with self.assertRaisesRegex(ValueError, "removal-retained-object-changed"):
+                removal.recover_pending_removal_locked(self.root)
+        self.assertEqual(path.read_bytes(), b"later-in-place-edit-also-changes-hardlink")
+        self.assertEqual(upgrade._identity(path.stat()), identity)
+        self.assertTrue((self.root / removal.PENDING).exists())
+        self.assertTrue(directory.exists())
+
     def test_hardlinks_unsupported_refuses_before_mutation(self):
         self.install()
         before = self.snapshot()

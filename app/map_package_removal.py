@@ -486,9 +486,12 @@ def recover_pending_removal_locked(root):
     root = Path(root)
     _check_other_pending(root)
     directory, journal = _load_pending(root)
-    if journal["status"] == "committed":
+    if journal["status"] in {"committed", "rolled-back"}:
+        # Both durable outcomes are terminal. A rolled-back journal proves
+        # restoration already finished; later user deletions/replacements must
+        # never be resurrected or revalidated against that obsolete snapshot.
         _cleanup_objects(root, directory, journal)
-        status = "removal-committed"
+        status = "removal-" + journal["status"]
     else:
         _restore(root, directory, journal)
         status = "removal-rolled-back"
