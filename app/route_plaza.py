@@ -224,7 +224,11 @@ def convert_plan(library: CustomMapLibrary, map_id: str, plan: dict) -> tuple[li
 
 def convert_manifest(library: CustomMapLibrary, manifest: dict) -> tuple[dict, dict]:
     """Galleries maps {map id: {points}} plus a report of what did not carry over."""
-    templates = {template: map_id for map_id, template in library.templates().items()}
+    templates = {}
+    for map_id, template in library.templates().items():
+        if template in templates:
+            raise AccountError(f"自定义地图资源缺口：模板 {template} 重复绑定到 {templates[template]} 和 {map_id}")
+        templates[template] = map_id
     maps, report = {}, dict(maps=0, missingMaps=0, droppedPoints=0)
     for entry in manifest.get("maps") or ():
         plan = entry.get("routePlan") if isinstance(entry, dict) else None

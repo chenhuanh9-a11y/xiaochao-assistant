@@ -1,0 +1,70 @@
+name: Qt same-frame floor-ready Windows regression
+
+on:
+  push:
+    branches: [fix/qt-floor-ready-policy]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  floor-ready:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        revision: [candidate, main-baseline]
+    env:
+      PYTHONPATH: 'app;tests;tools;experiments/qt_quick'
+      QT_QPA_PLATFORM: offscreen
+      QT_QUICK_BACKEND: software
+      PYTHONUTF8: '1'
+    steps:
+      - name: Exact candidate
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      # First run 41473326470 proved the original input fixture fails equally
+      # on both trees: running=True without installed=True cannot enable input.
+      # Keep baseline PRODUCTION code exact, but use the same repaired synthetic
+      # input source on both sides. No test is skipped and no runtime is patched.
+      - name: Preserve identical corrected input fixture for baseline comparison
+        if: matrix.revision == 'main-baseline'
+        shell: pwsh
+        run: Copy-Item experiments/qt_quick/test_client_game_floor_input.py "$env:RUNNER_TEMP/floor-input-fixture.py"
+      - name: Check out exact pre-fix production baseline
+        if: matrix.revision == 'main-baseline'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: c06a3f2eb8e0a3a5f3b904fffb8ef0c0a33b6962
+          persist-credentials: false
+      - name: Apply only identical input test fixture (baseline production unchanged)
+        if: matrix.revision == 'main-baseline'
+        shell: pwsh
+        run: |
+          Copy-Item "$env:RUNNER_TEMP/floor-input-fixture.py" experiments/qt_quick/test_client_game_floor_input.py
+          git diff --stat
+          git diff -- experiments/qt_quick/test_client_game_floor_input.py
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13.3'
+          architecture: x64
+      - name: Pinned test dependencies only (no build, package, or release)
+        run: python -m pip install --disable-pip-version-check -r experiments/qt_quick/requirements-client.txt
+      - name: Current-frame floor policy, lifecycle, manual, region and focus seams
+        shell: pwsh
+        run: |
+          $modules = @('test_client_live_runtime', 'test_client_floor_region', 'test_client_game_floor_click', 'test_client_game_floor_input', 'test_client_known_floor_recovery', 'test_client_map_intent_reset', 'test_client_manual_map', 'test_client_recapture_focus', 'test_client_recapture_composition')
+          if ('${{ matrix.revision }}' -eq 'candidate') { $modules += 'test_client_floor_ready_policy' }
+          $failed = @()
+          foreach ($module in $modules) {
+            python -B -X utf8 -m unittest -v $module
+            if ($LASTEXITCODE -ne 0) { $failed += $module }
+          }
+          if ($failed.Count -gt 0) {
+            Write-Error ('Failed modules: ' + ($failed -join ', '))
+            exit 1
+          }

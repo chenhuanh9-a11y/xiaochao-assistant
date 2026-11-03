@@ -70,6 +70,8 @@ class CustomGalleryService(QObject):
         self._closed = False
         self._busy = False
         self._refresh_pending = False
+        self._resource_generation = 0
+        self._plaza_pending = None
         self._pending = None
         self._gallery = "default"
         self._map = ""
@@ -98,6 +100,7 @@ class CustomGalleryService(QObject):
     snapshot = Property("QVariantMap", _snapshot, notify=changed)
     busy = Property(bool, lambda s: s._busy, notify=changed)
     message = Property(str, lambda s: s._message, notify=changed)
+    pendingWrites = Property(bool, lambda s: s._plaza_pending is not None, notify=changed)
 
     def _export_directory_url(self):
         try:
@@ -276,12 +279,16 @@ class CustomGalleryService(QObject):
             if self._refresh_pending:
                 self._refresh_pending = False
                 self.refresh()
+            else:
+                self._drain_plaza()
         job.signals.done.connect(done, Qt.QueuedConnection)
         self.pool.start(job)
         return True
 
     @Slot()
     def refresh(self):
+        # Revoke prepared downloads immediately, even if a writer delays reload.
+        self._resource_generation += 1
         if self._busy:
             self._refresh_pending = True
             return
@@ -579,26 +586,46 @@ class CustomGalleryService(QObject):
         self._use_handler = callback
         self.changed.emit()
 
-    def plazaVersions(self):
+    def plazaSources(self):
         """Read only the last UI snapshot; the store belongs to its single worker."""
-        return {row["source"]["workId"]: row["source"]["versionId"]
+        return {row["source"]["workId"]: dict(row["source"])
                 for row in self._state["galleries"] if row.get("source")}
 
-    def installPlaza(self, account, route, cancelled, done):
-        """Use the same queue, digest guard and committed-cache invalidation as edits."""
+    def plazaInstallContext(self):
+        """UI-thread capture; the read-only library survives selection changes."""
+        if self._closed or self._pending:
+            return None
+        return self.library, self._resource_generation
+
+    def plazaContextCurrent(self, context):
+        library, generation = context
+        return (not self._closed and not self._refresh_pending
+                and generation == self._resource_generation and library is self.library)
+
+    def installPlaza(self, prepared, context, cancelled, done):
+        """Queue one prepared save; network work belongs to the plaza pool."""
+        if self._closed or self._pending or self._plaza_pending is not None:
+            return False
+        self._plaza_pending = (prepared, context, cancelled, done)
+        self.changed.emit()
+        self._drain_plaza()
+        return True
+
+    def _drain_plaza(self):
+        if self._closed or self._busy or self._pending or self._plaza_pending is None:
+            return
         from account_service import AccountError
-        from route_plaza import prepare_install
+        prepared, context, cancelled, done = self._plaza_pending
+        self._plaza_pending = None
         result = {}
         def install():
-            revoked = lambda: cancelled() or self._refresh_pending
-            name, maps, source, report = prepare_install(account, self.library, route, cancelled=revoked)
-            if revoked():
+            if cancelled() or not self.plazaContextCurrent(context):
                 raise AccountError("已取消下载，未导入路线")
+            name, maps, source, report = prepared
             gid = self._write(lambda: self._store.install_plaza(name, maps, source))
             result.update(gallery=gid, report=report)
-            self._past, self._future = [], []
-        return self._run(install, "路线已下载，可在自定义图库中选用", galleries_changed=True,
-                         on_done=lambda error: done(result, error))
+        self._run(install, "路线已下载，可在自定义图库中选用", galleries_changed=True,
+                  on_done=lambda error: done(result, error))
 
     def setActiveGallery(self, gid):
         self._in_use = str(gid or "")
@@ -620,4 +647,5 @@ class CustomGalleryService(QObject):
 
     def shutdown(self):
         self._closed = True
+        self._plaza_pending = None
         self.pool.waitForDone()

@@ -169,6 +169,137 @@ class RecaptureFocusTests(unittest.TestCase):
         self.assertEqual(len(self.backend.captures), before + 1)
         self.assertFalse(self.coordinator._waiting_foreground)
 
+    def return_to_game(self):
+        self.coordinator._watch_foreground()
+        self.session.refreshRuntime()
+        self.native.foreground = 42
+        self.coordinator._watch_foreground()
+
+    def test_foreground_return_retries_unobserved_frames_before_fresh_authorization(self):
+        old = self.runtime.snapshot()['pendingRenderToken']
+        before = len(self.backend.captures)
+        with patch('map_interface_observation.detect_map_interface', side_effect=[
+                dict(detected=False), dict(detected=False), dict(detected=True)]):
+            self.return_to_game(); self.settle()
+        receipt = self.session.snapshot['lastReceipt']
+        self.assertTrue(receipt.get('success'), receipt)
+        self.assertEqual(len(self.backend.captures), before + 3)
+        self.assertIsNone(self.runtime.render_payload(old))
+        self.assertTrue(self.runtime.snapshot()['displayAuthorized'])
+        self.coordinator._watch_foreground(); self.settle()
+        self.assertEqual(len(self.backend.captures), before + 3)
+
+    def test_foreground_return_retries_capture_unavailable_before_fresh_frame(self):
+        before = len(self.backend.captures)
+        failures = [True, True, False]
+        def unavailable():
+            if failures.pop(0):
+                raise OSError('game-client-dc-returned-blank-frame')
+        self.backend.on_capture = unavailable
+        self.return_to_game(); self.settle()
+        receipt = self.session.snapshot['lastReceipt']
+        self.assertTrue(receipt.get('success'), receipt)
+        self.assertEqual(len(self.backend.captures), before + 3)
+        self.assertTrue(self.runtime.snapshot()['displayAuthorized'])
+
+    def test_foreground_return_deadline_is_not_a_physical_map_close(self):
+        events = []
+        original = self.runtime._notify
+        def notify(name, **values):
+            events.append((name, values))
+            return original(name, **values)
+        self.runtime._notify = notify
+        with patch('map_interface_observation.detect_map_interface', return_value=dict(detected=False)):
+            self.return_to_game(); self.settle()
+        receipt = self.session.snapshot['lastReceipt']
+        self.assertFalse(receipt.get('success'), receipt)
+        self.assertEqual(receipt['reason'], 'map-open-preparation-deadline')
+        self.assertGreater(len(self.backend.captures), 2)
+        self.assertFalse(any(values.get('mapClosed') for name, values in events))
+        self.assertFalse(self.runtime.snapshot()['displayAuthorized'])
+        self.fixture.input.resetMapInput.assert_called_with(True)
+
+    def test_difficult_foreground_return_uses_same_multiframe_preparation(self):
+        self.native.foreground = 42
+        self.live.dispatch('end_round')
+        self.live.dispatch('set_context', mode='difficult')
+        self.live.dispatch('start_round')
+        self.assertTrue(self.live.dispatch('capture_now')['success'])
+        self.session.refreshRuntime()
+        self.coordinator._applied_context = ('difficult', 'shared-structure')
+        self.fixture.settings.values['mode'] = 'difficult'
+        self.native.foreground = 77
+        before = len(self.backend.captures)
+        with patch.object(self.runtime._engine.qt_map_ui, 'observe', side_effect=[
+                dict(mapOpen=False), dict(mapOpen=False), dict(mapOpen=True, floor='1')]):
+            self.return_to_game(); self.settle()
+        receipt = self.session.snapshot['lastReceipt']
+        self.assertTrue(receipt.get('success'), receipt)
+        self.assertEqual(len(self.backend.captures), before + 3)
+        self.assertEqual(self.runtime.snapshot()['mode'], 'difficult')
+
+    def test_foreground_return_interruption_never_authorizes_old_frame(self):
+        # Real worker/capture lane, paused before the first return pixels.
+        entered, release = threading.Event(), threading.Event()
+        def blocked_capture():
+            entered.set()
+            self.assertTrue(release.wait(3))
+        self.backend.on_capture = blocked_capture
+        old = self.runtime.snapshot()['pendingRenderToken']
+        self.return_to_game()
+        self.assertTrue(entered.wait(3))
+        self.native.foreground = 77
+        self.coordinator._watch_foreground()
+        release.set(); self.settle()
+        self.assertIsNone(self.runtime.render_payload(old))
+        self.assertFalse(self.runtime.snapshot()['displayAuthorized'])
+
+    def interrupted_return(self, interrupt):
+        entered, release = threading.Event(), threading.Event()
+        def blocked_capture():
+            entered.set()
+            self.assertTrue(release.wait(3))
+        self.backend.on_capture = blocked_capture
+        old = self.runtime.snapshot()['pendingRenderToken']
+        self.return_to_game()
+        self.assertTrue(entered.wait(3))
+        try:
+            interrupt()
+        finally:
+            self.backend.on_capture = None
+            release.set()
+        self.settle()
+        self.assertIsNone(self.runtime.render_payload(old))
+        return self.runtime.snapshot()
+
+    def test_return_worker_cannot_reauthorize_after_explicit_close(self):
+        state = self.interrupted_return(lambda: self.coordinator._map_input_requested(dict(
+            sequence=1, openIntent=False, createdAt=101., hwnd=42, source='hotkey')))
+        self.assertFalse(state['mapOpen'])
+        self.assertFalse(state['displayAuthorized'])
+
+    def test_return_worker_cannot_reauthorize_after_round_end(self):
+        state = self.interrupted_return(lambda: self.session.dispatch('end_round'))
+        self.assertFalse(state['roundActive'])
+        self.assertFalse(state['displayAuthorized'])
+
+    def test_return_worker_cannot_reauthorize_after_rebinding(self):
+        state = self.interrupted_return(lambda: self.capture.bindFullClient(42))
+        self.assertFalse(state['displayAuthorized'])
+
+    def test_return_worker_yields_to_rapid_close_open_sequence(self):
+        def keys():
+            for sequence, opening in ((1, False), (2, True)):
+                self.coordinator._map_input_requested(dict(sequence=sequence, openIntent=opening,
+                    createdAt=100. + sequence, hwnd=42, source='hotkey'))
+        state = self.interrupted_return(keys)
+        receipt = self.session.snapshot['lastReceipt']
+        self.assertTrue(receipt.get('success'), receipt)
+        self.assertEqual(receipt['action'], 'map')
+        self.assertEqual(self.coordinator._map_input_sequence, 2)
+        self.assertTrue(state['mapOpen'])
+        self.assertTrue(state['displayAuthorized'])
+
     def test_reentrant_click_and_busy_repeat_enqueue_only_once(self):
         self.native.on_focus = self.coordinator.recaptureFromMain
         self.click()

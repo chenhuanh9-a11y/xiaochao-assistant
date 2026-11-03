@@ -69,14 +69,15 @@ Dialog {
                 TextField { id: confirmation; objectName: "accountPasswordConfirm"; visible: root.state.accountMode !== "登录"; Layout.fillWidth: true; echoMode: TextInput.Password; maximumLength: 128; Accessible.name: "确认密码"; onAccepted: root.submit() }
             }
             Label {
+                objectName: "accountHelpText"
                 Layout.fillWidth: true; visible: !root.state.hasRecoveryCode; wrapMode: Text.WordWrap; color: "#526785"; font.pixelSize: 12
-                text: root.state.accountMode === "注册" ? "用户名 3–32 位英文小写、数字或下划线；密码 6–128 位。注册后会显示一次恢复码。" : root.state.accountMode === "找回密码" ? "用恢复码重设密码，所有设备都会退出登录。" : root.state.persistent ? "本机加密保存登录状态，不保存密码。" : "本机不保存登录状态，关闭软件后需要重新登录。"
+                text: root.state.accountMode === "注册" ? "用户名 3–32 位英文小写、数字或下划线；密码 6–128 位。注册后请保存恢复码；确认保存后，本机不再显示。" : root.state.accountMode === "找回密码" ? "用账号恢复码重设密码。" : root.state.persistent ? "本机加密保存登录状态，不保存密码。" : "本机不保存登录状态，关闭软件后需要重新登录。"
             }
             Label { objectName: "accountMessage"; Layout.fillWidth: true; text: root.state.accountMessage; color: "#354f75"; wrapMode: Text.WordWrap }
             TextField {
                 objectName: "accountRecoveryCode"; Layout.fillWidth: true; visible: root.state.hasRecoveryCode
                 text: routePlazaService.recoveryCode; readOnly: true; selectByMouse: true; font.pixelSize: 19
-                Accessible.name: "一次性恢复码"
+                Accessible.name: "账号恢复码"
             }
             AppButton { visible: root.state.hasRecoveryCode; text: "复制恢复码"; onClicked: routePlazaService.copyRecoveryCode() }
         }

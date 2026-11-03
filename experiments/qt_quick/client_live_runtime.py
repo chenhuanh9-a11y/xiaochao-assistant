@@ -2544,13 +2544,15 @@ class LiveRuntime:
         # A provider's narrow pre-pixel foreground refusal must not itself
         # erase a still-current observation. Other actions keep their existing
         # revocation semantics; no failure after acquisition is retained.
-        if action not in ("refresh_map", "capture_now"):
+        foreground_return = action == "capture_now" and payload.get("foregroundReturn") is True
+        if action not in ("refresh_map", "capture_now") or foreground_return:
             with self._lock:
                 self._game_floor_intent = None
                 self._floor_click_epoch_span = None
             self._revoke_render("new-capture")
         obsolete = lambda: self._cancelled(cancelled) or epoch != self._epoch
-        if action == "map":
+        preparing = action == "map" or foreground_return
+        if preparing:
             from map_open_preparation import prepare_map_open_frame
             preparation = _PreparationHost(self, engine, obsolete)
             prepared = prepare_map_open_frame(preparation, None, self._cycle + 1,
@@ -2564,7 +2566,11 @@ class LiveRuntime:
                     diagnostic = preparation.observation_diagnostic()
                     self._automatic_failure_sample("map-open-preparation-deadline", current=lambda: not obsolete(),
                         diagnostic=dict(preparationObservation=diagnostic))
-                    self.invalidate("map-closed", source="map-preparation-deadline")
+                    if not foreground_return:
+                        self.invalidate("map-closed", source="map-preparation-deadline")
+                    # Returning to the game may expose black/transition frames.
+                    # No observation is not proof of a physical map close:
+                    # keep display revoked without resetting the key intent.
                     return self._receipt(action, payload, success=False, reason="map-open-preparation-deadline",
                         preparationObservation=diagnostic)
                 # A recognized map with unreadable floor stays available for
@@ -2619,7 +2625,20 @@ class LiveRuntime:
             return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
         map_detected = (observation.get("mapOpen") is True if engine.pack.mode == "difficult"
                         else observation.get("detected") is True)
-        effective_floor = self._observe_floor_policy(floor_read, obsolete=obsolete) if map_detected else None
+        # Preparation and direct captures already use this shared map-only UI
+        # proof. Do not let the weaker generic texture verdict veto its floor
+        # evidence a second time. This is floor policy input, NOT pose/display
+        # authority; keep generic map detection for unresolved/region handling.
+        from session_state_machine import verified_map_hotkey_frame
+        floor_ready = map_detected or (engine.pack.mode == "nightmare"
+            and verified_map_hotkey_frame(observation, floor_read))
+        with self._lock:
+            if (floor_ready and not map_detected
+                    and (obsolete() or engine is not self._engine or group is not self._group
+                         or not self._capture_is_current(captured.context, capture_generation)
+                         or capture_generation != self._capture_generation())):
+                return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
+            effective_floor = self._observe_floor_policy(floor_read, obsolete=obsolete) if floor_ready else None
         if floor is None and map_detected:
             self._revoke_render("current-floor-unavailable")
             digest = hashlib.sha256(frame.tobytes()).hexdigest()
@@ -2643,7 +2662,7 @@ class LiveRuntime:
             if effective_floor is not None:
                 return self._solve_retained(action, payload, cancelled, acquire_current=False)
             return self._receipt(action, payload, success=False, reason="current-floor-unavailable", observation=observation,
-                preparationObservation=preparation.observation_diagnostic() if action == "map" else {})
+                preparationObservation=preparation.observation_diagnostic() if preparing else {})
         if opened is not True:
             if action == "refresh_map":
                 from session_state_machine import map_probe_transition
