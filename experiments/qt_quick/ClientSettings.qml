@@ -23,6 +23,8 @@ Item {
     property bool advancedDisplay: false
     property bool modeExpanded: false
     property bool modulesExpanded: false
+    property bool referenceEditRequested: false
+    readonly property bool referenceEditing: typeof clientCoordinator !== "undefined" && clientCoordinator.referenceEditing === true
     readonly property bool layoutDirty: settingsService.controlLayoutDirty
     function recordShortcut(target) {
         if (settingsService.beginShortcutCapture(target)) captureArea.forceActiveFocus()
@@ -245,6 +247,59 @@ Item {
                                 }
                             }
                             Note { text: "点击录入后按键并确认；保存后生效。清空可解绑。" }
+                            Disclosure { objectName: "controlLayoutToggle"; text: root.modulesExpanded ? "收起悬浮面板控件" : "自定义悬浮面板控件"; expanded: root.modulesExpanded; onClicked: root.modulesExpanded = !root.modulesExpanded }
+                            ColumnLayout {
+                                visible: root.modulesExpanded
+                                Layout.fillWidth: true
+                                spacing: 10
+                                Note { text: "勾选显示的模块，用上移 / 下移调整顺序。修改会预览到游戏控制面板，保存布局后保留到下次启动。" }
+                                ColumnLayout {
+                                    objectName: "controlLayoutEditor"
+                                    Layout.fillWidth: true
+                                    spacing: 4
+                                    Repeater {
+                                        model: root.preferences.gameControlLayout.order
+                                        delegate: RowLayout {
+                                            required property string modelData
+                                            required property int index
+                                            Layout.fillWidth: true
+                                            CheckBox {
+                                                objectName: "layout_enabled_" + modelData
+                                                text: root.moduleNames[modelData]
+                                                Layout.fillWidth: true
+                                                font.family: "Microsoft YaHei UI"; font.pixelSize: 13
+                                                checked: root.preferences.gameControlLayout.enabled.indexOf(modelData) >= 0
+                                                onToggled: root.setLayoutFlag("module", modelData, checked)
+                                            }
+                                            AppButton { objectName: "layout_up_" + modelData; text: "上移"; implicitWidth: 54; padding: 6; enabled: index > 0; Accessible.name: root.moduleNames[modelData] + "上移"; onClicked: settingsService.moveControlModule(modelData, -1) }
+                                            AppButton { objectName: "layout_down_" + modelData; text: "下移"; implicitWidth: 54; padding: 6; enabled: index < root.preferences.gameControlLayout.order.length - 1; Accessible.name: root.moduleNames[modelData] + "下移"; onClicked: settingsService.moveControlModule(modelData, 1) }
+                                        }
+                                    }
+                                }
+                                Flow {
+                                    Layout.fillWidth: true
+                                    spacing: 8
+                                    Repeater {
+                                        model: [{key: "alignedOpacity", title: "贴合不透明度控件"}, {key: "referenceOpacity", title: "定点不透明度控件"}, {key: "referencePosition", title: "定点位置编辑控件"}]
+                                        delegate: CheckBox {
+                                            required property var modelData
+                                            objectName: "layout_display_" + modelData.key
+                                            text: modelData.title
+                                            enabled: root.preferences.gameControlLayout.enabled.indexOf("display") >= 0
+                                            font.family: "Microsoft YaHei UI"; font.pixelSize: 13
+                                            checked: root.preferences.gameControlLayout.display[modelData.key]
+                                            onToggled: root.setLayoutFlag("display", modelData.key, checked)
+                                        }
+                                    }
+                                }
+                                Flow {
+                                    Layout.fillWidth: true; spacing: 8
+                                    AppButton { objectName: "layout_preset_compact"; text: "精简预设"; onClicked: settingsService.setControlLayoutPreset("compact") }
+                                    AppButton { objectName: "layout_preset_common"; text: "常用预设"; onClicked: settingsService.setControlLayoutPreset("common") }
+                                    AppButton { objectName: "layout_save"; text: "保存布局"; primary: true; enabled: root.layoutDirty && !settingsService.busy; onClicked: settingsService.saveFields(["gameControlLayout"]) }
+                                    AppButton { objectName: "layout_reset"; text: "撤销布局"; enabled: root.layoutDirty && !settingsService.busy; onClicked: settingsService.resetControlLayout() }
+                                }
+                            }
                         }
                         ColumnLayout {
                             objectName: "settingsDisplayColumn"
@@ -279,12 +334,37 @@ Item {
                             }
                             OpacityBlock { settingKey: "sheetOpacity"; title: "不透明度" }
                             OpacityBlock { settingKey: "sheetScale"; title: "小抄大小"; minimum: 50; maximum: 150 }
+                            OpacityBlock { settingKey: "referenceOpacity"; title: "定点地图不透明度" }
+                            Flow {
+                                Layout.fillWidth: true; spacing: 8
+                                AppButton {
+                                    objectName: "settingsEditReferencePosition"
+                                    text: "编辑定点地图位置"; visible: !root.referenceEditing
+                                    enabled: !settingsService.busy
+                                    onClicked: { root.referenceEditRequested = true; clientCoordinator.beginReferenceEdit() }
+                                }
+                                AppButton {
+                                    objectName: "settingsFinishReferencePosition"
+                                    text: "完成位置编辑"; visible: root.referenceEditing
+                                    enabled: !settingsService.busy; primary: true
+                                    onClicked: { clientCoordinator.finishReferenceEdit(); root.referenceEditRequested = false }
+                                }
+                                AppButton {
+                                    objectName: "settingsCancelReferencePosition"
+                                    text: "取消位置编辑"; visible: root.referenceEditing || root.referenceEditRequested
+                                    onClicked: { clientCoordinator.cancelReferenceEdit(); root.referenceEditRequested = false }
+                                }
+                            }
+                            Note {
+                                objectName: "settingsReferencePositionMessage"
+                                visible: root.referenceEditing || root.referenceEditRequested
+                                text: visible && typeof clientCoordinator !== "undefined" ? clientCoordinator.message : ""
+                            }
+                            OpacityBlock { settingKey: "interfaceOpacity"; title: "界面不透明度"; minimum: 65; maximum: 95 }
                             Disclosure { objectName: "advancedDisplayToggle"; text: root.advancedDisplay ? "收起更多显示设置" : "更多显示设置"; expanded: root.advancedDisplay; onClicked: root.advancedDisplay = !root.advancedDisplay }
                             ColumnLayout {
                                 visible: root.advancedDisplay
                                 Layout.fillWidth: true; spacing: 10
-                                OpacityBlock { settingKey: "referenceOpacity"; title: "定点地图不透明度" }
-                                OpacityBlock { settingKey: "interfaceOpacity"; title: "界面不透明度"; minimum: 65; maximum: 95 }
                                 Repeater {
                                     model: [
                                         {key: "referenceSheetVisible", title: "显示定点地图"},
@@ -395,59 +475,7 @@ Item {
                     Note { text: settingsService.coffinVariantMessage; Layout.columnSpan: parent.columns }
                 }
                     }
-                    Disclosure { objectName: "controlLayoutToggle"; text: root.modulesExpanded ? "收起悬浮面板控件" : "自定义悬浮面板控件"; expanded: root.modulesExpanded; onClicked: root.modulesExpanded = !root.modulesExpanded }
-                    ColumnLayout {
-                        visible: root.modulesExpanded
-                        Layout.fillWidth: true; Layout.maximumWidth: 760
-                        spacing: 10
-                Note { text: "勾选显示的模块，用上移 / 下移调整顺序。修改会预览到游戏控制面板，保存布局后保留到下次启动。" }
-                ColumnLayout {
-                    objectName: "controlLayoutEditor"
-                    Layout.fillWidth: true
-                    spacing: 4
-                    Repeater {
-                        model: root.preferences.gameControlLayout.order
-                        delegate: RowLayout {
-                            required property string modelData
-                            required property int index
-                            Layout.fillWidth: true
-                            CheckBox {
-                                objectName: "layout_enabled_" + modelData
-                                text: root.moduleNames[modelData]
-                                Layout.fillWidth: true
-                                font.family: "Microsoft YaHei UI"; font.pixelSize: 13
-                                checked: root.preferences.gameControlLayout.enabled.indexOf(modelData) >= 0
-                                onToggled: root.setLayoutFlag("module", modelData, checked)
-                            }
-                            AppButton { objectName: "layout_up_" + modelData; text: "上移"; enabled: index > 0; Accessible.name: root.moduleNames[modelData] + "上移"; onClicked: settingsService.moveControlModule(modelData, -1) }
-                            AppButton { objectName: "layout_down_" + modelData; text: "下移"; enabled: index < root.preferences.gameControlLayout.order.length - 1; Accessible.name: root.moduleNames[modelData] + "下移"; onClicked: settingsService.moveControlModule(modelData, 1) }
-                        }
-                    }
-                }
-                Flow {
-                    Layout.fillWidth: true
-                    spacing: 8
-                    Repeater {
-                        model: [{key: "alignedOpacity", title: "贴合不透明度控件"}, {key: "referenceOpacity", title: "定点不透明度控件"}, {key: "referencePosition", title: "定点位置编辑控件"}]
-                        delegate: CheckBox {
-                            required property var modelData
-                            objectName: "layout_display_" + modelData.key
-                            text: modelData.title
-                            enabled: root.preferences.gameControlLayout.enabled.indexOf("display") >= 0
-                            font.family: "Microsoft YaHei UI"; font.pixelSize: 13
-                            checked: root.preferences.gameControlLayout.display[modelData.key]
-                            onToggled: root.setLayoutFlag("display", modelData.key, checked)
-                        }
-                    }
-                }
-                Flow {
-                    Layout.fillWidth: true; spacing: 8
-                    AppButton { objectName: "layout_preset_compact"; text: "精简预设"; onClicked: settingsService.setControlLayoutPreset("compact") }
-                    AppButton { objectName: "layout_preset_common"; text: "常用预设"; onClicked: settingsService.setControlLayoutPreset("common") }
-                    AppButton { objectName: "layout_save"; text: "保存布局"; primary: true; enabled: root.layoutDirty && !settingsService.busy; onClicked: settingsService.saveFields(["gameControlLayout"]) }
-                    AppButton { objectName: "layout_reset"; text: "撤销布局"; enabled: root.layoutDirty && !settingsService.busy; onClicked: settingsService.resetControlLayout() }
-                }
-                    }
+
                 }
             }
         }
