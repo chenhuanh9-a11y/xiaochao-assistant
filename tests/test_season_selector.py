@@ -97,6 +97,16 @@ class SeasonSelectorTests(unittest.TestCase):
         self.assertFalse(self.item('selectorSeason').isEnabled())
         self.assertFalse(self.warnings, '\n'.join(self.warnings))
 
+    def test_current_context_can_be_requested_only_for_saved_default_mismatch(self):
+        self.select_season('s0')
+        self.assertEqual(self.requests, [])
+        self.root.setProperty('allowCurrentContextRequest', True)
+        self.select_season('s0')
+        self.assertEqual(self.requests, [('s0', 'nightmare')])
+        self.root.setProperty('enabled', False)
+        self.root.requestContext('s0', 'nightmare')
+        self.assertEqual(self.requests, [('s0', 'nightmare')])
+
     def test_rejected_or_pending_request_keeps_authoritative_season_visible(self):
         self.root.contextRequested.disconnect()
         self.root.contextRequested.connect(lambda season, mode: self.requests.append((season, mode)))

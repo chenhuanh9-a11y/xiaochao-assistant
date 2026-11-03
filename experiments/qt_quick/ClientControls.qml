@@ -366,6 +366,9 @@ Window {
                 Layout.fillWidth: true; Layout.topMargin: 8
                 seasons: settingsService.seasonOptions
                 season: session.appliedSeason; mode: panel.appliedMode
+                                allowCurrentContextRequest: !!settingsService.persistedValues
+                                    && (settingsService.persistedValues.gameSeason !== session.appliedSeason
+                                        || settingsService.persistedValues.gameMode !== session.appliedMode)
                 nightmareObjectName: "controlModeNightmare"
                 difficultObjectName: "controlModeDifficult"
                 enabled: panel.modeAvailable()

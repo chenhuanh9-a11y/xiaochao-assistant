@@ -7,6 +7,7 @@ RowLayout {
     property var seasons: []
     property string season: ""
     property string mode: ""
+    property bool allowCurrentContextRequest: false
     property string nightmareObjectName: objectName + "Nightmare"
     property string difficultObjectName: objectName + "Difficult"
     signal contextRequested(string season, string mode)
@@ -34,7 +35,7 @@ RowLayout {
     }
 
     function requestContext(nextSeason, nextMode) {
-        if (!enabled || (nextSeason === season && nextMode === mode)) return
+        if (!enabled || (nextSeason === season && nextMode === mode && !allowCurrentContextRequest)) return
         if (nextMode !== "nightmare" && nextMode !== "difficult") return
         for (var i = 0; i < seasons.length; i++) {
             if (seasons[i].id === nextSeason) {

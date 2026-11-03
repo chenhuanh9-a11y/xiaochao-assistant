@@ -82,6 +82,7 @@ class _RuntimeWork(QRunnable):
 class SessionService(QObject):
     changed = Signal()
     actionRequested = Signal(str, dict)
+    contextFinished = Signal(object)
 
     def __init__(self, runtime=None, parent=None):
         super().__init__(parent)
@@ -172,11 +173,30 @@ class SessionService(QObject):
             job.cancelled.set()
         self._pending = None
 
+    def _restore_applied_context(self):
+        """Reconcile a terminal context attempt, without erasing its receipt/error."""
+        try:
+            self._state = dict(self._runtime.snapshot())
+        except Exception:
+            # The last observed applied context is safer than the failed intent.
+            # Do not grant authority when fresh runtime state is unavailable.
+            self._state = dict(self._state, liveAuthorization=False,
+                               engineConnected=False, liveEngineAvailable=False,
+                               availableCommands=[], message="Runtime snapshot unavailable.")
+        self._season = normalize_season(self._state.get("season", "s0"))
+        self._mode = str(self._state.get("mode", "nightmare"))
+        self._profile = str(self._state.get("profileId", ""))
+
+    def _context_finished(self, work, context):
+        if work.action == "set_context":
+            self.contextFinished.emit((context["mode"], context["profileId"], context["season"]))
+
     @Slot()
     def refreshRuntime(self):
         """Read a bounded runtime snapshot on the owning UI thread."""
         if self._closed or self._runtime is None:
             return
+        pending = self._jobs.get(self._pending)
         try:
             state = dict(self._runtime.snapshot())
             old = self._context()
@@ -191,9 +211,15 @@ class SessionService(QObject):
             self._state, self._season, self._mode, self._profile = state, season, mode, profile
             self._message = str(state.get("message", "Runtime ready."))
         except Exception as error:
-            self._state = {}
+            self._state = dict(self._state, engineConnected=False, liveEngineAvailable=False,
+                               liveAuthorization=False, availableCommands=[])
+            self._season = normalize_season(self._state.get("season", "s0"))
+            self._mode = str(self._state.get("mode", "nightmare"))
+            self._profile = str(self._state.get("profileId", ""))
             self._message = f"Runtime snapshot unavailable: {error}"
             self._invalidate("runtime-snapshot-failed")
+        if pending and pending[0].cancelled.is_set():
+            self._context_finished(pending[0], pending[0].context)
         self.changed.emit()
 
     @Slot(str)
@@ -225,6 +251,14 @@ class SessionService(QObject):
             self._message = "Resource operation is in progress."
             self.changed.emit()
             return
+        pending = self._jobs.get(self._pending)
+        if pending and pending[0].action == "set_context" and action != "set_context":
+            # A hotkey/terminal command can supersede a context worker without
+            # going through stop(). Its payload must use applied runtime state,
+            # and the coordinator must not retain the cancelled target forever.
+            self._invalidate("context-superseded")
+            self._restore_applied_context()
+            self._context_finished(pending[0], pending[0].context)
         context = self._context()
         target = (context, deepcopy(dict(payload)))
         existing = self._actions.snapshot(action)
@@ -232,7 +266,10 @@ class SessionService(QObject):
                 and self._actions.accepts_background_result(existing.token)):
             self._actions.begin(action, target_state=target, visual_state="requested")
             return
+        pending = self._jobs.get(self._pending)
         self._invalidate("superseded")
+        if pending:
+            self._context_finished(pending[0], pending[0].context)
         context = self._context()
         decision = self._actions.begin(action, target_state=(context, dict(payload)), visual_state="requested")
         data = dict(payload)
@@ -271,6 +308,8 @@ class SessionService(QObject):
             self.changed.emit()
             return
         if error:
+            if work.action == "set_context":
+                self._restore_applied_context()
             self._actions.fail(token, fallback_state="failed", reason=error)
             self._message = error
             self._last_receipt = dict(action=work.action, success=False, reason=error,
@@ -310,15 +349,20 @@ class SessionService(QObject):
             else:
                 state_drifted = any(name in state and state[name] != context[name]
                                     for name in context_fields)
-            if request_mismatch or state_drifted:
+            # A current explicit refusal intentionally retains the old applied
+            # context. Preserve its real reason instead of calling it stale.
+            rejected_context = (work.action == "set_context" and receipt.get("success") is False
+                                and not request_mismatch)
+            if request_mismatch or (state_drifted and not rejected_context):
                 if self._diagnostics is not None:
                     self._diagnostics.record("result-consumed", jobId=key, action=work.action,
                         accepted=False, reason="runtime-result-context-mismatch")
                 self.stale_results += 1
                 self._actions.cancel(token, reason="runtime-result-context-mismatch")
-                if state_drifted:
+                if state_drifted or work.action == "set_context":
                     self.refreshRuntime()
                 self._message = "Discarded a result from a superseded runtime context."
+                self._context_finished(work, context)
                 self.changed.emit()
                 return
             self._last_receipt = deepcopy(receipt)
@@ -335,6 +379,7 @@ class SessionService(QObject):
         if self._diagnostics is not None:
             self._diagnostics.record("result-consumed", jobId=key, action=work.action,
                 accepted=not bool(error), reason="worker-error" if error else "current-result")
+        self._context_finished(work, context)
         self.changed.emit()
 
     def dispatchMaintenance(self, action, payload):
@@ -404,7 +449,12 @@ class SessionService(QObject):
             self._message = "Unavailable command: set_context. Attach a runtime that supports it."
             self.changed.emit()
             return False
+        pending = self._jobs.get(self._pending)
         self._invalidate("context-reconfigured")
+        if pending:
+            # Equal live targets returned above, so this is a different target.
+            # End the old attempt before dispatch seals the new generation.
+            self._context_finished(pending[0], pending[0].context)
         self._season, self._mode, self._profile = season, mode, profile
         # dispatchWithPayload seals the context from these desired values, so
         # neither member can be replaced by the previous runtime snapshot.
@@ -446,7 +496,11 @@ class SessionService(QObject):
         cancel = getattr(self._runtime, "cancel_map_open_recovery", None)
         if callable(cancel):
             cancel("session-stopped")
+        pending = self._jobs.get(self._pending)
         self._invalidate("cancelled")
+        if pending and pending[0].action == "set_context":
+            self._restore_applied_context()
+            self._context_finished(pending[0], pending[0].context)
         self._message = "Pending requests cancelled."
         self.changed.emit()
 
@@ -455,7 +509,11 @@ class SessionService(QObject):
         cancel = getattr(self._runtime, "cancel_map_open_recovery", None)
         if callable(cancel):
             cancel(str(reason))
+        pending = self._jobs.get(self._pending)
         self._invalidate(str(reason))
+        if pending and pending[0].action == "set_context":
+            self._restore_applied_context()
+            self._context_finished(pending[0], pending[0].context)
         self.changed.emit()
 
     @Slot()

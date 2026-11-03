@@ -117,12 +117,22 @@ Item {
                             SeasonSelector {
                                 id: homeContextSelector; objectName: "homeGameContext"
                                 seasons: settingsService.seasonOptions
-                                season: session.currentSeason; mode: session.currentMode
-                                enabled: !session.busy && !resourceService.busy && !settingsService.busy && !session.snapshot.roundActive && !session.snapshot.roundPreparing
+                                season: session.appliedSeason; mode: session.appliedMode
+                                allowCurrentContextRequest: !!settingsService.persistedValues
+                                    && (settingsService.persistedValues.gameSeason !== session.appliedSeason
+                                        || settingsService.persistedValues.gameMode !== session.appliedMode)
+                                enabled: !session.busy && !resourceService.busy && !settingsService.busy && !session.snapshot.contextPending && !session.snapshot.resourceLocked && !session.snapshot.roundActive && !session.snapshot.roundPreparing
                                 onContextRequested: function(season, mode) { clientCoordinator.requestGameContext(season, mode) }
                             }
                             Item { Layout.fillWidth: true }
                             AppButton { text: "识别详情"; implicitHeight: 32; onClicked: clientCoordinator.navigate("recognition") }
+                        }
+                        Label {
+                            Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#567096"
+                            visible: !session.busy && !settingsService.busy && !!settingsService.persistedValues
+                                     && (settingsService.persistedValues.gameSeason !== session.appliedSeason
+                                         || settingsService.persistedValues.gameMode !== session.appliedMode)
+                            text: "默认赛季和难度已保存，本局仍显示已应用的环境。可重新选择默认项重试。"
                         }
                         RowLayout {
                             objectName: "homeRoundStats"

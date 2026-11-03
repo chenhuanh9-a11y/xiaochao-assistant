@@ -151,7 +151,8 @@ class SeasonSessionTests(unittest.TestCase):
             fake = SimpleNamespace(settings=SimpleNamespace(busy=False, persistedValues={}, setValue=Mock(), saveFields=Mock()),
                 resources=SimpleNamespace(busy=False), session=SimpleNamespace(snapshot=state),
                 _settings_context=ClientCoordinator._settings_context, notificationRequested=Mock(), changed=Mock(),
-                _clear_reference=Mock(), _revoke_runtime=Mock())
+                _clear_reference=Mock(), _revoke_runtime=Mock(),
+                _applied_context=("nightmare", "", "s0"), _pending_context=None)
             fake._game_context_locked = lambda: ClientCoordinator._game_context_locked(fake)
             ClientCoordinator.requestGameContext(fake, "s1", "nightmare")
             fake.settings.setValue.assert_not_called()

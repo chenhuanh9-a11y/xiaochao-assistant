@@ -284,6 +284,9 @@ class ClientCoordinator(QObject):
         if recording_signal is not None:
             recording_signal.connect(self._set_shortcut_recording)
         session.changed.connect(self._session_changed)
+        context_finished = getattr(session, "contextFinished", None)
+        if context_finished is not None:
+            context_finished.connect(self._context_finished)
         session.actionRequested.connect(self._action_requested)
         resources.resourcesChanged.connect(self._resources_changed)
         resources.changed.connect(self._resource_readiness_changed)
@@ -497,12 +500,12 @@ class ClientCoordinator(QObject):
         state = self.session.snapshot if state is None else state
         mode = state.get("mode", self._applied_context[0])
         season = state.get("season", "s0")
+        if self._pending_context or state.get("contextPending"):
+            return ((mode, "context-pending"), "正在切换地图资源，请稍后再打开地图")
         if not CONTEXTS[context_key(mode, season)].registered:
             return ((season, mode, "season-resources-unregistered"), f"{season_label(season)} 地图资源尚未登记，暂不能开始识别")
         if self.resources.busy or self.resources.pendingKind or state.get("resourceLocked"):
             return ((mode, "resource-operation"), "正在更新地图资源，请等待资源操作完成后再打开地图")
-        if self._pending_context or state.get("contextPending"):
-            return ((mode, "context-pending"), "正在切换地图资源，请稍后再打开地图")
         report = (state.get("savedFrameCapabilities") or {}).get(mode) or {}
         reason = str(report.get("reason") or state.get("liveUnavailableReason") or "")
         if reason == "resource-validation-pending" or state.get("pendingAction") == "inspect_engine_resources":
@@ -1308,6 +1311,14 @@ class ClientCoordinator(QObject):
             return
         current = self._settings_context(self.settings.persistedValues)
         if (mode, season) == (current[0], current[2]):
+            # Saved defaults are intent, not evidence that the runtime applied
+            # them. An explicit selection retries a failed saved target once.
+            if (current == self._applied_context or self._pending_context
+                    or self._game_context_locked()):
+                return
+            self._pending_context = current
+            self._context_timer.start()
+            self._try_apply_context()
             return
         if self._game_context_locked():
             self._message = "请先结束本局，再切换赛季或难度"
@@ -1658,6 +1669,17 @@ class ClientCoordinator(QObject):
             self._message = "定点位置已保存，已恢复鼠标穿透"
         self.changed.emit()
 
+    def _context_finished(self, target):
+        if self._pending_context != tuple(target):
+            return
+        # Completion (including rejection/cancellation) ends this attempt.
+        # Keep the persisted default intact, but never retry it on a timer.
+        self._pending_context = None
+        self._context_timer.stop()
+        self._applied_context = (self.session.appliedMode, self.session.appliedProfile,
+                                 self.session.appliedSeason)
+        self.changed.emit()
+
     def _try_apply_context(self):
         if not self._pending_context or self._closing or self._closed:
             self._context_timer.stop()
@@ -1675,6 +1697,9 @@ class ClientCoordinator(QObject):
                 self._session_changed()
         else:
             self._message = self.session.message
+            self._pending_context = None
+            self._context_timer.stop()
+            self.changed.emit()
 
     def _resources_changed(self):
         if self._closing or self._closed:

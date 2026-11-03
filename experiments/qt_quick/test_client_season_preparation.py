@@ -139,7 +139,77 @@ def scenario(name, root):
                 wait(ready, "cancelled preparation must resume when its unprepared mode is selected")
             else:
                 wait(lambda: idle() and bool(calls), "startup timer fired")
-            if name == "save-s1":
+            if name in ("context-error", "context-superseded"):
+                from test_client_manual_map import qml_item
+                wait(ready, "initial S0 ready")
+                home = qml_item(client.main, "homeGameContext")
+                from PySide6.QtCore import QPoint, QPointF, Qt
+                def choose_home_season(season):
+                    for object_name in ("homeGameContextSeason", "homeGameContextSeasonOption_" + season):
+                        item = qml_item(client.main, object_name)
+                        point = item.mapToScene(QPointF(item.width() / 2, item.height() / 2))
+                        QTest.mouseClick(client.main, Qt.LeftButton, Qt.NoModifier,
+                                         QPoint(round(point.x()), round(point.y())))
+                        QTest.qWait(20)
+                picker = qml_item(client.main, "homeGameContextSeason")
+                original_dispatch = client.runtime.dispatch
+                attempts = []
+                def dispatch(action, payload, cancelled):
+                    if action == "set_context":
+                        attempts.append(dict(payload))
+                        if len(attempts) in (1, 4):
+                            entered.set()
+                            if not release.wait(6):
+                                raise RuntimeError("test did not release context")
+                            if name != "context-superseded" or len(attempts) == 4:
+                                raise RuntimeError("controlled-context-failure")
+                    return original_dispatch(action, payload, cancelled)
+                client.runtime.dispatch = dispatch
+                choose_home_season("s1")
+                wait(entered.is_set, "context worker entered")
+                assert home.property("season") == "s0", home.property("season")
+                assert picker.property("displayText") == "S0"
+                assert not home.property("enabled")
+                assert "正在切换" in client.coordinator.runtimeStatus
+                assert "尚未登记" not in client.coordinator.runtimeStatus
+                assert client.session.appliedSeason == "s0"
+                evidence_dir = os.environ.get("QT_CONTEXT_EVIDENCE_DIR") if name == "context-error" else None
+                if evidence_dir:
+                    Path(evidence_dir).mkdir(parents=True, exist_ok=True)
+                    QTest.qWait(100)
+                    assert client.main.grabWindow().save(str(Path(evidence_dir) / "context-pending.png"))
+                if name == "context-superseded":
+                    client.coordinator._native_action("end-round")
+                release.set()
+                wait(idle, "failed context clears coordinator pending")
+                QTest.qWait(500)
+                assert len(attempts) == 1, attempts
+                assert home.property("season") == "s0"
+                assert home.property("enabled")
+                assert picker.property("displayText") == "S0"
+                assert not client.session.snapshot.get("contextPending")
+                if name == "context-error":
+                    assert "controlled-context-failure" in client.session.message
+                assert json.loads(client.settings.path.read_text())["gameSeason"] == "s1"
+                if evidence_dir:
+                    assert client.main.grabWindow().save(str(Path(evidence_dir) / "context-failed.png"))
+                # Same persisted target must be explicitly retryable without
+                # rewriting unrelated draft settings or rolling defaults back.
+                choose_home_season("s1")
+                wait(lambda: idle() and client.session.appliedSeason == "s1", "explicit retry")
+                assert len(attempts) == 2, attempts
+                assert home.property("season") == "s1"
+                select("s0")
+                wait(ready, "return to actual S0")
+                # A subsequent refusal also allows selecting the already
+                # running S0, correcting the saved default without a fake switch.
+                choose_home_season("s1")
+                wait(lambda: idle() and len(attempts) == 4, "second failed S1 attempt")
+                assert client.session.appliedSeason == "s0"
+                choose_home_season("s0")
+                wait(lambda: idle() and client.settings.persistedValues["gameSeason"] == "s0",
+                     "choose actual context after failure")
+            elif name == "save-s1":
                 select("s1")
             elif name == "cold-restart":
                 assert client.session.appliedSeason == "s1"
