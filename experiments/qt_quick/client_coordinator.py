@@ -18,6 +18,7 @@ if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 from reference_position_editor import ReferencePositionEdit
 from client_problem_messages import operation_problem
+from client_input_diagnostics import InputDiagnostics
 from client_manual_map import MANUAL_PICKER_ACTION, normalize_selection_mode
 
 
@@ -203,6 +204,10 @@ class ClientCoordinator(QObject):
         self._window_rows = []
         self._automatic_live = window_catalog is game_window_rows
         self._binding_identity = None
+        from client_window_binding import probe_game_binding
+        self._binding_probe = probe_game_binding
+        self._binding_suspended = self._binding_resume_pending = False
+        self._input_diagnostics = InputDiagnostics(self.traceReported.emit)
         self._last_catalog_notice = None
         self._last_round_active = False
         self._last_prepared_round = None
@@ -556,6 +561,9 @@ class ClientCoordinator(QObject):
         self._focus_loss_map_sequence = None
 
     def _reset_map_input(self, reason, *, open_intent=False):
+        cancel_recovery = getattr(self.runtime, "cancel_map_open_recovery", None)
+        if callable(cancel_recovery):
+            cancel_recovery(reason)
         if reason != "foreground-lost":
             # Only the first focus loss preserves a same-round return plan.
             self._clear_focus_return_plan()
@@ -567,6 +575,11 @@ class ClientCoordinator(QObject):
     def _close_map_from_input(self, payload):
         # Close is an urgent lifetime boundary, not an idempotent queued job.
         # Retain the independently correct static reference and this round's ID.
+        state = self.runtime.snapshot()
+        self._trace("close-input", state=state, reason=payload.get("inputSource", "map-key"),
+            diag=dict(inputSource=payload.get("inputSource", "map-key"),
+                inputSequence=payload.get("inputSequence"), pointerSequence=payload.get("pointerSequence"),
+                inputCreatedAt=payload.get("inputCreatedAt")))
         if self._diagnostics is not None:
             self._diagnostics.record("close-input", source=payload.get("inputSource", "map-key"),
                 inputAt=payload.get("inputCreatedAt"), sequence=payload.get("inputSequence"))
@@ -598,6 +611,9 @@ class ClientCoordinator(QObject):
         except OSError:
             return
         self._map_input_sequence = sequence
+        cancel_recovery = getattr(self.runtime, "cancel_map_open_recovery", None)
+        if callable(cancel_recovery):
+            cancel_recovery("new-map-input")
         if self._diagnostics is not None:
             self._diagnostics.record("map-input", source=event.get("source", "map-key"),
                 inputAt=created, sequence=sequence, openIntent=opening)
@@ -674,9 +690,8 @@ class ClientCoordinator(QObject):
                 # observe_game_floor_click just validated this press. Runtime
                 # rechecks the complete scope under its lock for drag updates;
                 # a nonblocking metadata read returning None is not cancellation.
-                from map_pointer_policy import cursor_is_map_close_control
                 context = event["context"]
-                if cursor_is_map_close_control((event["x"], event["y"]), context.get("clientBounds")):
+                if floor.get("closeControlHit") is True:
                     self._close_map_from_input(dict(inputSequence=self._map_input_sequence,
                         pointerSequence=sequence, inputCreatedAt=event.get("createdAt"),
                         inputSource="mouse-close-control"))
@@ -1017,6 +1032,8 @@ class ClientCoordinator(QObject):
                 self.images.clear()
 
     def _drop_binding(self, reason):
+        self._binding_suspended = False
+        self._binding_resume_pending = False
         self._reset_map_input(reason)
         self.input.disable()
         self.capture.disable()
@@ -1028,6 +1045,54 @@ class ClientCoordinator(QObject):
         self.session.dispatch("end_round")
         self._message = "游戏窗口已关闭，等待唯一游戏窗口后自动重新连接"
         self.notificationRequested.emit("游戏连接已断开", self._message, "warning")
+
+    def _suspend_game_binding(self, reason):
+        if not self._bound or self._binding_suspended:
+            return
+        self._binding_suspended = True
+        suspend = getattr(self.input, "suspendGameBinding", None)
+        if callable(suspend):
+            suspend()
+        self.capture.disable()
+        self._cancel_pointer_drag("game-binding-unavailable")
+        self._revoke_runtime("capture-context-changed")
+        self._cancel_session_frame("game-binding-unavailable")
+        self.session.refreshRuntime()
+        self._trace("binding-suspended", reason=reason)
+
+    def _resume_game_binding(self):
+        if not self._binding_suspended:
+            return
+        state = self.runtime.snapshot()
+        # Active rounds bypass _ensure_round_active's capture enable step.
+        # Resume the same provider without bind_capture, which ends the round.
+        if state.get("roundActive"):
+            if (self.session.busy or self.resources.busy or self.resources.pendingKind
+                    or self._pending_context or self.session.snapshot.get("resourceLocked")):
+                return
+            try:
+                if self._native_windows.foreground_window() != int(self._bound):
+                    return
+            except OSError:
+                return
+            if not self.capture.enable():
+                return
+            # The game could change its map state while observation was paused.
+            # Keep game keys suspended until a current positive OR negative map
+            # observation synchronizes intent. A failed capture retries on the
+            # next bounded discovery tick; management keys remain available.
+            self._binding_resume_pending = True
+            self.session.dispatchWithPayload("capture_now", {
+                "inputObservationSequence": self._map_input_sequence,
+                "foregroundReturn": True, "bindingResume": True})
+            return
+        self._binding_suspended = False
+        resume = getattr(self.input, "resumeGameBinding", None)
+        if callable(resume):
+            resume()
+        self._binding_resume_pending = False
+        self.session.refreshRuntime()
+        self._trace("binding-resumed", reason="same-window-identity")
 
     def _discover_game(self):
         if self._closing or self._closed:
@@ -1041,13 +1106,23 @@ class ClientCoordinator(QObject):
             rows = list(self._catalog())
         except Exception as error:
             # An unreadable catalog cannot authorize a replacement binding.
+            self._suspend_game_binding("catalog-unavailable")
             self._message = f"窗口读取失败：{error}"
             self.changed.emit()
             return
         self._window_rows = rows
         identities = {self._window_identity(row) for row in rows}
-        if self._bound and self._binding_identity is not None and self._binding_identity not in identities:
-            self._drop_binding("game-window-lost")
+        bound_row = next((row for row in rows if self._window_identity(row) == self._binding_identity), None)
+        if self._bound and bound_row is not None and bound_row.get("minimized"):
+            self._suspend_game_binding("game-window-minimized")
+        elif self._bound and self._binding_identity is not None and self._binding_identity not in identities:
+            verdict = self._binding_probe(self._binding_identity)
+            if verdict.get("status") == "lost":
+                self._drop_binding("game-window-lost")
+            else:
+                self._suspend_game_binding(verdict.get("reason", "binding-unverified"))
+        elif self._bound and self._binding_identity in identities:
+            self._resume_game_binding()
         if not self._bound:
             if (len(rows) == 1 and not rows[0].get("minimized") and not self.session.busy
                     and not self.resources.busy and not self.resources.pendingKind):
@@ -1091,6 +1166,7 @@ class ClientCoordinator(QObject):
         self._focus_notice = ""
         self._bound = str(hwnd)
         self._binding_identity = self._window_identity(row)
+        self._binding_suspended = self._binding_resume_pending = False
         self._clear_reference()
         try:
             self.input.bindWindow(int(hwnd))
@@ -1348,7 +1424,7 @@ class ClientCoordinator(QObject):
 
     @Slot()
     def beginReferenceEdit(self):
-        if self.resources.busy or self._closing or self._closed:
+        if self.resources.busy or self.session.snapshot.get("resourceLocked") or self._closing or self._closed:
             return
         if not self._reference:
             provider = self._reference_preview_provider
@@ -1393,7 +1469,7 @@ class ClientCoordinator(QObject):
                 or payload.get("referenceAuthorized") or payload.get("liveAuthorization")):
             return
         self._reference_preview_context = None
-        if self.resources.busy:
+        if self.resources.busy or self.session.snapshot.get("resourceLocked"):
             self._message = "资源操作尚未完成，请稍后重试位置预览"
             self.changed.emit()
             return
@@ -1615,7 +1691,7 @@ class ClientCoordinator(QObject):
             reprojecting = (pending == "set_context" and self._pending_context
                             and self._pending_context[0] == self._applied_context[0])
             if not reprojecting and pending not in {
-                    "refresh_map", "reselect_map", "previous_candidate", "next_candidate",
+                    "refresh_map", "recover_map_open", "probe_map_after_drag", "reselect_map", "previous_candidate", "next_candidate",
                     "select_candidate", "confirm_route", "set_floor", "cycle_floor",
                     "select_group_member"}:
                 self._invalidate_display()
@@ -1633,6 +1709,23 @@ class ClientCoordinator(QObject):
             if self._map_resource_problem(state) is None:
                 self._map_resource_notified.clear()
         receipt = state.get("lastReceipt", {})
+        observation = receipt.get("mapInputObservation")
+        current = getattr(self.runtime, "map_input_observation_is_current", None)
+        observe = getattr(self.input, "observeMapState", None)
+        if (isinstance(observation, dict) and callable(current) and callable(observe)
+                and current(observation)):
+            # A bounded return can observe only transition/black frames. That
+            # current unknown observation releases the input pause, preserving
+            # physical intent; it grants neither close nor display authority.
+            reconciled = (observation["inputSequence"] == self._map_input_sequence
+                if observation["mapOpen"] is None else
+                observe(observation["mapOpen"], observation["inputSequence"]))
+            if reconciled and self._binding_suspended and self._binding_resume_pending:
+                self._binding_suspended = self._binding_resume_pending = False
+                self.input.resumeGameBinding()
+                self._trace("binding-resumed", reason="same-window-current-map-observation")
+        if receipt.get("action") == "capture_now" and self._binding_suspended:
+            self._binding_resume_pending = False
         if receipt.get("action") == "bind_capture":
             if receipt.get("success") and self._bound:
                 self._message = "窗口已连接；切回游戏打开地图即可识别"
@@ -1672,6 +1765,10 @@ class ClientCoordinator(QObject):
             if not callable(reference_getter):
                 self.showReference()
             current = get_payload(token) if get_payload else None
+            if not current or not current.get("liveAuthorization"):
+                self._withdraw_expired_source("current-grant-lost")
+                self.changed.emit()
+                return
             if current and current.get("liveAuthorization"):
                 scope = ("epoch", "mode", "profileId", "mapId", "floor", "roundId", "cycleId",
                          "captureGeneration", "displayGeneration", "variantId",
@@ -1716,6 +1813,13 @@ class ClientCoordinator(QObject):
             return
         payload = get_payload(token) if get_payload else None
         if not payload or not payload.get("liveAuthorization"):
+            # A cancelled worker's Session view can name the older token after
+            # a newer refresh/drag has already reached the consumer. Validate
+            # that displayed owner directly before withdrawing its pixels.
+            retained = get_payload(self._last_render_token) if get_payload and self._last_render_token else None
+            if retained and retained.get("liveAuthorization"):
+                self._present_runtime_state(dict(render=retained), trigger=trigger)
+                return
             self._trace("drop", state=state, reason="payload-expired", diag=dict(trigger=trigger))
             self._withdraw_expired_source("runtime-payload-expired")
             self.changed.emit(); return
@@ -1791,15 +1895,17 @@ class ClientCoordinator(QObject):
                 raw=pointer_error, action="game-floor-control", phase="input", kind="warning"))
             self.notificationRequested.emit("楼层点击监听暂不可用", summary, "warning")
         if state.get("status") in {"failed", "conflict", "unknown"}:
-            key = ("input-failure", state.get("message"))
+            raw = state.get("rawMessage") or state.get("message", "")
+            key = ("input-failure", raw)
             if key not in self._notified:
                 self._notified.add(key)
-                summary = "全局快捷键暂不可用，原始原因已保存在帮助页的“最近问题”。"
+                summary = state.get("message") or "全局快捷键暂不可用，原始原因已保存在帮助页的“最近问题”。"
                 self.errorReported.emit(dict(title="快捷键暂不可用", summary=summary,
-                    raw=state.get("message", ""), action="native-input", phase="input", kind="warning"))
+                    raw=raw, action="native-input", phase="input", kind="warning"))
                 self.notificationRequested.emit("快捷键暂不可用", summary, "warning")
 
     def _notify_session_transitions(self, state):
+        self._input_diagnostics.action(state.get("lastReceipt", {}), state, self._aligned)
         current = self.runtime.snapshot()
         active = bool(current.get("roundActive", state.get("roundActive")))
         receipt = state.get("lastReceipt", {})
@@ -1826,7 +1932,8 @@ class ClientCoordinator(QObject):
                 self.notificationRequested.emit("本局已结束", "本局显示与识别已停止", "info")
         receipt = state.get("lastReceipt", {})
         reason = receipt.get("reason", "")
-        if receipt.get("success") is False and not receipt.get("fitReportingDeferred"):
+        if (receipt.get("success") is False and not receipt.get("fitReportingDeferred")
+                and not (receipt.get("action") == "recover_map_open" and receipt.get("recoveryPending"))):
             key = ("failure", state.get("roundId"), state.get("cycleId"), receipt.get("action"), reason)
             if key not in self._notified:
                 self._notified.add(key)
@@ -1834,7 +1941,7 @@ class ClientCoordinator(QObject):
                 self.errorReported.emit(problem)
                 pose = state.get("poseResult") or {}
                 meaningful_pose_failure = pose.get("status") == "rejected" and not state.get("displayAuthorized")
-                if receipt.get("action") not in {"refresh_map", "inspect_engine_resources"} or meaningful_pose_failure:
+                if receipt.get("action") not in {"refresh_map", "recover_map_open", "inspect_engine_resources"} or meaningful_pose_failure:
                     self.notificationRequested.emit(problem["title"], problem["summary"], problem["kind"])
     def _native_action(self, action):
         if self._closing or self._closed:
@@ -1910,7 +2017,7 @@ class ClientCoordinator(QObject):
             window.setScreen(projection.screen)
 
     def _watch_foreground(self):
-        if self._closed or self._closing:
+        if self._closed or self._closing or self._binding_suspended:
             return
         if self._edit is not None:
             self._show_reference_current()
@@ -2005,6 +2112,16 @@ class ClientCoordinator(QObject):
         if self._closed or self._closing or not isinstance(event, dict):
             return
         name = event.get("event", "unknown")
+        if name in ('automatic-failure-sample', 'failure-sample'):
+            self._trace(name, payload=event, role='diagnostics', reason=event.get('reason', ''),
+                failureSample=event.get('failureSample', {}))
+            return  # Evidence delivery has no presentation or recognition authority.
+        if name == "map-preparation":
+            details = event.get("preparation") or {}
+            self._trace(name, payload=event, role="runtime", reason=event.get("reason", ""),
+                phase=details.get("phase"), diag=details,
+                decision=dict(openingId=details.get("openingId"), ordinal=details.get("ordinal")))
+            return
         if name == 'recognition-diagnostic':
             self._trace(name, payload=event, role='recognition', reason=event.get('reason', ''),
                 recognitionDiagnostics=event.get('recognitionDiagnostics', {}))
@@ -2097,11 +2214,27 @@ class ClientCoordinator(QObject):
                 self.changed.emit()
 
     def _track_map(self):
-        if (self._closed or self._closing or not self._bound or self.session.busy
+        if (self._closed or self._closing or self._binding_suspended or not self._bound or self.session.busy
                 or self.resources.busy or self.resources.pendingKind or self._pointer_drag is not None):
             return
         state = self.session.snapshot
-        if not state.get("roundActive") or not state.get("mapOpen") or state.get("resourceLocked"):
+        if not state.get("roundActive") or state.get("resourceLocked"):
+            return
+        if state.get("mapRecoveryPending"):
+            recovery = self.runtime.map_open_recovery_status()
+            if not recovery.get("pending"):
+                self.runtime.cancel_map_open_recovery(recovery.get("reason", "recovery-expired"))
+                self.session.refreshRuntime()
+                return
+            if not recovery.get("due"):
+                return
+            try:
+                if self._native_windows.foreground_window() == int(self._bound):
+                    self.session.dispatchWithPayload("recover_map_open", dict(recoveryId=recovery["id"]))
+            except OSError:
+                self._revoke_runtime("foreground-query-failed")
+            return
+        if not state.get("mapOpen"):
             return
         if "refresh_map" not in state.get("availableCommands", ()):
             return

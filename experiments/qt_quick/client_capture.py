@@ -4,6 +4,7 @@ from __future__ import annotations
 import operator
 import sys
 import threading
+import time
 
 from client_paths import APP_ROOT
 APP = APP_ROOT
@@ -45,6 +46,10 @@ class ClientCaptureProvider:
         self._enabled, self._closed = False, False
         self._generation = 0
         self._status, self._message = "disabled", "Client capture is disabled."
+        self._last_capture_observation = None
+        self._capture_capability = dict(clientDc="not-probed",
+            safeFallback="not-probed" if full_capture is not None else "not-configured",
+            fallbackRequired=False)
 
     @property
     def snapshot(self):
@@ -52,6 +57,8 @@ class ClientCaptureProvider:
             return dict(enabled=self._enabled, status=self._status, message=self._message,
                         hwnd=str(self._hwnd), region=list(self._region or ()),
                         generation=self._generation, closed=self._closed,
+                        captureCapability=dict(self._capture_capability),
+                        lastCaptureObservation=dict(self._last_capture_observation) if self._last_capture_observation else None,
                         captureIntent="full-client" if self._full_client else "roi")
 
     @property
@@ -135,6 +142,7 @@ class ClientCaptureProvider:
                 return False
             self._enabled = False
             self._generation += 1
+            self._capture_capability.update(clientDc="not-probed", fallbackRequired=False)
             try:
                 if (not self._hwnd or (not self._full_client and self._region is None)
                         or not self._native.is_window(self._hwnd)):
@@ -152,6 +160,7 @@ class ClientCaptureProvider:
             self._enabled = False
             self._generation += 1
             self._status, self._message = "disabled", "Client capture is disabled."
+            self._capture_capability.update(clientDc="not-probed", fallbackRequired=False)
 
     @staticmethod
     def _cancelled(cancelled):
@@ -175,11 +184,15 @@ class ClientCaptureProvider:
             generation = self._generation
         if self._cancelled(cancelled):
             raise CaptureUnavailable("Capture request cancelled")
+        observation_started = time.perf_counter()
+        trace = dict(provider="client-capture", backend="client-region-pipeline", phase="guard",
+            foreground="unknown", captureIntent="full-client" if full_client else "roi")
         try:
             if not self._native.is_window(hwnd):
                 raise CaptureUnavailable("Bound game window is unavailable; rebind explicitly")
             foreground = self._native.foreground_window()
             if not global_key_is_allowed(hwnd, foreground):
+                trace["foreground"] = "not-bound-game"
                 error = CaptureForegroundUnavailable("Bound game must own the foreground before capture")
                 error.capture_diagnostics = dict(expectedHwnd=hwnd, foregroundRole='other')
                 # Metadata only: let the runtime distinguish an unchanged,
@@ -192,8 +205,11 @@ class ClientCaptureProvider:
                             or self._cancelled(cancelled)):
                         raise CaptureUnavailable("Capture request was superseded or cancelled")
                 raise error
+            trace["foreground"] = "verified-before-capture"
+            trace["phase"] = "client-context"
             from client_region_capture import capture_client_region, client_capture_context
             context = client_capture_context(hwnd, _backend=self._backend)
+            trace.update(bounds=list(context.client_screen_bounds), clientSize=list(context.full_client_size), dpi=context.dpi)
             if full_client:
                 # Rectangle and metadata come from this same worker/backend
                 # context, not from catalog pixels sampled on another thread.
@@ -207,6 +223,7 @@ class ClientCaptureProvider:
                             or self._cancelled(cancelled)):
                         raise CaptureUnavailable("Capture preflight was superseded or cancelled")
                 return
+            trace["phase"] = "acquisition"
             frame = capture_client_region(hwnd, region, expected_context=expected or context,
                                           full_capture=self._full_capture, _backend=self._backend,
                                           reject_blank_full_client=full_client)
@@ -214,17 +231,49 @@ class ClientCaptureProvider:
                 if (generation != self._generation or not self._enabled or self._closed
                         or self._cancelled(cancelled)):
                     raise CaptureUnavailable("Captured frame was superseded or cancelled")
+            trace["phase"] = "post-capture-foreground"
             if not global_key_is_allowed(hwnd, self._native.foreground_window()):
+                trace["foreground"] = "changed-during-capture"
                 raise CaptureUnavailable("Foreground changed during capture; frame discarded")
             with self._lock:
                 if generation != self._generation or not self._enabled or self._closed:
                     raise CaptureUnavailable("Captured frame was superseded")
+                self._last_capture_observation = dict(status="captured", generation=generation, backend=frame.acquisition,
+                    durationMs=(time.perf_counter() - observation_started) * 1000)
                 self._status, self._message = "ready", "Client frame captured."
+                fallback = frame.acquisition == "full-frame-fallback-crop"
+                self._capture_capability.update(clientDc="failed" if fallback else "captured",
+                    fallbackRequired=fallback)
+                if fallback:
+                    self._capture_capability["safeFallback"] = "verified-for-capture"
             return frame
         except Exception as error:
+            if getattr(error, "code", None) == "capture-safe-fallback-unsupported":
+                capability = dict(error.capture_capability, clientDc="failed", fallbackRequired=True)
+                # capture_client_region invokes fallback while handling the DC
+                # OSError. Keep that original exception chain, but expose only
+                # bounded codes in diagnostics (never its arbitrary message).
+                cause = error.__context__
+                trigger = dict(type=type(cause).__name__[:64],
+                    reason="game-client-dc-returned-blank-frame" if str(cause) ==
+                        "game-client-dc-returned-blank-frame" else "client-dc-native-error",
+                    **{key: value if type(value := getattr(cause, key, None)) is int else None
+                       for key in ("errno", "winerror")})
+                error.capture_capability = capability
+                error.capture_diagnostics.update(captureCapability=capability, fallbackTrigger=trigger)
+                if "bounds" in trace:
+                    error.capture_diagnostics.update(clientBounds=trace["bounds"],
+                        fullClientSize=trace["clientSize"], dpi=trace["dpi"])
+                trace.update(captureCapability=capability, fallbackTrigger=trigger)
+            trace["durationMs"] = (time.perf_counter() - observation_started) * 1000
+            error.capture_trace = trace
             with self._lock:
                 if generation == self._generation and self._enabled:
+                    self._last_capture_observation = dict(status="failed", generation=generation, backend=trace["backend"],
+                        durationMs=trace["durationMs"], phase=trace["phase"])
                     self._status, self._message = "failed", str(error)
+                    if getattr(error, "code", None) == "capture-safe-fallback-unsupported":
+                        self._capture_capability = dict(error.capture_capability)
             raise
 
     def shutdown(self):

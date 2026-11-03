@@ -7,6 +7,7 @@ source commit plus an explicit hashed inventory of an authorized resource root.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import importlib.metadata
 import json
@@ -21,6 +22,8 @@ from xml.dom import minidom
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS = ROOT / "tools"
 sys.path.insert(0, str(TOOLS))
+sys.path.insert(0, str(ROOT / "app"))
+from managed_base_resources import optional_author_sidecar
 from package_profiles import LIGHT_PROFILE, partition_resources
 from packaged_resource_contract import check_package
 from verify_admin_manifest import verify_administrator_manifest, verify_manifest_xml
@@ -427,7 +430,7 @@ def _local_file(root, name):
     return path
 
 
-def validate_resources(root, inventory):
+def validate_resources(root, inventory, *, bundled_packages=()):
     root, inventory = Path(root).resolve(), Path(inventory).resolve()
     if not root.is_dir() or root == ROOT or root == ROOT / "work":
         raise ValueError("Pass the exact isolated resource root, not the source/work directory")
@@ -453,7 +456,7 @@ def validate_resources(root, inventory):
     actual = {path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()}
     if actual != set(rows):
         raise ValueError("Inventory must cover the exact resource root; undeclared/missing files exist")
-    retained, omitted = partition_resources(rows)
+    retained, omitted = partition_resources(rows, bundled_packages=bundled_packages)
     # The source version describes this client; the input's resourceVersion is
     # retained independently in the profile/record. Never ship an old EXE version.
     replaced = {"version.json": retained.pop("version.json")} if "version.json" in retained else {}
@@ -466,12 +469,12 @@ def validate_resources(root, inventory):
     return declaration, retained, omitted, replaced, contract
 
 
-def verify_frozen(stage, resources, qml_names, product=PRODUCT):
+def verify_frozen(stage, resources, qml_names, product=PRODUCT, *, bundled_author_paths=()):
     internal = stage / "_internal"
     executable = stage / (product + ".exe")
     manifests = verify_administrator_manifest(executable)
     for name, row in resources.items():
-        path = internal / name
+        path = internal / ("qt-author-base/" + name if name in bundled_author_paths else name)
         if not path.is_file() or path.stat().st_size != row["bytes"] or sha256(path) != row["sha256"].lower():
             raise ValueError(f"Frozen resource mismatch: {name}")
     for name in qml_names:
@@ -504,10 +507,12 @@ def verify_frozen(stage, resources, qml_names, product=PRODUCT):
 # Product identity travels with program updates, even inside the resource tree.
 _PROGRAM_IDENTITY = {"_internal/version.json", "_internal/installation-profile.json",
                      "_internal/references/build-fingerprint.txt"}
-RESOURCE_INSTALLATION_POLICY = dict(existingBasePlane="preserve-whole-plane",
-    missingBasePlane="install-whole-bundled-baseline", partialExistingPlane="preserve-no-repair",
+RESOURCE_INSTALLATION_POLICY = dict(existingBasePlane="manifest-owned-transaction-before-runtime",
+    missingBasePlane="repair-complete-manifest", partialExistingPlane="repair-missing-verify-entire-set",
     editorBase="seed-whole-family-only-when-both-outer-and-internal-absent",
-    resourceVersionMeaning="bundled-baseline; existing installed resource declarations remain authoritative")
+    resourceVersionMeaning="candidate-baseline; actual health is verified before resource consumers",
+    unknownOwnership="block-with-path-and-expected-actual-hashes",
+    installedAuthorPackages="preserve-receipt-files-and-dependency-contracts")
 
 
 def resource_file_family(relative):
@@ -517,16 +522,72 @@ def resource_file_family(relative):
         return "program"
     if relative.startswith("_internal/assets/custom-maps/"):
         return "editor"
+    if optional_author_sidecar(relative):
+        return "optional-author"
     if (relative.startswith(("_internal/assets/", "_internal/references/", "_internal/recognition/"))
             or relative == "_internal/difficult-native-manifest.json"):
         return "base"
     return "program"
 
 
-def production_file_projection(stage, resources):
+BUNDLED_AUTHOR_PREFIXES = ("assets/zhan10-native/", "assets/zhan10-legacy-clean/")
+BUNDLED_AUTHOR_ROOT = "_internal/qt-author-base/"
+
+
+def selected_bundled_author_paths(resources, packages, instance):
+    """Explicit build input, not permission inferred from resources on disk."""
+    if packages and instance not in {"client", "production"}:
+        raise ValueError("Bundled author defaults support only client or production Setup")
+    if set(packages) - {"difficult-zhan10"}:
+        raise ValueError("Unsupported bundled author package")
+    names = sorted(name for name in resources if name.startswith(BUNDLED_AUTHOR_PREFIXES))
+    if bool(packages) != bool(names):
+        raise ValueError("Selected bundled author package must have explicit display assets")
+    return names
+
+
+def verify_bundled_author_defaults(stage, resources, bundled_author_paths):
+    """Bind the relocated program files and manifest to the exact input lock."""
+    stage = Path(stage).resolve()
+    names = list(bundled_author_paths)
+    if len(names) != len(set(names)):
+        raise ValueError("Duplicate bundled author resource path")
+    rows = {}
+    for name in names:
+        if (not isinstance(name, str) or not name.startswith(BUNDLED_AUTHOR_PREFIXES)
+                or "\\" in name or ":" in name or ".." in PurePosixPath(name).parts
+                or PurePosixPath(name).as_posix() != name or name not in resources):
+            raise ValueError("Invalid bundled author resource mapping")
+        row = resources[name]
+        if (not isinstance(row, dict) or set(row) != {"bytes", "sha256"} or type(row["bytes"]) is not int or row["bytes"] < 0
+                or not isinstance(row["sha256"], str) or not re.fullmatch(r"[0-9a-fA-F]{64}", row["sha256"])):
+            raise ValueError("Bundled author resource requires exact hash and byte count")
+        path = _local_file(stage, BUNDLED_AUTHOR_ROOT + name)
+        if path.stat().st_size != row["bytes"] or sha256(path) != row["sha256"].lower():
+            raise ValueError("Bundled author resource differs from verified inventory: " + name)
+        rows[name] = row
+    root = stage / BUNDLED_AUTHOR_ROOT
+    actual = {path.relative_to(stage).as_posix() for path in root.rglob("*") if path.is_file()}
+    expected = {BUNDLED_AUTHOR_ROOT + name for name in names}
+    if names:
+        expected.add(BUNDLED_AUTHOR_ROOT + "inventory.json")
+    if actual != expected:
+        raise ValueError("Bundled author projection differs from exact inventory")
+    if not names:
+        return None
+    manifest = _local_file(stage, BUNDLED_AUTHOR_ROOT + "inventory.json")
+    expected_manifest = dict(schema="xingtu-bundled-author-v1", packageId="difficult-zhan10", files=rows)
+    if _read(manifest) != expected_manifest:
+        raise ValueError("Bundled author manifest differs from verified inventory")
+    return dict(manifest=BUNDLED_AUTHOR_ROOT + "inventory.json", manifestSha256=sha256(manifest),
+                mappings={name: BUNDLED_AUTHOR_ROOT + name for name in sorted(names)},
+                policy="program-owned-read-only-default; existing-user-object-wins; no-import-receipt")
+
+
+def production_file_projection(stage, resources, *, bundled_author_paths=()):
     """Read a clean assembled stage; every resource belongs to exactly one plane."""
     stage = Path(stage).resolve()
-    families = dict(program=[], base=[], editor=[])
+    families = dict(program=[], base=[], editor=[], **{"optional-author": []})
     seen = set()
     for path in sorted(stage.rglob("*")):
         if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
@@ -540,9 +601,10 @@ def production_file_projection(stage, resources):
             raise ValueError("Case-colliding staged files")
         seen.add(name.casefold())
         families[resource_file_family(name)].append(name)
+    verify_bundled_author_defaults(stage, resources, bundled_author_paths)
     expected = {"_internal/" + name for name in resources
-                if resource_file_family("_internal/" + name) != "program"}
-    actual = set(families["base"]) | set(families["editor"])
+                if name not in bundled_author_paths and resource_file_family("_internal/" + name) != "program"}
+    actual = set(families["base"]) | set(families["editor"]) | set(families["optional-author"])
     if actual != expected:
         raise ValueError(f"Resource projection differs from exact inventory: missing={sorted(expected-actual)}, extra={sorted(actual-expected)}")
     return families
@@ -585,22 +647,80 @@ def stage_editor_baseline(stage, resources):
     return dict(policy="program-owned-fallback; preserve-existing-legacy-families", files=copied)
 
 
-def write_production_files_include(stage, resources, output):
-    families = production_file_projection(stage, resources)
+def write_production_files_include(stage, resources, output, *, resource_version="", bundled_author_paths=()):
+    families = production_file_projection(stage, resources, bundled_author_paths=bundled_author_paths)
+    author_defaults = verify_bundled_author_defaults(stage, resources, bundled_author_paths)
+    # Keep active data untouched during Setup. The startup repair verifies this
+    # complete candidate manifest under the same OS lock as author transactions.
+    sys.path.insert(0, str(ROOT / "app"))
+    from managed_base_resources import CANDIDATE, manifest_for_rows
+    rows = [dict(path=name, bytes=(Path(stage) / name).stat().st_size,
+                 sha256=sha256(Path(stage) / name)) for name in families["base"]]
+    for row in rows:
+        declared = resources[row["path"][len("_internal/"):]]
+        if ("bytes" in declared and "sha256" in declared
+                and (row["bytes"] != declared["bytes"] or row["sha256"] != declared["sha256"].lower())):
+            raise ValueError("Managed candidate differs from verified resource inventory: " + row["path"])
+    # A family-only projection is useful to validate editor staging. Real full
+    # builds already require the complete two-mode base in validate_resources.
+    manifest = manifest_for_rows(rows, resource_version) if rows else None
+    manifest_name = CANDIDATE + "/manifest.json" if manifest else None
+    if manifest:
+        manifest_path = Path(stage) / manifest_name
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        if manifest_name not in families["program"]:
+            families["program"].append(manifest_name)
     lines = ["; Generated exact production projection; no directory wildcard copies."]
+    installed_files = []
     for family, names in families.items():
+        if family == "optional-author":
+            # These belong to separately imported author displays. Shipping an
+            # older copy as base or program data would overwrite the author or
+            # resurrect it after the user removes its package.
+            continue
         for name in names:
             source = name.replace("/", "\\")
-            parent = str(PurePosixPath(name).parent)
+            installed = CANDIDATE + "/payload/" + name if family == "base" else name
+            installed_files.append(installed)
+            parent = str(PurePosixPath(installed).parent)
             destination = "{app}" + ("\\" + parent.replace("/", "\\") if parent != "." else "")
-            check = {"base": "; Check: InstallBaseResourcePlane", "editor": "; Check: InstallEditorResourceFamily"}.get(family, "")
+            check = "; Check: InstallEditorResourceFamily" if family == "editor" else ""
             lines.append(f'Source: "{{#StageDir}}\\{source}"; DestDir: "{destination}"; Flags: ignoreversion{check}')
     include = Path(output) / "production-files.iss"
     include.write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
     report = dict(schema="xingtu-qt-installer-projection-v1", families=families,
-                  policy=RESOURCE_INSTALLATION_POLICY, includeSha256=sha256(include))
+                  policy=RESOURCE_INSTALLATION_POLICY, installedFiles=installed_files,
+                  bundledAuthorDefaults=author_defaults,
+                  omittedOptionalAuthorFiles=families["optional-author"],
+                  managedBaseManifest=manifest_name, managedBaseBundleId=manifest["bundleId"] if manifest else None,
+                  managedBaseManifestSha256=sha256(Path(stage) / manifest_name) if manifest else None,
+                  includeSha256=sha256(include))
     (Path(output) / "production-file-projection.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     return include, report
+
+
+def stage_release_report(stage, *, product, source, version, resource_version, resource_inventory_sha256,
+                         compiled_source_commit=None, installer_source_commit=None):
+    """Generate program-owned identity from this completed freeze, never a resource baseline."""
+    sys.path.insert(0, str(ROOT / 'app'))
+    from package_identity import selected_file_identities
+    stage = Path(stage)
+    report = dict(schema='xingtu-qt-release-report-v1',
+        sourceCommit=source['commit'], sourceDirty=not source['clean'],
+        compiledPayloadSourceCommit=compiled_source_commit or source['commit'],
+        installerSourceCommit=installer_source_commit or source['commit'],
+        builtAt=datetime.now(timezone.utc).isoformat(),
+        version=version['version'], displayVersion=version['displayVersion'],
+        numericVersion=version['numericVersion'], buildFingerprint=source['commit'][:8].upper(),
+        fingerprintScheme='source-commit-prefix', executableSha256=sha256(stage / (product + '.exe')),
+        resourceVersion=resource_version, resourceInventorySha256=resource_inventory_sha256,
+        resourceVersionMeaning='candidate-baseline; installed health verified separately before resource consumers',
+        identityFiles={name: row for name, row in selected_file_identities(stage).items()
+                       if row['status'] == 'hashed'})
+    path = stage / 'release-report.json'
+    path.write_text(json.dumps(report, indent=2), encoding='utf-8')
+    return dict(file=path.name, sha256=sha256(path), executableSha256=report['executableSha256'])
 
 
 def main(argv=None):
@@ -612,6 +732,8 @@ def main(argv=None):
     parser.add_argument("--source-commit")
     parser.add_argument("--resource-root", type=Path, help="Exact isolated assets/references root, not its parent")
     parser.add_argument("--resource-inventory", type=Path)
+    parser.add_argument("--bundled-package", action="append", choices=("difficult-zhan10",), default=[],
+                        help="Include this explicitly authorized read-only display default in the client or production Setup")
     parser.add_argument("--iscc", type=Path)
     parser.add_argument("--output-dir", type=Path, help="NEW directory within this checkout's work/ or dist/")
     args = parser.parse_args(argv)
@@ -627,7 +749,9 @@ def main(argv=None):
     qt = ROOT / "experiments/qt_quick"
     if not (qt / "client.py").is_file() or not (qt / "Client.qml").is_file():
         raise ValueError("Integrated Qt entrypoint is not present")
-    declaration, resources, omitted, replaced, contract = validate_resources(args.resource_root, args.resource_inventory)
+    declaration, resources, omitted, replaced, contract = validate_resources(args.resource_root, args.resource_inventory,
+                                                                         bundled_packages=args.bundled_package)
+    author_paths = selected_bundled_author_paths(resources, args.bundled_package, args.instance)
     if BRAND_ICON not in resources or resources[BRAND_ICON]["sha256"].lower() != BRAND_ICON_SHA256:
         raise ValueError("The existing supplied Xingtu ICO must be present in the locked resource inventory")
     notices = notice_inputs()
@@ -661,6 +785,7 @@ def main(argv=None):
                 resourceRoot=str(args.resource_root.resolve()), resourceVersion=declaration["resourceVersion"],
                 resourceInventorySha256=sha256(args.resource_inventory), resourceFiles=len(resources),
                 omittedAuthorFiles=len(omitted), replacedResourceMetadata=list(replaced),
+                authorDisplayPackagesIncluded=args.bundled_package, authorDisplayFilesIncluded=len(author_paths),
                 resourcePathContract=contract, output=str(output), tools=tools,
                 noticeInputs=notices, sourceSupportAssets=support,
                 productBrand=dict(icon=BRAND_ICON, iconSha256=BRAND_ICON_SHA256,
@@ -695,8 +820,8 @@ def main(argv=None):
                    resourceInstallationPolicy=RESOURCE_INSTALLATION_POLICY if args.instance == "production" else None,
                    recoveryHelper=dict(included=args.instance == "production", executable="star-map-recovery-helper.exe"),
                    importHelper=dict(included=args.instance == "production", executable="star-map-import-helper.exe"),
-                   resourceVersion=declaration["resourceVersion"], authorDisplayPackagesIncluded=[],
-                   authorDisplayFilesIncluded=0, omittedAuthorDisplayFiles=len(omitted),
+                   resourceVersion=declaration["resourceVersion"], authorDisplayPackagesIncluded=args.bundled_package,
+                   authorDisplayFilesIncluded=len(author_paths), omittedAuthorDisplayFiles=len(omitted),
                    omittedAuthorDisplayBytes=sum(row["bytes"] for row in omitted.values()),
                    publicDownloadConfigured=False, localMapImportPreserved=True)
     profile.update(fingerprint)
@@ -708,7 +833,8 @@ def main(argv=None):
     version_path.write_text(version_info_text(product, numeric), encoding="utf-8")
     inputs = dict(sourceRoot=str(ROOT), product=product, resourceStage=str(resource_stage),
                   resources=resources, profilePath=str(profile_path), manifestPath=str(manifest_path),
-                  versionInfoPath=str(version_path), iconPath=str(resource_stage / BRAND_ICON))
+                   versionInfoPath=str(version_path), iconPath=str(resource_stage / BRAND_ICON),
+                   bundledAuthorPaths=author_paths)
     input_path = output / "freeze-inputs.json"
     input_path.write_text(json.dumps(inputs, indent=2), encoding="utf-8")
     plan["resources"], plan["omittedAuthorResources"] = resources, omitted
@@ -724,28 +850,37 @@ def main(argv=None):
         plan["importHelper"] = assemble_recovery_helper(output, stage, environment_vars, kind="import")
     plan["qtClosure"] = prune_unneeded_qt(stage)
     plan["notices"] = collect_notices(stage, plan["qtClosure"])
-    plan["frozenVerification"] = verify_frozen(stage, resources, [p.name for p in qt.glob("*.qml")], product)
+    plan["frozenVerification"] = verify_frozen(stage, resources, [p.name for p in qt.glob("*.qml")], product,
+                                             bundled_author_paths=author_paths)
+    if author_paths:
+        defaults = dict(schema="xingtu-bundled-author-v1", packageId="difficult-zhan10",
+                        files={name:resources[name] for name in author_paths})
+        (stage / "_internal/qt-author-base/inventory.json").write_text(json.dumps(defaults, indent=2), encoding="utf-8")
+        plan["bundledAuthorDefaults"] = defaults
+    plan["editorBaseline"] = stage_editor_baseline(stage, resources)
     # Root metadata is consumed by first-run sandbox seeding; source version is
     # authoritative. No user work/config, screenshots or import receipts copied.
     shutil.copy2(ROOT / "version.json", stage / "version.json")
     shutil.copy2(profile_path, stage / "installation-profile.json")
     if source_identity(args.source_commit) != source:
         raise ValueError("Source changed during freeze; do not create a Setup")
+    plan['releaseReport'] = stage_release_report(stage, product=product, source=source,
+        version=version, resource_version=declaration['resourceVersion'],
+        resource_inventory_sha256=plan['resourceInventorySha256'])
     production_defines = []
     if args.instance == "production":
         # Relative program ownership drives the existing exact-file backup and
         # failed-upgrade rollback. No work/settings/imports are frozen or owned.
-        plan["editorBaseline"] = stage_editor_baseline(stage, resources)
         ownership = stage / "_installer-owned-files.txt"
-        owned_files = sorted(p.relative_to(stage).as_posix().replace("/", "\\")
-                             for p in stage.rglob("*") if p.is_file())
+        ownership.write_text("", encoding="utf-8-sig")
+        include, projection = write_production_files_include(stage, resources, output,
+            resource_version=declaration["resourceVersion"], bundled_author_paths=author_paths)
+        owned_files = sorted(name.replace("/", "\\") for name in projection["installedFiles"])
         if any(name.lower() == "work" or name.lower().startswith("work\\") for name in owned_files):
             raise ValueError("Production ownership must not contain user work/data")
-        owned_files.append(ownership.name)
         ownership.write_text("\n".join(owned_files) + "\n", encoding="utf-8-sig")
         plan["programOwnership"] = dict(files=len(owned_files), sha256=sha256(ownership),
                                         backup="{app}/work/installer-backups", userDataOwned=False)
-        include, projection = write_production_files_include(stage, resources, output)
         plan["fileProjection"] = projection
         production_defines = ["/DProductionInstaller", f"/DProductionFilesInclude={include}"]
     setup_name = setup_basename(instance, display, source["commit"])

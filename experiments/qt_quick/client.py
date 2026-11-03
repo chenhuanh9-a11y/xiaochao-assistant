@@ -49,10 +49,16 @@ def prepare_first_run(sandbox):
 
 
 class QtClient:
-    def __init__(self, app, sandbox, *, probe_output=None, info_fetch=None):
+    def __init__(self, app, sandbox, *, probe_output=None, info_fetch=None, on_created=None):
+        self._closed = False
+        self._shutdown_complete = False
+        if on_created is not None:
+            # Retain even an object whose later service/QML construction fails.
+            on_created(self)
         from backend import Backend
         from client_settings import SettingsService
         from client_resources import ResourceService
+        from client_package_manager import PackageManagerService
         from client_session import SessionService
         from client_windows import WindowController
         from client_input import NativeShortcutBackend
@@ -119,6 +125,10 @@ class QtClient:
         self.session = SessionService(self.runtime)
         self.resources = ResourceService(self.sandbox)
         self.resources.setLeaseProvider(self.session)
+        self.package_manager = PackageManagerService(self.sandbox, self.resources)
+        self.package_manager.setLeaseProvider(self.session)
+        self.package_manager.resourcesChanged.connect(self.resources.resourcesChanged.emit)
+        self.resources.resourcesChanged.connect(self.package_manager.requestRefresh)
         self.online_packages = OnlinePackagesService(self.sandbox, self.resources,
             index_url=None if probe_output else os.environ.get("STAR_MAP_PACKAGE_INDEX_URL"))
         self.backend = Backend(self.sandbox)
@@ -143,7 +153,8 @@ class QtClient:
             commit=self.coordinator.confirmManualMap,
             geometry_provider=self.coordinator.manualMapPickerGeometry, parent=self.coordinator)
         self.coordinator._manual_map_picker = self.manual_map_picker
-        self.reference_preview = ReferencePreviewProvider(self.providers, parent=self.coordinator)
+        self.reference_preview = ReferencePreviewProvider(self.providers, parent=self.coordinator,
+                                                         installation_root=self.sandbox)
         self.coordinator.setReferencePreviewProvider(self.reference_preview)
         self._reference_screens = set()
         self.app.screenAdded.connect(self._reference_screen_added)
@@ -179,15 +190,20 @@ class QtClient:
             self.lifecycle_trace.record("startup", buildFingerprint=self.info._build_fingerprint,
                 sourceCommit=self.problems._source_commit)
         self.coordinator.errorReported.connect(self.problems.record)
+        self.chest_auto_tap.errorReported.connect(self.problems.record)
         self.resources.errorReported.connect(self._resource_problem)
+        self.package_manager.errorReported.connect(self._resource_problem)
+        self.package_manager.removalCompleted.connect(
+            lambda title, message: self.coordinator.notificationRequested.emit(title, message, "success"))
         self.online_packages.errorReported.connect(self._resource_problem)
         self.coordinator.traceReported.connect(self.problems.recordTrace)
         self.info.setProviders(session=self.session, resources=self.resources, input=self.input,
-                               coordinator=self.coordinator, problems=self.problems)
+                               coordinator=self.coordinator, problems=self.problems,
+                               settings=self.settings, capture=self.capture)
         self.coordinator.close_writers = (self.custom_galleries, self.info, self.online_packages,
                                          self.route_plaza,
                                          self.backend, self.route_choices, self.problems, self.reference_preview,
-                                         self.capture_exclusion, self.manual_map_picker)
+                                         self.capture_exclusion, self.manual_map_picker, self.package_manager)
         if self.lifecycle_trace is not None:
             self.coordinator.close_writers += (self.lifecycle_trace,)
         self.custom_galleries.setUseHandler(self._use_custom_gallery)
@@ -221,7 +237,8 @@ class QtClient:
         context.setContextProperty("productionProduct", PRODUCTION)
         context.setContextProperty("tutorialService", self.tutorial)
         for key, value in dict(backend=self.backend, resourceModel=self.backend.model, routeChoices=self.route_choices,
-            settingsService=self.settings, resourceService=self.resources, session=self.session,
+            settingsService=self.settings, resourceService=self.resources,
+            packageManagerService=self.package_manager, session=self.session,
             windows=self.windows, clientCoordinator=self.coordinator, infoService=self.info,
             customGalleryService=self.custom_galleries, onlinePackageService=self.online_packages,
             routePlazaService=self.route_plaza,
@@ -450,60 +467,8 @@ class QtClient:
         self._sync_custom_gallery_active()
 
     def shutdown(self):
-        if self._closed:
-            return
-        self.lifecycle.record_event(dict(stage="shutdown-entered", closing=self.coordinator.closing,
-                                         closeReady=self.coordinator.closeReady))
-        self._closed = True
-        self.route_plaza.cancel()
-        self.problems.shutdown()
-        if self.lifecycle_trace is not None:
-            self.lifecycle_trace.shutdown()
-        self.chest_auto_tap.shutdown()
-        if self._import_handoff is not None and not self.coordinator.closeReady:
-            self._import_handoff.cancel()
-        if self._recovery_request and not self.coordinator.closeReady:
-            from star_map_recovery_helper import cancel_recovery_request
-            cancel_recovery_request(self.sandbox, self._recovery_request)
-        self._initialize_timer.stop()
-        self.coordinator.shutdown()
-        self.session.shutdown()
-        self.capture_exclusion.shutdown()
-        self.resources.shutdown()
-        self.settings.shutdown()
-        self.preview.shutdown()
-        self.reference_preview.close()
-        self.reference_preview.pool.waitForDone()
-        self.control_snap.shutdown()
-        self.backend.shutdown()
-        self.route_choices.shutdown()
-        self.info.shutdown()
-        self.tutorial.shutdown()
-        self.custom_galleries.shutdown()
-        self.online_packages.shutdown()
-        self.route_plaza.shutdown()
-        self.manual_map_picker.shutdown()
-        self.windows.shutdown()
-        self.lifecycle.record_event(dict(stage="shutdown-completed", closing=self.coordinator.closing,
-                                         closeReady=self.coordinator.closeReady))
-
-
-def report_startup_failure(details: str) -> Path | None:
-    """Keep the traceback beside the windowed entry's own startup record."""
-    path = WORK_ROOT / "qt-client-startup-error.txt"
-    try:
-        WORK_ROOT.mkdir(parents=True, exist_ok=True)
-        path.write_text(details, encoding="utf-8")
-    except OSError:
-        return None
-    return path
-
-
-def show_startup_failure(message: str) -> None:
-    """The windowed build has no console; a failed start must not look like nothing happened."""
-    if os.name == "nt":
-        import ctypes
-        ctypes.windll.user32.MessageBoxW(None, message, "星图启动提示", 0x10)
+        from client_startup_cleanup import shutdown_client
+        shutdown_client(self)
 
 
 def main():
@@ -528,9 +493,12 @@ def main():
                       nativeInputStarted=False)
         if args.verify_resources:
             root = RESOURCE_ROOT if FROZEN else args.sandbox.resolve() / "_internal"
-            registry = build_engine_factories(root)
-            registry.prepare()
-            result["providers"] = registry.capabilities()
+            from client_resource_startup import readable_resources
+            installation = owned_sandbox(args.sandbox.resolve()) if PRODUCTION else args.sandbox.resolve()
+            with readable_resources(installation, production=PRODUCTION):
+                registry = build_engine_factories(root)
+                registry.prepare()
+                result["providers"] = registry.capabilities()
             result["tkLoaded"] = "tkinter" in sys.modules
             result["ready"] = all(row.get("available") for row in result["providers"].values())
         if FROZEN:
@@ -567,6 +535,21 @@ def main():
     if not primary:
         guard.close()
         return 0
+    from client_resource_startup import production_resources
+    from client_resource_startup_recovery import offer_startup_recovery
+    try:
+        resource_root = owned_sandbox(args.sandbox.resolve()) if PRODUCTION else args.sandbox.resolve()
+        with production_resources(resource_root, production=PRODUCTION,
+                on_failure=lambda error: offer_startup_recovery(resource_root, error)) as recovery:
+            if recovery is not None:
+                return recovery.exit_code
+            return _run_primary_client(app, args, guard)
+    finally:
+        guard.close()
+
+
+def _run_primary_client(app, args, guard):
+    from client_single_instance import restore_main_window
     app.setWindowIcon(QIcon(str(HERE / "icons" / "xingtu-round.png")))
     from client_theme import apply_light_theme
     apply_light_theme(app)
@@ -596,24 +579,20 @@ def main():
         try:
             local_manifest = (lambda url: dict(schemaVersion=1, platform="windows", version="1.0.5",
                               versionCode=9, releaseNotes="Local probe", publishedAt="2026-10-30", releases=[])) if args.probe_output else None
-            client = holder["client"] = QtClient(app, sandbox, probe_output=args.probe_output, info_fetch=local_manifest)
+            client = holder["client"] = QtClient(app, sandbox, probe_output=args.probe_output, info_fetch=local_manifest,
+                on_created=lambda partial: holder.update(client=partial))
             if holder.pop("activationPending", False):
                 restore_main_window(client.main)
-            app.aboutToQuit.connect(lambda: client.lifecycle.record_event(dict(stage="about-to-quit")))
-            app.aboutToQuit.connect(client.shutdown)
+            holder["quit_journal"] = lambda: client.lifecycle.record_event(dict(stage="about-to-quit"))
+            app.aboutToQuit.connect(holder["quit_journal"])
             if "boot" in holder:
                 holder["boot"].rootObjects()[0].hide()
             if args.probe_output:
                 from probe_client import run_client_probe
                 run_client_probe(client, args.probe_output)
         except Exception as error:
-            print(f"Qt client startup failed: {type(error).__name__}: {error}", file=sys.stderr)
-            record = report_startup_failure(traceback.format_exc())
-            if "boot" in holder:
-                holder["boot"].rootObjects()[0].setProperty("statusText", f"准备失败：{error}")
-            else:
-                show_startup_failure(f"星图启动失败：{error}" + (f"\n\n详细信息已保存到：\n{record}" if record else ""))
-                app.exit(1)
+            holder["startup_error"] = error
+            app.exit(1)
     if args.sandbox.exists():
         QTimer.singleShot(0, lambda: open_client(owned_sandbox(args.sandbox)))
     else:
@@ -634,15 +613,32 @@ def main():
     try:
         exit_code = app.exec()
         client = holder.get("client")
-        if client is not None:
-            client.lifecycle.record_event(dict(stage="app-loop-return", exitCode=exit_code))
-        return exit_code
+        lifecycle = getattr(client, "lifecycle", None)
+        if lifecycle is not None:
+            lifecycle.record_event(dict(stage="app-loop-return", exitCode=exit_code))
     finally:
-        # Keep ownership through aboutToQuit's existing writer-drain callbacks.
-        guard.close()
-        client = holder.get("client")
-        if client is not None:
-            client.lifecycle.record_event(dict(stage="instance-guard-closed"))
+        # Qt swallows exceptions in slots. Run cleanup synchronously here so a
+        # partial constructor, direct quit or app.exec error all retain the
+        # outer runtime lease until owned resource consumers have really drained.
+        try:
+            client = holder.get("client")
+            if client is not None:
+                try:
+                    client.shutdown()
+                except Exception as error:
+                    if "startup_error" in holder:
+                        raise error from holder["startup_error"]
+                    raise
+        finally:
+            if "bootPool" in holder:
+                holder["bootPool"].waitForDone()
+            if "quit_journal" in holder:
+                app.aboutToQuit.disconnect(holder["quit_journal"])
+    if "startup_error" in holder:
+        from qt_startup_diagnostics import report_startup_failure
+        report_startup_failure(holder["startup_error"], stage="create-client")
+        return 1
+    return exit_code
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ import test_map_package_upgrade as fixture_module
 OLD_PATH, ADDED_PATH = fixture_module.OLD_PATH, fixture_module.ADDED_PATH
 import map_package_upgrade as upgrade
 from map_package_recovery_plan import inspect_locked
+from map_package_recovery_plan import history_locked
 import star_map_import as importer
 import star_map_import_helper as process
 import star_map_recovery_helper as helper
@@ -37,12 +38,14 @@ class RecoveryHelperTests(unittest.TestCase):
                     importer.install_package(self.fixture.new, self.root, application_stopped=True)
             transaction_id = None
         else:
-            transaction_id = importer.install_package(self.fixture.new, self.root,
-                application_stopped=True)["upgradeTransactionId"]
+            with patch.object(upgrade, '_cleanup_upgrade', side_effect=OSError('synthetic cleanup denial')):
+                with self.assertRaisesRegex(importer.ImportRejected, 'upgrade-cleanup-incomplete'):
+                    importer.install_package(self.fixture.new, self.root, application_stopped=True)
+            transaction_id = upgrade._pending_id(self.root)
         with importer._writer_locked_installation(self.root, require_closed=False):
             return inspect_locked(self.root, transaction_id)
 
-    def request(self, plan, action="rollback", request_id="synthetic-request"):
+    def request(self, plan, action="recover", request_id="synthetic-request"):
         with patch.object(process, "_launch_parent_bound_helper", return_value=Mock()) as launch:
             helper.launch_recovery_helper(self.root / "star-map-recovery-helper.exe",
                 self.root, plan, action, request_id)
@@ -55,12 +58,15 @@ class RecoveryHelperTests(unittest.TestCase):
                           return_value="exited-matching-process-handle"):
             return helper.run_helper(**request)
 
-    def test_completed_upgrade_rollback_and_distinct_atomic_receipt(self):
+    def test_committed_upgrade_cleanup_and_distinct_atomic_receipt(self):
         plan = self.plan()
         request = self.request(plan)
         code, result = self.run_request(request)
         self.assertEqual(code, 0, result)
-        self.fixture.assert_old()
+        self.assertEqual((self.root / OLD_PATH).read_bytes(), b'q90-route')
+        self.assertEqual(result['operationResult']['status'], 'upgrade-committed')
+        self.assertEqual(result['operationResult']['temporaryCopiesRemaining'], 0)
+        self.assertTrue(result['operationResult']['cleanupOnly'])
         self.assertEqual(result["planSha256"], plan["planSha256"])
         self.assertEqual(result["transactionId"], plan["transactionId"])
         self.assertEqual(json.loads(helper.receipt_path(self.root).read_text("utf-8")), result)
@@ -72,6 +78,96 @@ class RecoveryHelperTests(unittest.TestCase):
         self.assertEqual(code, 0, result)
         self.fixture.assert_old()
         self.assertFalse((self.root / upgrade.PENDING).exists())
+
+    def addition_plan(self):
+        # Existing receipt/resources are preserved; only the new entry is partial.
+        archive = self.fixture.package('additive.zip', {OLD_PATH: b'old-route', ADDED_PATH: b'{}'})
+        original = upgrade.os.link
+        def interrupt(source, target, *args, **kwargs):
+            original(source, target, *args, **kwargs)
+            if Path(target) == self.root / ADDED_PATH:
+                raise KeyboardInterrupt('synthetic loss after additive publication')
+        with patch.object(upgrade.os, 'link', side_effect=interrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                importer.install_package(archive, self.root, application_stopped=True)
+        with importer._writer_locked_installation(self.root, require_closed=False):
+            plan = inspect_locked(self.root)
+            self.assertIn(plan, history_locked(self.root))
+        return plan
+
+    def test_default_packaged_helper_recovers_pending_additions_with_bound_plan(self):
+        plan = self.addition_plan()
+        self.assertEqual(plan['status'], 'additions-pending')
+        stage = upgrade._addition_journal(self.root)[0]
+        request = self.request(plan, 'recover')
+        code, result = self.run_request(request)
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result['operationResult']['status'], 'additions-rolled-back')
+        self.assertEqual(result['operationResult']['additionTransactionId'], plan['transactionId'])
+        self.fixture.assert_old()
+        self.assertFalse((self.root / upgrade.ADDITIONS_PENDING).exists())
+        self.assertFalse(stage.exists(), 'standalone helper recovery must remove its owned stage')
+
+    def test_additions_recovery_preserves_unknown_stage_content_and_reports_cleanup_failure(self):
+        plan = self.addition_plan()
+        stage = upgrade._addition_journal(self.root)[0]
+        unknown = stage / 'user-note.txt'
+        unknown.write_bytes(b'preserve user content')
+        request = self.request(plan, 'recover')
+        code, result = self.run_request(request)
+        self.assertEqual(code, 2, result)
+        self.assertEqual(result['errorCode'], 'additions-stage-cleanup-conflict')
+        self.assertEqual(unknown.read_bytes(), b'preserve user content')
+        self.assertTrue((self.root / upgrade.ADDITIONS_PENDING).exists())
+        unknown.unlink()
+        # A new explicit recovery uses a newly verified plan, not stale consent.
+        with importer._writer_locked_installation(self.root, require_closed=False):
+            new_plan = inspect_locked(self.root)
+        code, result = self.run_request(self.request(new_plan, 'recover', 'second-request'))
+        self.assertEqual(code, 0, result)
+        self.assertFalse(stage.exists())
+
+    def test_additions_cleanup_io_failure_is_not_reported_as_success(self):
+        plan = self.addition_plan()
+        stage = upgrade._addition_journal(self.root)[0]
+        request = self.request(plan, 'recover')
+        actual = importer._rollback_published
+        def busy(path, *args, **kwargs):
+            if Path(path) == stage / OLD_PATH:
+                return False
+            return actual(path, *args, **kwargs)
+        with patch.object(importer, '_rollback_published', side_effect=busy):
+            code, result = self.run_request(request)
+        self.assertEqual(code, 2, result)
+        self.assertEqual(result['errorCode'], 'additions-stage-cleanup-incomplete')
+        self.assertTrue((stage / OLD_PATH).exists())
+        self.assertTrue((stage / 'addition-journal.json').exists())
+        self.assertTrue((self.root / upgrade.ADDITIONS_PENDING).exists())
+        self.fixture.assert_old()
+        # Partial cleanup changes the fingerprint. Reinspect, then use the real
+        # helper dispatcher on the remaining subset without replaying rollback.
+        with importer._writer_locked_installation(self.root, require_closed=False):
+            retry_plan = inspect_locked(self.root)
+        self.assertTrue(retry_plan['cleanupOnly'])
+        self.assertNotEqual(retry_plan['planSha256'], plan['planSha256'])
+        code, result = self.run_request(self.request(retry_plan, 'recover', 'cleanup-retry'))
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result['operationResult']['status'], 'additions-rolled-back')
+        self.assertFalse((self.root / upgrade.ADDITIONS_PENDING).exists())
+        self.assertFalse(stage.exists())
+        self.fixture.assert_old()
+
+    def test_additions_helper_rejects_changed_plan_without_touching_user_replacement(self):
+        plan = self.addition_plan()
+        request = self.request(plan, 'recover')
+        replacement = self.fixture.folder / 'user-edit'
+        replacement.write_bytes(b'user-new-data')
+        replacement.replace(self.root / ADDED_PATH)
+        code, result = self.run_request(request)
+        self.assertEqual(code, 2, result)
+        self.assertEqual(result['errorCode'], 'recovery-plan-changed-reinspect-required')
+        self.assertEqual((self.root / ADDED_PATH).read_bytes(), b'user-new-data')
+        self.assertTrue((self.root / upgrade.ADDITIONS_PENDING).exists())
 
     def test_non_normal_parent_exit_never_mutates_resources(self):
         request = self.request(self.plan())
@@ -99,7 +195,7 @@ class RecoveryHelperTests(unittest.TestCase):
         self.assertEqual((self.root / OLD_PATH).read_bytes(), b"q90-route")
 
     def test_changed_target_rejects_stale_consent_and_preserves_user_edit(self):
-        request = self.request(self.plan())
+        request = self.request(self.plan(pending=True))
         replacement = self.fixture.folder / "player-route"
         replacement.write_bytes(b"player-edited")
         replacement.replace(self.root / OLD_PATH)
@@ -112,7 +208,7 @@ class RecoveryHelperTests(unittest.TestCase):
         request = self.request(self.plan())
         path = Path(request["request_file"])
         payload = json.loads(path.read_text("utf-8"))
-        payload["action"] = "recover"
+        payload["action"] = "rollback"
         path.write_text(json.dumps(payload), encoding="utf-8")
         with patch.object(process, "wait_for_application_exit") as wait:
             code, result = helper.run_helper(**request)

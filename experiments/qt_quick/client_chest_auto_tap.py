@@ -14,6 +14,7 @@ from client_chest_preferences import QtChestAutoTap, INTENT_SCHEMA, read_object,
 from game_window_focus import NativeGameFocusAPI
 from hotkey_bindings import parse_chord
 from hotkey_keys import _primary_hotkey_to_vk
+from client_problem_messages import chest_message
 
 
 class ChestAutoTapService(QObject):
@@ -23,6 +24,7 @@ class ChestAutoTapService(QObject):
     an immutable, lock-protected target, and retains ownership of key releases.
     """
     changed = Signal()
+    errorReported = Signal(object)
 
     def __init__(self, paths, coordinator, native_input, settings, *,
                  service_factory=QtChestAutoTap, native=None, key_is_down=key_down, parent=None):
@@ -40,6 +42,7 @@ class ChestAutoTapService(QObject):
         self._saved_enabled = False
         self._message = "请连接游戏并启用快捷键，再手动开启开箱连点"
         self._last = None
+        self._reported_error = ""
         path = Path(paths.settings_path).with_name("chest-auto-tap.json")
         _no_links(path)
         self._intent_path = path.with_name("qt-chest-intent.json")
@@ -78,18 +81,32 @@ class ChestAutoTapService(QObject):
             vk = 0x1b if name == "escape" else parse_chord(text, _primary_hotkey_to_vk).vk
             if vk:
                 reserved[vk] = "星图快捷键 " + str(name)
+        changed = self._reserved != reserved
         self._reserved = reserved
+        return changed
 
     def _snapshot(self):
         state = self._service.snapshot()
+        display_state = dict(state, error=state.get("runtimeError", state.get("error", "")))
         return dict(state, savedEnabled=self._saved_enabled, enabled=self._armed,
-                    running=self._running, message=self._message,
+                    running=self._running, message=chest_message(display_state, self._message),
+                    status=chest_message(display_state, state.get("status", "")),
+                    rawMessage=self._message, rawStatus=state.get("status", ""), rawError=state.get("error", ""),
                     tapKeys=list(TAP_KEYS), triggerKeys=list(TRIGGER_KEYS))
 
     snapshot = Property("QVariantMap", _snapshot, notify=changed)
+    pendingWrites = Property(bool, lambda s: bool(getattr(s._service, "_thread", None)
+                                                and s._service._thread.is_alive()), notify=changed)
 
     def _publish(self):
         state = self._snapshot()
+        raw_error = state.get("rawError", "")
+        if not raw_error:
+            self._reported_error = ""
+        if raw_error and raw_error != self._reported_error:
+            self._reported_error = raw_error
+            self.errorReported.emit(dict(title="开箱连点已停止", summary=state["message"],
+                raw=raw_error, action="chest-auto-tap", phase="input", kind="error"))
         if state != self._last:
             self._last = state
             self.changed.emit()
@@ -150,6 +167,13 @@ class ChestAutoTapService(QObject):
         if self.coordinator.closing:
             self.shutdown()
             return
+        if self._refresh_reserved():
+            result = self._service.reconcile_reserved()
+            if not result.get("success"):
+                self._armed = False
+                self._timer.stop()
+                self._stop()
+                self._message = result.get("message", "快捷键冲突，开箱连点已暂停")
         if not self._armed:
             self._stop()
             self._publish()
@@ -170,6 +194,18 @@ class ChestAutoTapService(QObject):
             self._message = reason
         elif not self._running:
             self._bound = str(self.coordinator.boundWindow)
+            current = self._service.snapshot()
+            if current.get("error"):
+                self._armed = False
+                self._timer.stop()
+                self._stop()
+                self._message = current["error"]
+                self._publish()
+                return
+            if current.get("pendingReleaseVks"):
+                self._message = "已准备；等待上次按键释放后恢复"
+                self._publish()
+                return
             if self._needs_release:
                 try:
                     held = self._key_is_down(TRIGGER_VKS[self._service.snapshot()["holdKey"]])
@@ -182,7 +218,9 @@ class ChestAutoTapService(QObject):
                 self._needs_release = False
             with self._lock:
                 self._target = handle
-            result = self._service.update(dict(enabled=True))
+            resume = getattr(self._service, "resume", None)
+            result = (resume() if current.get("enabled") and callable(resume)
+                      else self._service.update(dict(enabled=True)))
             self._running = bool(result.get("success") and self._service.snapshot().get("enabled"))
             self._message = result.get("message", "")
             if not self._running:
@@ -262,6 +300,6 @@ class ChestAutoTapService(QObject):
         self._armed = False
         self._timer.stop()
         self._stop()
-        self._service.stop()
+        getattr(self._service, "shutdown", self._service.stop)()
         self._message = "开箱连点已停止"
         self._publish()

@@ -106,13 +106,18 @@ class ResourceServiceTests(unittest.TestCase):
         self.service.importArchive(QUrl.fromLocalFile(str(path or self.package())).toString())
         self.settle()
 
-    def upgrade(self, *, interrupted=False):
-        """Synthetic receipts and real unchanged transaction; no installed EXE."""
+    def upgrade(self, *, interrupted=False, cleanup_pending=False):
+        """Synthetic receipts and real transaction; no installed EXE."""
         self.install(self.package("old.zip", b"old"))
         receipt = self.root / "work/map-packages/nightmare-suju.json"
         self.old_receipt = receipt.read_bytes()
         archive = self.package("new.zip", b"new")
-        if interrupted:
+        if cleanup_pending:
+            with patch.object(recovery.upgrade, "_cleanup_upgrade", side_effect=OSError("fixture cleanup denied")):
+                with self.assertRaisesRegex(importer.ImportRejected, "upgrade-cleanup-incomplete"):
+                    importer.install_package(archive, self.root, application_stopped=True)
+            transaction_id = recovery.upgrade._pending_id(self.root)
+        elif interrupted:
             actual_link = recovery.upgrade.os.link
             def interrupt(source, target, *args, **kwargs):
                 if Path(target) == receipt:
@@ -138,13 +143,25 @@ class ResourceServiceTests(unittest.TestCase):
         self.settle()
         self.assertEqual(self.service.pendingKind, "recovery", self.service.message)
         self.assertTrue(self.lease.active)
-        self.assertIn(self.service._pending[1]["planSha256"], self.confirmations[-1][1])
+        plan = self.service._pending[1]
+        self.assertRegex(plan["planSha256"], r"^[0-9a-f]{64}$")
+        self.assertNotIn(plan["planSha256"], self.confirmations[-1][1])
+        self.assertNotIn(plan["transactionId"], self.confirmations[-1][1])
+        self.assertIn("点击取消", self.confirmations[-1][1])
+        self.assertIn(f"涉及 {plan['fileCount']} 个文件。" if plan["fileCount"] else "剩余记录", self.confirmations[-1][1])
 
     def assert_old_resources(self):
         self.assertEqual((self.root / IMAGE).read_bytes(), b"old")
         self.assertEqual((self.root / "work/map-packages/nightmare-suju.json").read_bytes(), self.old_receipt)
         self.assertFalse((self.root / recovery.upgrade.PENDING).exists())
         self.assertFalse(self.lease.active)
+
+    def assert_no_upgrade_copies(self, transaction_id):
+        directory = self.root / f"work/map-packages/upgrades/{transaction_id}"
+        self.assertFalse((directory / "backup").exists())
+        self.assertFalse((directory / "new").exists())
+        self.assertEqual(list((self.root / "work/map-packages").glob("staging-*")), [])
+        self.assertLessEqual((directory / "journal.json").stat().st_size, 1024)
 
     def test_recovery_restores_old_resources_and_rescans_with_one_lease(self):
         transaction_id = self.upgrade(interrupted=True)
@@ -162,18 +179,26 @@ class ResourceServiceTests(unittest.TestCase):
         self.assertEqual(len(self.lease.released), released + 1)
         self.assertFalse(self.service.recoveryRequired)
         self.assertTrue(any(row["status"] == "installed" for row in self.service.packageRows))
-        self.assertTrue((self.root / f"work/map-packages/upgrades/{transaction_id}/backup" / IMAGE).is_file())
+        self.assert_no_upgrade_copies(transaction_id)
 
-    def test_completed_transaction_rollback_cancel_and_commit(self):
-        transaction_id = self.upgrade()
-        self.request_recovery(transaction_id)
+    def test_committed_transaction_rejects_rollback_then_cancel_and_complete_cleanup(self):
+        transaction_id = self.upgrade(cleanup_pending=True)
+        self.service.requestRollback(transaction_id)
+        self.settle()
+        self.assertEqual(self.service.pendingKind, "")
+        self.assertEqual(self.problems[-1]["errorCode"], "recovery-operation-no-longer-valid")
+        self.request_recovery()
         self.service.confirmOperation(False)
-        self.assertFalse(self.lease.active)
+        self.assertTrue(self.lease.active)
         self.assertEqual((self.root / IMAGE).read_bytes(), b"new")
-        self.request_recovery(transaction_id)
+        self.request_recovery()
+        self.assertEqual(self.service._pending[1]["status"], "upgrade-cleanup-pending")
         self.service.confirmOperation(True)
         self.settle()
-        self.assert_old_resources()
+        self.assertEqual((self.root / IMAGE).read_bytes(), b"new")
+        self.assertFalse(self.lease.active)
+        self.assertFalse((self.root / recovery.upgrade.PENDING).exists())
+        self.assert_no_upgrade_copies(transaction_id)
         self.service.inspectRecovery()
         self.settle()
         self.assertEqual(self.service.recoveryTransactions, [])
@@ -194,7 +219,7 @@ class ResourceServiceTests(unittest.TestCase):
                 self.assertIn("reinspect", self.problems[-1]["raw"])
                 self.assertEqual((self.root / IMAGE).read_bytes(), b"new")
                 self.assertTrue((self.root / recovery.upgrade.PENDING).exists())
-                self.assertFalse(self.lease.active)
+                self.assertTrue(self.lease.active)  # Pending recovery still gates runtime readers.
         self.assertEqual(self.changes, [])
 
     def test_recovery_conflict_retains_edits_backup_and_pending_journal(self):
@@ -212,7 +237,7 @@ class ResourceServiceTests(unittest.TestCase):
         self.assertEqual((directory / "backup" / IMAGE).read_bytes(), b"old")
         self.assertEqual(json.loads((directory / "journal.json").read_bytes())["status"], "rollback-incomplete")
         self.assertEqual(self.changes, [])
-        self.assertFalse(self.lease.active)
+        self.assertTrue(self.lease.active)
 
     def test_recovery_closed_phase_and_original_exe_guard_are_required(self):
         self.upgrade(interrupted=True)
@@ -226,7 +251,7 @@ class ResourceServiceTests(unittest.TestCase):
         allowed[0] = False
         self.service.confirmOperation(True)
         self.assertFalse(self.service.busy)
-        self.assertFalse(self.lease.active)
+        self.assertTrue(self.lease.active)
         allowed[0] = True
         self.request_recovery()
         with patch.object(importer, "_check_closed", side_effect=importer.ImportRejected("application-running-or-not-writable")):
@@ -276,7 +301,7 @@ class ResourceServiceTests(unittest.TestCase):
         with patch.object(importer, "_check_closed", side_effect=AssertionError("inspection must not claim closed")):
             self.service.inspectRecovery()
             self.settle()
-        self.assertEqual(len(self.service.recoveryTransactions), 1)
+        self.assertEqual(self.service.recoveryTransactions, [])
         self.assertFalse(self.lease.active)
 
     def test_external_helper_handoff_retains_lease_and_never_claims_commit(self):
@@ -317,7 +342,7 @@ class ResourceServiceTests(unittest.TestCase):
         self.settle()
         self.assertIn("fixture helper missing", self.problems[-1]["raw"])
         self.assertFalse(self.service.recoveryHandoffPending)
-        self.assertFalse(self.lease.active)
+        self.assertTrue(self.lease.active)
         self.assertEqual(close_requests, [])
         self.assertEqual(self.changes, [])
         self.assertTrue((self.root / recovery.upgrade.PENDING).exists())
@@ -332,23 +357,28 @@ class ResourceServiceTests(unittest.TestCase):
         self.assertIn("pending-upgrade-journal-missing", self.problems[-1]["raw"])
 
     def test_bound_helper_receipt_reports_actual_result_and_notifies_after_scan(self):
-        transaction_id = self.upgrade()
+        transaction_id = self.upgrade(cleanup_pending=True)
         receipt = dict(requestId="fixture-request", planSha256="a" * 64,
-            transactionId=transaction_id, action="rollback", success=False,
+            transactionId=transaction_id, action="recover", success=False,
             reason="fixture conflict; backups retained")
         self.service.recordRecoveryReceipt(receipt)
         self.service.refresh()
         self.settle()
-        self.assertIn("fixture conflict", self.problems[-1]["raw"])
+        self.assertTrue(any("fixture conflict" in problem["raw"] for problem in self.problems))
         self.assertEqual(self.changes, [])
-        result = importer.rollback_package_upgrade(self.root, transaction_id, application_stopped=True)
+        result = importer.recover_package_upgrade(self.root, application_stopped=True)
+        self.assertEqual(result["status"], "upgrade-committed")
+        self.assertEqual(result["temporaryCopiesRemaining"], 0)
+        self.assertTrue(result["cleanupOnly"])
         receipt.update(success=True, operationResult=result)
         self.service.recordRecoveryReceipt(receipt)
         self.assertEqual(self.changes, [])
         self.service.refresh()
         self.settle()
         self.assertEqual(len(self.changes), 1)
-        self.assert_old_resources()
+        self.assertEqual((self.root / IMAGE).read_bytes(), b"new")
+        self.assertFalse(self.lease.active)
+        self.assert_no_upgrade_copies(transaction_id)
         self.service.refresh()
         self.settle()
         self.assertEqual(len(self.changes), 1)
@@ -364,7 +394,7 @@ class ResourceServiceTests(unittest.TestCase):
         self.service.inspectRecovery()
         self.settle()
         self.assertTrue(self.service.recoveryRequired)
-        self.assertEqual(self.service.recoveryTransactions[0]["status"], "rolled-back")
+        self.assertEqual(self.service.recoveryTransactions[0]["status"], "upgrade-cleanup-pending")
         self.request_recovery()
         self.service.confirmOperation(True)
         self.settle()
@@ -376,7 +406,7 @@ class ResourceServiceTests(unittest.TestCase):
         self.settle()
         self.assertEqual(self.service.pendingKind, "")
         self.assertIn("invalid-upgrade-transaction-id", self.problems[-1]["raw"])
-        self.assertFalse(self.lease.active)
+        self.assertTrue(self.lease.active)
         self.assertTrue((self.root / recovery.upgrade.PENDING).exists())
 
     def test_real_import_repeat_remove_and_reimport_preserve_unknown(self):
@@ -392,14 +422,14 @@ class ResourceServiceTests(unittest.TestCase):
             self.install(archive)
             self.assertEqual((self.root / IMAGE).read_bytes(), b"route")
             self.assertEqual(len(self.changes), 1)
-            self.assertNotIn("内容已存在", self.service.message)
-            self.assertEqual(self.service.message, "资源安装完成，登记与状态已核对。")
+            self.assertNotIn("这个图包已经安装", self.service.message)
+            self.assertEqual(self.service.message, "图包安装完成，可以使用了。")
             self.assertEqual(len(self.completions), 1)
             self.assertIn("安装完成", self.completions[0][1])
             self.assertTrue(any(r["status"] == "installed" for r in self.service.packageRows))
             self.install(archive)
         self.assertEqual([(r['added'], r['alreadyPresent']) for r in results], [(1, 0), (0, 1)])
-        self.assertIn("资源内容已存在，登记与状态已核对", self.service.message)
+        self.assertIn("这个图包已经安装，无需重复导入", self.service.message)
         self.assertEqual(len(self.changes), 2)
         self.assertEqual(len(self.completions), 2)
         self.assertEqual(len(self.lease.released), 2)
@@ -472,7 +502,7 @@ class ResourceServiceTests(unittest.TestCase):
         self.service.refresh()
         self.settle()
         self.assertTrue(any(r["status"] == "installed" for r in self.service.packageRows))
-        self.assertEqual(self.service.message, "本地资源已核对。")
+        self.assertEqual(self.service.message, "图包状态已核对。")
 
     def test_failure_has_chinese_summary_bounded_original_and_no_cancel_or_late_error(self):
         archive = self.package()
@@ -481,7 +511,7 @@ class ResourceServiceTests(unittest.TestCase):
             self.service.importArchive(QUrl.fromLocalFile(str(archive)).toString())
             self.settle()
         self.assertEqual(len(self.problems), 1)
-        self.assertIn("校验不一致", self.service.message)
+        self.assertIn("文件与包内说明不一致", self.service.message)
         self.assertNotIn("file-integrity-mismatch", self.service.message)
         problem = self.problems[0]
         self.assertTrue(problem["raw"].startswith("file-integrity-mismatch"))
@@ -500,7 +530,7 @@ class ResourceServiceTests(unittest.TestCase):
                                                action="recover", reason="import-request-cancelled"))
         APP.processEvents()
         self.assertEqual(len(self.problems), 1)
-        self.assertIn("恢复操作已取消", self.service.message)
+        self.assertIn("操作已取消", self.service.message)
         self.service.importArchive(QUrl.fromLocalFile(str(archive)).toString())
         self.settle()
         self.assertEqual(len(self.completions), 1)
@@ -532,7 +562,7 @@ class ResourceServiceTests(unittest.TestCase):
         self.assertFalse(self.lease.active)
         self.service.refresh()
         self.settle()
-        self.assertEqual(self.service.message, "本地资源已核对。")
+        self.assertEqual(self.service.message, "图包状态已核对。")
 
     def test_existing_same_bytes_without_receipt_still_registers(self):
         self.write(IMAGE, b"route")
@@ -542,7 +572,7 @@ class ResourceServiceTests(unittest.TestCase):
         self.assertTrue(receipt.is_file())
         self.assertEqual(json.loads(receipt.read_text())["alreadyPresent"], 1)
         self.assertEqual(json.loads(receipt.read_text())["added"], 0)
-        self.assertIn("内容已存在", self.service.message)
+        self.assertIn("这个图包已经安装", self.service.message)
         self.assertEqual(len(self.changes), 1)
         self.assertFalse(self.lease.active)
         self.assertTrue(any(r["status"] == "installed" for r in self.service.packageRows))
@@ -554,25 +584,25 @@ class ResourceServiceTests(unittest.TestCase):
         self.assertEqual((result['added'], result['alreadyPresent']), (0, 1))
         self.changes.clear()
         self.service.recordImportReceipt(dict(result, success=True))
-        self.assertIn("内容已存在", self.service.message)
-        self.assertIn("正在核对", self.service.message)
+        self.assertIn("这个图包已经安装", self.service.message)
+        self.assertIn("正在确认", self.service.message)
         self.assertFalse(self.changes)
         self.service.refresh()
         self.settle()
-        self.assertIn("内容已存在，实际状态已核对", self.service.message)
+        self.assertIn("这个图包已经安装，无需重复导入，状态已确认", self.service.message)
         self.assertEqual(len(self.changes), 1)
         self.service.refresh()
         self.settle()
-        self.assertIn("内容已存在，实际状态已核对", self.service.message)
+        self.assertIn("这个图包已经安装，无需重复导入，状态已确认", self.service.message)
         self.assertEqual(len(self.changes), 1)
         self.service.recordImportReceipt(dict(result, success=False, reason="fixture import failed"))
         self.service.refresh()
         self.settle()
         self.assertIn("fixture import failed", self.problems[-1]["raw"])
-        self.assertNotIn("内容已存在", self.service.message)
+        self.assertNotIn("这个图包已经安装", self.service.message)
         self.assertEqual(len(self.changes), 1)
         self.service.recordImportReceipt(dict(result, success=True, replaced=1, replaceFiles=[{}]))
-        self.assertNotIn("内容已存在", self.service.message)
+        self.assertNotIn("这个图包已经安装", self.service.message)
 
     def test_owned_upgrade_confirmation_cancel_then_commit(self):
         self.install(self.package("old.zip", b"old"))
@@ -686,7 +716,7 @@ class ResourceServiceTests(unittest.TestCase):
         self.lease.allowed = False
         self.install()
         self.assertFalse((self.root / IMAGE).exists())
-        self.assertIn("会话", self.service.message)
+        self.assertIn("本局", self.service.message)
 
     def test_missing_marker_rejected_and_marker_change_blocks_worker(self):
         (self.root / ".qt-lab-owner").unlink()

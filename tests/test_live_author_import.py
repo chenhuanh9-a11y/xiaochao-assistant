@@ -84,6 +84,9 @@ class LiveAuthorImportTests(unittest.TestCase):
     def test_106_main_and_helper_share_strict_import_contract(self):
         self._check_version_import_contract('1.0.6', '1.0.0.10')
 
+    def test_107_main_and_helper_share_strict_import_contract(self):
+        self._check_version_import_contract('1.0.7', '1.0.0.11')
+
     def _check_version_import_contract(self, display, numeric):
         import star_map_import_helper as helper
         self.write('_internal/version.json', json.dumps(dict(
@@ -113,7 +116,7 @@ class LiveAuthorImportTests(unittest.TestCase):
 
     def test_unknown_client_version_remains_rejected(self):
         package = self.package('nightmare-suju', {SUJU: b'image'})
-        for display, numeric in (('99.0', '1.0.0.7'), ('1.0.7', '1.0.0.11'),
+        for display, numeric in (('99.0', '1.0.0.7'), ('1.0.8', '1.0.0.12'),
                                  ('1.0.6', '1.0.1.10')):
             with self.subTest(display=display, numeric=numeric):
                 self.write('_internal/version.json', json.dumps(dict(
@@ -225,7 +228,7 @@ class LiveAuthorImportTests(unittest.TestCase):
                 self.assertFalse(self.receipt(package_id).exists())
         self.assert_base_preserved()
 
-    def test_owned_author_upgrade_is_live_and_retains_old_bytes_for_rollback(self):
+    def test_owned_author_upgrade_is_live_and_retires_temporary_copies(self):
         old = self.package('nightmare-suju', {SUJU: b'old-image'}, 'old.zip')
         self.live(old)
         receipt_bytes = self.receipt().read_bytes()
@@ -238,12 +241,11 @@ class LiveAuthorImportTests(unittest.TestCase):
         self.assertEqual(result['authorFilesAdded'], 0)
         self.assertEqual((self.root / SUJU).read_bytes(), b'new-image')
         backup = self.root / 'work/map-packages/upgrades' / result['upgradeTransactionId'] / 'backup'
-        self.assertEqual((backup / SUJU).read_bytes(), b'old-image')
-        self.assertEqual((backup / 'work/map-packages/nightmare-suju.json').read_bytes(), receipt_bytes)
+        self.assertFalse(backup.exists())
         self.assertEqual(self.live(newer)['status'], 'author-already-installed')
-        importer.rollback_package_upgrade(self.root, result['upgradeTransactionId'], application_stopped=True)
-        self.assertEqual((self.root / SUJU).read_bytes(), b'old-image')
-        self.assertEqual(self.receipt().read_bytes(), receipt_bytes)
+        with self.assertRaisesRegex(importer.ImportRejected, 'no-longer-rollbackable'):
+            importer.rollback_package_upgrade(self.root, result['upgradeTransactionId'], application_stopped=True)
+        self.assertEqual((self.root / SUJU).read_bytes(), b'new-image')
 
     def test_live_upgrade_cancel_during_publication_restores_old_receipt_and_pixels(self):
         old = self.package('nightmare-suju', {SUJU: b'old-image'}, 'old.zip')
@@ -382,7 +384,8 @@ class LiveAuthorImportTests(unittest.TestCase):
                 state = {'published': 0}
                 def publish(source, target, *args, **kwargs):
                     real_link(source, target, *args, **kwargs)
-                    state['published'] += 1
+                    if Path(target) in {self.root / SUJU, self.root / second}:
+                        state['published'] += 1
                 with patch.object(importer.os, 'link', side_effect=publish):
                     with self.assertRaisesRegex(importer.ImportRejected, 'import-cancelled'):
                         self.live(package, cancelled=lambda: state['published'] >= stop_after)

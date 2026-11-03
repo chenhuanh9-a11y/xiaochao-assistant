@@ -3,6 +3,7 @@ from copy import deepcopy
 from pathlib import Path
 import json
 import tempfile
+import sys
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -158,23 +159,27 @@ class CompositionTests(unittest.TestCase):
 
 
 class StartupFailureTests(unittest.TestCase):
-    def test_failure_details_are_saved_and_shown_in_the_windowed_build(self):
+    def test_canonical_reporter_persists_and_notifies(self):
+        import qt_startup_diagnostics as diagnostics
         with tempfile.TemporaryDirectory() as folder:
             work = Path(folder) / "work"
-            with patch.object(client, "WORK_ROOT", work):
-                record = client.report_startup_failure("Traceback: boom")
-            self.assertEqual(record, work / "qt-client-startup-error.txt")
-            self.assertEqual(record.read_text("utf-8"), "Traceback: boom")
-        user32 = Mock()
-        with patch.object(client.os, "name", "nt"), \
-                patch("ctypes.windll", SimpleNamespace(user32=user32), create=True):
-            client.show_startup_failure("星图启动失败：boom")
-        user32.MessageBoxW.assert_called_once_with(None, "星图启动失败：boom", "星图启动提示", 0x10)
+            with patch.object(diagnostics, "_candidate_directories", return_value=[work]), \
+                    patch.object(diagnostics, "_show_native_error") as notify, \
+                    patch.object(sys, "frozen", True, create=True):
+                record = diagnostics.report_startup_failure(RuntimeError("fixture boom"), stage="create-client")
+            self.assertEqual(record, work / diagnostics.LOG_NAME)
+            details = record.read_text("utf-8")
+            self.assertIn("exception=RuntimeError", details)
+            self.assertIn("stage=create-client", details)
+            notify.assert_called_once()
 
-    def test_unwritable_work_folder_still_reports(self):
-        with tempfile.NamedTemporaryFile() as blocker:
-            with patch.object(client, "WORK_ROOT", Path(blocker.name) / "work"):
-                self.assertIsNone(client.report_startup_failure("x"))
+    def test_unwritable_report_still_notifies(self):
+        import qt_startup_diagnostics as diagnostics
+        with patch.object(diagnostics, "_persist", side_effect=OSError("fixture denied")), \
+                patch.object(diagnostics, "_show_native_error") as notify, \
+                patch.object(sys, "frozen", True, create=True):
+            self.assertIsNone(diagnostics.report_startup_failure(RuntimeError("fixture boom")))
+        notify.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ from author_structure_resources import AuthorStructureResourceStore
 
 
 class DifficultNativeContext:
-    def __init__(self, root, identity_pack=None):
+    def __init__(self, root, identity_pack=None, *, display_fallback_root=None):
         self.root = Path(root).resolve()
         manifest = self.read('difficult-native-manifest.json')
         interfaces = manifest['runtimeInterfaces']
@@ -31,7 +31,8 @@ class DifficultNativeContext:
             raise ValueError(self.resources.error)
         if self.read(interfaces['typedIndex']).get('structureVersionBindings') != interfaces['versionBindings']:
             raise ValueError('native version registry interface mismatch')
-        self.catalog = AuthorRouteCatalog(self.local(interfaces['authorCatalog']), asset_base=self.root)
+        self.catalog = AuthorRouteCatalog(self.local(interfaces['authorCatalog']), asset_base=self.root,
+                                         fallback_root=display_fallback_root)
         self.adapters = AuthorCoordinateAdapters(self.local(interfaces['coordinatePack']))
         self.version_pack = SimpleNamespace(by_id={row['id']: row for row in source['maps']},
             floors=tuple(map(str, source['floors'])), identity_profiles=source['identityProfiles'],
@@ -102,7 +103,9 @@ class DifficultNativeContext:
                 raise ValueError('invalid native full-reference role/identity')
             if row['mapId'] in self._full:
                 raise ValueError('duplicate native full-reference')
-            self._full[row['mapId']] = self.local(row['resourcePath'])
+            from bundled_author_resources import display_path
+            self._full[row['mapId']] = display_path(self.local(row['resourcePath']), self.root,
+                display_fallback_root, row.get('sha256'), row.get('bytes'))
         self._display_paths = set()
         for map_id, floor in (set(self._bridges) | {(key[1],key[3]) for key in self.legacy_bindings}):
             path = self.catalog.route_path('zhan10-speed', map_id, floor, include_inactive=True)
@@ -216,6 +219,11 @@ class DifficultNativeContext:
         if path not in allowed:
             raise ValueError('native display resource role mismatch')
         pixels = imread_unicode(path, cv2.IMREAD_UNCHANGED)
+        # Opaque full-sheet WebP may decode without an alpha channel. Its
+        # implicit alpha is 255; overlay/minimap assets still require real BGRA.
+        if (role == 'full-reference' and pixels is not None and pixels.dtype == np.uint8
+                and pixels.ndim == 3 and pixels.shape[2] == 3):
+            pixels = cv2.cvtColor(pixels, cv2.COLOR_BGR2BGRA)
         if pixels is None or pixels.dtype != np.uint8 or pixels.ndim != 3 or pixels.shape[2] != 4:
             raise ValueError('native display requires real BGRA pixels')
         return pixels

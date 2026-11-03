@@ -9,11 +9,15 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import shutil
 import stat
 import tempfile
 import unicodedata
 import zipfile
 from packaged_product_identity import CLOSED_EXE_NAMES
+from resource_transaction import (ResourceTransactionError, resource_read_lock,
+                                  resource_write_lock, assert_resources_ready,
+                                  preflight_hardlinks)
 
 
 MAX_FILES = 2000
@@ -43,7 +47,7 @@ LIVE_AUTHOR_IMAGE_ROOTS = {
     "nightmare-lianghapi": ("_internal/assets/authors/lianghapi-single/",),
 }
 PACKAGE_IDS = {"nightmare-suju", "difficult-zhan10"} | set(AUTHOR_PACKAGES)
-SUPPORTED_DISPLAY_VERSIONS = {"1.0", "1.0.1", "1.0.2", "1.0.3", "1.0.4", "1.0.5", "1.0.6"}
+SUPPORTED_DISPLAY_VERSIONS = {"1.0", "1.0.1", "1.0.2", "1.0.3", "1.0.4", "1.0.5", "1.0.6", "1.0.7"}
 CLIENT_COMPATIBILITY = {"displayVersion": "1.0", "numericLine": "1.0.0.N",
                         "minimumBuild": 1, "maximumBuild": 65535}
 BASE_DEPENDENCIES = {
@@ -249,6 +253,12 @@ DIFFICULT_METADATA = {
 class ImportRejected(ValueError):
     """Display the reason to the user; never retry with elevation."""
 
+    def __init__(self, reason, *, code=None, details=None):
+        super().__init__(reason)
+        candidate = code or re.split(r': |; ', str(reason), maxsplit=1)[0]
+        self.code = candidate if re.fullmatch(r'[a-z][a-z0-9-]{0,95}', candidate) else 'import-rejected'
+        self.details = dict(details or {})
+
 
 def _relative(value: str) -> str:
     if not isinstance(value, str) or not value or len(value) > 240:
@@ -369,8 +379,10 @@ def _owned_inventory(root: Path, package_id: str):
 
 
 def _pending_upgrade(root: Path):
-    if _target(root, "work/map-packages/pending-upgrade.json").exists():
-        raise ImportRejected("upgrade-recovery-required; run recover with application closed")
+    try:
+        assert_resources_ready(root)
+    except ResourceTransactionError as error:
+        raise ImportRejected(str(error), code=error.code, details=error.details) from error
 
 
 def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None) -> dict:
@@ -422,9 +434,14 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None) -
         raise ImportRejected("unsupported-client-version")
     for row in dependencies.values():
         dependency = _target(root, row["path"])
-        if (not dependency.is_file() or dependency.stat().st_size != row["bytes"]
-                or _sha(dependency) != row["sha256"]):
-            raise ImportRejected(f"missing-or-incompatible-dependency: {row['path']}")
+        missing = not dependency.exists()
+        actual_bytes = dependency.stat().st_size if dependency.is_file() else None
+        # Bound reads even when an unrelated/modified file occupies this path.
+        actual_sha = _sha(dependency) if actual_bytes is not None and actual_bytes <= MAX_FILE_BYTES else None
+        if actual_bytes != row["bytes"] or actual_sha != row["sha256"]:
+            raise ImportRejected(f"missing-or-incompatible-dependency: {row['path']}",
+                details=dict(path=row['path'], expectedBytes=row['bytes'], actualBytes=actual_bytes,
+                             expectedSha256=row['sha256'], actualSha256=actual_sha, missing=missing))
     expected = {"data/" + row["path"] for row in rows.values()}
     if set(entries) != {MANIFEST, *(p.casefold() for p in expected)}:
         raise ImportRejected("archive-inventory-mismatch")
@@ -482,6 +499,7 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None) -
         if count != row["bytes"] or digest.hexdigest() != row["sha256"]:
             raise ImportRejected(f"file-integrity-mismatch: {path}")
     return {"packageId": package_id, "revision": 1, "files": list(rows.values()),
+            "requiresFiles": list(dependencies.values()),
             "fileCount": len(rows), "bytes": total, "alreadyPresent": existing,
             "replaceFiles": replacements, "missingFiles": missing,
             "previousReceiptSha256": receipt_digest,
@@ -504,15 +522,18 @@ def _open_archive(zip_path, expected_sha256=None):
 
 
 def inspect_package(zip_path, install_root) -> dict:
-    """Validate all bytes/CRC/dependencies without writing to the installation."""
+    """Validate bytes/CRC/dependencies under the coordination lock; no resource writes."""
     root = Path(os.path.abspath(install_root))
     _no_links(root)
-    _pending_upgrade(root)
     try:
-        with _open_archive(zip_path) as (archive, digest):
-            result = _validate(archive, root)
-            result["archiveSha256"] = digest
-            return result
+        with resource_read_lock(root):
+            _pending_upgrade(root)
+            with _open_archive(zip_path) as (archive, digest):
+                result = _validate(archive, root)
+                result["archiveSha256"] = digest
+                return result
+    except ResourceTransactionError as error:
+        raise ImportRejected(str(error), code=error.code, details=error.details) from error
     except (zipfile.BadZipFile, OSError, KeyError, TypeError) as error:
         raise ImportRejected(f"package-unreadable: {error}") from error
 
@@ -603,24 +624,17 @@ def _writer_locked_installation(install_root, *, require_closed):
     _no_links(root)
     if not root.is_dir():
         raise ImportRejected("installation-root-missing")
-    if require_closed:
-        _check_closed(root)
     state = _target(root, "work/map-packages")
-    state.mkdir(parents=True, exist_ok=True)
-    lock = _target(root, "work/map-packages/import.lock")
-    # OS-released exclusive lock avoids a stale lock after interpreter/power loss.
-    with lock.open("a+b") as lock_file:
-        try:
-            if os.name == "nt":
-                import msvcrt
-                lock_file.seek(0)
-                msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as error:
-            raise ImportRejected("another-import-is-running") from error
-        yield root, state
+    try:
+        with resource_write_lock(root, wait=True):
+            # Recheck after lock acquisition; no new conforming runtime can
+            # start between application closure and resource publication.
+            if require_closed:
+                _check_closed(root)
+            yield root, state
+    except ResourceTransactionError as error:
+        reason = 'another-import-is-running' if error.code == 'resource-busy' else str(error)
+        raise ImportRejected(reason, code=error.code, details=error.details) from error
 
 
 @contextmanager
@@ -633,8 +647,11 @@ def _locked_installation(install_root, application_stopped):
 
 def recover_package_upgrade(install_root, *, application_stopped=False):
     """Recover an interrupted owned-resource transaction, preserving unknown files."""
-    from map_package_upgrade import recover_pending_upgrade
+    from map_package_upgrade import recover_pending_upgrade, recover_pending_additions
     with _locked_installation(install_root, application_stopped) as (root, _):
+        result = recover_pending_additions(root)
+        if result['status'] != 'no-pending-additions':
+            return result
         return recover_pending_upgrade(root)
 
 
@@ -677,6 +694,17 @@ def _check_cancelled(cancelled):
         raise ImportRejected("import-cancelled")
 
 
+def _set_addition_outcome(result, added, *, live):
+    result['added'] = added
+    if live:
+        result.update(restartRequired=False, liveImport=True, authorFilesAdded=added,
+            authorFilesAlreadyPresent=sum(_live_author_path(result['packageId'], row['path'])
+                                         for row in result['files']) - added,
+            status='author-installed-live' if added else 'author-already-installed')
+    else:
+        result['status'] = 'installed-restart-required' if added else 'already-installed'
+
+
 def _commit_additions(root, result, stage, *, live=False, cancelled=None):
     """The shared additive transaction; staged hard links remain rollback witnesses."""
     created = []
@@ -694,6 +722,8 @@ def _commit_additions(root, result, stage, *, live=False, cancelled=None):
             # by an in-process author import, even if its staged hash is valid.
             if live and not _live_author_path(result['packageId'], row['path']):
                 raise ImportRejected("live-import-requires-restart")
+            if row not in result['missingFiles']:
+                raise ImportRejected('target-changed-during-import')
             target.parent.mkdir(parents=True, exist_ok=True)
             _no_links(target.parent)
             # Same-volume hard link publishes a complete file exclusively.
@@ -705,30 +735,22 @@ def _commit_additions(root, result, stage, *, live=False, cancelled=None):
             os.link(staged, target)
             created.append((target, identity, row["sha256"]))
         _check_cancelled(cancelled)
-        result["added"] = len(created)
-        if live:
-            result["restartRequired"] = False
-            result["liveImport"] = True
-            result["authorFilesAdded"] = len(created)
-            result["authorFilesAlreadyPresent"] = sum(
-                _live_author_path(result['packageId'], row['path']) for row in result['files']
-            ) - len(created)
-            result["status"] = "author-already-installed" if not created else "author-installed-live"
-        else:
-            result["status"] = "already-installed" if not created else "installed-restart-required"
+        if len(created) != len(result['missingFiles']):
+            raise ImportRejected('target-changed-during-import')
+        _set_addition_outcome(result, len(created), live=live)
         receipt = _target(root, f"work/map-packages/{result['packageId']}.json")
         if not created and receipt.exists():
             owned, _ = _owned_inventory(root, result['packageId'])
             if owned == _rows(result['files']):
                 # A no-op must retain the receipt inode/transaction witness
-                # so an earlier owned upgrade can still be rolled back.
+                # so retirement history keeps its exact receipt binding.
                 previous = _json(receipt.read_bytes())
                 if previous.get('upgradeTransactionId'):
                     result['upgradeTransactionId'] = previous['upgradeTransactionId']
                 result['receiptPreserved'] = True
                 return result
         temporary = stage / "receipt.json"
-        temporary.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.write_bytes(json.dumps(result, ensure_ascii=False, indent=2).encode('utf-8'))
         _check_cancelled(cancelled)
         # Receipt replacement is the commit point. Cancellation before it
         # rolls back additions; cancellation observed by the caller afterward
@@ -746,18 +768,38 @@ def _commit_additions(root, result, stage, *, live=False, cancelled=None):
 def _install_staged(zip_path, root, state, *, expected_archive_sha256=None, live=False, cancelled=None):
     _pending_upgrade(root)
     _check_cancelled(cancelled)
-    with tempfile.TemporaryDirectory(prefix="staging-", dir=state) as directory:
-        stage = Path(directory)
+    stage = Path(tempfile.mkdtemp(prefix='staging-', dir=state))
+    prepared = False
+    try:
         with _open_archive(zip_path, expected_archive_sha256) as (archive, digest):
             result = _validate(archive, root, stage)
             result["archiveSha256"] = digest
         if live and not supports_live_author_import(result):
             raise ImportRejected("live-import-requires-restart")
         _check_cancelled(cancelled)
+        preflight_hardlinks(root, [r['path'] for r in result['files']]
+                            + [f"work/map-packages/{result['packageId']}.json"])
         if result["replaceFiles"]:
             from map_package_upgrade import commit_upgrade
             return commit_upgrade(root, result, stage, live=live, cancelled=cancelled)
-        return _commit_additions(root, result, stage, live=live, cancelled=cancelled)
+        from map_package_upgrade import prepare_additions, recover_pending_additions
+        prepared = prepare_additions(root, result, stage, live=live)
+        try:
+            output = _commit_additions(root, result, stage, live=live, cancelled=cancelled)
+        except Exception:
+            if prepared:
+                recover_pending_additions(root)
+            raise
+        if prepared:
+            recover_pending_additions(root)  # Verifies committed receipt/data before clearing marker.
+        return output
+    finally:
+        # Process loss, incomplete rollback, or cleanup keeps witnesses for explicit
+        # recovery; startup refuses resources while that marker is present.
+        if (not prepared and stage.exists()
+                and not _target(root, 'work/map-packages/pending-additions.json').exists()
+                and not _target(root, 'work/map-packages/pending-upgrade.json').exists()):
+            shutil.rmtree(stage)
 
 
 def install_package(zip_path, install_root, *, application_stopped=False, expected_archive_sha256=None) -> dict:
@@ -816,6 +858,14 @@ if __name__ == "__main__":
 
 def verified_installed_package(root, package_id, expected_sha256=None, *, cancelled=None):
     """Read receipt and actual contents off the UI thread; never trust download completion."""
+    try:
+        with resource_read_lock(root):
+            return _verified_installed_package_locked(root, package_id, expected_sha256, cancelled=cancelled)
+    except (OSError, ValueError):
+        return dict(status='unverified')
+
+
+def _verified_installed_package_locked(root, package_id, expected_sha256=None, *, cancelled=None):
     root = Path(root).resolve()
     try:
         _pending_upgrade(root)

@@ -37,5 +37,25 @@
       "fixture": "capture_focus_feature.py.baseline",
       "sha256": "ff8caa733507613a6d073bee0e45d665a3d8daa418f534f5cbd7ff870aa250a5"
     }
+  },
+  "approvedCompatibilityBaselines": {
+    "capture_pre_pr76": {
+      "sourceCommit": "b734b102608456e12c3a7bedbd9a15bc58c01e73",
+      "sourcePath": "experiments/qt_quick/client_capture.py",
+      "fixture": "capture_pre_pr76.py.baseline",
+      "sha256": "c44744ba1531c96d847258432882e357ec342dda21475d0537760686dcc831b2"
+    },
+    "capture_compatibility_feature": {
+      "sourceCommit": "5370d140dcede9dc6738c49b160859970f6ab0d9",
+      "sourcePath": "experiments/qt_quick/client_capture.py",
+      "fixture": "capture_compatibility_feature.py.baseline",
+      "sha256": "a5c6f418c395ab7504ee25cf869df4b167bd0836409c3ebde3939aa856e27466"
+    },
+    "exclusion_compatibility_feature": {
+      "sourceCommit": "5370d140dcede9dc6738c49b160859970f6ab0d9",
+      "sourcePath": "experiments/qt_quick/client_capture_exclusion.py",
+      "fixture": "exclusion_compatibility_feature.py.baseline",
+      "sha256": "def0397d6985b6bf2daa5fbebea8b177a9b0f930232543434e1bc649f0deb61a"
+    }
   }
 }

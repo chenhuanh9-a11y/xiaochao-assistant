@@ -60,16 +60,19 @@ class MapIntentResetTests(unittest.TestCase):
     def press(self, keys):
         keys._dispatch_action("map", dict(createdAt=1.0))
 
-    def test_preparation_timeout_next_physical_edge_opens_in_both_modes(self):
+    def test_unconfirmed_preparation_timeout_retains_intent_and_next_edge_closes(self):
         for mode in ("nightmare", "difficult"):
             with self.subTest(mode=mode), self.chain(mode) as (owner, live, keys, events, actions):
                 with patch("map_open_preparation.prepare_map_open_frame", return_value=None):
                     self.press(keys)
                 owner.app.processEvents()
                 self.assertFalse(live.runtime.snapshot()["mapOpen"])
+                self.assertTrue(live.runtime.snapshot()["mapRecoveryPending"])
+                self.assertTrue(keys._map_input.open_intent)
                 self.press(keys)
-                self.assertEqual([a for a, _ in actions], ["map", "map"])
-                self.assertTrue(live.runtime.snapshot()["mapOpen"])
+                self.assertEqual([a for a, _ in actions], ["map", "close_map"])
+                self.assertFalse(live.runtime.snapshot()["mapOpen"])
+                self.assertFalse(live.runtime.snapshot()["mapRecoveryPending"])
                 self.assertEqual([p["inputSequence"] for _, p in actions], [1, 2])
 
     def test_passive_close_next_edge_opens_but_first_miss_does_not_reset(self):
@@ -160,8 +163,10 @@ class MapIntentResetTests(unittest.TestCase):
             generation=-1, frameId="old-frame", cycleId=-1, mode="other", profileId="other")
         for mode in ("nightmare", "difficult"):
             with self.subTest(mode=mode), self.chain(mode) as (owner, live, keys, events, actions):
-                with patch("map_open_preparation.prepare_map_open_frame", return_value=None):
-                    self.press(keys)
+                self.press(keys)
+                # Only a confirmed close emits mapClosed. An unobserved
+                # preparation deadline now has a bounded recovery ticket.
+                live.dispatch("close_map", inputSequence=1)
                 packet = next(e for e in reversed(events) if e["event"] == "render-revoked")
                 self.assertTrue(packet["mapClosed"])
                 for field, value in replacements.items():
@@ -175,8 +180,8 @@ class MapIntentResetTests(unittest.TestCase):
         for mode in ("nightmare", "difficult"):
             for action, payload in (("end_round", {}), ("bind_capture", {"hwnd": 456})):
                 with self.subTest(mode=mode, action=action), self.chain(mode) as (owner, live, keys, events, actions):
-                    with patch("map_open_preparation.prepare_map_open_frame", return_value=None):
-                        self.press(keys)
+                    self.press(keys)
+                    live.dispatch("close_map", inputSequence=1)
                     live.dispatch(action, **payload)
                     owner.app.processEvents()
                     self.assertTrue(keys._map_input.open_intent)

@@ -1443,3 +1443,20 @@ CODES = CODES | frozenset({
 })
 EXCEPTIONS = EXCEPTIONS | frozenset({'CaptureForegroundUnavailable'})
 MODULES = MODULES | frozenset({'client_fit_reporting.py'})
+
+# Bounded automatic failure evidence outcomes, not user text or image pixels.
+FIELDS = FIELDS | frozenset({'controlBand', 'automaticV2Status', 'sampleIdentity'})
+CODES = CODES | frozenset({'automatic-v2', 'sample-crop-invalid', 'sample-encode-failed'})
+
+CODES = CODES | frozenset({'automatic-image-retired', 'automatic-image-missing',
+    'automatic-image-read-unavailable', 'automatic-image-byte-limit',
+    'automatic-image-recovery-unavailable', 'automatic-image-short-write',
+    'automatic-storage-operation-failed', 'automatic-legacy-read-only',
+    'automatic-namespace-invalid', 'automatic-journal-changed',
+    'automatic-journal-short-write'})
+# Classified safe-fallback failure; retain its type without free exception text.
+EXCEPTIONS = EXCEPTIONS | frozenset({'CaptureFallbackUnsupported'})
+
+# Durable additive cleanup boundary, without arbitrary journal fields.
+CODES = CODES | frozenset({'addition-outcome.json', 'additions-outcome-witness-changed',
+    'map-package-additions-outcome-v1'})

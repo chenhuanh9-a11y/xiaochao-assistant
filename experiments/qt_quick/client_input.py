@@ -23,6 +23,7 @@ from hotkey_keys import _primary_hotkey_to_vk, NATIVE_ONLY_SHORTCUT_KEYS
 from session_state_machine import global_key_is_allowed
 from floor_observation_policy import MANUAL_FLOOR_HOLD_SECONDS
 from client_map_input import OrderedMapInput
+from client_problem_messages import input_message
 from client_native_keys import MOUSE_SHORTCUT_VKS
 from client_manual_map import MANUAL_PICKER_ACTION, PICKER_KEY_NAMES, PICKER_KEY_VKS
 
@@ -158,11 +159,12 @@ class NativeShortcutBackend(QObject):
                 and any(chord.vk in (0x10, 0x11, 0x12) for chord in self._bindings.values())
                 and not getattr(self._source, "pointer_installed", False)):
             return "鼠标监听尚未就绪，单独 Alt、Shift、Ctrl 快捷键已暂停；其他快捷键仍可使用。"
-        return self._message
+        return input_message(self._status, self._message,
+                             management=self._management_enabled, game=self._enabled)
 
     message = Property(str, _public_message, notify=changed)
     snapshot = Property("QVariantMap", lambda self: dict(
-        enabled=self._enabled, status=self._status, message=self._public_message(),
+        enabled=self._enabled, status=self._status, message=self._public_message(), rawMessage=self._message,
         hwnd=str(self._hwnd), bindings={name: chord.name for name, chord in self._bindings.items()},
         textEntryActive=self._text, editingBindings=self._editing,
         readPermission="unknown", passThrough=True, globalRegistration=False,
@@ -175,7 +177,7 @@ class NativeShortcutBackend(QObject):
         mouseEventSource="raw-input" if self._source is not None else "injected-fixture",
         eventSource="pass-through-hook" if self._source is not None else "injected-poll-fixture"), notify=changed)
 
-    def _stop(self, status, message):
+    def _stop(self, status, message, *, preserve_map_intent=False):
         self._timer.stop()
         self._cancel_modifier_taps()
         self._enabled = False
@@ -184,7 +186,7 @@ class NativeShortcutBackend(QObject):
             update(0)
         self._status, self._message = status, message
         self._prime, self._game_focus = True, None
-        self._map_input.reset()
+        self._map_input.reset(self._map_input.open_intent if preserve_map_intent else False)
         self.changed.emit()
 
     @Slot(bool)
@@ -200,6 +202,10 @@ class NativeShortcutBackend(QObject):
         cancel = getattr(self._source, "cancel_pointer", None)
         if callable(cancel):
             cancel("map-input-reset")
+
+    def observeMapState(self, openIntent, inputSequence):
+        """Adopt verified current visual state only for its original input edge."""
+        return not self._closed and self._map_input.reconcile(openIntent, inputSequence)
 
     def _dispatch_action(self, action, event=None):
         if self._ordered_map_input and action in {"map", "escape"}:
@@ -582,7 +588,7 @@ class NativeShortcutBackend(QObject):
         if self._closed or self._binding_suspended:
             return
         self._binding_suspended = True
-        self._stop("suspended", "Game window verification is temporarily unavailable.")
+        self._stop("suspended", "Game window verification is temporarily unavailable.", preserve_map_intent=True)
 
     @Slot()
     def resumeGameBinding(self):

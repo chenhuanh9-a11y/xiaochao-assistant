@@ -30,6 +30,8 @@ def _feature_evidence(name, value):
     fields = {
         'fitReport': ('attemptCount', 'retryCount', 'firstReason', 'lastReason',
                       'firstAt', 'lastAt', 'firstDiagnostics', 'lastDiagnostics'),
+        'failureSample': ('saved', 'savedCount', 'missingReason', 'sampling', 'limits',
+            'recoveryRequired', 'controlBand', 'cleanup', 'error', 'frameCapturedAtUtc'),
         'preparationObservation': ('frameWidth', 'frameHeight', 'mode',
             'observationReason', 'mapDetected', 'floorReason', 'floorLayout',
             'shapeReason', 'aspectRatio', 'floorControlSizeEligible'),
@@ -37,6 +39,14 @@ def _feature_evidence(name, value):
     if not isinstance(value, dict):
         return {}
     selected = {key: value[key] for key in fields[name] if key in value}
+    if name == 'failureSample':
+        if 'controlBand' in selected:
+            child = selected['controlBand']
+            selected['controlBand'] = _feature_evidence('failureSample',
+                {k: v for k, v in child.items() if k != 'controlBand'} if isinstance(child, dict) else {})
+        if isinstance(selected.get('cleanup'), dict):
+            selected['cleanup'] = {key: selected['cleanup'][key] for key in
+                ('status', 'complete', 'removed') if key in selected['cleanup']}
     if name == 'fitReport':
         for key in ('firstDiagnostics', 'lastDiagnostics'):
             diagnostic = selected.get(key)
@@ -229,6 +239,10 @@ class ProblemsService(QObject):
         row = {name: _text(event.get(name, ''), limits[name])
                 for name in ('title', 'summary', 'raw', 'traceback', 'action', 'phase', 'kind', 'mode', 'mapId', 'floor', 'exceptionType', 'exceptionOrigin', 'exceptionAction')}
         row['reason'] = problem_reason(event.get('reason'))
+        if event.get('errorCode') or event.get('errorDetails'):
+            from client_resource_errors import safe_code, safe_error_details
+            row['errorCode'] = safe_code(event.get('errorCode'))
+            row['errorDetails'] = safe_error_details(event.get('errorDetails'))
         row['title'] = row['title'] or '运行出现问题'
         row['summary'] = row['summary'] or '本次操作未完成，可复制下方原始原因进行排查。'
         row['phaseLabel'] = PHASE_LABELS.get(row['phase'], '任务执行')
@@ -236,7 +250,7 @@ class ProblemsService(QObject):
         diagnostics = _metadata(event.get('captureDiagnostics', {}))
         encoded = json.dumps(diagnostics, ensure_ascii=False)
         row['captureDiagnostics'] = diagnostics if len(encoded.encode('utf-8')) <= 1024 else dict(summary=_text(encoded, 900), truncated=True)
-        for name in ('fitReport', 'preparationObservation'):
+        for name in ('fitReport', 'preparationObservation', 'failureSample'):
             if name in event:
                 row[name] = _feature_evidence(name, event[name])
         signature = tuple(row[name] for name in ('reason', 'title', 'summary', 'raw', 'action', 'phase', 'kind', 'mode', 'mapId', 'floor'))
@@ -306,13 +320,22 @@ class ProblemsService(QObject):
             value = _metadata(event[name])
             encoded_value = json.dumps(value, ensure_ascii=False)
             row[name] = value if len(encoded_value.encode('utf-8')) <= 2048 else dict(summary=_text(encoded_value, 1900), truncated=True)
-        for name in ('fitReport', 'preparationObservation'):
+        for name in ('fitReport', 'preparationObservation', 'failureSample'):
             if name in event:
                 row[name] = _feature_evidence(name, event[name])
         if 'recognitionDiagnostics' in event:
             from recognition_diagnostics import bounded_recognition
             row['recognitionDiagnostics'] = bounded_recognition(event['recognitionDiagnostics'])
         raw_diagnostics = event.get('diag', event.get('diagnostics', {}))
+        if event.get('stage') == 'map-preparation':
+            # A preparation owns a finite trace budget. Keep only its producer
+            # contract, without admitting arbitrary capture/exception payloads.
+            fields = ('openingId', 'ordinal', 'phase', 'inputSequence', 'requestScope',
+                'probe', 'captureErrors', 'suppressed', 'deadlineSeconds', 'probePeriodSeconds',
+                'captureGeneration', 'capture', 'exception', 'elapsedMs', 'observation',
+                'beforeDeadline', 'lastProbeOutcome', 'loopStopReason', 'recoveryId')
+            raw_diagnostics = {key: raw_diagnostics[key] for key in fields
+                if isinstance(raw_diagnostics, dict) and key in raw_diagnostics}
         # Only stable origin fields affect dedup, never arbitrary per-frame
         # diagnostics. Keep independent origin lanes inside the existing 64-key
         # LRU so interleaved failures do not erase or repeatedly re-log each other.

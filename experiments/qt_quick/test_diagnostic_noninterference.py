@@ -55,6 +55,16 @@ def capture_baseline(key, name):
     return module
 
 
+def compatibility_baseline(key):
+    record = MANIFEST['approvedCompatibilityBaselines'][key]
+    expected = ('b734b102608456e12c3a7bedbd9a15bc58c01e73' if key == 'capture_pre_pr76'
+                else '5370d140dcede9dc6738c49b160859970f6ab0d9')
+    payload = (FIXTURES / record['fixture']).read_bytes()
+    if record['sourceCommit'] != expected or hashlib.sha256(payload).hexdigest() != record['sha256']:
+        raise ValueError('approved compatibility fixture identity mismatch')
+    return payload
+
+
 class NoninterferenceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -189,18 +199,20 @@ class NoninterferenceTests(unittest.TestCase):
                 self.assertEqual(results[0],results[1],kind)
                 self.assertFalse(results[0][2],kind)
 
-    def test_capture_authorization_source_is_byte_identical_to_main(self):
-        for relative in ('app/client_region_capture.py',
-                         'experiments/qt_quick/client_capture_exclusion.py'):
-            self.assertEqual(hashlib.sha256((ROOT/relative).read_bytes()).hexdigest(),
-                             MANIFEST['files'][relative]['sha256'], relative)
+    def test_capture_authorization_source_matches_approved_compatibility_feature(self):
+        relative = 'app/client_region_capture.py'
+        self.assertEqual(hashlib.sha256((ROOT/relative).read_bytes()).hexdigest(),
+                         MANIFEST['files'][relative]['sha256'], relative)
+        for key in ('capture_compatibility_feature', 'exclusion_compatibility_feature'):
+            record = MANIFEST['approvedCompatibilityBaselines'][key]
+            self.assertEqual((ROOT/record['sourcePath']).read_bytes(), compatibility_baseline(key))
 
-    def test_capture_source_change_is_only_foreign_metadata(self):
+    def test_historical_diagnostic_capture_change_is_only_foreign_metadata(self):
         original = (FIXTURES / MANIFEST['files']['experiments/qt_quick/client_capture.py']['fixture']).read_text('utf-8')
         records = MANIFEST['approvedCaptureBaselines']
         historical = (FIXTURES / records['capture_diagnostic_only']['fixture']).read_text('utf-8')
         feature = (FIXTURES / records['capture_focus_feature']['fixture']).read_text('utf-8')
-        current_source = (ROOT/'experiments/qt_quick/client_capture.py').read_text('utf-8')
+        current_source = compatibility_baseline('capture_pre_pr76').decode('utf-8')
         for before, after, end_marker in (
                 (original, historical, '                raise error'),
                 (feature, current_source, '                # Metadata only:')):

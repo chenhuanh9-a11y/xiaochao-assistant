@@ -19,7 +19,9 @@ from packaged_product_identity import PRODUCTION_APP_ID, PRODUCTION_PRODUCT, bak
 def _production_profile():
     # Only the build-baked profile counts; an adjacent file or CLI root cannot
     # turn a source/test executable into the original product.
-    return FROZEN and baked_identity() == "qt-production"
+    # This module belongs to the Qt entry only. Missing metadata must not select
+    # the legacy fallback and seed a second data root under work/qt-client-runtime.
+    return FROZEN and baked_identity(require_qt=True) == "qt-production"
 
 
 PRODUCTION = _production_profile()
@@ -94,7 +96,10 @@ class RuntimePaths:
     @property
     def editor_base_candidates(self):
         candidates = ([self.installation_root / "assets/custom-maps"] if self.production else [])
-        return candidates + [self.resource_root / "assets/custom-maps", self.resource_root / "qt-editor-base"]
+        candidates += [self.resource_root / "assets/custom-maps", self.resource_root / "qt-editor-base"]
+        if FROZEN and not self.production:
+            candidates.append(RESOURCE_ROOT / "qt-editor-base")
+        return candidates
 
     @property
     def editor_base_root(self):
@@ -128,6 +133,12 @@ def editor_library_usable(root):
         return True
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return False
+
+
+def bundled_author_root():
+    # Source tools never discover installed resources; frozen defaults stay
+    # beside program code and are never seeded into user-owned directories.
+    return RESOURCE_ROOT / "qt-author-base" if FROZEN else None
 
 
 def runtime_paths(root=None):

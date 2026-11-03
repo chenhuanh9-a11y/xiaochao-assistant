@@ -21,11 +21,29 @@ class CaptureExclusionError(RuntimeError):
     pass
 
 
+class CaptureFallbackUnsupported(CaptureExclusionError):
+    """The DC attempt failed and this platform cannot safely use screen fallback."""
+    code = "capture-safe-fallback-unsupported"
+
+    def __init__(self, capability):
+        super().__init__(self.code)
+        self.error_phase = "capture"
+        self.capture_capability = dict(capability)
+        self.capture_diagnostics = dict(captureCapability=dict(capability))
+
+
 class _DisplayAffinity:
     """Same WDA_EXCLUDEFROMCAPTURE/previous-value contract as the Tk lane."""
     def __init__(self):
-        if os.name != "nt" or sys.getwindowsversion().build < 19041:
-            raise CaptureExclusionError("Display exclusion requires Windows build 19041 or later")
+        build = sys.getwindowsversion().build if os.name == "nt" else None
+        self.capability = dict(safeFallback="supported", windowsBuild=build,
+            minimumWindowsBuild=19041, exclusionMode="WDA_EXCLUDEFROMCAPTURE")
+        if build is None or build < 19041:
+            self.capability.update(safeFallback="unsupported",
+                reason="platform-not-supported" if build is None else "windows-build-too-old")
+            # Earlier Windows accepts 0x11 as WDA_MONITOR, which leaves blank
+            # surfaces instead of excluding them. Never substitute that mode.
+            raise CaptureFallbackUnsupported(self.capability)
         self.user = ctypes.WinDLL("user32", use_last_error=True)
         self.dwm = ctypes.WinDLL("dwmapi", use_last_error=True)
         self.user.IsWindow.argtypes = [wintypes.HWND]

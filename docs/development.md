@@ -91,3 +91,14 @@ Qt 迁移的默认启动链单独验收：单实例占锁须早于引擎/监听/
 用户主动接受、拒绝的贴合记录及其截图不做清理。地图包升级备份仍按原设计保留。
 
 Tk 和 Qt 客户端启动时都做同样的清理（`diagnostic_export.prune_diagnostic_logs` 与 `star_map_download.prune_installed_downloads`），Qt 的 `events-qt-*` 日志也在同一个上限内；Qt 有 `qt-import-pending.json` 或 `qt-recovery-pending.json` 时同样不删下载包。
+
+
+### 默认失败证据（Qt，新自动样本）
+
+新安装或没有旧设置项时，默认开启有限的本地自动失败画面。旧设置明确 `false`、非法值或读取失败均不自动开启。帮助页明确提示局部图仍可能含昵称或聊天，不承诺匿名。正常诊断导出默认附上与已导出日志会话匹配的自动局部图，可选择“仅导出文字日志”；完整游戏窗口的手动失败帧仍须单独开启，默认关闭，任何流程都不自动上传。
+
+自动样本只复用当前合法采集，保存当前地图颜色区和检测器实际使用的右上控件带，不额外截桌面、不改变识别判断。保存失败也将有界 `failureSample` 状态和 `missingReason` 传到文字日志；没有合法帧时只记原因，不能补造截图。自动采样仍按失败类型和图类别冷却，完整手动帧仍有独立进程限额。
+
+`failures/automatic-v2/` 是新的身份绑定缓存，每模式最多 6 张、12 MiB，超过 7 天或为新图腾空间时轮换最旧对象。新 PNG 的创建、写入和身份记录使用同一 Windows 独占句柄；读取或删除再次核对原文件 identity、单链接、尺寸及 SHA256。删除使用 `SetFileInformationByHandle(FileDispositionInfo)` 针对验证过的同一句柄，不使用 pathname unlink，也不回退到不安全删除。参考微软 [CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew) 的共享权限及 [SetFileInformationByHandle](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfileinformationbyhandle) 的 DELETE 权限合同。
+
+旧 `failures/automatic/` 缺少原文件 identity，只读保留与兼容导出，不为其补写当下 identity 后自动删除。迁移期间每模式可能额外留存旧版最多 12 MiB 样本；旧目录异常不阻断新 v2 空间。链接、外部替换、未知文件、未提交且仍有图片的写入、损坏 journal 都失败关闭并明确状态，不冒称完整恢复。删除完成但 journal 未更新的缺图记录可安全修复；部分 journal 写入或断电仍可能需要人工检查。POSIX 不实施自动图写入/轮换，Linux 单元测试的 Windows skips 不代表原生合同通过。

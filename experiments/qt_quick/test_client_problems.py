@@ -195,5 +195,18 @@ class ProblemTests(unittest.TestCase):
         self.assertEqual(rows[1]['decision']['rankVerdict']['topMapId'],'b')
         self.assertEqual(self.service.recent,[])
 
+    def test_failure_sampling_missing_reason_survives_disk_without_private_payload(self):
+        self.service.recordTrace(dict(role='diagnostics',stage='automatic-failure-sample',
+            reason='metadata-only',failureSample=dict(saved=False,
+                missingReason='automatic-sampling-disabled',
+                username='private-sampling-user',privatePayload='private-sampling-payload',
+                controlBand=dict(saved=False,missingReason='sample-crop-invalid'))))
+        self.drain()
+        rows=[json.loads(line) for line in self.service.log_path.read_text('utf-8').splitlines()]
+        sample=rows[-1]['failureSample']
+        self.assertEqual(sample['missingReason'],'automatic-sampling-disabled')
+        self.assertEqual(sample['controlBand']['missingReason'],'sample-crop-invalid')
+        self.assertNotIn('private-sampling',json.dumps(rows))
+
 
 if __name__=='__main__':unittest.main()

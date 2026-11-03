@@ -83,10 +83,14 @@ class FailureSamplingContracts(unittest.TestCase):
         result = self.capture_failure()
         self.assertEqual(result['reason'], self.f.fit['reason'])
         self.assertEqual(self.f.capture.count, before+1)
-        journal = self.root/'memory/failures/automatic/automatic-failures.jsonl'
+        journal = self.root/'memory/failures/automatic-v2/automatic-failures.jsonl'
         rows = [json.loads(line) for line in journal.read_text().splitlines()]
         row = next(row for row in rows if row.get('cropProvenance') == 'color-component-unvalidated')
         controls = next(row for row in rows if row.get('cropProvenance') == 'detector-control-band')
+        for sample in (row, controls):
+            info = (self.store.root/sample['samplePath']).stat()
+            self.assertEqual(sample['sampleIdentity'], [info.st_dev, info.st_ino])
+            self.assertEqual(sample['sampleBytes'], info.st_size)
         self.assertEqual(controls['diagnostic']['sampleRole'], 'detector-control-band')
         x,y,w,h = controls['cropBounds']
         import cv2

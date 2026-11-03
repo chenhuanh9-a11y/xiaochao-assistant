@@ -11,7 +11,7 @@ from diagnostic_schema import FIELDS, CODES, MODULES, EXCEPTIONS, ENVIRONMENT_TE
 PRIVATE = re.compile(r'username|nickname|playername|account|password|secret|tokenvalue|(?:window|process|program)(?:name|title|exe|path)|foreground(hwnd|pid|name)|executable|commandline|hostname',re.I)
 FREE = frozenset(('raw','summary','title','message','error','errorMessage','details','stateGetterError'))
 STACK = frozenset(('traceback','stack'))
-EXCEPTION = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*(?:Error|Exception|Unavailable))\b')
+EXCEPTION = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*(?:Error|Exception|Unavailable|Unsupported))\b')
 HEX = re.compile(r'[a-fA-F0-9]{16,64}\Z')
 CLOCK = re.compile(r'\d{4}-\d{2}-\d{2}T[0-9:.+Z-]{8,32}\Z')
 

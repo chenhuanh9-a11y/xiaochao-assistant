@@ -68,12 +68,13 @@ Item {
                 AppButton { objectName: "helpSaveDiagnostics"; text: "另存 ZIP…"; enabled: !infoService.checking; onClicked: saveDiagnostics.open() }
                 AppButton { text: "自愿支持开发"; onClicked: support.open() }
             }
-            AppCheckBox { objectName: "helpAutomaticFailureSampling"; text: "自动保存少量地图失败画面（默认关闭）"; checked: infoService.automaticFailureSampling; enabled: !infoService.checking; onToggled: infoService.setAutomaticFailureSampling(checked) }
-            Label { text: "仅复用已采集的游戏客户区画面，保存地图颜色区域及实际检测使用的右上控件带；图片仍可能包含昵称或聊天。两类图片共用每种模式 6 张、12 MiB 上限；已有图片满额或超过 7 天时停止新增；为防误删外部替换文件，不自动删除旧图片。未提交图片会保留并暂停后续采样，需手动检查；仅 Windows 支持安全自动采样写入。关闭后不再新增，不会自动上传。"; textFormat: Text.PlainText; wrapMode: Text.WordWrap; Layout.fillWidth: true; color: "#526785" }
-            AppCheckBox { objectName: "helpExportAutomaticFailureEvidence"; text: "本次导出附上已保存的自动采样画面"; checked: infoService.includeAutomaticFailureEvidence; enabled: !infoService.checking; onToggled: infoService.setIncludeAutomaticFailureEvidence(checked) }
+            AppCheckBox { objectName: "helpAutomaticFailureSampling"; text: "自动保存少量地图失败画面（本地）"; checked: infoService.automaticFailureSampling; enabled: !infoService.checking; onToggled: infoService.setAutomaticFailureSampling(checked) }
+            Label { text: "仅复用已采集的游戏客户区画面，保存地图颜色区域及实际检测使用的右上控件带；图片仍可能包含昵称或聊天。新自动样本两类图片共用每种模式 6 张、12 MiB 上限，按容量和 7 天期限安全轮换。旧版留存样本不自动删除，迁移期间可能额外占用每种模式最多 12 MiB。遇到未知、被改动或未提交的对象时暂停该样本空间的采样并记录原因；仅 Windows 支持安全自动采样写入。关闭后不再新增，不会自动上传。"; textFormat: Text.PlainText; wrapMode: Text.WordWrap; Layout.fillWidth: true; color: "#526785" }
+            AppCheckBox { objectName: "helpExportAutomaticFailureEvidence"; text: "本次导出附上匹配的自动局部样本（默认）"; checked: infoService.includeAutomaticFailureEvidence; enabled: !infoService.checking; onToggled: infoService.setIncludeAutomaticFailureEvidence(checked) }
+            AppCheckBox { objectName: "helpTextOnlyDiagnostics"; text: "仅导出文字日志（不附任何图片）"; checked: infoService.textOnlyDiagnostics; enabled: !infoService.checking; onToggled: infoService.setTextOnlyDiagnostics(checked) }
             AppCheckBox { objectName: "helpFailureSampling"; text: "额外保存并导出手动失败画面（可能包含完整游戏窗口）"; checked: infoService.includeFailureEvidence; enabled: !infoService.checking; onToggled: infoService.setIncludeFailureEvidence(checked) }
-            Label { text: "开启后再复现：限量保存本次运行中已有的失败采集画面，不额外截图；重启后默认关闭。"; color: "#526785"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-            Label { text: "诊断包默认仅含脱敏文本、版本和运行状态（含快捷键绑定状态），不包含完整个人配置文件。保存画面与导出画面需要分别开启；只有勾选本次附图选项才会导出已有画面。图片可能含昵称或聊天，请确认后再分享。附图选项重启后关闭。"; color: "#526785"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+            Label { text: "手动完整帧默认关闭，需单独开启后再复现；仅限量保存已有的失败采集画面，不额外截图，重启后关闭。"; color: "#526785"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+            Label { text: "新装或未配置时默认保存有界本地局部失败样本；已有关闭设置继续保留。诊断包默认包含文字日志、版本、运行状态及匹配的自动局部样本，不包含完整个人配置文件。可选择仅导出文字日志。图片可能含昵称或聊天，不保证匿名，请检查后再分享；不会自动上传。"; color: "#526785"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
             ProgressBar { Layout.fillWidth: true; visible: infoService.checking; indeterminate: true; Accessible.name: infoService.operation }
             Label { text: infoService.operation || infoService.message; color: infoService.hasError ? "#b8364a" : "#526785"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
             Label { visible: !!infoService.diagnosticsReceipt.path; text: "诊断文件：" + (infoService.diagnosticsReceipt.path || ""); textFormat: Text.PlainText; color: "#17775a"; wrapMode: Text.WrapAnywhere; Layout.fillWidth: true }
