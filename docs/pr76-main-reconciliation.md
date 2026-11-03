@@ -209,3 +209,38 @@ that the old file is byte-identical or that a future combined build has passed.
 | `tools/qt-client.iss` | M | Selective main adaptation in f3399dc / 5370d14 |
 | `tools/qt_client_entry.py` | M | Selective main adaptation in f3399dc / 5370d14 |
 | `tools/rebuild_qt_installer.py` | M | Selective main adaptation in f3399dc / 5370d14 |
+
+## Independent review corrections
+
+- `06382fd`: removal journals with durable `rolled-back` are terminal cleanup-only,
+  like `committed`. Recovery cannot recreate a subsequently deleted active image
+  or receipt, cannot reject a later independent replacement as an old rollback
+  conflict, and can resume after some temporary pins have already been removed.
+  In-place edits that also alter a retained hardlink still fail closed and keep
+  the gate; the hash/identity deletion guard has not been weakened. Four new
+  cases were red before the fix. Follow-up production-plan checks remove active
+  object stamps/ancestor traversal for terminal journals and retain only lexical
+  path validation; cleanup does not prune active resource parents. Three more
+  directory/symlink replacements were red through the actual dispatcher before
+  this correction. The removal suite has 32 passes and one native Windows skip.
+- Additive import cleanup now persists an immutable `addition-outcome.json`
+  bound to the transaction and original journal SHA256 before retiring payload
+  witnesses. A valid terminal outcome permits a partially cleaned staging set;
+  surviving objects retain exact hash/identity checks. Both committed and rolled
+  back cleanup avoid active resource/receipt mutation. Missing pre-terminal
+  witnesses and changed terminal metadata still block recovery.
+- The additions pending gate now remains until all staged resource and receipt
+  copies plus their subdirectories are gone. Pointer-clear failures are retryable;
+  only redundant terminal text/empty-directory retirement is best effort after
+  the gate is cleared. Recovery-plan fingerprints include terminal evidence and
+  all staging paths. The helper and startup closed schemas allow `cleanupOnly`
+  only as literal true for an additions-pending plan; its UI promises cleanup
+  rather than rollback. Registered removal recognizes validated terminal text
+  remnants, without gaining authority over unknown files.
+- Additive reentry regressions: twelve pass, including committed/rolled-back
+  subsequent user changes, partial cleanup, durable-write acknowledgment failure,
+  changed witness, directory failure, metadata retirement, and strict helper plan
+  fields and actual subprocess exit during partial cleanup. Joint resource review
+  suite: 140 run, 135 pass, three platform skips,
+  two Linux environment errors (ctypes.WinDLL and subprocess.STARTUPINFO).
+  These are not Windows native or installed-Setup acceptance results.

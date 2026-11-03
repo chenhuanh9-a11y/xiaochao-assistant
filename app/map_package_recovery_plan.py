@@ -32,15 +32,20 @@ def inspect_locked(root, transaction_id=None):
     additions = upgrade._addition_journal(root)
     if additions is not None and (transaction_id is None or additions[2]['transactionId'] == transaction_id):
         stage, retained, journal = additions
+        outcome = upgrade._addition_outcome(stage, retained, journal)
         paths = {upgrade.ADDITIONS_PENDING, retained.relative_to(root).as_posix(),
-                 f"{upgrade.STATE}/{journal['packageId']}.json"}
-        paths.update(row['path'] for row in journal['files'])
-        paths.update((stage / entry['new']['path']).relative_to(root).as_posix() for entry in journal['entries'])
+                 (stage / upgrade.ADDITIONS_OUTCOME).relative_to(root).as_posix(),
+                 (stage / 'receipt.json').relative_to(root).as_posix()}
+        if outcome is None:
+            paths.add(f"{upgrade.STATE}/{journal['packageId']}.json")
+            paths.update(row['path'] for row in journal['files'])
+        paths.update((stage / row['path']).relative_to(root).as_posix() for row in journal['files'])
         fingerprints = {name: _stamp(importer._target(root, name)) for name in sorted(paths)}
         encoded = json.dumps(fingerprints, sort_keys=True, separators=(',', ':')).encode()
         return dict(transactionId=journal['transactionId'], packageId=journal['packageId'],
                     status='additions-pending', pending=True, fileCount=len(journal['files']),
-                    blockedPaths=[], planSha256=hashlib.sha256(encoded).hexdigest())
+                    blockedPaths=[], planSha256=hashlib.sha256(encoded).hexdigest(),
+                    **({'cleanupOnly': True} if outcome is not None else {}))
     pending = upgrade._pending_id(root)
     if transaction_id is None:
         transaction_id = pending

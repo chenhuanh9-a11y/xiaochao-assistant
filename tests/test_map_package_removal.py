@@ -404,6 +404,50 @@ r.remove_packages(root,'nightmare-suju',application_idle=True,expected_plan_sha2
         self.assertFalse((self.root / removal.PENDING).exists())
         self.assertFalse(directory.exists())
 
+    def test_terminal_rollback_dispatcher_preserves_later_directory_replacement(self):
+        self.rolled_back_with_pending_cleanup()
+        target = self.root / SUJU
+        target.unlink()
+        target.mkdir()
+        with resource_write_lock(self.root):
+            plan = recovery.inspect_locked(self.root)
+            result = recovery.execute_locked(self.root, plan, "recover")
+        self.assertEqual(result["status"], "removal-rolled-back")
+        self.assertTrue(target.is_dir())
+        self.assertFalse((self.root / removal.PENDING).exists())
+
+    def test_terminal_rollback_dispatcher_never_follows_later_user_symlink(self):
+        self.rolled_back_with_pending_cleanup()
+        target = self.root / SUJU
+        target.unlink()
+        outside = self.f.folder / "outside-user-object"
+        outside.write_bytes(b"outside-user-content")
+        try:
+            target.symlink_to(outside)
+        except OSError as error:
+            self.skipTest(str(error))
+        with resource_write_lock(self.root):
+            plan = recovery.inspect_locked(self.root)
+            result = recovery.execute_locked(self.root, plan, "recover")
+        self.assertEqual(result["status"], "removal-rolled-back")
+        self.assertTrue(target.is_symlink())
+        self.assertEqual(outside.read_bytes(), b"outside-user-content")
+        self.assertFalse((self.root / removal.PENDING).exists())
+
+    def test_terminal_commit_dispatcher_does_not_validate_or_prune_later_user_directories(self):
+        self.install()
+        with patch.object(removal, "_cleanup_objects", side_effect=OSError("cleanup-busy")):
+            with self.assertRaisesRegex(ValueError, "removal-committed-cleanup-required"):
+                self.remove()
+        target = self.root / SUJU
+        target.mkdir()
+        with resource_write_lock(self.root):
+            plan = recovery.inspect_locked(self.root)
+            result = recovery.execute_locked(self.root, plan, "recover")
+        self.assertEqual(result["status"], "removal-committed")
+        self.assertTrue(target.is_dir())
+        self.assertFalse((self.root / removal.PENDING).exists())
+
     def test_rolled_back_in_place_user_edit_preserves_changed_pin_and_pending_gate(self):
         directory, _ = self.rolled_back_with_pending_cleanup()
         path = self.root / SUJU

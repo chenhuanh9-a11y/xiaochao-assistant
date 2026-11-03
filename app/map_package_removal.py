@@ -34,11 +34,15 @@ def _reject(code):
     raise files.ImportRejected(code)
 
 
-def _target(root, relative):
+def _validate_relative(relative):
     if (not isinstance(relative, str) or not relative or len(relative) > 1024
             or relative.startswith("/") or any(c in relative for c in "\\:\x00\r\n")
             or any(part in {"", ".", ".."} or part.endswith((" ", ".")) for part in relative.split("/"))):
         _reject("removal-unsafe-path")
+
+
+def _target(root, relative):
+    _validate_relative(relative)
     target = root.joinpath(*relative.split("/"))
     files._no_links(target)
     return target
@@ -124,7 +128,7 @@ def _valid_target(package, relative):
         return parts[4] in {"backup", "new"} and (logical == receipt or files._allowed(package, logical))
     if len(parts) >= 4 and re.fullmatch(r"work/map-packages/staging-[A-Za-z0-9_-]+", "/".join(parts[:3])):
         logical = "/".join(parts[3:])
-        return logical in {"addition-journal.json", "receipt.json"} or files._allowed(package, logical)
+        return logical in {"addition-journal.json", "receipt.json", upgrade.ADDITIONS_OUTCOME} or files._allowed(package, logical)
     return False
 
 
@@ -265,7 +269,13 @@ def _plan_locked(root, package_id=None, cancelled=None):
             sources.append((receipt, _target(directory, "receipt.json")))
             if upgrade._matches(_target(directory, "receipt.json"), receipt):
                 remember_archive(package, _target(directory, "receipt.json"))
-        histories.append((package, directory, sources, [source]))
+        metadata = [source]
+        outcome = upgrade._addition_outcome(directory, source, journal)
+        if outcome is not None:
+            terminal = _target(directory, upgrade.ADDITIONS_OUTCOME)
+            metadata.append(terminal)
+            witnesses[terminal.relative_to(root).as_posix()] = _stamp(terminal)
+        histories.append((package, directory, sources, metadata))
         witnesses[source.relative_to(root).as_posix()] = _stamp(source)
     entries, preserved, packages = {}, [], set()
 
@@ -391,7 +401,13 @@ def _load_pending(root):
                 or not _valid_target(row["packageId"], row["path"])
                 or type(row["bytes"]) is not int or not 0 <= row["bytes"] <= MAX_BYTES):
             _reject("removal-invalid-journal-entry")
-        _target(root, row["path"])
+        # Terminal recovery owns only its retained pins and metadata. Validate
+        # the old logical path without consulting the user's current object or
+        # ancestor links, which may legitimately have changed after completion.
+        if journal["status"] in {"committed", "rolled-back"}:
+            _validate_relative(row["path"])
+        else:
+            _target(root, row["path"])
         seen.add(row["path"].casefold())
         upgrade._digest(row["sha256"])
         upgrade._valid_identity(row["identity"])
@@ -406,9 +422,10 @@ def inspect_pending_removal_locked(root):
     directory, journal = _load_pending(root)
     stamps = {PENDING: _stamp(_target(root, PENDING)), "journal": _stamp(directory / "journal.json")}
     for number, row in enumerate(journal["entries"]):
-        target = _target(root, row["path"])
+        if journal["status"] not in {"committed", "rolled-back"}:
+            target = _target(root, row["path"])
+            stamps[row["path"]] = _stamp(target) if target.exists() else None
         retained = _target(directory, "objects/" + str(number))
-        stamps[row["path"]] = _stamp(target) if target.exists() else None
         stamps["object:" + str(number)] = _stamp(retained) if retained.exists() else None
     return dict(transactionId=journal["transactionId"],
         packageId=journal["packageIds"][0] if len(journal["packageIds"]) == 1 else "all-managed",
@@ -452,8 +469,12 @@ def _retire(root, directory, journal):
         identity = upgrade._identity(source.stat())
         digest = hashlib.sha256(upgrade._encoded(journal)).hexdigest()
         files._rollback_published(source, tuple(identity), digest)
-        _prune_empty(root, [row["path"] for row in journal["entries"]] +
-            [source.relative_to(root).as_posix(), (directory / "objects/0").relative_to(root).as_posix()])
+        # Never prune active-resource parents after a durable outcome: a user
+        # may have recreated even empty directories there in the meantime.
+        private_history = [row["path"] for row in journal["entries"] if row["path"].startswith((
+            "work/map-packages/upgrades/", "work/map-packages/staging-", "work/map-package-removals/"))]
+        _prune_empty(root, private_history + [source.relative_to(root).as_posix(),
+                           (directory / "objects/0").relative_to(root).as_posix()])
     except (OSError, files.ImportRejected):
         pass
 

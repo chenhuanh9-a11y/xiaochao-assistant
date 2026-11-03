@@ -634,7 +634,8 @@ class ResourceService(QObject):
             self._pending, self._kind = result, "recovery"
             additions = plan['status'] == 'additions-pending'
             removal = plan['status'] == 'removal-pending'
-            cleanup = plan['status'] in {'upgrade-cleanup-pending', 'upgrade-cleanup-available'}
+            cleanup = (plan.get('cleanupOnly') is True
+                       or plan['status'] in {'upgrade-cleanup-pending', 'upgrade-cleanup-available'})
             self._message = "请确认如何处理上次未完成的操作。"
             self.changed.emit()
             explanation = ("只清理上次操作留下的临时文件，不会把当前图包退回旧版本。"

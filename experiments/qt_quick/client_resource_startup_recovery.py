@@ -45,7 +45,9 @@ def _inspect(root, transaction_id=None):
 
 
 def _validate_plan(plan, kind):
-    if not isinstance(plan, dict) or set(plan) != _PLAN_FIELDS or plan.get("pending") is not True:
+    if (not isinstance(plan, dict) or set(plan) not in (_PLAN_FIELDS, _PLAN_FIELDS | {'cleanupOnly'})
+            or ('cleanupOnly' in plan and (kind != 'additions' or plan['cleanupOnly'] is not True))
+            or plan.get("pending") is not True):
         raise StartupRecoveryError("startup-recovery-plan-invalid")
     try:
         transaction_id = UUID(plan["transactionId"])
@@ -74,7 +76,9 @@ def _confirmation_message(plan, kind):
         "upgrade": ("清理临时副本，不回退或重写已提交的当前资源。"
                     if plan["status"] in {"committed", "rolled-back", "upgrade-cleanup-pending"}
                     else "处理中断的图包升级：未提交则恢复旧资源，已提交则只完成临时副本清理。"),
-        "additions": "恢复中断的图包导入：未提交则撤回本次新增，已提交则完成记录清理。",
+        "additions": ("只清理上次导入留下的临时副本，不会撤回、恢复或重写当前资源。"
+                      if plan.get('cleanupOnly') is True else
+                      "恢复中断的图包导入：未提交则撤回本次新增，已提交则完成记录清理。"),
         "removal": "恢复中断的图包删除：未提交则还原本次删除，已提交则完成记录清理。",
     }
     return ("上次图包操作还没处理完，星图暂时无法启动。\n\n"

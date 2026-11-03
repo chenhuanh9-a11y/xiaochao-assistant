@@ -908,6 +908,8 @@ def retire_upgrade(root, transaction_id):
 
 ADDITIONS_PENDING = STATE + '/pending-additions.json'
 ADDITIONS_SCHEMA = 'map-package-additions-v1'
+ADDITIONS_OUTCOME = 'addition-outcome.json'
+ADDITIONS_OUTCOME_SCHEMA = 'map-package-additions-outcome-v1'
 
 
 def prepare_additions(root, result, stage, *, live=False):
@@ -943,6 +945,22 @@ def prepare_additions(root, result, stage, *, live=False):
     return True
 
 
+def _addition_outcome(stage, retained, journal):
+    """An immutable terminal witness survives partial private-payload cleanup."""
+    adapter = _adapter()
+    path = adapter._target(stage, ADDITIONS_OUTCOME)
+    if not path.exists():
+        return None
+    value = _read_json(path)
+    if (set(value) != {'schema', 'transactionId', 'journalSha256', 'status'}
+            or value['schema'] != ADDITIONS_OUTCOME_SCHEMA
+            or value['transactionId'] != journal['transactionId']
+            or value['journalSha256'] != adapter._sha(retained)
+            or value['status'] not in {'committed', 'rolled-back'}):
+        _reject('additions-outcome-witness-changed')
+    return value
+
+
 def _addition_journal(root):
     adapter = _adapter()
     path = adapter._target(root, ADDITIONS_PENDING)
@@ -963,13 +981,15 @@ def _addition_journal(root):
     retained = adapter._target(stage, 'addition-journal.json')
     if _read_json(retained) != journal or _identity(retained.stat()) != _identity(path.stat()):
         _reject('additions-journal-witness-changed')
+    outcome = _addition_outcome(stage, retained, journal)
     inventory = _rows(journal['files'], journal['packageId'])
     identities = journal['stagedIdentities']
     if not isinstance(identities, dict) or set(identities) != {row['path'] for row in inventory.values()}:
         _reject('invalid-additions-staged-identities')
     for row in inventory.values():
         _valid_identity(identities[row['path']])
-        if not _matches(adapter._target(stage, row['path']), row, identities[row['path']]):
+        staged = adapter._target(stage, row['path'])
+        if (outcome is None or staged.exists()) and not _matches(staged, row, identities[row['path']]):
             _reject('additions-retained-object-changed')
     receipt_row = journal['newReceipt']
     if (not isinstance(receipt_row, dict) or set(receipt_row) != {'path', 'bytes', 'sha256'}
@@ -990,7 +1010,9 @@ def _addition_journal(root):
             _reject('invalid-additions-entry')
         found.add(key)
         _valid_identity(entry['newIdentity'])
-        if not _matches(adapter._target(stage, row['path']), row, entry['newIdentity']):
+        staged = adapter._target(stage, row['path'])
+        if (entry['newIdentity'] != identities[row['path']]
+                or (outcome is None or staged.exists()) and not _matches(staged, row, entry['newIdentity'])):
             _reject('additions-retained-object-changed')
     if journal['oldReceiptSha256'] is not None:
         _digest(journal['oldReceiptSha256'])
@@ -1002,6 +1024,11 @@ def _addition_cleanup_plan(stage, retained, journal):
     adapter = _adapter()
     expected = {row['path']: (row, journal['stagedIdentities'][row['path']]) for row in journal['files']}
     expected['receipt.json'] = (journal['newReceipt'], None)
+    outcome = _addition_outcome(stage, retained, journal)
+    if outcome is not None:
+        path = adapter._target(stage, ADDITIONS_OUTCOME)
+        expected[ADDITIONS_OUTCOME] = (dict(path=ADDITIONS_OUTCOME, bytes=path.stat().st_size,
+            sha256=adapter._sha(path)), _identity(path.stat()))
     expected['addition-journal.json'] = (dict(path='addition-journal.json', bytes=retained.stat().st_size,
                                             sha256=adapter._sha(retained)), _identity(retained.stat()))
     allowed_dirs = {stage}
@@ -1031,53 +1058,75 @@ def recover_pending_additions(root):
     if loaded is None:
         return {'status': 'no-pending-additions'}
     stage, retained, journal = loaded
-    receipt = adapter._target(root, f"{STATE}/{journal['packageId']}.json")
-    current = _read_json(receipt) if receipt.exists() else None
-    committed = (current is not None and current.get('additionTransactionId') == journal['transactionId']
-                 and current.get('packageId') == journal['packageId']
-                 and current.get('files') == journal['files'])
-    if committed:
-        if any(not _matches(adapter._target(root, row['path']), row) for row in journal['files']):
-            _reject('additions-committed-data-changed')
-    else:
-        if (adapter._sha(receipt) if receipt.exists() else None) != journal['oldReceiptSha256']:
-            _reject('additions-receipt-changed')
-        # Inspect the entire set first; leave all objects untouched on conflicts.
-        for entry in journal['entries']:
-            path = adapter._target(root, entry['new']['path'])
-            if path.exists() and not _matches(path, entry['new'], entry['newIdentity']):
-                _reject('additions-rollback-conflict')
-        for entry in reversed(journal['entries']):
-            row = entry['new']
-            path = adapter._target(root, row['path'])
-            if path.exists() and not adapter._rollback_published(path, tuple(entry['newIdentity']), row['sha256']):
-                _reject('additions-rollback-incomplete')
+    outcome = _addition_outcome(stage, retained, journal)
+    if outcome is None:
+        receipt = adapter._target(root, f"{STATE}/{journal['packageId']}.json")
+        current = _read_json(receipt) if receipt.exists() else None
+        committed = (current is not None and current.get('additionTransactionId') == journal['transactionId']
+                     and current.get('packageId') == journal['packageId']
+                     and current.get('files') == journal['files'])
+        if committed:
+            if any(not _matches(adapter._target(root, row['path']), row) for row in journal['files']):
+                _reject('additions-committed-data-changed')
+        else:
+            if (adapter._sha(receipt) if receipt.exists() else None) != journal['oldReceiptSha256']:
+                _reject('additions-receipt-changed')
+            # Inspect the entire set first; leave all objects untouched on conflicts.
+            for entry in journal['entries']:
+                path = adapter._target(root, entry['new']['path'])
+                if path.exists() and not _matches(path, entry['new'], entry['newIdentity']):
+                    _reject('additions-rollback-conflict')
+            for entry in reversed(journal['entries']):
+                row = entry['new']
+                path = adapter._target(root, row['path'])
+                if path.exists() and not adapter._rollback_published(path, tuple(entry['newIdentity']), row['sha256']):
+                    _reject('additions-rollback-incomplete')
+        # Publication/rollback is now complete. Persist this before deleting
+        # any witnesses, so a retry never replays business mutations or requires
+        # already cleaned staging files/current user objects to remain unchanged.
+        outcome = dict(schema=ADDITIONS_OUTCOME_SCHEMA, transactionId=journal['transactionId'],
+            journalSha256=adapter._sha(retained), status='committed' if committed else 'rolled-back')
+        _write_new(adapter._target(stage, ADDITIONS_OUTCOME), _encoded(outcome))
+    committed = outcome['status'] == 'committed'
     files, directories = _addition_cleanup_plan(stage, retained, journal)
-    pending = adapter._target(root, ADDITIONS_PENDING)
-    if not adapter._rollback_published(pending, tuple(_identity(retained.stat())), adapter._sha(retained)):
-        _reject('additions-pointer-could-not-be-cleared')
-    _directory_sync(pending.parent)
+    # Keep both linked journal witnesses and terminal outcome until all staged
+    # payload/receipt copies and their subdirectories have been cleaned.
+    outcome_path = adapter._target(stage, ADDITIONS_OUTCOME)
+    metadata = {retained, outcome_path}
     incomplete = False
     for path, identity, digest in files:
-        if path == retained:
-            continue  # Keep ownership evidence if any later cleanup fails.
+        if path in metadata:
+            continue
         if not adapter._rollback_published(path, identity, digest):
             incomplete = True
+        _directory_sync(path.parent)
     for directory in directories:
         try:
             directory.rmdir()  # Never recursively remove a newly introduced object.
         except OSError:
             incomplete = True
-    if not incomplete:
-        if not adapter._rollback_published(retained, tuple(_identity(retained.stat())), adapter._sha(retained)):
-            incomplete = True
-        else:
-            try:
-                stage.rmdir()
-            except OSError:
-                incomplete = True
     if incomplete:
         raise adapter.ImportRejected('additions-stage-cleanup-incomplete', details={'stage': journal['stage']})
+    # Revalidate the complete stage: a concurrent unknown object cannot become
+    # an untracked successful cleanup merely because it appeared after planning.
+    remaining, remaining_directories = _addition_cleanup_plan(stage, retained, journal)
+    if remaining_directories or {row[0] for row in remaining} != metadata:
+        _reject('additions-stage-cleanup-incomplete')
+    pending = adapter._target(root, ADDITIONS_PENDING)
+    if not adapter._rollback_published(pending, tuple(_identity(retained.stat())), adapter._sha(retained)):
+        _reject('additions-pointer-could-not-be-cleared')
+    # No payload copies remain when the gate is cleared. Only redundant terminal
+    # text/empty directories may remain after a best-effort metadata retirement.
+    try:
+        _directory_sync(pending.parent)
+        by_path = {path: (identity, digest) for path, identity, digest in remaining}
+        for path in (outcome_path, retained):
+            if not adapter._rollback_published(path, *by_path[path]):
+                break
+        else:
+            stage.rmdir()
+    except (OSError, adapter.ImportRejected):
+        pass
     return {'status': 'additions-committed' if committed else 'additions-rolled-back',
             'packageId': journal['packageId'], 'additionTransactionId': journal['transactionId'],
             'restartRequired': True}

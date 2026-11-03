@@ -142,6 +142,19 @@ class RecoveryHelperTests(unittest.TestCase):
         self.assertEqual(result['errorCode'], 'additions-stage-cleanup-incomplete')
         self.assertTrue((stage / OLD_PATH).exists())
         self.assertTrue((stage / 'addition-journal.json').exists())
+        self.assertTrue((self.root / upgrade.ADDITIONS_PENDING).exists())
+        self.fixture.assert_old()
+        # Partial cleanup changes the fingerprint. Reinspect, then use the real
+        # helper dispatcher on the remaining subset without replaying rollback.
+        with importer._writer_locked_installation(self.root, require_closed=False):
+            retry_plan = inspect_locked(self.root)
+        self.assertTrue(retry_plan['cleanupOnly'])
+        self.assertNotEqual(retry_plan['planSha256'], plan['planSha256'])
+        code, result = self.run_request(self.request(retry_plan, 'recover', 'cleanup-retry'))
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result['operationResult']['status'], 'additions-rolled-back')
+        self.assertFalse((self.root / upgrade.ADDITIONS_PENDING).exists())
+        self.assertFalse(stage.exists())
         self.fixture.assert_old()
 
     def test_additions_helper_rejects_changed_plan_without_touching_user_replacement(self):

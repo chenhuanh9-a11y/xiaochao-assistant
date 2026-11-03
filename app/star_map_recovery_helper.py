@@ -46,8 +46,9 @@ def _validate_request(request, request_id):
             or request["action"] not in ("recover", "rollback")):
         raise importer.ImportRejected("invalid-recovery-request")
     plan = request["plan"]
-    if (not isinstance(plan, dict) or set(plan) != {"transactionId", "packageId", "status", "pending",
-                                                 "fileCount", "blockedPaths", "planSha256"}
+    fields = {"transactionId", "packageId", "status", "pending", "fileCount", "blockedPaths", "planSha256"}
+    if (not isinstance(plan, dict) or set(plan) not in (fields, fields | {'cleanupOnly'})
+            or ('cleanupOnly' in plan and (plan['cleanupOnly'] is not True or plan.get('status') != 'additions-pending'))
             or not re.fullmatch(r"[0-9a-f]{64}", str(plan.get("planSha256", "")))):
         raise importer.ImportRejected("invalid-recovery-plan")
     # The locked shared service additionally validates the journal, transaction
