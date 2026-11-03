@@ -785,6 +785,44 @@ class ResourceServiceTests(unittest.TestCase):
         self.assertTrue(any(r["packageId"] == manifest["packageId"] and r["status"] == "not-installed"
                             for r in self.service.packageRows), self.service.message)
 
+    def test_same_files_changed_dependencies_report_rejection_not_duplicate_success(self):
+        self.install()
+        receipt = self.root / "work/map-packages/nightmare-suju.json"
+        before, inode = receipt.read_bytes(), receipt.stat().st_ino
+        self.completions.clear()
+        self.changes.clear()
+        dependency = "_internal/references/author-packs/wang-qingxin/catalog.json"
+        self.write(dependency, b"catalog")
+        self.dependencies.append(row(dependency, b"catalog"))
+        self.install(self.package("changed-dependencies.zip"))
+        self.assertIn("dependency-contract-changed", self.problems[-1]["raw"])
+        self.assertIn("当前不能仅更新依赖记录", self.problems[-1]["summary"])
+        self.assertIn("原图包和安装记录未改动", self.problems[-1]["summary"])
+        self.assertEqual(self.completions, [])
+        self.assertEqual(self.changes, [])
+        self.assertEqual(receipt.read_bytes(), before)
+        self.assertEqual(receipt.stat().st_ino, inode)
+        self.assertNotIn("无需重复导入", self.service.message)
+        self.assertFalse(self.lease.active)
+
+    def test_confirmation_rejects_receipt_with_erased_dependencies(self):
+        self.install()
+        self.completions.clear()
+        self.install(self.package("new-image.zip", b"new-image"))
+        self.assertEqual(self.service.pendingKind, "overwrite")
+        receipt = self.root / "work/map-packages/nightmare-suju.json"
+        changed = json.loads(receipt.read_bytes())
+        changed.pop("requiresFiles")
+        receipt.write_text(json.dumps(changed))
+        before = receipt.read_bytes()
+        self.service.confirmOperation(True)
+        self.settle()
+        self.assertIn("invalid-installed-package-dependencies", self.problems[-1]["raw"])
+        self.assertEqual(self.completions, [])
+        self.assertEqual(receipt.read_bytes(), before)
+        self.assertEqual((self.root / IMAGE).read_bytes(), b"route")
+        self.assertFalse(self.lease.active)
+
 
 if __name__ == "__main__":
     unittest.main()

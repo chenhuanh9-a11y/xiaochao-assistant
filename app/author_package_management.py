@@ -40,6 +40,9 @@ def package_inspection_message(error) -> str:
         return ('本地已有不同版本、改动过或未登记的资源，不能直接覆盖。'
                 '若是已管理资源，请先在“管理已安装资源”备份并移除，再重新导入；'
                 f'未登记文件会保留。冲突文件：{path}')
+    if 'dependency-contract-changed-reimport-unsupported' in text:
+        return ('这个图包的地图文件相同，但依赖要求已改变，当前不支持仅更新依赖记录。'
+                '本次未导入，原收据和资源保持不变。')
     if 'missing-or-incompatible-dependency:' in text:
         return '资源包与当前基础地图数据不匹配，请选择适用于本版本的资源包。原资源未改动。'
     if 'upgrade-recovery-required' in text or 'pending-upgrade' in text:

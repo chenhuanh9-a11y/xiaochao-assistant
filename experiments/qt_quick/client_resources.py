@@ -54,6 +54,8 @@ def package_problem(error, action, *, online=False, recovery_required=False):
         summary = "图包中的文件与包内说明不一致，暂时不能导入。请重新获取图包提供者发布的完整文件。"
     elif category == "limit":
         summary = "这个图包或下载列表过大，当前软件无法处理。请向图包提供者获取适用于当前版本的文件。"
+    elif code == "dependency-contract-changed-reimport-unsupported":
+        summary = "图包文件相同，但依赖要求已改变，当前不能仅更新依赖记录。本次未导入，原图包和安装记录未改动。"
     elif category == "dependency":
         summary = "这个图包需要的地图文件有缺失，或版本与当前软件不匹配，暂时不能导入。请查看图包适用的版本，使用与当前软件配套的图包。"
     elif category == "conflict":

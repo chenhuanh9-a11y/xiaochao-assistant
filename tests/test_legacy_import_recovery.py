@@ -102,7 +102,8 @@ class LegacyImportRecoveryTests(unittest.TestCase):
 
     def test_existing_receipt_never_falls_back_to_legacy_authority(self):
         self.f.write("work/map-packages/nightmare-suju.json", json.dumps(dict(packageId=self.package,
-            revision=1, archiveSha256="b" * 64, files=[fixture.row(self.path, b"different-version")])).encode())
+            revision=1, archiveSha256="b" * 64, requiresFiles=self.f.dependencies,
+            files=[fixture.row(self.path, b"different-version")])).encode())
         before = self.f.receipt().read_bytes()
         with self.assertRaisesRegex(importer.ImportRejected, "existing-data-conflict"):
             self.f.live(self.archive)

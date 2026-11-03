@@ -370,7 +370,12 @@ def _installed_inventory(root: Path, package_id: str):
     if not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
         raise ImportRejected("invalid-installed-package-receipt")
     raw = path.read_bytes()
-    receipt = _json(raw)
+    rows, dependencies = _receipt_inventory(_json(raw), package_id)
+    return rows, dependencies, hashlib.sha256(raw).hexdigest()
+
+
+def _receipt_inventory(receipt, package_id):
+    """Shared strict receipt contract for import, ownership and removal."""
     if (receipt.get("packageId") != package_id or receipt.get("revision") != 1
             or not isinstance(receipt.get("archiveSha256"), str)
             or not re.fullmatch(r"[0-9a-f]{64}", receipt["archiveSha256"])):
@@ -378,9 +383,29 @@ def _installed_inventory(root: Path, package_id: str):
     rows = _rows(receipt.get("files"))
     if any(not _allowed(package_id, row["path"]) for row in rows.values()):
         raise ImportRejected("invalid-installed-package-receipt")
-    dependency_records = receipt.get("requiresFiles", [])
-    dependencies = {} if dependency_records == [] else _rows(dependency_records, dependencies=True)
-    return rows, dependencies, hashlib.sha256(raw).hexdigest()
+    if "requiresFiles" not in receipt:
+        # Only our exact approved legacy adoption format predates dependencies.
+        # A missing field on an ordinary receipt is damage, not permission to
+        # forget the constraints that the original archive had to declare.
+        from author_package_management import LEGACY_AUTHOR_INVENTORY
+        release = LEGACY_AUTHOR_INVENTORY.get(package_id)
+        legacy = receipt.get("legacyAdoption")
+        expected_legacy = (dict(schemaVersion=1, scope="author-display-only",
+            sourceArchive=release["archiveName"], completeDisplaySet=True) if release else None)
+        approved = (_rows([{key: row[key] for key in ("path", "bytes", "sha256")}
+                            for row in release["files"]]) if release else None)
+        if (set(receipt) != {"packageId", "revision", "archiveSha256", "files", "legacyAdoption"}
+                or not release or legacy != expected_legacy or rows != approved
+                or receipt["archiveSha256"] != release["archiveSha256"]):
+            raise ImportRejected("invalid-installed-package-dependencies")
+        dependencies = {}
+    else:
+        dependencies = _rows(receipt["requiresFiles"], dependencies=True)
+        required = (DIFFICULT_AUTHOR_DEPENDENCIES if package_id in
+                    {"difficult-aichicu", "difficult-suju-speed"} else BASE_DEPENDENCIES)
+        if not required <= {row["path"] for row in dependencies.values()}:
+            raise ImportRejected("invalid-installed-package-dependencies")
+    return rows, dependencies
 
 
 def _owned_inventory(root: Path, package_id: str):
@@ -540,6 +565,14 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None) -
         # Reading through EOF also performs zipfile's CRC check.
         if count != row["bytes"] or digest.hexdigest() != row["sha256"]:
             raise ImportRejected(f"file-integrity-mismatch: {path}")
+    installed, installed_dependencies, installed_digest = _installed_inventory(root, package_id)
+    if (installed_digest is not None and not replacements and not missing
+            and installed == rows and installed_dependencies != dependencies):
+        raise ImportRejected("dependency-contract-changed-reimport-unsupported")
+    # Bind confirmations even when all payload bytes already match: a receipt
+    # can change its dependency contract independently of the image files.
+    if installed_digest is not None:
+        receipt_digest = installed_digest
     _check_other_package_constraints(root, package_id, rows, replacements)
     return {"packageId": package_id, "revision": 1, "files": list(rows.values()),
             "requiresFiles": list(dependencies.values()),
@@ -791,8 +824,10 @@ def _commit_additions(root, result, stage, *, live=False, cancelled=None):
         _set_addition_outcome(result, len(created), live=live)
         receipt = _target(root, f"work/map-packages/{result['packageId']}.json")
         if not created and receipt.exists():
-            owned, _ = _owned_inventory(root, result['packageId'])
+            owned, dependencies, _ = _installed_inventory(root, result['packageId'])
             if owned == _rows(result['files']):
+                if dependencies != _rows(result['requiresFiles'], dependencies=True):
+                    raise ImportRejected('dependency-contract-changed-reimport-unsupported')
                 # A no-op must retain the receipt inode/transaction witness
                 # so retirement history keeps its exact receipt binding.
                 previous = _json(receipt.read_bytes())

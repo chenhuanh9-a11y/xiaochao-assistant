@@ -1,7 +1,7 @@
 import sys,json,tempfile,unittest,hashlib
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).parents[1]/'app'))
-from star_map_import import verified_installed_package
+from star_map_import import verified_installed_package, BASE_DEPENDENCIES
 class Installed(unittest.TestCase):
  def setUp(self):
   self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name)
@@ -9,7 +9,11 @@ class Installed(unittest.TestCase):
   self.file=self.root/'_internal/assets/suju/nightmare-03/floor-2.png';self.file.parent.mkdir(parents=True);self.file.write_bytes(b'pixels')
   self.receipt=self.root/'work/map-packages/nightmare-suju.json';self.receipt.parent.mkdir(parents=True)
  def write(self):
-  self.receipt.write_text(json.dumps(dict(packageId=self.pid,revision=1,archiveSha256=self.sha,files=[dict(path=self.file.relative_to(self.root).as_posix(),bytes=6,sha256=hashlib.sha256(b'pixels').hexdigest())])))
+  dependencies=[]
+  for name in sorted(BASE_DEPENDENCIES):
+   path=self.root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(b'base')
+   dependencies.append(dict(path=name,bytes=4,sha256=hashlib.sha256(b'base').hexdigest()))
+  self.receipt.write_text(json.dumps(dict(packageId=self.pid,revision=1,archiveSha256=self.sha,requiresFiles=dependencies,files=[dict(path=self.file.relative_to(self.root).as_posix(),bytes=6,sha256=hashlib.sha256(b'pixels').hexdigest())])))
  def check(self,sha=None,**kw):return verified_installed_package(self.root,self.pid,sha,**kw)['status']
  def test_download_without_receipt_is_not_installed(self):self.assertEqual(self.check(),'not-installed')
  def test_verified_and_duplicate(self):

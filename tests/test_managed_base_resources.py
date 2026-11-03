@@ -136,7 +136,23 @@ class ManagedBaseResourcesTests(unittest.TestCase):
             self.write(self.target / name, b"author image")
         value = dict(packageId=package, revision=1, archiveSha256="a" * 64, files=[row])
         if dependencies is not None:
-            value["requiresFiles"] = dependencies
+            # Ordinary installed receipts always declare the base closure, as
+            # real ZIP imports do. Additional rows exercise migration conflicts.
+            base = []
+            for name in sorted(managed.files.BASE_DEPENDENCIES):
+                data = b"fixture-base"
+                self.write(self.target / name, data)
+                base.append(self.row(name, data))
+            value["requiresFiles"] = base + dependencies
+        else:
+            # Only a complete approved legacy adoption may omit dependencies.
+            import author_package_management as author
+            release = dict(archiveName="fixture-approved.zip", archiveSha256="a" * 64, files=[row])
+            patcher = mock.patch.object(author, "LEGACY_AUTHOR_INVENTORY", {package: release})
+            patcher.start()
+            self.addCleanup(patcher.stop)
+            value["legacyAdoption"] = dict(schemaVersion=1, scope="author-display-only",
+                sourceArchive=release["archiveName"], completeDisplaySet=True)
         data = json.dumps(value).encode()
         path = self.target / f"work/map-packages/{package}.json"
         self.write(path, data)
@@ -307,7 +323,7 @@ class ManagedBaseResourcesTests(unittest.TestCase):
             managed.repair_managed_base_resources(self.target)
         self.assertEqual((self.target / row["path"]).read_bytes(), before)
 
-    def test_old_receipt_without_dependencies_allows_missing_repair_but_blocks_replacement(self):
+    def test_approved_legacy_receipt_allows_missing_repair_but_blocks_replacement(self):
         self.receipt()
         self.project()
         managed.repair_managed_base_resources(self.target)
