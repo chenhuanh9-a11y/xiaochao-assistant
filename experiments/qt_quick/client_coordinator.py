@@ -791,7 +791,7 @@ class ClientCoordinator(QObject):
 
     @Slot(str)
     def navigate(self, name):
-        if name in {"home", "recognition", "gallery", "resources", "downloads", "custom", "settings", "replay", "help"}:
+        if name in {"home", "recognition", "gallery", "resources", "downloads", "custom", "settings", "replay", "help", "plaza"}:
             self.pageRequested.emit(name)
             if name == "recognition" and self.runtime.snapshot().get("roundActive"):
                 # Even show()/showNormal() may activate a normal QQuickWindow.

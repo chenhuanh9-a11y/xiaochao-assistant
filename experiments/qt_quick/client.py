@@ -63,6 +63,7 @@ class QtClient:
         from client_custom_gallery import CustomGalleryService
         from client_custom_display import CustomGalleryDisplay
         from client_downloads import OnlinePackagesService
+        from client_route_plaza import RoutePlazaService
         from client_coordinator import ClientCoordinator, LiveImages
         from client_ui_feedback import UiFeedback
         from client_onboarding import OnboardingService
@@ -91,6 +92,7 @@ class QtClient:
         self._closed = False
         self.settings = SettingsService(self.sandbox)
         self.custom_galleries = CustomGalleryService(self.sandbox)
+        self.route_plaza = RoutePlazaService(self.sandbox, self.custom_galleries)
         self.custom_display = CustomGalleryDisplay(self.custom_galleries)
         from client_capture_exclusion import QtCaptureExclusion
         self.capture_exclusion = QtCaptureExclusion(parent=app,
@@ -181,6 +183,7 @@ class QtClient:
         self.info.setProviders(session=self.session, resources=self.resources, input=self.input,
                                coordinator=self.coordinator, problems=self.problems)
         self.coordinator.close_writers = (self.custom_galleries, self.info, self.online_packages,
+                                         self.route_plaza,
                                          self.backend, self.route_choices, self.problems, self.reference_preview,
                                          self.capture_exclusion, self.manual_map_picker)
         if self.lifecycle_trace is not None:
@@ -217,6 +220,7 @@ class QtClient:
             settingsService=self.settings, resourceService=self.resources, session=self.session,
             windows=self.windows, clientCoordinator=self.coordinator, infoService=self.info,
             customGalleryService=self.custom_galleries, onlinePackageService=self.online_packages,
+            routePlazaService=self.route_plaza,
             onboardingService=self.onboarding, chestAutoTapService=self.chest_auto_tap,
             previewService=self.preview, problemService=self.problems,
             floorRegionService=self.floor_region,
@@ -447,6 +451,7 @@ class QtClient:
         self.lifecycle.record_event(dict(stage="shutdown-entered", closing=self.coordinator.closing,
                                          closeReady=self.coordinator.closeReady))
         self._closed = True
+        self.route_plaza.cancel()
         self.problems.shutdown()
         if self.lifecycle_trace is not None:
             self.lifecycle_trace.shutdown()
@@ -471,6 +476,7 @@ class QtClient:
         self.info.shutdown()
         self.custom_galleries.shutdown()
         self.online_packages.shutdown()
+        self.route_plaza.shutdown()
         self.manual_map_picker.shutdown()
         self.windows.shutdown()
         self.lifecycle.record_event(dict(stage="shutdown-completed", closing=self.coordinator.closing,

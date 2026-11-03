@@ -13,11 +13,11 @@ ApplicationWindow {
     color: "#f3f5fa"; font.family: "Microsoft YaHei UI"; font.pixelSize: 13
     property string page: "home"
     property real replayAlpha: 0.55
-    property var pages: ["home", "gallery", "resources", "settings", "replay", "help", "recognition", "custom", "downloads"]
+    property var pages: ["home", "gallery", "resources", "settings", "replay", "help", "recognition", "custom", "downloads", "plaza"]
     readonly property bool compactRail: width < 800 || height < 660
     readonly property int workspaceMargin: width >= 1200 ? 48 : 28
     function section(name) { return name === "resources" || name === "downloads" ? "gallery" : name === "recognition" ? "home" : name === "replay" ? "help" : name }
-    function heading(name) { return ({home:"主页面",gallery:"地图资源",resources:"图包管理",downloads:"在线图包",settings:"设置",replay:"识别回放",help:"帮助与公告",recognition:"地图识别",custom:"自定义路线"})[name] || "星图" }
+    function heading(name) { return ({home:"主页面",gallery:"地图资源",resources:"图包管理",downloads:"在线图包",settings:"设置",replay:"识别回放",help:"帮助与公告",recognition:"地图识别",custom:"自定义路线",plaza:"路线广场"})[name] || "星图" }
     readonly property var routeOptions: {
         var options = routeChoices.profiles.slice()
         var custom = customGalleryService.snapshot
@@ -41,6 +41,7 @@ ApplicationWindow {
         onActivated: clientCoordinator.toggleControlsKeyboard()
     }
     ClientOnboarding {}
+    ClientAccount {}
     onClosing: function(event) {
         if (clientCoordinator.closeReady) {
             closeChoice.close()
@@ -65,7 +66,7 @@ ApplicationWindow {
                 }
                 Repeater {
                     model: [{key:"home",label:"主页面",icon:"home"},{key:"gallery",label:"地图资源",icon:"map"},
-                            {key:"custom",label:"自定义",icon:"route"},{key:"settings",label:"设置",icon:"settings"},{key:"help",label:"帮助",icon:"help"}]
+                            {key:"custom",label:"自定义",icon:"route"},{key:"plaza",label:"路线广场",icon:"note"},{key:"settings",label:"设置",icon:"settings"},{key:"help",label:"帮助",icon:"help"}]
                     AppButton {
                         id: navigation
                         required property var modelData
@@ -150,6 +151,7 @@ ApplicationWindow {
             ClientRecognition {}
             ClientCustomGallery {}
             ClientOnlinePackages {}
+            ClientRoutePlaza {}
         }
         }
     }

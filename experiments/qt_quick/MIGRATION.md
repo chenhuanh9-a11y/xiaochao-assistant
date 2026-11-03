@@ -616,3 +616,21 @@ Validation on Linux/offscreen (native window/key/SendInput boundaries mocked):
 - No Windows desktop/game input, installed build, packaging or release was tested.
   The feature-branch Windows workflow runs offscreen tests only, with read-only
   repository permissions; it neither builds nor releases anything.
+
+
+## 路线广场与账号登录（Qt）
+
+`Client.qml` 侧栏 → `ClientRoutePlaza.qml`；页内账号状态/登录按钮 → 所属主窗口的
+`ClientAccount.qml`。新增 `RoutePlazaService` 复用 PR #23 (`0d3c394`) 的 toolkit-free
+账号/广场服务；该 PR 尚未合并，因此此次窄移植了业务模块和合成 HTTP 测试，未整树合并。
+
+| 原 Tk 契约（PR #23） | 当前 Qt 入口/消费者 | 离线证据 |
+| --- | --- | --- |
+| 公开浏览、搜索、刷新、已下载/更新、去使用 | 常驻广场页，版本 ID 增量模型，原导航器到 `custom` | 本机 HTTP、模型不变刷新、版本替换、完整客户端鼠标点击 |
+| 登录/注册/恢复码重置/注销、失效提示 | `ClientAccount`、公共账号状态；原 `AccountService` 令牌/DPAPI 契约 | 账号错误/恢复码、关闭迟到结果、输入保护、空白登录截图；DPAPI 未测 |
+| 校验包并转换为只读图库、复制后编辑、删除/导出 | 原 `CustomGalleryService` 单写者/磁盘摘要/committed snapshot/显示失效链路 | 真实临时图库、复制/删除/更新/失败回滚、旧 Qt 图库与导出测试 |
+| 切页、取消与退出 | 隐藏页收取任务，可见再同步；原 `close_writers` 排空 | 本机阻塞下载取消/资源撤销；完整客户端退出子进程正常返回 |
+
+原 Tk 主入口未替换；Tk 图库页仅补齐下载图库来源/只读/可删除语义。
+调用链、参考文档、截图和未测项见 [路线广场文档](../../docs/route-plaza.md)。
+测试使用合成图包、本机 HTTP 和原 native/capture/engine fixture；不是线上或游戏验收。
