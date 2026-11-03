@@ -18,6 +18,7 @@ import star_map_import as importer
 import star_map_import_helper as process
 from packaged_product_identity import expected_application_executable
 from map_package_recovery_plan import execute_locked
+from resource_transaction import resource_runtime_lease
 
 SCHEMA = "xingtu-resource-recovery-request-v1"
 HELPER_NAME = "star-map-recovery-helper"
@@ -88,6 +89,7 @@ def run_helper(*, request_file, request_sha256, install_root, request_id, parent
     expected_path = _request_path(root, request_id)
     result = dict(requestId=request_id, success=False, restartRequired=False,
                   scope="offline-resource-recovery; not native-game acceptance")
+    lease = None
     try:
         expected_exe = importer._target(root, expected_application_executable())
         if os.path.normcase(os.path.realpath(sys.executable)) == os.path.normcase(str(expected_exe)):
@@ -109,6 +111,7 @@ def run_helper(*, request_file, request_sha256, install_root, request_id, parent
             parent_executable=parent_executable, cancel_path=process._cancel_path(root, request_id))
         if process._cancel_path(root, request_id).exists():
             raise importer.ImportRejected("import-request-cancelled")
+        lease = resource_runtime_lease(root)
         # Original closed check and OS writer lock remain mandatory; a second
         # instance or changed backup/target prevents recovery after consent.
         with importer._writer_locked_installation(root, require_closed=True):
@@ -120,10 +123,19 @@ def run_helper(*, request_file, request_sha256, install_root, request_id, parent
         result["success"] = True
         code = 0
     except Exception as error:
-        result.update(errorCode=type(error).__name__, reason=str(error))
+        result.update(errorCode=getattr(error, 'code', type(error).__name__),
+                      errorDetails=getattr(error, 'details', {}), reason=str(error))
         code = 2
+    except BaseException:
+        if lease is not None:
+            lease.close()
+        raise
     result["completedAtUTC"] = datetime.now(timezone.utc).isoformat()
-    process._write_receipt(root, result, path=receipt_path(root))
+    try:
+        process._write_receipt(root, result, path=receipt_path(root))
+    finally:
+        if lease is not None:
+            lease.close()
     return code, result
 
 

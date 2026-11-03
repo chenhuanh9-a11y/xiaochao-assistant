@@ -62,13 +62,9 @@ class InstallerProjectionTests(unittest.TestCase):
     def apply_generated_projection(self, destination):
         # Interpret the generated concrete file rows with the documented cached
         # Inno checks. This does not execute Pascal or assert native acceptance.
-        existing_base = any((destination / name).exists() for name in (
-            "_internal/assets", "_internal/references", "_internal/recognition",
-            "_internal/difficult-native-manifest.json"))
         existing_editor = any((destination / name).exists() for name in (
             "assets/custom-maps", "_internal/assets/custom-maps"))
-        decisions = dict(InstallBaseResourcePlane=not existing_base,
-                         InstallEditorResourceFamily=not existing_editor)
+        decisions = dict(InstallEditorResourceFamily=not existing_editor)
         copied = []
         for line in self.include.read_text("utf-8-sig").splitlines():
             if not line.startswith("Source:"):
@@ -77,10 +73,11 @@ class InstallerProjectionTests(unittest.TestCase):
             if check and not decisions[check[1]]:
                 continue
             relative = re.search(r'Source: "\{#StageDir\}\\([^"]+)"', line)[1].replace("\\", "/")
-            target = destination / relative
+            parent = re.search(r'DestDir: "\{app\}([^"]*)"', line)[1].replace("\\", "/").lstrip("/")
+            target = destination / parent / Path(relative).name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(self.stage / relative, target)
-            copied.append(relative)
+            copied.append(target.relative_to(destination).as_posix())
         return copied
 
     def test_production_filename_is_formal_while_private_instances_keep_fingerprint(self):
@@ -92,12 +89,17 @@ class InstallerProjectionTests(unittest.TestCase):
         self.assertEqual(build.setup_basename(private, "1.0.5-qt-test", commit),
                          "XingtuQtTest-Setup-1.0.5-qt-test-aaaaaaaaaaaa")
 
-    def test_fresh_install_copies_complete_planes_with_one_cached_decision(self):
+    def test_fresh_install_stages_complete_candidate_then_runtime_repairs_all_base_files(self):
         destination = self.folder / "fresh"
         copied = self.apply_generated_projection(destination)
-        expected = {p.relative_to(self.stage).as_posix() for p in self.stage.rglob("*") if p.is_file()}
+        expected = set(self.report["installedFiles"])
         self.assertEqual(set(copied), expected)
+        from managed_base_resources import repair_managed_base_resources
+        self.assertEqual(repair_managed_base_resources(destination)["changed"], len(self.report["families"]["base"]))
         for name in self.resources:
+            if "/author-packs/" in name:
+                self.assertFalse((destination / "_internal" / name).exists())
+                continue
             self.assertEqual((destination / "_internal" / name).read_bytes(),
                              (self.stage / "_internal" / name).read_bytes())
 
@@ -122,13 +124,18 @@ class InstallerProjectionTests(unittest.TestCase):
                          (self.stage / "_internal/references/build-fingerprint.txt").read_bytes())
         self.assertEqual((destination / "version.json").read_bytes(), b"new-program")
 
-    def test_partial_plane_is_preserved_without_filling_missing_coupled_manifest(self):
+    def test_partial_plane_repairs_missing_full_set_preserving_unmanaged_extra_file(self):
         destination = self.folder / "partial"
         self.write(destination / "_internal/references/one-existing.json", b"keep")
         copied = self.apply_generated_projection(destination)
         self.assertFalse(set(copied) & set(self.report["families"]["base"]))
         self.assertFalse((destination / "_internal/difficult-native-manifest.json").exists())
         self.assertTrue((destination / "_internal/assets/custom-maps/manifest.json").exists())
+        from managed_base_resources import repair_managed_base_resources
+        repair_managed_base_resources(destination)
+        self.assertEqual((destination / "_internal/references/one-existing.json").read_bytes(), b"keep")
+        self.assertEqual((destination / "_internal/difficult-native-manifest.json").read_bytes(),
+                         (self.stage / "_internal/difficult-native-manifest.json").read_bytes())
 
     def test_production_fingerprint_uses_new_qt_commit_and_records_replaced_hash(self):
         resources = {"references/build-fingerprint.txt": dict(bytes=9, sha256="a" * 64)}
@@ -142,7 +149,7 @@ class InstallerProjectionTests(unittest.TestCase):
 
     def test_inventory_exactness_and_identity_separation_gate(self):
         families = self.report["families"]
-        self.assertEqual(len(families["base"]), 82)
+        self.assertEqual(len(families["base"]), 80)
         members = sum(families.values(), [])
         self.assertEqual(len(members), len(set(members)))
         self.assertIn("_internal/references/build-fingerprint.txt", families["program"])
@@ -150,6 +157,29 @@ class InstallerProjectionTests(unittest.TestCase):
         self.write(self.stage / "_internal/references/undeclared.json", b"stray")
         with self.assertRaisesRegex(ValueError, "exact inventory"):
             build.production_file_projection(self.stage, self.resources)
+
+    def test_optional_author_sidecars_are_reported_but_never_installed_as_base_or_program(self):
+        import json
+        sidecars = {"_internal/references/author-packs/nightingale/" + name
+                    for name in ("catalog.json", "display-bindings.json")}
+        self.assertEqual(set(self.report["families"]["optional-author"]), sidecars)
+        manifest = json.loads((self.stage / self.report["managedBaseManifest"]).read_bytes())
+        self.assertFalse(sidecars & {row["path"] for row in manifest["files"]})
+        self.assertEqual(set(self.report["omittedOptionalAuthorFiles"]), sidecars)
+        self.assertTrue(all(not any(path.endswith(name) for name in sidecars)
+                            for path in self.report["installedFiles"]))
+        destination = self.folder / "existing-optional-author"
+        for name in sidecars:
+            self.write(destination / name, b"local author bytes")
+        self.apply_generated_projection(destination)
+        for name in sidecars:
+            self.assertEqual((destination / name).read_bytes(), b"local author bytes")
+        # Classification is exact; unfamiliar authors or extra sidecars do not
+        # gain an exemption from base integrity or declared inventory checks.
+        for name in ("_internal/references/author-packs/unknown/catalog.json",
+                     "_internal/references/author-packs/nightingale/other.json",
+                     "_internal/references/nightmare-canonical-coordinate-pack.json"):
+            self.assertEqual(build.resource_file_family(name), "base")
 
 
 if __name__ == "__main__":

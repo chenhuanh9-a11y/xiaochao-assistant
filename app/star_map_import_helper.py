@@ -20,6 +20,7 @@ import time
 
 from star_map_import import ImportRejected, _check_closed, _no_links, _target, install_package
 from packaged_product_identity import expected_application_executable
+from resource_transaction import resource_runtime_lease
 
 
 def _kernel():
@@ -216,6 +217,7 @@ def run_helper(*, archive, install_root, parent_pid, parent_created, archive_sha
     result = {"requestId": request_id, "archiveSha256": archive_sha256,
               "success": False, "restartRequired": False,
               "completedAtUTC": None, "scope": "offline-resource-import; not game/player acceptance"}
+    lease = None
     try:
         if os.path.normcase(os.path.realpath(sys.executable)) == os.path.normcase(str(expected_exe)):
             raise ImportRejected("helper-must-use-separate-executable")
@@ -224,6 +226,7 @@ def run_helper(*, archive, install_root, parent_pid, parent_created, archive_sha
             cancel_path=_cancel_path(root, request_id))
         if _cancel_path(root, request_id).exists():
             raise ImportRejected("import-request-cancelled")
+        lease = resource_runtime_lease(root)
         _check_closed(root)  # Also rejects a second running instance of this installed EXE.
         imported = install_package(archive, root, application_stopped=True,
                                    expected_archive_sha256=archive_sha256)
@@ -231,12 +234,21 @@ def run_helper(*, archive, install_root, parent_pid, parent_created, archive_sha
         result["success"] = True
         code = 0
     except Exception as error:
-        result["errorCode"] = type(error).__name__
+        result["errorCode"] = getattr(error, 'code', type(error).__name__)
+        result["errorDetails"] = getattr(error, 'details', {})
         result["reason"] = str(error)
         code = 2
+    except BaseException:
+        if lease is not None:
+            lease.close()
+        raise
     result["completedAtUTC"] = datetime.now(timezone.utc).isoformat()
     # If this write fails, main must show 'result unavailable', never success.
-    _write_receipt(root, result)
+    try:
+        _write_receipt(root, result)
+    finally:
+        if lease is not None:
+            lease.close()
     return code, result
 
 

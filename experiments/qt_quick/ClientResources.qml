@@ -7,18 +7,29 @@ Item {
     id: panel
     implicitHeight: 330
     property string confirmationText: ""
+    property var packageManager: typeof packageManagerService !== "undefined" ? packageManagerService : null
+    property var confirmationOwner: resourceService
+    property bool managerRefreshPending: false
+    readonly property bool operationPending: resourceService.busy || resourceService.pendingKind !== "" || (packageManager && (packageManager.busy || packageManager.pendingKind !== ""))
+    readonly property bool recoveryPending: resourceService.recoveryRequired || (packageManager && packageManager.recoveryRequired)
+
+    function refreshPackages() {
+        managerRefreshPending = !!packageManager
+        resourceService.refresh()
+    }
 
     function stateLabel(status) {
-        const labels = {"installed": "已安装并校验", "not-installed": "未安装", "incomplete": "文件缺失或有改动",
-            "unmanaged": "已有文件，尚未登记", "unverified": "尚未完成校验", "recovery-required": "需要恢复事务", "bundled": "内置默认资源"}
-        return labels[status] || status
+        const labels = {"installed": "已安装，可以使用", "not-installed": "未安装", "incomplete": "文件缺失或有改动",
+            "unmanaged": "已有文件，暂时无法确认来源", "unverified": "还没确认是否可用", "recovery-required": "上次操作还没完成", "managed-remnants": "有旧图包文件可清理", "bundled": "内置默认资源"}
+        return labels[status] || "需要重新核对"
     }
     function stateDetail(row) {
         if (row.status === "bundled") return "安装包自带，已导入的资源和当前选择保持优先。"
-        if (row.status === "unmanaged") return "现有文件没有可验证的登记记录，将保留原文件。"
-        if (row.status === "incomplete") return "请核对本地改动；移除时会备份实际文件。"
+        if (row.status === "unmanaged") return "暂时无法确认这些文件是否属于图包，会保留原文件。"
+        if (row.status === "incomplete") return "部分文件有改动或无法确认来源，会保留这些文件，删除可能无法全部完成。"
+        if (row.status === "managed-remnants") return "包含这个图包的旧备份，或上次操作留下的临时文件。"
         if (row.status === "unverified") return "暂时无法完成核对，请重新检查状态。"
-        if (row.status === "recovery-required") return "请先核对保留的事务备份与日志。"
+        if (row.status === "recovery-required") return "请点击“恢复记录”，按提示完成上次操作。"
         return ""
     }
 
@@ -29,22 +40,23 @@ Item {
             Layout.fillWidth: true
             Label { text: "管理本地资源"; color: "#142b4b"; font.pixelSize: 18; font.bold: true }
             Item { Layout.fillWidth: true }
-            AppButton { text: "恢复记录"; enabled: !resourceService.busy && resourceService.pendingKind === ""; onClicked: resourceService.inspectRecovery() }
+            AppButton { text: "恢复记录"; enabled: !panel.operationPending; onClicked: resourceService.inspectRecovery() }
             AppButton { text: "在线图包"; onClicked: clientCoordinator.navigate("downloads") }
-            AppButton { text: "核对状态"; enabled: !resourceService.busy && resourceService.pendingKind === ""; onClicked: resourceService.refresh() }
-            AppButton { text: "导入 ZIP"; primary: true; enabled: !resourceService.busy && resourceService.pendingKind === "" && !resourceService.recoveryRequired; onClicked: archiveDialog.open() }
+            AppButton { text: "核对状态"; enabled: !panel.operationPending && !panel.recoveryPending; onClicked: panel.refreshPackages() }
+            AppButton { objectName: "clearManagedPackagesButton"; text: "清理全部图包"; enabled: !!panel.packageManager && !panel.operationPending && !panel.recoveryPending; onClicked: panel.packageManager.requestClearAll() }
+            AppButton { text: "导入 ZIP"; primary: true; enabled: !panel.operationPending && !panel.recoveryPending; onClicked: archiveDialog.open() }
         }
         Label {
             Layout.fillWidth: true
-            text: "查看作者资源的实际文件状态；导入、更新和备份移除仅作用于当前资源目录。"
+            text: "删除只清理已核对归属的图包和历史副本；成功后不保留包副本。官方基础资源、自定义路线与未知文件会保留。"
             wrapMode: Text.Wrap; color: "#526785"; font.pixelSize: 12
         }
         ColumnLayout {
             Layout.fillWidth: true
             visible: resourceService.recoveryRequired || resourceService.recoveryTransactions.length > 0
-            Label { text: "升级恢复与回滚"; color: "#17365e"; font.bold: true }
-            Label { text: resourceService.recoveryUsesHelper ? "确认后正常关闭客户端，由恢复工具还原旧资源；重新打开后核对结果。" : resourceService.recoveryExecutionAllowed ? "已停止资源读取，可核对后恢复旧资源。" : "恢复需要单独的启动恢复阶段，识别和资源读取必须全部停止。"; color: "#526785"; wrapMode: Text.Wrap; Layout.fillWidth: true }
-            AppButton { text: "恢复中断的升级"; visible: resourceService.recoveryRequired; enabled: resourceService.recoveryExecutionAllowed && !resourceService.busy && resourceService.pendingKind === ""; onClicked: resourceService.requestRecovery() }
+            Label { text: "完成上次操作与清理"; color: "#17365e"; font.bold: true }
+            Label { text: resourceService.recoveryUsesHelper ? "确认后软件会正常退出，继续处理上次未完成的更改，或清理已完成操作留下的临时文件。完成后请重新打开查看结果。" : resourceService.recoveryExecutionAllowed ? "软件已准备好，可以确认后恢复图包或清理临时文件。" : "请先结束本局并正常退出，重新打开后按提示恢复图包。"; color: "#526785"; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            AppButton { text: "处理上次未完成的操作"; visible: resourceService.recoveryRequired; enabled: resourceService.recoveryExecutionAllowed && !resourceService.busy && resourceService.pendingKind === ""; onClicked: resourceService.requestRecovery() }
             ListView {
                 id: transactions
                 Layout.fillWidth: true
@@ -55,8 +67,14 @@ Item {
                 delegate: RowLayout {
                     required property var modelData
                     width: transactions.width
-                    Label { Layout.fillWidth: true; text: modelData.packageId + " · " + modelData.transactionId.slice(0,8) + " · " + modelData.status; color: "#526785"; elide: Text.ElideRight }
-                    AppButton { text: "回滚"; enabled: resourceService.recoveryExecutionAllowed && !resourceService.busy && resourceService.pendingKind === ""; onClicked: resourceService.requestRollback(modelData.transactionId) }
+                    Label { Layout.fillWidth: true; text: resourceService.packageTitle(modelData.packageId) + " · " + resourceService.recoveryStatusLabel(modelData.status); color: "#526785"; elide: Text.ElideRight }
+                    AppButton {
+                        objectName: "resourceTransactionAction-" + modelData.transactionId
+                        readonly property bool cleanup: modelData.status === "upgrade-cleanup-available" || modelData.status === "upgrade-cleanup-pending"
+                        text: cleanup ? "清理临时副本" : "恢复图包"
+                        enabled: (cleanup || modelData.pending) && resourceService.recoveryExecutionAllowed && !resourceService.busy && resourceService.pendingKind === ""
+                        onClicked: resourceService.requestCleanup(modelData.transactionId)
+                    }
                 }
             }
         }
@@ -70,7 +88,7 @@ Item {
             objectName: "managedPackageList"
             anchors.fill: parent; anchors.margins: 4; anchors.leftMargin: 18; anchors.rightMargin: 12
             clip: true; spacing: 0
-            model: resourceService.packageRows
+            model: panel.packageManager ? panel.packageManager.packageRows.concat(resourceService.packageRows.filter(function(row) { return row.status === "bundled" })) : resourceService.packageRows
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar {}
             delegate: Item {
@@ -85,7 +103,7 @@ Item {
                         Label { Layout.fillWidth: true; text: modelData.title; elide: Text.ElideRight; font.pixelSize: 14; color: "#142b4b"; font.bold: true }
                         Label {
                             Layout.fillWidth: true
-                            text: panel.stateLabel(modelData.status) + (modelData.fileCount !== undefined ? " · " + modelData.fileCount + " 个可移除显示文件" : "")
+                            text: panel.stateLabel(modelData.status) + (modelData.fileCount !== undefined ? " · " + modelData.fileCount + " 个图包文件（含旧副本）" : "")
                             color: modelData.status === "installed" ? "#17775a" : "#526785"; font.pixelSize: 12; wrapMode: Text.Wrap
                         }
                         Label {
@@ -94,9 +112,10 @@ Item {
                         }
                     }
                     AppButton {
-                        text: "备份并移除"; enabled: !!modelData.canRemove && !resourceService.busy && resourceService.pendingKind === "" && !resourceService.recoveryRequired
-                        Accessible.name: "备份并移除 " + modelData.title
-                        onClicked: resourceService.requestRemove(modelData.packageId)
+                        objectName: "removePackageButton-" + modelData.packageId
+                        text: "删除图包"; enabled: !!panel.packageManager && !!modelData.canRemove && !panel.operationPending && !panel.recoveryPending
+                        Accessible.name: "删除图包 " + modelData.title
+                        onClicked: panel.packageManager.requestRemove(modelData.packageId)
                     }
                 }
                 Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#edf1f7"; visible: index < packages.count - 1 }
@@ -104,7 +123,7 @@ Item {
             Label {
                 anchors.centerIn: parent; width: Math.min(parent.width, 440); horizontalAlignment: Text.AlignHCenter
                 visible: packages.count === 0
-                text: resourceService.busy ? "正在核对本地资源…" : resourceService.recoveryRequired ? "资源事务需要恢复，请先核对保留的备份与日志。" : "尚无资源状态。点击“核对状态”，或导入本地 ZIP 资源包。"
+                text: panel.operationPending ? "正在核对本地资源…" : panel.recoveryPending ? "上次图包操作还没完成，请正常退出并重启后按提示处理。" : "还没有可管理的图包。可点击“核对状态”，或导入本地 ZIP 图包。"
                 wrapMode: Text.Wrap; color: "#526785"; font.pixelSize: 13
             }
         }
@@ -112,11 +131,12 @@ Item {
         RowLayout {
             Layout.fillWidth: true
             Label {
-                Layout.fillWidth: true; text: resourceService.message; wrapMode: Text.Wrap
-                color: resourceService.recoveryRequired ? "#b8364a" : "#354f75"; font.pixelSize: 12
+                Layout.fillWidth: true; text: (panel.packageManager ? panel.packageManager.message + "\n" : "") + resourceService.message; wrapMode: Text.Wrap
+                color: panel.recoveryPending ? "#b8364a" : "#354f75"; font.pixelSize: 12
                 Accessible.role: Accessible.StaticText
             }
             AppButton { text: "取消操作"; visible: resourceService.canCancel; onClicked: resourceService.cancel() }
+            AppButton { text: "取消删除"; visible: !!panel.packageManager && panel.packageManager.canCancel; onClicked: panel.packageManager.cancel() }
         }
     }
 
@@ -137,22 +157,38 @@ Item {
         closePolicy: Popup.CloseOnEscape
         contentItem: Label { text: panel.confirmationText; wrapMode: Text.Wrap; color: "#354963"; font.pixelSize: 13; padding: 6 }
         footer: DialogButtonBox {
-            AppButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
-            AppButton { text: "确认"; primary: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
+            AppButton { objectName: "resourceConfirmCancelButton"; text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
+            AppButton { objectName: "resourceConfirmAcceptButton"; text: "确认"; primary: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
             onAccepted: confirmation.accept()
             onRejected: confirmation.reject()
         }
-        onAccepted: resourceService.confirmOperation(true)
-        onRejected: resourceService.confirmOperation(false)
-        onClosed: if (resourceService.pendingKind !== "") resourceService.confirmOperation(false)
+        onAccepted: panel.confirmationOwner.confirmOperation(true)
+        onRejected: panel.confirmationOwner.confirmOperation(false)
+        onClosed: if (panel.confirmationOwner.pendingKind !== "") panel.confirmationOwner.confirmOperation(false)
     }
     Connections {
         target: resourceService
+        function onChanged() {
+            if (panel.managerRefreshPending && !resourceService.busy && resourceService.pendingKind === "") {
+                panel.managerRefreshPending = false
+                panel.packageManager.refresh()
+            }
+        }
         function onConfirmationRequested(title, message) {
+            panel.confirmationOwner = resourceService
             confirmation.title = title
             panel.confirmationText = message
             confirmation.open()
         }
     }
-    Component.onCompleted: resourceService.refresh()
+    Connections {
+        target: panel.packageManager
+        function onConfirmationRequested(title, message) {
+            panel.confirmationOwner = panel.packageManager
+            confirmation.title = title
+            panel.confirmationText = message
+            confirmation.open()
+        }
+    }
+    Component.onCompleted: panel.refreshPackages()
 }

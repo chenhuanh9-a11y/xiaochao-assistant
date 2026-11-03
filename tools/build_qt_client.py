@@ -7,6 +7,7 @@ source commit plus an explicit hashed inventory of an authorized resource root.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import importlib.metadata
 import json
@@ -21,6 +22,8 @@ from xml.dom import minidom
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS = ROOT / "tools"
 sys.path.insert(0, str(TOOLS))
+sys.path.insert(0, str(ROOT / "app"))
+from managed_base_resources import optional_author_sidecar
 from package_profiles import LIGHT_PROFILE, partition_resources
 from packaged_resource_contract import check_package
 from verify_admin_manifest import verify_administrator_manifest, verify_manifest_xml
@@ -504,10 +507,12 @@ def verify_frozen(stage, resources, qml_names, product=PRODUCT, *, bundled_autho
 # Product identity travels with program updates, even inside the resource tree.
 _PROGRAM_IDENTITY = {"_internal/version.json", "_internal/installation-profile.json",
                      "_internal/references/build-fingerprint.txt"}
-RESOURCE_INSTALLATION_POLICY = dict(existingBasePlane="preserve-whole-plane",
-    missingBasePlane="install-whole-bundled-baseline", partialExistingPlane="preserve-no-repair",
+RESOURCE_INSTALLATION_POLICY = dict(existingBasePlane="manifest-owned-transaction-before-runtime",
+    missingBasePlane="repair-complete-manifest", partialExistingPlane="repair-missing-verify-entire-set",
     editorBase="seed-whole-family-only-when-both-outer-and-internal-absent",
-    resourceVersionMeaning="bundled-baseline; existing installed resource declarations remain authoritative")
+    resourceVersionMeaning="candidate-baseline; actual health is verified before resource consumers",
+    unknownOwnership="block-with-path-and-expected-actual-hashes",
+    installedAuthorPackages="preserve-receipt-files-and-dependency-contracts")
 
 
 def resource_file_family(relative):
@@ -517,6 +522,8 @@ def resource_file_family(relative):
         return "program"
     if relative.startswith("_internal/assets/custom-maps/"):
         return "editor"
+    if optional_author_sidecar(relative):
+        return "optional-author"
     if (relative.startswith(("_internal/assets/", "_internal/references/", "_internal/recognition/"))
             or relative == "_internal/difficult-native-manifest.json"):
         return "base"
@@ -526,7 +533,7 @@ def resource_file_family(relative):
 def production_file_projection(stage, resources):
     """Read a clean assembled stage; every resource belongs to exactly one plane."""
     stage = Path(stage).resolve()
-    families = dict(program=[], base=[], editor=[])
+    families = dict(program=[], base=[], editor=[], **{"optional-author": []})
     seen = set()
     for path in sorted(stage.rglob("*")):
         if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
@@ -542,7 +549,7 @@ def production_file_projection(stage, resources):
         families[resource_file_family(name)].append(name)
     expected = {"_internal/" + name for name in resources
                 if resource_file_family("_internal/" + name) != "program"}
-    actual = set(families["base"]) | set(families["editor"])
+    actual = set(families["base"]) | set(families["editor"]) | set(families["optional-author"])
     if actual != expected:
         raise ValueError(f"Resource projection differs from exact inventory: missing={sorted(expected-actual)}, extra={sorted(actual-expected)}")
     return families
@@ -585,22 +592,78 @@ def stage_editor_baseline(stage, resources):
     return dict(policy="program-owned-fallback; preserve-existing-legacy-families", files=copied)
 
 
-def write_production_files_include(stage, resources, output):
+def write_production_files_include(stage, resources, output, *, resource_version=""):
     families = production_file_projection(stage, resources)
+    # Keep active data untouched during Setup. The startup repair verifies this
+    # complete candidate manifest under the same OS lock as author transactions.
+    sys.path.insert(0, str(ROOT / "app"))
+    from managed_base_resources import CANDIDATE, manifest_for_rows
+    rows = [dict(path=name, bytes=(Path(stage) / name).stat().st_size,
+                 sha256=sha256(Path(stage) / name)) for name in families["base"]]
+    for row in rows:
+        declared = resources[row["path"][len("_internal/"):]]
+        if ("bytes" in declared and "sha256" in declared
+                and (row["bytes"] != declared["bytes"] or row["sha256"] != declared["sha256"].lower())):
+            raise ValueError("Managed candidate differs from verified resource inventory: " + row["path"])
+    # A family-only projection is useful to validate editor staging. Real full
+    # builds already require the complete two-mode base in validate_resources.
+    manifest = manifest_for_rows(rows, resource_version) if rows else None
+    manifest_name = CANDIDATE + "/manifest.json" if manifest else None
+    if manifest:
+        manifest_path = Path(stage) / manifest_name
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        if manifest_name not in families["program"]:
+            families["program"].append(manifest_name)
     lines = ["; Generated exact production projection; no directory wildcard copies."]
+    installed_files = []
     for family, names in families.items():
+        if family == "optional-author":
+            # These belong to separately imported author displays. Shipping an
+            # older copy as base or program data would overwrite the author or
+            # resurrect it after the user removes its package.
+            continue
         for name in names:
             source = name.replace("/", "\\")
-            parent = str(PurePosixPath(name).parent)
+            installed = CANDIDATE + "/payload/" + name if family == "base" else name
+            installed_files.append(installed)
+            parent = str(PurePosixPath(installed).parent)
             destination = "{app}" + ("\\" + parent.replace("/", "\\") if parent != "." else "")
-            check = {"base": "; Check: InstallBaseResourcePlane", "editor": "; Check: InstallEditorResourceFamily"}.get(family, "")
+            check = "; Check: InstallEditorResourceFamily" if family == "editor" else ""
             lines.append(f'Source: "{{#StageDir}}\\{source}"; DestDir: "{destination}"; Flags: ignoreversion{check}')
     include = Path(output) / "production-files.iss"
     include.write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
     report = dict(schema="xingtu-qt-installer-projection-v1", families=families,
-                  policy=RESOURCE_INSTALLATION_POLICY, includeSha256=sha256(include))
+                  policy=RESOURCE_INSTALLATION_POLICY, installedFiles=installed_files,
+                  omittedOptionalAuthorFiles=families["optional-author"],
+                  managedBaseManifest=manifest_name, managedBaseBundleId=manifest["bundleId"] if manifest else None,
+                  managedBaseManifestSha256=sha256(Path(stage) / manifest_name) if manifest else None,
+                  includeSha256=sha256(include))
     (Path(output) / "production-file-projection.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     return include, report
+
+
+def stage_release_report(stage, *, product, source, version, resource_version, resource_inventory_sha256,
+                         compiled_source_commit=None, installer_source_commit=None):
+    """Generate program-owned identity from this completed freeze, never a resource baseline."""
+    sys.path.insert(0, str(ROOT / 'app'))
+    from package_identity import selected_file_identities
+    stage = Path(stage)
+    report = dict(schema='xingtu-qt-release-report-v1',
+        sourceCommit=source['commit'], sourceDirty=not source['clean'],
+        compiledPayloadSourceCommit=compiled_source_commit or source['commit'],
+        installerSourceCommit=installer_source_commit or source['commit'],
+        builtAt=datetime.now(timezone.utc).isoformat(),
+        version=version['version'], displayVersion=version['displayVersion'],
+        numericVersion=version['numericVersion'], buildFingerprint=source['commit'][:8].upper(),
+        fingerprintScheme='source-commit-prefix', executableSha256=sha256(stage / (product + '.exe')),
+        resourceVersion=resource_version, resourceInventorySha256=resource_inventory_sha256,
+        resourceVersionMeaning='candidate-baseline; installed health verified separately before resource consumers',
+        identityFiles={name: row for name, row in selected_file_identities(stage).items()
+                       if row['status'] == 'hashed'})
+    path = stage / 'release-report.json'
+    path.write_text(json.dumps(report, indent=2), encoding='utf-8')
+    return dict(file=path.name, sha256=sha256(path), executableSha256=report['executableSha256'])
 
 
 def main(argv=None):
@@ -747,20 +810,23 @@ def main(argv=None):
     shutil.copy2(profile_path, stage / "installation-profile.json")
     if source_identity(args.source_commit) != source:
         raise ValueError("Source changed during freeze; do not create a Setup")
+    plan['releaseReport'] = stage_release_report(stage, product=product, source=source,
+        version=version, resource_version=declaration['resourceVersion'],
+        resource_inventory_sha256=plan['resourceInventorySha256'])
     production_defines = []
     if args.instance == "production":
         # Relative program ownership drives the existing exact-file backup and
         # failed-upgrade rollback. No work/settings/imports are frozen or owned.
         ownership = stage / "_installer-owned-files.txt"
-        owned_files = sorted(p.relative_to(stage).as_posix().replace("/", "\\")
-                             for p in stage.rglob("*") if p.is_file())
+        ownership.write_text("", encoding="utf-8-sig")
+        include, projection = write_production_files_include(stage, resources, output,
+            resource_version=declaration["resourceVersion"])
+        owned_files = sorted(name.replace("/", "\\") for name in projection["installedFiles"])
         if any(name.lower() == "work" or name.lower().startswith("work\\") for name in owned_files):
             raise ValueError("Production ownership must not contain user work/data")
-        owned_files.append(ownership.name)
         ownership.write_text("\n".join(owned_files) + "\n", encoding="utf-8-sig")
         plan["programOwnership"] = dict(files=len(owned_files), sha256=sha256(ownership),
                                         backup="{app}/work/installer-backups", userDataOwned=False)
-        include, projection = write_production_files_include(stage, resources, output)
         plan["fileProjection"] = projection
         production_defines = ["/DProductionInstaller", f"/DProductionFilesInclude={include}"]
     setup_name = setup_basename(instance, display, source["commit"])

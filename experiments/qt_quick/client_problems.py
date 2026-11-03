@@ -239,6 +239,10 @@ class ProblemsService(QObject):
         row = {name: _text(event.get(name, ''), limits[name])
                 for name in ('title', 'summary', 'raw', 'traceback', 'action', 'phase', 'kind', 'mode', 'mapId', 'floor', 'exceptionType', 'exceptionOrigin', 'exceptionAction')}
         row['reason'] = problem_reason(event.get('reason'))
+        if event.get('errorCode') or event.get('errorDetails'):
+            from client_resource_errors import safe_code, safe_error_details
+            row['errorCode'] = safe_code(event.get('errorCode'))
+            row['errorDetails'] = safe_error_details(event.get('errorDetails'))
         row['title'] = row['title'] or '运行出现问题'
         row['summary'] = row['summary'] or '本次操作未完成，可复制下方原始原因进行排查。'
         row['phaseLabel'] = PHASE_LABELS.get(row['phase'], '任务执行')

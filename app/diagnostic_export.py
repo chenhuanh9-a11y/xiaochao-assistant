@@ -293,6 +293,7 @@ def export_safe_diagnostic_bundle(
 ) -> dict:
     """Export bounded logs and explicitly requested, already saved failure evidence."""
     from diagnostic_evidence import export_failure_evidence, log_window
+    from package_identity import collect_package_identity
     from uuid import uuid4
     export_id = export_id or uuid4().hex
     moment = exported_at or datetime.now().astimezone()
@@ -414,6 +415,7 @@ def export_safe_diagnostic_bundle(
                 },
                 "packageMetadata": package_metadata,
                 "packageMetadataSource": package_metadata_source,
+                "packageIdentity": collect_package_identity(app_root, resource_root=resource_root),
                 "runtimeContext": runtime_context or {
                     "collectionStatus": "not-provided",
                 },

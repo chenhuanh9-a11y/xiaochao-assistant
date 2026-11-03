@@ -2,8 +2,9 @@
 
 Uses the shared baked-production or marked-isolated installation contract. Workers
 never touch Qt state; their queued results are checked against operation tokens.
-An upgrade cannot be cancelled once submitted: the shared transaction owns its
-rollback. Additive author imports/removals honour cancellation before commit.
+An upgrade cannot be cancelled once submitted: the transaction owns rollback
+before commit and temporary-object cleanup afterwards. Additive author imports
+and removals honour cancellation before commit.
 """
 from __future__ import annotations
 
@@ -22,60 +23,71 @@ sys.path.insert(0, str(ROOT / "app"))
 import star_map_import as importer
 import author_package_management as manager
 import client_resource_recovery as recovery
-
-
-def _error_text(value):
-    return str(value).encode("utf-8", errors="replace")[:4096].decode("utf-8", errors="ignore")
+from client_resource_errors import error_text as _error_text, error_fields, error_category
 
 
 def package_cancelled(error):
-    reason = (error.get("code") or error.get("reason", "")) if isinstance(error, dict) else str(error)
-    return reason in {"cancelled", "import-cancelled", "import-request-cancelled"}
+    return error_fields(error)["code"] in {"cancelled", "import-cancelled", "import-request-cancelled"}
 
 
 def package_problem(error, action, *, online=False, recovery_required=False):
     """Small presentation adapter; original details stay separate for diagnosis."""
-    raw = _error_text(error.get("reason", "") if isinstance(error, dict) else error)
-    code = (str(error.get("code", "")) + " " + str(error.get("errorType", ""))
-            if isinstance(error, dict) else "")
-    reason = (code + " " + raw).casefold()
-    title = "在线图包操作未完成" if online else "资源操作未完成"
-    summary = ("在线操作未完成，请重新检查图包列表后重试。" if online else
-               "资源操作未完成，请点击“核对状态”检查实际结果后重试。")
-    if raw == "non-local-archive":
+    fields = error_fields(error)
+    raw, code = fields["reason"], fields["code"]
+    category = error_category(code)
+    title = "在线图包操作未完成" if online else "图包操作未完成"
+    summary = ("这次在线图包操作没有完成。请刷新图包列表后重试。" if online else
+               "这次图包操作没有完成。请点击“核对状态”查看当前结果，再重试。")
+    if code == "non-local-archive":
         summary = "请选择保存在本机的 ZIP 图包文件，不能直接导入网页地址。"
     elif recovery_required:
-        title, summary = "资源事务需要恢复", "资源事务尚未完成。备份和日志已保留；请点击“恢复记录”，核对后恢复旧资源。"
+        title, summary = "上次图包操作还没完成", "暂时不能继续导入或删除图包。请点击“恢复记录”，按提示完成上次操作。"
     elif action == "refresh-after-write":
-        summary = "资源写入已完成，但安装状态核对失败。请点击“核对状态”重试；本次未显示安装完成提示。"
-    elif any(value in reason for value in ("deadline", "timeout", "network", "connection", "urlerror", "http-response")):
-        summary = "网络连接失败或请求超时，在线图包操作未完成。请检查网络后重试；失败的下载不会自动导入。"
-    elif any(value in reason for value in ("https-required", "invalid-url", "url-", "redirect", "index-not-configured")):
-        summary = "图包下载地址未配置或未通过安全校验。请向发行方核对有效地址；仍可使用本地 ZIP 导入。"
-    elif "binding-mismatch" in reason:
-        summary = "本地图包与所选在线条目不一致，未通过导入检查。请重新检查列表并下载对应图包。"
-    elif any(value in reason for value in ("sha", "integrity", "length-mismatch", "size-mismatch", "file-size-or-case")):
-        summary = "图包内容不完整或校验不一致，未通过导入检查。请重新获取完整图包后重试。"
-    elif "size-limit" in reason:
-        summary = "图包或在线列表超过支持的大小限制。请向发行方获取符合当前版本要求的文件。"
-    elif any(value in reason for value in ("dependency", "compatibility", "client-version", "package-version")):
-        summary = "图包与当前客户端或基础资源不匹配。请核对客户端版本，并选择对应的图包。"
-    elif any(value in reason for value in ("conflict", "changed", "reinspect", "ownership")):
-        summary = "资源、登记或备份在核对后发生变化，本次操作未能完成。请保留本地文件，重新核对并确认操作范围。"
-    elif any(value in reason for value in ("linked", "unsafe", "outside-root", "allowlist", "noncanonical")):
-        summary = "图包或目标目录包含不允许的路径，操作已被安全检查拒绝。请使用发行方提供的原始图包。"
-    elif any(value in reason for value in ("running", "requires-idle", "not-stopped", "close-application")):
-        summary = "资源仍被当前会话或其他操作使用。请先停止本局和相关操作，再按页面提示重试。"
-    elif any(value in reason for value in ("helper", "parent-", "process-handle")):
-        summary = "独立资源工具未能完成启动或返回可核对的结果。请重新核对状态；仍失败时可在帮助页导出诊断 ZIP。"
-    elif any(value in reason for value in ("permission", "not-writable", "disk", "oserror")):
-        summary = "资源文件无法读取或写入。请检查磁盘空间、目录权限和文件占用，再核对实际状态后重试。"
-    elif any(value in reason for value in ("index", "manifest", "archive", "package-unreadable", "badzipfile", "invalid-json")):
-        summary = ("在线图包列表格式或校验信息不可用。请重新检查列表；仍失败时请联系发行方。" if online else
-                   "所选文件不是当前版本支持的完整图包。请重新选择发行方提供的 ZIP，勿自行修改包内文件。")
-    return dict(title=title, summary=summary + " 详细原因可在帮助页的“最近问题”查看。",
+        summary = "图包文件已经处理完，但还没确认是否可用。请点击“核对状态”再检查一次。"
+    elif category == "network":
+        summary = "暂时连接不上图包下载服务，这次下载没有完成。请检查网络，稍后重试。"
+    elif category == "url":
+        summary = "这个图包的下载地址暂时不可用。请联系图包提供者，也可以导入已经下载到本机的 ZIP 图包。"
+    elif category == "binding":
+        summary = "下载到的图包与所选项目不一致，因此没有导入。请刷新列表，再下载需要的图包。"
+    elif category == "integrity":
+        summary = "图包中的文件与包内说明不一致，暂时不能导入。请重新获取图包提供者发布的完整文件。"
+    elif category == "limit":
+        summary = "这个图包或下载列表过大，当前软件无法处理。请向图包提供者获取适用于当前版本的文件。"
+    elif category == "dependency":
+        summary = "这个图包需要的地图文件有缺失，或版本与当前软件不匹配，暂时不能导入。请查看图包适用的版本，使用与当前软件配套的图包。"
+    elif category == "conflict":
+        summary = "图包文件或安装记录发生了变化，这次操作已停止。请点击“核对状态”，重新确认后再试。"
+    elif category == "unsafe":
+        summary = "这个图包不能按当前方式安全导入，操作已停止。请使用图包提供者发布的原始 ZIP 文件。"
+    elif category == "busy":
+        summary = "本局或另一个图包操作还在进行。请先结束本局，或等待当前操作完成后再试。"
+    elif category == "helper":
+        summary = "图包处理没有完成，软件还没收到可以确认的结果。请点击“核对状态”；仍有问题时，可导出诊断信息寻求帮助。"
+    elif category == "file":
+        summary = "软件暂时无法访问图包文件。请确认磁盘空间足够、文件没有被其他程序占用，再重试。"
+    elif category == "package":
+        summary = ("暂时无法读取在线图包列表。请刷新列表；仍有问题时，请联系图包提供者。" if online else
+                   "暂时无法读取这个图包，或它的格式不受支持。请选择图包提供者发布、适用于当前软件版本的 ZIP 文件。")
+    return dict(title=title, summary=summary + " 可在“帮助 → 最近问题”查看详情。",
                 raw=raw, action=("online:" if online else "resource:") + action,
-                phase="operation", kind="error")
+                phase="operation", kind="error", errorCode=code, errorDetails=fields["details"])
+
+
+def package_title(package_id):
+    if package_id == "all-managed":
+        return "全部已导入图包"
+    return manager.PACKAGE_NAMES.get(package_id, "待确认的图包")
+
+
+def recovery_status_label(status):
+    return {
+        "preparing": "上次更新准备中断", "prepared": "上次更新未完成",
+        "committed": "更新已完成，待清理临时文件", "rolling-back": "正在恢复更新前的图包",
+        "rollback-incomplete": "恢复尚未完成", "rolled-back": "已恢复，待清理临时文件",
+        "additions-pending": "上次导入未完成", "removal-pending": "上次删除未完成",
+        "upgrade-cleanup-pending": "还需清理临时文件", "upgrade-cleanup-available": "有临时文件可清理",
+    }.get(status, "需要重新核对")
 
 
 class _Signals(QObject):
@@ -97,8 +109,7 @@ class _Work(QRunnable):
                 recovery = self.recovery_probe()
             except OSError:
                 recovery = False
-            self.signals.done.emit(self.token, None, dict(reason=_error_text(error), recovery=recovery,
-                                                        errorType=type(error).__name__))
+            self.signals.done.emit(self.token, None, dict(error_fields(error), recovery=recovery))
 
 
 def _confirmation_fingerprint(result):
@@ -141,6 +152,7 @@ class ResourceService(QObject):
         self._recovery_launcher = None
         self._recovery_handoff = False
         self._recovery_notice = ""
+        self._recovery_verified_notice = "已恢复操作前的图包，状态已确认。"
         self._receipt_needs_notification = False
         self._lease_provider, self._lease_id = None, None
         self._import_launcher = None
@@ -164,6 +176,14 @@ class ResourceService(QObject):
     recoveryHandoffPending = Property(bool, lambda s: s._recovery_handoff, notify=changed)
     recoveryUsesHelper = Property(bool, lambda s: s._recovery_launcher is not None, notify=changed)
 
+    @Slot(str, result=str)
+    def packageTitle(self, package_id):
+        return package_title(package_id)
+
+    @Slot(str, result=str)
+    def recoveryStatusLabel(self, status):
+        return recovery_status_label(status)
+
     def setImportLauncher(self, launcher):
         if not self._available() or not callable(launcher):
             raise RuntimeError("Cannot change import launcher during an operation")
@@ -174,9 +194,10 @@ class ResourceService(QObject):
         if type(receipt.get("success")) is not bool:
             raise ValueError("Invalid import receipt")
         self._import_duplicate = bool(receipt["success"]) and _duplicate_import(receipt)
-        self._import_notice = (("上次导入的资源内容已存在，正在核对实际状态。" if self._import_duplicate else
-            "上次资源导入已完成，正在核对实际状态。") if receipt["success"] else
-            self._report_problem(receipt.get("reason", "import-helper-result-unavailable"), "import-receipt", deferred=True))
+        self._import_notice = (("这个图包已经安装，正在确认当前状态。" if self._import_duplicate else
+            "上次导入已完成，正在确认图包是否可用。") if receipt["success"] else
+            self._report_problem(dict(receipt, reason=receipt.get("reason", "import-helper-result-unavailable")),
+                                 "import-receipt", deferred=True))
         self._import_receipt_notification = bool(receipt["success"])
         self._import_package_id = str(receipt.get("packageId", ""))
         request = str(receipt.get("requestId", ""))
@@ -245,19 +266,35 @@ class ResourceService(QObject):
             raise ValueError("Invalid request-bound recovery receipt")
         if receipt["success"]:
             result = receipt.get("operationResult", {})
-            if (not isinstance(result, dict) or result.get("status") != "rolled-back"
-                    or result.get("upgradeTransactionId") != receipt.get("transactionId")):
-                raise ValueError("Recovery receipt does not confirm old-resource restoration")
-            self._recovery_notice = "恢复工具已还原旧资源，正在核对实际状态。"
+            status = result.get('status') if isinstance(result, dict) else None
+            cleanup_only = status == 'upgrade-committed' or (isinstance(result, dict) and result.get('cleanupOnly') is True)
+            additions = status in {'additions-rolled-back', 'additions-committed'}
+            removal = status in {'removal-rolled-back', 'removal-committed'}
+            identity_key = 'additionTransactionId' if additions else 'removalTransactionId' if removal else 'upgradeTransactionId'
+            if (not isinstance(result, dict) or status not in {'rolled-back', 'upgrade-committed', 'additions-rolled-back', 'additions-committed',
+                                                             'removal-rolled-back', 'removal-committed'}
+                    or ('cleanupOnly' in result and type(result['cleanupOnly']) is not bool)
+                    or (cleanup_only and (type(result.get('temporaryCopiesRemaining')) is not int
+                                          or result['temporaryCopiesRemaining'] != 0))
+                    or result.get(identity_key) != receipt.get("transactionId")):
+                raise ValueError("Recovery receipt does not confirm the completed transaction outcome")
+            outcome = ('未完成的导入已撤销' if status == 'additions-rolled-back' else
+                       '上次导入已完成' if status == 'additions-committed' else
+                       '未完成的删除已撤销，图包已恢复' if status == 'removal-rolled-back' else
+                       '上次删除和清理已完成' if status == 'removal-committed' else
+                       '上次更新产生的临时文件已清理完' if cleanup_only else
+                       '已恢复操作前的图包')
+            self._recovery_notice = outcome + '，正在核对当前状态。'
+            self._recovery_verified_notice = outcome + '，状态已确认。'
             self._receipt_needs_notification = True
         else:
-            self._recovery_notice = self._report_problem(receipt.get("reason", "recovery-helper-result-unavailable"),
+            self._recovery_notice = self._report_problem(dict(receipt, reason=receipt.get("reason", "recovery-helper-result-unavailable")),
                                                         "recovery-receipt", recovery_required=True, deferred=True)
         self.changed.emit()
 
     def _report_problem(self, error, action, *, recovery_required=False, deferred=False):
         if package_cancelled(error):
-            return ("恢复操作已取消；备份和事务记录已保留，可重新核对恢复记录。"
+            return ("恢复操作已取消；上次未完成的操作仍需处理，可稍后点击“恢复记录”继续。"
                     if recovery_required else "操作已取消。")
         problem = package_problem(error, action, recovery_required=recovery_required)
         if deferred:
@@ -282,14 +319,15 @@ class ResourceService(QObject):
         if not self._available():
             return
         if self._recovery_launcher is None and not self._recovery_allowed():
-            self._message = "请先停止识别和所有资源读取，再进入资源恢复阶段。"
+            self._message = "现在还不能处理恢复。请先结束本局，再退出并重新打开软件，按启动提示处理。"
             self.changed.emit()
             return
         def inspect(cancel):
             importer._check_cancelled(cancel.is_set)
             with importer._writer_locked_installation(self.sandbox, require_closed=False) as (root, _state):
                 plan = recovery.inspect_locked(root, transaction_id)
-                if action == "rollback" and plan["status"] == "rolled-back":
+                if action == "rollback" and plan["status"] in {
+                        "rolled-back", "upgrade-cleanup-pending", "upgrade-cleanup-available"}:
                     raise importer.ImportRejected("recovery-operation-no-longer-valid")
                 return action, plan
         self._start("inspect-recovery", inspect, "正在核对恢复范围…")
@@ -302,13 +340,38 @@ class ResourceService(QObject):
     def requestRollback(self, transaction_id):
         self._request_recovery("rollback", transaction_id)
 
+    @Slot(str)
+    def requestCleanup(self, transaction_id):
+        self._request_recovery("recover", transaction_id)
+
     def setLeaseProvider(self, provider):
         """Inject the session coordinator before exposing this service to QML."""
-        if self._busy or self._pending is not None:
+        if self._busy or self._pending is not None or self._lease_id is not None:
             raise RuntimeError("Cannot replace an active resource lease provider")
         self._lease_provider = provider
 
+    def _pending_recovery(self):
+        # A malformed, linked, or unreadable pointer still forbids consumers.
+        # This bounded metadata probe does not inspect resource contents.
+        for name in ("pending-upgrade.json", "pending-base-repair.json",
+                     "pending-additions.json", "pending-removal.json"):
+            try:
+                (self.sandbox / "work/map-packages" / name).lstat()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                return True
+            return True
+        return False
+
     def _release_lease(self):
+        if not self._closed:
+            self._recovery = self._recovery or self._pending_recovery()
+            if self._recovery or self._recovery_handoff or self._import_handoff:
+                # Every error/cancel/history exit shares this rule. Recovery
+                # reuses this lease; only a verified scan or safe shutdown can
+                # reopen Session's runtime/maintenance/initialization commands.
+                return
         if self._lease_id is not None:
             lease_id, self._lease_id = self._lease_id, None
             self._lease_provider.releaseResourceLease(lease_id)
@@ -326,7 +389,7 @@ class ResourceService(QObject):
             lease = self._lease_provider.acquireResourceLease()
             if not lease:
                 self._kind, self._pending = "", None
-                self._message = "当前会话正在运行或处理操作，请停止后再管理资源。"
+                self._message = "本局或另一个操作还在进行。请先结束本局，或等待操作完成后再管理图包。"
                 self.changed.emit()
                 return
             self._lease_id = lease
@@ -338,8 +401,7 @@ class ResourceService(QObject):
             self._validate_root()
             importer._check_cancelled(cancel.is_set)
             return function(cancel)
-        job = _Work(self._token, guarded,
-                    lambda: (self.sandbox / "work/map-packages/pending-upgrade.json").exists())
+        job = _Work(self._token, guarded, self._pending_recovery)
         self._jobs[self._token] = job
         job.signals.done.connect(self._completed, Qt.ConnectionType.QueuedConnection)
         self.changed.emit()
@@ -368,7 +430,7 @@ class ResourceService(QObject):
             self.changed.emit()
             return
         self._start("inspect", lambda cancel: (str(path), importer.inspect_package(path, self.sandbox)),
-                    "正在校验资源包…")
+                    "正在检查图包文件…")
 
     @Slot(str)
     def requestRemove(self, package_id):
@@ -410,7 +472,7 @@ class ResourceService(QObject):
                     or path.stat().st_size != expected["bytes"]):
                 raise importer.ImportRejected("online-archive-binding-mismatch")
             return str(path), result
-        self._start("inspect", inspect, "正在核对在线索引与本地图包。")
+        self._start("inspect", inspect, "正在确认下载的图包与所选项目一致…")
         return self._busy
 
     def _install(self, path, result):
@@ -426,7 +488,7 @@ class ResourceService(QObject):
                 if not isinstance(request_id, str) or not request_id:
                     raise importer.ImportRejected("import-helper-launch-not-confirmed")
                 return request_id
-            self._start("launch-import", launch, "正在准备导入工具，随后正常关闭客户端。", cancellable=False)
+            self._start("launch-import", launch, "正在准备导入，随后会关闭软件…", cancellable=False)
             return
         def install(cancel):
             if live:
@@ -447,7 +509,7 @@ class ResourceService(QObject):
                     raise importer.ImportRejected("resource-plan-changed-reinspect-required")
                 return importer._install_staged(path, root, state,
                     expected_archive_sha256=result["archiveSha256"])
-        self._start("install", install, "正在安装资源…" if live else "正在执行资源事务，请等待完成…",
+        self._start("install", install, "正在安装图包，请等待完成…",
                     cancellable=live)
 
     @Slot(bool)
@@ -458,7 +520,7 @@ class ResourceService(QObject):
         self._pending, self._kind = None, ""
         if not accepted:
             self._release_lease()
-            self._message = "已取消，资源未改动。"
+            self._message = "已取消，这次操作没有更改图包。"
             self.changed.emit()
             return
         if kind == "overwrite":
@@ -477,10 +539,10 @@ class ResourceService(QObject):
                     if not isinstance(request_id, str) or not request_id:
                         raise importer.ImportRejected("recovery-helper-launch-not-confirmed")
                     return request_id
-                self._start("launch-recovery", launch, "正在准备恢复工具，随后正常关闭客户端。", cancellable=False)
+                self._start("launch-recovery", launch, "正在准备处理上次操作，随后会关闭软件…", cancellable=False)
                 return
             if not self._recovery_allowed():
-                self._message = "资源读取状态已改变，请重新进入恢复阶段并核对。"
+                self._message = "软件又开始使用地图文件了，这次处理已停止。请结束本局，重新核对后再试。"
                 self._release_lease()
                 self.changed.emit()
                 return
@@ -491,7 +553,7 @@ class ResourceService(QObject):
                     if not self._recovery_allowed():
                         raise importer.ImportRejected("resource-consumers-not-stopped")
                     return recovery.execute_locked(root, plan, action)
-            self._start("recover", execute, "正在恢复旧资源，请等待事务完成…", cancellable=False)
+            self._start("recover", execute, "正在处理上次未完成的操作，请稍候…", cancellable=False)
         elif kind == "remove":
             plan = pending
             self._start("remove", lambda cancel: manager.remove_author_package_live(
@@ -506,7 +568,7 @@ class ResourceService(QObject):
         elif self._busy and self._can_cancel:
             self._cancel.set()
             self._can_cancel = False
-            self._message = "正在请求取消；等待事务确认最终结果…"
+            self._message = "正在取消，请等待文件处理结束…"
             self.changed.emit()
 
     @Slot(int, object, object)
@@ -523,8 +585,11 @@ class ResourceService(QObject):
             if kind == "refresh-after-write":
                 self._import_completion_message = ""
             recovery = error.get("recovery", False) if isinstance(error, dict) else False
-            raw = error.get("reason", "") if isinstance(error, dict) else str(error)
-            self._recovery = "upgrade-recovery-required" in raw or "pending-upgrade" in raw or recovery
+            code = error_fields(error)["code"]
+            self._recovery = self._recovery or code in {
+                "upgrade-recovery-required", "pending-upgrade", "base-recovery-required",
+                "upgrade-cleanup-incomplete", "base-cleanup-incomplete",
+                "additions-recovery-required", "removal-recovery-required"} or recovery
             if self._recovery:
                 self._rows = [dict(row, canRemove=False, status="recovery-required") for row in self._rows]
                 self._message = self._report_problem(error, kind, recovery_required=True)
@@ -536,22 +601,29 @@ class ResourceService(QObject):
             self._kind = ""
             self._release_lease()
             self.changed.emit()
+            if kind in {"install", "refresh-after-write"}:
+                # A failed transaction may have changed files before rollback.
+                # Invalidate caches even then; pending journals keep new readers
+                # behind assert_resources_ready until explicit recovery.
+                # Closed-process recovery has no concurrent runtime readers;
+                # the live package manager owns deletion invalidation.
+                self.resourcesChanged.emit()
             return
         if kind in ("refresh", "inspect", "inspect-remove", "refresh-after-write", "recovery-history", "inspect-recovery") and self._cancel.is_set():
             self._message, self._kind = "操作已取消。", ""
             if kind == "refresh-after-write":
                 self._import_completion_message = ""
-                self._message = "状态核对已取消；已完成的资源改动仍然保留，可重新核对。"
+                self._message = "已停止检查。刚才完成的图包操作仍然保留，可点击“核对状态”继续检查。"
             self._release_lease()
             self.changed.emit()
             return
         if kind == "recovery-history":
             self._recovery_rows, self._kind = result, ""
-            self._recovery = any(row["pending"] for row in result)
-            self._message = "恢复记录已核对。" if result else "没有可恢复的升级记录。"
+            self._recovery = self._recovery or any(row["pending"] for row in result)
+            self._message = "已找到上次操作的处理记录。" if result else "没有需要恢复或清理的图包操作。"
         elif kind == "launch-recovery":
             self._kind, self._recovery_handoff = "", True
-            self._message = "恢复工具已准备，正在正常关闭客户端；重新打开后核对实际结果。"
+            self._message = "准备完成，正在关闭软件以处理上次操作。完成后请重新打开软件查看结果。"
             self.changed.emit()
             # Keep the lease until shutdown. Never emit resourcesChanged or
             # report success for a helper which has only started waiting.
@@ -560,16 +632,24 @@ class ResourceService(QObject):
         elif kind == "inspect-recovery":
             action, plan = result
             self._pending, self._kind = result, "recovery"
-            self._message = "等待确认恢复旧资源。"
+            additions = plan['status'] == 'additions-pending'
+            removal = plan['status'] == 'removal-pending'
+            cleanup = plan['status'] in {'upgrade-cleanup-pending', 'upgrade-cleanup-available'}
+            self._message = "请确认如何处理上次未完成的操作。"
             self.changed.emit()
-            self.confirmationRequested.emit("恢复旧资源" if action == "recover" else "回滚已完成升级",
-                "%s\n事务：%s\n状态：%s，涉及 %s 个资源。\n核对指纹：%s\n\n恢复旧文件和登记记录并保留备份。本地改动或确认范围变化会拒绝执行；不会继续安装新版本。" % (
-                    plan["packageId"], plan["transactionId"], plan["status"], plan["fileCount"], plan["planSha256"])
-                + ("\n\n确认后将正常关闭客户端。恢复工具仅在客户端正常退出后执行；重新打开客户端核对结果。" if self._recovery_launcher is not None else ""))
+            explanation = ("只清理上次操作留下的临时文件，不会把当前图包退回旧版本。"
+                           if cleanup else "尚未完成的导入会撤销；已经完成的导入会保留，并检查是否还有需要清理的文件。"
+                           if additions else "尚未完成的删除会撤销并恢复图包；已经完成的删除只继续清理，不会重新放回已删除的图包。"
+                           if removal else "尚未完成的更新会恢复到操作前；已经完成的更新只清理临时文件，不会退回旧版本。")
+            scope = f"涉及 {plan['fileCount']} 个文件。" if plan["fileCount"] else "将检查上次操作的剩余记录。"
+            self.confirmationRequested.emit("清理临时文件" if cleanup else "处理上次导入" if additions else "处理上次删除" if removal else "处理上次更新",
+                package_title(plan["packageId"]) + "\n" + scope + "\n\n" + explanation
+                + "\n无法确认来源或被改动的文件会保留；若因此无法完成，会告诉你。\n\n点击取消可返回，不会开始这次处理。"
+                + ("\n确认后软件会正常退出，再进行处理。完成后请重新打开软件查看结果。" if self._recovery_launcher is not None else ""))
             return
         elif kind == "launch-import":
             self._kind, self._import_handoff = "", True
-            self._message = "导入工具已准备；正在正常关闭客户端。重新打开后核对结果。"
+            self._message = "准备完成，正在关闭软件以导入图包。完成后请重新打开软件查看结果。"
             self.changed.emit()
             self.importCloseRequested.emit()
             return
@@ -577,18 +657,18 @@ class ResourceService(QObject):
             self._rows, self._recovery, self._kind = result, False, ""
             if self._import_receipt_notification:
                 self._import_receipt_notification = False
-                self._import_notice = ("上次导入的资源内容已存在，实际状态已核对。" if self._import_duplicate else
-                                       "上次资源导入已完成，实际状态已核对。")
+                self._import_notice = ("这个图包已经安装，无需重复导入，状态已确认。" if self._import_duplicate else
+                                       "上次图包导入已完成，状态已确认。")
                 self.resourcesChanged.emit()
                 if self._helper_popup_request:
-                    title = next((str(row.get("title") or row.get("name") or self._import_package_id)
+                    title = next((str(row.get("title") or row.get("name") or package_title(self._import_package_id))
                                   for row in result if row.get("packageId") == self._import_package_id),
-                                 self._import_package_id or "地图资源包")
+                                 package_title(self._import_package_id))
                     self.importCompleted.emit(title, self._import_notice)
-            self._message = "本地资源已核对。" if result else "尚未安装资源，可导入 ZIP 资源包。"
+            self._message = "图包状态已核对。" if result else "还没有安装图包，可以导入本地 ZIP 图包。"
             if self._receipt_needs_notification:
                 self._receipt_needs_notification = False
-                self._recovery_notice = "恢复工具已还原旧资源，实际状态已核对。"
+                self._recovery_notice = self._recovery_verified_notice
                 self.resourcesChanged.emit()
         elif kind == "inspect":
             path, inspection = result
@@ -596,11 +676,11 @@ class ResourceService(QObject):
             if (inspection.get("replaceFiles") or (self._import_launcher is not None
                     and not importer.supports_live_author_import(inspection))):
                 self._kind, self._pending = "overwrite", (path, inspection)
-                self._message = "等待确认资源更新。"
+                self._message = "请确认是否更新这个图包。"
                 self.changed.emit()
-                self.confirmationRequested.emit("确认更新资源", "将替换 %s 中 %s 个已登记且未改动的文件，并新增 %s 个文件。旧文件将由现有事务备份；未知文件与本地改动不会覆盖。\n\n仅作用于当前资源目录。" % (
-                    inspection["packageId"], len(inspection["replaceFiles"]), len(inspection["missingFiles"]))
-                    + ("\n\n确认后正常关闭客户端，由独立导入工具执行；请重新打开客户端核对结果。" if self._import_launcher is not None and not importer.supports_live_author_import(inspection) else ""))
+                self.confirmationRequested.emit("更新图包", "将更新“%s”中的 %s 个文件，并新增 %s 个文件。\n\n只替换能确认属于这个图包、且没有被改动的文件。处理失败时会恢复尚未完成的更改；成功后会清理临时文件。\n点击取消可返回，不会开始更新。" % (
+                    package_title(inspection["packageId"]), len(inspection["replaceFiles"]), len(inspection["missingFiles"]))
+                    + ("\n\n确认后软件会正常退出再导入，完成后请重新打开查看结果。" if self._import_launcher is not None and not importer.supports_live_author_import(inspection) else ""))
                 return
             self._install(path, inspection)
             return
@@ -608,7 +688,7 @@ class ResourceService(QObject):
             self._kind, self._pending = "remove", result
             self._message = "等待确认备份并移除。"
             self.changed.emit()
-            self.confirmationRequested.emit("备份并移除资源", "%s\n将备份并移除 %s 个作者显示文件（%s 字节），其中 %s 个有本地改动、%s 个已缺失。保留 %s 个核心文件，以及未登记文件和自定义路线。\n\n备份保留在当前资源目录 work/map-package-removals；此操作不提供自动恢复。" % (
+            self.confirmationRequested.emit("备份并移除图包", "%s\n将保留备份并移除 %s 个地图图片文件（%s 字节），其中 %s 个有改动、%s 个已缺失。保留 %s 个软件必需文件，以及来源不明的文件和自定义路线。\n\n此操作会保留备份，但不能在软件中一键恢复。" % (
                 result["title"], result["fileCount"], result["bytes"], len(result["modifiedFiles"]),
                 len(result["missingFiles"]), result["preservedCoreFiles"]))
             return
@@ -618,15 +698,21 @@ class ResourceService(QObject):
             self._kind = ""
             duplicate = kind == "install" and _duplicate_import(result)
             # Keep the final feedback pending until the actual-state scan succeeds.
-            self._import_completion_message = (("资源内容已存在，登记与状态已核对。" if duplicate else
-                "资源安装完成，登记与状态已核对。") if kind == "install" else "")
-            self._message = ("资源已备份并移除。备份：" + result["backupPath"] if kind == "remove" else
-                             "资源内容已存在，正在核对登记与状态…" if duplicate else
-                             "资源安装完成，正在核对状态…")
+            self._import_completion_message = (("这个图包已经安装，无需重复导入。" if duplicate else
+                "图包安装完成，可以使用了。") if kind == "install" else "")
+            self._message = ("图包已移除，备份已保留。" if kind == "remove" else
+                             "这个图包已经安装，正在核对当前状态…" if duplicate else
+                             "图包文件已安装，正在核对是否可用…")
             self.resourcesChanged.emit()
             if kind == "recover":
                 self._recovery_rows = []
-                self._message = "旧资源已恢复，正在核对状态…"
+                self._message = ("新增导入记录已处理，正在核对状态…"
+                                 if result.get('status') in {'additions-rolled-back', 'additions-committed'}
+                                 else "图包删除记录已处理，正在核对状态…"
+                                 if result.get('status') in {'removal-rolled-back', 'removal-committed'}
+                                 else "上次更新产生的临时文件已清理，正在核对状态…"
+                                 if result.get('status') == 'upgrade-committed' or result.get('cleanupOnly') is True
+                                 else "已恢复操作前的图包，正在核对状态…")
             message = self._message
             self._start("refresh-after-write", self._snapshot, message)
             return
@@ -634,9 +720,9 @@ class ResourceService(QObject):
             self._rows, self._recovery, self._kind = result, False, ""
             if self._import_completion_message:
                 self._message = self._import_completion_message
-                title = next((str(row.get("title") or row.get("name") or self._import_package_id)
+                title = next((str(row.get("title") or row.get("name") or package_title(self._import_package_id))
                               for row in result if row.get("packageId") == self._import_package_id),
-                             self._import_package_id or "地图资源包")
+                             package_title(self._import_package_id))
                 self.importCompleted.emit(title, self._message)
             self._import_completion_message = ""
         self._release_lease()

@@ -12,6 +12,10 @@ import threading
 from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, Qt, Signal, Slot
 
 from client_screen_geometry import project_client_geometry, ScreenGeometryError
+# Use the same source/frozen app dependency bootstrap as the Qt entry, including
+# when this provider is imported independently rather than through client.py.
+import client_paths
+from resource_transaction import assert_resources_ready, resource_read_lock
 
 
 QT_LOGICAL = "qt-logical-v1"
@@ -153,9 +157,10 @@ class ReferencePreviewProvider(QObject):
     failed = Signal(str)
     _completed = Signal(object)
 
-    def __init__(self, factories, parent=None, *, display_loader=None):
+    def __init__(self, factories, parent=None, *, display_loader=None, installation_root=None):
         super().__init__(parent)
         self._factories = factories
+        self._installation_root = installation_root
         if display_loader is None:
             from client_route_preferences import prepare_display_layer
             display_loader = prepare_display_layer
@@ -185,38 +190,44 @@ class ReferencePreviewProvider(QObject):
             try:
                 if cancelled.is_set():
                     return
-                # EngineFactories is lazy; invoking one mode avoids preparing
-                # the unrelated mode and performs all resource IO on this worker.
-                engine = self._factories[mode]()
-                maps = engine.pack.maps
-                if not maps:
-                    raise ValueError("No installed reference maps")
-                selected = map_id or maps[0].id
-                item = engine.pack.by_id.get(selected)
-                if item is None:
-                    raise ValueError("Reference preview map is not installed")
-                floors = tuple(str(x) for x in getattr(item, "layers", engine.identity_floors))
-                selected_floor = str(floor) if str(floor) in floors else str(getattr(engine.pack, "default_entry_floor", "1"))
-                if selected_floor not in floors:
-                    selected_floor = next(iter(floors), "")
-                if not selected_floor:
-                    raise ValueError("No installed reference preview floor")
-                if cancelled.is_set():
-                    return
-                layer = self._loader(engine, selected, selected_floor, profile_id, variant_id=variant_id)
-                import numpy as np
-                pixels = np.asarray(layer["pixels"])
-                if (pixels.dtype != np.uint8 or pixels.ndim != 3 or pixels.shape[2] != 4
-                        or not 0 < pixels.shape[0] * pixels.shape[1] <= 20_000_000):
-                    raise ValueError("Invalid installed reference preview pixels")
-                rgba = np.ascontiguousarray(pixels[:, :, [2, 1, 0, 3]])
-                rgba.setflags(write=False)
-                if not cancelled.is_set():
-                    self._completed.emit(dict(requestId=generation, context=captured_context,
-                        previewOnly=True, referenceAuthorized=False, liveAuthorization=False,
-                        mode=mode, mapId=selected, floor=selected_floor, profileId=profile_id,
-                        resourceIdentity=layer.get("resourceIdentity"), pixels=rgba,
-                        title="位置预览（不参与识别）"))
+                from contextlib import nullcontext
+                lease = (resource_read_lock(self._installation_root, wait=True, cancelled=cancelled.is_set)
+                         if self._installation_root is not None else nullcontext())
+                with lease:
+                    if self._installation_root is not None:
+                        assert_resources_ready(self._installation_root)
+                    # EngineFactories is lazy; invoking one mode avoids preparing
+                    # the unrelated mode and performs all resource IO on this worker.
+                    engine = self._factories[mode]()
+                    maps = engine.pack.maps
+                    if not maps:
+                        raise ValueError("No installed reference maps")
+                    selected = map_id or maps[0].id
+                    item = engine.pack.by_id.get(selected)
+                    if item is None:
+                        raise ValueError("Reference preview map is not installed")
+                    floors = tuple(str(x) for x in getattr(item, "layers", engine.identity_floors))
+                    selected_floor = str(floor) if str(floor) in floors else str(getattr(engine.pack, "default_entry_floor", "1"))
+                    if selected_floor not in floors:
+                        selected_floor = next(iter(floors), "")
+                    if not selected_floor:
+                        raise ValueError("No installed reference preview floor")
+                    if cancelled.is_set():
+                        return
+                    layer = self._loader(engine, selected, selected_floor, profile_id, variant_id=variant_id)
+                    import numpy as np
+                    pixels = np.asarray(layer["pixels"])
+                    if (pixels.dtype != np.uint8 or pixels.ndim != 3 or pixels.shape[2] != 4
+                            or not 0 < pixels.shape[0] * pixels.shape[1] <= 20_000_000):
+                        raise ValueError("Invalid installed reference preview pixels")
+                    rgba = np.ascontiguousarray(pixels[:, :, [2, 1, 0, 3]])
+                    rgba.setflags(write=False)
+                    if not cancelled.is_set():
+                        self._completed.emit(dict(requestId=generation, context=captured_context,
+                            previewOnly=True, referenceAuthorized=False, liveAuthorization=False,
+                            mode=mode, mapId=selected, floor=selected_floor, profileId=profile_id,
+                            resourceIdentity=layer.get("resourceIdentity"), pixels=rgba,
+                            title="位置预览（不参与识别）"))
             except Exception as error:
                 if not cancelled.is_set():
                     self._completed.emit(dict(requestId=generation, error=f"{type(error).__name__}:{error}"[:512]))

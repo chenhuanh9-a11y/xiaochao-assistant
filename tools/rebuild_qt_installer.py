@@ -21,6 +21,110 @@ INSTALLER_ONLY_FILES = {
 }
 
 
+def validate_managed_runtime_reuse(stage, prior, source):
+    """Bind candidate-only packaging to an already built matching runtime.
+
+    A mutable side profile alone is not evidence. Require the completed build's
+    exact manifest and EXE hashes, release report, and compiled-source identity;
+    compare runtime source, not the last installer-wrapper commit.
+    """
+    stage = Path(stage)
+    projection = prior.get("fileProjection", {})
+    required = build.RESOURCE_INSTALLATION_POLICY["existingBasePlane"]
+    if (projection.get("policy", {}).get("existingBasePlane") != required
+            or projection.get("managedBaseManifest") != "_internal/managed-base-resources/manifest.json"
+            or not projection.get("managedBaseManifestSha256")
+            or not prior.get("releaseReport", {}).get("executableSha256")):
+        raise ValueError("Managed base deployment requires a full freeze; legacy runtime reuse is unsupported")
+    compiled = (prior.get("compiledPayloadSourceCommit")
+                or prior.get("reusedCompiledPayload", {}).get("sourceCommit") or prior["source"]["commit"])
+    changed = set(build._git("diff", "--name-only", compiled, source["commit"]).splitlines())
+    if changed - INSTALLER_ONLY_FILES:
+        raise ValueError("Compiled runtime changed; perform a full freeze")
+    manifest = build._local_file(stage, projection["managedBaseManifest"])
+    if build.sha256(manifest) != projection["managedBaseManifestSha256"]:
+        raise ValueError("Managed candidate manifest changed; perform a full freeze")
+    sys.path.insert(0, str(ROOT / "app"))
+    from managed_base_resources import _manifest
+    if _manifest(manifest)["bundleId"] != projection.get("managedBaseBundleId"):
+        raise ValueError("Managed candidate identity changed; perform a full freeze")
+    executable = build._local_file(stage, prior["product"] + ".exe")
+    report_path = build._local_file(stage, prior["releaseReport"]["file"])
+    report = build._read(report_path)
+    if (build.sha256(executable) != prior["releaseReport"]["executableSha256"]
+            or build.sha256(report_path) != prior["releaseReport"]["sha256"]
+            or report.get("executableSha256") != prior["releaseReport"]["executableSha256"]
+            or (report.get("compiledPayloadSourceCommit") or report.get("sourceCommit")) != compiled):
+        raise ValueError("Compiled payload identity changed; perform a full freeze")
+    for name in ("installation-profile.json", "_internal/installation-profile.json"):
+        profile = build._read(build._local_file(stage, name))
+        if (profile.get("resourceInstallationPolicy", {}).get("existingBasePlane") != required
+                or profile.get("sourceCommit") != compiled):
+            raise ValueError("Managed runtime profile identity changed; perform a full freeze")
+    # asInvoker only describes elevation, not the helper's compiled behavior.
+    # Reuse the complete helper inventories recorded by the original freeze.
+    for kind in ("recovery", "import"):
+        helper = prior.get(kind + "Helper")
+        executable = "star-map-" + kind + "-helper.exe"
+        runtime = "_star_map_" + kind + "_runtime/"
+        inventory = helper.get("files") if isinstance(helper, dict) else None
+        if (not isinstance(inventory, dict) or not inventory or helper.get("included") is not True
+                or helper.get("executable") != executable or helper.get("runtimeDirectory") != runtime[:-1]
+                or executable not in inventory
+                or not any(isinstance(name, str) and name.startswith(runtime) for name in inventory)):
+            raise ValueError("Helper inventory missing or invalid; perform a full freeze")
+        for name, row in inventory.items():
+            if (not isinstance(name, str) or (name != executable and not name.startswith(runtime))
+                    or not isinstance(row, dict) or type(row.get("bytes")) is not int
+                    or not isinstance(row.get("sha256"), str)):
+                raise ValueError("Helper inventory missing or invalid; perform a full freeze")
+            try:
+                path = build._local_file(stage, name)
+                matches = path.stat().st_size == row["bytes"] and build.sha256(path) == row["sha256"]
+            except (OSError, ValueError) as error:
+                raise ValueError("Helper payload missing or changed; perform a full freeze") from error
+            if not matches:
+                raise ValueError("Helper payload missing or changed; perform a full freeze")
+    return compiled
+
+
+def refresh_release_identity(stage, record, compiled_source_commit):
+    """Rebind report labels while preserving the actual reused EXE provenance."""
+    stage = Path(stage)
+    record.update(compiledPayloadSourceCommit=compiled_source_commit,
+        buildFingerprint=compiled_source_commit[:8].upper(),
+        installerSourceCommit=record['source']['commit'],
+        installerBuildFingerprint=record['source']['commit'][:8].upper())
+    rebound = {}
+    for name in ('installation-profile.json', '_internal/installation-profile.json'):
+        path = stage / name
+        previous = build.sha256(path)
+        profile = json.loads(path.read_text(encoding='utf-8'))
+        profile.update(sourceCommit=compiled_source_commit, buildFingerprint=record['buildFingerprint'],
+            compiledPayloadSourceCommit=compiled_source_commit,
+            installerSourceCommit=record['source']['commit'], installerInstance=record['installerInstance'])
+        path.write_text(json.dumps(profile, indent=2), encoding='utf-8')
+        rebound[name] = dict(previousSha256=previous, sha256=build.sha256(path))
+    fingerprint = stage / '_internal/references/build-fingerprint.txt'
+    previous = build.sha256(fingerprint)
+    fingerprint.write_text(record['buildFingerprint'] + '\n', encoding='ascii')
+    rebound['_internal/references/build-fingerprint.txt'] = dict(previousSha256=previous, sha256=build.sha256(fingerprint))
+    record['reusedCompiledPayload']['reboundIdentityFiles'] = rebound
+    record['resources']['references/build-fingerprint.txt'] = dict(bytes=fingerprint.stat().st_size,
+        sha256=build.sha256(fingerprint))
+    record['releaseReport'] = build.stage_release_report(stage, product=record['product'],
+        source=dict(record['source'], commit=compiled_source_commit), version=record['version'],
+        resource_version=record['resourceVersion'],
+        resource_inventory_sha256=record['resourceInventorySha256'],
+        compiled_source_commit=compiled_source_commit, installer_source_commit=record['source']['commit'])
+    ownership = Path(stage) / '_installer-owned-files.txt'
+    names = ownership.read_text(encoding='utf-8-sig').splitlines()
+    if 'release-report.json' not in names:
+        names.append('release-report.json')
+    ownership.write_text('\n'.join(names) + '\n', encoding='utf-8-sig')
+    record['programOwnership'].update(files=len(names), sha256=build.sha256(ownership))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-commit", required=True)
@@ -50,6 +154,7 @@ def main():
     if output.exists():
         raise ValueError("Installer output must be new")
     old_stage = prior_path.parent / "freeze" / prior["product"]
+    runtime_commit = validate_managed_runtime_reuse(old_stage, prior, source)
     projection = prior["fileProjection"]["families"]
     names = [name for group in projection.values() for name in group]
     if (len(names) != len(set(names))
@@ -71,34 +176,20 @@ def main():
     record.update(source=source, sourceRoot=str(ROOT), output=str(output), tools=tools,
         action="installer-only", buildCompleted=False, executableLaunched=False,
         installPerformed=False, published=False,
-        buildFingerprint=source["commit"][:8].upper(),
-        reusedCompiledPayload=dict(sourceCommit=prior["source"]["commit"],
-            sourceTree=prior["source"]["tree"], priorRecordSha256=build.sha256(prior_path),
+        reusedCompiledPayload=dict(sourceCommit=runtime_commit,
+            priorBuildSourceCommit=prior['source']['commit'], priorBuildSourceTree=prior["source"]["tree"],
+            priorRecordSha256=build.sha256(prior_path),
             runtimeSourceIdentical=True, pythonFreezeRepeated=False, files=reused),
         installerLanguage=dict(name="chinesesimp", fileSha256=CHINESE_SHA256,
             fixedSimplifiedChinese=True, wizardLaunched=False))
     record["installerInstance"].update(build.INSTANCES["production"])
-    rebound = {}
-    for name in ("installation-profile.json", "_internal/installation-profile.json"):
-        path = stage / name
-        profile = json.loads(path.read_text(encoding="utf-8"))
-        profile.update(sourceCommit=source["commit"], buildFingerprint=record["buildFingerprint"],
-                       installerInstance=record["installerInstance"])
-        path.write_text(json.dumps(profile, indent=2), encoding="utf-8")
-        rebound[name] = dict(previousSha256=reused[name]["sha256"], sha256=build.sha256(path))
-    fingerprint = stage / "_internal/references/build-fingerprint.txt"
-    fingerprint.write_text(record["buildFingerprint"] + "\n", encoding="ascii")
-    rebound["_internal/references/build-fingerprint.txt"] = dict(
-        previousSha256=reused["_internal/references/build-fingerprint.txt"]["sha256"],
-        sha256=build.sha256(fingerprint))
-    record["reusedCompiledPayload"]["reboundIdentityFiles"] = rebound
-    record["resources"]["references/build-fingerprint.txt"] = dict(
-        bytes=fingerprint.stat().st_size, sha256=build.sha256(fingerprint))
+    refresh_release_identity(stage, record, runtime_commit)
     record["frozenVerification"] = build.verify_frozen(stage, record["resources"],
         [p.name for p in (ROOT / "experiments/qt_quick").glob("*.qml")], record["product"])
     for kind in ("recovery", "import"):
         build.verify_invoker_manifest(stage / ("star-map-" + kind + "-helper.exe"))
-    include, record["fileProjection"] = build.write_production_files_include(stage, record["resources"], output)
+    include, record["fileProjection"] = build.write_production_files_include(stage, record["resources"], output,
+        resource_version=record["resourceVersion"])
     record_path = output / "build-record.json"
     record_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
     instance = record["installerInstance"]

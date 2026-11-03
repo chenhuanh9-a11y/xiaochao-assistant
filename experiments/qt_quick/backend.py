@@ -12,6 +12,7 @@ from client_paths import RESOURCE_ROOT as ROOT, WORK_ROOT, runtime_paths, bundle
 sys.path.insert(0, str(ROOT / "app"))
 from map_resource_context import load_browse_context
 from star_map_import import inspect_package, install_package
+from resource_transaction import assert_resources_ready, resource_read_lock
 
 
 class WorkSignals(QObject):
@@ -190,9 +191,14 @@ class Backend(QObject):
             self.changed.emit()
             if self.viewKey != initial_view:
                 self.viewChanged.emit(self.viewKey)
-        self._submit(lambda: load_browse_context(self.paths.resource_root, mode,
-                                                cancelled=cancel.is_set,
-                                                display_fallback_root=bundled_author_root()), loaded)
+        def read():
+            # The UI stays responsive while its worker waits for an author
+            # transaction. Never cache the intermediate on-disk removal state.
+            with resource_read_lock(self.sandbox, wait=True, cancelled=cancel.is_set):
+                assert_resources_ready(self.sandbox)
+                return load_browse_context(self.paths.resource_root, mode, cancelled=cancel.is_set,
+                                           display_fallback_root=bundled_author_root())
+        self._submit(read, loaded)
 
     @staticmethod
     def _preview_url(path, stamps):

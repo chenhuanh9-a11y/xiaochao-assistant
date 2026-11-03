@@ -87,17 +87,18 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(result['previousReceiptSha256'], hashlib.sha256(self.old_receipt).hexdigest())
         self.assert_old()
 
-    def test_owned_upgrade_and_explicit_rollback_restore_receipt_and_files(self):
+    def test_owned_upgrade_retires_copies_and_disables_completed_rollback(self):
         self.installed_old()
         result = importer.install_package(self.new, self.root, application_stopped=True)
         self.assertEqual(result['replaced'], 1)
         self.assertEqual((self.root / OLD_PATH).read_bytes(), b'q90-route')
         self.assertEqual((self.root / ADDED_PATH).read_bytes(), b'{}')
         self.assertEqual(importer.inspect_package(self.new, self.root)['alreadyPresent'], 2)
-        importer.rollback_package_upgrade(self.root, result['upgradeTransactionId'], application_stopped=True)
-        self.assert_old()
+        with self.assertRaisesRegex(importer.ImportRejected, 'no-longer-rollbackable'):
+            importer.rollback_package_upgrade(self.root, result['upgradeTransactionId'], application_stopped=True)
+        self.assertEqual((self.root / OLD_PATH).read_bytes(), b'q90-route')
 
-    def test_identical_reinstall_preserves_receipt_and_upgrade_rollback(self):
+    def test_identical_reinstall_preserves_receipt_and_retired_upgrade(self):
         self.installed_old()
         result = importer.install_package(self.new, self.root, application_stopped=True)
         receipt_bytes = self.receipt.read_bytes()
@@ -107,8 +108,9 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(again['upgradeTransactionId'], result['upgradeTransactionId'])
         self.assertEqual(self.receipt.read_bytes(), receipt_bytes)
         self.assertEqual(self.receipt.stat().st_ino, receipt_inode)
-        importer.rollback_package_upgrade(self.root, result['upgradeTransactionId'], application_stopped=True)
-        self.assert_old()
+        with self.assertRaisesRegex(importer.ImportRejected, 'no-longer-rollbackable'):
+            importer.rollback_package_upgrade(self.root, result['upgradeTransactionId'], application_stopped=True)
+        self.assertEqual((self.root / OLD_PATH).read_bytes(), b'q90-route')
 
     def test_publish_failure_rolls_back_old_resource_and_receipt(self):
         self.installed_old()

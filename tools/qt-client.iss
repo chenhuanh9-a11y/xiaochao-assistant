@@ -125,8 +125,16 @@ var
   UpgradeFiles, UpgradeExisting: TStringList;
   UpgradeBackup: String;
   UpgradeStarted, UpgradeCommitted: Boolean;
-  ResourcePlanReady, InstallBaseResources, InstallEditorBase: Boolean;
+  ResourcePlanReady, InstallEditorBase: Boolean;
   ResourcePlanRoot: String;
+  ResourceLock: THandle;
+  ResourceLockRoot: String;
+function CreateFileW(lpFileName: String; dwDesiredAccess, dwShareMode,
+  lpSecurityAttributes, dwCreationDisposition, dwFlagsAndAttributes,
+  hTemplateFile: LongWord): THandle;
+  external 'CreateFileW@kernel32.dll stdcall';
+function CloseHandle(hObject: THandle): Boolean;
+  external 'CloseHandle@kernel32.dll stdcall';
 function InstallerFileAttributes(lpFileName: String): LongWord;
   external 'GetFileAttributesW@kernel32.dll stdcall';
 function OwnedAssistantShortcut(const Path: String): Boolean;
@@ -187,21 +195,41 @@ begin
   end;
   Result := True;
 end;
+procedure ReleaseResourceLock;
+begin
+  if (ResourceLock <> 0) and (ResourceLock <> THandle(-1)) then CloseHandle(ResourceLock);
+  ResourceLock := 0;
+  ResourceLockRoot := '';
+end;
+function AcquireResourceLock: Boolean;
+var
+  Target, LockPath: String;
+begin
+  Target := ExpandConstant('{app}');
+  Result := False;
+  if (ResourceLock <> 0) and (CompareText(ResourceLockRoot, Target) = 0) then begin
+    Result := True; Exit;
+  end;
+  ReleaseResourceLock;
+  LockPath := Target + '\work\map-packages\import.lock';
+  if not NoLinkedAncestors(LockPath) then Exit;
+  if not ForceDirectories(ExtractFileDir(LockPath)) then Exit;
+  { Shared with resource_transaction.py. share=0 conflicts with its open CRT
+    handle as well as another Setup; the handle survives until rollback ends. }
+  ResourceLock := CreateFileW(LockPath, $C0000000, 0, 0, 4, $80, 0);
+  if ResourceLock = THandle(-1) then begin ResourceLock := 0; Exit; end;
+  ResourceLockRoot := Target;
+  Result := True;
+end;
 procedure DetermineResourcePlanes;
 var
   Target: String;
 begin
   Target := ExpandConstant('{app}');
   if ResourcePlanReady and (CompareText(ResourcePlanRoot, Target) = 0) then Exit;
-  { Cache BEFORE copying any file: never decide independently for each entry. }
-  InstallBaseResources := not (
-    DirExists(Target + '\_internal\assets') or
-    FileExists(Target + '\_internal\assets') or
-    DirExists(Target + '\_internal\references') or
-    FileExists(Target + '\_internal\references') or
-    DirExists(Target + '\_internal\recognition') or
-    FileExists(Target + '\_internal\recognition') or
-    FileExists(Target + '\_internal\difficult-native-manifest.json'));
+  { Active base resources are never copied by Setup. The exact generated
+    projection installs a candidate manifest/payload; startup validates and
+    repairs the whole set under this same lock before creating consumers. }
   InstallEditorBase := not (
     DirExists(Target + '\assets\custom-maps') or
     FileExists(Target + '\assets\custom-maps') or
@@ -209,11 +237,6 @@ begin
     FileExists(Target + '\_internal\assets\custom-maps'));
   ResourcePlanRoot := Target;
   ResourcePlanReady := True;
-end;
-function InstallBaseResourcePlane: Boolean;
-begin
-  DetermineResourcePlanes;
-  Result := InstallBaseResources;
 end;
 function InstallEditorResourceFamily: Boolean;
 begin
@@ -236,7 +259,7 @@ begin
     (Pos('_internal\references\', Path) = 1) or
     (Pos('_internal\recognition\', Path) = 1) or
     (Path = '_internal\difficult-native-manifest.json') then
-    Result := InstallBaseResourcePlane;
+    Result := False;
 end;
 function SafeProgramPath(const Relative: String): Boolean;
 var
@@ -349,11 +372,12 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssInstall then begin
+    if not AcquireResourceLock then
+      RaiseException('地图资源正被助手、导入或恢复任务使用，请关闭任务后重试。');
     { Re-evaluate once at the installation boundary, before any actual copy. }
     ResourcePlanReady := False;
     DetermineResourcePlanes;
-    if InstallBaseResources then Log('RESOURCE_BASE_INSTALL_COMPLETE_BUNDLE')
-    else Log('RESOURCE_BASE_PRESERVE_EXISTING_WHOLE_PLANE');
+    Log('RESOURCE_BASE_CANDIDATE_STAGED_VERIFY_AND_REPAIR_BEFORE_RUNTIME');
     if InstallEditorBase then Log('RESOURCE_EDITOR_SEED_COMPLETE_FAMILY')
     else Log('RESOURCE_EDITOR_PRESERVE_EXISTING_FAMILY');
     BeginUpgrade;
@@ -394,6 +418,7 @@ begin
   { Backups intentionally remain under work for recovery/audit, including success. }
   if UpgradeFiles <> nil then UpgradeFiles.Free;
   if UpgradeExisting <> nil then UpgradeExisting.Free;
+  ReleaseResourceLock;
 end;
 { Old uninstall logs own bundled maps too. Back them up before allowing uninstall,
   then restore their original paths after native program removal. Never migrate schemas. }
@@ -499,13 +524,8 @@ procedure DeinitializeUninstall;
 begin
   RestoreUninstallResources;
   if ResourceFiles <> nil then ResourceFiles.Free;
+  ReleaseResourceLock;
 end;
-function CreateFileW(lpFileName: String; dwDesiredAccess, dwShareMode,
-  lpSecurityAttributes, dwCreationDisposition, dwFlagsAndAttributes,
-  hTemplateFile: LongWord): THandle;
-  external 'CreateFileW@kernel32.dll stdcall';
-function CloseHandle(hObject: THandle): Boolean;
-  external 'CloseHandle@kernel32.dll stdcall';
 function ExecutableAvailable(const FileName: String): Boolean;
 var
   Handle: THandle;
@@ -530,12 +550,16 @@ begin
     Result := '已检测到安装版。覆盖安装必须使用原安装目录，以保留原设置和地图。';
     Exit;
   end;
-  if not InstalledExecutableAvailable then
+  if not InstalledExecutableAvailable then begin
     Result := '星图正在运行，或安装目录不可写。请自行退出助手后重试；安装程序不会结束您的程序。';
+    Exit;
+  end;
+  if not AcquireResourceLock then
+    Result := '地图资源正被助手、导入或恢复任务使用，请关闭任务后重试。';
 end;
 function InitializeUninstall: Boolean;
 begin
-  Result := InstalledExecutableAvailable;
+  Result := InstalledExecutableAvailable and AcquireResourceLock;
   if not Result then
     SuppressibleMsgBox('星图正在运行，或安装目录不可写。请自行退出助手后再卸载。个人设置、日志与截图将保留。', mbError, MB_OK, IDOK)
   else

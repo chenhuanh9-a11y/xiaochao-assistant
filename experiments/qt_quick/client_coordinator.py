@@ -1348,7 +1348,7 @@ class ClientCoordinator(QObject):
 
     @Slot()
     def beginReferenceEdit(self):
-        if self.resources.busy or self._closing or self._closed:
+        if self.resources.busy or self.session.snapshot.get("resourceLocked") or self._closing or self._closed:
             return
         if not self._reference:
             provider = self._reference_preview_provider
@@ -1393,7 +1393,7 @@ class ClientCoordinator(QObject):
                 or payload.get("referenceAuthorized") or payload.get("liveAuthorization")):
             return
         self._reference_preview_context = None
-        if self.resources.busy:
+        if self.resources.busy or self.session.snapshot.get("resourceLocked"):
             self._message = "资源操作尚未完成，请稍后重试位置预览"
             self.changed.emit()
             return
