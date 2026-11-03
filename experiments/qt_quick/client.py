@@ -269,6 +269,7 @@ class QtClient:
         self._initialize_timer = QTimer(app)
         self._initialize_timer.setInterval(120)
         self._initialize_timer.timeout.connect(self._initialize_resources)
+        self.session.changed.connect(self._refresh_resource_preparation)
         self._initialize_timer.start()
         self.info.scheduleStartupCheck(bool(self.paths.production and not probe_output))
 
@@ -418,6 +419,31 @@ class QtClient:
             return
         self._initialized = False
         self._initialize_timer.start()
+
+    def _refresh_resource_preparation(self):
+        """Prepare an unvalidated applied context through the existing worker.
+
+        Startup can legitimately prepare only an unavailable future season.
+        Returning to S0 must then validate S0 instead of waiting for a resource
+        write. Observe committed Session state, never a settings draft or a
+        desired context whose asynchronous switch has not completed.
+        """
+        if self._closed or self.coordinator.closing or self.session.busy:
+            return
+        state = self.session.snapshot
+        if state.get("closed") or state.get("contextPending"):
+            return
+        season, mode = self.session.appliedSeason, self.session.appliedMode
+        report = state.get("savedFrameCapabilities", {}).get(mode, {})
+        if (report.get("season") != season or report.get("mode") != mode
+                or report.get("prepared") is not False
+                or report.get("reason") != "resource-validation-pending"):
+            return
+        # Resource failures are prepared-but-unavailable and never retried in a
+        # loop. A cancelled/stale preparation may remain unprepared; a later
+        # idle signal retries it only for the current applied context.
+        if not self._initialize_timer.isActive():
+            self._schedule_resource_preparation()
 
     def _use_custom_gallery(self, gallery_id):
         if (self._closed or self.coordinator.closing or self.settings.busy or self.resources.busy or self.session.busy
