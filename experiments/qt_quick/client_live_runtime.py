@@ -2680,8 +2680,8 @@ class LiveRuntime:
                     return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
                 if result.get("stale") and self._retire_refresh_owner(payload.get("_recoveryRenderOwner")):
                     result = dict(result, liveAuthorization=False)
-                # The first positive floor sample can still be waiting for
-                # main's second stable sample. Retain this ticket's budget.
+                # Main's floor policy can defer a current positive sample.
+                # Retain this ticket's existing budget until it is accepted.
                 if result.get("reason") != "floor-policy-deferred":
                     self.cancel_map_open_recovery("current-frame-recovered")
                 return result
@@ -2757,8 +2757,11 @@ class LiveRuntime:
             # current owner. Live failures from the current worker still revoke.
             with self._lock:
                 published_owner = payload.get("_refreshRenderOwner", owner)
+                current_owner = self._refresh_render_owner()
+                # This worker may have revoked its old grant before a fallback
+                # failed. No current grant is not a transfer to a newer owner.
                 if (self._cancelled(cancelled) or epoch != self._epoch
-                        or published_owner != self._refresh_render_owner()):
+                        or current_owner is not None and published_owner != current_owner):
                     self._retire_refresh_owner(published_owner)
                     return self._receipt("refresh_map", payload, success=False,
                         reason="cancelled-or-stale", stale=True)
