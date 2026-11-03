@@ -115,7 +115,7 @@ class _Work(QRunnable):
 def _confirmation_fingerprint(result):
     return json.dumps({key: result.get(key) for key in (
         "packageId", "archiveSha256", "previousReceiptSha256", "files",
-        "replaceFiles", "missingFiles")}, sort_keys=True, separators=(",", ":"))
+        "replaceFiles", "missingFiles", "legacyReceiptSha256")}, sort_keys=True, separators=(",", ":"))
 
 
 def _duplicate_import(result):
@@ -684,7 +684,7 @@ class ResourceService(QObject):
                 self._kind, self._pending = "overwrite", (path, inspection)
                 self._message = "请确认是否更新这个图包。"
                 self.changed.emit()
-                self.confirmationRequested.emit("更新图包", "将更新“%s”中的 %s 个文件，并新增 %s 个文件。\n\n只替换能确认属于这个图包、且没有被改动的文件。处理失败时会恢复尚未完成的更改；成功后会清理临时文件。\n点击取消可返回，不会开始更新。" % (
+                self.confirmationRequested.emit("更新图包", ("已识别到受支持的旧版图包，无需手动寻找或删除文件。\n\n" if inspection.get("legacyReceiptSha256") else "") + "将更新“%s”中的 %s 个文件，并新增 %s 个文件。\n\n只替换能确认属于这个图包、且没有被改动的文件。处理失败时会恢复尚未完成的更改；成功后会清理临时文件。\n点击取消可返回，不会开始更新。" % (
                     package_title(inspection["packageId"]), len(inspection["replaceFiles"]), len(inspection["missingFiles"]))
                     + ("\n\n确认后软件会正常退出再导入，完成后请重新打开查看结果。" if self._import_launcher is not None and not importer.supports_live_author_import(inspection) else ""))
                 return

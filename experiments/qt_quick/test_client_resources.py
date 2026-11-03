@@ -664,6 +664,44 @@ class ResourceServiceTests(unittest.TestCase):
         self.assertEqual(len(self.changes), 1)
         self.assertFalse(self.lease.active)
 
+    def test_approved_legacy_import_directly_confirms_then_upgrades_without_manual_cleanup(self):
+        self.write(IMAGE, b"approved-old")
+        inventory = {"nightmare-suju": dict(archiveSha256="a" * 64, archiveName="old.zip",
+            files=[row(IMAGE, b"approved-old")])}
+        receipt = self.root / "work/map-packages/nightmare-suju.json"
+        with patch.object(manager, "LEGACY_AUTHOR_INVENTORY", inventory):
+            self.install(self.package("new.zip", b"new"))
+            self.assertEqual(self.service.pendingKind, "overwrite", self.service.message)
+            self.assertFalse(receipt.exists(), "inspection must not publish metadata")
+            self.assertIn("已识别到受支持的旧版图包", self.confirmations[-1][1])
+            self.service.confirmOperation(False)
+            self.assertFalse(receipt.exists())
+            self.assertEqual((self.root / IMAGE).read_bytes(), b"approved-old")
+            self.install(self.package("new.zip", b"new"))
+            self.service.confirmOperation(True)
+            self.settle()
+        self.assertEqual((self.root / IMAGE).read_bytes(), b"new")
+        self.assertEqual(len(self.completions), 1)
+        self.assertEqual(self.problems, [])
+        self.assertFalse(self.lease.active)
+        self.assert_no_upgrade_copies(json.loads(receipt.read_bytes())["upgradeTransactionId"])
+
+    def test_legacy_approval_binds_full_known_release_not_only_selected_changed_file(self):
+        self.write(IMAGE, b"approved-old")
+        inventory = {"nightmare-suju": dict(archiveSha256="a" * 64, archiveName="old.zip",
+            files=[row(IMAGE, b"approved-old")])}
+        with patch.object(manager, "LEGACY_AUTHOR_INVENTORY", inventory):
+            self.install(self.package("new.zip", b"new"))
+            self.assertEqual(self.service.pendingKind, "overwrite")
+            inventory["nightmare-suju"]["archiveSha256"] = "b" * 64
+            self.service.confirmOperation(True)
+            self.settle()
+        self.assertEqual((self.root / IMAGE).read_bytes(), b"approved-old")
+        self.assertFalse((self.root / "work/map-packages/nightmare-suju.json").exists())
+        self.assertIn("resource-plan-changed", self.problems[-1]["raw"])
+        self.assertEqual(self.completions, [])
+        self.assertFalse(self.lease.active)
+
     def test_unknown_file_conflict_never_overwrites(self):
         self.write(IMAGE, b"unknown")
         self.install()

@@ -455,6 +455,7 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None) -
     existing = 0
     replacements, missing = [], []
     owned, receipt_digest = None, None
+    legacy_receipt_digest = None
     for row in rows.values():
         path = row["path"]
         if not _allowed(package_id, path):
@@ -467,6 +468,19 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None) -
             if not target.is_file() or target.stat().st_size != row["bytes"] or _sha(target) != row["sha256"]:
                 if owned is None:
                     owned, receipt_digest = _owned_inventory(root, package_id)
+                    if receipt_digest is None:
+                        # A supported old release can be identified without a
+                        # prior UI refresh. Inspection stays read-only; the full
+                        # approved set must match before it gains any authority.
+                        from author_package_management import _legacy_author_plan_locked
+                        legacy = _legacy_author_plan_locked(root, package_id)
+                        if legacy['status'] == 'legacy-verified':
+                            legacy_rows = _rows(legacy['receipt']['files'])
+                            # Do not orphan verified old files by replacing the
+                            # full-set receipt with a partial incoming package.
+                            if legacy_rows.keys() <= rows.keys():
+                                owned = legacy_rows
+                                legacy_receipt_digest = legacy['receiptSha256']
                 old = owned.get(path.casefold())
                 if (old is None or not target.is_file() or target.stat().st_size != old["bytes"]
                         or _sha(target) != old["sha256"]):
@@ -507,6 +521,7 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None) -
             "fileCount": len(rows), "bytes": total, "alreadyPresent": existing,
             "replaceFiles": replacements, "missingFiles": missing,
             "previousReceiptSha256": receipt_digest,
+            **({'legacyReceiptSha256': legacy_receipt_digest} if legacy_receipt_digest else {}),
             "restartRequired": True, "authentication": "not-signed; SHA256 integrity only"}
 
 
@@ -792,6 +807,14 @@ def _install_staged(zip_path, root, state, *, expected_archive_sha256=None, live
         _check_cancelled(cancelled)
         preflight_hardlinks(root, [r['path'] for r in result['files']]
                             + [f"work/map-packages/{result['packageId']}.json"])
+        if result.get('legacyReceiptSha256'):
+            # Every ZIP entry and dependency has now passed validation and the
+            # writer/idle lease still holds. Register only this proven old set,
+            # then reuse the normal rollback-safe upgrade and copy retirement.
+            from author_package_management import _adopt_legacy_author_package_locked
+            _adopt_legacy_author_package_locked(root, state, result['packageId'], cancelled=cancelled,
+                expected_receipt_sha256=result['legacyReceiptSha256'])
+            result['previousReceiptSha256'] = result['legacyReceiptSha256']
         if result["replaceFiles"]:
             from map_package_upgrade import commit_upgrade
             return commit_upgrade(root, result, stage, live=live, cancelled=cancelled)
