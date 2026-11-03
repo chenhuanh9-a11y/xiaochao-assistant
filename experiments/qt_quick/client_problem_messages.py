@@ -168,3 +168,32 @@ def operation_problem(receipt, state):
             if isinstance(receipt.get(key), str):
                 problem[key] = receipt[key][:128]
     return problem
+
+
+def input_message(status, raw, *, management=False, game=False):
+    if status == "ready":
+        return ("快捷键监听已开启；游戏操作需在已连接游戏的前台使用。" if game else
+                "面板和本局快捷键已开启；连接游戏后可使用游戏操作快捷键。")
+    if status == "starting":
+        return "正在启动快捷键监听，请稍候。"
+    if status == "suspended":
+        return "游戏窗口暂时无法核验，游戏操作快捷键已暂停。请保持游戏窗口可见，等待重新连接。"
+    if status == "waiting":
+        return "尚未连接游戏，游戏操作快捷键暂不可用。请打开游戏，等待自动连接或手动连接。"
+    if status == "disabled":
+        return ("游戏操作快捷键已关闭，面板和本局快捷键仍可使用。" if management else
+                "快捷键已关闭。需要使用时，请在连接游戏后启用。")
+    if status == "conflict":
+        if raw == "Shortcut action count does not match the product contract.":
+            return "已保存的快捷键配置格式不完整，本次未启用。请在设置页重新核对并保存快捷键。"
+        return "快捷键配置有冲突或无效，本次未启用。请在设置页检查重复按键并重新保存；具体冲突可在技术详情查看。"
+    if status == "unknown":
+        if raw == "Configure at least one shortcut before enabling.":
+            return "尚未设置可用的快捷键。请在设置页录入并保存后，再启用快捷键。"
+        if raw.startswith("Unknown shortcut actions:"):
+            return "快捷键配置含有无法识别的操作，本次未启用。请在设置页核对配置，并查看技术详情。"
+        if raw in {"The explicitly bound game window is unavailable.",
+                   "Bound game window was destroyed; explicit rebind is required."}:
+            return "游戏窗口尚不可用，游戏操作快捷键未启用。请打开游戏并重新连接；若仍失败，请查看技术详情。"
+        return "当前快捷键状态无法确认，本次未启用。请在帮助页“最近问题”查看技术详情，再核对快捷键设置。"
+    return "快捷键监听未能正常工作，本次快捷键操作不可用。请查看帮助页“最近问题”的技术详情，再检查连接和快捷键设置。"
