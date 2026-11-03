@@ -69,11 +69,17 @@ class RoutePlazaService(QObject):
                     username=self.account.username or "", persistent=self.account.persistent,
                     loaded=self._loaded, count=len(self._routes), downloading=self._download,
                     query=self._query, accountOpen=self._account_open, accountMode=self._account_mode,
-                    accountMessage=self._account_message, hasRecoveryCode=bool(self._recovery_code))
+                    accountMessage=self._account_message, recoveryPending=bool(self.account.pending_recovery_code),
+                    hasRecoveryCode=bool(self._visible_recovery_code()))
 
     snapshot = Property("QVariantMap", _snapshot, notify=changed)
     routeModel = Property(QObject, lambda s: s.model, constant=True)
-    recoveryCode = Property(str, lambda s: s._recovery_code, notify=changed)
+    def _visible_recovery_code(self):
+        # Only expose an unacknowledged code belonging to the current account.
+        code = self.account.pending_recovery_code
+        return code if self._account_open and code == self._recovery_code else ""
+
+    recoveryCode = Property(str, _visible_recovery_code, notify=changed)
 
     def _note(self, message, error=False):
         self._message, self._error = message, error
@@ -149,9 +155,9 @@ class RoutePlazaService(QObject):
                 self._account_mode, self._account_message = "登录", result
                 self._pending_download = None
                 self.changed.emit()
-            elif operation == "注册" and result:
-                self._recovery_code = result
-                self._account_message = "注册成功。请妥善保存恢复码，它只显示这一次。"
+            elif operation == "注册" and self.account.pending_recovery_code:
+                self._recovery_code = self.account.pending_recovery_code
+                self._account_message = "注册成功。请妥善保存恢复码，确认保存后不再显示。"
                 self.changed.emit()
             else:
                 self.finishSignIn()
@@ -167,7 +173,9 @@ class RoutePlazaService(QObject):
         self._dialog_generation += 1
         self._account_open = True
         self._account_mode = "登录"
-        self._account_message = self._recovery_code = ""
+        self._recovery_code = self.account.pending_recovery_code
+        self._account_message = ("请保存本次注册的恢复码，确认保存后不再显示；退出软件后不再保留。"
+                                 if self._recovery_code else "")
         self.changed.emit()
 
     @Slot()
@@ -180,14 +188,14 @@ class RoutePlazaService(QObject):
 
     @Slot(str)
     def setAccountMode(self, mode):
-        if self._busy or self._recovery_code or mode not in ("登录", "注册", "找回密码"):
+        if self._busy or self._visible_recovery_code() or mode not in ("登录", "注册", "找回密码"):
             return
         self._account_mode, self._account_message = mode, ""
         self.changed.emit()
 
     @Slot(str, str, str, str, str, str)
     def submitAccount(self, identifier, username, email, code, password, confirmation):
-        if not self._account_open or self._recovery_code or self._busy:
+        if not self._account_open or self._visible_recovery_code() or self._busy:
             return
         mode = self._account_mode
         if mode != "登录" and password != confirmation:
@@ -209,6 +217,7 @@ class RoutePlazaService(QObject):
         if self._busy or not self._account_open or not self.account.username:
             return
         pending = self._pending_download
+        self.account.acknowledge_recovery_code(self._visible_recovery_code())
         self.closeAccount()
         self._note("已登录，可以下载路线。")
         if pending is not None and self._active and self._routes.get(pending.version_id) is pending:
@@ -216,8 +225,9 @@ class RoutePlazaService(QObject):
 
     @Slot()
     def copyRecoveryCode(self):
-        if self._account_open and self._recovery_code:
-            QGuiApplication.clipboard().setText(self._recovery_code)
+        code = self._visible_recovery_code()
+        if code:
+            QGuiApplication.clipboard().setText(code)
             self._account_message = "已复制恢复码，请妥善保存。"
             self.changed.emit()
 
@@ -276,6 +286,7 @@ class RoutePlazaService(QObject):
     def cancel(self):
         """Application close: drain accepted work without allowing another request."""
         self._closing = True
+        self.account.shutdown()
         self._cancel.set()
         self._generation += 1
         self.closeAccount()

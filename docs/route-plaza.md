@@ -25,7 +25,7 @@ Qt 入口：侧栏「路线广场」→「账号登录」，下载后点击「�
 ## 广场
 
 - 列表：`GET /v1/community/map-galleries?mode=nightmare&content_kind=nightmare-routes&limit=50[&query=…]`，不用登录，只显示已通过审核的路线。
-- 下载：`POST /v1/community/map-galleries/{版本ID}/packages/nightmare/download`，要登录。返回的阿里云 OSS 签名链接（10 分钟有效）不带令牌直接下载，必须是 HTTPS 的 `*.aliyuncs.com`。
+- 下载：`POST /v1/community/map-galleries/{版本ID}/packages/nightmare/download`，要登录。返回的阿里云 OSS 签名链接（10 分钟有效）不带令牌直接下载，必须是 HTTPS 的 `*.aliyuncs.com`；每次重定向在发出下一跳请求前重新校验同一白名单，完成后仍校验最终地址。
 - 校验：字节数与 SHA-256 必须和服务器记录一致；ZIP 里只能有 `map-gallery.json`，并且 `schemaVersion` 3、`contentKind` `nightmare-routes`、`workId`、`packageId`、`revision` 都要对得上。
 - 同一作品的新版本替换旧的那份图库（ID 不变，游戏内的选择不受影响）。图库可以删除，不能改名或编辑；复制、导出得到的是自己的普通图库。
 
@@ -97,3 +97,14 @@ QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
 `_display_notice_context`），`test_client_theme` 的 1 项失败（旧测试找不到搜索控件）。
 两者分别在未修改的默认分支 `c06a3f2` 干净 worktree 用相同命令重现，未改无关测试或扩大业务范围。
 这些失败不计入上面的通过组，也没有宣称全库测试通过。
+
+
+### PR #87 生命周期补测
+
+- 刷新令牌使用独立单飞锁；HTTP 和等待刷新不持有 Qt snapshot 读取的状态锁。登录、注册、恢复、注销和退出按请求代际撤销旧结果，旧刷新不能覆盖新会话。
+- 注册成功的恢复码仅保存在本次进程的账号内存中，不写 session vault、设置快照或日志。取消/Esc/切页只关闭展示，不视作“我已保存”；迟到成功不重开弹窗、不续接旧下载。广场出现“领取恢复码”入口，重开后可保存；点击“我已保存”、注销、账号变化或退出清除。退出后不能再领取。
+- `test_client_account_lifecycle` 使用真实 QML 弹窗、鼠标/Esc、Qt 工作池与门控本机 transport；覆盖关闭后实际按钮重开、再次关闭、明确确认、换账号、shutdown 和慢刷新期间取消/切页/退出。原 head 的 5 条回归均失败，其中 UI 等待约 2.01 秒；修复后同路径通过。条件控件改变后先等待 Qt Quick layout polish，再按屏幕坐标点击。
+- `test_account_concurrency` 使用门控 mock transport 检验会话与请求交错；`test_route_plaza_redirect` 使用真实 urllib 跳转处理及内存 transport，证明被禁止的下一跳不会发出。未连外站；对象下载没有账号 token，不能据此声称 token 泄漏。
+- 新增 `qt-route-plaza-windows.yml` 只读运行 candidate、原 head `3188d301`、main `c06a3f2` 三组相关套件。main 尚无广场模块，只比较原有相关套件；新增回归只在 candidate 运行。没有构建、安装或发布 Setup，1.0.6 冻结不变。
+
+补测的 Linux 环境为 Python 3.12 / PySide6 6.11.1，`PYTHONPATH=app:tests:tools:experiments/qt_quick`，`QT_QPA_PLATFORM=offscreen`，`QT_QUICK_BACKEND=software`。沿用上面的相关 14 个模块，另外运行 `test_account_concurrency test_client_account_lifecycle test_route_plaza_redirect`。原 head 167 项（166 通过、1 跳过），main 对应 143 项（142 通过、1 跳过）。跳过项需要私有资源 ZIP；本次没有读取该私有数据。Windows CI、Windows DPAPI 和实机游戏/焦点/DPI/安装验收仍应分别记录，不能以 Linux 离屏结果替代。

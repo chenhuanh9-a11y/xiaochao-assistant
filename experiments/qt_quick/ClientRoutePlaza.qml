@@ -19,6 +19,7 @@ Item {
             Layout.fillWidth: true
             Label { objectName: "plazaAccountStatus"; text: root.state.username ? "已登录：" + root.state.username : "未登录 · 登录后可下载"; color: "#354f75"; Layout.fillWidth: true; elide: Text.ElideRight }
             AppButton { objectName: "plazaLogin"; text: "账号登录"; primary: true; visible: !root.state.username; enabled: !root.state.busy; onClicked: routePlazaService.openAccount() }
+            AppButton { objectName: "plazaRecovery"; text: "领取恢复码"; primary: true; visible: !!root.state.recoveryPending; enabled: !root.state.busy; onClicked: routePlazaService.openAccount() }
             AppButton { objectName: "plazaLogout"; text: "退出登录"; visible: !!root.state.username; enabled: !root.state.busy; onClicked: routePlazaService.logout() }
             AppButton { text: "自定义图库"; onClicked: clientCoordinator.navigate("custom") }
         }

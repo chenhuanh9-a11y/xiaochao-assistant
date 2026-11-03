@@ -91,7 +91,7 @@ Dialog {
                 text: root.state.hasRecoveryCode ? "我已保存" : root.state.busy ? "请稍候…" : root.state.accountMode === "注册" ? "注册并登录" : root.state.accountMode === "找回密码" ? "重设密码" : "登录"
                 onClicked: root.state.hasRecoveryCode ? routePlazaService.finishSignIn() : root.submit()
             }
-            AppButton { text: "取消"; Layout.fillWidth: true; onClicked: root.close() }
+            AppButton { objectName: "accountCancel"; text: "取消"; Layout.fillWidth: true; onClicked: root.close() }
         }
     }
 }
