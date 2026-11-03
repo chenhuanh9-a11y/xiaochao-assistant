@@ -439,6 +439,12 @@ class QtClient:
                 or report.get("prepared") is not False
                 or report.get("reason") != "resource-validation-pending"):
             return
+        receipt = state.get("lastReceipt", {})
+        if receipt.get("action") == "inspect_engine_resources" and receipt.get("success") is False:
+            # An unexpected registry error may leave its report unprepared.
+            # Keep that failure visible rather than creating an endless retry
+            # loop. A new applied context or explicit resource change may retry.
+            return
         # Resource failures are prepared-but-unavailable and never retried in a
         # loop. A cancelled/stale preparation may remain unprepared; a later
         # idle signal retries it only for the current applied context.
