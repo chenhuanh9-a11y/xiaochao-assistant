@@ -128,7 +128,7 @@ class GalleryResourceRefreshTests(unittest.TestCase):
         self.assertEqual(self.manager.pendingKind, 'remove', self.manager.message)
         self.manager.confirmOperation(True)
         self.settled()
-        self.assertEqual(self.manager.packageRows, [])
+        self.assertFalse(any(row['packageId'] == package for row in self.manager.packageRows))
 
     def assert_color(self, url, color):
         self.assertTrue(url)
@@ -195,21 +195,58 @@ class GalleryResourceRefreshTests(unittest.TestCase):
         self.assertEqual(restored_key, key)
         self.assertNotEqual(new_url, old_url, 'Changed pixels must invalidate the Qt image cache URL')
 
-    def test_base_author_delete_retains_missing_declaration_but_clears_available_preview(self):
+    def test_base_author_delete_hides_card_retains_declaration_and_reimport_restores_it(self):
+        self.assertEqual(self.backend.profiles, [])
+        self.assertEqual(self.backend.profileId, '')
         self.install(self.fixture.package('base.zip', self.png('red')))
         self.assert_selected_preview('#ff0000')
         self.remove('nightmare-suju')
-        # Built-in declarations intentionally survive removal. They must not
-        # retain available counts or stale image URLs after their files vanish.
-        self.assertEqual([row['id'] for row in self.backend.profiles], ['suju'])
-        self.assertEqual(self.backend.profiles[0]['available'], 0)
-        self.assertEqual(self.backend.profiles[0]['previewUrl'], '')
+        # Repair metadata survives, but missing authors must not occupy cards.
+        self.assertEqual([row.profile_id for row in self.backend.context.profiles], ['suju'])
+        self.assertEqual(self.backend.context.profiles[0].available_layers, 0)
+        self.assertEqual(self.backend.profiles, [])
+        self.assertEqual(self.backend.profileId, '')
         self.assertEqual(self.backend.mapCount, 0)
-        self.assertEqual(len(self.backend.model.rows), 1)
-        self.assertFalse(self.backend.model.rows[0]['available'])
-        self.assertEqual(self.backend.model.rows[0]['imageUrl'], '')
+        self.assertEqual(self.backend.model.rows, [])
         self.assertEqual(self.backend.preview_model.rows, [])
         self.assertEqual(self.backend.selectedImage, '')
+        self.assertEqual(self.backend.selectedKey, '')
+        self.install(self.fixture.package('base-again.zip', self.png('blue')))
+        self.assertEqual([row['id'] for row in self.backend.profiles], ['suju'])
+        self.assert_selected_preview('#0000ff')
+
+    def test_selected_author_removal_immediately_falls_back_without_stale_preview(self):
+        self.install(self.fixture.package('base.zip', self.png('red')))
+        self.install(self.optional_package('optional.zip', 'blue'))
+        self.backend.setProfile('suju')
+        self.assert_selected_preview('#ff0000')
+        self.remove('nightmare-suju')
+        self.assertEqual(self.backend.profileId, 'nightingale')
+        self.assertEqual(self.backend.selectedKey, '')
+        self.assertEqual(self.backend.selectedImage, '')
+        key, url = self.assert_selected_preview('#0000ff')
+        self.backend.refresh()
+        self.until(lambda: not self.backend.busy)
+        self.assertEqual(self.backend.selectedKey, key)
+        self.assertEqual(self.backend.selectedImage, url)
+        self.assertEqual([row['id'] for row in self.backend.profiles], ['nightingale'])
+
+    def test_selected_author_removal_falls_back_to_available_author_across_seasons(self):
+        self.install(self.fixture.package('base.zip', self.png('red')))
+        self.install(self.optional_package('optional.zip', 'blue'))
+        self.backend.setProfile('suju')
+        self.assert_selected_preview('#ff0000')
+        self.backend.setSeason('s1')
+        self.until(lambda: not self.backend.busy)
+        self.remove('nightmare-suju')
+        self.assertEqual(self.backend.profiles, [])
+        self.backend.setSeason('s0')
+        self.until(lambda: not self.backend.busy)
+        self.assertEqual([row['id'] for row in self.backend.profiles], ['nightingale'])
+        self.assertEqual(self.backend.profileId, 'nightingale')
+        self.assert_selected_preview('#0000ff')
+        self.backend.setProfile('suju')
+        self.assertEqual(self.backend.profileId, 'nightingale')
 
 
 if __name__ == '__main__':

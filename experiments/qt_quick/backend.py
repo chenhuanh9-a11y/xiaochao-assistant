@@ -181,11 +181,14 @@ class Backend(QObject):
                 self._message = f"资源读取失败：{error or context.error}"
             else:
                 self.context = context
+                # Keep all declarations in the read context for package repair,
+                # but only offer authors with actual local images in the gallery.
                 self._profiles = [{"id": p.profile_id, "name": p.name, "packageId": p.package_id or "",
                                    "available": p.available_layers,
                                    "availableMaps": p.available_maps, "mapCount": p.map_count,
                                    "previewUrl": self._preview_url(p.first_preview[2], context.path_stamps, self._season)
-                                       if p.first_preview else ""} for p in context.profiles]
+                                       if p.first_preview else ""} for p in context.profiles
+                                  if p.available_layers > 0]
                 if self._profile not in {p["id"] for p in self._profiles}:
                     self._profile = next((p["id"] for p in self._profiles if p["available"]),
                                          self._profiles[0]["id"] if self._profiles else "")
