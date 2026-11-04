@@ -1862,6 +1862,7 @@ class LiveRuntime:
             capture = getattr(self._capture, "snapshot", {})
             capture = capture() if callable(capture) else capture
             self._notify("render-revoked", reason=str(reason), token=previous_token,
+                **({'invalidationOrigin': source} if source else {}),
                 mapClosed=reason in ("map-closed", "escape"),
                 inputSequence=self._last_map_input_sequence,
                 inputWindow=str(capture.get("hwnd", "")))
