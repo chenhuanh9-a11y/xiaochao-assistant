@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import time
 from types import SimpleNamespace
+from unittest.mock import patch
 import unittest
 
 import numpy as np
@@ -132,6 +133,7 @@ class ModeSwitchTests(unittest.TestCase):
 
     def test_runtime_uses_the_region_only_while_the_map_is_open(self):
         runtime = LiveRuntime.__new__(LiveRuntime)
+        runtime._season = "s0"
         runtime._diagnostics, runtime._latest_map_frame = None, None
         runtime._settings = dict(floorControlMode="region",
                                  floorControlRegion=dict(rect=REGION, clientSize=[1920, 1080]))
@@ -151,6 +153,28 @@ class ModeSwitchTests(unittest.TestCase):
         self.assertIsNone(floor)
         self.assertNotIn("floorSource", floor_read)
         self.assertIsNone(runtime.latest_map_frame())
+
+
+    def test_runtime_observation_uses_applied_not_saved_season(self):
+        from test_client_live_runtime import FixtureCapture, fixture_engine
+        runtime = LiveRuntime(engine_factories={}, capture_provider=FixtureCapture(), evidence_kind="synthetic")
+        for mode, floors in (("nightmare", (-1, 1, 2)), ("difficult", (1, 2))):
+            engine = fixture_engine(mode)
+            frame = hud(floors, 1)
+            for choice in ("fixed", "auto", "region"):
+                for applied, saved, expected in (("s0", "s1", "1"), ("s1", "s0", None)):
+                    with self.subTest(mode=mode, choice=choice, applied=applied, saved=saved):
+                        runtime._season = applied
+                        runtime._settings = dict(gameSeason=saved, floorControlMode=choice,
+                            floorControlRegion=dict(rect=REGION, clientSize=[1920, 1080]))
+                        with patch("map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=1)), \
+                             patch("map_interface_observation.detect_map_interface", return_value=dict(detected=True)):
+                            _, floor, reading = runtime._observe(engine, frame)
+                        self.assertEqual(floor, expected)
+                        self.assertEqual(runtime._settings["gameSeason"], saved)
+                        if applied != "s0":
+                            self.assertEqual(reading["floorSource"], "unavailable")
+                            self.assertNotIn("centers", reading)
 
 
 class FloorRegionServiceTests(unittest.TestCase):

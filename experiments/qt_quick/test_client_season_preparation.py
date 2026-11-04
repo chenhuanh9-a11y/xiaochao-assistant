@@ -192,6 +192,17 @@ def scenario(name, root):
                 if name == "context-error":
                     assert "controlled-context-failure" in client.session.message
                 assert json.loads(client.settings.path.read_text())["gameSeason"] == "s1"
+                # A real failed Qt context change leaves the saved default ahead
+                # of the runtime. Exercise _observe, not just the helper guard.
+                import numpy as np
+                assert client.runtime._season == "s0"
+                assert client.runtime._settings["gameSeason"] == "s1"
+                with patch("map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=1)), \
+                     patch("map_interface_observation.detect_map_interface", return_value=dict(detected=True)):
+                    for mode in ("nightmare", "difficult"):
+                        _, floor, reading = client.runtime._observe(fixture_engine(mode), np.zeros((720, 1280, 3), np.uint8))
+                        assert floor == "1", (mode, reading)
+                        assert reading["floorSource"] == "fixed", (mode, reading)
                 if evidence_dir:
                     assert client.main.grabWindow().save(str(Path(evidence_dir) / "context-failed.png"))
                 # Same persisted target must be explicitly retryable without

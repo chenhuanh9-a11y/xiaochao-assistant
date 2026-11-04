@@ -3635,8 +3635,10 @@ class LiveRuntime:
     def _observe(self, engine, frame):
         from floor_control_region import apply_floor_region
         started = time.monotonic()
-        # One settings snapshot per frame; configure_settings swaps the dict.
-        settings = getattr(self, "_settings", None) or {}
+        # One preference snapshot per frame; configure_settings swaps the dict.
+        # Saved defaults may lead the applied context while a switch is pending
+        # or after it fails. Floor authority belongs to the running context.
+        settings = dict(getattr(self, "_settings", None) or {}, gameSeason=self._season)
         if engine.pack.mode == "difficult":
             result = engine.qt_map_ui.observe(frame)
             floor = str(result["floor"]) if result.get("floor") is not None else None
