@@ -112,6 +112,20 @@ python -B -m unittest -v <module>
 
 ## 未完成与下一步验收条件
 
+### 2026-11-04：跟进主线 #94 与图库空卡
+
+本轮先保留并提交原工作区仅有的两个已审查图库修改，得到 `24939c2`；随后将主线 #94 的实质修复 `8a416f798d82f0b5b6237accf43934830ee762fe` 逐项 cherry-pick 为 `49f56ca911bcc96da125b86bb194edf6c4ea788c`，无文本冲突。最终源码 tree 为 `e4bc1989357f16448f014bcaefa19ca63ff85b92`。未合并分支、推送、修改版本、安装或发布。
+
+实际 fetch 核实当时最新 `main` 为 `164ea363c8d38c0d6d12353379add595fc26ee07`，其相对原基线 `9d7fa80` 仅有 #94 的三个文件变更。候选与 main 仍从该基线分叉，不能称候选是最新 main 的后代；`git cherry HEAD origin/main` 确认 #94 实质提交已具有等价补丁。诊断链中的 `invalidationOrigin` 经 runtime 事件、coordinator trace、磁盘和诊断导出保留，不改变赛季隔离。
+
+图库仅在 Qt 展示层过滤 `available_layers == 0` 的作者，底层声明和包修复能力继续保留。新增真实合成 PNG/JSON + 包事务测试覆盖：初始空卡隐藏，删除后隐藏及清理预览，重新导入恢复，删除所选作者自动回退，重复刷新保留有效选择，S1 期间删除后返回 S0 的回退。部分图片仍可用的作者继续显示；没有将“本地文件存在”扩大为内容校验或安装收据有效。
+
+在 `49f56ca` 精确源码上，以 Python 3.12 / PySide6 6.11.1、Qt offscreen/software、各模块独立进程执行本记录上述 15 个直接模块及 `test_client_problems`、`test_client_coordinator`、`test_client_gallery_count`、`test_client_control_actions`、`test_client_control_stability`，共 **20 模块、188 项全部通过，无跳过**。每模块命令为 `python -B -m unittest -v <module>`，`PYTHONPATH=app:tests:tools:experiments/qt_quick`；日志和 JSON 汇总在忽略目录 `work/integration-evidence/regressions-main94-empty-cards/`。新增的五个变更 Python 文件 AST 与 diff 检查通过。这是本轮针对性回归，不复用旧 Windows 823 项作为新源码通过证据，也不宣称全库通过。
+
+只读运行 `tools/build_qt_client.py --check-environment` 明确返回 `success: false`：当前不是 Windows x64 Python 3.13，缺 Windows Qt 平台插件、PyInstaller/相应 hooks/pefile 和显式 Inno Setup 编译器。未尝试在此环境制作 Windows 安装器。下一步测试包仍须将精确候选送到独立 Windows 工作目录，针对新增代码重跑回归，使用已授权且有 hash 库存的 S0 资源和干净源码进行完整 freeze，选择独立 `client` 测试实例（不能用 production 覆盖旧安装），校验最终 Setup 的 manifest、源码/资源/版本回执、字节数与 SHA256。源码改变，不能只重编旧 Setup 外壳。按仓库交付合同，正式可交付构建还需绑定同一远端 commit；本轮禁止推送，因此该步骤仍待后续授权。已有 CI 的历史 baseline 锚点不代表本轮 main，执行前需按预期比较目标重新核对。
+
+S1 真实资源和名称仍缺失，但不阻挡验证 S0 兼容、S1 失败关闭、选择器/设置/图库交互与诊断链。测试包只能如实展示 S1 未就绪，不能以合成测试替代 S1 资源接入或真实游戏验收。
+
 - **S1 实际资源仍缺失。** 需要有来源的结构地图、索引/楼层、门/坐标合同、逐层显示绑定、复核相似组及资源版本/hash。当前清晰显示不可用，不借用 S0；不能仅修改目录就宣称资源可用。
 - **名称仍需权威确认。** 当前只显示 S0/S1，不编造赛季中文名。
 - **Windows 原生与真实游戏未验收。** 上述 Windows 自动验证使用合成输入/采集与重型引擎替身，不能替代独立候选安装环境中的 DPI/字体、无焦点 popup、输入穿透/全局快捷键、准备及运行中锁、隐藏控件独立设置、位置编辑完成/取消、旧配置与真实图库保留、文件选择器、退出后 worker 排空。
