@@ -204,9 +204,15 @@ Popup {
                         Label { objectName: "tutorialStepTitle"; text: root.current ? root.current.title : ""; color: "#142b4b"; font.pixelSize: 19; font.bold: true; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                         Label { text: root.current ? root.current.text : ""; color: "#354f75"; font.pixelSize: 14; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                         Label {
+                            objectName: "tutorialSelectionMode"
+                            visible: !!root.current && !!root.current.selectionModeText
+                            text: root.current ? root.current.selectionModeText : ""
+                            color: "#2f66eb"; font.pixelSize: 13; wrapMode: Text.WordWrap; Layout.fillWidth: true
+                        }
+                        Label {
                             objectName: "tutorialBindings"
                             visible: !!root.current && !!root.current.bindings
-                            text: root.current && root.current.bindings ? "你当前的绑定：" + root.current.bindings : ""
+                            text: root.current && root.current.bindings ? "当前快捷键：" + root.current.bindings : ""
                             color: "#2f66eb"; font.pixelSize: 13; wrapMode: Text.WordWrap; Layout.fillWidth: true
                         }
                         Repeater {
