@@ -53,6 +53,137 @@ class IntentTests(unittest.TestCase):
         save.assert_not_called()
         self.assertTrue(self.adapter.snapshot['running'])
 
+    def test_temporary_catalog_absence_pauses_without_revoking_intent(self):
+        self.assertTrue(self.enable()['success'])
+        original_rows = self.owner.gameWindows
+        self.focus = 99
+        self.owner.gameWindows = []
+        self.adapter.pollOnce()
+        self.assertTrue(self.adapter.snapshot['savedEnabled'])
+        self.assertTrue(self.adapter.snapshot['enabled'])
+        self.assertFalse(self.adapter.snapshot['running'])
+        self.assertIsNone(self.service._target_window())
+        self.focus = 42
+        self.adapter.pollOnce()
+        self.assertFalse(self.adapter.snapshot['running'])
+        self.owner.gameWindows = original_rows
+        self.held = True
+        self.adapter.pollOnce()
+        self.assertFalse(self.adapter.snapshot['running'])
+        self.held = False
+        self.adapter.pollOnce()
+        self.assertTrue(self.adapter.snapshot['running'])
+
+    def test_catalog_return_with_replaced_process_revokes_intent(self):
+        self.assertTrue(self.enable()['success'])
+        original_rows = self.owner.gameWindows
+        self.owner.gameWindows = []
+        self.adapter.pollOnce()
+        self.owner.gameWindows = [dict(original_rows[0], pid=701)]
+        self.pid = 701
+        self.adapter.pollOnce()
+        self.assertTrue(self.adapter.snapshot['savedEnabled'])
+        self.assertFalse(self.adapter.snapshot['enabled'])
+        self.assertFalse(self.adapter.snapshot['running'])
+
+    def test_missing_catalog_during_restore_or_enable_waits_for_identity(self):
+        self.assertTrue(self.enable()['success'])
+        rows = self.owner.gameWindows
+        for restart in (True, False):
+            with self.subTest(restart=restart):
+                self.owner.gameWindows = []
+                if restart:
+                    self.restart()
+                else:
+                    self.assertTrue(self.enable()['success'])
+                self.adapter.pollOnce()
+                self.assertTrue(self.adapter.snapshot['enabled'])
+                self.assertFalse(self.adapter.snapshot['running'])
+                self.owner.gameWindows = rows
+                self.adapter.pollOnce()
+                self.assertTrue(self.adapter.snapshot['running'])
+
+    def test_real_coordinator_unknown_catalog_does_not_disarm_chest(self):
+        from test_client_coordinator import CoordinatorTests
+        fixture = CoordinatorTests()
+        fixture.setUpClass()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        coordinator = fixture.coordinator
+        rows = [dict(self.owner.gameWindows[0], processCreateTime=123,
+                     executable='fixture-game.exe')]
+        coordinator._bound = '42'
+        coordinator._binding_identity = coordinator._window_identity(rows[0])
+        coordinator._window_rows = rows
+        coordinator._catalog = mock.Mock(return_value=[])
+        coordinator._binding_probe = mock.Mock(return_value=dict(status='unknown', reason='fixture-unreadable'))
+        coordinator.capture.disable = mock.Mock()
+        self.owner = coordinator
+        self.restart()
+        self.assertTrue(self.enable()['success'])
+        coordinator._discover_game()
+        self.assertEqual(coordinator.boundWindow, '42')
+        self.assertTrue(coordinator._binding_suspended)
+        self.assertTrue(self.adapter.snapshot['enabled'])
+        self.assertFalse(self.adapter.snapshot['running'])
+        coordinator._catalog.return_value = rows
+        coordinator._discover_game()
+        self.assertFalse(coordinator._binding_suspended)
+        self.assertTrue(self.adapter.snapshot['running'])
+
+    def test_real_worker_catalog_gap_releases_and_requires_new_gesture(self):
+        import threading
+        import time
+        self.patch.stop()
+        events = []
+        pressed, released = threading.Event(), threading.Event()
+        def send(vk, up):
+            events.append((vk, up))
+            (released if up else pressed).set()
+            return 0
+        with mock.patch('chest_auto_tap.key_down', lambda vk: self.held), \
+             mock.patch('chest_auto_tap.foreground_window', lambda: self.focus), \
+             mock.patch('chest_auto_tap.same_top_window', lambda a, b: bool(b and a == b)), \
+             mock.patch('chest_auto_tap._send_key', send):
+            try:
+                self.enable()
+                deadline = time.monotonic() + 1
+                while not self.service.snapshot()['status'].startswith('等待按住'):
+                    self.assertLess(time.monotonic(), deadline)
+                    time.sleep(.002)
+                self.held = True
+                self.assertTrue(pressed.wait(1))
+                rows = self.owner.gameWindows
+                self.owner.gameWindows = []
+                self.focus = 99
+                self.adapter.pollOnce()
+                self.assertTrue(released.wait(1))
+                count = sum(not up for _, up in events)
+                self.focus = 42
+                self.adapter.pollOnce()
+                time.sleep(.04)
+                self.assertEqual(sum(not up for _, up in events), count)
+                self.owner.gameWindows = rows
+                self.adapter.pollOnce()
+                time.sleep(.04)
+                self.assertEqual(sum(not up for _, up in events), count)
+                self.held = False
+                self.adapter.pollOnce()
+                deadline = time.monotonic() + 1
+                while not self.service.snapshot()['status'].startswith('等待按住'):
+                    self.assertLess(time.monotonic(), deadline)
+                    time.sleep(.002)
+                pressed.clear()
+                self.held = True
+                self.assertTrue(pressed.wait(1))
+                self.assertTrue(self.adapter.snapshot['savedEnabled'])
+            finally:
+                self.held = False
+                self.adapter.shutdown()
+                if self.service._thread:
+                    self.service._thread.join(1)
+                    self.assertFalse(self.service._thread.is_alive())
+
     def test_compiled_binding_change_without_save_stops_conflicting_worker(self):
         self.assertTrue(self.enable()['success'])
         self.input.snapshot['bindings']['confirm-round'] = 'F12'
