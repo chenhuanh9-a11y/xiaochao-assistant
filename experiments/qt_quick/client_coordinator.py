@@ -18,7 +18,7 @@ if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 from reference_position_editor import ReferencePositionEdit
 from client_problem_messages import operation_problem
-from client_input_diagnostics import InputDiagnostics
+from client_input_diagnostics import InputDiagnostics, map_attempt
 from client_manual_map import MANUAL_PICKER_ACTION, normalize_selection_mode
 from season_context import SEASONS, season_label, normalize_season, context_key, selected_profile, CONTEXTS
 
@@ -339,7 +339,7 @@ class ClientCoordinator(QObject):
     def _trace(self, stage, *, state=None, payload=None, reason="", window=None, **extra):
         data = payload or state or {}
         row = dict(role="presentation", stage=stage, reason=reason,
-                   season=data.get("season", "s0"), mode=data.get("mode"), groupid=data.get("groupId"),
+                   season=data.get("season", "s0"), contextKey=data.get("contextKey"), mode=data.get("mode"), groupid=data.get("groupId"),
                    identityPhase=data.get("identityPhase"), provisional=data.get("provisional"),
                    durablemap=data.get("durableMapId", data.get("mapId")), floor=data.get("floor"),
                    round=data.get("roundId"), cycle=data.get("cycleId"), frame=data.get("frameId"),
@@ -618,6 +618,17 @@ class ClientCoordinator(QObject):
         except OSError:
             return
         self._map_input_sequence = sequence
+        # Only the already-accepted game action, never raw keys or other apps.
+        # Sequence participates in dedup; the existing bounded writer owns IO.
+        try:
+            input_state = self.session.snapshot
+            self._trace("map-input", state=input_state, role="input", reason="map-input-accepted",
+                decision=dict(inputSequence=sequence),
+                diag=dict(inputSequence=sequence, openIntent=opening, inputCreatedAt=created,
+                    inputSource=event.get("source") if event.get("source") in {"hotkey", "escape"} else "map-key",
+                    state=InputDiagnostics._state(input_state)))
+        except Exception:
+            pass  # Optional diagnostic delivery cannot swallow the accepted action.
         cancel_recovery = getattr(self.runtime, "cancel_map_open_recovery", None)
         if callable(cancel_recovery):
             cancel_recovery("new-map-input")
@@ -2187,13 +2198,22 @@ class ClientCoordinator(QObject):
         name = event.get("event", "unknown")
         if name in ('automatic-failure-sample', 'failure-sample'):
             self._trace(name, payload=event, role='diagnostics', reason=event.get('reason', ''),
-                failureSample=event.get('failureSample', {}))
+                failureSample=event.get('failureSample', {}),
+                **({'mapAttempt': event['mapAttempt']} if 'mapAttempt' in event else {}))
             return  # Evidence delivery has no presentation or recognition authority.
+        if name == "map-capture-diagnostic":
+            self._trace("map-capture", payload=event, role="runtime", reason=event.get("reason", ""),
+                phase=event.get("phase"), mapAttempt=map_attempt(event.get("mapAttempt")),
+                diag={key: event[key] for key in ("capture", "observation", "exception") if key in event})
+            return  # Observational metadata has no display or input authority.
         if name == "map-preparation":
             details = event.get("preparation") or {}
+            request = details.get("requestScope") or {}
+            correlation = map_attempt(dict(details, requestGeneration=request.get("generation")))
             self._trace(name, payload=event, role="runtime", reason=event.get("reason", ""),
-                phase=details.get("phase"), diag=details,
-                decision=dict(openingId=details.get("openingId"), ordinal=details.get("ordinal")))
+                phase=details.get("phase"), diag=details, mapAttempt=correlation,
+                decision=dict(openingId=details.get("openingId"), attemptId=details.get("attemptId"),
+                    ordinal=details.get("ordinal")))
             return
         if name == 'recognition-diagnostic':
             self._trace(name, payload=event, role='recognition', reason=event.get('reason', ''),
@@ -2215,6 +2235,7 @@ class ClientCoordinator(QObject):
                     role="runtime", status=event.get("status"),
                     diag={key: event.get(key) for key in ("poseResult", "poseAttempt", "groupMemberIds", "invalidationOrigin") if key in event},
                     **({'fitReport': event['fitReport']} if 'fitReport' in event else {}),
+                    **({'mapAttempt': event['mapAttempt']} if 'mapAttempt' in event else {}),
                     **decision)
         if name == "map-fit-incomplete":
             # A finalized historical segment is independent of the current open.

@@ -162,6 +162,7 @@ def operation_problem(receipt, state):
                 mode=state.get('mode', ''), mapId=state.get('mapId', ''), floor=state.get('floor', ''),
                 captureDiagnostics=receipt.get('captureDiagnostics') or {},
                 preparationObservation=preparation_observation,
+                **({'mapAttempt': receipt['mapAttempt']} if 'mapAttempt' in receipt else {}),
                 traceback=str(receipt.get('traceback') or '')[:8192])
     if receipt.get('error'):
         for key in ('exceptionType', 'exceptionOrigin', 'exceptionAction'):

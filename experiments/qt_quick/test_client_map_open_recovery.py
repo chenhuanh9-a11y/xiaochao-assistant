@@ -69,6 +69,27 @@ class MapOpenRecoveryContracts(unittest.TestCase):
         self.assertFalse(any(row.get("stage") == "render-revoked" and row.get("reason") == "map-closed"
             for row in self.traces))
 
+    def test_original_intent_and_recovery_share_opening_but_not_attempt(self):
+        self.miss_initial_preparation()
+        first = [row for row in self.traces if row.get('stage') == 'map-preparation']
+        self.assertTrue(first)
+        opening = first[0]['mapAttempt']['openingId']
+        initial_attempt = first[0]['mapAttempt']['attemptId']
+        sequence = self.coordinator._map_input_sequence
+        ticket = self.runtime.map_open_recovery_status()['id']
+        self.assertEqual(self.session.snapshot['lastReceipt']['mapAttempt']['openingId'], opening)
+        with self.not_ready():
+            self.tick()
+        rows = [row for row in self.traces if row.get('stage') == 'map-preparation']
+        recovery = [row for row in rows if row['mapAttempt'].get('recoveryId') == ticket]
+        self.assertTrue(recovery)
+        self.assertEqual({row['mapAttempt']['openingId'] for row in rows}, {opening})
+        self.assertEqual({row['mapAttempt']['inputSequence'] for row in rows}, {sequence})
+        self.assertEqual(len({row['mapAttempt']['attemptId'] for row in recovery}), 1)
+        self.assertNotEqual(recovery[0]['mapAttempt']['attemptId'], initial_attempt)
+        inputs = [row for row in self.traces if row.get('stage') == 'map-input']
+        self.assertEqual(len(inputs), 1, 'recovery must not invent a physical key edge')
+
     def test_unknown_recovery_is_finite_and_never_publishes_negative_frames(self):
         self.miss_initial_preparation()
         self.assertTrue(self.runtime.snapshot().get("mapRecoveryPending"))

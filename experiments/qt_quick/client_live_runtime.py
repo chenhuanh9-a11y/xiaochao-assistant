@@ -51,12 +51,13 @@ class _PreparationHost:
         self.CAPTURE_READY_PROBE_SECONDS = CAPTURE_READY_PROBE_SECONDS
         self.CAPTURE_VISUAL_DEADLINE_SECONDS = CAPTURE_VISUAL_DEADLINE_SECONDS
         self.runtime, self.engine, self.obsolete = runtime, engine, obsolete
+        self.payload = payload if payload is not None else {}
         self.initial_context = None
         self.last_unresolved = None
         self.last_capture = None
         self.last_observation_diagnostic = None
         self.events = []
-        self.diagnostics = PreparationDiagnostics(runtime, payload or {})
+        self.diagnostics = PreparationDiagnostics(runtime, self.payload)
         self.stop_reason = None
     def _log(self, event, **values):
         if event == 'map-ready-full-unavailable':
@@ -94,7 +95,7 @@ class _PreparationHost:
         started = time.perf_counter()
         self.diagnostics.emit("capture-start", "capture-requested", captureGeneration=capture_generation)
         try:
-            captured = self.runtime._capture_frame(cancelled)
+            captured = self.runtime._capture_frame(cancelled, attempt_id=self.payload.get("_diagnosticAttemptId"))
             frame = self.runtime._full_frame(captured)
         except Exception as error:
             self.diagnostics.capture_errors += 1
@@ -360,6 +361,7 @@ class LiveRuntime:
         self._failure_samples = FailureSampleRecorder()
         self._failure_capture_stamp = None
         self._failure_control_observation = None
+        self._failure_notice_limits = {}
         if evidence_kind not in ("live-client-capture", "synthetic", "recorded", "unverified"):
             raise ValueError("unsupported capture evidence kind")
         self._offline = EngineAdapter(engine_factories=engine_factories,
@@ -1154,8 +1156,9 @@ class LiveRuntime:
             if requested is not None and (not isinstance(requested,dict) or any(requested.get(key) != value
                     for key,value in self._game_floor_click_context_locked().items())):
                 return self._receipt("probe_map_after_drag", payload, success=False, reason="transient-probe-expired", stale=True)
+        self._new_diagnostic_attempt(payload)
         capture_generation = self._capture_generation()
-        captured = self._capture_frame(cancelled)
+        captured = self._capture_frame(cancelled, attempt_id=payload.get("_diagnosticAttemptId"))
         frame = self._full_frame(captured)
         obsolete = lambda: self._cancelled(cancelled) or epoch != self._epoch
         if obsolete():
@@ -1427,11 +1430,13 @@ class LiveRuntime:
         """Fit a manual target on new pixels without promoting its frame yet."""
         obsolete = lambda: (self._cancelled(cancelled) or scope != self._sibling_scope()
             or intent != self._group_intent_generation)
+        self._new_diagnostic_attempt(payload)
         capture_generation = self._capture_generation()
-        captured = self._capture_frame(obsolete)
+        captured = self._capture_frame(obsolete, attempt_id=payload.get("_diagnosticAttemptId"))
         frame = self._full_frame(captured).copy()
         frame.setflags(write=False)
         observation, observed_floor, floor_read = self._observe(engine, frame)
+        self._remember_control_observation(frame, engine.pack.mode, observation, floor_read, captured=captured)
         detected = self._map_observed(engine, observation, floor_read)
         with self._lock:
             if obsolete() or not self._capture_is_current(captured.context, capture_generation):
@@ -1446,16 +1451,19 @@ class LiveRuntime:
             effective_floor = self._observe_floor_policy(floor_read, obsolete=obsolete)
             if (observed_floor is None or effective_floor != floor or self._floor_read_conflicts(floor_read, floor)):
                 self._revoke_render("current-frame-floor-conflict" if observed_floor else "current-floor-unavailable")
-                return None, self._receipt(action, payload, success=False, reason="current-floor-unavailable")
-            if obsolete():
-                return None, self._receipt(action, payload, success=False, reason="group-choice-context-expired", stale=True)
-            digest = hashlib.sha256(frame.tobytes()).hexdigest()
-            generation = self._frame_generation + 1
-            return dict(captured=captured, frame=frame, floor=floor, digest=digest,
-                created_at=self._monotonic(), capture_generation=capture_generation,
-                frame_id=f"{self._round}:{generation}:{digest[:16]}", observed_floor=self._observed_floor,
-                cycle_id=self._cycle, generation=generation, floor_read=copy.deepcopy(floor_read),
-                sourceScope=scope, sourceOwner=self._refresh_render_owner(), intent=intent), None
+                failure_receipt = self._receipt(action, payload, success=False, reason="current-floor-unavailable")
+            else:
+                if obsolete():
+                    return None, self._receipt(action, payload, success=False, reason="group-choice-context-expired", stale=True)
+                digest = hashlib.sha256(frame.tobytes()).hexdigest()
+                generation = self._frame_generation + 1
+                return dict(captured=captured, frame=frame, floor=floor, digest=digest,
+                    created_at=self._monotonic(), capture_generation=capture_generation,
+                    frame_id=f"{self._round}:{generation}:{digest[:16]}", observed_floor=self._observed_floor,
+                    cycle_id=self._cycle, generation=generation, floor_read=copy.deepcopy(floor_read),
+                    sourceScope=scope, sourceOwner=self._refresh_render_owner(), intent=intent), None
+        self._terminal_failure_sample("current-floor-unavailable", payload, captured, lambda: not obsolete())
+        return None, failure_receipt
 
     def _retry_desired_group_member(self, action, payload, cancelled, result):
         with self._lock:
@@ -1690,6 +1698,9 @@ class LiveRuntime:
                     return self._receipt(action, payload, success=False, reason=str(stale), stale=True)
                 if not selected:
                     grouped = self._identity_fields()["groupLocked"]
+                    self._terminal_failure_sample("similar-group-pending" if grouped else "identity-not-uniquely-verified",
+                        payload, observation["captured"], lambda: not self._cancelled(cancelled) and epoch == self._epoch
+                            and frame_id == self._frame_id)
                     return self._receipt(action, payload, success=grouped,
                         reason="similar-group-pending" if grouped else "identity-not-uniquely-verified",
                         posePending=True)
@@ -1817,6 +1828,8 @@ class LiveRuntime:
         """Revoke immediately; return whether this close emitted a fit summary."""
         with self._lock:
             self._map_recovery = None
+            self._failure_capture_stamp = None
+            self._failure_control_observation = None
             if self._diagnostics is not None:
                 self._diagnostics.record("invalidate", reason=str(reason), source=source, epoch=self._epoch,
                     season=self._season, mode=self._mode, mapId=self._map_id, floor=str(self._floor), frameId=self._frame_id,
@@ -2114,15 +2127,19 @@ class LiveRuntime:
     def set_automatic_failure_sampling_enabled(self, enabled):
         self._failure_samples.automatic_enabled = enabled is True
         if not enabled:
+            self._failure_capture_stamp = None
             self._failure_control_observation = None
 
-    def _automatic_failure_sample(self, reason, *, captured=None, current=None, diagnostic=None):
+    def _automatic_failure_sample(self, reason, *, captured=None, attempt_id=None, current=None, diagnostic=None):
         """Diagnostic-only reuse of the existing guarded capture; never recapture."""
         try:
-            return self._record_automatic_failure_sample(reason, captured=captured, current=current, diagnostic=diagnostic)
+            return self._record_automatic_failure_sample(reason, captured=captured, attempt_id=attempt_id, current=current, diagnostic=diagnostic)
         except Exception as error:
             result = dict(saved=False, sampling='automatic', missingReason='sample-preparation-error', error=type(error).__name__)
-            self._notify('automatic-failure-sample', reason='metadata-only', failureSample=result)
+            try:
+                self._notify('automatic-failure-sample', reason='metadata-only', failureSample=result)
+            except Exception:
+                pass
             return result
 
 
@@ -2194,32 +2211,135 @@ class LiveRuntime:
 
 
 
-    def _record_automatic_failure_sample(self, reason, *, captured=None, current=None, diagnostic=None):
+    def _failure_capture_scope(self):
+        # An image belongs to its originating lifetime, never the state at save time.
+        return (self._epoch, self._round, self._season, self._mode, self._profile,
+            id(self._engine), getattr(self, "_display_generation", 0))
+
+    @staticmethod
+    def _new_diagnostic_attempt(payload):
+        payload["_diagnosticAttemptId"] = uuid4().hex
+        return payload["_diagnosticAttemptId"]
+
+    def _failure_diagnostic(self, payload):
+        from client_input_diagnostics import number
+        return dict(attemptId=payload.get("_diagnosticAttemptId"),
+            openingId=payload.get("_diagnosticOpeningId"),
+            inputSequence=number(payload.get("inputSequence")),
+            requestGeneration=number(payload.get("generation")),
+            epoch=self._epoch, roundId=self._round, cycleId=self._cycle,
+            frameId=self._frame_id, sourceFrameGeneration=self._frame_generation)
+
+    @staticmethod
+    def _map_attempt_metadata(payload):
+        from client_input_diagnostics import number
+        import re
+        result = {}
+        for source, target in (("_diagnosticAttemptId", "attemptId"),
+                ("_diagnosticOpeningId", "openingId"), ("recoveryId", "recoveryId")):
+            value = payload.get(source)
+            if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{32}", value):
+                result[target] = value
+        for source, target in (("inputSequence", "inputSequence"),
+                ("generation", "requestGeneration"), ("inputCreatedAt", "inputCreatedAt")):
+            value = number(payload.get(source))
+            if value is not None:
+                result[target] = value
+        return result
+
+    def _capture_diagnostic(self, payload, phase, reason, *, action=None, captured=None, error=None, observed=None):
+        if action == "refresh_map":
+            return
+        try:
+            from client_preparation_diagnostics import capture_metadata, exception_metadata, PreparationDiagnostics
+            values = {}
+            if phase == "capture-result":
+                values["capture"] = capture_metadata(captured=captured, error=error)
+            if error is not None:
+                values["exception"] = exception_metadata(error)
+            if observed is not None:
+                values["observation"] = PreparationDiagnostics.observation(*observed)
+            self._notify("map-capture-diagnostic", phase=phase, reason=reason,
+                mapAttempt=self._map_attempt_metadata(payload), **values)
+        except Exception:
+            pass  # Diagnostics must never change capture/observation decisions.
+
+    def _terminal_failure_sample(self, reason, payload, captured, current):
+        return self._automatic_failure_sample(reason, captured=captured,
+            attempt_id=payload.get("_diagnosticAttemptId"), current=current,
+            diagnostic=self._failure_diagnostic(payload))
+
+    def _record_automatic_failure_sample(self, reason, *, captured=None, attempt_id=None, current=None, diagnostic=None):
         stamp = self._failure_capture_stamp
-        if captured is None and stamp is not None:
-            captured = stamp[0]
-        generation = stamp[3] if stamp is not None and len(stamp) > 3 else None
+        def unavailable():
+            if captured is None:
+                return 'legal-captured-frame-unavailable'
+            if stamp is None or len(stamp) < 6 or stamp[0] is not captured:
+                return 'capture-attempt-unavailable'
+            if not attempt_id or stamp[4] != attempt_id:
+                return 'capture-attempt-mismatch'
+            if stamp[5] != self._failure_capture_scope():
+                return 'capture-scope-changed'
+            if (not self._active or not self._failure_samples.automatic_enabled
+                    or current is not None and not current()
+                    or self._failure_capture_stamp is not stamp
+                    or not self._capture_is_current(captured.context, stamp[3])):
+                return 'capture-not-current'
+            return ''
         def valid():
-            return bool(self._active and (current is None or current()) and captured is not None
-                        and stamp is not None and stamp[0] is captured
-                        and self._capture_is_current(captured.context, generation))
-        # A missing legal frame is represented explicitly; no new capture is requested.
-        frame = self._full_frame(captured) if valid() else None
-        data = dict(diagnostic or {}, evidenceKind=self._evidence_kind, season=self._season, mode=self._mode,
-                    frameCapturedAtUtc=stamp[1] if stamp is not None else None,
+            return not unavailable()
+        missing = unavailable()
+        frame = None
+        if not missing:
+            try:
+                frame = self._full_frame(captured)
+            except Exception:
+                missing = 'capture-frame-invalid'
+        data = dict(diagnostic or {}, evidenceKind=self._evidence_kind,
+                    season=self._season, mode=self._mode, contextKey=context_key(self._mode, self._season),
+                    attemptId=attempt_id, frameUnavailableReason=missing,
+                    frameCapturedAtUtc=stamp[1] if frame is not None else None,
+                    frameCapturedMonotonicAt=stamp[2] if frame is not None else None,
+                    captureGeneration=stamp[3] if frame is not None else None,
                     **self._failure_samples.metadata)
         root = getattr(getattr(self._engine, 'memory_store', None), 'root', None)
-        result = self._failure_samples.record_automatic(root=root, reason=reason, frame=frame,
-            diagnostic=data, current=valid if captured is not None else lambda: bool(
-                self._active and (current is None or current())))
         controls = getattr(self, '_failure_control_observation', None)
-        if controls is not None and controls[0] is captured and controls[1] is not None and frame is not None:
-            result['controlBand'] = self._failure_samples.record_automatic(root=root, reason=reason, frame=frame,
-                diagnostic=dict(data, sampleRole='detector-control-band'), current=valid,
-                crop_bounds=controls[1], crop_provenance='detector-control-band')
+        control_bounds = controls[1] if controls is not None and controls[0] is captured else None
+        metadata_current = lambda: bool(self._active and self._failure_samples.automatic_enabled
+            and (current is None or current()))
+        if reason == 'current-floor-unavailable':
+            # Floor failures need the searched control region, not unrelated map pixels.
+            control_frame = frame if control_bounds is not None else None
+            if frame is not None and control_bounds is None:
+                data['frameUnavailableReason'] = 'detector-control-band-unavailable'
+            result = self._failure_samples.record_automatic(root=root, reason=reason, frame=control_frame,
+                diagnostic=dict(data, sampleRole='detector-control-band'),
+                current=valid if control_frame is not None else metadata_current,
+                crop_bounds=control_bounds, crop_provenance='detector-control-band')
+        else:
+            result = self._failure_samples.record_automatic(root=root, reason=reason, frame=frame,
+                diagnostic=data, current=valid if frame is not None else metadata_current)
+            if (reason not in ('identity-not-uniquely-verified', 'similar-group-pending', 'candidate-awaiting-confirmation')
+                    and control_bounds is not None and frame is not None):
+                result['controlBand'] = self._failure_samples.record_automatic(root=root, reason=reason, frame=frame,
+                    diagnostic=dict(data, sampleRole='detector-control-band'), current=valid,
+                    crop_bounds=control_bounds, crop_provenance='detector-control-band')
         saved_any = result['saved'] or result.get('controlBand', {}).get('saved', False)
+        key = (self._season, self._mode, reason, result.get('missingReason'),
+            result.get('controlBand', {}).get('missingReason'))
+        now = time.monotonic()
+        notices = self._failure_notice_limits
+        previous = notices.get(key)
+        if not saved_any and previous is not None and now < previous[0]:
+            notices[key] = (previous[0], min(2**31-1, previous[1]+1))
+            return result
+        if len(notices) >= 64 and key not in notices:
+            notices.pop(next(iter(notices)))
+        notices[key] = (now+60., 0)
         self._notify('automatic-failure-sample', reason='saved' if saved_any else 'metadata-only',
-                     failureSample=result)
+                     failureSample=dict(result, suppressed=previous[1] if previous else 0),
+                     mapAttempt={key: data[key] for key in
+                         ('attemptId', 'openingId', 'inputSequence') if data.get(key) is not None})
         return result
 
     def _recognition_diagnostic(self, stage, reason, **values):
@@ -2235,24 +2355,36 @@ class LiveRuntime:
         except Exception:
             pass  # Diagnostics cannot replace the algorithm's result/exception.
 
-    def _remember_control_observation(self, frame, mode, observation, floor_read):
+    def _remember_control_observation(self, frame, mode, observation, floor_read, *, captured=None):
         try:
             stamp = self._failure_capture_stamp
             if (self._failure_samples.automatic_enabled and stamp is not None
-                    and getattr(stamp[0], 'frame_bgr', None) is frame):
+                    and (getattr(stamp[0], 'frame_bgr', None) is frame or stamp[0] is captured)
+                    and stamp[5] == self._failure_capture_scope()):
                 from recognition_diagnostics import control_band
                 self._failure_control_observation = (stamp[0], control_band(frame, mode, observation, floor_read))
         except Exception:
             self._failure_control_observation = None
 
-    def _capture_frame(self, cancelled):
+    def _capture_frame(self, cancelled, *, attempt_id=None):
+        # Retire prior evidence BEFORE a new acquisition, including failures.
+        self._failure_capture_stamp = None
+        self._failure_control_observation = None
         try:
             sample_generation = self._capture_generation()
+            sample_scope = self._failure_capture_scope()
             captured = self._capture.capture(cancelled)
             if self._failure_samples.enabled or self._failure_samples.automatic_enabled:
-                from datetime import datetime, timezone
-                self._failure_capture_stamp = (captured, datetime.now(timezone.utc).isoformat(),
-                    time.monotonic(), sample_generation)
+                # Diagnostic validation cannot change the acquisition result or
+                # exception. The original consumer still validates full frames.
+                try:
+                    self._full_frame(captured)
+                    if not self._cancelled(cancelled) and sample_scope == self._failure_capture_scope():
+                        from datetime import datetime, timezone
+                        self._failure_capture_stamp = (captured, datetime.now(timezone.utc).isoformat(),
+                            time.monotonic(), sample_generation, attempt_id, sample_scope)
+                except Exception:
+                    pass
             return captured
         except Exception as error:
             error.error_phase = "capture"
@@ -2347,6 +2479,9 @@ class LiveRuntime:
                     captureGeneration=visual["captureGeneration"])
                 self._map_input_observation = (evidence, visual["captured"].context, visual["captureGeneration"])
                 extra["mapInputObservation"] = dict(evidence)
+            attempt = self._map_attempt_metadata(payload)
+            if attempt:
+                extra["mapAttempt"] = attempt
             return dict(action=action, success=success, reason=reason, message=reason,
                         requestContext=request, resultContext=context,
                         liveAuthorization=bool(self._render and self._render.get("liveAuthorization")), **extra)
@@ -2636,9 +2771,10 @@ class LiveRuntime:
         with self._lock:
             row, self._map_recovery = self._map_recovery, None
         if row is not None:
-            self._notify("map-recovery-ended", reason=reason, recoveryId=row["id"])
+            self._notify("map-recovery-ended", reason=reason, recoveryId=row["id"],
+                mapAttempt=dict(recoveryId=row["id"], openingId=row.get("openingId"), inputSequence=row.get("inputSequence")))
 
-    def _arm_map_open_recovery(self, cancelled, epoch):
+    def _arm_map_open_recovery(self, cancelled, epoch, payload=None):
         with self._lock:
             if self._cancelled(cancelled) or epoch != self._epoch:
                 return False
@@ -2649,8 +2785,13 @@ class LiveRuntime:
             now = self._monotonic()
             self._map_recovery = dict(id=uuid4().hex, scope=self._map_recovery_scope(),
                 remaining=MAP_RECOVERY_PROBES, nextAt=now + MAP_RECOVERY_INTERVAL,
-                expiresAt=now + MAP_RECOVERY_SECONDS)
-        self._notify("map-recovery-pending", reason="map-preparation-unconfirmed")
+                expiresAt=now + MAP_RECOVERY_SECONDS,
+                openingId=(payload or {}).get("_diagnosticOpeningId"),
+                inputSequence=(payload or {}).get("inputSequence"))
+            row = self._map_recovery
+        self._notify("map-recovery-pending", reason="map-preparation-unconfirmed",
+            recoveryId=row["id"],
+            mapAttempt=dict(recoveryId=row["id"], openingId=row["openingId"], inputSequence=row["inputSequence"]))
         return True
 
     def _recover_map_open(self, payload, cancelled):
@@ -2662,6 +2803,8 @@ class LiveRuntime:
             state = self.map_open_recovery_status()
             if (self._cancelled(cancelled) or row is None or payload.get("recoveryId") != row["id"]):
                 return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+            payload["_diagnosticOpeningId"] = row.get("openingId")
+            payload["inputSequence"] = row.get("inputSequence")
             if not state["pending"]:
                 self.cancel_map_open_recovery(state["reason"])
                 return self._receipt(action, payload, success=False, reason="map-open-recovery-exhausted")
@@ -2672,6 +2815,9 @@ class LiveRuntime:
             epoch, engine, expected = self._epoch, self._engine, row["scope"]
             self._capture_pending = True
         obsolete = lambda: self._cancelled(cancelled) or self._map_recovery is not row or expected != self._map_recovery_scope()
+        self._new_diagnostic_attempt(payload)
+        payload["_diagnosticOpeningId"] = row.get("openingId")
+        payload["inputSequence"] = row.get("inputSequence")
         host = _PreparationHost(self, engine, obsolete, payload)
         host.diagnostics.emit("begin", "map-open-recovery", recoveryId=row["id"])
         try:
@@ -2688,6 +2834,7 @@ class LiveRuntime:
                 if not isinstance(error, OSError):
                     raise
                 prepared, stopped = None, False
+            terminal_receipt = None
             with self._lock:
                 if obsolete():
                     host.diagnostics.finish("cancelled-or-stale")
@@ -2701,7 +2848,13 @@ class LiveRuntime:
                     if not pending:
                         self.cancel_map_open_recovery("budget-exhausted")
                     host.diagnostics.finish(reason)
-                    return self._receipt(action, payload, success=False, reason=reason, recoveryPending=pending)
+                    terminal_receipt = self._receipt(action, payload, success=False, reason=reason, recoveryPending=pending)
+            if terminal_receipt is not None:
+                if not pending:
+                    self._terminal_failure_sample("map-open-recovery-exhausted", payload,
+                        host.last_capture[0] if host.last_capture is not None else None,
+                        lambda: not self._cancelled(cancelled) and expected == self._map_recovery_scope())
+                return terminal_receipt
             result = self._capture_and_solve(action, payload, cancelled, prepared=prepared, recovery_scope=expected)
             with self._lock:
                 published_owner = payload.get("_recoveryRenderOwner")
@@ -2926,6 +3079,8 @@ class LiveRuntime:
                              diagnosticOnly=self._evidence_kind != "live-client-capture")
 
     def _capture_and_solve(self, action, payload, cancelled, *, prepared=None, recovery_scope=None):
+        if prepared is None:
+            self._new_diagnostic_attempt(payload)
         with self._lock:
             if recovery_scope is not None:
                 if self._cancelled(cancelled) or recovery_scope != self._map_recovery_scope() or self._map_recovery is None:
@@ -2967,10 +3122,12 @@ class LiveRuntime:
                     return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
                 if preparation.last_unresolved is None:
                     diagnostic = preparation.observation_diagnostic()
-                    self._automatic_failure_sample("map-open-preparation-deadline", current=lambda: not obsolete(),
-                        diagnostic=dict(preparationObservation=diagnostic))
+                    self._automatic_failure_sample("map-open-preparation-deadline",
+                        captured=preparation.last_capture[0] if preparation.last_capture is not None else None,
+                        attempt_id=payload.get("_diagnosticAttemptId"), current=lambda: not obsolete(),
+                        diagnostic=dict(self._failure_diagnostic(payload), preparationObservation=diagnostic))
                     preparation.diagnostics.finish("map-open-preparation-deadline")
-                    if not self._arm_map_open_recovery(cancelled, epoch):
+                    if not self._arm_map_open_recovery(cancelled, epoch, payload):
                         return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
                     if payload.get("bindingResume") is True and preparation.last_capture is not None:
                         captured, capture_generation = preparation.last_capture
@@ -3021,11 +3178,25 @@ class LiveRuntime:
                 # queued render-ready event cannot republish a prior token
                 # while this worker is blocked in a native/backend capture.
                 self._revoke_render("new-capture")
-            captured = self._capture_frame(obsolete)
-            observation, floor, floor_read = self._observe(engine, self._full_frame(captured))
+            try:
+                captured = self._capture_frame(obsolete, attempt_id=payload.get("_diagnosticAttemptId"))
+                captured_frame = self._full_frame(captured)
+            except Exception as error:
+                self._capture_diagnostic(payload, "capture-result", "capture-exception", action=action,
+                    error=error)
+                raise
+            self._capture_diagnostic(payload, "capture-result", "frame-captured", action=action, captured=captured)
+            try:
+                observation, floor, floor_read = self._observe(engine, captured_frame)
+            except Exception as error:
+                self._capture_diagnostic(payload, "observation-result", "observation-exception", action=action,
+                    error=error)
+                raise
             from session_state_machine import verified_map_hotkey_frame
             opened = (observation.get("mapOpen") if engine.pack.mode == "difficult"
                       else verified_map_hotkey_frame(observation, floor_read))
+            self._capture_diagnostic(payload, "observation-result", "current-frame-observed", action=action,
+                observed=(observation, floor, floor_read, opened))
         frame = self._full_frame(captured)
         width, height = captured.context.full_client_size
         frame = frame.copy()
@@ -3084,6 +3255,7 @@ class LiveRuntime:
                     row["floor"] = self._floor
             if effective_floor is not None:
                 return self._solve_retained(action, payload, cancelled, acquire_current=False)
+            self._terminal_failure_sample("current-floor-unavailable", payload, captured, lambda: not obsolete())
             return self._receipt(action, payload, success=False, reason="current-floor-unavailable", observation=observation,
                 preparationObservation=preparation.observation_diagnostic() if preparing else {})
         if opened is not True:
@@ -3127,9 +3299,15 @@ class LiveRuntime:
                 self._pointer_context_snapshot = None
                 if action == "refresh_map":
                     self._revoke_render("current-floor-unavailable")
-                    return self._receipt(action, payload, success=False, reason="current-floor-unavailable", observation=observation)
-                self.invalidate("floor-unknown")
-                return self._receipt(action, payload, success=False, reason="current-floor-unavailable", observation=observation)
+                else:
+                    self.invalidate("floor-unknown")
+                failure_receipt = self._receipt(action, payload, success=False,
+                    reason="current-floor-unavailable", observation=observation)
+                failure_epoch = self._epoch
+            self._terminal_failure_sample("current-floor-unavailable", payload,
+                captured if action == "refresh_map" else None,
+                lambda: not self._cancelled(cancelled) and self._active and failure_epoch == self._epoch)
+            return failure_receipt
         if effective_floor is None:
             with self._lock:
                 if obsolete():
@@ -3171,6 +3349,7 @@ class LiveRuntime:
             for row in self._candidate_rows:
                 row["floor"] = floor
         if pending_selection:
+            self._terminal_failure_sample("candidate-awaiting-confirmation", payload, captured, lambda: not obsolete())
             return self._receipt(action, payload, success=False, reason="candidate-awaiting-confirmation")
         ranked = []
         entry_candidate = None
@@ -3192,6 +3371,8 @@ class LiveRuntime:
                 return self._receipt(action, payload, success=False, reason=str(stale), stale=True)
             if not map_id:
                 grouped = self._identity_fields()["groupLocked"]
+                self._terminal_failure_sample("similar-group-pending" if grouped else "identity-not-uniquely-verified",
+                    payload, captured, lambda: not obsolete() and frame_id == self._frame_id)
                 return self._receipt(action, payload, success=grouped,
                     reason="similar-group-pending" if grouped else "identity-not-uniquely-verified", posePending=True)
             with self._lock:
@@ -3426,10 +3607,10 @@ class LiveRuntime:
         if not fit.get("success"):
             reason = str(fit.get("reason", "pose-fit-failed"))
             if reason in ('structure-current-geometry-failed', 'initial-structure-current-geometry-failed', 'current-geometry-failed'):
-                self._automatic_failure_sample(reason, captured=captured,
+                self._automatic_failure_sample(reason, captured=captured, attempt_id=payload.get("_diagnosticAttemptId"),
                     current=lambda: not obsolete() and frame_current() and self._capture_is_current(captured.context, capture_generation),
-                    diagnostic=dict(mapId=map_id, floor=floor, cycleId=cycle, frameId=frame_id,
-                                    captureGeneration=capture_generation, sourceFrameGeneration=frame_generation))
+                    diagnostic=dict(self._failure_diagnostic(payload), mapId=map_id, floor=floor,
+                                    captureGeneration=capture_generation))
             try:
                 stamp = self._failure_capture_stamp
                 if (self._failure_samples.enabled and stamp is not None and stamp[0] is captured

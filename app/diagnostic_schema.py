@@ -1460,3 +1460,15 @@ EXCEPTIONS = EXCEPTIONS | frozenset({'CaptureFallbackUnsupported'})
 # Durable additive cleanup boundary, without arbitrary journal fields.
 CODES = CODES | frozenset({'addition-outcome.json', 'additions-outcome-witness-changed',
     'map-package-additions-outcome-v1'})
+
+# Current opening/attempt diagnostic correlation, never input or display authority.
+FIELDS = FIELDS | frozenset({'season', 'contextKey', 'mapAttempt', 'attemptId', 'openingId',
+    'inputSequence', 'requestGeneration', 'frameCapturedMonotonicAt', 'frameUnavailableReason'})
+CODES = CODES | frozenset({'s0', 's1', 's0:nightmare', 's1:nightmare', 's0:difficult',
+    's1:difficult', 'map-input-accepted'})
+
+CODES = CODES | frozenset({'map-capture', 'map-capture-diagnostic', 'current-frame-observed', 'runtime-memory',
+    'legal-captured-frame-unavailable', 'capture-attempt-unavailable', 'capture-attempt-mismatch',
+    'capture-scope-changed', 'capture-frame-invalid'})
+
+CODES = CODES | frozenset({'detector-control-band-unavailable'})

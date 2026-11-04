@@ -1,4 +1,6 @@
 """Default, bounded metadata for one map-opening preparation; never pixels."""
+from contextlib import nullcontext
+import re
 import traceback
 from uuid import uuid4
 
@@ -97,8 +99,16 @@ class PreparationDiagnostics:
 
     def __init__(self, runtime, payload):
         self.runtime = runtime
-        self.opening = uuid4().hex
-        self.request = scope(payload)
+        # One opening can own several bounded preparation attempts. These
+        # random diagnostic identities never participate in capture authority.
+        payload = payload if isinstance(payload, dict) else {}
+        def diagnostic_id(value):
+            return value.lower() if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{32}", value) else None
+        self.opening = diagnostic_id(payload.get("_diagnosticOpeningId")) or uuid4().hex
+        self.attempt = diagnostic_id(payload.get("_diagnosticAttemptId")) or uuid4().hex
+        payload["_diagnosticOpeningId"], payload["_diagnosticAttemptId"] = self.opening, self.attempt
+        self.recovery = diagnostic_id(payload.get("recoveryId"))
+        self.request = {key: value for key, value in scope(payload).items() if value is not None}
         self.input_sequence = number(payload.get("inputSequence"))
         self.sequence = self.suppressed = self.probes = self.capture_errors = 0
         self.last_outcome = "not-started"
@@ -109,9 +119,26 @@ class PreparationDiagnostics:
             self.suppressed += 1
             return
         self.sequence += 1
-        values = dict(openingId=self.opening, ordinal=self.sequence, phase=phase,
+        values = dict(openingId=self.opening, attemptId=self.attempt, ordinal=self.sequence, phase=phase,
             inputSequence=self.input_sequence, requestScope=self.request, probe=self.probes,
             captureErrors=self.capture_errors, suppressed=self.suppressed, **details)
+        if self.recovery is not None:
+            values["recoveryId"] = self.recovery
+        if phase == "begin" or final:
+            state = {"source": "runtime-memory"}
+            try:
+                # Reuse the lifetime lock and booleans only. No provider query,
+                # full snapshot, capture, or remembered observation is consulted.
+                with getattr(self.runtime, "_lock", None) or nullcontext():
+                    for key, attribute in (("roundActive", "_active"), ("mapOpen", "_map_open"),
+                                           ("captureInProgress", "_capture_pending")):
+                        value = getattr(self.runtime, attribute, None)
+                        if type(value) is bool:
+                            state[key] = value
+            except Exception:
+                state = {"source": "runtime-memory"}
+            values["state"] = state
+        values = {key: value for key, value in values.items() if value is not None}
         self.runtime._notify("map-preparation", reason=reason, preparation=values)
 
     def finish(self, reason):
