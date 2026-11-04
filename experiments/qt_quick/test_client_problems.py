@@ -195,6 +195,46 @@ class ProblemTests(unittest.TestCase):
         self.assertEqual(rows[1]['decision']['rankVerdict']['topMapId'],'b')
         self.assertEqual(self.service.recent,[])
 
+    def test_runtime_invalidation_origins_survive_queued_trace_disk_and_export(self):
+        from client_live_runtime import LiveRuntime
+        import test_client_coordinator as coordinator_fixture
+        owner = coordinator_fixture.CoordinatorTests()
+        owner.setUpClass()
+        owner.setUp()
+        self.addCleanup(owner.tearDown)
+        runtime = LiveRuntime(engine_factories={})
+        coordinator = owner.coordinator
+        coordinator.runtime = runtime
+        coordinator.traceReported.connect(self.service.recordTrace)
+        produced = []
+        def deliver(row):
+            produced.append(row)
+            coordinator.runtimeEvent.emit(row)
+        runtime.set_event_callback(deliver)
+        self.addCleanup(runtime.set_event_callback, None)
+        origins = ('execute:capture_now:ValueError', 'refresh-map:ValueError')
+        for index in range(20):
+            runtime.invalidate('runtime-error', source=origins[index % 2])
+        owner.app.processEvents()
+        self.assertEqual({row.get('invalidationOrigin') for row in produced}, set(origins))
+        self.assertTrue(all(row['mapClosed'] is False for row in produced))
+        self.assertTrue(all('inputSequence' in row and 'inputWindow' in row for row in produced))
+        self.drain()
+        rows = [json.loads(line) for line in self.service.log_path.read_text('utf-8').splitlines()]
+        traces = [row for row in rows if row.get('stage') == 'render-revoked']
+        self.assertEqual(len(traces), 2)
+        self.assertEqual({row['origin']['invalidationOrigin'] for row in traces}, set(origins))
+        self.assertEqual({row['diag']['invalidationOrigin'] for row in traces}, set(origins))
+        self.assertEqual(self.service.recent, [])  # Withdrawal is not a fabricated exception.
+        bundle = export_safe_diagnostic_bundle(self.root, self.root/'work/nightmare-live',
+            app_version='fixture', build_fingerprint='TEST0001',
+            destination=self.root/'origins.zip', summary={})
+        with zipfile.ZipFile(bundle['path']) as archive:
+            payload = '\n'.join(archive.read(name).decode('utf-8') for name in archive.namelist()
+                                if name.startswith('logs/events-'))
+        for origin in origins:
+            self.assertIn(origin, payload)
+
     def test_failure_sampling_missing_reason_survives_disk_without_private_payload(self):
         self.service.recordTrace(dict(role='diagnostics',stage='automatic-failure-sample',
             reason='metadata-only',failureSample=dict(saved=False,

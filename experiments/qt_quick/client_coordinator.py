@@ -2213,7 +2213,7 @@ class ClientCoordinator(QObject):
                                           groupEvidence=event.get("groupEvidence", {})))
         self._trace(name, payload=payload, reason=event.get("reason", ""),
                     role="runtime", status=event.get("status"),
-                    diag={key: event.get(key) for key in ("poseResult", "poseAttempt", "groupMemberIds") if key in event},
+                    diag={key: event.get(key) for key in ("poseResult", "poseAttempt", "groupMemberIds", "invalidationOrigin") if key in event},
                     **({'fitReport': event['fitReport']} if 'fitReport' in event else {}),
                     **decision)
         if name == "map-fit-incomplete":
