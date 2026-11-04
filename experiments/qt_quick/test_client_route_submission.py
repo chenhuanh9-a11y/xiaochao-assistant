@@ -1,5 +1,6 @@
 """Qt service + real QML input + localhost submission HTTP; no game/online IO."""
 from pathlib import Path
+import json
 import tempfile
 import threading
 import time
@@ -84,6 +85,29 @@ class SubmissionQtTests(unittest.TestCase):
         self.service.submitGallery(self.gid, "修改后的路线", "修订说明"); self.finish()
         self.assertEqual(self.server.records[REVISION]["status"], "pending")
         self.assertEqual(self.threads, [threading.get_ident()] * len(self.threads))
+
+    def test_legacy_editor_without_submission_navigation_fails_before_draft(self):
+        # A valid older editor package remains usable, but cannot supply Android
+        # navigation. Exercise the published gallery snapshot, not a mocked converter.
+        manifest_path = self.root / "maps" / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        del manifest["maps"][0]["routeSubmission"]
+        manifest_path.write_text(json.dumps(manifest))
+        self.galleries.refresh()
+        until(lambda: not self.galleries.busy)
+        self.assertTrue(self.galleries.snapshot["available"])
+        self.assertFalse(self.galleries.snapshot["dataError"])
+        original = self.galleries.path.read_bytes()
+        self.sign_in(); self.submit(); self.finish()
+        self.assertTrue(self.service.snapshot["error"])
+        self.assertIn("缺少投稿导航资源", self.service.snapshot["message"])
+        self.assertEqual(self.server.records, {})
+        self.assertEqual(self.server.uploads, [])
+        self.assertFalse(any(method in ("POST", "PUT") and path.startswith("/v1/community/")
+                             for method, path, *_ in self.server.calls))
+        self.assertEqual(self.galleries.path.read_bytes(), original)
+        self.service.closeSubmission()
+        self.assertFalse(self.service.snapshot["submissionLocked"])
 
     def test_upload_is_independent_of_gallery_writer_cancel_and_exact_retry(self):
         self.sign_in(); self.gate("/object"); self.submit()
