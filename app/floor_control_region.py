@@ -13,10 +13,11 @@ import math
 
 import cv2
 import numpy as np
+from floor_contract import floor_contract, S0_MODE_FLOORS, S0_FLOOR_NAMES
 
 # Floors in on-screen order, left to right, as the detectors report them.
-MODE_FLOORS = {"nightmare": (-1, 1, 2), "difficult": (1, 2)}
-FLOOR_NAMES = {-1: "B1", 1: "1", 2: "2"}
+MODE_FLOORS = dict(S0_MODE_FLOORS)
+FLOOR_NAMES = dict(S0_FLOOR_NAMES)
 
 FILL_LEVEL = 62        # selected tile fill; unselected panels and backdrop stay below
 GLYPH_LEVEL = 140      # button labels
@@ -154,12 +155,13 @@ def _crop(frame, box):
     return cv2.cvtColor(frame[y0:y1, x0:x1, :3], cv2.COLOR_BGR2GRAY), (x0, y0)
 
 
-def read_floor_in_region(frame: np.ndarray, region, mode: str) -> dict:
+def read_floor_in_region(frame: np.ndarray, region, mode: str, *, season="s0") -> dict:
     """Selected floor (-1/1/2) inside ``region`` (normalized client [x, y, w, h])."""
-    floors = MODE_FLOORS.get(mode)
+    contract = floor_contract(mode, season=season)
+    floors = contract.observed_values if contract is not None else None
     box = normalized_region(region)
     if floors is None:
-        return _unread("unsupported-mode")
+        return _unread("unsupported-mode" if season == "s0" else "floor-contract-unavailable")
     if box is None or frame is None or getattr(frame, "ndim", 0) != 3:
         return _unread("region-invalid")
     gray, origin = _crop(frame, box)
@@ -171,16 +173,17 @@ def read_floor_in_region(frame: np.ndarray, region, mode: str) -> dict:
     return _read_row(gray, floors, tiles, origin, frame.shape[1::-1], "region-highlight-read")
 
 
-def locate_floor_row(frame: np.ndarray, mode: str) -> dict:
+def locate_floor_row(frame: np.ndarray, mode: str, *, season="s0") -> dict:
     """Find the floor-button row anywhere in the top-right corner and read it.
 
     Nothing about the HUD's position is assumed; tile size is bounded only
     relative to the client width, and the mode's exact button count around the
     highlight is required, so other bright HUD items do not qualify.
     """
-    floors = MODE_FLOORS.get(mode)
+    contract = floor_contract(mode, season=season)
+    floors = contract.observed_values if contract is not None else None
     if floors is None:
-        return _unread("unsupported-mode")
+        return _unread("unsupported-mode" if season == "s0" else "floor-contract-unavailable")
     if frame is None or getattr(frame, "ndim", 0) != 3:
         return _unread("region-invalid")
     gray, origin = _crop(frame, SEARCH_AREA)
@@ -233,6 +236,11 @@ def apply_floor_region(settings, mode, frame, floor_read: dict) -> dict:
     the button geometry used for clicks; ``floorSource`` records the reading.
     """
     settings = settings or {}
+    # Reject even a stale positive fixed-detector reading in an unregistered
+    # season. Legacy callers without gameSeason retain the exact S0 path.
+    season = settings.get("gameSeason", "s0")
+    if season != "s0":
+        return dict(_unread("floor-contract-unavailable"), floorSource="unavailable")
     choice = settings.get("floorControlMode", "auto")
     if choice == "fixed":
         return dict(floor_read, floorSource="fixed")
