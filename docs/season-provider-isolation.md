@@ -32,6 +32,6 @@
 
 以 Python 3.12、PySide6 6.11.1、Qt offscreen/software，使用 `PYTHONPATH=app:tests:tools:experiments/qt_quick`，每模块独立进程运行 `python -B -m unittest -v <module>`。模块为：`test_season_provider_boundary`、`test_season_resources`、`test_season_catalog`、`test_season_session`、`test_client_providers`、`test_client_group_registry`、`test_client_front_scope`、`test_client_similarity_protocol`、`test_client_season_preparation`、`test_client_context_failure`、`test_client_coordinator`、`test_client_engine`、`test_client_paths`、`test_client_custom_display`、`test_client_resource_feedback`、`test_storage_retention`、`test_memory_retention_links`。
 
-相似性协议两项 `test_established_logical_group_never_runs_internal_member_competition` 和 `test_explicit_map_open_rediscovers_family_without_reselecting_its_member` 的 rank 调用次数断言失败（1 != 2），在未改动冻结基线 `3002f82` 同环境逐模块复现相同失败；未为消除断言改识别策略。链接保留测试有一项跳过，具体原因保留在日志。完整输出及汇总位于忽略目录 `work/integration-evidence/regressions-provider-boundary/`，不称全库全绿。
+本轮共 **17 模块、211 项：208 通过、2 失败、1 跳过**。相似性协议两项 `test_established_logical_group_never_runs_internal_member_competition` 和 `test_explicit_map_open_rediscovers_family_without_reselecting_its_member` 的 rank 调用次数断言失败（1 != 2），在未改动冻结基线 `3002f82` 同环境逐模块复现相同失败；未为消除断言改识别策略。链接保留测试有一项跳过，具体原因保留在日志。完整输出及汇总位于忽略目录 `work/integration-evidence/regressions-provider-boundary/`，不称全库全绿。
 
 独立只读复审发现的旧测试 worker 签名不兼容已修复；另一发现是“假定不存在的 seed 文件”不足以保证禁读，已改为 `NightmareMemoryStore` 显式支持 `None` 并在读取入口早退，增加真实 store 禁止任何 `read_text` 的测试。默认参数/S0 行为不变。最终复审无新增阻断，覆盖子集与本次回归重叠，不累计计数；Windows 原生、真实 S1 图和实际游戏未验证。
