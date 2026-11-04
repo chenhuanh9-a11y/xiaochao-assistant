@@ -48,6 +48,47 @@ node tools/maps/extract/export-catalog.cjs --catalog "C:/MapExports/map_data_com
 
 ## 明确尚未交付的环节
 
+### 连接现有增量候选工具的数据桥
+
+当前提取器输出 `summary.json`、`modules.json`、`discovery.json`，旧增量
+normalizer 则读取 `extraction-manifest.json`。以下数据桥补齐这个文件契约，并将
+typed dictionary 转为结构构建器使用的 `levelLayouts.data` 等字段：
+
+```powershell
+node tools/maps/extract/prepare-increment-inputs.cjs --run EXTRACTED_RUN --output NEW_BRIDGE --season S1 --mode nightmare
+node tools/maps/normalize_increment_catalog.cjs --run NEW_BRIDGE --old-catalog VERIFIED_TEXTURE_CATALOG --output NEW_BRIDGE/catalog-candidate
+```
+
+输入必须是完整提取结果，包括仅供本地哈希核对的模块 `.bin`，以及非空
+`summary.installedVersion`。桥接前核对模块 SHA256、大小、更新层选择和路径，
+拒绝 required module partial、字典键折叠碰撞、未知 literal 类型及已存在输出。
+验证失败不创建输出目录。成功只写原始 literal JSON 的副本、
+`normalized-literals.json` 和兼容 manifest，不复制模块字节，不执行任何游戏代码。
+输出必须在输入之外的新目录；原提取结果保持不变。
+
+四份输入 JSON 的真实路径也必须位于提取目录内，外链软链接会被拒绝。
+所需模块的 data 必须是 typed dictionary；layout、房型、图像目录必须非空，
+房间坐标/旋转及房型引用必须有效。地图图像键还按下游逗号转下划线规则检查
+重复，不能以字符串键覆盖 tuple 键。normalizer 独立复查形状/键冲突，并从
+真实 literal 元数据记录 partial 状态，不按模块名猜测。语义和游戏内正确性
+仍不由这些格式检查证明。
+
+`normalized-literals.json` 可作为旧增量脚本的 `--literals` 输入，原始
+`literal-exports.json` 仍供要求 `exports.data` 格式的消费者使用，不可混用。
+此桥不生成地图计划、正常图、结构或生产资源，也不检查渲染器/贴图是否齐全。
+
+**赛季/模式是显式来源标签，不是候选隔离实现。** 桥接 manifest 和渲染 catalog
+保留 `seasonId`、`mode`，同时标记 `mapSelectionApplied:false`、
+`competitionScopeEnforced:false` 和 `runtimeIntegration:not_performed`。
+源配置可能同时含多赛季、多模式，后续必须用权威清单选择目标。
+新赛季只能与同赛季、同模式竞争，不允许把 S0 旧运行根直接当作 S1 基线追加。
+同赛季增量才比较该赛季/模式的旧清单。`--old-catalog` 在此仅提供明确核验过的
+纹理复用来源，不授予旧地图候选进入新赛季的权限。现有三层噩梦构建器仍有旧
+批次约束，不能因为数据桥测试通过就声称 S1 已接通。
+
+合成测试覆盖提取→桥接→旧 normalizer 的数据链，以及部分模块、键碰撞、
+哈希错误、路径越界、输入重叠和重复输出拒绝；未触碰真实客户端或素材。
+
 - 贴图/场景资源字节提取、正常地图渲染：此目录不含贴图或 renderer。仓库的 `tools/maps/render-candidate-structures.cjs` 仍需外部合法 `source_renderer.js` 和匹配资产，不能仅凭本次输出声称完成。
 - 全内墙/障碍碰撞、精确通道中心线和可走区域：`room_voxels` 是占用，不等于格子全可走。当前只导出源几何与门，不生成虚假的无墙寻路网格。
 - 可走上层、楼梯传送/跳落、实时随机门状态、正门出口场景锚点：仍需独立源字段适配与验证。场景配置虽静态恢复，尚无通用已验证锚点导出器。

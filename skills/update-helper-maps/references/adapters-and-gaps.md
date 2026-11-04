@@ -1,5 +1,29 @@
 # 仓库入口与维护缺口
 
+## 2026-11-04 提取数据桥与新赛季边界
+
+新增 `tools/maps/extract/prepare-increment-inputs.cjs` 将当前提取器的四份 JSON
+适配为旧 normalizer 的 extraction-manifest 和构建器使用的 normalized-literals。
+它校验输入真实路径、模块哈希/大小/来源、typed 字典、核心目录非空、房间引用
+和图像键唯一性；不运行模块、不读取真实客户端、不执行注册或发布。
+参数及边界见 `tools/maps/extract/README.md`。
+
+新增 manifest 字段和 catalog.inputScope 均是附加来源元数据。旧合法
+extraction-manifest 无 scope 时保持可读，输出 inputScope=null，不默认套用
+赛季。旧唯一逗号图像键仍可核对匹配旧纹理；冲突键、错误结构、零图输入和
+越界软链接不再作为合法输入接收。partial 状态取真实 literal 字段。
+生产 map-package schema、中间 map_update schema2 均未修改。
+
+新赛季与旧同赛季增量分别规划，新图只与同赛季、同模式竞争；数据桥仍标记
+候选筛选和竞争隔离未执行。旧三层噩梦新增脚本与其完整运行根不能直接推广
+为 S1 provider，不能把 S0 候选复制进 S1。真实数据和 provider 回读仍独立验收。
+
+独立集成基线 3002f82 上验证：Node 合成提取/桥接/normalizer 9 项，维护清单
+19 项，native increment contract 9 项，public tools 3 项，editor door display
+7 项，共 47 项通过；包括旧合法格式合成兼容测试。没有可用的真实历史提取
+目录，因此未验证真实历史素材或真实 renderer，不能把此结果写成生产兼容
+全通过。未接入 S1、未打包、未推送或发布。
+
 公开整理日期：2026-10-27。路径相对仓库根目录；不保存本机工作树、内部协调记录或真实素材位置。
 
 | 阶段 | 已存在的代码 | 范围和缺口 |
