@@ -6,6 +6,7 @@ No environment overrides, development roots, Tk assistant, captures or listeners
 from __future__ import annotations
 
 from collections import OrderedDict
+from dataclasses import dataclass
 import copy
 import json
 from pathlib import Path
@@ -18,7 +19,13 @@ if APP not in sys.path:
     sys.path.insert(0, APP)
 
 
-from season_context import CONTEXTS, SEASONS, context_key, normalize_season
+from season_context import CONTEXTS, SEASONS, context_key, normalize_season, SeasonContext
+
+
+@dataclass(frozen=True)
+class ProviderResourceBinding:
+    context: SeasonContext
+    root: Path
 
 
 class ProviderUnavailable(RuntimeError):
@@ -53,8 +60,9 @@ def _read(root, relative):
     return data
 
 
-def _build_memory_store(pack, memory_root, resource_root, *, map_ui=None, production=PRODUCTION):
+def _build_memory_store(pack, memory_root, resource_root, *, map_ui=None, production=PRODUCTION, season="s0"):
     """Original exemplar policy, with diagnostic stores/seeds kept isolated."""
+    season = normalize_season(season)
     from nightmare_candidate import NightmareMemoryStore
     if pack.mode == "difficult":
         validator = lambda frame: map_ui.observe(frame).get("mapOpen") is True
@@ -63,7 +71,8 @@ def _build_memory_store(pack, memory_root, resource_root, *, map_ui=None, produc
         validator = lambda frame: detect_map_interface(frame).get("detected") is True
     return NightmareMemoryStore(pack, memory_root, sample_validator=validator,
         portable_seed_path=Path(resource_root) / "references" / "nightmare-portable-layout-seeds.json"
-        if production else Path(resource_root) / ".qt-no-portable-seeds.json")
+        if production and season == "s0" else
+        Path(resource_root) / ".qt-no-portable-seeds.json" if season == "s0" else None)
 
 
 class SharedReferenceProvider:
@@ -195,9 +204,21 @@ class EngineFactories(dict):
             self._engines.clear()
             self._reports = self._initial_reports()
 
+    def _resource_binding(self, mode, season="s0"):
+        """Resolve one declared context, never discover or combine season roots.
+
+        Only the legacy S0 binding is registered today. New registrations must
+        supply independently validated resources, not flip the display catalog.
+        """
+        context = SeasonContext(season=season, mode=mode)
+        if season != "s0" or not context.registered:
+            raise ProviderUnavailable(f"season-resources-unavailable:{season}")
+        return ProviderResourceBinding(context=context, root=self.root)
+
     def _get(self, mode, season="s0"):
         season = normalize_season(season)
-        key = context_key(mode, season)
+        binding = self._resource_binding(mode, season)
+        key = binding.context.key
         with self._build_locks[key]:
             with self._lock:
                 if key in self._engines:
@@ -206,7 +227,7 @@ class EngineFactories(dict):
                     raise ProviderUnavailable(self._reports[key]["reason"])
                 revision = self._revision
             try:
-                engine = self._build(mode)
+                engine = self._build(mode, season=season)
             except Exception as error:
                 reason = f"{mode}:{type(error).__name__}:{error}"
                 with self._lock:
@@ -223,11 +244,12 @@ class EngineFactories(dict):
                 self._reports[key] = dict(available=True, prepared=True, reason="saved-frame-rank-ready",
                                        season=season, mode=mode, contextKey=key,
                                        mapCount=len(engine.pack.maps), floors=list(engine.identity_floors),
-                                       liveAuthorization=False, resourceRoot=str(self.root),
+                                       liveAuthorization=False, resourceRoot=str(binding.root),
                                        inventory=getattr(engine, "qt_resource_inventory", {}))
             return engine
 
-    def _build(self, mode):
+    def _build(self, mode, *, season="s0"):
+        binding = self._resource_binding(mode, season)
         # All heavyweight production imports and resource parsing are worker-only.
         from author_route_catalog import AuthorRouteCatalog
         from map_identity_engine import MapIdentityEngine
@@ -236,7 +258,7 @@ class EngineFactories(dict):
         from shared_structure_reference import SharedStructureResourceStore
         from shared_structure_context import load_shared_version_context
 
-        root = self.root
+        root = binding.root
         native = None
         catalog_error = ""
         if mode == "nightmare":
@@ -280,7 +302,7 @@ class EngineFactories(dict):
             from difficult_native_context import DifficultNativeContext
             from difficult_native_identity import NativeDifficultPack, NativeDifficultCandidateEngine
             from client_paths import bundled_author_root
-            native = DifficultNativeContext(root, display_fallback_root=bundled_author_root())
+            native = DifficultNativeContext(root, display_fallback_root=bundled_author_root() if season == "s0" else None)
             pack = NativeDifficultPack(root, interfaces["identityPack"], display_context=native)
             native.validate_identity_pack(pack)
             resources, adapters, catalog = native.resources, native.adapters, native.catalog
@@ -297,12 +319,14 @@ class EngineFactories(dict):
         # Constructor performs no IO; ranking submits no human-label writes.
         # Explicit live manual confirmation reuses this store on its worker.
         # Source/test diagnostics retain isolated memory.
-        memory_root = runtime_paths().memory_root(mode) if PRODUCTION else root / ".qt-saved-frame-memory" / mode
+        memory_root = (runtime_paths().memory_root(mode, season) if PRODUCTION else
+                       root / ".qt-saved-frame-memory" / mode if season == "s0" else
+                       root / ".qt-saved-frame-memory" / season / mode)
         if mode == "difficult":
             map_ui = _load_difficult_map_ui(native.local(native.interfaces["uiControls"]))
         else:
             map_ui = None
-        memory = _build_memory_store(pack, memory_root, root, map_ui=map_ui)
+        memory = _build_memory_store(pack, memory_root, root, map_ui=map_ui, season=season)
         provider = SharedReferenceProvider(root, resources, {}, native=native)
         engine = engine_type(pack, identity_root=entry_root, identity_profile_id=profile,
             identity_floors=pack.floors, exit_icon_path=exit_icon,
@@ -346,7 +370,7 @@ class EngineFactories(dict):
         # Local compatibility cohorts remain recognition evidence only. The
         # separately confirmed list is scoped by Runtime to F1 front entries.
         from client_group_registry import ConfirmedFrontGroups
-        engine.qt_logical_group_registry = ConfirmedFrontGroups(pack)
+        engine.qt_logical_group_registry = ConfirmedFrontGroups(pack, season=season)
         engine.qt_resource_root = root
         engine.qt_adapters = adapters
         engine.qt_catalog = catalog

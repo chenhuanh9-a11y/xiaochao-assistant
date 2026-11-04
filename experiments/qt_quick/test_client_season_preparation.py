@@ -74,7 +74,8 @@ def scenario(name, root):
         if name == "prepare-error":
             raise RuntimeError("controlled-prepare-error")
         return original_prepare(self, cancelled, season=season)
-    def build(self, mode):
+    def build(self, mode, *, season="s0"):
+        assert season == "s0", "Unregistered season reached the resource builder"
         builds.append(mode)
         if name == "cancelled-late" and len(builds) == 1:
             entered.set()

@@ -1458,7 +1458,7 @@ class NightmareMemoryStore:
         pack: NightmarePack,
         root: Path = DEFAULT_MEMORY_ROOT,
         sample_validator: Callable[[np.ndarray], bool] | None = None,
-        portable_seed_path: Path = DEFAULT_PORTABLE_LAYOUT_SEEDS,
+        portable_seed_path: Path | None = DEFAULT_PORTABLE_LAYOUT_SEEDS,
     ) -> None:
         self.pack = pack
         self.root = Path(root)
@@ -1474,7 +1474,7 @@ class NightmareMemoryStore:
             self.root / "alignment-success-evidence.jsonl"
         )
         self.sample_validator = sample_validator
-        self.portable_seed_path = Path(portable_seed_path)
+        self.portable_seed_path = Path(portable_seed_path) if portable_seed_path is not None else None
         self._sample_validation_cache: dict[str, bool] = {}
         self._lock = threading.RLock()
         # Failure I/O must never hold the learning/read lock used by solvers.
@@ -1646,7 +1646,9 @@ class NightmareMemoryStore:
         return None
 
     def portable_layout_seeds(self) -> list[dict]:
-        """Load curated geometry-only seeds; none can authorize display."""
+        """Load curated geometry-only seeds; None explicitly disables seed IO."""
+        if self.portable_seed_path is None:
+            return []
         try:
             raw = json.loads(self.portable_seed_path.read_text(encoding="utf-8"))
         except (OSError, ValueError, json.JSONDecodeError):

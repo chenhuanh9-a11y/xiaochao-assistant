@@ -73,7 +73,7 @@ class ResourceFeedbackTests(unittest.TestCase):
     def test_real_lease_rejects_open_once_and_next_edge_opens_after_ready(self):
         for mode in ("nightmare", "difficult"):
             with self.subTest(mode=mode), self.chain(mode) as (o,c,s,r,f,k,n,a,root):
-                f._build = runtime_fixture.fixture_engine
+                f._build = lambda mode, *, season="s0": runtime_fixture.fixture_engine(mode)
                 f.prepare(); s.refreshRuntime()
                 lease = s.acquireResourceLease(); self.assertTrue(lease)
                 self.press(k); self.press(k)
@@ -117,7 +117,7 @@ class ResourceFeedbackTests(unittest.TestCase):
                 # Same resource-change hook used after import/delete, with its
                 # existing invalidation and worker recheck; no transaction fake.
                 build = f._build
-                f._build = runtime_fixture.fixture_engine
+                f._build = lambda mode, *, season="s0": runtime_fixture.fixture_engine(mode)
                 c._resources_changed()
                 self.assertIn("校验", c.runtimeStatus)
                 s.dispatch("inspect_engine_resources"); self.drain(o,s)
@@ -133,8 +133,8 @@ class ResourceFeedbackTests(unittest.TestCase):
     def test_ready_mode_switch_without_map_input_rearms_previous_missing_reason(self):
         with self.chain("nightmare") as (o,c,s,r,f,k,n,a,root):
             original_build = f._build
-            f._build = lambda mode: (runtime_fixture.fixture_engine(mode)
-                if mode == "difficult" else original_build(mode))
+            f._build = lambda mode, *, season="s0": (runtime_fixture.fixture_engine(mode)
+                if mode == "difficult" else original_build(mode, season=season))
             s.dispatch("inspect_engine_resources"); self.drain(o,s)
             self.press(k)
             self.assertEqual(len(self.resource_notices(n)), 1)
@@ -161,7 +161,7 @@ class ResourceFeedbackTests(unittest.TestCase):
     def test_difficult_missing_ui_template_is_distinct_from_missing_pack(self):
         with self.chain("difficult") as (o,c,s,r,f,k,n,a,root):
             from client_providers import _load_difficult_map_ui
-            def build(mode):
+            def build(mode, *, season="s0"):
                 if mode == "difficult": _load_difficult_map_ui(root / "arbitrary-fixture-name.npz")
                 return runtime_fixture.fixture_engine(mode)
             f._build = build
@@ -173,7 +173,7 @@ class ResourceFeedbackTests(unittest.TestCase):
             self.assertEqual(len(self.resource_notices(n)), 1)
             self.assertNotIn(str(root), self.resource_notices(n)[0][1])
             # Fixing templates/readiness rearms an identical later failure.
-            f._build = runtime_fixture.fixture_engine
+            f._build = lambda mode, *, season="s0": runtime_fixture.fixture_engine(mode)
             c._resources_changed()
             s.dispatch("inspect_engine_resources"); self.drain(o,s)
             self.assertTrue(s.snapshot["liveEngineAvailable"])
@@ -192,7 +192,7 @@ class ResourceFeedbackTests(unittest.TestCase):
                         _load_difficult_map_ui(root / "arbitrary-fixture-name.npz")
                     self.assertIs(raised.exception.__cause__, error)
                     self.assertIn(type(error).__name__, str(raised.exception))
-                    def build(mode):
+                    def build(mode, *, season="s0"):
                         if mode == "difficult": return _load_difficult_map_ui(root / "arbitrary-fixture-name.npz")
                         return runtime_fixture.fixture_engine(mode)
                     f._build = build
