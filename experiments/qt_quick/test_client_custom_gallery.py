@@ -66,12 +66,15 @@ class CustomGalleryTests(unittest.TestCase):
         self.default.write_text(json.dumps(dict(id="default", name="默认路线", maps={})), encoding="utf-8")
         self.library = make_library(self.folder / "synthetic-library")
         self.service = CustomGalleryService(self.sandbox, library=self.library, default_path=self.default)
+        from client_settings import SettingsService
+        self.settings = SettingsService(self.sandbox)
         self.confirmations = []
         self.service.confirmationRequested.connect(lambda *args: self.confirmations.append(args))
         until(lambda: bool(self.service.snapshot["galleries"]))
         self.addCleanup(self.cleanup)
 
     def cleanup(self):
+        self.settings.shutdown()
         self.service.shutdown()
         APP.processEvents()
         self.temp.cleanup()
@@ -278,6 +281,7 @@ class CustomGalleryTests(unittest.TestCase):
         warnings = []
         engine.warnings.connect(lambda rows: warnings.extend(str(row) for row in rows))
         engine.rootContext().setContextProperty("customGalleryService", self.service)
+        engine.rootContext().setContextProperty("settingsService", self.settings)
         engine.load(QUrl.fromLocalFile(str(Path(__file__).with_name("ClientCustomGallery.qml"))))
         self.assertEqual(len(engine.rootObjects()), 1, warnings)
         self.call("createGallery", "QML路线")

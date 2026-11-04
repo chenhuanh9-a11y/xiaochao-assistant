@@ -1915,8 +1915,10 @@ class LiveRuntime:
         """Update explicit solver preferences; mode/profile use set_context."""
         with self._lock:
             variant_changed = settings.get("zhan10CoffinVariantId", "variant-01") != self._settings.get("zhan10CoffinVariantId", "variant-01")
+            numbers_changed = settings.get("routePointNumbers", False) != self._settings.get("routePointNumbers", False)
+            numbers_display_changed = numbers_changed and self._profile.startswith("custom:")
             self._settings = copy.deepcopy(dict(settings))
-            if variant_changed:
+            if variant_changed or numbers_display_changed:
                 self._display_generation = getattr(self, "_display_generation", 0) + 1
                 if (self._profile, self._map_id, str(self._floor)) == ("zhan10-coffin", "nightmare-01", "1"):
                     # Retain identity, floor and canonical pose. Only presentation
@@ -1928,6 +1930,11 @@ class LiveRuntime:
             self._publish_game_pointer_context_locked()
         if changed:
             self._notify("aligned-visibility-changed", reason="settings-updated")
+        if numbers_display_changed:
+            # Retain the verified pose for display-only reprojection. Public
+            # payloads reject the old generation immediately, including while
+            # a slower worker is still preparing the replacement pixels.
+            self._notify("render-revoked", reason="route-point-numbers-changed")
 
     def manual_map_catalog(self):
         """Read-only picker catalog for the current mode/profile.
@@ -2130,7 +2137,8 @@ class LiveRuntime:
     def render_payload(self, token):
         with self._lock:
             row = self._render
-            if row is None or row["token"] != token or not self._display_current(row):
+            if (row is None or row["token"] != token or not self._display_current(row)
+                    or row.get("displayGeneration") != getattr(self, "_display_generation", 0)):
                 return None
             if not self._capture_is_current(self._render_capture_context, row.get("captureGeneration")):
                 self.invalidate("capture-context-changed")
@@ -2453,7 +2461,7 @@ class LiveRuntime:
                 self._mode, self._profile = mode, profile
                 self._publish_game_pointer_context_locked()
                 self._offline.dispatch("set_context", dict(mode=mode, profileId=profile))
-            if changed_profile and not changed_mode:
+            if (changed_profile or payload.get("refreshDisplay") is True) and not changed_mode:
                 return self._reproject_route_display(action, payload, cancelled)
             return self._receipt(action, payload, success=True, reason="context-updated")
         if self._cancelled(cancelled):
