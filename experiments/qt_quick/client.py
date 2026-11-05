@@ -520,7 +520,7 @@ def main():
     parser.add_argument("--sandbox", type=Path, default=DEFAULT_SANDBOX)
     parser.add_argument("--probe-output", type=Path)
     parser.add_argument("--self-check", action="store_true", help="read-only packaged import/resource check, no windows or listeners")
-    parser.add_argument("--verify-resources", action="store_true", help="with self-check, construct both explicit-root providers without capture")
+    parser.add_argument("--verify-resources", action="store_true", help="with self-check, verify S0 and every included S1 provider without capture")
     parser.add_argument("--offline-resource-root", type=Path,
                         help="with self-check, verify the explicit S1 offline gallery root and decode its images")
     args = parser.parse_args()
@@ -538,7 +538,8 @@ def main():
                           "Client.qml", "ClientControls.qml", "ClientReference.qml", "ClientAligned.qml",
                           "ClientMapPicker.qml")),
                       tkLoaded="tkinter" in sys.modules,
-                      nativeInputStarted=False)
+                      nativeInputStarted=False, windowsCreated=False,
+                      listenersStarted=False, captureStarted=False)
         if args.offline_resource_root is not None:
             from season_map_resources import verify_offline_inventory
             result["offlineGallery"] = verify_offline_inventory(args.offline_resource_root.resolve())
@@ -551,8 +552,17 @@ def main():
                 registry = build_engine_factories(root)
                 registry.prepare()
                 result["providers"] = registry.capabilities()
+                from s1_private_resources import validated_s1_resources
+                required_s1 = False
+                if FROZEN:
+                    profile = json.loads((RESOURCE_ROOT / "installation-profile.json").read_text(encoding="utf-8"))
+                    required_s1 = profile["installerInstance"]["id"] == "s0-s1-test"
+                native = validated_s1_resources(root, required=required_s1)
+                result["resourceContexts"] = {"s0:" + mode: row for mode, row in result["providers"].items()}
+                result["resourceContexts"].update({"s1:" + mode: row for mode, row in native["providers"].items()})
+                result["s1Included"] = native["included"]
             result["tkLoaded"] = "tkinter" in sys.modules
-            result["ready"] = result["ready"] and all(row.get("available") for row in result["providers"].values())
+            result["ready"] = result["ready"] and all(row.get("available") for row in result["resourceContexts"].values())
         if FROZEN:
             WORK_ROOT.mkdir(parents=True, exist_ok=True)
             (WORK_ROOT / "client-self-check.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
@@ -560,7 +570,8 @@ def main():
         return 0 if result["ready"] and result["qml"] and not result["tkLoaded"] else 1
     if os.name == "nt":
         import ctypes
-        model_id = "Xingtu.Assistant" if PRODUCTION else ("Xingtu.QtClientTest" if FROZEN else "Xingtu.QtClientSource")
+        from packaged_product_identity import qt_application_model_id
+        model_id = qt_application_model_id()
         set_model_id = ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID
         set_model_id.argtypes = [ctypes.c_wchar_p]
         set_model_id.restype = ctypes.c_long

@@ -36,6 +36,9 @@ INSTANCES = {
     "layout-preview": dict(appId="D4B8E562-EA62-4A43-AF1D-043A5646971E", appName="Xingtu Qt Layout Preview",
                            installFolder="XingtuQtLayoutPreview", startMenuGroup="Xingtu Qt Layout Preview",
                            setupPrefix="XingtuQtLayout-Setup", versionSuffix="-qt-layout-test", product=PRODUCT),
+    "s0-s1-test": dict(appId="907F912D-58FD-4F84-A7A4-0C816AA70E52", appName="Xingtu S0 S1 Private Test",
+                       installFolder="XingtuS0S1PrivateTest", startMenuGroup="Xingtu S0 S1 Private Test",
+                       setupPrefix="XingtuS0S1Private-Setup", versionSuffix="-s0-s1-private", product=PRODUCT),
     "production": dict(appId="D04394A0-DACE-4FF9-874D-3DCB43EE53D1", appName="星图",
                        installFolder="XiaochaoAssistant", startMenuGroup="星图",
                        setupPrefix="星图", versionSuffix="", product="星图"),
@@ -430,7 +433,9 @@ def _local_file(root, name):
     return path
 
 
-def validate_resources(root, inventory, *, bundled_packages=()):
+def validate_resources(root, inventory, *, bundled_packages=(), instance="client"):
+    if instance not in INSTANCES:
+        raise ValueError("Unknown installer instance")
     root, inventory = Path(root).resolve(), Path(inventory).resolve()
     if not root.is_dir() or root == ROOT or root == ROOT / "work":
         raise ValueError("Pass the exact isolated resource root, not the source/work directory")
@@ -444,7 +449,10 @@ def validate_resources(root, inventory, *, bundled_packages=()):
         raise ValueError("Resource inventory requires a nonempty path -> {bytes, sha256} files object")
     for name, row in rows.items():
         path = _local_file(root, name)
-        if name not in ("version.json", "difficult-native-manifest.json") and PurePosixPath(name).parts[0] not in {
+        is_s1 = name.startswith("seasons/s1/") and len(PurePosixPath(name).parts) > 3 and PurePosixPath(name).parts[2] in {"difficulty2", "difficult", "nightmare"}
+        if name.startswith("seasons/") and (not is_s1 or instance != "s0-s1-test"):
+            raise ValueError("Season resources support only the exact S1 native roots in s0-s1-test Setup: " + name)
+        if not is_s1 and name not in ("version.json", "difficult-native-manifest.json") and PurePosixPath(name).parts[0] not in {
                 "assets", "references", "recognition"}:
             raise ValueError(f"Unexpected runtime-resource category: {name}")
         if path.suffix.lower() not in {".json", ".gz", ".npz", ".png", ".webp", ".jpg", ".jpeg", ".txt", ".md", ".ico", ".svg"}:
@@ -466,6 +474,10 @@ def validate_resources(root, inventory, *, bundled_packages=()):
     contract = check_package(root)
     if not contract["success"]:
         raise ValueError(f"Packaged runtime path contract rejected: {contract['errors']}")
+    if instance == "s0-s1-test":
+        sys.path.insert(0, str(ROOT / "experiments/qt_quick"))
+        from s1_private_resources import validated_s1_resources
+        contract["s1"] = validated_s1_resources(root, required=True)
     return declaration, retained, omitted, replaced, contract
 
 
@@ -536,8 +548,8 @@ BUNDLED_AUTHOR_ROOT = "_internal/qt-author-base/"
 
 def selected_bundled_author_paths(resources, packages, instance):
     """Explicit build input, not permission inferred from resources on disk."""
-    if packages and instance not in {"client", "production"}:
-        raise ValueError("Bundled author defaults support only client or production Setup")
+    if packages and instance not in {"client", "production", "s0-s1-test"}:
+        raise ValueError("Bundled author defaults support only client, s0-s1-test or production Setup")
     if set(packages) - {"difficult-zhan10"}:
         raise ValueError("Unsupported bundled author package")
     names = sorted(name for name in resources if name.startswith(BUNDLED_AUTHOR_PREFIXES))
@@ -586,6 +598,8 @@ def verify_bundled_author_defaults(stage, resources, bundled_author_paths):
 
 def production_file_projection(stage, resources, *, bundled_author_paths=()):
     """Read a clean assembled stage; every resource belongs to exactly one plane."""
+    if any(name.startswith("seasons/") for name in resources):
+        raise ValueError("Production resource projection does not support season resources")
     stage = Path(stage).resolve()
     families = dict(program=[], base=[], editor=[], **{"optional-author": []})
     seen = set()
@@ -595,6 +609,8 @@ def production_file_projection(stage, resources, *, bundled_author_paths=()):
         if not path.is_file():
             continue
         name = path.relative_to(stage).as_posix()
+        if name.casefold().startswith("_internal/seasons/"):
+            raise ValueError("Production resource projection does not support season resources")
         if any(char in name for char in ('"', ';', '\r', '\n')) or name.lower().startswith("work/"):
             raise ValueError(f"Invalid staged program/resource path: {name}")
         if name.casefold() in seen:
@@ -750,7 +766,8 @@ def main(argv=None):
     if not (qt / "client.py").is_file() or not (qt / "Client.qml").is_file():
         raise ValueError("Integrated Qt entrypoint is not present")
     declaration, resources, omitted, replaced, contract = validate_resources(args.resource_root, args.resource_inventory,
-                                                                         bundled_packages=args.bundled_package)
+                                                                         bundled_packages=args.bundled_package,
+                                                                         instance=args.instance)
     author_paths = selected_bundled_author_paths(resources, args.bundled_package, args.instance)
     if BRAND_ICON not in resources or resources[BRAND_ICON]["sha256"].lower() != BRAND_ICON_SHA256:
         raise ValueError("The existing supplied Xingtu ICO must be present in the locked resource inventory")
@@ -821,6 +838,8 @@ def main(argv=None):
                    recoveryHelper=dict(included=args.instance == "production", executable="star-map-recovery-helper.exe"),
                    importHelper=dict(included=args.instance == "production", executable="star-map-import-helper.exe"),
                    resourceVersion=declaration["resourceVersion"], authorDisplayPackagesIncluded=args.bundled_package,
+                   includedResourceContexts=(["s0:nightmare", "s0:difficult", "s1:difficulty2", "s1:difficult", "s1:nightmare"]
+                       if args.instance == "s0-s1-test" else ["s0:nightmare", "s0:difficult"]),
                    authorDisplayFilesIncluded=len(author_paths), omittedAuthorDisplayFiles=len(omitted),
                    omittedAuthorDisplayBytes=sum(row["bytes"] for row in omitted.values()),
                    publicDownloadConfigured=False, localMapImportPreserved=True)
