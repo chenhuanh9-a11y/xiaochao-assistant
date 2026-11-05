@@ -513,13 +513,11 @@ class ClientCoordinator(QObject):
         if reason == "resource-validation-pending" or state.get("pendingAction") == "inspect_engine_resources":
             return ((mode, "resource-validation-pending"), "正在校验地图识别资源，请稍后再打开地图")
         if report.get("available") is False:
-            label = "困难模式" if mode == "difficult" else "噩梦模式"
-            if "difficult-map-ui-template-missing:" in reason:
-                summary = "困难模式缺少楼层识别模板，请到地图资源页补齐或重新导入资源"
-            elif "difficult-map-ui-template-unavailable:" in reason:
-                summary = "困难模式楼层识别模板未通过校验或无法读取，请到地图资源页检查并重新导入资源"
+            label = {"difficulty2": "普通模式", "difficult": "困难模式", "nightmare": "噩梦模式"}.get(mode, "当前模式")
+            if "missing-resource:" in reason or "FileNotFoundError" in reason:
+                summary = f"{label}缺少地图识别资源，请到地图资源页补齐或重新导入资源"
             else:
-                summary = f"{label}缺少地图识别资源或资源未通过校验，请到地图资源页检查并重新导入"
+                summary = f"{label}地图识别资源未通过校验或无法读取，请到地图资源页检查并重新导入"
             return ((mode, reason), summary)
         if season != "s0" and not report.get("liveReady", False):
             gaps = ";".join(report.get("liveGaps", ())) or "season-live-contract-unavailable"

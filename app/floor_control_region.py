@@ -1,12 +1,7 @@
-"""Read the selected floor from the structure of the floor-button row.
+"""Read current S0 vertical floor controls from complete signed label evidence.
 
-The game slides the whole floor-button row so the *selected* button keeps one
-screen position. A fixed rectangle split into equal slots would therefore
-always see the highlight in the same slot. The floor is instead read from
-structure: a filled (highlighted) tile, then how many labelled buttons sit to
-its left and right. New S0 vertical columns use the reversed order with signed glyph checks.
-The same reading runs inside a player-drawn region (框选)
-or over the client's top-right corner to find the row automatically (自动).
+The search band and player calibration restrict observation, not click positions.
+Only the declared mode order 2/1 or 2/1/-1 is accepted; S1 stays unvalidated.
 """
 from __future__ import annotations
 
@@ -16,7 +11,7 @@ import cv2
 import numpy as np
 from floor_contract import floor_contract, S0_MODE_FLOORS, S0_FLOOR_NAMES
 
-# Floors in on-screen order, left to right, as the detectors report them.
+# Supported S0 semantic values. The vertical visual order is their reverse.
 MODE_FLOORS = dict(S0_MODE_FLOORS)
 FLOOR_NAMES = dict(S0_FLOOR_NAMES)
 
@@ -25,8 +20,6 @@ GLYPH_LEVEL = 140      # button labels
 MIN_REGION_PIXELS = (24, 10)
 PITCH_RATIO = .94
 BACKDROP_MAX = 75     # median of the unselected buttons and the gaps between them
-# Legacy horizontal layout search area.
-SEARCH_AREA = (.5, 0., .5, .35)
 # New S0 HUD: search the right-side column, excluding the zoom slider.
 # These are search bounds, never fixed click coordinates.
 VERTICAL_SEARCH_AREA = (.75, .15, .18, .45)
@@ -66,30 +59,6 @@ def _candidate_tiles(gray: np.ndarray, kernel: int, min_height: float, max_heigh
     return sorted(tiles, key=lambda tile: tile[4], reverse=True)[:limit]
 
 
-def _horizontal_tiles(gray, tiles, *, verified_column=False):
-    """Keep legacy rectangular near-square fills, not nearby round HUD icons.
-
-    Aspect alone cannot distinguish the old square highlight from a circular
-    exit icon. Unsupported near-square silhouettes fail closed; the wide
-    legacy path is unchanged. A verified column retains its stricter filter.
-    """
-    accepted = []
-    for tile in tiles:
-        x, y, w, h, _ = tile
-        if w >= 1.15 * h:
-            accepted.append(tile)
-            continue
-        if verified_column:
-            continue
-        fill = gray[y:y+h, x:x+w] > FILL_LEVEL
-        corner = max(1, round(min(w, h) * .20))
-        corners = (fill[:corner, :corner], fill[:corner, -corner:],
-                   fill[-corner:, :corner], fill[-corner:, -corner:])
-        if float(fill.mean()) >= .85 and all(float(part.mean()) >= .50 for part in corners):
-            accepted.append(tile)
-    return accepted
-
-
 def _labelled_button(gray: np.ndarray, center: float, top: int, width: int, height: int,
                      selected: tuple[int, int]):
     """True/False for a labelled unselected button around ``center``; None if clipped."""
@@ -116,8 +85,8 @@ def _labelled_button(gray: np.ndarray, center: float, top: int, width: int, heig
     return False
 
 
-def _read_row(gray: np.ndarray, floors, tiles, origin, size, reason: str, *, check_extra=False) -> dict:
-    """Floor from the first tile with exactly the mode's button count around it."""
+def _read_axis(gray: np.ndarray, floors, tiles, origin, size, reason: str) -> dict:
+    """Read one transposed column with exactly the mode's signed label count."""
     if not tiles:
         return _unread("highlight-not-found")
     total = len(floors)
@@ -129,7 +98,7 @@ def _read_row(gray: np.ndarray, floors, tiles, origin, size, reason: str, *, che
 
         def walk(direction):
             found = 0
-            for step in range(1, total + int(check_extra)):
+            for step in range(1, total + 1):
                 present = _labelled_button(gray, center + direction * step * pitch, ty, tw, th, (tx, tx + tw))
                 if present is None:
                     return found, True
@@ -161,8 +130,8 @@ def _read_row(gray: np.ndarray, floors, tiles, origin, size, reason: str, *, che
         accepted.append((left, (tx, ty, tw, th), center, pitch))
     if not accepted:
         return first_failure
-    if len({row[0] for row in accepted}) > 1:
-        return _unread("rows-disagree")
+    if len(accepted) > 1:
+        return _unread("columns-ambiguous")
     index, (tx, ty, tw, th), center, pitch = accepted[0]
     floor = floors[index]
     fill = float(np.median(gray[ty:ty + th, tx:tx + tw]))
@@ -215,16 +184,16 @@ def _vertical_label_evidence(gray, points, bounds, order, selected, origin, size
 def _read_vertical(gray, floors, origin, size, reason):
     """Reuse structural reading with transposed pixels, not rotated labels.
 
-    S0's new visual order is the reverse of the legacy horizontal order.
+    S0 visual order is the reverse of its semantic floor-value order.
     centerPoints are normalized (x, y) pairs, in observedOrder. Deliberately
-    omit legacy scalar centers/pitch, which horizontal click consumers own.
+    omit scalar centers/pitch: click consumers require full 2D geometry.
     This is floor-reading evidence, not verified click geometry.
     """
     width = size[0]
     transposed = np.ascontiguousarray(gray.T)
     tiles = _candidate_tiles(transposed, round(width * .0036), width * .010, width * .06)
     order = tuple(reversed(floors))
-    read = _read_row(transposed, order, tiles, origin[::-1], size[::-1], reason, check_extra=True)
+    read = _read_axis(transposed, order, tiles, origin[::-1], size[::-1], reason)
     if read.get("selectedFloor") is None:
         return read
     y, x, h, w = read.pop("tileBounds")
@@ -243,19 +212,9 @@ def _read_vertical(gray, floors, origin, size, reason):
 
 
 def _merge_region_read(fixed, read, source, **extra):
-    if fixed.get("controlAxis") == "vertical" and read.get("controlAxis") != "vertical":
-        return dict(_unread("layouts-ambiguous"), floorSource="unavailable")
-    out = dict(fixed, selectedFloor=read["selectedFloor"], floorSource=source, **extra)
-    if read.get("controlAxis") == "vertical":
-        # A new floor reading must not authorize clicks using old horizontal
-        # geometry inherited from the fixed detector.
-        for key in ("centers", "controlRects", "controlVertical", "difficultObservation", "scores", "margin"):
-            out.pop(key, None)
-        out.update(layout="vertical-floor-read-only", controlAxis="vertical",
-                   controlGeometryVerified=False, centerPoints=read["centerPoints"],
-                   observedOrder=read["observedOrder"], tileBounds=read["tileBounds"],
-                   labelEvidence=read["labelEvidence"], axisPitch=read["axisPitch"],
-                   confidence=read.get("confidence", 0.))
+    """A calibrated reading replaces the current vertical observation completely."""
+    out = dict(read, **extra, floorSource=source)
+    out.update({key: fixed[key] for key in ("season", "mode", "mapOpen") if key in fixed})
     return out
 
 
@@ -269,30 +228,18 @@ def _crop(frame, box):
 
 
 def read_floor_in_region(frame: np.ndarray, region, mode: str, *, season="s0") -> dict:
-    """Selected floor (-1/1/2) inside ``region`` (normalized client [x, y, w, h])."""
+    """Read the complete current vertical selector inside a normalized region."""
     contract = floor_contract(mode, season=season)
-    floors = contract.observed_values if contract is not None else None
+    if contract is None or season != "s0":
+        return _unread("vertical-floor-detector-unvalidated" if contract else "floor-contract-unavailable")
     box = normalized_region(region)
-    if floors is None:
-        return _unread("unsupported-mode" if season == "s0" else "floor-contract-unavailable")
-    if contract.control_axis != "horizontal":
-        return _unread("vertical-floor-detector-unvalidated")
-    if box is None or frame is None or getattr(frame, "ndim", 0) != 3:
+    if frame is None or getattr(frame, "ndim", 0) != 3 or box is None:
         return _unread("region-invalid")
     gray, origin = _crop(frame, box)
     if gray is None:
         return _unread("region-too-small")
-    # A verified column needs the stricter horizontal check to exclude nearby
-    # circular exit HUD icons. Otherwise require rectangular near-square fills.
-    # The player framed the row: its tile fills a good part of the height.
-    height = gray.shape[0]
-    tiles = _candidate_tiles(gray, round(height * .12), height * .25, height)
-    vertical = _read_vertical(gray, floors, origin, frame.shape[1::-1], "region-highlight-read")
-    horizontal_tiles = _horizontal_tiles(gray, tiles, verified_column=vertical.get("selectedFloor") is not None)
-    horizontal = _read_row(gray, floors, horizontal_tiles, origin, frame.shape[1::-1], "region-highlight-read")
-    if horizontal.get("selectedFloor") is not None and vertical.get("selectedFloor") is not None:
-        return _unread("layouts-ambiguous")
-    return vertical if vertical.get("selectedFloor") is not None else horizontal
+    read = _read_vertical(gray, contract.observed_values, origin, frame.shape[1::-1], "region-highlight-read")
+    return dict(read, controlSearchRegion=list(box))
 
 
 def locate_vertical_floor_controls(frame: np.ndarray, mode: str, *, season="s0") -> dict:
@@ -306,34 +253,6 @@ def locate_vertical_floor_controls(frame: np.ndarray, mode: str, *, season="s0")
     result = (_read_vertical(column, contract.observed_values, origin, frame.shape[1::-1], "auto-located")
               if column is not None else _unread("region-too-small"))
     return dict(result, controlSearchRegion=list(VERTICAL_SEARCH_AREA))
-
-
-def locate_floor_row(frame: np.ndarray, mode: str, *, season="s0") -> dict:
-    """Find a legacy horizontal row or a new S0 right-side vertical column.
-
-    Position is searched within the layout-specific HUD bands; tile size is bounded
-    relative to the client width, and the mode's exact button count around the
-    highlight is required, so other bright HUD items do not qualify.
-    """
-    contract = floor_contract(mode, season=season)
-    floors = contract.observed_values if contract is not None else None
-    if floors is None:
-        return _unread("unsupported-mode" if season == "s0" else "floor-contract-unavailable")
-    if contract.control_axis != "horizontal":
-        return _unread("vertical-floor-detector-unvalidated")
-    if frame is None or getattr(frame, "ndim", 0) != 3:
-        return _unread("region-invalid")
-    gray, origin = _crop(frame, SEARCH_AREA)
-    if gray is None:
-        return _unread("region-too-small")
-    width = frame.shape[1]
-    tiles = _candidate_tiles(gray, round(width * .0036), width * .010, width * .06)
-    vertical = locate_vertical_floor_controls(frame, mode, season=season)
-    horizontal_tiles = _horizontal_tiles(gray, tiles, verified_column=vertical.get("selectedFloor") is not None)
-    horizontal = _read_row(gray, floors, horizontal_tiles, origin, frame.shape[1::-1], "auto-located")
-    if horizontal.get("selectedFloor") is not None and vertical.get("selectedFloor") is not None:
-        return _unread("layouts-ambiguous")
-    return vertical if vertical.get("selectedFloor") is not None else horizontal
 
 
 def region_for_client(setting, size) -> tuple[float, float, float, float] | None:
@@ -359,23 +278,20 @@ def region_for_client(setting, size) -> tuple[float, float, float, float] | None
 
 
 def _auto(mode, frame, floor_read: dict, source: str, **extra) -> dict:
-    """Fixed reading first; when it reads nothing, locate the row automatically."""
+    """Use the current default column, or locate the same vertical layout."""
     if floor_read.get("selectedFloor") is not None:
         return dict(floor_read, floorSource=source, **extra)
-    located = locate_floor_row(frame, mode)
+    located = locate_vertical_floor_controls(frame, mode)
     if located["selectedFloor"] is None:
         return dict(floor_read, floorSource=source + "-auto-unread", autoRead=located, **extra)
     return _merge_region_read(floor_read, located, "auto-located", autoRead=located, **extra)
 
 
 def apply_floor_region(settings, mode, frame, floor_read: dict) -> dict:
-    """Choose the floor reading for the player's 楼层识别 setting.
+    """Apply fixed/default-column or player-region preferences to S0 evidence.
 
-    自动 (default): the fixed detector, then the automatic row search when it
-    reads nothing. 框选: the framed region, then the same automatic path. 固定:
-    the fixed detector only, exactly as before. Horizontal clicks retain fixed
-    geometry. Vertical readings explicitly invalidate legacy click geometry;
-    they do not authorize a click until the production layout contract is adapted.
+    A framed region can replace the observation, never the declared mode or
+    season. Click geometry is separately bound to current map-open evidence.
     """
     settings = settings or {}
     # Reject even a stale positive fixed-detector reading in an unregistered

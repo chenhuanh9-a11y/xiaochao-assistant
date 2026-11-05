@@ -7,6 +7,8 @@ from unittest.mock import Mock, patch
 import test_client_live_runtime as fixtures
 from client_live_runtime import _AlignmentHost
 from floor_observation_policy import game_floor_control_hit
+from s0_vertical_controls import bind_control_geometry
+from test_s0_vertical_controls import synthetic_read
 
 
 class FloorClickContracts(unittest.TestCase):
@@ -17,13 +19,12 @@ class FloorClickContracts(unittest.TestCase):
         self.now = 10.
         self.runtime._monotonic = lambda: self.now
         self.capture.generation = 5
-        self.read = dict(selectedFloor=1, layout="localized-triplet", centers=[.45, .50, .55], scores={})
-        detector = patch("map_interface_observation.detect_selected_floor", side_effect=lambda *a: copy.deepcopy(self.read))
+        self.read = synthetic_read(mode)
+        detector = patch("floor_control_region.locate_vertical_floor_controls",
+                         side_effect=lambda *a, **kw: synthetic_read(mode, self.read["selectedFloor"]))
         detector.start(); self.addCleanup(detector.stop)
         if mode == "difficult":
             self.engine = fixtures.fixture_engine("difficult")
-            self.engine.qt_map_ui.observe = lambda frame: dict(mapOpen=True, floor=str(self.read["selectedFloor"]),
-                glyphs=[dict(center=[600., 40.]), dict(center=[720., 40.])], controlScale=[1., 1.], highlightDifference=18.)
             self.runtime._factories["difficult"] = lambda:self.engine
             self.assertTrue(self.dispatch("set_game_mode", mode="difficult")["success"])
         self.assertTrue(self.dispatch("start_round")["success"])
@@ -31,8 +32,9 @@ class FloorClickContracts(unittest.TestCase):
         return self.runtime.game_floor_click_context() if read_context else None
 
     def xy(self, floor, mode="nightmare"):
-        if mode == "difficult": return (700 if floor == 1 else 820), 240
-        return 100 + {-1:.45, 1:.50, 2:.55}[floor]*1280, 230
+        read = synthetic_read(mode)
+        x, y = read["centerPoints"][read["observedOrder"].index(floor)]
+        return 100 + x*1280, 200 + y*720
 
     def click(self, floor, context, mode="nightmare"):
         return self.runtime.observe_game_floor_click(*self.xy(floor, mode), context)
@@ -230,10 +232,11 @@ class FloorClickContracts(unittest.TestCase):
     def test_missing_hit_or_changed_capture_context_does_not_apply_intent(self):
         context = self.prepare()
         epoch = self.runtime._epoch
-        self.runtime._last_observation["floor_read"]["centers"] = ["invalid", .50, .55]
+        self.runtime._last_observation["floor_read"]["controlRects"][0]["rect"] = ["invalid", .2, .9, .4]
         self.assertEqual(self.click(2, context)["reason"], "floor-click-not-a-control")
         self.assertEqual(self.runtime._epoch, epoch)
-        self.runtime._last_observation["floor_read"]["centers"] = [.45, .50, .55]
+        self.runtime._last_observation["floor_read"] = bind_control_geometry(
+            synthetic_read(), "nightmare", (1280, 720), map_open=True)
         self.capture.is_current = lambda *a, **k:False
         self.assertEqual(self.click(2, context)["reason"], "capture-context-changed")
         self.assertEqual(self.runtime._epoch, epoch)
@@ -260,19 +263,30 @@ class FloorClickContracts(unittest.TestCase):
 
 
 class SharedFloorHitContracts(unittest.TestCase):
-    def test_original_localized_triplet_and_centered_safe_viewport(self):
+    def test_registered_s1_verified_geometry_retains_generic_hit_capability(self):
+        read = dict(season="s1", mode="difficulty2", layout="localized-floor-contract",
+            mapOpen=True, controlGeometryVerified=True, controlAxis="vertical",
+            controlRects=[dict(floor=floor, rect=[.80, .2+i*.1, .90, .28+i*.1])
+                          for i, floor in enumerate((-1, -2, -3, -4))])
+        for i, floor in enumerate((-1, -2, -3, -4)):
+            self.assertEqual(game_floor_control_hit((100+.85*1280, 200+(.24+i*.1)*720),
+                (100, 200, 1380, 920), read), floor)
+        self.assertIsNone(game_floor_control_hit((1188, 373), (100, 200, 1380, 920),
+            dict(read, mapOpen=False)))
+
+    def test_removed_horizontal_triplet_never_produces_a_hit(self):
         read = dict(layout="localized-triplet", centers=[.45, .50, .55])
         for floor, x in ((-1,.45),(1,.50),(2,.55)):
-            self.assertEqual(game_floor_control_hit((100+x*1280,230), (100,200,1380,920), read), floor)
+            self.assertIsNone(game_floor_control_hit((100+x*1280,230), (100,200,1380,920), read))
         self.assertIsNone(game_floor_control_hit((740,230), (100,200,1380,1000), read))
-        self.assertEqual(game_floor_control_hit((740,270), (100,200,1380,1000), read), 1)
+        self.assertIsNone(game_floor_control_hit((740,270), (100,200,1380,1000), read))
         self.assertIsNone(game_floor_control_hit((740,230), (100,200,1380,920), dict(read,layout="legacy")))
 
-    def test_original_native_glyph_midpoint_scale_and_map_open_gates(self):
+    def test_removed_horizontal_native_glyphs_never_produce_a_hit(self):
         native = dict(mapOpen=True, glyphs=[dict(center=[600.,40.]),dict(center=[720.,40.])],controlScale=[1.,1.])
         read = dict(layout="difficult-two-buttons", centers=[.4,.6], difficultObservation=native)
-        self.assertEqual(game_floor_control_hit((700,240), (100,200,1380,920), read), 1)
-        self.assertEqual(game_floor_control_hit((760,240), (100,200,1380,920), read), 2)
+        self.assertIsNone(game_floor_control_hit((700,240), (100,200,1380,920), read))
+        self.assertIsNone(game_floor_control_hit((760,240), (100,200,1380,920), read))
         self.assertIsNone(game_floor_control_hit((820,263), (100,200,1380,920), read))
         native["mapOpen"] = False
         self.assertIsNone(game_floor_control_hit((700,240), (100,200,1380,920), read))

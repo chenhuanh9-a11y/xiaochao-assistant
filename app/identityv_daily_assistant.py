@@ -132,7 +132,6 @@ from runtime_timeline import (RuntimeTimeline, observe as observe_runtime,
 from identityv_live_mvp import (
     LayeredOverlay, capture_client, client_rect, collect_identityv_window_environment,
     detect_map_interface, detect_selected_floor, find_game_window,
-    floor_control_vertical_geometry,
 )
 detect_selected_floor = observe_function('floor-sensor')(detect_selected_floor)
 from nightmare_candidate import (
@@ -4908,7 +4907,6 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
                 if shared_resources.error:
                     raise ValueError(f'共享结构资源不可用：{shared_resources.error}')
         if mode=='difficult':
-            from difficult_map_ui import DifficultMapUI
             native_root = Path(os.environ.get('IDENTITYV_DIFFICULT_NATIVE_ROOT') or RESOURCE_ROOT)
             native_manifest = native_root/'difficult-native-manifest.json'
             native_interfaces = (json.loads(native_manifest.read_text(encoding='utf-8')).get('runtimeInterfaces', {})
@@ -4923,7 +4921,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
                 native_context.validate_identity_pack(pack)
                 catalog, adapters, resources = native_context.catalog, native_context.adapters, native_context.resources
                 shared_resources = resources
-                ui = DifficultMapUI(native_context.local(native_interfaces['uiControls']))
+                ui = None
             else:
                 from difficult_mode import DifficultPack,DifficultCatalog,DifficultCoordinateAdapters,DifficultStructureStore
                 assets=Path(asset_root if asset_root is not None else
@@ -4935,7 +4933,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
                         '; '.join((check['missing']+check.get('errors',[]))[:3]))
                 catalog=DifficultCatalog(pack);adapters=DifficultCoordinateAdapters(pack)
                 resources=DifficultStructureStore(RESOURCE_ROOT)
-                ui=DifficultMapUI(RESOURCE_ROOT/'references/difficult-ui-controls.npz')
+                ui = None
         else:
             pack=NightmarePack(manifest_path=nightmare_root/'references/nightmare-map-pack.json')
             try:
@@ -5161,22 +5159,16 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
         self._shared_structure_display_cache = {}
 
     def _mode_map_interface(self,frame, *, floor_read=None, mode=None, observer=None):
-        if (mode if mode is not None else getattr(self,'game_mode','nightmare'))!='difficult':return detect_map_interface(frame, floor_read=floor_read)
-        result=(observer if observer is not None else self.difficult_map_ui).observe(frame)
-        opened=result.get('mapOpen') is True
-        return dict(detected=opened,flatMapCanvas=opened,shapeAccepted=opened,
-            matchedAnchors=2 if opened else 0,backdropRatio=0.,reason=result['reason'],
-            frameWidth=frame.shape[1],frameHeight=frame.shape[0],difficultObservation=result)
+        from s0_vertical_controls import observe_s0_map
+        current_mode = mode if mode is not None else getattr(self, 'game_mode', 'nightmare')
+        if floor_read is not None:
+            return detect_map_interface(frame, floor_read=floor_read)
+        return observe_s0_map(frame, current_mode)[0]
 
     def _mode_selected_floor(self,frame, *, mode=None, observer=None):
-        if (mode if mode is not None else getattr(self,'game_mode','nightmare'))!='difficult':return detect_selected_floor(frame)
-        result=(observer if observer is not None else self.difficult_map_ui).observe(frame)
-        selected=int(result['floor']) if result.get('floor') in {'1','2'} else None
-        return dict(selectedFloor=selected,scores={},margin=result.get('highlightDifference',0.),
-            confidence=1. if selected else 0.,reason=result['reason'],layout='difficult-two-buttons',
-            centers=[g['center'][0]/frame.shape[1] for g in result.get('glyphs',[])],
-            layoutFamily='difficult-two-buttons',difficultObservation=result,
-            controlVertical=dict(regionTop=(min((g['center'][1] for g in result.get('glyphs',[])),default=0)-22)/frame.shape[0],regionHeight=44/frame.shape[0]))
+        from s0_vertical_controls import observe_s0_map
+        current_mode = mode if mode is not None else getattr(self, 'game_mode', 'nightmare')
+        return observe_s0_map(frame, current_mode)[1]
 
     def _mode_route_options(self):
         options = self._author_route_options()

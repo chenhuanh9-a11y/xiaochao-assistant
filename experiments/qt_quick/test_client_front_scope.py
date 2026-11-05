@@ -8,6 +8,7 @@ from pathlib import Path
 import threading
 from types import SimpleNamespace
 import unittest
+from test_s0_vertical_controls import synthetic_read
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -58,7 +59,6 @@ class FrontScopeTests(unittest.TestCase):
         self.engine.qt_logical_group_registry.group_for = Mock(
             wraps=self.engine.qt_logical_group_registry.group_for)
         self.engine.rank = Mock(return_value=[producer_row(self.a, floor, kind)])
-        self.engine.qt_map_ui.observe = lambda *args: dict(mapOpen=True, floor=floor)
         self.runtime = LiveRuntime(engine_factories={mode: lambda: self.engine},
             capture_provider=self.capture, evidence_kind="synthetic", clock=lambda: 1.)
         self.dispatch("set_context", mode=mode)
@@ -146,7 +146,8 @@ class FrontScopeTests(unittest.TestCase):
         for mode in ("difficult", "nightmare"):
             with self.subTest(mode=mode):
                 self.configure(mode, "side-neighborhood", "2")
-                with patch("map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=2)):
+                with patch("floor_control_region.locate_vertical_floor_controls",
+                          side_effect=lambda frame, mode, **kw: synthetic_read(mode, 2)):
                     result = self.start_capture()
                 if mode == "difficult":
                     self.assertFalse(result["success"])
@@ -163,8 +164,8 @@ class FrontScopeTests(unittest.TestCase):
         self.configure("difficult", "side-neighborhood")
         self.assertTrue(self.start_capture()["success"])
         self.engine.rank.reset_mock()
-        self.engine.qt_map_ui.observe = lambda *args: dict(mapOpen=True, floor="2")
-        with patch("map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=2)):
+        with patch("floor_control_region.locate_vertical_floor_controls",
+                          side_effect=lambda frame, mode, **kw: synthetic_read(mode, 2)):
             result = self.dispatch("capture_now")
         self.assertTrue(result["success"], result)
         self.engine.rank.assert_not_called()
@@ -184,8 +185,8 @@ class FrontScopeTests(unittest.TestCase):
                 self.assertTrue(self.dispatch("capture_now")["success"])
                 self.assertEqual(self.runtime.snapshot()["mapId"], self.b)
                 self.engine.rank.reset_mock()
-                self.engine.qt_map_ui.observe = lambda *args: dict(mapOpen=True, floor="2")
-                with patch("map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=2)):
+                with patch("floor_control_region.locate_vertical_floor_controls",
+                          side_effect=lambda frame, mode, **kw: synthetic_read(mode, 2)):
                     result = self.dispatch("capture_now")
                 self.assertTrue(result["success"], result)
                 self.engine.rank.assert_not_called()

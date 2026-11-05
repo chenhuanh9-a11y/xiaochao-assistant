@@ -6,7 +6,7 @@ import numpy as np
 from client_space_geometry import CLIENT_COMPONENT_POLICIES, centered_safe_viewport, normalized_rect_to_client
 
 MAP_REGIONS = {
-    "floorSwitch": (0.77, 0.04, 0.14, 0.17, 0.025),
+    "floorSwitch": (0.75, 0.15, 0.18, 0.45, 0.025),
     "closeButton": (0.90, 0.04, 0.095, 0.24, 0.025),
     "zoomControl": (0.91, 0.27, 0.085, 0.52, 0.018),
     "bottomControls": (0.78, 0.77, 0.21, 0.22, 0.025),
@@ -21,168 +21,6 @@ MAP_INTERFACE_MIN_ASPECT = 1.25
 MAP_INTERFACE_WIDE_ASPECT = 1.45
 
 MAP_INTERFACE_NARROW_BACKDROP = 0.55
-
-FLOOR_BUTTON_REGIONS = {
-    -1: (0.727, 0.018, 0.035, 0.057),
-    1: (0.766, 0.018, 0.035, 0.057),
-    2: (0.805, 0.018, 0.035, 0.057),
-}
-
-def floor_control_vertical_geometry(width: int, height: int) -> dict:
-    """Map the wide HUD's floor-control band into a narrow safe viewport.
-
-    When a client is narrower than 16:9, the game keeps the floor controls
-    inside a vertically centered 16:9 safe viewport.  Their x positions still
-    scale with the full client, but their y positions must include that safe
-    viewport's top inset.  This covers 16:10, 4:3, and intermediate ratios
-    without hard-coding individual resolutions.
-    """
-    w, h = max(1, int(width)), max(1, int(height))
-    viewport = centered_safe_viewport((w, h))
-    # Keep normalized HUD geometry exact; integer rounding belongs only at the
-    # final pixel crop in ``normalized_rect_to_client``.
-    safe_height = float(
-        w * 9.0 / 16.0
-        if viewport.mode == "centered-safe-height" else h
-    )
-    safe_top = float(
-        (h - safe_height) / 2.0
-        if viewport.mode == "centered-safe-height" else 0
-    )
-    if safe_top <= 0.5:
-        return {
-            "layoutFamily": "wide",
-            "safeTop": 0.0,
-            "safeHeight": 1.0,
-            "searchTop": 0.015,
-            "searchBottom": 0.090,
-            "regionTop": 0.018,
-            "regionHeight": 0.057,
-        }
-    def safe_y(value: float) -> float:
-        return float((safe_top + safe_height * value) / h)
-
-    return {
-        "layoutFamily": "centered-16x9-safe-area",
-        "safeTop": float(safe_top / h),
-        "safeHeight": float(safe_height / h),
-        "searchTop": safe_y(0.015),
-        "searchBottom": safe_y(0.090),
-        "regionTop": safe_y(0.018),
-        "regionHeight": float(safe_height * 0.057 / h),
-    }
-
-def _legacy_floor_control_vertical_geometry() -> dict:
-    return {
-        "layoutFamily": "cropped-wide-hud",
-        "safeTop": 0.0,
-        "safeHeight": 1.0,
-        "searchTop": 0.015,
-        "searchBottom": 0.090,
-        "regionTop": 0.018,
-        "regionHeight": 0.057,
-    }
-
-def _floor_button_layout_in_geometry(
-    frame: np.ndarray, vertical: dict,
-) -> tuple[list[float], dict] | None:
-    """Anchor the triplet to a filled button, not three strong text columns."""
-    if frame is None or frame.ndim != 3:
-        return None
-    h, w = frame.shape[:2]
-    if w < 1000 or h < 600:
-        return None
-    x0, x1 = int(w * 0.70), int(w * 0.995)
-    y0 = int(h * vertical["searchTop"])
-    y1 = min(h, int(h * (vertical["searchBottom"] + vertical["regionHeight"])))
-    gray = cv2.cvtColor(frame[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
-    if gray.size == 0:
-        return None
-    unit = vertical["safeHeight"] * h
-    kw, kh = max(3, round(w * 0.020) | 1), max(3, round(unit * 0.030) | 1)
-    # Dense texture survives cursor cuts; sparse text strokes do not fill a
-    # button-sized window. A component of this density field anchors one tile.
-    density = cv2.boxFilter((gray > 60).astype(np.float32), -1, (kw, kh), normalize=True)
-    _, _, stats, _ = cv2.connectedComponentsWithStats((density > 0.70).astype(np.uint8), 8)
-    best = None
-    filled_floors = set()
-    for bx, by, bw, bh, _area in stats[1:]:
-        tile_width, tile_height = bw + kw * 0.5, bh + kh * 0.5
-        if not (w * 0.020 <= tile_width <= w * 0.060
-                and unit * 0.022 <= tile_height <= unit * 0.085
-                and 0.8 <= tile_width / tile_height <= 2.2):
-            continue
-        top, bottom = max(0, int(by - kh * 0.25)), min(gray.shape[0], int(by + bh + kh * 0.25))
-        measured = dict(vertical, regionTop=max(0.0, (y0 + top - 0.022 * unit) / h))
-        measure_top = int(h * measured["regionTop"])
-        measure_bottom = math.ceil(h * (measured["regionTop"] + measured["regionHeight"]))
-        # Label peaks must come from the same rows that will be scored. Text
-        # below a tile cannot complete an otherwise occluded floor triplet.
-        strip = cv2.cvtColor(frame[measure_top:measure_bottom, x0:x1], cv2.COLOR_BGR2GRAY).astype(np.float32)
-        baseline = np.percentile(strip, 20, axis=0)
-        signal = np.maximum(strip - baseline[None, :], 0.0).mean(axis=0)
-        smooth = cv2.GaussianBlur(signal[None, :], (max(5, round(w * 0.003) | 1), 1), 0).ravel()
-        local = np.flatnonzero((smooth[1:-1] >= smooth[:-2]) & (smooth[1:-1] > smooth[2:])) + 1
-        anchor = int(bx + bw / 2)
-        peaks = []
-        for index in sorted(local.tolist(), key=lambda value: float(smooth[value]), reverse=True):
-            if smooth[index] < 7.0:
-                break
-            if bx - kw * 0.25 <= index < bx + bw + kw * 0.25:
-                continue
-            if all(abs(index - existing) >= max(12, round(w * 0.020)) for existing in peaks):
-                peaks.append(index)
-            if len(peaks) >= 12:
-                break
-        peaks.append(anchor)
-        peaks.sort()
-        for ai in range(len(peaks) - 2):
-            for bi in range(ai + 1, len(peaks) - 1):
-                for ci in range(bi + 1, len(peaks)):
-                    first, second, third = peaks[ai], peaks[bi], peaks[ci]
-                    if anchor not in (first, second, third):
-                        continue
-                    left, right = second - first, third - second
-                    if not (w * 0.020 <= min(left, right)
-                            and max(left, right) <= min(w * 0.080, tile_width * 1.20)):
-                        continue
-                    uneven = abs(left - right) / max(left, right)
-                    if uneven > 0.28:
-                        continue
-                    filled_floors.add((-1, 1, 2)[(first, second, third).index(anchor)])
-                    score = float(smooth[first] + smooth[second] + smooth[third]) - 35.0 * uneven
-                    if best is None or score > best[0]:
-                        best = (score, [float((x0 + index) / w) for index in (first, second, third)], measured)
-    if best is None:
-        return None
-    return best[1], dict(best[2], filledFloor=(next(iter(filled_floors))
-                                             if len(filled_floors) == 1 else None))
-
-def _locate_floor_button_layout(
-    frame: np.ndarray,
-) -> tuple[list[float] | None, dict]:
-    if frame is None or frame.ndim != 3:
-        return None, _legacy_floor_control_vertical_geometry()
-    h, w = frame.shape[:2]
-    primary = floor_control_vertical_geometry(w, h)
-    found = _floor_button_layout_in_geometry(frame, primary)
-    if found is not None:
-        return found
-    if primary["layoutFamily"] == "centered-16x9-safe-area":
-        # Accepted confirmation-memory frames may be right-edge crops of a
-        # wide client. Their pixel aspect looks narrow, but the top safe inset
-        # has already been removed. Only allow the proven legacy band when the
-        # complete triplet is visibly shifted to that crop's far-right edge.
-        cropped = _legacy_floor_control_vertical_geometry()
-        cropped_layout = _floor_button_layout_in_geometry(frame, cropped)
-        cropped_centers = cropped_layout[0] if cropped_layout is not None else None
-        if (
-            cropped_centers is not None
-            and cropped_centers[0] >= 0.82
-            and cropped_centers[-1] >= 0.90
-        ):
-            return cropped_layout
-    return None, primary
 
 def region_pixels(
     frame: np.ndarray,
@@ -301,11 +139,15 @@ def detect_map_interface(frame: np.ndarray, *, floor_read: dict | None = None) -
         tinted_count = sum(tinted_ratios[name] >= MAP_REGIONS[name][4] for name in MAP_REGIONS)
     damage = strong and tinted_count >= 3
     # The broad tinted color bands can also match ordinary dark gameplay.
-    # Require the actual map-only button triplet for this tolerant branch.
+    # Require complete current signed controls for this tolerant branch.
     floor_controls = None
     if damage:
         floor_controls = (floor_read if floor_read is not None else detect_selected_floor(frame))
-    tinted_controls_present = bool(floor_controls and floor_controls.get('layout') == 'localized-triplet')
+    tinted_controls_present = bool(floor_controls
+        and floor_controls.get("controlAxis") == "vertical"
+        and type(floor_controls.get("selectedFloor")) is int
+        and floor_controls.get("selectedFloor") in (-1, 1, 2)
+        and floor_controls.get("labelEvidence"))
     matched = max(neutral_count, tinted_count if damage else 0)
     required_backdrop = (
         MAP_INTERFACE_NARROW_BACKDROP
@@ -348,78 +190,10 @@ def detect_map_interface(frame: np.ndarray, *, floor_read: dict | None = None) -
         "clientCoordinatePolicies": dict(CLIENT_COMPONENT_POLICIES),
     }
 
-def detect_selected_floor(frame: np.ndarray) -> dict:
-    """Read the textured highlight behind the B1/1/2 floor buttons without OCR."""
-    h, w = frame.shape[:2]
-    centers, vertical = _locate_floor_button_layout(frame)
-    if centers is not None:
-        layout = "localized-triplet"
-    else:
-        # Missing labels cannot turn a fixed crop of text/cursor into a floor.
-        return {
-            "selectedFloor": None,
-            "scores": {"-1": 0.0, "1": 0.0, "2": 0.0},
-            "margin": 0.0,
-            "confidence": 0.0,
-            "reason": ("safe-area-floor-triplet-not-localized"
-                       if vertical["layoutFamily"] == "centered-16x9-safe-area"
-                       else "floor-triplet-not-localized"),
-            "layout": "unlocalized",
-            "centers": None,
-            "layoutFamily": vertical["layoutFamily"],
-            "safeTop": vertical["safeTop"],
-            "safeHeight": vertical["safeHeight"],
-        }
-    scores: dict[int, float] = {}
-    regions = FLOOR_BUTTON_REGIONS
-    if centers is not None:
-        regions = {
-            floor: (
-                center - 0.0175,
-                vertical["regionTop"],
-                0.035,
-                vertical["regionHeight"],
-            )
-            for floor, center in zip((-1, 1, 2), centers)
-        }
-    for floor, (x, y, rw, rh) in regions.items():
-        region = frame[int(h * y):math.ceil(h * (y + rh)), int(w * x):math.ceil(w * (x + rw))]
-        if not region.size:
-            scores[floor] = 0.0
-            continue
-        gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
-        # Clip sparse bright glyphs, signatures and cursor strokes; measure
-        # the filled highlight background rather than its brightest outliers.
-        scores[floor] = float(np.minimum(gray, np.percentile(gray, 75)).std())
-    ordered = sorted(scores, key=scores.get, reverse=True)
-    top, second = ordered[0], ordered[1]
-    margin = scores[top] - scores[second]
-    # Preserve the absolute-contrast path. At lower contrast, require two
-    # independent observations to agree: the unique filled tile that anchored
-    # the layout, and a texture score at least three times the other buttons.
-    # A remembered floor, a lone glyph, or an ambiguous tile cannot qualify.
-    filled_floor = vertical.get('filledFloor')
-    filled_highlight = bool(filled_floor == top and scores[top] >= 3.0 * scores[second])
-    selected = top if margin >= 8.0 and (scores[top] >= 25.0 or filled_highlight) else None
-    return {
-        "decisionThresholds": dict(marginMin=8.0, absoluteScoreMin=25.0, relativeScoreMultiplier=3.0),
-        "topScore": scores[top], "secondScore": scores[second], "filledHighlight": filled_highlight,
-        "selectedFloor": selected,
-        "scores": {str(key): value for key, value in scores.items()},
-        "margin": margin,
-        "confidence": min(1.0, max(0.0, margin / 25.0)) if selected else 0.0,
-        "reason": "highlight-detected" if selected else "floor-controls-unavailable-or-ambiguous",
-        "layout": layout,
-        "filledFloor": filled_floor,
-        "highlightEvidence": ("absolute-contrast" if selected and scores[top] >= 25.0
-                              else "filled-tile-and-relative-contrast" if selected else None),
-        "centers": centers,
-        "layoutFamily": vertical["layoutFamily"],
-        "safeTop": vertical["safeTop"],
-        "safeHeight": vertical["safeHeight"],
-        "regionTop": vertical["regionTop"],
-        "regionHeight": vertical["regionHeight"],
-    }
+def detect_selected_floor(frame: np.ndarray, *, mode="nightmare", season="s0") -> dict:
+    """Observe only the current signed S0 column in an explicitly declared mode."""
+    from floor_control_region import locate_vertical_floor_controls
+    return locate_vertical_floor_controls(frame, mode, season=season)
 
 
 def map_preparation_diagnostic(frame, observation, floor_read, *, mode):

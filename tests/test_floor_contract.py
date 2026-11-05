@@ -8,7 +8,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 from floor_contract import floor_contract
 from floor_control_region import (MODE_FLOORS, FLOOR_NAMES, apply_floor_region,
-                                  locate_floor_row, read_floor_in_region)
+                                  locate_vertical_floor_controls, read_floor_in_region)
 
 
 class FloorContractTests(unittest.TestCase):
@@ -17,7 +17,7 @@ class FloorContractTests(unittest.TestCase):
                                     ("difficult", (1, 2), ("1", "2"))):
             contract = floor_contract(mode)
             self.assertEqual((contract.season, contract.mode, contract.control_axis),
-                             ("s0", mode, "horizontal"))
+                             ("s0", mode, "vertical"))
             self.assertEqual(contract.observed_values, observed)
             self.assertEqual(contract.floor_ids, ids)
             for value, floor_id in zip(observed, ids):
@@ -56,7 +56,7 @@ class FloorContractTests(unittest.TestCase):
     def test_readers_reject_s1_before_inspecting_pixels(self):
         for mode in ("nightmare", "difficult"):
             for read in (lambda: read_floor_in_region(None, None, mode, season="s1"),
-                         lambda: locate_floor_row(None, mode, season="s1")):
+                         lambda: locate_vertical_floor_controls(None, mode, season="s1")):
                 result = read()
                 self.assertIsNone(result["selectedFloor"])
                 self.assertEqual(result["reason"], "vertical-floor-detector-unvalidated")

@@ -36,8 +36,7 @@ class MapOpenRecoveryContracts(unittest.TestCase):
     @contextmanager
     def not_ready(self):
         with patch("map_interface_observation.detect_map_interface", return_value=dict(detected=False)), \
-                patch("map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=None)), \
-                patch.object(self.engine.qt_map_ui, "observe", return_value=dict(mapOpen=False, floor=None)):
+                patch("floor_control_region.locate_vertical_floor_controls", return_value=dict(selectedFloor=None)):
             yield
 
     def miss_initial_preparation(self):

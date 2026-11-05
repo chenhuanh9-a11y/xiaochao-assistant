@@ -73,10 +73,10 @@ class SeasonProviderBoundaryTests(unittest.TestCase):
             for mode in ('nightmare', 'difficult'):
                 pack = SimpleNamespace(mode=mode)
                 with patch('nightmare_candidate.NightmareMemoryStore') as store:
-                    _build_memory_store(pack, root/'memory', root, map_ui=Mock(), production=True, season='s0')
+                    _build_memory_store(pack, root/'memory', root, production=True, season='s0')
                     self.assertEqual(store.call_args.kwargs['portable_seed_path'],
                                      root/'references/nightmare-portable-layout-seeds.json')
-                    _build_memory_store(pack, root/'s1-memory', root, map_ui=Mock(), production=True, season='s1')
+                    _build_memory_store(pack, root/'s1-memory', root, production=True, season='s1')
                     self.assertEqual(store.call_args.args[1], root/'s1-memory')
                     self.assertIsNone(store.call_args.kwargs['portable_seed_path'])
 
@@ -86,7 +86,7 @@ class SeasonProviderBoundaryTests(unittest.TestCase):
             (root / '.qt-no-portable-seeds.json').write_text('{"seeds": []}')
             for mode in ('nightmare', 'difficult'):
                 memory = _build_memory_store(SimpleNamespace(mode=mode, by_id={}),
-                    root / 'memory' / mode, root, map_ui=Mock(), production=True, season='s1')
+                        root / 'memory' / mode, root, production=True, season='s1')
                 self.assertIsNone(memory.portable_seed_path)
                 with patch.object(Path, 'read_text', side_effect=AssertionError('seed IO')):
                     self.assertEqual(memory.portable_layout_seeds(), [])

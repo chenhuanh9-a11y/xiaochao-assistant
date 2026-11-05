@@ -125,15 +125,13 @@ class _PreparationHost:
             self.last_observation_diagnostic = (captured.context, capture_generation,
                 map_preparation_diagnostic(frame, observation, floor_read, mode=self.engine.pack.mode))
             self.last_capture = (captured, capture_generation)
-        map_detected = (observation.get("mapOpen") is True if self.engine.pack.mode == "difficult"
-                        else observation.get("detected") is True)
+        map_detected = observation.get("detected") is True
         self.last_unresolved = ((captured, observation, floor, capture_generation, floor_read)
                                 if map_detected and floor is None else None)
         # The shared loop supplies the original cadence/deadline. Qt requires a
         # current explicit floor before ending preparation; it never converts a
         # remembered floor into fresh display evidence during the fade.
-        ready = (observation.get("mapOpen") is True if self.engine.pack.mode == "difficult"
-                 else verified_map_hotkey_frame(observation, floor_read))
+        ready = verified_map_hotkey_frame(observation, floor_read)
         before_deadline = time.perf_counter() < deadline_at
         outcome = ("prepared-current-frame" if before_deadline else "ready-after-deadline") if ready and floor is not None else (
             "current-floor-unavailable" if map_detected and floor is None else "map-not-ready")
@@ -3423,8 +3421,7 @@ class LiveRuntime:
                     error=error)
                 raise
             from session_state_machine import verified_map_hotkey_frame
-            opened = (observation.get("mapOpen") if engine.pack.mode == "difficult"
-                      else verified_map_hotkey_frame(observation, floor_read))
+            opened = verified_map_hotkey_frame(observation, floor_read)
             self._capture_diagnostic(payload, "observation-result", "current-frame-observed", action=action,
                 observed=(observation, floor, floor_read, opened))
         frame = self._full_frame(captured)
@@ -3433,24 +3430,17 @@ class LiveRuntime:
         frame.setflags(write=False)
         if obsolete():
             return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
-        map_detected = (observation.get("mapOpen") is True if engine.pack.mode == "difficult"
-                        else observation.get("detected") is True)
-        # Preparation and direct captures already use this shared map-only UI
-        # proof. Do not let the weaker generic texture verdict veto its floor
-        # evidence a second time. This is floor policy input, NOT pose/display
-        # authority; keep generic map detection for unresolved/region handling.
-        from session_state_machine import verified_map_hotkey_frame
-        floor_ready = map_detected or (engine.pack.mode == "nightmare"
-            and verified_map_hotkey_frame(observation, floor_read))
+        map_detected = observation.get("detected") is True
+        floor_ready = map_detected
         with self._lock:
-            if (floor_ready and not map_detected
+            if (floor_ready
                     and (obsolete() or engine is not self._engine or group is not self._group
                          or not self._capture_is_current(captured.context, capture_generation)
                          or capture_generation != self._capture_generation())):
                 return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
         # The policy owns its lock and rechecks obsolescence. Holding the
         # caller lock across it would block new UI drag ownership/cancellation.
-        policy_obsolete = lambda: (obsolete() or floor_ready and not map_detected and (
+        policy_obsolete = lambda: (obsolete() or floor_ready and (
             engine is not self._engine or group is not self._group
             or not self._capture_is_current(captured.context, capture_generation)
             or capture_generation != self._capture_generation()))
@@ -4059,88 +4049,25 @@ class LiveRuntime:
         return frame
 
     def _observe(self, engine, frame):
-        from floor_control_region import apply_floor_region, locate_vertical_floor_controls
         started = time.monotonic()
-        # One preference snapshot per frame; configure_settings swaps the dict.
-        # Saved defaults may lead the applied context while a switch is pending
-        # or after it fails. Floor authority belongs to the running context.
         settings = dict(getattr(self, "_settings", None) or {}, gameSeason=self._season)
         if self._season == "s1":
             unavailable = dict(selectedFloor=None, reason="s1-floor-control-detector-unvalidated",
                 confidence=0., season="s1", mode=engine.pack.mode, controlAxis="vertical",
                 controlGeometryVerified=False, floorSource="unavailable")
             return dict(detected=False, mapOpen=None, reason=unavailable["reason"]), None, unavailable
-        # New S0 controls have their own visual order. Observe them before the
-        # difficult legacy template gate, but require independent map-canvas
-        # evidence. A readable number alone never grants map-open authority.
-        vertical = locate_vertical_floor_controls(frame, engine.pack.mode, season=self._season)
-        if vertical.get("selectedFloor") is not None:
-            from map_interface_observation import detect_map_interface
-            from s0_vertical_controls import bind_control_geometry
-            result = detect_map_interface(frame, floor_read={})
-            opened = result.get("detected") is True
-            floor_read = dict(vertical, season="s0", mode=engine.pack.mode,
-                layout="vertical-floor-read-only", mapOpen=opened, controlGeometryVerified=False)
-            if opened:
-                floor_read = apply_floor_region(settings, engine.pack.mode, frame, floor_read)
-            floor_read = bind_control_geometry(floor_read, engine.pack.mode, frame.shape[1::-1], map_open=opened)
-            contract = self._floor_contract()
-            floor = contract.floor_id_for(floor_read.get("selectedFloor")) if contract else None
-            result = dict(result, mapOpen=opened, floor=floor,
-                layoutFamily="s0-vertical", controlAxis="vertical")
-            if opened:
-                self._latest_map_frame = (frame, engine.pack.mode, floor_read)
-            if self._diagnostics is not None:
-                self._diagnostics.record("observation", mode=engine.pack.mode, floor=floor,
-                    mapDetected=opened, combinedSensor=False, floorSource=floor_read.get("floorSource"),
-                    elapsedMs=(time.monotonic()-started)*1000, roundId=self._round, cycleId=self._cycle)
-            self._remember_control_observation(frame, engine.pack.mode, result, floor_read)
-            self._recognition_diagnostic("map-floor-observation", result.get("reason", "reason-not-provided"),
-                observation=result, floorRead=floor_read, elapsedMs=(time.monotonic()-started)*1000)
-            return result, floor, floor_read
-        if engine.pack.mode == "difficult":
-            result = engine.qt_map_ui.observe(frame)
-            floor = str(result["floor"]) if result.get("floor") is not None else None
-            floor_read = dict(result, selectedFloor=int(floor) if floor in ("1", "2") else None,
-                controlSearchRegion=vertical.get("controlSearchRegion"),
-                scores={}, margin=result.get("highlightDifference", 0.), confidence=1. if floor else 0.,
-                layout="difficult-two-buttons", layoutFamily="difficult-two-buttons", difficultObservation=result,
-                centers=[g["center"][0] / frame.shape[1] for g in result.get("glyphs", [])],
-                controlVertical=dict(regionTop=(min((g["center"][1] for g in result.get("glyphs", [])), default=0)-22)/frame.shape[0],
-                                     regionHeight=44/frame.shape[0]))
-            if result.get("mapOpen") is True:
-                self._latest_map_frame = (frame, "difficult", floor_read)
-                floor_read = apply_floor_region(settings, "difficult", frame, floor_read)
-                floor = str(floor_read["selectedFloor"]) if floor_read["selectedFloor"] in (1, 2) else None
-            if self._diagnostics is not None:
-                self._diagnostics.record("observation", mode=engine.pack.mode, floor=floor,
-                    mapDetected=result.get("mapOpen"), combinedSensor=True,
-                    floorSource=floor_read.get("floorSource"),
-                    elapsedMs=(time.monotonic()-started)*1000, roundId=self._round, cycleId=self._cycle)
-            self._remember_control_observation(frame, engine.pack.mode, result, floor_read)
-            self._recognition_diagnostic('floor-observation', result.get('reason', 'reason-not-provided'),
-                observation=result, floorRead={key: floor_read.get(key) for key in
-                    ('selectedFloor', 'floorSource', 'regionRead', 'autoRead')},
-                elapsedMs=(time.monotonic()-started)*1000)
-            return result, floor, floor_read
-        from map_interface_observation import detect_map_interface, detect_selected_floor
-        floor_read = dict(detect_selected_floor(frame), controlSearchRegion=vertical.get("controlSearchRegion"))
-        floor_ms = (time.monotonic()-started)*1000 if self._diagnostics is not None else 0
-        # Map detection keeps using the fixed reading; the region only answers
-        # which floor is selected once the map is known to be open.
-        result = detect_map_interface(frame, floor_read=floor_read)
-        if result.get("detected"):
-            self._latest_map_frame = (frame, "nightmare", floor_read)
-            floor_read = apply_floor_region(settings, "nightmare", frame, floor_read)
-        floor = floor_read.get("selectedFloor")
-        floor = "B1" if floor == -1 else str(floor) if floor in (1, 2) else None
+        from s0_vertical_controls import observe_s0_map
+        result, floor_read = observe_s0_map(frame, engine.pack.mode, settings=settings, season=self._season)
+        floor = result.get("floor")
+        if result.get("detected") is True:
+            self._latest_map_frame = (frame, engine.pack.mode, floor_read)
         if self._diagnostics is not None:
             self._diagnostics.record("observation", mode=engine.pack.mode, floor=floor,
-                mapDetected=result.get("detected"), combinedSensor=False, floorMs=floor_ms,
+                mapDetected=result.get("detected"), combinedSensor=False,
                 floorSource=floor_read.get("floorSource"),
                 elapsedMs=(time.monotonic()-started)*1000, roundId=self._round, cycleId=self._cycle)
         self._remember_control_observation(frame, engine.pack.mode, result, floor_read)
-        self._recognition_diagnostic('map-floor-observation', result.get('reason', 'reason-not-provided'),
+        self._recognition_diagnostic("map-floor-observation", result.get("reason", "reason-not-provided"),
             observation=result, floorRead=floor_read, elapsedMs=(time.monotonic()-started)*1000)
         return result, floor, floor_read
 

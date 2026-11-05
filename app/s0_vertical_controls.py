@@ -1,7 +1,7 @@
-"""Layout-specific S0 vertical click geometry; no capture, input or pose grants.
+"""Current S0 vertical observation and click geometry; no IO or pose grants.
 
-FloorContract retains semantic IDs and legacy layout compatibility. This module
-owns only the separately observed visual order of the new right-side column.
+FloorContract retains semantic IDs across declared modes and seasons. This
+module owns the observed S0 right-side column and its current-frame map proof.
 """
 from __future__ import annotations
 import math
@@ -64,7 +64,7 @@ def bind_control_geometry(read, mode, frame_size, *, map_open):
     closed; never retain legacy scalar centers or a prior frame's rectangles.
     """
     out = dict(read)
-    for key in ("centers", "pitch", "difficultObservation", "controlVertical", "controlRects", "scores", "margin"):
+    for key in ("controlRects", "controlFrameSize"):
         out.pop(key, None)
     out.update(season="s0", mode=mode, mapOpen=map_open is True,
                layout="vertical-floor-read-only", controlGeometryVerified=False)
@@ -129,3 +129,24 @@ def control_hit(cursor, client_bounds, read):
         return hits[0] if len(hits) == 1 else None
     except (TypeError, ValueError):
         return None
+
+
+def observe_s0_map(frame, mode, *, settings=None, season="s0"):
+    """Compose same-frame signed controls, canvas proof and calibrated geometry."""
+    from floor_control_region import apply_floor_region, locate_vertical_floor_controls
+    from map_interface_observation import detect_map_interface
+    contract = floor_contract(mode, season=season)
+    if season != "s0" or contract is None:
+        reason = "floor-control-detector-unvalidated" if contract else "floor-contract-unavailable"
+        read = dict(selectedFloor=None, season=season, mode=mode, controlAxis="vertical",
+                    controlGeometryVerified=False, floorSource="unavailable", reason=reason)
+        return dict(detected=False, mapOpen=None, reason=reason), read
+    current = locate_vertical_floor_controls(frame, mode, season=season)
+    read = dict(current, season=season, mode=mode,
+                layout="vertical-floor-read-only", controlGeometryVerified=False)
+    read = apply_floor_region(dict(settings or {}, gameSeason=season), mode, frame, read)
+    observation = detect_map_interface(frame, floor_read=read)
+    opened = observation.get("detected") is True
+    read = bind_control_geometry(read, mode, frame.shape[1::-1], map_open=opened)
+    return dict(observation, mapOpen=opened, floor=contract.floor_id_for(read.get("selectedFloor")),
+                layoutFamily="s0-vertical", controlAxis="vertical"), read

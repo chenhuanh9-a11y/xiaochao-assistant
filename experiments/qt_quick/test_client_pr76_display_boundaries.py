@@ -4,6 +4,7 @@ from copy import deepcopy
 import threading
 import time
 import unittest
+from test_s0_vertical_controls import synthetic_read
 from unittest.mock import Mock, patch
 
 from client_live_runtime import _AlignmentHost
@@ -34,8 +35,7 @@ class RuntimeBoundaries(unittest.TestCase):
     @contextmanager
     def negative(self):
         with patch("map_interface_observation.detect_map_interface", return_value=dict(detected=False)), \
-                patch("map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=None)), \
-                patch.object(self.engine.qt_map_ui, "observe", return_value=dict(mapOpen=False, floor=None)):
+                patch("floor_control_region.locate_vertical_floor_controls", return_value=dict(selectedFloor=None)):
             yield
 
     def refresh_tail(self, *, fail, drag):
@@ -142,8 +142,8 @@ class RuntimeBoundaries(unittest.TestCase):
             workers.append(work)
             work.signals.done.connect(lambda *args: completions.append(args))
             return original_start(work)
-        def delayed_failure(cancelled):
-            original_capture(cancelled)  # Real provider, controlled native/pixels.
+        def delayed_failure(cancelled, **kwargs):
+            original_capture(cancelled, **kwargs)  # Real provider, controlled native/pixels.
             entered.set()
             if not release.wait(3):
                 raise AssertionError("capture failure release missing")
@@ -187,8 +187,8 @@ class RuntimeBoundaries(unittest.TestCase):
         self.assertTrue(self.runtime.snapshot()["mapRecoveryPending"])
         self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
         self.now += .3
-        with patch("map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=2)), \
-                patch.object(self.engine.qt_map_ui, "observe", return_value=dict(mapOpen=True, floor="2")):
+        with patch("floor_control_region.locate_vertical_floor_controls",
+                          side_effect=lambda frame, mode, **kw: synthetic_read(mode, 2)):
             second = self.dispatch("recover_map_open", recoveryId=ticket)
         self.assertTrue(second["success"], second)
         self.assertFalse(self.runtime.snapshot()["mapRecoveryPending"])
@@ -255,16 +255,20 @@ class RuntimeBoundaries(unittest.TestCase):
         original = self.backend.capture
         def capture(*args):
             calls.append(1)
-            return original(*args)
+            frame = original(*args).copy()
+            frame[0, 0, 2] = len(calls)
+            return frame
         with patch.object(self.backend, "capture", side_effect=capture), \
-                patch("map_interface_observation.detect_map_interface", side_effect=[dict(detected=False), dict(detected=True)]), \
-                patch("map_interface_observation.detect_selected_floor", side_effect=[dict(selectedFloor=None), dict(selectedFloor=1)]), \
-                patch.object(self.engine.qt_map_ui, "observe", side_effect=[dict(mapOpen=False, floor=None), dict(mapOpen=True, floor="1")]):
+                patch("map_interface_observation.detect_map_interface",
+                      side_effect=lambda frame, **kwargs: dict(detected=int(frame[0, 0, 2]) >= 2)), \
+                patch("floor_control_region.locate_vertical_floor_controls",
+                      side_effect=lambda frame, *args, **kwargs: synthetic_read(self.mode)
+                      if int(frame[0, 0, 2]) >= 2 else dict(selectedFloor=None)):
             self.coordinator._resume_game_binding()
             self.assertFalse(self.keys.enabled)
             self.settle()
         self.assertEqual(len(calls), 2)
-        self.assertTrue(self.keys.enabled)
+        self.assertTrue(self.keys.enabled, self.session.snapshot.get("lastReceipt"))
         self.assertTrue(self.keys._map_input.open_intent)
         self.assertFalse(self.coordinator._binding_suspended)
         self.assertTrue(self.runtime.snapshot()["displayAuthorized"])
@@ -311,7 +315,7 @@ class RuntimeBoundaries(unittest.TestCase):
         self.assertFalse(self.coordinator._binding_resume_pending)
         self.coordinator._resume_game_binding()
         self.settle()
-        self.assertTrue(self.keys.enabled)
+        self.assertTrue(self.keys.enabled, self.session.snapshot.get("lastReceipt"))
         self.assertTrue(self.keys._map_input.open_intent)
 
     def test_minimized_and_unknown_catalog_keep_binding_identity_until_current_resume(self):
@@ -369,11 +373,9 @@ class GroupBoundaries(groups.DragGroupChoiceContracts):
 
     def test_helper_ready_post_drag_choice_fits_current_pixels_without_false_close(self):
         self.finish_drag()
-        observation, floor_read = FloorReadyForegroundReturnTests.nightmare_ready(1, margin=12.)
-        sensor = (patch("map_interface_observation.detect_map_interface", return_value=observation)
-            if self.mode == "nightmare" else patch.object(self.engine.qt_map_ui, "observe",
-                return_value=dict(mapOpen=True, floor="1")))
-        with sensor, patch("map_interface_observation.detect_selected_floor", return_value=floor_read):
+        observation, floor_read = dict(detected=True), synthetic_read(self.mode)
+        with patch("map_interface_observation.detect_map_interface", return_value=observation), \
+                patch("floor_control_region.locate_vertical_floor_controls", return_value=floor_read):
             self.choose_target()
             token = self.await_target_material()
         self.assertTrue(self.runtime.snapshot()["mapOpen"])

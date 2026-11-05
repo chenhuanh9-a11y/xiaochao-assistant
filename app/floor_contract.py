@@ -1,9 +1,7 @@
-"""Immutable, reviewed floor identities; not resource or detector authority.
+"""Semantic floors and vertical control axes for declared season/mode contexts.
 
-S0 horizontal and source-reviewed S1 vertical identities are registered. A
-display catalog does not establish detector geometry or pixel evidence.
-Unknown contexts must not borrow S0's button order.
-This module performs no IO and does not select maps, poses or resources.
+Logical floor identities do not define the visual S0 column order. S1 keeps
+its own negative floor identities and separately validated runtime capabilities.
 """
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -48,8 +46,8 @@ _BASEMENT = FloorDefinition(-1, "B1")
 _FIRST = FloorDefinition(1, "1")
 _SECOND = FloorDefinition(2, "2")
 _CONTRACTS = MappingProxyType({
-    ("s0", "nightmare"): FloorContract("s0", "nightmare", (_BASEMENT, _FIRST, _SECOND), "horizontal"),
-    ("s0", "difficult"): FloorContract("s0", "difficult", (_FIRST, _SECOND), "horizontal"),
+    ("s0", "nightmare"): FloorContract("s0", "nightmare", (_BASEMENT, _FIRST, _SECOND), "vertical"),
+    ("s0", "difficult"): FloorContract("s0", "difficult", (_FIRST, _SECOND), "vertical"),
     **{("s1", mode): FloorContract("s1", mode,
         tuple(FloorDefinition(value, str(value)) for value in (-1, -2, -3, -4)), "vertical")
         for mode in ("difficulty2", "difficult", "nightmare")},

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import tempfile
 import time
 import unittest
+from test_s0_vertical_controls import synthetic_read
 from unittest.mock import Mock, patch, call
 import numpy as np
 from PySide6.QtCore import QObject, Signal, QUrl
@@ -424,7 +425,8 @@ class SharedRuntimeDeliveryTests(unittest.TestCase):
             self.assertFalse(session.busy,session.snapshot)
         try:
             with patch("map_interface_observation.detect_map_interface",return_value=dict(detected=True)), \
-                 patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=1)), \
+                 patch("floor_control_region.locate_vertical_floor_controls",
+                       side_effect=lambda frame, mode, **kw: synthetic_read(mode)), \
                  patch.object(_AlignmentHost,"fit",side_effect=lambda *args:copy.deepcopy(fit)), \
                  patch("client_coordinator.another_assistant_running",return_value=False):
                 coordinator._window_rows=[dict(hwnd="42",width=1280,height=720)]

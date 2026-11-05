@@ -29,12 +29,7 @@ def read_floor_evidence(floor_read, observations, *, explicit_floor=None, contra
     window = [*observations, observed][-5:]
     scores = floor_read.get("scores") or {}
     observed_score = float(scores.get(str(observed), 0.0))
-    strong_latest = bool(
-        observed in (1, 2)
-        and floor_read.get("layout") == "localized-triplet"
-        and float(floor_read.get("margin", 0.0)) >= 12.0
-        and observed_score >= 32.0
-    )
+    strong_latest = False
     explicit = type(explicit_floor) is int and explicit_floor in allowed
     stable = explicit_floor if explicit else stable_floor_from_observations(window, strong_latest=strong_latest, allowed_values=allowed)
     return FloorEvidence(observed, tuple(window), observed_score, strong_latest, explicit, stable)
@@ -143,49 +138,4 @@ def game_floor_control_hit(
         if any(a >= b for a, b in zip(centers, centers[1:])):
             return None
         return hits[0] if len(hits) == 1 else None
-    difficult=floor_read.get('layout')=='difficult-two-buttons'
-    if floor_read.get("layout") != "localized-triplet" and not difficult:
-        return None
-    centers = floor_read.get("centers")
-    if not isinstance(centers, (list, tuple)) or len(centers) != (2 if difficult else 3):
-        return None
-    left, top, right, bottom = (int(value) for value in client_bounds)
-    width, height = right - left, bottom - top
-    if width < 100 or height < 100:
-        return None
-    if difficult:
-        import numpy as np
-        observation = floor_read.get('difficultObservation') or {}
-        if observation.get('mapOpen') is not True:
-            return None
-        glyphs = observation.get('glyphs') or []
-        try:
-            points = np.asarray([g['center'] for g in glyphs], dtype=float)
-            sx, sy = map(float, observation.get('controlScale', (1., 1.)))
-        except (KeyError, ValueError, TypeError):
-            return None
-        if points.shape != (2, 2) or not np.isfinite(points).all() or not (np.isfinite([sx, sy]).all() and sx > 0 and sy > 0):
-            return None
-        spacing = float(points[1, 0] - points[0, 0])
-        if spacing <= 0:
-            return None
-        px, py = cursor[0] - left, cursor[1] - top
-        # Native glyph positions own hit geometry. Adjacent buttons meet at
-        # their midpoint instead of overlapping a fixed client-width strip.
-        index = 0 if px < float(points[:, 0].mean()) else 1
-        cx, cy = points[index]
-        if abs(px - cx) <= min(64. * sx, spacing / 2.) and abs(py - cy) <= 22. * sy:
-            return index + 1
-        return None
-    from map_interface_observation import floor_control_vertical_geometry
-    vertical = floor_control_vertical_geometry(width, height)
-    region_top = float(vertical.get("regionTop", 0.0))
-    region_height = float(vertical.get("regionHeight", 0.0))
-    x = (cursor[0] - left) / width
-    y = (cursor[1] - top) / height
-    if not (region_top <= y <= region_top + region_height):
-        return None
-    for floor, center in zip((1,2) if difficult else (-1, 1, 2), centers):
-        if abs(x - float(center)) <= 0.025:
-            return floor
     return None

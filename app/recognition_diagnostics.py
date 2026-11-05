@@ -64,7 +64,7 @@ def bounded_recognition(value, limit=2048):
 
 
 def control_band(frame, mode, observation, floor_read):
-    """Union of actual horizontal/vertical detector ROIs in client pixels."""
+    """The current vertical detector ROI in original client pixels."""
     height, width = frame.shape[:2]
     boxes = []
     region = floor_read.get("controlSearchRegion")
@@ -74,31 +74,6 @@ def control_band(frame, mode, observation, floor_read):
         if 0 <= x < x+w <= 1 and 0 <= y < y+h <= 1:
             boxes.append([int(width*x), int(height*y),
                           min(width, math.ceil(width*(x+w))), min(height, math.ceil(height*(y+h)))])
-    if mode == 'difficult':
-        for row in observation.get('diagnosticScales', [observation]):
-            box = row.get('controlBounds')
-            if isinstance(box, (list, tuple)) and len(box) == 4:
-                boxes.append(box)
-    else:
-        from map_interface_observation import MAP_REGIONS
-        from client_space_geometry import CLIENT_COMPONENT_POLICIES, normalized_rect_to_client
-        if observation.get('detectionMode') != 'shape-rejected':
-            for name in ('floorSwitch', 'closeButton'):
-                boxes.append(normalized_rect_to_client((width, height), MAP_REGIONS[name][:4],
-                    policy=CLIENT_COMPONENT_POLICIES['ui-roi']))
-        if width >= 1000 and height >= 600:
-            from map_interface_observation import floor_control_vertical_geometry, _legacy_floor_control_vertical_geometry
-            vertical = floor_control_vertical_geometry(width, height)
-            searched = [vertical]
-            if (vertical['layoutFamily'] == 'centered-16x9-safe-area'
-                    and (floor_read.get('layoutFamily') != vertical['layoutFamily']
-                         or floor_read.get('layout') == 'unlocalized')):
-                searched.append(_legacy_floor_control_vertical_geometry())
-            for geometry in searched:
-                # Localization searches this wider strip before scoring glyphs.
-                y0 = int(height * geometry['searchTop'])
-                y1 = min(height, int(height * (geometry['searchBottom'] + geometry['regionHeight'])))
-                boxes.append([int(width * .70), y0, int(width * .995), y1])
     valid = [box for box in boxes if all(type(v) is int for v in box)
              and 0 <= box[0] < box[2] <= width and 0 <= box[1] < box[3] <= height]
     if not valid:
