@@ -38,7 +38,12 @@ Window {
     readonly property bool groupHeld: snapshot.manualGroupMemberHeld === true
     readonly property bool groupPending: snapshot.groupMemberSelectionPending === true
     readonly property string appliedMode: session.appliedMode || session.currentMode
-    readonly property var activeModules: layout.order.filter(function(key) { return layout.enabled.indexOf(key) >= 0 })
+    readonly property var activeModules: {
+        const rows = layout.order.filter(function(key) { return layout.enabled.indexOf(key) >= 0 })
+        if (snapshot.season === "s1" && snapshot.manualAlignmentAvailable && rows.indexOf("manual_map") < 0 && rows.indexOf("map") < 0)
+            rows.push("manual_map")
+        return rows
+    }
     readonly property var actionOrder: ["toggle-panel", "candidate-prev", "candidate-next", "confirm-round", "cycle-floor", "end-round", "toggle-sheet-visibility", "start-round", "toggle-round", "manual-map-picker"]
     readonly property bool manualSelection: preferences.mapSelectionMode === "manual"
     Component.onCompleted: syncGroupChoices()
@@ -380,6 +385,18 @@ Window {
         id: manualMapModule
         ColumnLayout {
             spacing: 4
+            ControlButton {
+                objectName: "controlPrepareManualAlignment"
+                visible: panel.snapshot.season === "s1" && !panel.snapshot.manualAlignmentSession
+                text: "准备手动贴合"; Layout.fillWidth: true
+                enabled: panel.available("prepare_manual_alignment")
+                hint: "人工选择地图和楼层；请自行打开游戏地图，不自动认图或点击游戏楼层"
+                onClicked: session.dispatch("prepare_manual_alignment")
+            }
+            KeyHint {
+                visible: panel.snapshot.manualAlignmentSession === true
+                text: "手动贴合：先在游戏中打开地图并选好楼层，再选相同的软件楼层"
+            }
             RowLayout {
                 Layout.fillWidth: true; spacing: 4
                 ControlButton {
@@ -407,20 +424,29 @@ Window {
             }
             KeyHint { visible: panel.manualSelection && panel.shortcut("manual-map-picker") !== ""; text: "手动选图快捷键 " + panel.shortcut("manual-map-picker") }
             KeyHint { visible: !panel.available("reselect_map"); text: panel.snapshot.resourceLocked ? "等待资源操作完成" : "正在准备地图资源" }
-            RowLayout {
+            GridLayout {
                 visible: (panel.snapshot.availableFloors || []).length > 0
-                Layout.fillWidth: true; spacing: 4
+                columns: panel.snapshot.season === "s1" ? 1 : 5
+                Layout.fillWidth: true; rowSpacing: 4; columnSpacing: 4
                 Repeater {
                     model: panel.snapshot.availableFloors || []
                     delegate: ControlButton {
                         required property string modelData
-                        text: modelData === "B1" ? "B1" : "F" + modelData
+                        objectName: "controlManualFloor_" + modelData
+                        text: panel.snapshot.season === "s1" ? modelData + "层" : modelData === "B1" ? "B1" : "F" + modelData
                         selected: String(panel.snapshot.manualFloor || panel.snapshot.floor) === modelData
                         enabled: panel.available("set_floor"); implicitWidth: 50; Layout.fillWidth: true
                         onClicked: session.dispatchWithPayload("set_floor", {floor: modelData})
                     }
                 }
                 ControlButton { text: "切换"; implicitWidth: 54; enabled: panel.available("cycle_floor"); onClicked: session.dispatch("cycle_floor") }
+            }
+            ControlButton {
+                objectName: "controlFitManualFrame"
+                visible: panel.snapshot.manualAlignmentSession === true
+                text: "贴合当前画面"; Layout.fillWidth: true
+                enabled: panel.available("fit_manual_frame")
+                onClicked: session.dispatch("fit_manual_frame")
             }
         }
     }

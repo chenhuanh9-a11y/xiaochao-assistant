@@ -275,7 +275,7 @@ class _AlignmentHost:
                 entryReverification=dict(candidateCount=len(candidates), acceptedPoseCount=len(accepted), reason=checked["reason"]))
         return None
 
-    def fit(self, frame, map_id, floor, cancelled, entry_candidate=None):
+    def fit(self, frame, map_id, floor, cancelled, entry_candidate=None, *, observation_bounds=None):
         from alignment_observation import rendered_profile_residual_is_verified
         from fast_structure_alignment import try_alignment
         from single_map_structure import current_geometry, solve, solve_initial_structure
@@ -283,8 +283,12 @@ class _AlignmentHost:
         reference = self._shared_structure_reference("shared-structure", map_id, floor)
         if reference is None:
             return dict(success=False, reason="shared-reference-unavailable")
+        explicit_domain = observation_bounds is not None
+        context = current_geometry(frame, observation_bounds=observation_bounds) if explicit_domain else None
+        if explicit_domain and context is None:
+            return dict(success=False, reason="manual-current-geometry-unavailable")
         # Original structure-fit order: default 0059 prior before entry/fast.
-        if self.steady is not None:
+        if self.steady is not None and not explicit_domain:
             adapter, context, current, signature = self.steady
             steady = adapter.try_alignment(self, frame, map_id, floor, context=context,
                 is_current=current, cancelled=cancelled, display_signature=signature,
@@ -293,7 +297,7 @@ class _AlignmentHost:
                 return steady
         # Original caller order: current fast proposal, established relation
         # recovery (including an unverified target), bounded entry, then initial.
-        context = current_geometry(frame)
+        context = context if explicit_domain else current_geometry(frame)
         fit = try_alignment(self, frame, map_id, floor, cancelled=cancelled, entry_seed=entry_candidate, context=context)
         strategy = "shared-fast-alignment"
         identity_profile = (self.engine.identity_profile_for_map(map_id)
@@ -301,7 +305,7 @@ class _AlignmentHost:
             else getattr(self.engine, "identity_profile_id", None))
         entry_first = (identity_profile == "shared-structure"
             and callable(getattr(getattr(self.engine, "side_entry_identity", None), "rank_entry", None)))
-        if (fit is None and entry_first and entry_candidate is None and self.group is not None
+        if (not explicit_domain and fit is None and entry_first and entry_candidate is None and self.group is not None
                 and self.group.map_id == map_id and str(floor) in self.group.verified_floors
                 and self.group.route_profile_id == "shared-structure"):
             # Legacy confirmed same-floor recovery is translation-only, even
@@ -317,16 +321,16 @@ class _AlignmentHost:
                         or recovery.get("sharedProjectionGeometryInsufficient")):
                     return recovery
             return None
-        if fit is None and (not entry_first or (self.group is not None and str(floor) not in self.group.verified_floors)):
+        if not explicit_domain and fit is None and (not entry_first or (self.group is not None and str(floor) not in self.group.verified_floors)):
             fit = recover_existing_group()
             strategy = "shared-established-group-recovery"
-        if fit is None:
+        if not explicit_domain and fit is None:
             fit = self._reverify_entry(frame, map_id, floor, reference, entry_candidate, cancelled, context=context)
             strategy = "verified-entry-current-frame"
-        if fit is None and entry_first:
+        if not explicit_domain and fit is None and entry_first:
             fit = recover_existing_group()
             strategy = "shared-established-group-recovery"
-        if fit is None:
+        if not explicit_domain and fit is None:
             from client_known_floor_recovery import recover_registered_floor
             fit = recover_registered_floor(self, frame, map_id, floor, reference, cancelled)
             strategy = "shared-registered-floor-recovery"
@@ -339,10 +343,13 @@ class _AlignmentHost:
         # Independently wrap/verify the final matrix in its actual typed canvas,
         # exactly as the production canonical consumer does after any sensor.
         residual = self._rendered_profile_current_frame_residual(
-            frame, reference.clean_mask, fit["matrixSourceToClient"], profile_id="shared-structure")
+            frame, reference.clean_mask, fit["matrixSourceToClient"], profile_id="shared-structure",
+            visible_override=context.get("visible") if explicit_domain else None)
         if not rendered_profile_residual_is_verified(residual):
             return dict(success=False, reason="canonical-current-frame-residual-unverified", residual=residual)
         return dict(fit, selectedRouteCurrentFrameResidual=residual,
+                    observationBounds=context["observationBounds"] if explicit_domain else None,
+                    observationComponent=dict(context["visible"][2], bounds=context["visible"][1]) if explicit_domain else None,
                     coordinateSpace="shared-structure-to-client", routeProfileId="shared-structure",
                     strategy=strategy)
 
@@ -402,6 +409,7 @@ class LiveRuntime:
         self._candidate_edit = False
         self._selection_pending = False
         self._manual_floor = None
+        self._manual_alignment = False
         self._observed_floor = ""
         self._last_observation = None
         self._pointer_context_snapshot = None
@@ -1608,6 +1616,8 @@ class LiveRuntime:
         from client_learning import persist_manual_confirmation
         # No action payload can promote saved/replayed/fixture pixels to live
         # evidence. Automatic gate.confirm calls never enter this method.
+        if self._season != "s0":
+            return dict(status="skipped", reason="season-manual-learning-unregistered", saved=False)
         if self._evidence_kind != "live-client-capture":
             return dict(status="skipped", reason="non-live-evidence", saved=False)
         epoch, engine, mode, round_id, map_id, floor, generation = confirmation
@@ -1653,6 +1663,8 @@ class LiveRuntime:
                 target = None if value in (None, "", "auto") else str(value)
                 if target is not None and target not in floors:
                     return self._receipt(action, payload, success=False, reason="unsupported-floor")
+            if self._manual_alignment and target is None:
+                return self._receipt(action, payload, success=False, reason="manual-floor-required")
             self.invalidate("floor-changed")
             self._manual_floor = target
             self._manual_override = target is not None
@@ -1662,6 +1674,9 @@ class LiveRuntime:
             self._floor_required = target is None and not self._observed_floor
             self._reset_provisional_floor(target or self._observed_floor)
             self._floor = target or self._observed_floor
+            if self._manual_alignment:
+                self._group = None
+                self._core.reset_round(reason="manual-floor-target-changed")
             for row in self._candidate_rows:
                 row["floor"] = self._floor
         # As in legacy select_floor, immediately attempt the target geometry.
@@ -1670,6 +1685,8 @@ class LiveRuntime:
         return self._solve_retained(action, payload, cancelled)
 
     def _solve_retained(self, action, payload, cancelled, *, acquire_current=True):
+        if self._manual_alignment:
+            return self._capture_manual_alignment(action, payload, cancelled)
         with self._lock:
             observation = self._last_observation
             if self._selection_pending:
@@ -1733,13 +1750,20 @@ class LiveRuntime:
             # confirm_route(mapId) seeds identity/floor and leaves pose pending
             # until a current map frame exists.
             manual_pick_available = bool(
-                self._active and ready and self._engine is not None and self._gate is not None
+                self._active and (ready or self._manual_alignment) and self._engine is not None and self._gate is not None
                 and not self._round_preparing and not self._capture_pending
                 and self._group_choice_inflight is None and self._pending_sibling is None)
             commands = list(offline["availableCommands"])
             commands += ["end_round", "close_map", "toggle_sheet_visibility"]
             if ready:
                 commands.append("reselect_map")
+            manual_ready = bool(self._season == "s1" and saved_ready and guarded and self._capture is not None)
+            if manual_ready and not self._active and not self._round_preparing:
+                commands.append("prepare_manual_alignment")
+            if self._manual_alignment and self._active:
+                commands.append("reselect_map")
+                if self._map_id and self._manual_floor:
+                    commands.append("fit_manual_frame")
             if self._candidate_edit and self._gate is not None:
                 commands += ["select_candidate", "previous_candidate", "next_candidate"]
             if self._engine is not None:
@@ -1796,6 +1820,9 @@ class LiveRuntime:
                 mapSelectionMode=self._settings.get("mapSelectionMode", "auto"),
                 manualSelectionPending=bool(self._active and self._manual_selection_unlocked()),
                 manualMapPickAvailable=manual_pick_available,
+                manualAlignmentSession=self._manual_alignment,
+                manualAlignmentAvailable=manual_ready,
+                mapObservationSource="manual-declaration" if self._manual_alignment else "automatic",
                 alignedVisible=self._aligned_visible,
                 automaticCandidateRows=self._candidate_summary(),
                 candidateRows=copy.deepcopy(self._candidate_rows), selectedCandidateIndex=selected,
@@ -1873,6 +1900,7 @@ class LiveRuntime:
             if reason in ("map-closed", "escape", "foreground-lost", "capture-context-changed", "floor-unknown"):
                 self._map_open = False
             if "resource" in str(reason):
+                self._manual_alignment = False
                 self._active = self._map_open = self._round_preparing = False
                 self._prepared_round_ready = False
                 self._core.reset_round(reason=str(reason))
@@ -2512,6 +2540,12 @@ class LiveRuntime:
     def dispatch(self, action, payload=None, cancelled=None):
         payload = dict(payload or {})
         action = str(action)
+        if self._season == "s1" and action in ("start_round", "toggle_round", "capture_now", "map", "refresh_map", "recover_map_open", "probe_map_after_drag"):
+            report = self._offline.snapshot()["savedFrameCapabilities"][self._mode]
+            if not report.get("liveReady", False):
+                return self._receipt(action, payload, success=False,
+                    reason=";".join(report.get("liveGaps", ())) or "s1-live-contract-unavailable",
+                    unavailable=True)
         if action == "resume_group_automatic":
             return self._receipt(action, payload, success=False, reason="unsupported-action")
         if action == "select_group_member":
@@ -2579,6 +2613,7 @@ class LiveRuntime:
                             source=payload.get("inputSource", "dispatch-" + action))
             with self._lock:
                 if action != "close_map":
+                    self._manual_alignment = False
                     self._active = self._map_open = self._round_preparing = False
                     self._prepared_round_ready = False
                     self._core.reset_round(reason=action)
@@ -2612,6 +2647,7 @@ class LiveRuntime:
                     return self._receipt(action, payload, success=False,
                                          reason="end-round-before-changing-mode")
                 if changed_mode:
+                    self._manual_alignment = False
                     self.invalidate("mode-changed")
                 elif changed_profile:
                     self._display_generation = getattr(self, "_display_generation", 0) + 1
@@ -2642,6 +2678,18 @@ class LiveRuntime:
             return self._receipt(action, payload, success=result["success"], reason=result["reason"], offline=result)
         try:
             with self._work:
+                if action == "prepare_manual_alignment":
+                    if self._season != "s1":
+                        return self._receipt(action, payload, success=False, reason="manual-session-not-required")
+                    prepared = self._start(payload, cancelled, manual=True)
+                    if not prepared["success"]:
+                        return prepared
+                    activated = self._ensure_round_active(payload, cancelled)
+                    if not activated["success"]:
+                        self.dispatch("end_round")
+                    return self._receipt(action, payload, **activated)
+                if action == "fit_manual_frame":
+                    return self._capture_manual_alignment(action, payload, cancelled)
                 if action == "recover_map_open":
                     return self._recover_map_open(payload, cancelled)
                 if action == "probe_map_after_drag":
@@ -2688,19 +2736,19 @@ class LiveRuntime:
                     unavailable=bool(getattr(error, "unavailable", False)),
                     **self._error_fields(error, action))
 
-    def _get_engine(self, mode, season="s0"):
+    def _get_engine(self, mode, season="s0", *, require_live=True):
         season = normalize_season(season)
         getter = getattr(self._factories, "get_engine", None)
         if season != "s0" and not callable(getter):
             from client_providers import ProviderUnavailable
             raise ProviderUnavailable(f"season-resources-unavailable:{season}")
         engine = getter(mode, season) if callable(getter) else self._factories[mode]()
-        if season != "s0" and not getattr(engine, "qt_live_ready", False):
+        if require_live and season != "s0" and not getattr(engine, "qt_live_ready", False):
             from client_providers import ProviderUnavailable
             raise ProviderUnavailable(";".join(getattr(engine, "qt_live_gaps", ())) or f"season-live-contract-unavailable:{season}")
         return engine
 
-    def _start(self, payload, cancelled):
+    def _start(self, payload, cancelled, *, manual=False):
         if self._capture is None:
             raise RuntimeError("capture-provider-unavailable")
         if self._evidence_kind == "live-client-capture" and not callable(getattr(self._capture, "is_current", None)):
@@ -2714,7 +2762,12 @@ class LiveRuntime:
             self._round_preparing = True
             self._prepared_round_ready = False
         try:
-            engine = self._get_engine(mode, season)
+            engine = self._get_engine(mode, season, require_live=not manual)
+            if manual:
+                from floor_contract import floor_contract
+                contract = floor_contract(mode, season=season)
+                if season != "s1" or contract is None or tuple(engine.identity_floors) != contract.floor_ids:
+                    raise ValueError("manual-floor-resource-contract-mismatch")
         except Exception:
             with self._lock:
                 if epoch == self._epoch:
@@ -2729,6 +2782,10 @@ class LiveRuntime:
             if epoch != self._epoch or mode != self._mode or season != self._season:
                 return self._receipt("start_round", payload, success=False, reason="stale-context", stale=True)
             self._core.reset_round(reason="round-prepared")
+            if manual:
+                self._core = AlignmentCoreV2(clock=self._monotonic, floors=contract.floor_ids)
+            elif self._core.floors != ("B1", "1", "2"):
+                self._core = AlignmentCoreV2(clock=self._monotonic)
             self._round += 1
             self._cycle = self._frame_generation = 0
             self._probe_misses = 0
@@ -2737,11 +2794,16 @@ class LiveRuntime:
             self._map_id = self._floor = self._frame_id = ""
             self._group = self._render = None
             self._engine = engine
+            self._manual_alignment = manual
             self._attach_identity_engine(engine)
             from nightmare_candidate import RouteDisplayGate
             self._clear_candidates()
             self._gate = RouteDisplayGate(engine.pack)
             self._update_candidates([], "")
+            if manual:
+                self._manual_floor = self._floor = str(engine.pack.default_entry_floor)
+                self._manual_override = True
+                self._floor_required = False
             if preselected and preselected in engine.pack.by_id:
                 self._gate.select(preselected)
                 self._candidate_edit = self._selection_pending = True
@@ -3102,6 +3164,53 @@ class LiveRuntime:
         return self._receipt("refresh_map", payload, success=True, reason="current-pose-refreshed",
                              renderToken=render_token, unchanged=True,
                              diagnosticOnly=self._evidence_kind != "live-client-capture")
+
+    def _capture_manual_alignment(self, action, payload, cancelled):
+        """Human map/floor intent plus a fresh frame; never detector evidence.
+
+        The existing fitter and canonical residual must establish the pose.
+        The explicit full-client search domain carries no map-open authority.
+        """
+        with self._work:
+            with self._lock:
+                if not (self._season == "s1" and self._manual_alignment and self._active
+                        and self._engine is not None and self._map_id and self._manual_floor):
+                    return self._receipt(action, payload, success=False, reason="manual-map-floor-required")
+                epoch, engine, group = self._epoch, self._engine, self._group
+                map_id, floor = self._map_id, self._manual_floor
+                self._revoke_render("manual-current-frame-request")
+                self._capture_pending = True
+            obsolete = lambda: self._cancelled(cancelled) or epoch != self._epoch
+            try:
+                capture_generation = self._capture_generation()
+                captured = self._capture_frame(obsolete)
+                frame = self._full_frame(captured).copy()
+                frame.setflags(write=False)
+                digest = hashlib.sha256(frame.tobytes()).hexdigest()
+                with self._lock:
+                    if (obsolete() or not self._manual_alignment or not self._active
+                            or engine is not self._engine or map_id != self._map_id
+                            or floor != self._manual_floor or floor != self._floor
+                            or not self._capture_is_current(captured.context, capture_generation)):
+                        return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
+                    if not self._map_open:
+                        self._cycle += 1
+                    self._map_open = True
+                    self._observed_floor = ""
+                    self._floor_required = False
+                    self._frame_generation += 1
+                    generation, cycle = self._frame_generation, self._cycle
+                    self._frame_id = frame_id = f"{self._round}:{generation}:{digest[:16]}"
+                    self._last_observation = dict(captured=captured, frame=frame, floor=None, digest=digest,
+                        created_at=self._monotonic(), capture_generation=capture_generation, frame_id=frame_id,
+                        cycle_id=cycle, generation=generation, observed_floor="",
+                        floor_read=dict(selectedFloor=None, season="s1", mode=self._mode,
+                            floorSource="unavailable", reason="manual-target-not-detector-evidence"))
+                return self._solve_observation(action, payload, cancelled, engine, group, epoch,
+                    captured, frame, floor, digest, capture_generation, generation, frame_id, cycle, map_id)
+            finally:
+                with self._lock:
+                    self._capture_pending = False
 
     def _capture_and_solve(self, action, payload, cancelled, *, prepared=None, recovery_scope=None):
         if prepared is None:
@@ -3516,11 +3625,17 @@ class LiveRuntime:
             pendingSiblingToken=token,renderToken=row["sourceToken"],projectionOnly=True,posePending=True)
 
     def _stage_round_group_commit(self, engine, group, map_id, floor, canonical, render_matrix,
-                                  display, frame, captured, cycle, frame_generation, residual):
+                                  display, frame, captured, cycle, frame_generation, residual, *, component_override=None):
         """Reuse the original single-root relation and validation-pool writer."""
         from types import SimpleNamespace
         from round_layer_group_commit import (commit_alignment_v2_round_pose,
             prime_round_layer_group_relations, map_anchor_focus_point)
+        if self._manual_alignment:
+            bounds = (component_override or {}).get("bounds")
+            if (not isinstance(bounds, (tuple, list)) or len(bounds) != 4
+                    or not (0 <= bounds[0] < bounds[2] <= frame.shape[1]
+                            and 0 <= bounds[1] < bounds[3] <= frame.shape[0])):
+                return None
         stage = group if group is not None and group.map_id == map_id else None
         owner = SimpleNamespace(pack=engine.pack, round_layer_group=stage,
             author_coordinate_adapters=engine.qt_adapters, active_map_cycle_id=cycle,
@@ -3528,16 +3643,20 @@ class LiveRuntime:
             _native_similarity_resources_ready=lambda: True,
             _open_cycle_transient_motion_active=lambda _map: False,
             _shared_structure_mode_enabled=lambda: True, _log=lambda *args, **kwargs: None)
+        if self._manual_alignment:
+            owner.round_floor_ids = tuple(engine.identity_floors)
         owner._active_round_layer_group = lambda mid, profile=None: (
             owner.round_layer_group if owner.round_layer_group is not None
             and owner.round_layer_group.map_id == mid
             else None)
-        owner._prime_round_layer_group_relations = lambda mid, anchor: prime_round_layer_group_relations(owner, mid, anchor)
+        owner._prime_round_layer_group_relations = (lambda mid, anchor: {}) if self._manual_alignment else (
+            lambda mid, anchor: prime_round_layer_group_relations(owner, mid, anchor))
         context = captured.context
         signature = (tuple(context.full_client_size), tuple(context.client_screen_bounds), context.dpi)
         accepted = commit_alignment_v2_round_pose(owner, map_id, floor, display["pixels"], frame,
             context.client_screen_bounds, render_matrix=render_matrix, canonical_matrix=canonical,
             route_profile_id=display.get("effectiveProfileId", "shared-structure"), source="initial-structure-v2", residual=residual,
+            component_override=component_override,
             normalize_route_profile_id=lambda profile: profile,
             display_environment_signature=lambda _: signature, map_anchor_focus_point=map_anchor_focus_point)
         return owner.round_layer_group if accepted else None
@@ -3621,7 +3740,11 @@ class LiveRuntime:
             lambda context: not obsolete() and self._steady_is_current(context, captured),
             self._steady_signature(captured)))
         fit_started = time.monotonic()
-        fit = host.fit(frame, map_id, floor, obsolete, entry_candidate) if entry_candidate is not None else host.fit(frame, map_id, floor, obsolete)
+        if self._manual_alignment:
+            fit = host.fit(frame, map_id, floor, obsolete,
+                observation_bounds=(0, 0, frame.shape[1], frame.shape[0]))
+        else:
+            fit = host.fit(frame, map_id, floor, obsolete, entry_candidate) if entry_candidate is not None else host.fit(frame, map_id, floor, obsolete)
         self._recognition_diagnostic('pose-fit', fit.get('reason', 'reason-not-provided'),
             success=fit.get('success'), fit=fit, solverEvents=host.events,
             elapsedMs=(time.monotonic()-fit_started)*1000,
@@ -3710,7 +3833,8 @@ class LiveRuntime:
         with self._lock:
             previous_group = copy.deepcopy(group) if group is not None else None
         target_group = self._stage_round_group_commit(engine, previous_group, map_id, floor, canonical,
-            render_matrix, display, frame, captured, cycle, frame_generation, residual)
+            render_matrix, display, frame, captured, cycle, frame_generation, residual,
+            component_override=fit.get("observationComponent") if self._manual_alignment else None)
         if target_group is None:
             reason = "round-group-pose-commit-rejected"
             self._set_pose_phase("rejected", reason, map_id, floor, frame_id, frame_generation,

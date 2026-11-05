@@ -69,11 +69,33 @@ Item {
         return !!state.commands && !!state.commands[action] && state.commands[action].available
                && !session.busy && !state.resourceLocked
     }
-    function floorName(floor) { return String(floor) === "B1" ? "B1" : "F" + floor }
+    function floorName(floor) { return state.season === "s1" ? floor + "层" : String(floor) === "B1" ? "B1" : "F" + floor }
 
     ColumnLayout {
         anchors.fill: parent
         spacing: 16
+        RowLayout {
+            visible: page.state.season === "s1"
+            Layout.fillWidth: true
+            AppButton {
+                objectName: "recognitionPrepareManualAlignment"
+                text: "准备手动贴合"; visible: !page.state.manualAlignmentSession
+                enabled: page.available("prepare_manual_alignment")
+                onClicked: session.dispatch("prepare_manual_alignment")
+            }
+            AppButton {
+                text: "选择本局地图"; enabled: page.state.manualMapPickAvailable === true
+                onClicked: clientCoordinator.requestManualMapSelection()
+            }
+            AppButton {
+                text: "贴合当前画面"; enabled: page.available("fit_manual_frame")
+                onClicked: clientCoordinator.fitManualFromMain()
+            }
+            Label {
+                text: "请自行打开游戏地图并选择楼层，再在游戏控制面板选相同楼层。"
+                Layout.fillWidth: true; wrapMode: Text.WordWrap
+            }
+        }
         RowLayout {
             Layout.fillWidth: true
             Label { text: "地图识别"; color: "#142b4b"; font.family: "Microsoft YaHei UI"; font.pixelSize: 26; font.bold: true }

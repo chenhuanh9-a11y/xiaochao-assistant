@@ -12,7 +12,17 @@ S0 使用原来的两模式根和资源合同；S1 普通（内部 `difficulty2`
 
 四层为源高度4/3/2/1对应游戏层-1/-2/-3/-4，入口在-1。`FloorContract` 登记真实竖排顺序；共享楼层证据、状态转换和显式已验证控件矩形的点击命中可处理负层。S0横排字典和流程不变。S1检测器尚无真实帧/窗口比例验证，不能套横排ROI或猜阈值；旧横排校准在S1及上下文变化后拒绝、清空且不写设置。
 
-资源就绪与 live 就绪分开：S1可保存帧识别和指定地图/层的共享贴合回放；当前 `qt_live_gaps` 是 `s1-floor-controls-unregistered`。界面不因 typed 资源可用而广告 start/map 命令，不启动采集。声明一个 flag 也不能绕过未验证的竖排检测器。没有真实S1游戏输入，不能声称实机识别、错层、点击或首贴/复贴时延验收完成。
+资源就绪与自动 live 就绪分开：S1可保存帧识别和指定地图/层的共享贴合回放；当前 `qt_live_gaps` 是 `s1-floor-controls-unregistered`。界面不因 typed 资源可用而广告自动 start/map 命令。声明一个 flag 也不能绕过未验证的竖排检测器。显式手动贴合是独立的当前会话入口，不改变全局 auto/manual 偏好，也不决定以后是否采用自动认图。没有真实S1游戏输入，不能声称实机识别、错层、点击或首贴/复贴时延验收完成。
+
+## 手动贴合
+
+先连接游戏窗口，在主界面地图识别页或游戏控制面板点击“准备手动贴合”，自行打开游戏地图，再“选择本局地图”。选图器只显示当前赛季/模式的地图，缩略图来自该 native manifest 已校验的 game-native PNG。软件初始人工楼层为已知主门层 -1；竖列 -1/-2/-3/-4 可随时人工选择，须与游戏当前楼层相同。软件楼层按钮不会点击游戏中的按钮。
+
+`prepare_manual_alignment` 仅建立手动会话并启用已绑定的捕获；选图确认、软件换层及“贴合当前画面”都重新取得当前完整客户端帧。主界面的贴合按钮复用已有的显式游戏焦点恢复和窗口/代际复查。人工 map/floor 只提供目标：`identitySource` / `floorSource` 为 manual，`observedFloor` 保持未知，不伪造 map detector 或楼层观测，也不写S1识别学习标签。换层立即撤销旧pose，清空group/core锚点；每层独立求解，不建立跨层关系。
+
+S1手动求解把当前全客户端观察域显式传入共享 fast/independent structure solver，当前组件与 visible 同时传入每次 residual 和 group tracking；没有结构时立即拒绝，不用 `None` 回退到S0固定ROI。灰度、几何和最终残差阈值不变。首次路径不采用尚未适配该观察域的 steady、入口及跨层恢复分支。只有当前帧 canonical residual、原 core adjudication、捕获窗口及请求代际都通过，才能产生渲染回执。空白/不足结构会拒绝；不同地图或楼层如果共享当前可见结构，人工误选不保证能被软件识破。当前未知的游戏内控件几何不授予自动读层或点击能力。
+
+真实 QtClient/ManualMapPickerService/SessionService 使用实际资源、注入合成捕获的端到端证据保存在忽略目录 `work/s1-manual-integration/`。该验证覆盖选图后 -1 当前帧贴合、软件切 -2 后重新贴合、竖排四层、空白帧撤销旧渲染；合成证据始终 `liveAuthorization=false`，正常 live 显示消费者拒绝将它显示成游戏授权层。实机捕获与窗口上下文仍须单独验证。
 
 ## 正门与侧出口
 

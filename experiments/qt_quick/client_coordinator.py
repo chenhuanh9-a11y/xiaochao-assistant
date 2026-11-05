@@ -851,8 +851,11 @@ class ClientCoordinator(QObject):
     def requestManualMapSelection(self):
         if self._closing or self._closed:
             return
-        if (normalize_selection_mode(self.settings.persistedValues.get("mapSelectionMode")) == "manual"
+        if ((normalize_selection_mode(self.settings.persistedValues.get("mapSelectionMode")) == "manual"
+                or self.runtime.snapshot().get("manualAlignmentSession"))
                 and self._manual_map_picker is not None):
+            if self.runtime.snapshot().get("manualAlignmentSession") and self._bound:
+                self._game_focus.requestFocus()
             # Manual mode keeps the game in the foreground and offers the
             # picker directly; no candidate reshuffle is needed.
             self._manual_map_picker.open(source="map-button")
@@ -972,10 +975,18 @@ class ClientCoordinator(QObject):
     @Slot()
     def recaptureFromMain(self):
         """Explicit main-page click only; never called by polling/background IO."""
+        self._capture_from_main("capture_now")
+
+    @Slot()
+    def fitManualFromMain(self):
+        """Return to the bound game before an explicitly requested manual fit."""
+        self._capture_from_main("fit_manual_frame")
+
+    def _capture_from_main(self, action):
         if (self._main_recapture_active or self._closing or self._closed or self.session.busy or self.resources.busy
                 or self.resources.pendingKind or self._pending_context
                 or self.session.snapshot.get("resourceLocked")
-                or "capture_now" not in self.session.snapshot.get("availableCommands", ())):
+                or action not in self.session.snapshot.get("availableCommands", ())):
             return
         state = self.runtime.snapshot()
         fields = ("season", "mode", "profileId", "roundId", "roundActive", "roundPreparing")
@@ -1011,7 +1022,7 @@ class ClientCoordinator(QObject):
                     if callable(reset):
                         reset(bool(self._map_was_open))
                 self._clear_focus_return_plan()
-                self.session.dispatch("capture_now")
+                self.session.dispatch(action)
             else:
                 self._message = self._focus_notice = "识别环境已变化，未截图；请确认游戏地图已打开后重试"
         self.changed.emit()

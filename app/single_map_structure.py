@@ -70,10 +70,10 @@ def regional_observed_edges(frame,query):
     return result
 
 
-def current_geometry(frame):
+def current_geometry(frame, *, observation_bounds=None):
     """One solver-owned observation; never retained across frames/cycles."""
     from map_observation import structure_current_map_evidence
-    current=structure_current_map_evidence(frame)
+    current=structure_current_map_evidence(frame, observation_bounds=observation_bounds) if observation_bounds is not None else structure_current_map_evidence(frame)
     if current is None: return None
     return dict(query=current['query'],observationBounds=current['observationBounds'],visible=current.get('visible'))
 
@@ -758,7 +758,8 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
         validation_context=_static_validation_context(frame,context,matrix,source_unknown)
         regions=regional_validation(frame,context['query'],projected,_context=validation_context)
         residual=(selected_route_current_frame_residual(frame,route,matrix,maximum_dimension=960,
-            route_profile_id=profile,reference_override=validation) if regions['regionalEdgeVerified'] else None)
+            route_profile_id=profile,reference_override=validation,
+            visible_override=context.get('visible')) if regions['regionalEdgeVerified'] else None)
         passed=bool(regions['regionalEdgeVerified'] and residual and residual.get('verified'))
         diagnostic['candidates'].append(dict(matrix=matrix.tolist(),pointGeometry=c['geometry'],pairs=c['pairs'],sourcePoints=c['sourcePoints'],queryPoints=c['queryPoints'],regions=regions,residual=residual,accepted=passed))
         if passed and not any(np.linalg.norm((extent@(matrix-old[0]).T)[:,:2],axis=1).max()<=3

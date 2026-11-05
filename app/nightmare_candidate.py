@@ -537,6 +537,7 @@ def visible_map_component(
     frame: np.ndarray,
     *,
     minimum_area: int = 1000,
+    observation_bounds: tuple[int, int, int, int] | None = None,
 ) -> tuple[np.ndarray, tuple[int, int, int, int], dict] | None:
     """Return the largest explored-map island in the central game-map canvas."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -544,6 +545,10 @@ def visible_map_component(
     search = np.zeros_like(gray, dtype=np.uint8)
     y0, y1 = int(h * 0.22), int(h * 0.80)
     x0, x1 = int(w * 0.16), int(w * 0.76)
+    if observation_bounds is not None:
+        x0, y0, x1, y1 = observation_bounds
+        if not (0 <= x0 < x1 <= w and 0 <= y0 < y1 <= h):
+            raise ValueError("Observation bounds must lie inside this frame")
     search[y0:y1, x0:x1] = (gray[y0:y1, x0:x1] >= 75).astype(np.uint8) * 255
     count, _labels, stats, centers = cv2.connectedComponentsWithStats(search, 8)
     candidates = []

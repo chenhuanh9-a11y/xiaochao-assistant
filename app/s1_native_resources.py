@@ -96,6 +96,7 @@ class S1NativeContext:
             if (not path.is_file() or path.stat().st_size != row["bytes"]
                     or hashlib.sha256(path.read_bytes()).hexdigest() != row["sha256"]):
                 raise ValueError(f"S1 native file hash mismatch: {row['path']}")
+        self._declared_files = frozenset(declared)
         required = {self.local(self.interfaces[name]) for name in REQUIRED_INTERFACES if name != "identityEntries"}
         entry_root = self.local(self.interfaces["identityEntries"])
         required.update(entry_root / name for name in ("entries.json", "side-entries.json", "entry-passports.json"))
@@ -128,6 +129,13 @@ class S1NativeContext:
 
     def local(self, relative):
         return local(self.root, relative)
+
+    def display_reference(self, map_id, floor="-1"):
+        """Hash-inventoried game-native image for the picker, never a sensor."""
+        if str(map_id) not in MODE_LAYOUTS[self.mode] or str(floor) not in S1_FLOORS:
+            return None
+        path = self.local(f"assets/game-native/{map_id}/{floor}.png")
+        return path if path in self._declared_files and path.is_file() else None
 
     def validate_identity_pack(self, pack):
         expected = {(key[1], key[3]): self.local(row["resourcePath"]) for key, row in self.resources.entries.items()}
