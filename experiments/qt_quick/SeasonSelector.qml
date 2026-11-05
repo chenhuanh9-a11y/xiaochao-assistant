@@ -37,10 +37,17 @@ RowLayout {
     }
 
     function requestContext(nextSeason, nextMode) {
+        for (var target = 0; target < seasons.length; target++) {
+            if (seasons[target].id === nextSeason) {
+                var caps = seasons[target].capabilities || {}
+                // A target season without ordinary mode uses the application's
+                // existing default. This is UI choice, never a map-floor guess.
+                if (nextMode === "difficulty2" && !caps.difficulty2 && nextSeason !== "s1") nextMode = "nightmare"
+            }
+        }
         if (!enabled || (nextSeason === season && nextMode === mode && !allowCurrentContextRequest)) return
-        if (nextMode === "difficulty2" && nextSeason !== "s1" && browseDifficulty2) nextMode = "difficult"
         if (nextMode !== "nightmare" && nextMode !== "difficult"
-                && !(browseDifficulty2 && nextSeason === "s1" && nextMode === "difficulty2")) return
+                && !((browseDifficulty2 || registeredContext(nextSeason, "difficulty2")) && nextSeason === "s1" && nextMode === "difficulty2")) return
         for (var i = 0; i < seasons.length; i++) {
             if (seasons[i].id === nextSeason) {
                 contextRequested(nextSeason, nextMode)
@@ -89,7 +96,7 @@ RowLayout {
     }
     AppButton {
         objectName: root.objectName + "Difficulty2"
-        visible: root.browseDifficulty2 && root.season === "s1"
+        visible: root.season === "s1" && (root.browseDifficulty2 || root.registeredContext(root.season, "difficulty2"))
         text: "普通"; implicitWidth: 64; implicitHeight: 34
         selected: root.mode === "difficulty2"
         Accessible.name: text + (selected ? " · 已选" : "")

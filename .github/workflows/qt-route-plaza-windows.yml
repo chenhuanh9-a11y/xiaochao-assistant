@@ -2,7 +2,7 @@ name: Qt route plaza account lifecycle Windows regression
 
 on:
   push:
-    branches: [feat/qt-route-plaza-account-login]
+    branches: [feat/qt-route-plaza-account-login, feat/qt-route-plaza-submit]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -19,7 +19,7 @@ jobs:
       matrix:
         source: [candidate, original-head, main-baseline]
     env:
-      PYTHONPATH: 'app;tests;tools;experiments/qt_quick'
+      PYTHONPATH: 'app;tests;tools;tools/maps;experiments/qt_quick'
       QT_QPA_PLATFORM: offscreen
       QT_QUICK_BACKEND: software
       PYTHONUTF8: '1'
@@ -44,6 +44,8 @@ jobs:
           }
           if ('${{ matrix.source }}' -eq 'candidate') {
             $modules += @('test_account_concurrency', 'test_client_account_lifecycle', 'test_route_plaza_redirect')
+            # New submission contracts exist only on candidate; all inputs are synthetic.
+            $modules += @('test_route_submission', 'test_client_route_submission', 'test_build_custom_map_package', 'test_extend_custom_map_package', 'test_prepare_qt_editor_base', 'test_client_route_point_numbers')
           }
           $failed = @()
           foreach ($module in $modules) {

@@ -670,7 +670,7 @@ class SettingsTests(unittest.TestCase):
             panel.setProperty("profileOptions", [])
             panel.setProperty("profilesBusy", False)
             self.assertFalse(picker.property("enabled"))
-            self.assertIn("资源待补齐", picker.property("displayText"))
+            self.assertEqual("当前作者未安装", picker.property("displayText"))
             self.assertEqual(runtime.snapshot()["season"], "s0")
             click_settings_action("settingsReset")
             self.assertEqual(service.values["gameSeason"], "s0")

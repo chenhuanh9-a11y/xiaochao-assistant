@@ -67,6 +67,17 @@ class PrepareEditorTests(unittest.TestCase):
             self.run_prepare(target)
         self.assertEqual((target / "keep").read_text(), "unchanged")
 
+    def test_submission_navigation_is_in_inventory_and_tamper_fails(self):
+        (self.source / "nav.json").write_text("{}")
+        self.manifest["maps"][0]["routeSubmission"] = dict(path="nav.json", sha256=prepare.digest(self.source / "nav.json"))
+        self.save()
+        self.run_prepare()
+        output = self.root / "work/next"
+        self.assertIn("assets/custom-maps/nav.json", prepare.read(output / "resource-inventory.json")["files"])
+        (self.source / "nav.json").write_text('{"changed":true}')
+        with self.assertRaisesRegex(ValueError, "navigation hash mismatch"):
+            self.run_prepare(self.root / "work/other")
+
     def test_manifest_and_traversal_fail_before_output(self):
         self.manifest["maps"][0]["floors"]["1"]["image"] = "../outside.png"
         self.save()

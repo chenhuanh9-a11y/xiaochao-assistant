@@ -30,7 +30,103 @@ Qt 入口：侧栏「路线广场」→「账号登录」，下载后点击「�
 - 校验：字节数与 SHA-256 必须和服务器记录一致；ZIP 里只能有 `map-gallery.json`，并且 `schemaVersion` 3、`contentKind` `nightmare-routes`、`workId`、`packageId`、`revision` 都要对得上。
 - 同一作品的新版本替换旧的那份图库（ID 不变，游戏内的选择不受影响）。图库可以删除，不能改名或编辑；复制、导出得到的是自己的普通图库。
 
-暂不支持投稿、举报和「我的投稿」。
+Qt 同时提供「投稿」和「我的投稿」，支持选择个人图库、说明、上传进度、停止/重试、修订、提交已有包审核和撤回。仅支持噩梦路线，困难模式明确提示不支持。服务端没有图库 DELETE 接口，因此没有删除投稿按钮；举报尚未接入 Qt。
+
+## 投稿协议与来源
+
+PC [PR #23](https://github.com/chenhuanh9-a11y/xiaochao-assistant/pull/23) 的 `0d3c39481926b8267b2964cbd5363a97e6456569` 只有账号、浏览和下载，没有投稿代码。投稿以安卓仓库只读快照 `7e1aba96312390c534b6cc400dfc2570a9601571` 中的已提交协议文件为依据：
+
+- `mobile/app/src/main/assets/community-page.js` 是语音社区；图库/路线投稿实际在 `map-gallery-page.js`，原生桥为 `CommunityBridge.kt`，HTTP 方法和上传头规则在 `AccountSyncClient.kt`。
+- `GalleryPackageStore.kt`、`GalleryPackageArchive.kt`、`NightmareRoutePlan.kt`、`nightmare-route-model.js` 定义导出身份、schema 3、导航签名、房间/途经点、楼梯和方向游程。规划使用导航实际单位与楼梯距离；不声称两端选出的连线像素完全相同。
+- `account-sync-server/app/map_galleries.py` 及 `tests/test_nightmare_route_galleries.py`、`test_map_gallery_contract.py`、`test_route_data_packages.py` 明确服务器状态转换与限制。这里只读源码，未运行/部署安卓服务端，也未使用线上账号。
+
+| 操作（都复用 AccountService Bearer 鉴权、刷新与安装 ID） | 接口/行为 |
+| --- | --- |
+| 我的投稿 | `GET /v1/community/my/map-galleries`，返回最近 100 个版本，Qt 只取个人 `nightmare-routes` |
+| 创建草稿 | `POST /v1/community/map-galleries`，`title`、`description`、`content_kind=nightmare-routes` |
+| 修订 | `PUT /v1/community/map-galleries/{版本ID}`，相同字段；草稿/拒绝原地修改，已上架/撤回/下架创建新的版本 ID，保持 work ID 并复制既有包绑定；审核中不能修改 |
+| 上传授权 | `POST /v1/community/map-galleries/{返回的版本ID}/upload-sessions` |
+| 上传对象 | 授权返回的 HTTPS OSS URL，固定长度 `PUT`，不附账号 token/cookie，不跟随跳转；只接受 content-type/content-md5 与 x-amz-/x-oss-/x-cos- 签名头 |
+| 上传完成 | `POST /v1/community/map-galleries/{版本ID}/upload-sessions/{会话ID}/complete`，`{"etag":"…"}` |
+| 提交审核 | `POST /v1/community/map-galleries/{版本ID}/submit`，`{"confirmed":true}`；仅草稿/拒绝且有已完成包 |
+| 撤回/下架自己的作品 | `POST /v1/community/map-galleries/{版本ID}/withdraw`，`{"confirmed":true}`；仅审核中/已上架 |
+
+上传授权字段为 `schema_version=3`、`work_id`、`package_id`、`package_revision`、`mode=nightmare`、`map_count`、`image_count=0`、`manifest_bytes`、`object_bytes`、`sha256`、`idempotency_key`、`content_type=application/x-xingtu-gallery`。未绑定包时与安卓一样，用 `xingtu-map-gallery:{workId}:nightmare:{localGalleryId}` 的 Java name UUID（MD5、v3）稳定生成 package ID；已有包沿用 ID 并递增包 revision，不能把作品 revision 当作包 revision。服务端若因其他设备/未完成上传返回 409 的结构化 `package_id/package_revision`，按该明确身份重建包并只重试授权一次，不能猜测下一个 revision。
+
+ZIP 仅含 UTF-8 `map-gallery.json`，使用固定时间戳和 STORE，保证重试字节一致且不会触发安卓解压比率上限。manifest 包含 `schemaVersion=3`、`contentKind=nightmare-routes`、`mode`、`workId/packageId/revision`、标题、作者、`minClientVersion=1.11.2`（更新后的导航版本）、`imageCount=0`、`routeEntryFloor=1` 和 `maps`；每张图包含稳定的 `mapEntryId`、`displayName`、`defaultFloor`、空 `floors` 和 `routePlan`，不上传地图图片或个人图库存储文件。
+
+限制按实际交集执行：标题 2–48 字（安卓桥；服务端 1–80、包 1–60），说明最多 500 字；1–27 张图，单图最多 128 个点，单方案 160 KiB，合计最多 200000 个方向步，每段最多 8 个楼层 part、每 part 最多 24000 个游程数值；manifest 6 MiB，包 64 MiB。服务器还限制账号对象容量 256 MiB、最多 3 个待审核、每天提交 5 次；本机不猜配额剩余量，以服务端反馈为准。上传会话回包及完成回包都核对身份/摘要/大小，完成后才提交审核。
+
+六种状态直接展示为草稿、审核中、已上架、已拒绝、已撤回、已下架；拒绝/下架原因来自 `rejection_reason`。400 未确认、401 登录失效、403 无权/封禁、404 不存在、409 状态或包身份冲突、413 大小/容量、422 字段/包格式、429 频率/配额、503 存储不可用均保留服务器原因。没有发现投稿专属稳定 `error_code` 表；账号封禁仍用既有错误码处理。
+
+安卓曾修复的两个问题分别处理：玩家 `official_source_id: null` 是无官方来源，不能转成字符串 `"null"`；409 不能无条件覆盖所有操作的真实原因。Qt 投稿在保留详细原因的同时提示刷新，下载保持独立错误处理。安卓 `ad669ecdd9c21a103510ce07c6fbb99c90d3e616` 还修正了请求未启动/已排入错误回调的区别，Qt 用唯一 worker 请求代际及 queued result，不借用 WebView 的布尔返回值。
+
+## 投稿坐标与资源契约
+
+上传是下载的反向坐标变换，但连线必须在安卓实际导航图上重新规划，不能直接把 PC 道路的像素线段伪装成安卓 `segments`：
+
+1. 个人图库的原生点经每层 `template_to_native` 的逆矩阵回到旧模板像素，再取每格 2px 的 cell；只容许最多 2px 的网格量化偏差。
+2. 房间点按安卓 label 找真实 room ID 和中心，途经点保留道路格，保留颜色/新起点。找不到对应道路或房间就失败，不丢点、不捏造房间、不上传半套地图。
+3. 按资源中的实际方向边规划，同层方向游程遵守 1/2/4/8/16/32/64/128；跨层仅用 `verified=true, kind=stairs` 的已核实楼梯。写入资源的真实 `navigationSignature`。
+
+**现有资源缺口：** 旧 PC 编辑资源包没有上述安卓导航和签名，不能凭原生道路图反推。每张支持投稿的地图需要可选 `routeSubmission: {path, sha256}`，引用含 `templateId/navigationSignature/catalogSha256/floors/stairs` 的导航 JSON；文件受资源哈希/路径约束，尺寸必须与模板坐标契约一致。缺少、损坏、重复绑定或坐标不符会明确失败，发生在创建远端草稿之前。现有浏览、编辑、下载不依赖这个可选能力。
+
+沿用 `tools/maps/build_custom_map_package.py`，增加显式 `--submission-navigation <已授权的安卓 nightmare-route-editor 根目录>`，可从同一次已授权资源构建输入生成该契约；不自动扫描安卓目录、不拷贝图片/作者路线/原始游戏数据。原资源验证和 `prepare_qt_editor_base.py` 的文件清单包含该导航文件及哈希。本次没有生成或发布生产地图包，也没有把安卓导航素材提交到 PC 仓库；**实际交付前仍需提供与生产编辑底图对应的已授权导航资源包**。离线测试的导航全为临时合成数据。
+
+## 投稿异步与取消
+
+投稿表单和两张列表常驻；仅增量协调发生变化的记录，进度不重置图库选择/输入/滚动。未登录进入投稿会先引导登录，表单填写后遇到登录失效可续接同一次意图；关闭账号/投稿窗口或切页会撤销该意图，不因迟到登录重新上传。注册的恢复码确认语义沿用原服务。
+
+从图库单写者发布的 committed snapshot 取得个人图库和只读 library，在广场唯一线程池转换、打包、上传；本机图库不发生投稿写入，上传不占图库 busy。开始时在 worker 校验磁盘摘要，阶段间核对图库内容、资源对象/代际、账号身份代际和取消标记。页面隐藏仍收取结果，恢复后才同步列表；标题输入继续受全局快捷键保护。`AccountService.identity_context` 在刷新 token 时保持稳定，换账号/注销/关闭才撤销身份。进度通过 queued signal 收取，UI 不等网络或导航计算。
+
+失败/停止保留一个有界尝试（固定包、幂等键和草稿 ID），表单锁定相同输入供重试；重试先读服务端状态，已提交则直接采用真实结果，已完成上传无需重传。关闭表单放弃本地续接后，仍可从「我的投稿」修订草稿或提交其已绑定包。创建/修订响应丢失导致草稿 ID 未知时，不自动重发非幂等的创建请求，提示先刷新确认。已经接受的 submit/withdraw 以回包为准，不能因请求中途取消而伪报未提交。没有伪造删除或远端上传取消 API，停止可能留下草稿/尚待服务端清理的上传对象。
+
+取消在转换搜索、发送分块及 HTTP 阶段边界生效；正在阻塞的 socket/API 调用须等返回或超时（对象 PUT 30 秒，账号 API 20 秒）。沿用 `close_writers` 和 QThreadPool 排空，退出先拒绝新请求、取消未发阶段，再等已接受任务完成。参考 [Qt QThreadPool 生命周期](https://doc.qt.io/qtforpython-6/PySide6/QtCore/QThreadPool.html) 和 Python 官方 [http.client](https://docs.python.org/3.13/library/http.client.html)，使用标准库固定长度发送/关闭连接，无新依赖或流程工具。
+
+待确认的线上协议：源码快照与部署版本是否一致，尤其结构化 409、上传会话字段、存储签名头及配额；未知草稿创建结果缺少服务端幂等查询/创建键；未完成上传对象的过期清理策略；未来是否开放删除。`minClientVersion=1.11.2` 与当前导航在真实安卓版本上的互通尚未验证。既有 `preserve_recovery_code` 服务端语义仍未确认，本次没有改它。
+
+## Qt 选中点标号
+
+路线广场与自定义图库的地图查看/编辑页都有「选中点标号」开关，共用一个偏好，默认关闭。
+点击后通过既有设置单写者异步保存 `routePointNumbers`；保存成功才生效，重启恢复，失败显示原因并保留原来已生效的选择。
+只保存该字段，不顺带保存设置页其他草稿，也不改下载图库的只读属性或路线文件。
+
+- **判定依据**：广场 `routePlans[].points` 是有序明确选点，`route_plaza.convert_plan()` 转为图库 `maps[mapId].points`；其中 `kind="room"` / `room` 表示选中的房间，`kind="via"` 表示明确选择的必经目标，`floor`、`x/y` 表示楼层与原生坐标。首尾点自然包含在该列表，`start=true` 仅表示另起一段。
+- **编号规则**：按保存的 `points` 顺序过滤到当前层，再从 1 递增；跨层后回到同一层继续该层序号，另起一段不重置。同层同房间按 `room` 合并、同位置必经点按取整坐标合并，保留每次访问的序号，例如 `1/3`。超过三次显示前三个序号及 `+剩余次数`，避免标签无限加宽。
+- **路过不标**：不从规划后的 `segments[].cells`、道路网节点或连线经过的房间推断选点。下载转换沿用已有行为：无法落点的目标丢弃，连续落在同一目标的安卓选点会折叠；编号针对最终成功保存的目标，不补造已丢弃的点。
+- **显示**：开启时深色底、浅色描边、白色数字，放在目标上方，靠画布边缘时收回画布内；只画当前层。游戏中的标号和路线使用同一原生图层与显示矩阵，随缩放/拖动移动；图库查看页按实际图片缩放换算，保持标签可读。关闭不画标号。
+- **适用范围**：下载的广场图库、其副本和个人图库共用显示链路。现有自定义路线仅支持噩梦；困难与作者位图没有明确选点数据，不推断房间或改写作者图片里的既有数字。
+
+开关成功保存后，`CustomGalleryDisplay` 清理相应图层缓存，并将偏好纳入实际显示资源身份；正在生成的旧图层即使开关往返也丢弃。
+运行时推进显示代际，旧定点/贴合像素立即失效；通过 `SessionService` 原有单线程队列更换显示图层，不重新识别、采集或求解位姿。
+已有后台任务完成后继续处理刷新，隐藏页面也不阻断。取消、结束本局或上下文变化后，迟到刷新按既有轮次/帧/楼层/资源/显示代际校验拒绝。
+
+离线验证新增 `test_client_route_point_numbers`，覆盖选点与路过节点区分、顺序、逐层重置、重复选点、保存/重启/失败重试、实际 QML 点击与像素显隐、切层/窗口缩放、缓存失效、取消与迟到结果，以及两模式无选点数据时的显示保持。
+合成地图的离屏截图保存在忽略目录 `outputs/route-room-numbers/`，没有提交素材。完整 QtClient 冒烟还验证了广场开关到保存设置、显示服务和运行时的实际连接。
+
+Linux / Python 3.13.5 / PySide6 6.11.1 的联合命令（沿用 #88/#93 的相关模块，再加本次显示/设置/生命周期覆盖；最新 main 尚无 #93 的投稿模块，不借入该分支）：
+
+```bash
+PYTHONPATH=/tmp/xiaochao-tk-runtime/usr/lib/python3.13:/tmp/xiaochao-tk-runtime/usr/lib/python3.13/lib-dynload:app:tests:tools:tools/maps:experiments/qt_quick \
+QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
+/tmp/xiaochao-qt-venv/bin/python -m unittest -q \
+  test_client_route_point_numbers test_client_route_plaza test_route_plaza \
+  test_custom_maps test_custom_map_editor test_client_custom_gallery \
+  test_client_composition test_client_custom_display test_client_gallery_export_dialog \
+  test_client_downloads test_client_shutdown test_client_coordinator test_client_resources \
+  test_client_import_upgrade_parity test_client_recapture_composition \
+  test_account_concurrency test_client_account_lifecycle test_route_plaza_redirect \
+  test_build_custom_map_package test_extend_custom_map_package test_prepare_qt_editor_base \
+  test_client_route_preferences test_client_route_reprojection test_client_settings \
+  test_client_live_runtime test_client_session test_client_reference_presentation \
+  test_client_aligned_transform test_client_material_identity test_client_material_handoff \
+  test_client_editor_upgrade
+```
+
+本次联合 473 项：471 通过、2 跳过（缺少 `QT_RESOURCE_PRIVATE_ZIP` 与 `QT_EDITOR_REAL_LIBRARY`）；新增 10 项全部通过。
+截图可额外设置 `XINGTU_QT_NUMBER_EVIDENCE_DIR=outputs/route-room-numbers`、`XINGTU_QT_PLAZA_EVIDENCE_DIR=outputs/route-room-numbers/plaza`。
+首次扩大回归时两个既有静态定点用例在 Linux 导入 Win32 模块失败；在未改动 `164ea36` 的干净 checkout 同样复现。本次仅为这两个用例补入既有 recapture 测试使用的有限空白图判断替身，保留全部断言，未改生产截图逻辑。
+没有线上路线/真实授权图库输入；Windows 字体/DPI、真实游戏缩放拖动、安装与 Setup 均未验证，也没有采集首贴/重开图端到端性能样本。
 
 ## 坐标换算
 
@@ -73,7 +169,7 @@ Qt 入口：侧栏「路线广场」→「账号登录」，下载后点击「�
 - [账号登录](images/qt-account-login.png)
 - [最小窗口](images/qt-route-plaza-small.png)
 
-未验证：线上账号/广场、Windows DPAPI、真实游戏显示、实机焦点/DPI/全局输入、安装包与安装。业务仍仅支持噩梦路线，困难模式、投稿、举报、「我的投稿」不在现有服务能力内；没有用占位数据补这些能力。没有构建、安装、合并或发布 Setup。
+未验证：线上账号/广场、Windows DPAPI、真实游戏显示、实机焦点/DPI/全局输入、安装包与安装。业务仍仅支持噩梦路线；困难模式、举报未接入。投稿资源缺口及线上互通待验见上文，没有用占位数据补生产能力。没有构建、安装、合并或发布 Setup。
 
 本次环境为 Linux / Python 3.13.5 / PySide6-Essentials 6.11.1，依赖来自
 `experiments/qt_quick/requirements-client.txt`。原环境没有 Tk；为运行原有无界面 Tk 测试，
@@ -111,3 +207,43 @@ QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
 - 新增 `qt-route-plaza-windows.yml` 只读运行 candidate、原 head `3188d301`、main `c06a3f2` 三组相关套件。main 尚无广场模块，只比较原有相关套件；新增回归只在 candidate 运行。没有构建、安装或发布 Setup，1.0.6 冻结不变。
 
 补测的 Linux 环境为 Python 3.12 / PySide6 6.11.1，`PYTHONPATH=app:tests:tools:experiments/qt_quick`，`QT_QPA_PLATFORM=offscreen`，`QT_QUICK_BACKEND=software`。沿用上面的相关 14 个模块，另外运行 `test_account_concurrency test_client_account_lifecycle test_route_plaza_redirect`。原 head 167 项（166 通过、1 跳过），main 对应 143 项（142 通过、1 跳过）。跳过项需要私有资源 ZIP；本次没有读取该私有数据。Windows CI、Windows DPAPI 和实机游戏/焦点/DPI/安装验收仍应分别记录，不能以 Linux 离屏结果替代。
+
+### Qt 投稿补测（2026-11-04）
+
+基于 PC `origin/main 9d7fa80`，Linux / Python 3.13.5 / PySide6 6.11.1，使用既有 `/tmp/xiaochao-qt-venv`。实际联合命令：
+
+```bash
+PYTHONPATH=/tmp/xiaochao-tk-runtime/usr/lib/python3.13:/tmp/xiaochao-tk-runtime/usr/lib/python3.13/lib-dynload:app:tests:tools:tools/maps:experiments/qt_quick \
+QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
+/tmp/xiaochao-qt-venv/bin/python -m unittest -q \
+  test_route_submission test_client_route_submission \
+  test_client_route_plaza test_route_plaza test_custom_maps test_custom_map_editor \
+  test_client_custom_gallery test_client_composition test_client_custom_display \
+  test_client_gallery_export_dialog test_client_downloads test_client_shutdown \
+  test_client_coordinator test_client_resources test_client_import_upgrade_parity \
+  test_client_recapture_composition test_account_concurrency \
+  test_client_account_lifecycle test_route_plaza_redirect \
+  test_build_custom_map_package test_extend_custom_map_package test_prepare_qt_editor_base
+```
+
+结果 **267 项，266 通过、1 跳过**（未提供 `QT_RESOURCE_PRIVATE_ZIP`）。中间一次重叠运行中原有 `test_tutorial_progress_drains_through_actual_window_close_choice` 触发其 8 秒子进程超时；没有放宽超时或更改该用例，最终联合重跑通过，不把中间失败隐去。
+
+- 新增 8 项本机假 HTTP/实际 PUT 测试，检查鉴权隔离、包字节/哈希/manifest、坐标/房间/跨层/新起点、修订返回新 ID、幂等重试、服务端修订号纠正、取消、不跟随跳转、会话篡改、资源缺口、未知创建结果不重复创建。
+- 新增 11 项 Qt 测试，包含真实 QML 鼠标/键盘投稿及「我的投稿」/撤回，登录续接与关闭后迟到结果、重复点击、进度、取消重试、资源刷新/图库变更、隐藏页面、已有包直接送审、稳定模型和退出排空。结果信号核对 UI 线程。资源生产/清单测试检查导航契约保留、坐标不符和篡改拒绝。
+- 完整 QtClient 在独立进程离屏运行：侧栏 → 登录 → 选择已保存的个人图库 → 打开投稿表单 → 输入保护 → 实际上传中请求退出 → 排空后正常关闭；无启动广场请求、QML 警告为零、退出没有迟到送审、本机图库字节未变化。截图仅在 ignored `work/qt-submit-evidence`，使用合成资源/本机假服务器；未提交图片素材。capture/native/游戏引擎由既有 fixture 替代。
+- `client.py --self-check` 返回 `ready=true, qml=true, tkLoaded=false, nativeInputStarted=false`；`git diff --check` 通过。测试有意注入的启动失败提示属于已有负例，不是实际客户端启动验收失败。
+
+未验证线上登录/上传/审核、OSS 实服务、真实安卓导入、生产导航资源包、Windows DPI/焦点/DPAPI/游戏与安装。没有改安卓仓库，没有使用真实用户素材，没有构建、安装、发布或合并。
+### 与选中点标号集成补测（2026-11-05）
+
+将投稿 head `a92b657` 与 main `62799bc`（含标号开关、安装包复用和诊断来源修复）联合验证。
+广场顶部冲突保留标号开关、设置错误提示、投稿入口和投稿账号文案，不改变投稿协议或选点数据。
+投稿页面测试使用真实 `SettingsService`，覆盖开启标号后投稿、查看「我的投稿」及撤回，并确认偏好保持。
+Windows candidate 的投稿回归同时执行 `test_client_route_point_numbers`；历史 baseline 的模块集不变。
+
+Linux / Python 3.12.14 / PySide6 6.11.1，`PYTHONPATH=app:tests:tools:tools/maps:experiments/qt_quick`，
+`QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software`。执行上面「Qt 选中点标号」的联合模块，
+另加 `test_route_submission test_client_route_submission test_client_problems`：**505 项，503 通过、2 跳过**。
+跳过原因仍为未提供 `QT_RESOURCE_PRIVATE_ZIP` 和 `QT_EDITOR_REAL_LIBRARY`。
+首次联合执行仅因投稿页面测试未注入标号开关需要的设置服务失败，补齐后整组重跑通过，没有删除或放宽原断言。
+测试仍使用离线合成输入；生产导航资源、真实账号/OSS/审核、安卓互通和游戏实机验收不在本轮结论内。

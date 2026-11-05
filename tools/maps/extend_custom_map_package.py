@@ -87,6 +87,10 @@ def verify_package(root, manifest):
         raise ValueError("invalid or empty baseline package")
     seen = set()
     for item in manifest["maps"]:
+        if item.get("routeSubmission"):
+            binding = item["routeSubmission"]
+            if sha256(contained(root, binding["path"])) != binding["sha256"]:
+                raise ValueError("submission navigation hash mismatch")
         safe_token(item.get("mapId"))
         if not isinstance(item.get("floors"), dict) or not item["floors"] or any(f not in ("B1", "1", "2") for f in item["floors"]):
             raise ValueError("invalid package floors")

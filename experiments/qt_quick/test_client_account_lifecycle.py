@@ -21,6 +21,7 @@ class AccountLifecycleTests(unittest.TestCase):
         engine = QQmlApplicationEngine()
         router = Router()
         engine.rootContext().setContextProperty("routePlazaService", self.service)
+        engine.rootContext().setContextProperty("settingsService", self.settings)
         engine.rootContext().setContextProperty("clientCoordinator", router)
         engine.loadData(b'''import QtQuick
 import QtQuick.Controls.Basic

@@ -154,15 +154,15 @@ class OfflineInventoryTests(InventoryFixture, unittest.TestCase):
         with self.assertRaises(CancelledError):
             load_browse_context(self.root, "nightmare", season="s1", cancelled=cancelled)
 
-    def test_offline_images_do_not_register_live_context_or_floor(self):
+    def test_offline_images_do_not_grant_native_resource_readiness_or_live_controls(self):
         from season_context import SeasonContext, MODES
         from floor_contract import floor_contract
         from client_providers import EngineFactories, ProviderUnavailable
         self.assertNotIn("difficulty2", MODES)
         factory = EngineFactories(self.root)
         for mode in ("nightmare", "difficult"):
-            self.assertFalse(SeasonContext("s1", mode).registered)
-            self.assertIsNone(floor_contract(mode, season="s1"))
+            self.assertTrue(SeasonContext("s1", mode).registered)  # Contract declaration is not availability.
+            self.assertEqual(floor_contract(mode, season="s1").control_axis, "vertical")
             with self.assertRaisesRegex(ProviderUnavailable, "season-resources-unavailable"):
                 factory.get_engine(mode, "s1")
 

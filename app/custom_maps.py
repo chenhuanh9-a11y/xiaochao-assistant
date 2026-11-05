@@ -147,6 +147,16 @@ class CustomMapLibrary:
         """Map id -> legacy Android template id, independent of display art."""
         return {mid: row["templateId"] for mid, row in self._maps.items() if isinstance(row.get("templateId"), str)}
 
+    def submission_navigation(self, map_id) -> dict:
+        """Authoritative Android cells/edges, separate from native editor roads."""
+        binding = self._maps.get(str(map_id), {}).get("routeSubmission")
+        if not isinstance(binding, dict):
+            raise RouteError(f"地图 {self.name(map_id)} 缺少投稿导航资源，请更新自定义地图资源后重试")
+        path = self._checked(binding["path"], binding["sha256"])
+        if path.stat().st_size > 6 * 1024 * 1024:
+            raise RouteError("投稿导航资源过大")
+        return json.loads(path.read_text("utf-8"))
+
     def has(self, map_id) -> bool:
         return str(map_id) in self._maps
 
@@ -374,11 +384,12 @@ def _merge_collinear(points):
     return out
 
 
-def marker_groups(points, floor) -> list[tuple[float, float, str]]:
+def marker_groups(points, floor, *, per_floor=False) -> list[tuple[float, float, str]]:
     """Numbered pills; repeated visits to one target share a pill ("1/3/5+2")."""
     groups: dict[tuple, list[int]] = {}
     places: dict[tuple, tuple[float, float]] = {}
-    for number, point in enumerate(points, start=1):
+    selected = [p for p in points if p.get("floor") == floor] if per_floor else points
+    for number, point in enumerate(selected, start=1):
         if point.get("floor") != floor:
             continue
         key = ("room", point["room"]) if point.get("kind") == "room" else ("via", round(point["x"]), round(point["y"]))
@@ -425,7 +436,8 @@ def _font(size):
 ROUTE_OUTLINE = (15, 27, 40, 255)
 
 
-def draw_route(draw: ImageDraw.ImageDraw, transform, lines, markers, *, width: float, pill: float):
+def draw_route(draw: ImageDraw.ImageDraw, transform, lines, markers, *, width: float, pill: float,
+               marker_offset=0, marker_bounds=None):
     """Draw lines and pills; ``transform`` maps native points to target pixels."""
     drawn = [([transform(p) for p in line], color) for line, color in lines]
     # Same as the Android route: a dark outline about a third of the line width on each side, drawn under
@@ -440,14 +452,20 @@ def draw_route(draw: ImageDraw.ImageDraw, transform, lines, markers, *, width: f
     font = _font(max(8, round(pill * 1.2)))
     for x, y, label in markers:
         cx, cy = transform((x, y))
+        cy -= marker_offset
         text = draw.textlength(label, font=font)
         half = max(pill, text / 2 + pill * .4)
+        if marker_bounds is not None:
+            # Keep labels at canvas edges visible after the upward offset.
+            canvas_width, canvas_height = marker_bounds
+            cx = max(half + 1, min(canvas_width - half - 1, cx))
+            cy = max(pill + 1, min(canvas_height - pill - 1, cy))
         draw.rounded_rectangle((cx - half, cy - pill, cx + half, cy + pill), radius=pill, fill=PILL_FILL,
                                outline=PILL_EDGE, width=max(1, round(pill / 10)))
         draw.text((cx, cy), label, fill=(255, 255, 255, 255), font=font, anchor="mm")
 
 
-def render_game_layer(library: CustomMapLibrary, map_id, floor, points) -> np.ndarray:
+def render_game_layer(library: CustomMapLibrary, map_id, floor, points, *, point_numbers=None) -> np.ndarray:
     """Straight-alpha BGRA on the native canvas: legacy art, entrances, route."""
     asset = library.floor(map_id, floor)
     art = np.asarray(library.image(map_id, floor))
@@ -470,8 +488,13 @@ def render_game_layer(library: CustomMapLibrary, map_id, floor, points) -> np.nd
         except RouteError:
             segments = []
         draw = ImageDraw.Draw(canvas)
-        draw_route(draw, lambda p: p, graph.floor_lines(segments, floor), marker_groups(points, floor),
-                   width=6 * scale, pill=20 * scale)
+        # None preserves the Tk renderer contract. Qt explicitly opts in/out;
+        # only saved targets are numbered, never the planner's cells.
+        markers = marker_groups(points, floor, per_floor=point_numbers is not None) if point_numbers is not False else []
+        draw_route(draw, lambda p: p, graph.floor_lines(segments, floor), markers,
+                   width=6 * scale, pill=20 * scale,
+                   marker_offset=48 * scale if point_numbers is True else 0,
+                   marker_bounds=canvas.size if point_numbers is True else None)
     rgba = np.asarray(canvas)
     bgra = np.ascontiguousarray(rgba[:, :, [2, 1, 0, 3]])
     bgra[bgra[:, :, 3] == 0] = 0

@@ -16,6 +16,30 @@ import build_custom_map_package as builder
 
 
 class MaskBindingTests(unittest.TestCase):
+    def test_submission_navigation_preserves_authoritative_binding_without_art(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, out = root / "source", root / "out"
+            source.mkdir(); out.mkdir()
+            nav = dict(version=1, width=4, height=4, step=2, cols=2, rows=2,
+                       edges=[3, 4], labels=[0, 4], rooms=[])
+            (source / "nav.json").write_text(json.dumps(nav))
+            catalog = dict(templates=[dict(id="nightmare-layout-01", navigationSignature="a" * 64,
+                            floors=[dict(id="1", navigation="nav.json")], stairs=[])])
+            (source / "catalog.json").write_text(json.dumps(catalog))
+            (source / "private-art.png").write_bytes(b"must not copy")
+            maps = [dict(mapId="m", templateId="nightmare-layout-01", floors={"1": dict(imageSize=[4, 4])})]
+            builder.add_submission_navigation(out, maps, source)
+            binding = maps[0]["routeSubmission"]
+            self.assertEqual(builder.sha256(out / binding["path"]), binding["sha256"])
+            document = json.loads((out / binding["path"]).read_text())
+            self.assertEqual(document["navigationSignature"], "a" * 64)
+            self.assertEqual(document["floors"]["1"], nav)
+            self.assertEqual([p.name for p in out.rglob("*") if p.is_file()], ["m.json"])
+            maps[0]["floors"]["1"]["imageSize"] = [8, 8]
+            with self.assertRaisesRegex(ValueError, "coordinates differ"):
+                builder.add_submission_navigation(out, maps, source)
+
     def test_binary_c_order_hash_is_independent_of_mask_encoding(self):
         binary = np.array([[0, 1, 1], [1, 0, 1]], np.uint8)
         expected = hashlib.sha256(binary.tobytes(order="C")).hexdigest()

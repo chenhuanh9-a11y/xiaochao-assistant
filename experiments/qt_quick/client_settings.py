@@ -20,7 +20,7 @@ from PySide6.QtGui import QGuiApplication, QKeyEvent
 from client_paths import RESOURCE_ROOT as ROOT, WORK_ROOT, runtime_paths
 if str(ROOT / "app") not in sys.path:
     sys.path.insert(0, str(ROOT / "app"))
-from season_context import CONTEXTS, MODES, context_key, normalize_season, selected_profile, season_options
+from season_context import CONTEXTS, MODES, RUNTIME_MODES, context_key, normalize_season, selected_profile, season_options
 from client_control_layout import load_layout, preset_layout, validate_layout
 from floor_control_region import normalized_region
 from client_manual_map import MANUAL_MAP_PICKER_DEFAULT_HOTKEY, MANUAL_PICKER_ACTION, SELECTION_MODES
@@ -36,7 +36,7 @@ FRESH_ACTIONS = ["F9", "F6", "F7", "F8", "", "", "F11", "", "F10",
                  MANUAL_MAP_PICKER_DEFAULT_HOTKEY]
 BOOL_DEFAULTS = {"automaticFailureEvidence": True, "referenceSheetVisible": True, "sheetVisibilityEnabled": True,
                  "orbVisible": True, "qtControlsVisible": True, "reduceMotion": False, "uiSoundEnabled": False,
-                 "difficultGridEnabled": False, "onboardingCompleted": False}
+                 "difficultGridEnabled": False, "onboardingCompleted": False, "routePointNumbers": False}
 RANGES = {"sheetOpacity": (0., 1.), "referenceOpacity": (0., 1.),
           "interfaceOpacity": (.65, .95), "sheetScale": (.5, 1.5)}
 DEFAULTS = {**BOOL_DEFAULTS, "sheetOpacity": .55, "referenceOpacity": .55,
@@ -62,8 +62,8 @@ def _validate(key, value):
             raise ValueError(f"需要 {low:g}–{high:g} 之间的数值")
         value = float(value)
     elif key == "gameMode":
-        if value not in ("nightmare", "difficult"):
-            raise ValueError("模式只能为 nightmare 或 difficult")
+        if value not in RUNTIME_MODES:
+            raise ValueError("未知地图模式")
     elif key == "gameSeason":
         value = normalize_season(value)
     elif key == "contextRouteProfiles":
@@ -289,7 +289,12 @@ class SettingsService(QObject):
     def selectCoffinVariant(self, variant):
         context = self._route_metadata["context"]
         mode = self._draft["gameMode"]
-        profile = selected_profile(self._draft)
+        try:
+            profile = selected_profile(self._draft)
+        except ValueError:
+            self._message = "赛季与模式组合尚未完成，请先选择有效组合"
+            self.changed.emit()
+            return False
         if (self._route_runtime is None or self._route_runtime.route_preferences_context() != context
                 or context.get("mode") != mode or context.get("season", "s0") != self._draft["gameSeason"]
                 or context.get("profileId") != profile
@@ -572,6 +577,13 @@ class SettingsService(QObject):
                     invalid[key] = str(error)
                     if key == "automaticFailureEvidence":
                         values[key] = False
+        try:
+            context_key(values["gameMode"], values["gameSeason"])
+        except ValueError as error:
+            # Preserve the raw file while exposing a safe, repairable snapshot.
+            # A valid S1 ordinary pair remains untouched; S0 cannot inherit it.
+            invalid["gameMode"] = str(error)
+            values["gameMode"] = DEFAULTS["gameMode"]
         # Snapshot legacy authors into S0 contexts in memory. Reading never
         # rewrites the file; a later context edit persists both S0 identities,
         # so updating the legacy global field cannot leak into another mode.
@@ -719,6 +731,12 @@ class SettingsService(QObject):
                for key in ("gameMode", "gameSeason")):
             return False
         snapshot = {**deepcopy(self._baseline), **deepcopy(edits)}
+        try:
+            context_key(snapshot["gameMode"], snapshot["gameSeason"])
+        except ValueError:
+            self._message = "赛季与模式组合无效；请一起保存有效的赛季和模式"
+            self.changed.emit()
+            return False
         if set(edits) & {"hotkey", "actionHotkeys"}:
             try:
                 _validate_hotkeys(snapshot, self._raw.get("actionHotkeys"))
@@ -727,6 +745,12 @@ class SettingsService(QObject):
                 self.changed.emit()
                 return False
         payload = {**deepcopy(self._raw), **edits}
+        try:
+            context_key(payload.get("gameMode", DEFAULTS["gameMode"]), payload.get("gameSeason", DEFAULTS["gameSeason"]))
+        except ValueError:
+            self._message = "原设置中的赛季与模式组合无效，请先修正模式；原文件已保留"
+            self.changed.emit()
+            return False
         if self._disk_bytes is None:
             # A new file otherwise looks like a legacy install on restart and
             # replaces untouched fresh shortcuts with LEGACY_ACTIONS.

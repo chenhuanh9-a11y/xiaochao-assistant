@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import sys
 import threading
+from types import MappingProxyType
 from client_paths import APP_ROOT, PRODUCTION, runtime_paths
 
 APP = str(APP_ROOT)
@@ -19,7 +20,7 @@ if APP not in sys.path:
     sys.path.insert(0, APP)
 
 
-from season_context import CONTEXTS, SEASONS, context_key, normalize_season, SeasonContext
+from season_context import CONTEXTS, SEASONS, RUNTIME_MODES, modes_for_season, context_key, normalize_season, SeasonContext
 
 
 @dataclass(frozen=True)
@@ -64,7 +65,9 @@ def _build_memory_store(pack, memory_root, resource_root, *, map_ui=None, produc
     """Original exemplar policy, with diagnostic stores/seeds kept isolated."""
     season = normalize_season(season)
     from nightmare_candidate import NightmareMemoryStore
-    if pack.mode == "difficult":
+    if season != "s0":
+        validator = lambda frame: False  # No learning labels before validated S1 map controls.
+    elif pack.mode == "difficult":
         validator = lambda frame: map_ui.observe(frame).get("mapOpen") is True
     else:
         from map_interface_observation import detect_map_interface
@@ -132,13 +135,16 @@ class EngineFactories(dict):
     Construction performs no resource IO. ``prepare`` validates/builds on the
     caller's worker. Until then modes report resource-validation-pending.
     """
-    MODES = ("nightmare", "difficult")
+    MODES = ("nightmare", "difficult")  # Legacy S0 dict facade remains unchanged.
 
-    def __init__(self, resource_root):
+    def __init__(self, resource_root, *, context_roots=None):
         self.root = Path(resource_root).resolve()
+        roots = dict(context_roots or {})
+        if not set(roots) <= set(CONTEXTS):
+            raise ValueError("unknown explicit provider root context")
+        self.context_roots = MappingProxyType({key: Path(value).resolve() for key, value in roots.items()})
         self._lock = threading.RLock()
-        self._build_locks = {context_key(mode, season): threading.Lock()
-                             for season in SEASONS for mode in self.MODES}
+        self._build_locks = {key: threading.Lock() for key in CONTEXTS}
         self._engines = {}
         self._custom_display = None
         self._base_display = None
@@ -150,12 +156,12 @@ class EngineFactories(dict):
         return {context_key(mode, season): dict(available=False, prepared=not CONTEXTS[context_key(mode, season)].registered,
                     season=season, mode=mode, contextKey=context_key(mode, season),
                     reason="resource-validation-pending" if CONTEXTS[context_key(mode, season)].registered else f"season-resources-unavailable:{season}")
-                for season in SEASONS for mode in self.MODES}
+                for season in SEASONS for mode in modes_for_season(season)}
 
     def capabilities(self, season="s0"):
         season = normalize_season(season)
         with self._lock:
-            return {mode: copy.deepcopy(self._reports[context_key(mode, season)]) for mode in self.MODES}
+            return {mode: copy.deepcopy(self._reports[context_key(mode, season)]) for mode in modes_for_season(season)}
 
     def context_capabilities(self):
         with self._lock:
@@ -188,7 +194,7 @@ class EngineFactories(dict):
             base(map_id, floor, reference, mode)) if base is not None else None
 
     def prepare(self, cancelled=None, *, season="s0"):
-        for mode in self.MODES:
+        for mode in modes_for_season(season):
             if cancelled and (cancelled.is_set() if hasattr(cancelled, "is_set") else cancelled()):
                 break
             try:
@@ -207,17 +213,30 @@ class EngineFactories(dict):
     def _resource_binding(self, mode, season="s0"):
         """Resolve one declared context, never discover or combine season roots.
 
-        Only the legacy S0 binding is registered today. New registrations must
-        supply independently validated resources, not flip the display catalog.
+        S0 keeps its legacy root. S1 resolves only an exact native mode root and
+        validates its declaration before cache lookup; no directory discovery.
         """
         context = SeasonContext(season=season, mode=mode)
-        if season != "s0" or not context.registered:
+        if not context.registered:
             raise ProviderUnavailable(f"season-resources-unavailable:{season}")
-        return ProviderResourceBinding(context=context, root=self.root)
+        if season == "s1":
+            from s1_native_resources import registration
+            root = self.context_roots.get(context.key, self.root / "seasons/s1" / mode)
+            try:
+                registration(root, mode)
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                raise ProviderUnavailable(f"season-resources-unavailable:s1:{mode}:{error}") from error
+            return ProviderResourceBinding(context=context, root=root)
+        return ProviderResourceBinding(context=context, root=self.context_roots.get(context.key, self.root))
 
     def _get(self, mode, season="s0"):
         season = normalize_season(season)
-        binding = self._resource_binding(mode, season)
+        try:
+            binding = self._resource_binding(mode, season)
+        except ProviderUnavailable as error:
+            with self._lock:
+                self._reports[context_key(mode, season)].update(available=False, prepared=True, reason=str(error))
+            raise
         key = binding.context.key
         with self._build_locks[key]:
             with self._lock:
@@ -245,7 +264,9 @@ class EngineFactories(dict):
                                        season=season, mode=mode, contextKey=key,
                                        mapCount=len(engine.pack.maps), floors=list(engine.identity_floors),
                                        liveAuthorization=False, resourceRoot=str(binding.root),
-                                       inventory=getattr(engine, "qt_resource_inventory", {}))
+                                       inventory=getattr(engine, "qt_resource_inventory", {}),
+                                       liveGaps=list(getattr(engine, "qt_live_gaps", ())),
+                                       liveReady=season == "s0" or bool(getattr(engine, "qt_live_ready", False)))
             return engine
 
     def _build(self, mode, *, season="s0"):
@@ -261,7 +282,20 @@ class EngineFactories(dict):
         root = binding.root
         native = None
         catalog_error = ""
-        if mode == "nightmare":
+        if season == "s1":
+            from s1_native_resources import S1NativeContext
+            from difficult_native_identity import NativeDifficultPack, NativeDifficultCandidateEngine
+            native = S1NativeContext(root, mode)
+            pack = NativeDifficultPack(root, native.interfaces["identityPack"], display_context=native,
+                                       expected_mode=mode, expected_season=season)
+            native.validate_identity_pack(pack)
+            resources, adapters, catalog = native.resources, native.adapters, native.catalog
+            entry_relative = native.interfaces["identityEntries"]
+            entry_root = native.local(entry_relative)
+            neutral, version_pack = native.neutral_relative, native.version_pack
+            profile, exit_icon = "shared-structure", None
+            engine_type = NativeDifficultCandidateEngine
+        elif mode == "nightmare":
             raw = _read(root, "references/nightmare-map-pack.json")
             # NightmarePack supports developer/environment source roots. Reject
             # those manifests before constructing it, keeping every path local.
@@ -313,7 +347,7 @@ class EngineFactories(dict):
             engine_type = NativeDifficultCandidateEngine
         for name in ("entries.json", "side-entries.json"):
             _read(root, entry_root.relative_to(root) / name)
-        if not exit_icon.is_file():
+        if exit_icon is not None and not exit_icon.is_file():
             raise ProviderUnavailable(f"missing-resource:{exit_icon.relative_to(root)}")
         # Production ranking may read the original exemplar/history store.
         # Constructor performs no IO; ranking submits no human-label writes.
@@ -322,7 +356,7 @@ class EngineFactories(dict):
         memory_root = (runtime_paths().memory_root(mode, season) if PRODUCTION else
                        root / ".qt-saved-frame-memory" / mode if season == "s0" else
                        root / ".qt-saved-frame-memory" / season / mode)
-        if mode == "difficult":
+        if mode == "difficult" and season == "s0":
             map_ui = _load_difficult_map_ui(native.local(native.interfaces["uiControls"]))
         else:
             map_ui = None
@@ -375,6 +409,12 @@ class EngineFactories(dict):
         engine.qt_adapters = adapters
         engine.qt_catalog = catalog
         engine.qt_native_context = native
+        engine.qt_season = season
+        engine.qt_live_gaps = tuple(getattr(native, "live_gaps", ()))
+        engine.qt_live_ready = not engine.qt_live_gaps
+        if season == "s1":
+            engine.qt_optional_displays = None
+            return engine
         from optional_author_displays import OptionalAuthorDisplays
         optional = OptionalAuthorDisplays(root, pack, catalog, adapters, versions, mode=mode)
         engine.qt_optional_displays = optional
@@ -384,9 +424,9 @@ class EngineFactories(dict):
         return engine
 
 
-def build_engine_factories(resource_root):
+def build_engine_factories(resource_root, *, context_roots=None):
     """Pass the exact sandbox ``_internal`` path; no parent/root discovery."""
-    return EngineFactories(resource_root)
+    return EngineFactories(resource_root, context_roots=context_roots)
 
 
 def bind_identity_context(engine, *, priority, context):

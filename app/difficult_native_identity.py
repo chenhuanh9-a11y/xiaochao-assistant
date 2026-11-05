@@ -14,13 +14,16 @@ class NativeDifficultPack:
     filter = NightmarePack.filter
     layer_role = 'structure-reference'
 
-    def __init__(self, root, manifest_relative, *, display_context=None):
+    def __init__(self, root, manifest_relative, *, display_context=None, expected_mode=None, expected_season=None):
+        self.mode = expected_mode or type(self).mode
         self.resource_root = self.source_root = Path(root).resolve()
         self.display_context = display_context
         self.manifest_path = self.local(manifest_relative)
         self.raw = json.loads(self.manifest_path.read_text(encoding='utf-8'))
         if self.raw.get('schemaVersion') != 1 or self.raw.get('mode') != self.mode:
             raise ValueError('native difficult identity pack is incompatible')
+        if expected_season is not None and self.raw.get('season') != expected_season:
+            raise ValueError('native identity season mismatch')
         self.pack_id = self.raw['packId']
         self.display_name = self.raw.get('displayName', '困难 · 原生结构')
         self.floors = tuple(map(str, self.raw['floors']))

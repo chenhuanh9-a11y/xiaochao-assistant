@@ -102,6 +102,9 @@ class QtClient:
         self.custom_galleries = CustomGalleryService(self.sandbox)
         self.route_plaza = RoutePlazaService(self.sandbox, self.custom_galleries)
         self.custom_display = CustomGalleryDisplay(self.custom_galleries)
+        self.custom_display.set_point_numbers(self.settings.persistedValues.get("routePointNumbers", False))
+        self.settings.saved.connect(lambda: self.custom_display.set_point_numbers(
+            self.settings.persistedValues.get("routePointNumbers", False)))
         from client_capture_exclusion import QtCaptureExclusion
         self.capture_exclusion = QtCaptureExclusion(parent=app,
             is_closing=lambda: self._closed or bool(getattr(getattr(self, "coordinator", None), "closing", False)))
@@ -229,6 +232,7 @@ class QtClient:
         from client_floor_region import FloorRegionImages, FloorRegionService
         self.floor_region_images = FloorRegionImages()
         self.floor_region = FloorRegionService(self.runtime, self.settings, self.floor_region_images)
+        self.session.changed.connect(self.floor_region.invalidateContext)
         self.engine = QQmlApplicationEngine()
         self.engine.addImageProvider("live", self.images)
         self.engine.addImageProvider("floorregion", self.floor_region_images)

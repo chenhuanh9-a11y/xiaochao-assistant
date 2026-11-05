@@ -252,6 +252,11 @@ def scenario(name, root):
                     assert "start_round" not in state["availableCommands"], state
                     select("s0")
                     wait(ready, "rapid S0 return")
+                # A preparation timer queued while S1 was selected may still
+                # inspect the now-cached S0 context once. Drain that bounded
+                # scheduled work before testing that idle does not retry.
+                wait(lambda: idle() and not client._initialize_timer.isActive(),
+                     "queued preparation drained after rapid S0 return")
                 count = len(calls)
                 QTest.qWait(500)
                 assert len(calls) == count, (count, calls)
@@ -273,6 +278,11 @@ def scenario(name, root):
             elif name == "failed-close":
                 wait(lambda: idle() and all(x["prepared"] for x in client.providers.capabilities().values()), "failed preparation complete")
                 assert "start_round" not in client.session.snapshot["availableCommands"]
+                # A preparation timer queued while S1 was selected may still
+                # inspect the now-cached S0 context once. Drain that bounded
+                # scheduled work before testing that idle does not retry.
+                wait(lambda: idle() and not client._initialize_timer.isActive(),
+                     "queued preparation drained after rapid S0 return")
                 count = len(calls)
                 QTest.qWait(500)
                 assert len(calls) == count == 1, calls

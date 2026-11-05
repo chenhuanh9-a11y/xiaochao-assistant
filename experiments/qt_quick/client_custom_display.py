@@ -29,6 +29,8 @@ class CustomGalleryDisplay:
         self.service = service
         self._lock = threading.RLock()
         self._layers = {}
+        self._point_numbers = False
+        self._numbers_generation = 0
         self._last_error = ""
         from base_map_display import BaseMapDisplay
         self._base_display = BaseMapDisplay()
@@ -73,6 +75,15 @@ class CustomGalleryDisplay:
             self._layers.clear()
         self._base_display.clear()
 
+    def set_point_numbers(self, enabled):
+        """UI-owned saved preference; workers use a locked, versioned snapshot."""
+        with self._lock:
+            if self._point_numbers == enabled:
+                return
+            self._point_numbers = enabled
+            self._numbers_generation += 1
+            self._layers.clear()
+
     def base_layer(self, map_id, floor, reference, mode, season="s0"):
         """Original no-route base pixels; caller owns missing-author eligibility."""
         if normalize_season(season) != "s0" or mode != "nightmare":
@@ -115,17 +126,19 @@ class CustomGalleryDisplay:
             library.validate_reference(map_id, str(floor), reference.clean_mask)
             manifest_hash = hashlib.sha256((library.root / "manifest.json").read_bytes()).hexdigest()
             route_hash = _route_hash(state["points"])
+            with self._lock:
+                point_numbers, numbers_generation = self._point_numbers, self._numbers_generation
             reference_hash = mask_sha256(reference.clean_mask)
             identity = dict(season=season, kind="custom-gallery", galleryId=gallery_id, libraryVersion=library.version,
                 libraryManifestSha256=manifest_hash, routeSha256=route_hash,
-                mapId=str(map_id), floor=str(floor), referencePath=str(reference.path),
+                pointNumbers=point_numbers, mapId=str(map_id), floor=str(floor), referencePath=str(reference.path),
                 referenceBinding=deepcopy(binding), referenceMaskSha256=reference_hash,
                 structureVersionKey=reference.metadata.get("structureVersionKey"))
             key = json.dumps(identity, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
             with self._lock:
                 cached = self._layers.get(key)
             if cached is None:
-                pixels = render_game_layer(library, str(map_id), str(floor), state["points"])
+                pixels = render_game_layer(library, str(map_id), str(floor), state["points"], point_numbers=point_numbers)
                 if (pixels.dtype != np.uint8 or pixels.ndim != 3 or pixels.shape[2] != 4
                         or tuple(pixels.shape[:2]) != tuple(reference.shape)):
                     raise ValueError("custom-gallery-native-canvas-mismatch")
@@ -144,6 +157,8 @@ class CustomGalleryDisplay:
                 raise ValueError("custom-gallery-changed-during-render")
             library.validate_reference(map_id, str(floor), reference.clean_mask)
             with self._lock:
+                if numbers_generation != self._numbers_generation:
+                    raise ValueError("custom-gallery-number-preference-changed")
                 self._layers[key] = cached
                 while len(self._layers) > 6:
                     self._layers.pop(next(iter(self._layers)))

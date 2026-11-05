@@ -19,7 +19,8 @@ class SeasonCatalogTests(unittest.TestCase):
         rows = season_options()
         self.assertEqual([r['label'] for r in rows], ['S0', 'S1'])
         self.assertTrue(rows[0]['capabilities']['nightmare']['registered'])
-        self.assertFalse(rows[1]['capabilities']['nightmare']['registered'])
+        self.assertTrue(rows[1]['capabilities']['nightmare']['registered'])
+        self.assertEqual(rows[1]['capabilities']['nightmare']['status'], 'resource-validation-required')
         rows[0]['name'] = 'mutated'
         rows[0]['capabilities']['nightmare']['registered'] = False
         self.assertEqual(season_options()[0]['name'], '')
@@ -64,7 +65,7 @@ from client_custom_display import CustomGalleryDisplay
 from backend import Backend
 from map_resource_context import load_browse_context
 app = QGuiApplication([])
-assert normalize_season('s2') == 's2' and len(CONTEXTS) == 6
+assert normalize_season('s2') == 's2' and len(CONTEXTS) == 7
 assert season_options()[-1]['label'] == 'S2 · Fixture / Future'
 assert not season_options()[-1]['capabilities']['nightmare']['registered']
 try: normalize_season('s9')

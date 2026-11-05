@@ -10,9 +10,9 @@ from test_client_settings import SettingsTests
 
 
 class ContextTests(unittest.TestCase):
-    def test_four_contexts_are_distinct_and_only_s0_registered(self):
-        self.assertEqual(set(CONTEXTS), {"s0:nightmare", "s0:difficult", "s1:nightmare", "s1:difficult"})
-        self.assertEqual(sum(c.registered for c in CONTEXTS.values()), 2)
+    def test_five_contexts_are_distinct_and_registration_is_declared(self):
+        self.assertEqual(set(CONTEXTS), {"s0:nightmare", "s0:difficult", "s1:nightmare", "s1:difficult", "s1:difficulty2"})
+        self.assertEqual(sum(c.registered for c in CONTEXTS.values()), 5)
         for bad in ("S1", "s2", "", None):
             with self.assertRaises(ValueError):
                 SeasonContext(bad, "nightmare")
@@ -33,7 +33,7 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(paths.memory_root("nightmare"), paths.work_root / "nightmare-memory")
         self.assertEqual(paths.settings_path, paths.work_root / 'nightmare-memory/ui-settings.json')
         roots = {paths.memory_root(c.mode, c.season) for c in CONTEXTS.values()}
-        self.assertEqual(len(roots), 4)
+        self.assertEqual(len(roots), 5)
         self.assertEqual(paths.memory_root("nightmare", "s1"), paths.work_root / 'seasons/s1/nightmare-memory')
         with self.assertRaises(ValueError):
             paths.memory_root("nightmare", "../../escape")

@@ -33,7 +33,7 @@ class SeasonResourceTests(unittest.TestCase):
             factories.prepare(season="s1")
             build.assert_not_called()
         self.assertEqual(set(factories.context_capabilities()),
-                         {f"{season}:{mode}" for season in ("s0", "s1") for mode in factories.MODES})
+                         {f"{season}:{mode}" for season in ("s0", "s1") for mode in factories.MODES} | {"s1:difficulty2"})
         self.assertFalse(factories.capabilities()["nightmare"]["prepared"])
         self.assertTrue(factories.capabilities("s1")["nightmare"]["prepared"])
 

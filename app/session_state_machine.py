@@ -67,7 +67,16 @@ def locked_map_canvas_without_floor_is_authorized(
     )
 
 
-def resolve_runtime_floor(observed: int | None, manual: str | None) -> tuple[str, str]:
+def resolve_runtime_floor(observed: int | None, manual: str | None, *, mode="nightmare", season="s0") -> tuple[str, str]:
+    if season != "s0":
+        from floor_contract import floor_contract
+        contract = floor_contract(mode, season=season)
+        if contract is None:
+            return "", "floor-contract-unavailable"
+        if manual in contract.floor_ids:
+            return manual, "manual"
+        floor = contract.floor_id_for(observed)
+        return (floor, "automatic") if floor is not None else ("", "manual-required")
     if manual in {"1", "2", "B1"}:
         return manual, "manual"
     if observed == -1:
@@ -81,6 +90,7 @@ def stable_floor_from_observations(
     observations: list[int | None],
     *,
     strong_latest: bool = False,
+    allowed_values=(-1, 1, 2),
 ) -> int | None:
     """Use the latest valid detector reading without waiting for more frames.
 
@@ -88,7 +98,7 @@ def stable_floor_from_observations(
     remains compatible with callers; detector validity is the confirmation.
     """
     latest = observations[-1] if observations else None
-    return latest if latest in (-1, 1, 2) else None
+    return latest if type(latest) is int and latest in allowed_values else None
 
 
 def map_closed_after_probe_misses(previous_misses: int, probe_open: bool, required: int = 2) -> tuple[int, bool]:

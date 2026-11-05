@@ -1,8 +1,8 @@
 """Shared season identity; difficulty remains the legacy ``mode`` value.
 
-S0 owns the established resource contracts. S1 is deliberately unregistered
-until independently validated season-specific resources are supplied. This
-registry is an availability declaration, never permission to borrow S0 assets.
+S0 owns the established resource contracts. S1 declares exact native contracts
+whose independent resources still require provider validation. This registry
+never permits borrowing another context's assets or live detector evidence.
 """
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -10,6 +10,11 @@ import re
 from season_catalog import SEASON_DEFINITIONS
 
 MODES = ("nightmare", "difficult")
+RUNTIME_MODES = (*MODES, "difficulty2")
+
+
+def modes_for_season(season):
+    return RUNTIME_MODES if season == "s1" else MODES
 
 
 def validate_catalog(definitions):
@@ -27,9 +32,10 @@ def validate_catalog(definitions):
         if not isinstance(name, str) or len(name) > 80 or any(ord(c) < 32 for c in name):
             raise ValueError("Invalid season display name")
         resources = row["resources"]
-        if (not isinstance(resources, dict) or set(resources) != set(MODES)
-                or any(value not in ("legacy-s0", "unregistered") for value in resources.values())
-                or (season != "s0" and any(value != "unregistered" for value in resources.values()))):
+        if (not isinstance(resources, dict) or set(resources) != set(modes_for_season(season))
+                or any(value not in ("legacy-s0", "native-s1", "unregistered") for value in resources.values())
+                or any(value == "legacy-s0" and season != "s0" or value == "native-s1" and season != "s1"
+                       for value in resources.values())):
             raise ValueError("Season catalog cannot grant unregistered resource capability")
         seen.add(season)
         rows.append(MappingProxyType(dict(id=season, number=number, name=name.strip(),
@@ -51,9 +57,9 @@ def season_label(season):
 
 def season_options():
     return [dict(id=row["id"], number=row["number"], name=row["name"], label=season_label(row["id"]),
-        capabilities={mode: dict(registered=row["id"] == "s0" and row["resources"][mode] == "legacy-s0",
-            status="resource-validation-required" if row["id"] == "s0" and row["resources"][mode] == "legacy-s0" else "unregistered")
-            for mode in MODES}) for row in CATALOG]
+        capabilities={mode: dict(registered=row["resources"][mode] in ("legacy-s0", "native-s1"),
+            status="resource-validation-required" if row["resources"][mode] != "unregistered" else "unregistered")
+            for mode in modes_for_season(row["id"])}) for row in CATALOG]
 
 
 def normalize_season(value="s0"):
@@ -73,7 +79,7 @@ class SeasonContext:
 
     def __post_init__(self):
         normalize_season(self.season)
-        if self.mode not in MODES:
+        if self.mode not in modes_for_season(self.season):
             raise ValueError(f"Unknown game mode: {self.mode}")
 
     @property
@@ -82,15 +88,15 @@ class SeasonContext:
 
     @property
     def label(self):
-        return f"{season_label(self.season)} {'噩梦' if self.mode == 'nightmare' else '困难'}"
+        return f"{season_label(self.season)} " + {"nightmare": "噩梦", "difficult": "困难", "difficulty2": "普通"}[self.mode]
 
     @property
     def registered(self):
-        return self.season == "s0" and next(row for row in CATALOG if row["id"] == self.season)["resources"][self.mode] == "legacy-s0"
+        return next(row for row in CATALOG if row["id"] == self.season)["resources"][self.mode] in ("legacy-s0", "native-s1")
 
 
 CONTEXTS = MappingProxyType({context_key(mode, season): SeasonContext(season, mode)
-                             for season in SEASONS for mode in MODES})
+                             for season in SEASONS for mode in modes_for_season(season)})
 
 
 def selected_profile(values, mode=None, season=None, default=""):

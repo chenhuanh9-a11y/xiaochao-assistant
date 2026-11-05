@@ -83,11 +83,14 @@ class PlazaTests(unittest.TestCase):
                                                default_path=self.root / "none.json")
         until(lambda: not self.galleries.busy and bool(self.galleries.snapshot["galleries"]))
         self.service = RoutePlazaService(self.root, self.galleries)
+        from client_settings import SettingsService
+        self.settings = SettingsService(self.root)
         self.threads = []
         self.service.changed.connect(lambda: self.threads.append(threading.get_ident()))
         self.addCleanup(self.cleanup)
 
     def cleanup(self):
+        self.settings.shutdown()
         self.service.shutdown()
         self.galleries.shutdown()
         APP.processEvents()
@@ -518,6 +521,7 @@ class PlazaTests(unittest.TestCase):
         router = Router()
         engine.rootContext().setContextProperty("routePlazaService", self.service)
         engine.rootContext().setContextProperty("clientCoordinator", router)
+        engine.rootContext().setContextProperty("settingsService", self.settings)
         warnings = []
         engine.warnings.connect(lambda rows: warnings.extend(str(row) for row in rows))
         engine.loadData(b'''import QtQuick
@@ -596,7 +600,7 @@ class PlazaCompositionTests(unittest.TestCase):
         self.assertFalse(result["startupRequests"])
 
 
-def composition():
+def composition(*, submitting=False):
     """Actual eight-window QtClient; native input/capture/resource engines are fixtures."""
     from client import QtClient
     from test_client_recapture_focus import RecaptureFocusTests
@@ -613,7 +617,11 @@ def composition():
     providers = Factories(nightmare=lambda: fixtures.fixture_engine(), difficult=lambda: fixtures.fixture_engine("difficult"))
     client = None
     gate, entered = threading.Event(), threading.Event()
-    server = FakeServer()
+    if submitting:
+        from test_route_submission import SubmissionServer, write_submission_resource
+        server = SubmissionServer()
+    else:
+        server = FakeServer()
     try:
         WORK_ROOT.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="qt-plaza-composition-", dir=WORK_ROOT) as directory, \
@@ -621,7 +629,10 @@ def composition():
             root = Path(directory)
             (root / ".qt-lab-owner").write_text("qt-quick-isolated-v1")
             library = root / "_internal/assets/custom-maps"
-            write_package(library)
+            if submitting:
+                write_submission_resource(library)
+            else:
+                write_package(library)
             manifest = library / "manifest.json"
             data = json.loads(manifest.read_text())
             data["maps"][0]["templateId"] = "nightmare-layout-01"
@@ -657,7 +668,17 @@ def composition():
             page = item(client.main, "routePlazaPage")
             click("nav_plaza")
             assert item(client.main, "routePlazaPage") is page
+            # Real root wiring: the saved intent reaches display workers before
+            # runtime presentation settings.
+            assert not client.settings.persistedValues["routePointNumbers"]
+            click("routePointNumbersSwitch")
+            until(lambda: not client.settings.busy and client.settings.persistedValues["routePointNumbers"])
+            assert client.custom_display._point_numbers
+            assert client.runtime._settings["routePointNumbers"]
             capture("qt-route-plaza.png")
+            click("routePointNumbersSwitch")
+            until(lambda: not client.settings.busy and not client.settings.persistedValues["routePointNumbers"])
+            assert not client.custom_display._point_numbers
             client.main.resize(650, 470)
             QTest.qWait(250)
             capture("qt-route-plaza-small.png")
@@ -676,6 +697,37 @@ def composition():
             assert client.route_plaza.snapshot["username"] == "alice", client.route_plaza.snapshot
             until(lambda: not item(client.main, "accountDialog").property("visible"))
             QTest.qWait(250)
+            if submitting:
+                client.custom_galleries.createGallery("投稿测试")
+                until(lambda: not client.custom_galleries.busy)
+                client.custom_galleries.addPoint(45, 45)
+                until(lambda: not client.custom_galleries.busy)
+                saved = client.custom_galleries.path.read_bytes()
+                click("plazaSubmit")
+                until(lambda: item(client.main, "routeSubmissionDialog").property("opened"))
+                QTest.qWait(100)
+                click("submissionTitle")
+                guarded = guarded and client.coordinator.textEntryActive
+                assert guarded, "submission text field did not suspend game shortcuts"
+                item(client.main, "submissionTitle").setProperty("text", "完整客户端投稿")
+                capture("qt-route-submit.png")
+                server.gate = "/object"
+                server.release.clear()
+                click("submissionSubmit")
+                until(server.entered.is_set)
+                client.coordinator.requestClose()
+                APP.processEvents()
+                assert not client.coordinator.closeReady, "submission was not drained"
+                server.release.set()
+                until(lambda: client.coordinator.closeReady, 10)
+                assert client.custom_galleries.path.read_bytes() == saved, "upload changed the gallery"
+                assert not any(call[1].endswith("/submit") for call in server.calls), "close submitted a late review"
+                client.shutdown()
+                client.engine.deleteLater()
+                QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+                print(json.dumps(dict(closed=client._closed, qmlErrors=list(client.warnings),
+                                      inputGuard=guarded, startupRequests=startup_requests)))
+                return
             original = route_plaza.fetch_archive
             def blocked(*args):
                 entered.set()

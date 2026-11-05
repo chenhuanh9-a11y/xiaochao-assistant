@@ -48,10 +48,11 @@ _OPENER = request.build_opener(_NoRedirect)
 
 
 class AccountError(Exception):
-    def __init__(self, message: str, status: int = 0, code: str = ""):
+    def __init__(self, message: str, status: int = 0, code: str = "", *, upload_identity=None):
         super().__init__(message)
         self.status = status
         self.code = code
+        self.upload_identity = upload_identity
 
 
 def api_root() -> str:
@@ -96,8 +97,18 @@ def call(method: str, path: str, body=None, *, token: str | None = None, install
         with _OPENER.open(req, timeout=TIMEOUT_SECONDS) as response:
             payload = response.read(MAX_RESPONSE_BYTES + 1)
     except error.HTTPError as failure:
-        message, code = _error_message(failure.code, failure.read(64 * 1024))
-        raise AccountError(message, failure.code, code) from None
+        payload = failure.read(64 * 1024)
+        message, code = _error_message(failure.code, payload)
+        upload_identity = None
+        if failure.code == 409:
+            try:
+                detail = json.loads(payload).get("detail")
+                if (isinstance(detail, dict) and isinstance(detail.get("package_id"), str)
+                        and type(detail.get("package_revision")) is int and detail["package_revision"] > 0):
+                    upload_identity = (str(uuid.UUID(detail["package_id"])), detail["package_revision"])
+            except (ValueError, AttributeError, TypeError):
+                pass
+        raise AccountError(message, failure.code, code, upload_identity=upload_identity) from None
     except (error.URLError, TimeoutError, OSError):
         raise AccountError("网络连接失败，请检查网络后重试") from None
     if len(payload) > MAX_RESPONSE_BYTES:
@@ -503,6 +514,12 @@ class AccountService:
         with self._lock:
             self._check_generation(generation)
         return result
+
+    @property
+    def identity_context(self):
+        """Account identity epoch, stable through token refresh; no credentials."""
+        with self._lock:
+            return self._generation, self._session.username if self._session else None
 
 
 def quoted(value: str) -> str:

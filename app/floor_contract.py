@@ -1,7 +1,8 @@
 """Immutable, reviewed floor identities; not resource or detector authority.
 
-Only the existing S0 contracts are registered. A season's display catalog does
-not establish its floors. Unknown contexts must not borrow S0's button order.
+S0 horizontal and source-reviewed S1 vertical identities are registered. A
+display catalog does not establish detector geometry or pixel evidence.
+Unknown contexts must not borrow S0's button order.
 This module performs no IO and does not select maps, poses or resources.
 """
 from dataclasses import dataclass
@@ -49,6 +50,9 @@ _SECOND = FloorDefinition(2, "2")
 _CONTRACTS = MappingProxyType({
     ("s0", "nightmare"): FloorContract("s0", "nightmare", (_BASEMENT, _FIRST, _SECOND), "horizontal"),
     ("s0", "difficult"): FloorContract("s0", "difficult", (_FIRST, _SECOND), "horizontal"),
+    **{("s1", mode): FloorContract("s1", mode,
+        tuple(FloorDefinition(value, str(value)) for value in (-1, -2, -3, -4)), "vertical")
+        for mode in ("difficulty2", "difficult", "nightmare")},
 })
 
 
@@ -64,4 +68,4 @@ def floor_contract(mode, *, season="s0"):
 S0_MODE_FLOORS = {mode: contract.observed_values
                   for (season, mode), contract in _CONTRACTS.items() if season == "s0"}
 S0_FLOOR_NAMES = {floor.observed_value: floor.floor_id
-                  for contract in _CONTRACTS.values() for floor in contract.floors}
+                  for (season, mode), contract in _CONTRACTS.items() if season == "s0" for floor in contract.floors}

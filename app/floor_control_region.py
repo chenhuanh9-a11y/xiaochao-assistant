@@ -162,6 +162,8 @@ def read_floor_in_region(frame: np.ndarray, region, mode: str, *, season="s0") -
     box = normalized_region(region)
     if floors is None:
         return _unread("unsupported-mode" if season == "s0" else "floor-contract-unavailable")
+    if contract.control_axis != "horizontal":
+        return _unread("vertical-floor-detector-unvalidated")
     if box is None or frame is None or getattr(frame, "ndim", 0) != 3:
         return _unread("region-invalid")
     gray, origin = _crop(frame, box)
@@ -184,6 +186,8 @@ def locate_floor_row(frame: np.ndarray, mode: str, *, season="s0") -> dict:
     floors = contract.observed_values if contract is not None else None
     if floors is None:
         return _unread("unsupported-mode" if season == "s0" else "floor-contract-unavailable")
+    if contract.control_axis != "horizontal":
+        return _unread("vertical-floor-detector-unvalidated")
     if frame is None or getattr(frame, "ndim", 0) != 3:
         return _unread("region-invalid")
     gray, origin = _crop(frame, SEARCH_AREA)
@@ -240,7 +244,8 @@ def apply_floor_region(settings, mode, frame, floor_read: dict) -> dict:
     # season. Legacy callers without gameSeason retain the exact S0 path.
     season = settings.get("gameSeason", "s0")
     if season != "s0":
-        return dict(_unread("floor-contract-unavailable"), floorSource="unavailable")
+        contract = floor_contract(mode, season=season)
+        return dict(_unread("vertical-floor-detector-unvalidated" if contract is not None else "floor-contract-unavailable"), floorSource="unavailable")
     choice = settings.get("floorControlMode", "auto")
     if choice == "fixed":
         return dict(floor_read, floorSource="fixed")

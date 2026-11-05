@@ -54,6 +54,12 @@ def editor_inventory(source, expected_manifest):
     verify_package(source, manifest)  # Existing producer's path/hash contract.
     names = {"manifest.json", "exit-icon.png"}
     for item in manifest["maps"]:
+        if item.get("routeSubmission"):
+            binding = item["routeSubmission"]
+            path = checked_file(source, binding["path"])
+            if digest(path) != binding["sha256"]:
+                raise ValueError("submission navigation hash mismatch")
+            names.add(binding["path"])
         for floor_id, floor in item["floors"].items():
             for kind in ("image", "topology"):
                 names.add(floor[kind])

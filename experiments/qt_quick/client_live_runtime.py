@@ -1259,7 +1259,7 @@ class LiveRuntime:
             self._game_floor_intent = dict(cycleId=self._cycle, floor=clicked,
                 awaitingObservation=True, expiresAt=created + MANUAL_FLOOR_HOLD_SECONDS)
             result = dict(success=True, reason="game-floor-control-intent", clickedFloor=clicked,
-                clickedFloorId="B1" if clicked == -1 else str(clicked), captureRequired=True,
+                clickedFloorId=self._floor_contract().floor_id_for(clicked), captureRequired=True,
                 expiresAt=self._game_floor_intent["expiresAt"])
         self._notify("game-floor-control-intent", reason="awaiting-current-highlight", clickedFloor=clicked,
             expiresAt=result["expiresAt"])
@@ -1270,15 +1270,15 @@ class LiveRuntime:
         with self._lock:
             if obsolete is not None and obsolete():
                 return None
-            evidence = read_floor_evidence(floor_read, self._floor_observations, explicit_floor=explicit_floor)
+            contract = self._floor_contract()
+            evidence = read_floor_evidence(floor_read, self._floor_observations, explicit_floor=explicit_floor, contract=contract)
             self._floor_observations = list(evidence.observations)
-            self._observed_floor = ("B1" if evidence.observed == -1 else str(evidence.observed)
-                                    if evidence.observed in (1, 2) else "")
+            self._observed_floor = (contract.floor_id_for(evidence.observed) or "") if contract else ""
             policy = decide_floor_transition(evidence, current_floor=self._floor,
                 floor_required=self._floor_required, manual_override=self._manual_override,
                 hard_locked=self._floor_hard_locked, hold_until=self._manual_hold_until,
                 cycle_id=self._cycle if self._map_open else self._cycle + 1,
-                game_intent=self._game_floor_intent, now=self._monotonic())
+                game_intent=self._game_floor_intent, now=self._monotonic(), contract=contract)
             self._last_floor_policy = policy.reason
             if self._diagnostics is not None:
                 self._diagnostics.record("floor-decision", reason=policy.reason, season=self._season, mode=self._mode,
@@ -1301,9 +1301,15 @@ class LiveRuntime:
 
     @staticmethod
     def _floor_read_conflicts(floor_read, target):
+        from floor_contract import floor_contract
+        contract = floor_contract(floor_read.get("mode", "nightmare"), season=floor_read.get("season", "s0"))
         observed = floor_read.get("selectedFloor")
-        return bool(observed in (-1, 1, 2)
-            and ("B1" if observed == -1 else str(observed)) != str(target))
+        floor = contract.floor_id_for(observed) if contract else None
+        return floor is not None and floor != str(target)
+
+    def _floor_contract(self):
+        from floor_contract import floor_contract
+        return floor_contract(self._mode, season=self._season)
 
     def _current_frame_floor_conflicts(self, target, *, frame_id=None):
         # Exact Tk V2 boundary: only the detector bound to this cycle/frame
@@ -1712,7 +1718,12 @@ class LiveRuntime:
         with self._lock:
             offline = self._offline.snapshot()
             capabilities = offline["savedFrameCapabilities"]
-            ready = capabilities[self._mode]["available"]
+            report = capabilities[self._mode]
+            saved_ready = report["available"]
+            live_gaps = tuple(report.get("liveGaps", ()))
+            if self._season != "s0" and not report.get("liveReady", False) and not live_gaps:
+                live_gaps = (f"season-live-contract-unavailable:{self._season}",)
+            ready = saved_ready and not live_gaps
             guarded = (self._evidence_kind != "live-client-capture"
                        or callable(getattr(self._capture, "is_current", None)))
             # The picker is a separate intent from the advertised confirm_route
@@ -1772,7 +1783,8 @@ class LiveRuntime:
                 displayFallback=metadata.get("fallback", False), fallbackReason=metadata.get("fallbackReason", ""),
                 engineConnected=True,
                 liveEngineAvailable=bool(ready and guarded and self._capture is not None),
-                liveUnavailableReason=(f"season-resources-unavailable:{self._season}" if self._season != "s0" else
+                liveUnavailableReason=(capabilities[self._mode]["reason"] if not saved_ready else
+                                       ";".join(live_gaps) if live_gaps else
                                        "capture-context-recheck-unavailable" if not guarded else
                                        "capture-provider-unavailable" if self._capture is None else
                                        capabilities[self._mode]["reason"] if not ready else ""),
@@ -1933,8 +1945,10 @@ class LiveRuntime:
         """Update explicit solver preferences; mode/profile use set_context."""
         with self._lock:
             variant_changed = settings.get("zhan10CoffinVariantId", "variant-01") != self._settings.get("zhan10CoffinVariantId", "variant-01")
+            numbers_changed = settings.get("routePointNumbers", False) != self._settings.get("routePointNumbers", False)
+            numbers_display_changed = numbers_changed and self._profile.startswith("custom:")
             self._settings = copy.deepcopy(dict(settings))
-            if variant_changed:
+            if variant_changed or numbers_display_changed:
                 self._display_generation = getattr(self, "_display_generation", 0) + 1
                 if (self._profile, self._map_id, str(self._floor)) == ("zhan10-coffin", "nightmare-01", "1"):
                     # Retain identity, floor and canonical pose. Only presentation
@@ -1946,6 +1960,11 @@ class LiveRuntime:
             self._publish_game_pointer_context_locked()
         if changed:
             self._notify("aligned-visibility-changed", reason="settings-updated")
+        if numbers_display_changed:
+            # Retain the verified pose for display-only reprojection. Public
+            # payloads reject the old generation immediately, including while
+            # a slower worker is still preparing the replacement pixels.
+            self._notify("render-revoked", reason="route-point-numbers-changed")
 
     def manual_map_catalog(self):
         """Read-only picker catalog for the current mode/profile.
@@ -2153,7 +2172,8 @@ class LiveRuntime:
     def render_payload(self, token):
         with self._lock:
             row = self._render
-            if row is None or row["token"] != token or not self._display_current(row):
+            if (row is None or row["token"] != token or not self._display_current(row)
+                    or row.get("displayGeneration") != getattr(self, "_display_generation", 0)):
                 return None
             if not self._capture_is_current(self._render_capture_context, row.get("captureGeneration")):
                 self.invalidate("capture-context-changed")
@@ -2579,7 +2599,8 @@ class LiveRuntime:
             # A convenience season change has no authority to carry another
             # season's author preference; explicit target preferences still win.
             profile = str(payload.get("profileId", self._profile if season == self._season else ""))
-            if mode not in ("nightmare", "difficult"):
+            from season_context import modes_for_season
+            if mode not in modes_for_season(season):
                 return self._receipt(action, payload, success=False, reason="unsupported-mode")
             with self._lock:
                 # Cancellation may arrive while this mutator waits for state ownership.
@@ -2608,7 +2629,7 @@ class LiveRuntime:
                 self._mode, self._profile = mode, profile
                 self._publish_game_pointer_context_locked()
                 self._offline.dispatch("set_context", dict(season=season, mode=mode, profileId=profile))
-            if changed_profile and not changed_mode:
+            if (changed_profile or payload.get("refreshDisplay") is True) and not changed_mode:
                 return self._reproject_route_display(action, payload, cancelled)
             return self._receipt(action, payload, success=True, reason="context-updated")
         if self._cancelled(cancelled):
@@ -2669,11 +2690,15 @@ class LiveRuntime:
 
     def _get_engine(self, mode, season="s0"):
         season = normalize_season(season)
-        if season != "s0":
+        getter = getattr(self._factories, "get_engine", None)
+        if season != "s0" and not callable(getter):
             from client_providers import ProviderUnavailable
             raise ProviderUnavailable(f"season-resources-unavailable:{season}")
-        getter = getattr(self._factories, "get_engine", None)
-        return getter(mode, season) if callable(getter) else self._factories[mode]()
+        engine = getter(mode, season) if callable(getter) else self._factories[mode]()
+        if season != "s0" and not getattr(engine, "qt_live_ready", False):
+            from client_providers import ProviderUnavailable
+            raise ProviderUnavailable(";".join(getattr(engine, "qt_live_gaps", ())) or f"season-live-contract-unavailable:{season}")
+        return engine
 
     def _start(self, payload, cancelled):
         if self._capture is None:
@@ -3820,6 +3845,11 @@ class LiveRuntime:
         # Saved defaults may lead the applied context while a switch is pending
         # or after it fails. Floor authority belongs to the running context.
         settings = dict(getattr(self, "_settings", None) or {}, gameSeason=self._season)
+        if self._season == "s1":
+            unavailable = dict(selectedFloor=None, reason="s1-floor-control-detector-unvalidated",
+                confidence=0., season="s1", mode=engine.pack.mode, controlAxis="vertical",
+                controlGeometryVerified=False, floorSource="unavailable")
+            return dict(detected=False, mapOpen=None, reason=unavailable["reason"]), None, unavailable
         if engine.pack.mode == "difficult":
             result = engine.qt_map_ui.observe(frame)
             floor = str(result["floor"]) if result.get("floor") is not None else None

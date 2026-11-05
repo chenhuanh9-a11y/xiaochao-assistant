@@ -237,6 +237,8 @@ class ClientCoordinator(QObject):
         mode = values.get("gameMode", "nightmare")
         self._applied_context = self._settings_context(values)
         self._pending_context = None
+        self._pending_display_refresh = False
+        self._route_point_numbers = values.get("routePointNumbers", False)
         self._binding_signature = (values.get("hotkey"), tuple(values.get("actionHotkeys", ())))
         from client_input import NativeWindowAPI
         self._native_windows = NativeWindowAPI()
@@ -519,6 +521,9 @@ class ClientCoordinator(QObject):
             else:
                 summary = f"{label}缺少地图识别资源或资源未通过校验，请到地图资源页检查并重新导入"
             return ((mode, reason), summary)
+        if season != "s0" and not report.get("liveReady", False):
+            gaps = ";".join(report.get("liveGaps", ())) or "season-live-contract-unavailable"
+            return ((season, mode, gaps), f"{season_label(season)} 生产结构资源可离线读取，楼层控件尚未完成验证，暂不能开始实机识别")
         return None
 
     @Slot()
@@ -1318,7 +1323,8 @@ class ClientCoordinator(QObject):
 
     @Slot(str, str)
     def requestGameContext(self, season, mode):
-        if season not in SEASONS or mode not in {"nightmare", "difficult"} or self.settings.busy or self.resources.busy:
+        from season_context import modes_for_season
+        if season not in SEASONS or mode not in modes_for_season(season) or self.settings.busy or self.resources.busy:
             return
         current = self._settings_context(self.settings.persistedValues)
         if (mode, season) == (current[0], current[2]):
@@ -1646,6 +1652,8 @@ class ClientCoordinator(QObject):
         if self._closing or self._closed:
             return
         values = self.settings.persistedValues
+        numbers_changed = values.get("routePointNumbers", False) != self._route_point_numbers
+        self._route_point_numbers = values.get("routePointNumbers", False)
         signature = (values.get("hotkey"), tuple(values.get("actionHotkeys", ())))
         if signature != self._binding_signature:
             was_enabled = self.input.enabled
@@ -1660,9 +1668,13 @@ class ClientCoordinator(QObject):
         if configure:
             configure(values)
         mode, profile, season = self._settings_context(values)
-        # Mode and author reconfiguration is serialized by SessionService; don't
-        # race two independent commands with different generation tokens.
-        if (mode, profile, season) != self._applied_context:
+        if numbers_changed and str(profile).startswith("custom:"):
+            self.cancelReferenceEdit()
+            self._cancel_pending_material("route-point-numbers-changed")
+            self._clear_reference()
+            self._pending_display_refresh = True
+        # Context includes season; a display-only refresh must not erase it.
+        if (mode, profile, season) != self._applied_context or self._pending_display_refresh:
             self._cancel_pointer_drag("preferences-committed")
             if (mode, season) != (self._applied_context[0], self._applied_context[2]):
                 self._clear_reference()
@@ -1702,7 +1714,15 @@ class ClientCoordinator(QObject):
                 and (mode, season) != (self._applied_context[0], self._applied_context[2])):
             self._message = "请先结束本局，再切换游戏模式"
             return
+        if self._pending_display_refresh and (mode, profile, season) == self._applied_context:
+            if self.session.busy:
+                return
+            self._pending_display_refresh = False
+            self.session.dispatchWithPayload("set_context", dict(season=season, mode=mode, profileId=profile, refreshDisplay=True))
+            self._context_timer.stop()
+            return
         if self.session.reconfigure(mode, profile, season):
+            self._pending_display_refresh = False
             self._context_timer.stop()
             if not self.session.busy:
                 self._session_changed()
@@ -1783,7 +1803,8 @@ class ClientCoordinator(QObject):
         state = self.session.snapshot
         self._notify_session_transitions(state)
         actual_context = self.runtime.snapshot()
-        if self._pending_context and (actual_context.get("mode"), actual_context.get("profileId"), actual_context.get("season", "s0")) == self._pending_context:
+        if (self._pending_context and not self._pending_display_refresh
+                and (actual_context.get("mode"), actual_context.get("profileId"), actual_context.get("season", "s0")) == self._pending_context):
             self._applied_context = self._pending_context
             self._pending_context = None
             self._context_timer.stop()
