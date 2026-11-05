@@ -105,10 +105,10 @@ Item {
             }
             Label {
                 text: page.state.structureScanInProgress === true
-                    ? "录制研究：首个候选可先显示，后台继续扫描；扫描结束后可切换，当前仍未锁定地图。"
-                    : page.state.recordedProvisionalDisplayEnabled === true
-                    ? "录制研究：每次开图重新筛选，可信位姿自动显示候选整图；可直接切换，不代表地图身份已锁定。"
-                    : page.state.recordedStructureCandidateAvailable === true && !page.state.manualAlignmentSession
+                    ? "自动候选：首个候选可先显示，后台继续扫描；扫描结束后可切换，当前仍未锁定地图。"
+                    : page.state.candidateProvisionalDisplayEnabled === true
+                    ? "自动候选：每次开图重新筛选，可信位姿自动显示候选整图；可直接切换，不代表地图身份已锁定。"
+                    : page.state.candidateStructureAvailable === true && !page.state.manualAlignmentSession
                     ? "当前画面可读取已验证的 B1/B2 并列出结构候选；请选择并确认本局地图。"
                     : "人工选择地图；自动观察当前 B1～B4。B3/B4 未实测，识别不确定时停止贴合。默认目标不代表已观察。"
                 Layout.fillWidth: true; wrapMode: Text.WordWrap
@@ -122,7 +122,15 @@ Item {
         }
         Label {
             Layout.fillWidth: true
-            text: page.state.recordedProvisionalDisplayEnabled === true ? "显示的是未锁定候选整图，包含未知区域；无需确认才能显示。" : page.groupVisible ? "相似组内可手动切换地图；手动选择不代表已通过当前楼层的几何核对。"
+            visible: page.state.candidateProvisionalDisplayEnabled === true
+            text: page.state.evidenceKind === "recorded"
+                ? "输入来源：录制画面，无实机显示授权。"
+                : "自动候选当前支持 B1/B2；B3/B4 可用手动选图与四层自动读层。整图包含尚未探索的区域。"
+            color: "#526785"; wrapMode: Text.WordWrap
+        }
+        Label {
+            Layout.fillWidth: true
+            text: page.state.candidateProvisionalDisplayEnabled === true ? "显示的是未锁定候选整图，包含未知区域；无需确认才能显示。" : page.groupVisible ? "相似组内可手动切换地图；手动选择不代表已通过当前楼层的几何核对。"
                 : page.state.identityLocked === true ? "本局地图已确认。重新选图可解除当前地图确认。" : "核对识别候选，再确认本局地图。"
             color: "#526785"; font.family: "Microsoft YaHei UI"; font.pixelSize: 13; wrapMode: Text.WordWrap
         }
@@ -133,7 +141,7 @@ Item {
             AppButton { objectName: "recognitionNext"; visible: !page.groupVisible; text: "下一候选"; enabled: page.candidates.length > 0 && page.available("next_candidate"); onClicked: session.dispatch("next_candidate") }
             Item { Layout.fillWidth: true }
             AppButton { objectName: "recognitionReselect"; text: "重新选图"; enabled: page.available("reselect_map"); onClicked: session.dispatch("reselect_map") }
-            AppButton { objectName: "recognitionConfirm"; visible: !page.groupVisible; text: page.state.recordedProvisionalDisplayEnabled === true ? "锁定本局地图（可选）" : page.state.identityLocked === true ? "地图已确认" : "确认此地图"; primary: true; enabled: page.hasSelection && page.available("confirm_route"); onClicked: session.dispatch("confirm_route") }
+            AppButton { objectName: "recognitionConfirm"; visible: !page.groupVisible; text: page.state.candidateProvisionalDisplayEnabled === true ? "锁定本局地图（可选）" : page.state.identityLocked === true ? "地图已确认" : "确认此地图"; primary: true; enabled: page.hasSelection && page.available("confirm_route"); onClicked: session.dispatch("confirm_route") }
         }
         Rectangle {
             Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 150
@@ -254,7 +262,7 @@ Item {
         Label {
             objectName: "recognitionCurrentFloor"
             visible: page.state.season === "s1"
-            text: (page.state.floorSource === "automatic-current-frame" || (page.state.recordedStructureCandidateAvailable === true && page.state.mapOpen === true)) && page.state.observedFloor ? "自动观察当前 " + page.floorName(page.state.observedFloor) + ((page.state.observedFloor === "-3" || page.state.observedFloor === "-4") ? "（未实测）" : "")
+            text: (page.state.floorSource === "automatic-current-frame" || (page.state.candidateStructureAvailable === true && page.state.mapOpen === true)) && page.state.observedFloor ? "自动观察当前 " + page.floorName(page.state.observedFloor) + ((page.state.observedFloor === "-3" || page.state.observedFloor === "-4") ? "（未实测）" : "")
                 : page.state.floorSource === "manual-unvalidated-fallback" ? "当前楼层未知 · 人工回退 " + page.floorName(page.state.targetFloor)
                 : "当前楼层未知" + (page.state.targetFloor ? " · 目标 " + page.floorName(page.state.targetFloor) : "")
             color: "#526785"; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true

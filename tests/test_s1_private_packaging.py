@@ -201,7 +201,8 @@ class PrivatePackagingTests(unittest.TestCase):
     def test_new_fixed_baked_identity_and_bundled_permission(self):
         self.assertEqual(len({row['appId'] for row in build.INSTANCES.values()}), len(build.INSTANCES))
         profile = self.root / 'installation-profile.json'
-        models = {'s0-s1-test': 'Xingtu.S0S1PrivateTest', 's1-floor-test': 'Xingtu.S1FloorPrivateTest'}
+        models = {'s0-s1-test': 'Xingtu.S0S1PrivateTest', 's1-floor-test': 'Xingtu.S1FloorPrivateTest',
+                  's1-auto-test': 'Xingtu.S1AutoPrivateTest'}
         self.assertEqual(identity.PRIVATE_S1_INSTANCES, frozenset(models))
         self.assertIs(build.PRIVATE_S1_INSTANCES, identity.PRIVATE_S1_INSTANCES)
         for name, model in models.items():
@@ -259,12 +260,17 @@ class PrivatePackagingTests(unittest.TestCase):
 
     @staticmethod
     def selected_guard(source, symbols):
-        """Expand only the guard's simple ifdef blocks; no native registry claims."""
+        """Project the guard's ifdef/defined-OR blocks; no native registry claims."""
         active, lines = [True], []
         for line in source.splitlines():
             text = line.strip()
             if text.startswith('#ifdef '):
                 active.append(active[-1] and text[7:] in symbols)
+            elif text.startswith('#if defined('):
+                import re
+                names = re.findall(r'defined\((\w+)\)', text)
+                assert names and re.sub(r'defined\(\w+\)|\s|\|', '', text[4:]) == ''
+                active.append(active[-1] and any(name in symbols for name in names))
             elif text == '#endif':
                 active.pop()
             elif active[-1]:
@@ -281,6 +287,10 @@ class PrivatePackagingTests(unittest.TestCase):
         self.assertNotIn(third, previous)
         self.assertIn(third, current)
         self.assertEqual(current.count("Lowercase(NormalizedDirectory(Previous) + '\\')"), 3)
+        auto = self.selected_guard(block, {'PrivateS1Installer', 'S1AutoPrivateInstaller'})
+        self.assertIn(third, auto)
+        self.assertIn('XingtuS1FloorPrivateTest', self.selected_guard(source.split('function PrivateDirectoryError', 1)[1].split('function NextButtonClick', 1)[0], {'PrivateS1Installer', 'S1AutoPrivateInstaller'}))
+        self.assertEqual(auto.count("Lowercase(NormalizedDirectory(Previous) + '\\')"), 4)
         directory = source.split('function PrivateDirectoryError', 1)[1].split('function NextButtonClick', 1)[0]
         previous_directory = self.selected_guard(directory, {'PrivateS1Installer', 'S0S1PrivateInstaller'})
         current_directory = self.selected_guard(directory, {'PrivateS1Installer', 'S1FloorPrivateInstaller'})

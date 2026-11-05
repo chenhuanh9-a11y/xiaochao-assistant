@@ -510,8 +510,13 @@ class LiveRuntime:
                  allowed_read_root=None, evidence_kind="unverified", clock=None, diagnostics=None,
                  recorded_s1_provisional_display=False, recorded_s1_streaming=False,
                  recorded_s1_scan_order="natural", recorded_s1_scan_budget=S1_STRUCTURE_CANDIDATE_BUDGET_SECONDS,
-                 recorded_s1_priority_index=None):
+                 recorded_s1_priority_index=None, s1_candidate_purpose=None):
         self._diagnostics = diagnostics
+        from s1_candidate_purpose import native_candidate_purpose_is_valid
+        self._native_s1_candidate_preview = bool(
+            evidence_kind == "live-client-capture"
+            and native_candidate_purpose_is_valid(s1_candidate_purpose)
+            and callable(getattr(capture_provider, "is_current", None)))
         # Explicit research opt-in cannot grant live capture readiness.
         self._recorded_s1_provisional_display = bool(recorded_s1_provisional_display and evidence_kind == "recorded")
         import math
@@ -599,16 +604,27 @@ class LiveRuntime:
     def _context(self):
         return dict(season=self._season, contextKey=context_key(self._mode, self._season), mode=self._mode, profileId=self._profile, roundId=self._round, frameId=self._frame_id)
 
-    def _recorded_s1_candidate_available(self, report=None, engine=None):
-        """Explicit recorded integration, not a waiver of live readiness."""
-        if self._season != "s1" or self._evidence_kind != "recorded":
+    def _s1_candidate_available(self, report=None, engine=None):
+        """Selected-context candidate purpose; never general live readiness."""
+        if self._season != "s1" or not (
+                self._evidence_kind == "recorded" or self._native_s1_candidate_preview):
             return False
         capability = ((report or {}).get("candidateObservation") or
             getattr(getattr(engine, "qt_native_context", None), "structure_candidate_capability", {}))
-        return capability.get("candidateReady") is True
+        if not isinstance(capability, dict) or capability.get("candidateReady") is not True:
+            return False
+        return (not self._native_s1_candidate_preview or (
+            capability.get("contract") == "s1-recorded-structure-candidate-floor-v2"
+            and tuple(capability.get("observedFloors", ())) == (-1, -2)))
+
+    def _candidate_preview_requested(self):
+        return self._recorded_s1_provisional_display or self._native_s1_candidate_preview
+
+    def _candidate_streaming_requested(self):
+        return self._recorded_s1_streaming or self._native_s1_candidate_preview
 
     def _s1_provisional_enabled(self):
-        return bool(self._recorded_s1_provisional_display and self._season == "s1"
+        return bool(self._candidate_preview_requested() and self._season == "s1"
             and self._settings.get("mapSelectionMode") == "auto" and not self._durable_map_id
             and not self._manual_alignment)
 
@@ -2292,7 +2308,7 @@ class LiveRuntime:
             live_gaps = tuple(report.get("liveGaps", ()))
             if self._season != "s0" and not report.get("liveReady", False) and not live_gaps:
                 live_gaps = (f"season-live-contract-unavailable:{self._season}",)
-            candidate_ready = self._recorded_s1_candidate_available(report)
+            candidate_ready = self._s1_candidate_available(report)
             ready = saved_ready and (not live_gaps or candidate_ready)
             guarded = (self._evidence_kind != "live-client-capture"
                        or callable(getattr(self._capture, "is_current", None)))
@@ -2348,10 +2364,12 @@ class LiveRuntime:
                     commands += ["capture_now", "map"]
                     if self._map_open:
                         commands.append("refresh_map")
+                        if self._native_s1_candidate_preview and self._s1_candidate_available(report):
+                            commands.append("observe_candidate_floor")
             recovery = self.map_open_recovery_status()
             if recovery.get("pending"):
                 commands.append("recover_map_open")
-            stream_busy = bool(self._recorded_s1_streaming and self._s1_provisional_enabled() and self._capture_pending)
+            stream_busy = bool(self._candidate_streaming_requested() and self._s1_provisional_enabled() and self._capture_pending)
             if stream_busy:
                 commands = [cmd for cmd in commands if cmd not in ("select_candidate", "previous_candidate", "next_candidate", "confirm_route")]
             capture_state = getattr(self._capture, "snapshot", {}) if self._capture is not None else {}
@@ -2366,9 +2384,15 @@ class LiveRuntime:
                 engineConnected=True,
                 liveEngineAvailable=bool(ready and guarded and self._capture is not None
                     and (self._season == "s0" or report.get("liveReady") is True)),
-                recordedStructureCandidateAvailable=candidate_ready,
-                recordedProvisionalDisplayEnabled=self._s1_provisional_enabled(),
+                recordedStructureCandidateAvailable=candidate_ready and self._evidence_kind == "recorded",
+                recordedProvisionalDisplayEnabled=self._s1_provisional_enabled() and self._evidence_kind == "recorded",
                 recordedStreamingEnabled=bool(self._recorded_s1_streaming and self._s1_provisional_enabled()),
+                nativeCandidatePreviewAvailable=candidate_ready and self._native_s1_candidate_preview,
+                candidateStructureAvailable=candidate_ready,
+                candidateSupportedFloors=["-1", "-2"] if candidate_ready else [],
+                candidateUnvalidatedFloors=["-3", "-4"] if self._season == "s1" else [],
+                candidateProvisionalDisplayEnabled=self._s1_provisional_enabled(),
+                candidateStreamingEnabled=bool(self._candidate_streaming_requested() and self._s1_provisional_enabled()),
                 structureScanInProgress=stream_busy,
                 candidateSwitchUnavailableReason="current-scan-in-progress" if stream_busy else "",
                 liveUnavailableReason=(capabilities[self._mode]["reason"] if not saved_ready else
@@ -2444,7 +2468,7 @@ class LiveRuntime:
                     handle.invalidate()
                 self._stream_priority_handles.clear()
             self._provisional_display_map_id = ""
-            if self._recorded_s1_provisional_display and self._season == "s1":
+            if self._candidate_preview_requested() and self._season == "s1":
                 self._capture_pending = False
                 self._capture_pending_owner = None
             self._map_recovery = None
@@ -2481,7 +2505,7 @@ class LiveRuntime:
             if reason == "custom-gallery-changed":
                 self._reference_sheet = self._reference_capture_context = None
             self._epoch += 1
-            sequenced_s1_close = (self._recorded_s1_provisional_display and self._season == "s1"
+            sequenced_s1_close = (self._candidate_preview_requested() and self._season == "s1"
                 and reason == "map-closed" and type(input_sequence) is int
                 and input_sequence == self._last_map_input_sequence)
             if reason != "s1-provisional-open-intent" and not sequenced_s1_close:
@@ -2597,7 +2621,7 @@ class LiveRuntime:
             self._settings = copy.deepcopy(dict(settings))
             if settings_changed:
                 self._settings_generation += 1
-                if (self._recorded_s1_provisional_display and self._season == "s1"
+                if (self._candidate_preview_requested() and self._season == "s1"
                         and not self._durable_map_id):
                     # In-flight candidates own the old policy, even when the
                     # new policy has disabled candidate display altogether.
@@ -3040,10 +3064,67 @@ class LiveRuntime:
         except Exception:
             self._failure_control_observation = None
 
-    def _capture_frame(self, cancelled, *, attempt_id=None):
+    def _probe_s1_candidate_floor(self, action, payload, cancelled, *, expected_epoch, request_id):
+        """Observe floor/canvas only; retain this opening's list until a boundary.
+
+        A same-floor observation neither renews the pose nor turns an old fit
+        into evidence for the new pixels. A layer change starts a fresh scan.
+        """
+        with self._work:
+            with self._lock:
+                if (expected_epoch != self._epoch or self._cancelled(cancelled)
+                        or not self._native_s1_candidate_preview or not self._s1_candidate_available(engine=self._engine)
+                        or self._manual_alignment or not self._active or not self._map_open):
+                    return self._receipt(action, payload, success=False, reason="candidate-probe-not-current", stale=True)
+                engine, epoch, frame_id = self._engine, self._epoch, self._frame_id
+                owner = self._capture_pending_owner = (epoch, request_id)
+                self._capture_pending = True
+                capture_generation = self._capture_generation()
+            obsolete = lambda: (self._cancelled(cancelled) or epoch != self._epoch
+                or engine is not self._engine or frame_id != self._frame_id)
+            try:
+                captured = self._capture_frame(cancelled, preserve_candidate=True)
+                frame = self._full_frame(captured)
+                with self._lock:
+                    if obsolete() or not self._capture_is_current(captured.context, capture_generation):
+                        return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+                observation, floor, read = self._observe(engine, frame)
+                with self._lock:
+                    if obsolete() or not self._capture_is_current(captured.context, capture_generation):
+                        return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+                    if read.get("mapOpen") is False:
+                        self.invalidate("map-closed")
+                        return self._receipt(action, payload, success=False, reason="candidate-map-closed")
+                    if floor is None:
+                        self._revoke_render("candidate-floor-unavailable")
+                        self._observed_floor = ""
+                        return self._receipt(action, payload, success=False, reason="candidate-floor-unavailable")
+                    if str(floor) == self._floor and self._render is not None:
+                        return self._receipt(action, payload, success=True, reason="candidate-floor-current", unchanged=True)
+                    self._revoke_render("candidate-floor-changed")
+                return self._capture_and_solve("capture_now", payload, cancelled, expected_epoch=epoch)
+            except Exception as error:
+                with self._lock:
+                    if obsolete():
+                        return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True,
+                            errorType=type(error).__name__)
+                    if self._capture_pending_owner is owner:
+                        self._revoke_render("candidate-floor-probe-failed")
+                    return self._receipt(action, payload, success=False,
+                        reason=f"{type(error).__name__}:{error}", error=True,
+                        **self._error_fields(error, action))
+            finally:
+                with self._lock:
+                    if self._capture_pending_owner is owner:
+                        self._capture_pending = False
+                        self._capture_pending_owner = None
+
+    def _capture_frame(self, cancelled, *, attempt_id=None, preserve_candidate=False):
         # Candidate freshness ends before entering a possibly blocked capture.
         with self._lock:
-            if self._s1_provisional_enabled() and self._render is not None:
+            if preserve_candidate and self._native_s1_candidate_preview and self._map_open:
+                pass  # A floor-only probe cannot renew pose or candidate evidence.
+            elif self._s1_provisional_enabled() and self._render is not None:
                 # Notify the actual presentation consumer before pixels block.
                 self._revoke_render("new-provisional-capture")
             else:
@@ -3189,7 +3270,7 @@ class LiveRuntime:
                 # not eat a newer end/cancel already waiting for this lock.
                 activation_request = (action in ("capture_now", "refresh_map", "recover_map_open",
                         "probe_map_after_drag", "fit_manual_frame", "observe_manual_floor",
-                        "prepare_manual_alignment", "start_round")
+                        "prepare_manual_alignment", "start_round", "observe_candidate_floor")
                     or action == "map" and payload.get("openIntent") is not False
                     or action == "toggle_round" and not (self._active or self._round_preparing))
                 if activation_request and arrival_serial <= self._dispatch_cutoff:
@@ -3215,9 +3296,12 @@ class LiveRuntime:
         capture_request_id = request_id
         payload = dict(payload or {})
         action = str(action)
+        if action == "observe_candidate_floor":
+            return self._probe_s1_candidate_floor(action, payload, cancelled,
+                expected_epoch=capture_request_epoch, request_id=request_id)
         if self._season == "s1" and action in ("start_round", "toggle_round", "capture_now", "map", "refresh_map", "recover_map_open", "probe_map_after_drag"):
             report = self._offline.snapshot()["savedFrameCapabilities"][self._mode]
-            if not report.get("liveReady", False) and not self._recorded_s1_candidate_available(report):
+            if not report.get("liveReady", False) and not self._s1_candidate_available(report):
                 return self._receipt(action, payload, success=False,
                     reason=";".join(report.get("liveGaps", ())) or "s1-live-contract-unavailable",
                     unavailable=True)
@@ -3278,7 +3362,7 @@ class LiveRuntime:
                 # sequenced close is superseded only by a larger input sequence.
                 # S0 keeps
                 # its original strict birth-epoch admission semantics.
-                newer_s1_input = (self._recorded_s1_provisional_display and self._season == "s1"
+                newer_s1_input = (self._candidate_preview_requested() and self._season == "s1"
                     and type(sequence) is int and sequence > self._last_map_input_sequence)
                 if (self._cancelled(cancelled) or request_lifetime_generation != self._request_lifetime_generation
                         or request_settings_generation != self._settings_generation
@@ -3459,7 +3543,7 @@ class LiveRuntime:
             raise ProviderUnavailable(f"season-resources-unavailable:{season}")
         engine = getter(mode, season) if callable(getter) else self._factories[mode]()
         if (require_live and season != "s0" and not getattr(engine, "qt_live_ready", False)
-                and not self._recorded_s1_candidate_available(engine=engine)):
+                and not self._s1_candidate_available(engine=engine)):
             from client_providers import ProviderUnavailable
             raise ProviderUnavailable(";".join(getattr(engine, "qt_live_gaps", ())) or f"season-live-contract-unavailable:{season}")
         return engine
@@ -3760,6 +3844,7 @@ class LiveRuntime:
                 transient = self._transient_cycle_current()
                 owner = self._refresh_render_owner()
                 self._capture_pending = owns_capture = True
+                capture_owner = self._capture_pending_owner = (epoch, object())
             if transient:
                 receipt = self._probe_map_after_drag(payload, cancelled)
                 if receipt.get("success"):
@@ -3799,7 +3884,9 @@ class LiveRuntime:
         finally:
             if owns_capture:
                 with self._lock:
-                    self._capture_pending = False
+                    if self._capture_pending_owner is capture_owner:
+                        self._capture_pending = False
+                        self._capture_pending_owner = None
             self._work.release()
 
     def _try_refresh_current(self, payload, captured, frame, floor, digest, capture_generation,
@@ -4312,7 +4399,7 @@ class LiveRuntime:
         frame = self._full_frame(captured)
         width, height = captured.context.full_client_size
         stream_snapshot = None
-        if self._recorded_s1_streaming and self._s1_provisional_enabled():
+        if self._candidate_streaming_requested() and self._s1_provisional_enabled():
             from priority_admission import FrameSnapshot
             stream_snapshot = FrameSnapshot(frame)
             frame = stream_snapshot.pixels
@@ -4484,7 +4571,7 @@ class LiveRuntime:
             if engine.pack.mode == "difficult" and str(floor) == "2":
                 return self._receipt(action, payload, success=False,
                     reason="difficult-f2-entry-recognition-disabled", posePending=True)
-            if self._recorded_s1_streaming and self._s1_provisional_enabled():
+            if self._candidate_streaming_requested() and self._s1_provisional_enabled():
                 return self._stream_s1_observation(action, payload, cancelled, engine, epoch,
                     captured, frame, floor, digest, capture_generation, frame_generation,
                     frame_id, cycle, stream_snapshot)
@@ -4926,7 +5013,8 @@ class LiveRuntime:
                     target_render.update(self._identity_fields())
                     target_render.update(identitySource="s1-current-structure-hypothesis",
                         identityVerified=False, requiresManualConfirmation=False,
-                        displayAuthorizationScope="current-recorded-frame-candidate")
+                        displayAuthorizationScope="current-native-frame-candidate" if live else "current-recorded-frame-candidate",
+                        candidatePurpose="native-s1-preview" if self._native_s1_candidate_preview else "recorded-s1-preview")
                     self._group, self._render = None, target_render
                 else:
                     self._map_id = map_id
@@ -5000,7 +5088,7 @@ class LiveRuntime:
             self._recognition_diagnostic("map-floor-observation", read["reason"], observation=observation,
                 floorRead=read, elapsedMs=(time.monotonic()-started)*1000)
             return observation, floor, read
-        if self._season == "s1" and self._recorded_s1_candidate_available(engine=engine):
+        if self._season == "s1" and self._s1_candidate_available(engine=engine):
             from s1_floor_observation import detect_s1_floor
             floor_read = detect_s1_floor(frame, season=self._season, mode=engine.pack.mode)
             if floor_read.get("selectedFloor") is not None and floor_read.get("observedFloorValidated") is not True:

@@ -60,11 +60,19 @@
     #endif
     #define S1FloorPrivateInstaller 1
     #define PrivateS1Installer 1
+  #elif InstallerAppId == "{{ED53B6E8-E9A0-4F21-AF75-7C8A62BE7347}"
+    #if InstallerAppName != "Xingtu S1 Auto Private Test" || InstallerFolder != "XingtuS1AutoPrivateTest" || InstallerGroup != "Xingtu S1 Auto Private Test"
+      #error Invalid S1 auto installer identity
+    #endif
+    #define S1AutoPrivateInstaller 1
+    #define PrivateS1Installer 1
   #else
     #error Unknown private installer identity
   #endif
   #ifdef S0S1PrivateInstaller
     #define InstallerModelId "Xingtu.S0S1PrivateTest"
+  #elif defined(S1AutoPrivateInstaller)
+    #define InstallerModelId "Xingtu.S1AutoPrivateTest"
   #elif defined(S1FloorPrivateInstaller)
     #define InstallerModelId "Xingtu.S1FloorPrivateTest"
   #else
@@ -651,12 +659,19 @@ begin
     'Software\Microsoft\Windows\CurrentVersion\Uninstall\{D4B8E562-EA62-4A43-AF1D-043A5646971E}_is1',
     'InstallLocation', Previous) and (Previous <> '') then
     Result := Pos(Lowercase(NormalizedDirectory(Previous) + '\'), Lowercase(Target + '\')) = 1;
-  #ifdef S1FloorPrivateInstaller
+  #if defined(S1FloorPrivateInstaller) || defined(S1AutoPrivateInstaller)
   { Protect the previous private channel's custom registration too. This block
     must not compile into that older channel's own legitimate upgrade path. }
   if Result then Exit;
   if RegQueryStringValue(RootKey,
     'Software\Microsoft\Windows\CurrentVersion\Uninstall\{907F912D-58FD-4F84-A7A4-0C816AA70E52}_is1',
+    'InstallLocation', Previous) and (Previous <> '') then
+    Result := Pos(Lowercase(NormalizedDirectory(Previous) + '\'), Lowercase(Target + '\')) = 1;
+  #endif
+  #ifdef S1AutoPrivateInstaller
+  if Result then Exit;
+  if RegQueryStringValue(RootKey,
+    'Software\Microsoft\Windows\CurrentVersion\Uninstall\{3C271F5D-71FF-4EA8-9569-B8DAC30F3773}_is1',
     'InstallLocation', Previous) and (Previous <> '') then
     Result := Pos(Lowercase(NormalizedDirectory(Previous) + '\'), Lowercase(Target + '\')) = 1;
   #endif
@@ -713,8 +728,11 @@ begin
     (Pos(Lowercase(Path + '\'), Lowercase(Target + '\')) = 1) or
     (CompareText(Target, Parent) = 0) or
     (Pos(Lowercase(Parent + '\'), Lowercase(Target + '\')) = 1) or
-    #ifdef S1FloorPrivateInstaller
+    #if defined(S1FloorPrivateInstaller) || defined(S1AutoPrivateInstaller)
     (Pos(Lowercase(NormalizedDirectory(ExpandConstant('{autopf}\XingtuS0S1PrivateTest')) + '\'), Lowercase(Target + '\')) = 1) or
+    #endif
+    #ifdef S1AutoPrivateInstaller
+    (Pos(Lowercase(NormalizedDirectory(ExpandConstant('{autopf}\XingtuS1FloorPrivateTest')) + '\'), Lowercase(Target + '\')) = 1) or
     #endif
     RegisteredOldPrivateDirectory(HKCU64, Target) or
     RegisteredOldPrivateDirectory(HKLM64, Target) or

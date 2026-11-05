@@ -112,9 +112,11 @@ class QtClient:
         self.input = NativeShortcutBackend()
         self.providers = build_engine_factories(self.paths.resource_root)
         self.providers.set_custom_display(self.custom_display.layer, base_provider=self.custom_display.base_layer)
+        from s1_candidate_purpose import private_native_candidate_purpose
         self.runtime = LiveRuntime(engine_factories=self.providers, capture_provider=self.capture,
                                    allowed_read_root=WORK_ROOT, evidence_kind="live-client-capture",
-                                   diagnostics=self.lifecycle_trace)
+                                    diagnostics=self.lifecycle_trace,
+                                    s1_candidate_purpose=private_native_candidate_purpose())
         values = self.settings.persistedValues
         self.runtime.configure_settings(values)
         mode, profile, season = ClientCoordinator._settings_context(values)

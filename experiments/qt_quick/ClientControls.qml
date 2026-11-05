@@ -113,7 +113,7 @@ Window {
             && snapshot.identityPhase !== "MEMBER_VERIFIED" && snapshot.identityPhase !== "MANUAL_MEMBER_CONFIRMED")
     }
     function mapText() {
-        if (snapshot.structureScanInProgress) return "录制研究 · 继续扫描中，结束后可切换候选"
+        if (snapshot.structureScanInProgress) return (snapshot.evidenceKind === "recorded" ? "录制研究" : "自动候选") + " · 继续扫描中，结束后可切换候选"
         if (snapshot.candidateDisplayOnly) return "候选 " + snapshot.provisionalMapId
         if (snapshot.identityPhase === "MANUAL_MEMBER_CONFIRMED") {
             var id = snapshot.currentGroupMemberId || snapshot.manualGroupMemberId || snapshot.mapId || ""
@@ -125,7 +125,7 @@ Window {
         return snapshot.mapName || snapshot.mapId || ""
     }
     function statusText() {
-        if (snapshot.candidateDisplayOnly) return "录制研究 · 候选整图未锁定 · " + outputStatus()
+        if (snapshot.candidateDisplayOnly) return (snapshot.evidenceKind === "recorded" ? "录制研究" : "自动候选") + " · 候选整图未锁定 · " + outputStatus()
         if (snapshot.contextPending) return "正在切换模式或路线"
         if (snapshot.manualSelectionPending) return "手动选图 · 等待选择本局地图"
         if (session.busy && snapshot.pendingAction === "start_round") return "正在准备本局"
@@ -155,7 +155,7 @@ Window {
     }
     function floorText() {
         if (snapshot.season === "s1") {
-            if ((snapshot.floorSource === "automatic-current-frame" || (snapshot.recordedStructureCandidateAvailable === true && snapshot.mapOpen === true)) && snapshot.observedFloor)
+            if ((snapshot.floorSource === "automatic-current-frame" || (snapshot.candidateStructureAvailable === true && snapshot.mapOpen === true)) && snapshot.observedFloor)
                 return "自动观察当前 B" + Math.abs(Number(snapshot.observedFloor)) + ((snapshot.observedFloor === "-3" || snapshot.observedFloor === "-4") ? "（未实测）" : "")
             if (snapshot.floorSource === "manual-unvalidated-fallback" && snapshot.targetFloor)
                 return "人工回退 B" + Math.abs(Number(snapshot.targetFloor)) + " · 当前楼层未知"
@@ -425,9 +425,9 @@ Window {
                     objectName: "controlMapSelectionAuto"
                     text: "自动识别"; selected: !panel.manualSelection
                     enabled: !settingsService.busy; Layout.fillWidth: true
-                    hint: panel.snapshot.recordedProvisionalDisplayEnabled === true
+                    hint: panel.snapshot.candidateProvisionalDisplayEnabled === true
                         ? "每次开图重新筛选，可信位姿自动显示未锁定候选整图"
-                        : panel.snapshot.recordedStructureCandidateAvailable === true
+                        : panel.snapshot.candidateStructureAvailable === true
                         ? "读取当前楼层并列出结构候选，地图身份仍需确认"
                         : "打开地图后自动识别本局地图"
                     onClicked: clientCoordinator.setMapSelectionMode("auto")
@@ -503,7 +503,7 @@ Window {
             KeyHint { text: panel.shortcut("candidate-prev") }
             ControlButton { text: "下一候选"; enabled: panel.available("next_candidate"); Layout.fillWidth: true; onClicked: session.dispatch("next_candidate") }
             KeyHint { text: panel.shortcut("candidate-next") }
-            ControlButton { text: panel.snapshot.recordedProvisionalDisplayEnabled === true ? "锁定本局地图（可选）" : "确认地图"; enabled: panel.available("confirm_route"); Layout.fillWidth: true; onClicked: session.dispatch("confirm_route") }
+            ControlButton { text: panel.snapshot.candidateProvisionalDisplayEnabled === true ? "锁定本局地图（可选）" : "确认地图"; enabled: panel.available("confirm_route"); Layout.fillWidth: true; onClicked: session.dispatch("confirm_route") }
             KeyHint { text: panel.shortcut("confirm-round") }
             ControlButton { text: "重新识别"; enabled: panel.available("capture_now"); Layout.fillWidth: true; onClicked: session.dispatch("capture_now") }
             ControlButton { objectName: "controlsRecognitionDetails"; text: "打开候选列表（切到主界面）"; Layout.fillWidth: true; onClicked: clientCoordinator.openRecognitionDetails() }

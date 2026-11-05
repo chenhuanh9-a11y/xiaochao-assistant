@@ -509,6 +509,12 @@ class ClientCoordinator(QObject):
                     and not self.session.snapshot.get("resourceLocked")
                     and not self.session.snapshot.get("contextPending"))
 
+    @staticmethod
+    def _native_candidate_preview_ready(state):
+        return (state.get("season") == "s1"
+                and state.get("nativeCandidatePreviewAvailable") is True
+                and not state.get("manualAlignmentSession"))
+
     def _map_resource_problem(self, state=None, *, allow_manual_floor=False):
         """Cached readiness only: never read or prepare resources on input/UI."""
         state = self.session.snapshot if state is None else state
@@ -532,7 +538,8 @@ class ClientCoordinator(QObject):
                 summary = f"{label}地图识别资源未通过校验或无法读取，请到地图资源页检查并重新导入"
             return ((mode, reason), summary)
         if (season != "s0" and not report.get("liveReady", False)
-                and not (allow_manual_floor and self._manual_floor_observation_ready(state))):
+                and not (allow_manual_floor and self._manual_floor_observation_ready(state))
+                and not self._native_candidate_preview_ready(state)):
             gaps = ";".join(report.get("liveGaps", ())) or "season-live-contract-unavailable"
             return ((season, mode, gaps), f"{season_label(season)} 生产结构资源可离线读取，楼层控件尚未完成验证，暂不能开始实机识别")
         return None
@@ -1136,7 +1143,8 @@ class ClientCoordinator(QObject):
             # next bounded discovery tick; management keys remain available.
             self._binding_resume_pending = True
             manual_floor = self._manual_floor_observation_ready(state)
-            if state.get("season") == "s1" and not manual_floor:
+            if (state.get("season") == "s1" and not manual_floor
+                    and not self._native_candidate_preview_ready(state)):
                 self._binding_resume_pending = False
                 return
             self.session.dispatchWithPayload("fit_manual_frame" if manual_floor else "capture_now", {
@@ -2200,7 +2208,7 @@ class ClientCoordinator(QObject):
                     return
                 manual_floor = self._manual_floor_observation_ready(actual)
                 if (actual.get("season") == "s1" and self._map_was_open
-                        and not manual_floor):
+                        and not manual_floor and not self._native_candidate_preview_ready(actual)):
                     return
                 self._waiting_foreground = False
                 self._trace("foreground-change", state=actual, reason="game-regained-foreground",
@@ -2377,7 +2385,21 @@ class ClientCoordinator(QObject):
             return
         if self._pending_context or state.get("contextPending"):
             return
-        if state.get("season") == "s1":
+        if self._native_candidate_preview_ready(state) and not state.get("mapRecoveryPending"):
+            if (not state.get("mapOpen")
+                    or "observe_candidate_floor" not in state.get("availableCommands", ())):
+                return
+            now = time.monotonic()
+            if now - self._last_manual_floor_observation_at < .5:
+                return
+            try:
+                if self._native_windows.foreground_window() == int(self._bound):
+                    self._last_manual_floor_observation_at = now
+                    self.session.dispatch("observe_candidate_floor")
+            except OSError:
+                self._revoke_runtime("foreground-query-failed")
+            return
+        if state.get("season") == "s1" and not self._native_candidate_preview_ready(state):
             # Only an existing open cycle or its explicit bounded recovery is
             # eligible. Unknown canvas frames may preserve that cycle; this
             # timer cannot invent a new opening after close/end.
