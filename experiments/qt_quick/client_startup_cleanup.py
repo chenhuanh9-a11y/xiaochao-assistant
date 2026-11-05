@@ -61,7 +61,8 @@ def shutdown_client(client):
                 done = pool.waitForDone(10) and done
             QCoreApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
             pending = any(bool(getattr(owner, "pendingWrites", False)) for owner in owners)
-            active = any(pool.activeThreadCount() for pool in pools.values())
+            active = (any(pool.activeThreadCount() for pool in pools.values())
+                      or bool(getattr(getattr(client, "runtime", None), "private_evidence_busy", False)))
             source = getattr(client, "input", None)
             hook_running = bool(getattr(source, "snapshot", {}).get("hookRunning", False))
             stable = stable + 1 if done and not active and not pending and not hook_running else 0
@@ -87,6 +88,7 @@ def shutdown_client(client):
         # These are non-blocking cancellation/stop boundaries. Explicit input
         # and capture shutdown still run if coordinator.shutdown itself fails.
         call("route_plaza", "cancel")
+        call("runtime", "stop_private_evidence")
         for name in ("coordinator", "input", "capture", "capture_exclusion", "session", "resources",
                      "package_manager", "chest_auto_tap", "problems", "lifecycle_trace"):
             call(name)

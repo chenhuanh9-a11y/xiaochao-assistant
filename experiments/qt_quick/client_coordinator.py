@@ -2335,7 +2335,8 @@ class ClientCoordinator(QObject):
                                           groupEvidence=event.get("groupEvidence", {})))
         self._trace(name, payload=payload, reason=event.get("reason", ""),
                     role="runtime", status=event.get("status"),
-                    diag={key: event.get(key) for key in ("poseResult", "poseAttempt", "groupMemberIds", "invalidationOrigin") if key in event},
+                    diag={key: event.get(key) for key in ("poseResult", "poseAttempt", "groupMemberIds", "invalidationOrigin",
+                        *getattr(self.runtime, "_private_diagnostic_fields", lambda: ())()) if key in event},
                     **({'fitReport': event['fitReport']} if 'fitReport' in event else {}),
                     **({'mapAttempt': event['mapAttempt']} if 'mapAttempt' in event else {}),
                     **decision)
@@ -2502,6 +2503,9 @@ class ClientCoordinator(QObject):
         self._foreground_timer.stop()
         self._tracking_timer.stop()
         self._context_timer.stop()
+        stop_evidence = getattr(self.runtime, "stop_private_evidence", None)
+        if callable(stop_evidence):
+            stop_evidence()
         shutdown_input = getattr(self.input, "shutdown", None)
         self._material_timer.stop()
         if callable(shutdown_input):
@@ -2531,6 +2535,8 @@ class ClientCoordinator(QObject):
             return
         pools = dict(session=self.session._pool.activeThreadCount(),
                      resources=self.resources.pool.activeThreadCount(), settings=self.settings.pool.activeThreadCount())
+        evidence_busy = bool(getattr(self.runtime, "private_evidence_busy", False))
+        pools["privateEvidence"] = int(evidence_busy)
         for index, writer in enumerate(self.close_writers):
             pool = getattr(writer, "pool", getattr(writer, "_pool", None))
             if pool is not None:
@@ -2545,7 +2551,7 @@ class ClientCoordinator(QObject):
                                          hookRunning=hook_running, pendingWrites=writes))
         if getattr(self.input, "snapshot", {}).get("hookRunning", False):
             return
-        if (self.resources.pool.activeThreadCount() or self.settings.pool.activeThreadCount()
+        if (evidence_busy or self.resources.pool.activeThreadCount() or self.settings.pool.activeThreadCount()
                 or bool(getattr(self.settings, "pendingWrites", False))
                 or self.session._pool.activeThreadCount()):
             return

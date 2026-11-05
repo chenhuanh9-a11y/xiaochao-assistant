@@ -90,7 +90,7 @@ class StructureCandidateScanner:
 
     def scan(self, frame, *, floor, floor_source, cancelled=None, budget_seconds=None,
              on_progress=None, candidate_order=None, preferred_map_id=None,
-             preferred_material_committed=None, planned_map_ids=None):
+             preferred_material_committed=None, planned_map_ids=None, first_material_committed=None):
         if floor not in self.catalog.floors or floor_source not in ("operator-declared", "current-frame-verified"):
             raise ValueError("s1-structure-floor-evidence-required")
         if not isinstance(frame, np.ndarray) or frame.ndim != 3 or frame.shape[2] != 3 or frame.dtype != np.uint8:
@@ -143,8 +143,9 @@ class StructureCandidateScanner:
                 excludedMapIds=[], poses=poses, outcomes=copy.deepcopy(outcomes), elapsedSeconds=self.clock()-started,
                 competitionComplete=False, uniqueIdentityVerified=False, identityHardGatePassed=False,
                 automaticSelectionAuthorized=False, liveAuthorization=False,
-                candidateReuse="preferred-current-frame" if status == "preferred-material-committed" else "none",
-                scanSkipped=status == "preferred-material-committed",
+                candidateReuse=("preferred-current-frame" if status == "preferred-material-committed" else
+                    "first-current-frame" if status == "first-material-committed" else "none"),
+                scanSkipped=status in ("preferred-material-committed", "first-material-committed"),
                 reason="supported-geometry-is-not-complete-identity-competition")
 
         status = "complete" if set(order) == set(self.catalog.map_ids) else "subset-unresolved"
@@ -180,6 +181,16 @@ class StructureCandidateScanner:
                     # This executes on the scanning worker. Consumers must queue
                     # UI work, and own cancellation/exception render withdrawal.
                     on_progress(report("partial"))
+                if callable(first_material_committed):
+                    try:
+                        material_committed = first_material_committed(map_id) is True
+                    except MemoryError:
+                        raise
+                    except Exception:
+                        material_committed = False
+                    if material_committed:
+                        status = "first-material-committed"
+                        break
                 if map_id == preferred and callable(preferred_material_committed):
                     # Not cancellation: preserve this ticket's accepted pose and
                     # pixels. Unknown/unscanned alternatives stay in the report.
@@ -268,7 +279,7 @@ class StructureEvidenceSession:
                 or self._floor not in c.floors
                 or report.get("floorSource") not in ("operator-declared", "current-frame-verified")
                 or report.get("observedFloor") != (self._floor if report.get("floorSource") == "current-frame-verified" else "")
-                or status not in ("partial", "complete", "budget-unresolved", "cancelled", "preferred-material-committed", "subset-unresolved")
+                or status not in ("partial", "complete", "budget-unresolved", "cancelled", "preferred-material-committed", "first-material-committed", "subset-unresolved")
                 or type(seq) is not int or seq < 1
                 or status == "partial" and "updateSeq" not in report
                 or report.get("scanComplete") is not (status == "complete")
@@ -291,6 +302,9 @@ class StructureEvidenceSession:
                 or status == "preferred-material-committed" and (
                     len(checked) != 1 or supported != checked or report.get("scanSkipped") is not True
                     or report.get("candidateReuse") != "preferred-current-frame")
+                or status == "first-material-committed" and (
+                    not supported or not checked or report.get("scanSkipped") is not True
+                    or report.get("candidateReuse") != "first-current-frame")
                 or status == "cancelled" and supported
                 or any(not verified_pose(report.get("poses", {}).get(mid)) for mid in supported)):
             return False
@@ -321,7 +335,7 @@ class StructureEvidenceSession:
             self._priority_history.move_to_end(key)
             while len(self._priority_history) > self.max_observations:
                 self._priority_history.popitem(last=False)
-        if supported and status in ("complete", "budget-unresolved", "preferred-material-committed", "subset-unresolved"):
+        if supported and status in ("complete", "budget-unresolved", "preferred-material-committed", "first-material-committed", "subset-unresolved"):
             self._history[key] = dict(floor=report["floor"], frameKey=report["frameKey"],
                 supportedMapIds=list(supported), scanComplete=report.get("scanComplete") is True)
             self._history.move_to_end(key)

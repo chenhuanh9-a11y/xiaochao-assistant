@@ -1494,3 +1494,7 @@ FIELDS = FIELDS | frozenset({'privateFrameDigest', 'privateScanMs', 'privateMate
 
 CODES = CODES | frozenset(['-1', '-2', '-3', '-4', 'all-common-chain-seeds', 'coordinate-index-axes', 'coordinate-index-schema', 'coordinate-or-catalogue-conflict', 'coordinate-reference-binding-mismatch:', 'coordinate-reference-missing:', 'coordinate-resources-unavailable', 'coordinate-scope-invalid', 'coordinate-work-obsolete', 'current-common-coordinate-ambiguous', 'current-common-coordinate-budget-exhausted', 'current-common-coordinate-unresolved', 'current-floor-common-chain-vertices', 'current-observation-context-ambiguous', 'current-structure-insufficient', 'entrance-plus-', 'entrance-plus-all-pool-chain-scale-union', 'glyph-raster', 'noninteger-native-origin', 'private-common-pose-unavailable', 's1-common-entrance-coordinate-index-v1', 'same-coordinate-positive-contradictions-only', 'utf-8', 'winner-map-fit'])
 FIELDS = FIELDS | frozenset({"privatePoseDomainNarrow"})
+
+# First-paint/background private evidence stages, fixed origin attribution.
+FIELDS = FIELDS | frozenset({"privateStage", "privateStageState", "openingId", "snapshotPoolRevision", "currentPoolRevision", "privateResourceMs"})
+CODES = CODES | frozenset({"private-stage", "private-evidence-discarded", "private-owner-or-revision-changed", "first-material-committed", "first-current-frame", "gate-work-obsolete", "queue", "prepare", "gate", "extract", "resources", "compare", "prepare-error", "started", "finished", "cancelled", "failed"})

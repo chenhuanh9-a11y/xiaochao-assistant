@@ -102,7 +102,7 @@ class GateAnchorLocator:
                           score, second, margin, self.template_sha256,
                           self.profile_sha256, diagnostics)
 
-    def detect(self, frame: np.ndarray) -> GateAnchor:
+    def detect(self, frame: np.ndarray, *, cancelled=lambda: False) -> GateAnchor:
         if not isinstance(frame, np.ndarray) or frame.dtype != np.uint8:
             raise ValueError('Frame must be a uint8 numpy array')
         if frame.ndim == 2:
@@ -117,6 +117,8 @@ class GateAnchorLocator:
                 'raster_size_is_map_zoom': False,
                 'uncertainty_kind': 'near-peak pixel support, not a calibrated probability',
                 'profile_validated_on_limited_static_samples': True}
+        if cancelled():
+            return self._unknown('gate-work-obsolete', diag)
         if min(gray.shape) < cfg.min_raster_px:
             return self._unknown('frame_too_small', diag)
         # Use exact factor 2; for odd dimensions the last pixel is discarded only
@@ -125,6 +127,8 @@ class GateAnchorLocator:
                            (gray.shape[1]//2, gray.shape[0]//2), interpolation=cv2.INTER_AREA)
         proposals = []
         for width, templ in self._coarse:
+            if cancelled():
+                return self._unknown('gate-work-obsolete', diag)
             if min(small.shape) < len(templ):
                 continue
             response = cv2.matchTemplate(small, templ, cv2.TM_CCOEFF_NORMED)
@@ -154,6 +158,8 @@ class GateAnchorLocator:
             x0, y0 = max(0, cx-pad), max(0, cy-pad)
             patch = gray[y0:min(gray.shape[0], cy+pad+1), x0:min(gray.shape[1], cx+pad+1)]
             for w in range(max(cfg.min_raster_px, width-4), min(cfg.max_raster_px, width+4)+1):
+                if cancelled():
+                    return self._unknown('gate-work-obsolete', diag)
                 if min(patch.shape) < w:
                     continue
                 response = cv2.matchTemplate(patch, self._fine[w], cv2.TM_CCOEFF_NORMED)

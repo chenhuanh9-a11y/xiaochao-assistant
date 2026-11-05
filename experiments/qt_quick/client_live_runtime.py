@@ -593,6 +593,9 @@ class LiveRuntime:
         self._manual_map_thumbnail_cache = {}
         from client_idvb0059_adapter import Idvb0059Adapter
         self._steady = Idvb0059Adapter()
+        from s1_private_experiment import LatestEvidenceQueue
+        self._s1_private_jobs = LatestEvidenceQueue()
+        self._private_observation_sequence = 0
         self._reset_identity()
         self._reset_floor_policy()
         self._message = "Bind a full client capture, then begin a round explicitly."
@@ -669,7 +672,7 @@ class LiveRuntime:
 
     def _reset_identity(self):
         self._s1_candidate_preference = None
-        self._s1_private_pool = None
+        self._clear_private_pool()
         old_structure = getattr(self, "_s1_structure_session", None)
         if old_structure is not None:
             old_structure.end_round()
@@ -969,7 +972,7 @@ class LiveRuntime:
             preference_scope = self._s1_candidate_preference_scope(captured, catalog)
             if self._s1_candidate_preference is not None and self._s1_candidate_preference[0] != preference_scope:
                 self._s1_candidate_preference = None
-                self._s1_private_pool = None
+                self._clear_private_pool()
             preferred = self._s1_candidate_preference[1] if self._s1_candidate_preference is not None else None
             private_prepare = getattr(engine, "qt_s1_private_coordinate_prepare", None)
             private_enabled = self._native_s1_candidate_preview and callable(private_prepare)
@@ -977,6 +980,10 @@ class LiveRuntime:
             if private_enabled and (pool is None or pool.scope != preference_scope):
                 from s1_private_experiment import PrivateRoundPool
                 pool = self._s1_private_pool = PrivateRoundPool(preference_scope, catalog.map_ids)
+            if private_enabled:
+                preferred = pool.locked_id or (pool.remaining[0] if len(pool.remaining) == 1 else preferred)
+                if preferred not in pool.remaining:
+                    preferred = None
             ticket = session.begin_observation(str(floor))
             self._s1_structure_ticket = ticket
             self._automatic_candidate_rows = []
@@ -987,12 +994,15 @@ class LiveRuntime:
             intent_generation = self._group_intent_generation
             round_id = self._round
             priority_handles = dict(self._stream_priority_handles)
+            self._private_observation_sequence += 1
+            private_sequence = self._private_observation_sequence
         first_result = None
         attempted = set()
         last_material_reason = "no-current-supported-candidates"
         started = time.monotonic()
         private_report = None
         private_material_ms = 0.0
+        scan_plan, scan_revision = (), None
 
         def owns_ticket():
             return (self._stream_owner is owner and epoch == self._epoch
@@ -1040,6 +1050,11 @@ class LiveRuntime:
             nonlocal first_result, last_material_reason, private_material_ms
             rows = StructureCandidateScanner.rank_rows(report, engine.pack)
             with self._lock:
+                if private_enabled:
+                    rows = [row for row in rows if row["mapId"] in pool.remaining]
+                    if (first_result is not None and self._render is not None
+                            and self._render.get("mapId") not in pool.remaining):
+                        first_result = None
                 if (not current() or report.get("frameKey") != digest
                         or not session.commit(report, ticket)):
                     return False
@@ -1058,7 +1073,9 @@ class LiveRuntime:
                 rawFrameDigest=digest, shapeSnapshotId=snapshot.sha256, frameShape=list(shape))
             for row in rows:
                 mid = row["mapId"]
-                if first_result is not None or mid in attempted or obsolete():
+                with self._lock:
+                    eligible = not private_enabled or (self._s1_private_pool is pool and mid in pool.remaining)
+                if first_result is not None or mid in attempted or obsolete() or not eligible:
                     continue
                 attempted.add(mid)
                 material_started = time.monotonic()
@@ -1066,7 +1083,8 @@ class LiveRuntime:
                     result = self._solve_observation(action, payload, cancelled, engine, None, epoch,
                         captured, frame, floor, digest, capture_generation, frame_generation,
                         frame_id, cycle, mid, structure_ticket=(session, ticket),
-                        structure_current=lambda: not obsolete())
+                        structure_current=lambda: not obsolete() and (not private_enabled
+                            or self._s1_private_pool is pool and mid in pool.remaining))
                 except MemoryError:
                     raise
                 except Exception as error:
@@ -1075,13 +1093,15 @@ class LiveRuntime:
                 private_material_ms += (time.monotonic() - material_started) * 1000
                 last_material_reason = result.get("reason", "material-unavailable")
                 with self._lock:
-                    if (current() and result.get("success") and self._render is not None
+                    if (current() and (not private_enabled or self._s1_private_pool is pool and mid in pool.remaining)
+                            and result.get("success") and self._render is not None
                             and self._render.get("frameId") == frame_id
+                            and self._render.get("mapId") == mid
+                            and self._render.get("token") == result.get("renderToken")
                             and self._display_current(self._render)):
                         first_result = result
                         if (private_enabled and self._s1_private_pool is pool
-                                and pool.accept_material(mid, coordinate_current=bool(private_report
-                                    and private_report.get("coordinateVerified") is True))):
+                                and pool.accept_material(mid, coordinate_current=True)):
                             self._notify("private-experimental-locked", reason="private-unique-pool-current-material",
                                 **pool.snapshot(), privateResourceDigest=catalog.resource_key)
             return True
@@ -1094,56 +1114,16 @@ class LiveRuntime:
                     and row.get("mapId") == map_id and row.get("frameId") == frame_id
                     and row.get("candidateDisplayOnly") and self._display_current(row))
 
-        def prepare_private():
-            nonlocal private_report, preferred
-            if not private_enabled or obsolete():
-                return
-            before = tuple(pool.remaining)
-            was_locked = pool.locked_id
-            try:
-                evidence = private_prepare(frame, before, str(floor), cancelled=obsolete)
-            except MemoryError:
-                raise
-            except Exception:
-                evidence = dict(coordinateVerified=False, evaluatedMapIds=list(before),
-                    contradictedMapIds=[], unknownMapIds=list(before), reason="private-coordinate-unavailable")
+        def first_material_committed(map_id):
             with self._lock:
-                if not current() or self._s1_private_pool is not pool:
-                    return
-                # Provider evidence belongs to this selected mode/resource/floor.
-                if (evidence.get("mode"), evidence.get("resourceKey"), evidence.get("floor")) != (
-                        catalog.mode, catalog.resource_key, str(floor)):
-                    evidence = dict(coordinateVerified=False, evaluatedMapIds=list(before),
-                        contradictedMapIds=[], unknownMapIds=list(before), reason="private-coordinate-unavailable")
-                private_report = evidence
-                reason = pool.observe(evidence)
-                preferred = (pool.locked_id or (pool.remaining[0] if len(pool.remaining) == 1 else preferred))
-                if preferred not in pool.remaining:
-                    preferred = None
-                summary = evidence.get("coordinateEvidence", {})
-                self._notify("private-pool-observed", reason=reason,
-                    privatePoolBefore=list(before), privatePoolAfter=list(pool.remaining),
-                    privateContradictedMapIds=evidence.get("contradictedMapIds", []),
-                    privateUnknownMapIds=evidence.get("unknownMapIds", list(before)),
-                    privateResourceDigest=catalog.resource_key, privateFrameDigest=digest,
-                    privateCoordinateReason=evidence.get("reason", ""),
-                    privateCoordinateVerified=evidence.get("coordinateVerified") is True,
-                    privatePoseDomainNarrow=evidence.get("poseAvailable") is True,
-                    privateCoordinateBasis=summary.get("basis", ""),
-                    privateScaleRange=summary.get("scaleRange", []),
-                    privateCoordinateErrorPx=summary.get("pointCoordinateErrorBoundPx", summary.get("anchorErrorPx", 0)),
-                    privateHypothesisCount=summary.get("sharedHypothesisCount", 0),
-                    privateGateStatus=evidence.get("gateStatus", "unknown"),
-                    privateGateReason=evidence.get("gateReason", "private-coordinate-unavailable"),
-                    privateGateMs=evidence.get("gateMs", 0), privateObservationMs=evidence.get("observationMs", 0),
-                    privateCompareMs=evidence.get("elapsedMs", 0), privateTotalMs=evidence.get("totalMs", 0),
-                    **pool.snapshot())
-                if current() and was_locked and not pool.locked_id:
-                    self._notify("private-experimental-unlocked", reason=reason,
-                        **pool.snapshot(), privateResourceDigest=catalog.resource_key)
+                row = self._render
+                return bool(current() and (not private_enabled or self._s1_private_pool is pool and map_id in pool.remaining)
+                    and first_result is not None and row is not None
+                    and row.get("token") == first_result.get("renderToken")
+                    and row.get("mapId") == map_id and row.get("frameId") == frame_id
+                    and row.get("candidateDisplayOnly") and self._display_current(row))
 
         try:
-            prepare_private()
             order, ordering = candidate_order(engine, catalog, str(floor), snapshot, prior,
                 self._recorded_s1_scan_order, self._recorded_s1_priority_index, priority_handles)
             if preferred is not None:
@@ -1161,8 +1141,13 @@ class LiveRuntime:
                 rawFrameDigest=digest, shapeSnapshotId=snapshot.sha256, frameShape=list(shape),
                 clientDimensions=list(dimensions))
             def scan_current():
-                options = dict(private_coordinate_report=private_report,
-                    planned_map_ids=pool.remaining) if private_enabled else {}
+                nonlocal scan_plan, scan_revision
+                with self._lock:
+                    scan_plan, scan_revision = (tuple(pool.remaining), pool.revision) if private_enabled else ((), None)
+                    options = dict(planned_map_ids=tuple(pool.remaining),
+                        first_material_committed=(first_material_committed
+                            if payload.get("forceCatalogue") is not True
+                            and action not in ("reselect_map", "map_reselection") else None)) if private_enabled else {}
                 return engine.qt_s1_structure_scan(frame, floor=str(floor), floor_source="current-frame-verified",
                     cancelled=obsolete, budget_seconds=self._recorded_s1_scan_budget,
                     on_progress=publish, candidate_order=order, preferred_map_id=preferred,
@@ -1171,26 +1156,19 @@ class LiveRuntime:
             # A singleton's fit/material failure is UNKNOWN, never elimination.
             # Restore competition once on the same immutable frame with a new
             # session ticket; no public redispatch or freshly acquired owner.
-            if private_enabled and len(pool.remaining) == 1 and first_result is None:
+            if private_enabled and len(scan_plan) == 1 and first_result is None:
+                retry_full = False
                 with self._lock:
-                    if current() and self._s1_private_pool is pool:
+                    if current() and self._s1_private_pool is pool and pool.revision == scan_revision:
                         pool.restore()
+                        retry_full = True
                         preferred = None
                         attempted.clear()
                         ticket = session.begin_observation(str(floor))
                         self._s1_structure_ticket = ticket
                         self._notify("private-experimental-unlocked", reason="private-current-fit-unknown",
                             **pool.snapshot(), privateResourceDigest=catalog.resource_key)
-                if not obsolete():
-                    prepare_private()
-                    # This frame cannot re-eliminate the same unknown fit and
-                    # thereby prevent recovery. Retain diagnostics, reopen all
-                    # IDs, and do not promote on this recovery pass.
-                    with self._lock:
-                        if current() and self._s1_private_pool is pool:
-                            pool.restore()
-                            private_report = None
-                            preferred = None
+                if retry_full and not obsolete():
                     report = scan_current()
             with self._lock:
                 still_current = current()
@@ -1239,6 +1217,119 @@ class LiveRuntime:
             with self._lock:
                 if self._stream_owner is owner:
                     self._stream_owner = None
+            # A valid captured frame remains historical evidence after an
+            # ordinary close, even if first paint lost the race. No UI authority
+            # follows it. Queue ordering is capture admission, not finish time.
+            if private_enabled:
+                self._enqueue_private_observation(pool, engine, catalog, captured, frame, str(floor),
+                    digest, epoch, frame_id, round_id, cycle, payload, private_sequence)
+
+    @property
+    def private_evidence_busy(self):
+        return self._s1_private_jobs.busy
+
+    def stop_private_evidence(self):
+        # Stop admission first, then invalidate the running immutable task.
+        # Exit drain polls busy; the UI never joins a native kernel here.
+        self._s1_private_jobs.shutdown()
+        with self._lock:
+            self._clear_private_pool()
+
+    def _clear_private_pool(self):
+        self._s1_private_pool = None
+        jobs = getattr(self, "_s1_private_jobs", None)
+        if jobs is not None:
+            jobs.discard_pending()
+
+    def _private_record(self, context, event, **values):
+        """Disk-only telemetry. Never enter the UI/session callback channel."""
+        diagnostics = self._diagnostics
+        if diagnostics is not None:
+            try:
+                diagnostics.record("runtime-event", eventName=event, **context, **values)
+            except Exception:
+                pass
+
+    def _enqueue_private_observation(self, pool, engine, catalog, captured, frame, floor,
+                                     digest, epoch, frame_id, round_id, cycle, payload, sequence):
+        import numpy as np
+        # Immutable source pixels, at most one running plus one latest queued.
+        owned_frame = np.frombuffer(frame.tobytes(order="C"), dtype=np.uint8).reshape(frame.shape)
+        context = dict(season=catalog.season, mode=catalog.mode, floor=floor,
+            frameId=frame_id, roundId=round_id, epoch=epoch, cycleId=cycle,
+            privateFrameDigest=digest, privateResourceDigest=catalog.resource_key,
+            attemptId=payload.get("_diagnosticAttemptId", ""),
+            openingId=payload.get("_diagnosticOpeningId", ""), inputSequence=payload.get("inputSequence"))
+        scope = pool.scope
+        def scope_current():
+            return (self._s1_private_pool is pool and pool.scope == scope and self._active
+                and engine is self._engine and self._s1_provisional_enabled()
+                and (self._round, self._season, self._mode, self._profile, id(self._engine), catalog,
+                    self._settings_generation, getattr(self, "_display_generation", 0),
+                    self._capture_generation()) == scope[:-1])
+        def cancelled():
+            with self._lock:
+                return not scope_current()
+        def stage(name, state, elapsed, **extra):
+            self._private_record(context, "private-stage", privateStage=name,
+                privateStageState=state, elapsedMs=elapsed, **extra)
+        def discard():
+            stage("queue", "cancelled", 0.)
+        def run():
+            began = time.monotonic()
+            state = "cancelled"
+            stage("prepare", "started", 0.)
+            try:
+                with self._lock:
+                    if not scope_current():
+                        return
+                    # Read remaining/revision at START, not queue admission.
+                    before, revision = tuple(pool.remaining), pool.revision
+                evidence = engine.qt_s1_private_coordinate_prepare(owned_frame, before, floor,
+                    cancelled=cancelled, stage=stage)
+                with self._lock:
+                    if not scope_current() or pool.revision != revision:
+                        self._private_record(context, "private-evidence-discarded", reason="private-owner-or-revision-changed",
+                            snapshotPoolRevision=revision, currentPoolRevision=pool.revision)
+                        return
+                    if (evidence.get("mode"), evidence.get("resourceKey"), evidence.get("floor")) != (
+                            catalog.mode, catalog.resource_key, floor):
+                        state = "failed"
+                        return
+                    was_locked = pool.locked_id
+                    reason = pool.observe(evidence)
+                    summary = evidence.get("coordinateEvidence", {})
+                    self._private_record(context, "private-pool-observed", reason=reason,
+                        privatePoolBefore=list(before), privatePoolAfter=list(pool.remaining),
+                        snapshotPoolRevision=revision, currentPoolRevision=pool.revision,
+                        privateContradictedMapIds=evidence.get("contradictedMapIds", []),
+                        privateUnknownMapIds=evidence.get("unknownMapIds", list(before)),
+                        privateCoordinateReason=evidence.get("reason", ""),
+                        privateCoordinateVerified=evidence.get("coordinateVerified") is True,
+                        privatePoseDomainNarrow=evidence.get("poseAvailable") is True,
+                        privateCoordinateBasis=summary.get("basis", ""), privateScaleRange=summary.get("scaleRange", []),
+                        privateCoordinateErrorPx=summary.get("pointCoordinateErrorBoundPx", summary.get("anchorErrorPx", 0)),
+                        privateHypothesisCount=summary.get("sharedHypothesisCount", 0),
+                        privateGateStatus=evidence.get("gateStatus", "unknown"),
+                        privateGateReason=evidence.get("gateReason", "private-coordinate-unavailable"),
+                        privateGateMs=evidence.get("gateMs", 0), privateObservationMs=evidence.get("observationMs", 0),
+                        privateCompareMs=evidence.get("elapsedMs", 0), privateTotalMs=evidence.get("totalMs", 0),
+                        privateResourceMs=evidence.get("resourceMs", 0),
+                        **pool.snapshot())
+                    if was_locked and not pool.locked_id:
+                        self._private_record(context, "private-experimental-unlocked", reason=reason, **pool.snapshot())
+                    state = "finished"
+            except BaseException as error:
+                state = "failed"
+                stage("prepare-error", state, (time.monotonic()-began)*1000, exceptionType=type(error).__name__)
+            finally:
+                # Records the original frame even when a later owner is active.
+                stage("prepare", state, (time.monotonic()-began)*1000)
+        if cancelled():
+            discard()
+            return
+        stage("queue", "started", 0.)
+        self._s1_private_jobs.submit(run, discard, sequence=sequence)
 
     def _s1_structure_pending_receipt(self, action, payload):
         session = self._s1_structure_session
@@ -2138,12 +2229,12 @@ class LiveRuntime:
                     return self._receipt(action, payload, success=False, reason="stale-structure-candidate", stale=True)
                 session = self._s1_structure_session
                 if (action in ("previous_candidate", "next_candidate") and session is not None
-                        and session.snapshot().get("currentStatus") in ("preferred-material-committed", "subset-unresolved")):
+                        and session.snapshot().get("currentStatus") in ("preferred-material-committed", "first-material-committed", "subset-unresolved")):
                     # Other candidates have no pose on this frame. A deliberate
                     # switch expands through a fresh full-catalogue observation.
                     switch_from = self._provisional_display_map_id
                     self._s1_candidate_preference = None
-                    self._s1_private_pool = None
+                    self._clear_private_pool()
                     rescan_owner = (birth_ticket[0], request_id if request_id is not None else object())
                     self._capture_pending = True
                     self._capture_pending_owner = rescan_owner
@@ -2151,7 +2242,7 @@ class LiveRuntime:
                 try:
                     # Keep this user's original lifetime across the handoff.
                     # A nested dispatch could adopt a later close/new round.
-                    rescanned = self._capture_and_solve("capture_now", {}, cancelled,
+                    rescanned = self._capture_and_solve("capture_now", {"forceCatalogue": True}, cancelled,
                         expected_epoch=birth_ticket[0])
                 finally:
                     with self._lock:
@@ -2185,7 +2276,7 @@ class LiveRuntime:
                 if not choice.get("success") or choice.get("frameKey") != observation.get("digest"):
                     return self._receipt(action, payload, success=False, reason="structure-candidate-not-current", stale=True)
                 self._s1_candidate_preference = None
-                self._s1_private_pool = None
+                self._clear_private_pool()
                 # Revoke old material without erasing the current support ticket.
                 old_token = self._render.get("token", "") if self._render else ""
                 self._core.revoke_display(reason="provisional-candidate-switch")
@@ -2212,7 +2303,7 @@ class LiveRuntime:
                     # Clear before waiting for work, so an old scan/ACK cannot
                     # restore the preference after explicit re-identification.
                     self._s1_candidate_preference = None
-                    self._s1_private_pool = None
+                    self._clear_private_pool()
                     self.invalidate("s1-candidate-reselection")
             with self._work:
                 with self._lock:
@@ -2660,7 +2751,7 @@ class LiveRuntime:
         with self._lock:
             if any(word in reason for word in ("resource", "context", "settings", "identity", "reselection", "candidate-selected", "end-round", "end_round", "reset_round", "stop_round")):
                 self._s1_candidate_preference = None
-                self._s1_private_pool = None
+                self._clear_private_pool()
             if any(word in reason for word in ("resource", "context", "end-round")):
                 for handle in self._stream_priority_handles.values():
                     handle.invalidate()
@@ -3050,6 +3141,7 @@ class LiveRuntime:
 
 
     def shutdown(self):
+        self.stop_private_evidence()
         self.set_automatic_failure_sampling_enabled(False)
         self.set_failure_sampling_enabled(False)
         self.dispatch("end_round")
@@ -3562,7 +3654,7 @@ class LiveRuntime:
                             or request_settings_generation != self._settings_generation):
                         return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
                     self._s1_candidate_preference = None
-                    self._s1_private_pool = None
+                    self._clear_private_pool()
                     capture_request_epoch = self._epoch + 1
                     self.invalidate("s1-candidate-reselection")
                     if capture_request_epoch != self._epoch:

@@ -406,17 +406,17 @@ class EngineFactories(dict):
             from s1_structure_selection import StructureCatalog, StructureCandidateScanner
             catalog = StructureCatalog.from_engine(engine)
             private_observer = None
-            def private_coordinate_prepare(frame, pool_ids, floor, *, cancelled):
+            def private_coordinate_prepare(frame, pool_ids, floor, *, cancelled, stage=None):
                 nonlocal private_observer
                 from client_paths import RESOURCE_ROOT
                 from s1_private_experiment import PrivateCoordinateObserver
                 if private_observer is None:
                     private_observer = PrivateCoordinateObserver(engine, catalog, RESOURCE_ROOT / "s1-private-assets")
-                return private_observer.prepare(frame, pool_ids, floor, cancelled=cancelled)
+                return private_observer.prepare(frame, pool_ids, floor, cancelled=cancelled, stage=stage)
             engine.qt_s1_private_coordinate_prepare = private_coordinate_prepare
             def structure_scan(frame, *, floor, floor_source="operator-declared", cancelled=None, budget_seconds=None,
                                on_progress=None, candidate_order=None, preferred_map_id=None,
-                               preferred_material_committed=None, private_coordinate_report=None, planned_map_ids=None):
+                               preferred_material_committed=None, private_coordinate_report=None, planned_map_ids=None, first_material_committed=None):
                 # Lazy import keeps provider construction free of live IO.
                 from client_live_runtime import _AlignmentHost
                 host = _AlignmentHost(engine)
@@ -430,7 +430,7 @@ class EngineFactories(dict):
                                     on_progress=on_progress, candidate_order=candidate_order,
                                     preferred_map_id=preferred_map_id,
                                     preferred_material_committed=preferred_material_committed,
-                                    planned_map_ids=planned_map_ids)
+                                    planned_map_ids=planned_map_ids, first_material_committed=first_material_committed)
             def structure_rank(frame, *, floor, budget_seconds=None):
                 report = structure_scan(frame, floor=floor, budget_seconds=budget_seconds)
                 engine.last_s1_structure_scan = report

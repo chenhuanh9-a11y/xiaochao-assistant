@@ -1,6 +1,7 @@
 """Private experimental elimination ledger; never formal identity authority.
 
-Only an owned current-frame common-coordinate report may eliminate IDs.
+Only a scoped immutable-observation common-coordinate report may eliminate IDs.
+Historical same-round evidence never grants current pose/display authority.
 Unknown fits, omitted scans, timeouts, preferences and UI payloads cannot.
 """
 from dataclasses import dataclass, field
@@ -16,11 +17,13 @@ class PrivateRoundPool:
     locked_id: str = ""
     eliminated: set = field(default_factory=set)
     observation_count: int = 0
+    revision: int = 0
 
     def __post_init__(self):
         self.remaining = tuple(self.map_ids)
 
     def restore(self):
+        self.revision += 1
         self.remaining = tuple(self.map_ids)
         self.eliminated.clear()
         self.locked_id = ""
@@ -41,6 +44,7 @@ class PrivateRoundPool:
             # failure or positive contradiction withdraws the private lock.
             return "private-coordinate-unknown"
         self.observation_count += 1
+        self.revision += 1
         remaining = tuple(mid for mid in before if mid not in bad)
         if not remaining or self.locked_id in bad:
             self.restore()
@@ -54,6 +58,8 @@ class PrivateRoundPool:
                 and len(self.eliminated) == len(self.map_ids) - 1):
             changed = self.locked_id != map_id
             self.locked_id = map_id
+            if changed:
+                self.revision += 1
             return changed
         return False
 
@@ -76,30 +82,61 @@ class PrivateCoordinateObserver:
             asset_dir / "s1_entrance_coordinate_index.json",
             mode=catalog.mode, resource_key=catalog.resource_key)
 
-    def prepare(self, frame, pool_ids, floor, *, cancelled):
+    def prepare(self, frame, pool_ids, floor, *, cancelled, stage=None):
         from nightmare_candidate import visible_map_components
         from single_map_structure import current_geometry, observed_corner_chains
         start = time.perf_counter()
-        anchor = self.locator.detect(frame)
+        stage = stage or (lambda *args, **kwargs: None)
+        def run_stage(name, fn):
+            began = time.perf_counter()
+            stage(name, "started", 0.)
+            try:
+                if cancelled():
+                    stage(name, "cancelled", (time.perf_counter()-began)*1000)
+                    return None
+                value = fn()
+                stage(name, "cancelled" if cancelled() else "finished", (time.perf_counter()-began)*1000)
+                return value
+            except BaseException as error:
+                stage(name, "failed", (time.perf_counter()-began)*1000, exceptionType=type(error).__name__)
+                raise
+        def stopped():
+            return dict(coordinateVerified=False, evaluatedMapIds=list(pool_ids),
+                contradictedMapIds=[], unknownMapIds=list(pool_ids), reason="coordinate-work-obsolete")
+        anchor = run_stage("gate", lambda: self.locator.detect(frame, cancelled=cancelled))
         gate_ms = (time.perf_counter() - start) * 1000
+        if anchor is None or cancelled():
+            return stopped()
         contexts = []
         bounds = (0, 0, frame.shape[1], frame.shape[0])
         # All islands are generated without any candidate map. The common
         # comparator accepts only islands with >=6 matching common chains,
         # rejects incompatible coordinate solutions, and never unions HUD edges.
-        components = visible_map_components(frame, observation_bounds=bounds)
-        if len(components) <= 32:
-            for visible in components:
-                if cancelled():
-                    break
-                context = current_geometry(frame, observation_bounds=bounds, visible_override=visible)
-                if context is not None and len(observed_corner_chains(frame, context)) >= 6:
-                    contexts.append(context)
+        def extract():
+            components = visible_map_components(frame, observation_bounds=bounds)
+            if len(components) <= 32:
+                for visible in components:
+                    if cancelled():
+                        break
+                    context = current_geometry(frame, observation_bounds=bounds, visible_override=visible)
+                    if context is not None and len(observed_corner_chains(frame, context)) >= 6:
+                        contexts.append(context)
+        run_stage("extract", extract)
+        if cancelled():
+            return stopped()
         extraction_ms = (time.perf_counter() - start) * 1000 - gate_ms
         gate = None
         if anchor.status == "located":
             gate = dict(center=list(anchor.center_px), uncertaintyPx=anchor.localization_uncertainty_px)
-        report = self.filter.evaluate(frame, contexts, pool_ids, str(floor), anchor=gate, cancelled=cancelled)
+        resource_started = time.perf_counter()
+        resources = run_stage("resources", lambda: self.filter._pool(tuple(sorted(set(pool_ids))), str(floor), cancelled))
+        resource_ms = (time.perf_counter()-resource_started)*1000
+        if resources is None or cancelled():
+            return stopped()
+        report = run_stage("compare", lambda: self.filter.evaluate(
+            frame, contexts, pool_ids, str(floor), anchor=gate, cancelled=cancelled))
+        if report is None or cancelled():
+            return stopped()
         selected = report.get("selectedContextIndex")
         if type(selected) is int and 0 <= selected < len(contexts):
             # Current-frame working memory only; never persisted in reports.
@@ -108,6 +145,7 @@ class PrivateCoordinateObserver:
         report["gateReason"] = anchor.reason
         report["gateMs"] = gate_ms
         report["observationMs"] = extraction_ms
+        report["resourceMs"] = resource_ms
         report["totalMs"] = (time.perf_counter() - start) * 1000
         return report
 
@@ -137,3 +175,64 @@ class PrivateCoordinateObserver:
                     observationBounds=context["observationBounds"],
                     observationComponent=dict(context["visible"][2], bounds=context["visible"][1]),
                     routeProfileId="shared-structure", strategy="private-shared-coordinate-fit")
+
+
+class LatestEvidenceQueue:
+    """One running immutable-frame task plus one replaceable latest task."""
+    def __init__(self):
+        import threading
+        self._lock = threading.Lock()
+        self._pending = None
+        self._thread = None
+        self._closed = False
+        self._latest_sequence = 0
+
+    @property
+    def busy(self):
+        with self._lock:
+            return self._thread is not None or self._pending is not None
+
+    def submit(self, run, discarded=lambda: None, *, sequence=None):
+        import threading
+        with self._lock:
+            sequence = self._latest_sequence + 1 if sequence is None else sequence
+            if self._closed or sequence <= self._latest_sequence:
+                rejected = (run, discarded)
+                old = None
+            else:
+                rejected = None
+                self._latest_sequence = sequence
+                old, self._pending = self._pending, (run, discarded)
+                if self._thread is None:
+                    self._thread = threading.Thread(target=self._drain, name='s1-private-evidence', daemon=True)
+                    self._thread.start()
+        if old is not None:
+            old[1]()
+        if rejected is not None:
+            rejected[1]()
+        return rejected is None
+
+    def _drain(self):
+        while True:
+            with self._lock:
+                item, self._pending = self._pending, None
+                if item is None:
+                    self._thread = None
+                    return
+            try:
+                item[0]()
+            except BaseException:
+                # A failed task never strands the bounded queue. Each runtime
+                # task records its own exception before this cleanup boundary.
+                pass
+
+    def discard_pending(self):
+        with self._lock:
+            item, self._pending = self._pending, None
+        if item is not None:
+            item[1]()
+
+    def shutdown(self):
+        with self._lock:
+            self._closed = True
+        self.discard_pending()

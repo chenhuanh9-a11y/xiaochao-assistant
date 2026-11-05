@@ -23,6 +23,19 @@ CODE = re.compile(r"[A-Za-z0-9_.:-]{0,96}\Z")
 STATE_FIELDS = frozenset(("action", "source", "reason", "eventName", "status", "imageStatus"))
 STATE_CODE = re.compile(r"[a-z][a-z0-9_-]{0,95}\Z")
 
+# Private experimental telemetry is bounded and code-only at BOTH boundaries.
+TEXT_FIELDS |= frozenset(("season", "attemptId", "openingId", "privateStage", "privateStageState",
+    "privateFrameDigest", "privateResourceDigest", "privateLockMapId", "privateCoordinateReason",
+    "privateCoordinateBasis", "privateGateStatus", "privateGateReason", "exceptionType"))
+NUMBER_FIELDS |= frozenset(("inputSequence", "snapshotPoolRevision", "currentPoolRevision",
+    "privateObservationCount", "privateCoordinateErrorPx", "privateHypothesisCount", "privateGateMs",
+    "privateObservationMs", "privateResourceMs", "privateCompareMs", "privateTotalMs", "privateScanMs", "privateMaterialMs"))
+BOOL_FIELDS |= frozenset(("privateExperimental", "privateExperimentalLocked",
+    "privateCoordinateVerified", "privatePoseDomainNarrow", "scanSkipped"))
+TEXT_FIELDS |= frozenset(("candidateReuse",))
+PRIVATE_ID_LISTS = frozenset(("privatePoolBefore", "privatePoolAfter", "privatePoolMapIds",
+    "privateEliminatedMapIds", "privateContradictedMapIds", "privateUnknownMapIds"))
+
 
 def _write_batch(path, rows):
     from diagnostic_storage import append_records
@@ -30,9 +43,11 @@ def _write_batch(path, rows):
         append_records(path, rows[start:start+16], file_limit=LOG_MAX_BYTES)
 
 
-def create_lifecycle_trace(paths):
+def create_lifecycle_trace(paths, *, candidate_purpose=None):
     # No writer, timer, thread, directory or diagnostic clock when disabled.
-    return LifecycleTrace(paths) if os.environ.get(ENVIRONMENT_FLAG) == "1" else None
+    from s1_candidate_purpose import native_candidate_purpose_is_valid
+    enabled = os.environ.get(ENVIRONMENT_FLAG) == "1" or native_candidate_purpose_is_valid(candidate_purpose)
+    return LifecycleTrace(paths) if enabled else None
 
 
 class LifecycleTrace:
@@ -75,6 +90,12 @@ class LifecycleTrace:
                     row["inputSequence" if key == "sequence" else key] = value
                 elif key in BOOL_FIELDS and type(value) is bool:
                     row[key] = value
+                elif key in PRIVATE_ID_LISTS and isinstance(value, (tuple, list)) and len(value) <= 44:
+                    if all(isinstance(mid, str) and CODE.fullmatch(mid) for mid in value):
+                        row[key] = list(value)
+                elif key == "privateScaleRange" and isinstance(value, (tuple, list)) and len(value) <= 2:
+                    if all(type(v) in (int, float) and math.isfinite(v) and abs(v) <= 1e18 for v in value):
+                        row[key] = list(value)
             self._queue.append(row)
 
     def _run(self):

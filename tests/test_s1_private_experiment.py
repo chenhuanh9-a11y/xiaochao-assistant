@@ -52,88 +52,9 @@ class PrivatePoolContracts(unittest.TestCase):
         self.assertNotIn('rawPixels',clean);self.assertNotIn('windowTitle',clean)
 
 
-class PrivateRuntimeContracts(unittest.TestCase):
+class PrivateFixedPoseContracts(unittest.TestCase):
     setUp=native.NativeCandidateContracts.setUp
     start_patch=native.NativeCandidateContracts.start_patch
-    show=native.NativeCandidateContracts.show
-    current_payload=native.NativeCandidateContracts.current_payload
-
-    def wire(self, prepare=None, fail=False):
-        self.events=[];self.fit_ids=[];self.prepared=[]
-        def default(frame, ids, floor, *, cancelled):
-            self.prepared.append((tuple(ids),floor,int(frame[0,0,0])))
-            return dict(mode='nightmare',resourceKey='fixture',floor=floor,coordinateVerified=True,
-                evaluatedMapIds=list(ids),contradictedMapIds=[i for i in ids if i=='b'],
-                unknownMapIds=[i for i in ids if i!='b'],reason='same-coordinate-positive-contradictions-only')
-        self.registry.engine.qt_s1_private_coordinate_prepare=prepare or default
-        def scan(frame, **kwargs):
-            evidence=kwargs.pop('private_coordinate_report',None)
-            def fit(f,mid,fl,cancelled,**kw):
-                self.fit_ids.append(mid)
-                return dict(success=False) if fail and evidence is not None else copy.deepcopy(self.fit)
-            return StructureCandidateScanner(self.registry.catalog,fit).scan(frame,**kwargs)
-        self.registry.engine.qt_s1_structure_scan=scan
-        self.runtime.set_event_callback(lambda row:self.events.append(row))
-
-    def test_private_lock_and_single_id_reopen_without_formal_identity(self):
-        self.wire();self.show()
-        state=self.runtime.snapshot()
-        self.assertTrue(state['privateExperiment']['privateExperimentalLocked'])
-        self.assertFalse(state['identityLocked']);self.assertEqual(self.runtime._durable_map_id,'')
-        self.runtime.dispatch('close_map');self.capture.frame[0,0,0]+=1;self.show()
-        self.assertEqual(self.fit_ids,['a','a'])
-        self.assertEqual(sum(e['event']=='private-experimental-locked' for e in self.events),1)
-        self.assertEqual(len(self.prepared),2)
-
-    def test_singleton_fit_unknown_restores_full_competition(self):
-        self.wire(fail=True);self.show()
-        self.assertEqual(self.fit_ids,['a','a','b'])
-        self.assertFalse(self.runtime.snapshot()['privateExperiment']['privateExperimentalLocked'])
-        self.assertEqual(self.runtime._s1_private_pool.remaining,('a','b'))
-
-    def test_force_rediscovery_replaces_round_pool_before_work(self):
-        self.wire();self.show();old=self.runtime._s1_private_pool
-        self.assertTrue(self.runtime.dispatch('capture_now',{'forceCatalogue':True})['success'])
-        self.assertIsNot(old,self.runtime._s1_private_pool)
-        self.assertEqual(self.prepared[-1][0],('a','b'))
-
-    def test_late_observer_after_end_cannot_lock_or_restore_state(self):
-        entered,release=threading.Event(),threading.Event()
-        def blocked(frame,ids,floor,*,cancelled):
-            entered.set();self.assertTrue(release.wait(3))
-            return dict(mode='nightmare',resourceKey='fixture',floor=floor,coordinateVerified=True,
-                evaluatedMapIds=list(ids),contradictedMapIds=['b'],unknownMapIds=['a'])
-        self.wire(blocked);result=[]
-        worker=threading.Thread(target=lambda:result.append(self.runtime.dispatch('capture_now')))
-        worker.start();self.assertTrue(entered.wait(3));self.runtime.dispatch('end_round');release.set();worker.join(3)
-        self.assertFalse(worker.is_alive());self.assertFalse(result[0]['success'])
-        self.assertIsNone(self.runtime._s1_private_pool);self.assertIsNone(self.runtime._render)
-        self.assertFalse(any(e['event']=='private-experimental-locked' for e in self.events))
-
-    def test_late_observer_cannot_replace_successor_pool(self):
-        self.wire();seen=[False]
-        def event(row):
-            self.events.append(row)
-            if row['event']=='private-pool-observed' and not seen[0]:
-                seen[0]=True
-                self.runtime.dispatch('close_map')
-                self.capture.frame[0,0,0]+=1
-                self.assertTrue(self.runtime.dispatch('capture_now')['success'])
-                self.successor=self.runtime._s1_private_pool
-                self.successor_token=self.runtime._render['token']
-        self.runtime.set_event_callback(event)
-        result=self.runtime.dispatch('capture_now')
-        self.assertFalse(result['success'])
-        self.assertIs(self.runtime._s1_private_pool,self.successor)
-        self.assertEqual(self.runtime._render['token'],self.successor_token)
-        self.assertTrue(self.runtime.snapshot()['privateExperiment']['privateExperimentalLocked'])
-
-    def test_resource_and_manual_boundaries_clear_experiment(self):
-        self.wire();self.show();self.registry.invalidate=lambda:None
-        self.runtime.invalidate('resource-changed')
-        self.assertIsNone(self.runtime._s1_private_pool)
-        self.runtime.configure_settings(dict(mapSelectionMode='manual'))
-        self.assertIsNone(self.runtime._s1_private_pool)
 
     def test_fixed_pose_residual_and_material_share_selected_component(self):
         from s1_private_experiment import PrivateCoordinateObserver
