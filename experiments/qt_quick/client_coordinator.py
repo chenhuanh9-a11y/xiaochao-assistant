@@ -1001,14 +1001,14 @@ class ClientCoordinator(QObject):
     @Slot()
     def recaptureFromMain(self):
         """Explicit main-page click only; never called by polling/background IO."""
-        self._capture_from_main("capture_now")
+        self._capture_from_main("capture_now", force_catalogue=True)
 
     @Slot()
     def fitManualFromMain(self):
         """Return to the bound game before an explicitly requested manual fit."""
         self._capture_from_main("fit_manual_frame")
 
-    def _capture_from_main(self, action):
+    def _capture_from_main(self, action, *, force_catalogue=False):
         if (self._main_recapture_active or self._closing or self._closed or self.session.busy or self.resources.busy
                 or self.resources.pendingKind or self._pending_context
                 or self.session.snapshot.get("resourceLocked")
@@ -1048,7 +1048,10 @@ class ClientCoordinator(QObject):
                     if callable(reset):
                         reset(bool(self._map_was_open))
                 self._clear_focus_return_plan()
-                self.session.dispatch(action)
+                if force_catalogue and action == "capture_now" and self._native_candidate_preview_ready(current):
+                    self.session.dispatchWithPayload(action, {"forceCatalogue": True})
+                else:
+                    self.session.dispatch(action)
             else:
                 self._message = self._focus_notice = "识别环境已变化，未截图；请确认游戏地图已打开后重试"
         self.changed.emit()

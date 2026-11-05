@@ -172,10 +172,10 @@ class BakedPurposeContracts(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             profile = Path(directory) / 'installation-profile.json'
             with patch.object(sys, 'frozen', True, create=True), patch.object(sys, '_MEIPASS', directory, create=True):
-                for name in ('s0-s1-test', 's1-floor-test', 's1-auto-test'):
+                for name in ('s0-s1-test', 's1-floor-test', 's1-auto-test', 's1-playtest'):
                     profile.write_text(json.dumps(dict(product=build.PRODUCT,
                         installerInstance=dict(id=name, **build.INSTANCES[name]))))
-                    self.assertIs(private_native_candidate_purpose(), _NATIVE_S1_PREVIEW if name == 's1-auto-test' else None)
+                    self.assertIs(private_native_candidate_purpose(), _NATIVE_S1_PREVIEW if name in ('s1-auto-test', 's1-playtest') else None)
 
 
 if __name__ == '__main__':

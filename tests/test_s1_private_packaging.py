@@ -227,7 +227,7 @@ class PrivatePackagingTests(unittest.TestCase):
         self.assertEqual(len({row['appId'] for row in build.INSTANCES.values()}), len(build.INSTANCES))
         profile = self.root / 'installation-profile.json'
         models = {'s0-s1-test': 'Xingtu.S0S1PrivateTest', 's1-floor-test': 'Xingtu.S1FloorPrivateTest',
-                  's1-auto-test': 'Xingtu.S1AutoPrivateTest'}
+                  's1-auto-test': 'Xingtu.S1AutoPrivateTest', 's1-playtest': 'Xingtu.S1Playtest'}
         self.assertEqual(identity.PRIVATE_S1_INSTANCES, frozenset(models))
         self.assertIs(build.PRIVATE_S1_INSTANCES, identity.PRIVATE_S1_INSTANCES)
         for name, model in models.items():

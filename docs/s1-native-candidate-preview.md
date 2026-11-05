@@ -31,3 +31,18 @@ The new installer has its own AppId, application model, default installation
 directory and user-data instance. It protects previous private registrations
 and directories as well as the production installation. No public release or
 automatic migration from another instance is implied.
+
+The 1.0.12 `s1-playtest` channel adds inventoried original-color PNG display
+bridges without changing PNG/NPZ coordinates or solver thresholds. Actual Qt
+material acknowledgement remembers only the last candidate ID. A fresh opening
+fits that ID against its new frame first; a failed fit/material continues through
+the catalog. A successful shortcut preserves unknown competitors and grants no
+permanent identity. Explicit re-identification requests `forceCatalogue: true`;
+ordinary openings and floor probes do not.
+
+The native automatic controls keep the current candidate, re-identification,
+display and round controls visible; manual recovery and less-used actions are
+expandable. B3/B4 have reported static source-image detector replay evidence;
+real-time candidate/display validation remains separate. This delivery runs
+build/startup/data-protection checks and does not claim a new simulation suite
+or game acceptance. The new channel also protects the 1.0.11 auto-test identity.

@@ -16,7 +16,7 @@ def private_native_candidate_purpose():
     if baked_identity(require_qt=True) != "qt-isolated":
         return None
     profile = json.loads((Path(sys._MEIPASS) / "installation-profile.json").read_text("utf8"))
-    if profile["installerInstance"]["id"] != "s1-auto-test":
+    if profile["installerInstance"]["id"] not in ("s1-auto-test", "s1-playtest"):
         return None
     return _NATIVE_S1_PREVIEW
 

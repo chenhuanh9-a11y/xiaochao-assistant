@@ -38,8 +38,11 @@ Window {
     readonly property bool groupHeld: snapshot.manualGroupMemberHeld === true
     readonly property bool groupPending: snapshot.groupMemberSelectionPending === true
     readonly property string appliedMode: session.appliedMode || session.currentMode
+    readonly property bool compactAutomatic: snapshot.nativeCandidatePreviewAvailable === true && !manualSelection && snapshot.manualAlignmentSession !== true
+    property bool recoveryExpanded: false
     readonly property var activeModules: {
         const rows = layout.order.filter(function(key) { return layout.enabled.indexOf(key) >= 0 })
+        if (compactAutomatic) return ["display", "recognition", "round"]
         if (snapshot.season === "s1" && snapshot.manualAlignmentAvailable && rows.indexOf("manual_map") < 0 && rows.indexOf("map") < 0)
             rows.push("manual_map")
         return rows
@@ -156,7 +159,7 @@ Window {
     function floorText() {
         if (snapshot.season === "s1") {
             if ((snapshot.floorSource === "automatic-current-frame" || (snapshot.candidateStructureAvailable === true && snapshot.mapOpen === true)) && snapshot.observedFloor)
-                return "自动观察当前 B" + Math.abs(Number(snapshot.observedFloor)) + ((snapshot.observedFloor === "-3" || snapshot.observedFloor === "-4") ? "（未实测）" : "")
+                return "自动观察当前 B" + Math.abs(Number(snapshot.observedFloor)) + ((snapshot.observedFloor === "-3" || snapshot.observedFloor === "-4") ? "（实时贴合待测）" : "")
             if (snapshot.floorSource === "manual-unvalidated-fallback" && snapshot.targetFloor)
                 return "人工回退 B" + Math.abs(Number(snapshot.targetFloor)) + " · 当前楼层未知"
             return "当前楼层未知" + (snapshot.targetFloor ? " · 目标 B" + Math.abs(Number(snapshot.targetFloor)) : "")
@@ -337,6 +340,18 @@ Window {
                         }
                     }
                 }
+                ControlButton {
+                    objectName: "controlRecoveryToggle"
+                    visible: panel.compactAutomatic
+                    text: panel.recoveryExpanded ? "收起恢复选项" : "手动恢复 / 更多"
+                    Layout.fillWidth: true
+                    onClicked: panel.recoveryExpanded = !panel.recoveryExpanded
+                }
+                Loader {
+                    active: panel.compactAutomatic && panel.recoveryExpanded
+                    visible: active; Layout.fillWidth: true
+                    sourceComponent: manualMapModule
+                }
             }
         }
         ColumnLayout {
@@ -375,13 +390,14 @@ Window {
                     KeyHint { text: panel.shortcut("toggle-sheet-visibility") }
                 }
                 ColumnLayout {
+                    visible: !panel.compactAutomatic || panel.recoveryExpanded
                     Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop; spacing: 2
                     ControlButton { objectName: "controlReferenceVisibility"; text: panel.preferences.referenceSheetVisible ? "隐藏定点" : "显示定点"; icon.source: "icons/map.png"; selected: panel.preferences.referenceSheetVisible === true; enabled: !settingsService.busy; Layout.fillWidth: true; hint: "切换定点地图显示，保留已选择的地图"; onClicked: clientCoordinator.toggleReferenceVisibility() }
                     ControlButton { visible: !!panel.layout.display.referencePosition && !panel.editing; objectName: "controlEditReferencePosition"; text: "编辑位置"; hint: "拖动定点地图，完成后保存位置"; implicitHeight: 30; Layout.fillWidth: true; onClicked: clientCoordinator.beginReferenceEdit() }
                 }
             }
             OpacityControl { visible: !!panel.layout.display.alignedOpacity; settingKey: "sheetOpacity"; title: "贴合层不透明度" }
-            OpacityControl { visible: !!panel.layout.display.referenceOpacity; settingKey: "referenceOpacity"; title: "定点不透明度" }
+            OpacityControl { visible: !!panel.layout.display.referenceOpacity && (!panel.compactAutomatic || panel.recoveryExpanded); settingKey: "referenceOpacity"; title: "定点不透明度" }
         }
     }
     Component {
@@ -417,7 +433,7 @@ Window {
             }
             KeyHint {
                 visible: panel.snapshot.manualAlignmentSession === true
-                text: "手动选图；自动观察当前 B1～B4。B3/B4 未实测，识别不确定时停止贴合；默认目标不代表已观察。"
+                text: "手动选图；自动观察当前 B1～B4。B3/B4 已有静态截图核验，实时贴合待测，识别不确定时停止贴合；默认目标不代表已观察。"
             }
             RowLayout {
                 Layout.fillWidth: true; spacing: 4
@@ -467,7 +483,7 @@ Window {
                         required property string modelData
                         objectName: "controlManualFloor_" + modelData
                         visible: !(panel.snapshot.season === "s1" && panel.snapshot.automaticFloorObservationAvailable === true)
-                        text: panel.snapshot.season === "s1" ? "人工回退 B" + Math.abs(Number(modelData)) + ((modelData === "-3" || modelData === "-4") ? "（未实测）" : "") : modelData === "B1" ? "B1" : "F" + modelData
+                        text: panel.snapshot.season === "s1" ? "人工回退 B" + Math.abs(Number(modelData)) + ((modelData === "-3" || modelData === "-4") ? "（实时贴合待测）" : "") : modelData === "B1" ? "B1" : "F" + modelData
                         selected: panel.snapshot.season === "s1" ? String(panel.snapshot.manualFloor || "") === modelData : String(panel.snapshot.manualFloor || panel.snapshot.floor) === modelData
                         enabled: panel.available("set_floor"); implicitWidth: 50; Layout.fillWidth: true
                         onClicked: session.dispatchWithPayload("set_floor", {floor: modelData})
@@ -499,14 +515,14 @@ Window {
                 Accessible.name: "选择识别候选地图"
                 onActivated: function(index) { panel.chooseCandidate(index, model[index]) }
             }
-            ControlButton { text: "上一候选"; enabled: panel.available("previous_candidate"); Layout.fillWidth: true; onClicked: session.dispatch("previous_candidate") }
-            KeyHint { text: panel.shortcut("candidate-prev") }
-            ControlButton { text: "下一候选"; enabled: panel.available("next_candidate"); Layout.fillWidth: true; onClicked: session.dispatch("next_candidate") }
-            KeyHint { text: panel.shortcut("candidate-next") }
-            ControlButton { text: panel.snapshot.candidateProvisionalDisplayEnabled === true ? "锁定本局地图（可选）" : "确认地图"; enabled: panel.available("confirm_route"); Layout.fillWidth: true; onClicked: session.dispatch("confirm_route") }
-            KeyHint { text: panel.shortcut("confirm-round") }
-            ControlButton { text: "重新识别"; enabled: panel.available("capture_now"); Layout.fillWidth: true; onClicked: session.dispatch("capture_now") }
-            ControlButton { objectName: "controlsRecognitionDetails"; text: "打开候选列表（切到主界面）"; Layout.fillWidth: true; onClicked: clientCoordinator.openRecognitionDetails() }
+            ControlButton { visible: !panel.compactAutomatic || panel.recoveryExpanded; text: "上一候选"; enabled: panel.available("previous_candidate"); Layout.fillWidth: true; onClicked: session.dispatch("previous_candidate") }
+            KeyHint { text: !panel.compactAutomatic || panel.recoveryExpanded ? panel.shortcut("candidate-prev") : "" }
+            ControlButton { visible: !panel.compactAutomatic || panel.recoveryExpanded; text: "下一候选"; enabled: panel.available("next_candidate"); Layout.fillWidth: true; onClicked: session.dispatch("next_candidate") }
+            KeyHint { text: !panel.compactAutomatic || panel.recoveryExpanded ? panel.shortcut("candidate-next") : "" }
+            ControlButton { visible: !panel.compactAutomatic || panel.recoveryExpanded; text: panel.snapshot.candidateProvisionalDisplayEnabled === true ? "人工确认本局地图（可选）" : "确认地图"; enabled: panel.available("confirm_route"); Layout.fillWidth: true; onClicked: session.dispatch("confirm_route") }
+            KeyHint { text: !panel.compactAutomatic || panel.recoveryExpanded ? panel.shortcut("confirm-round") : "" }
+            ControlButton { objectName: "controlReidentify"; text: "重新识别"; enabled: panel.available("capture_now"); Layout.fillWidth: true; onClicked: session.dispatchWithPayload("capture_now", {forceCatalogue: true}) }
+            ControlButton { objectName: "controlsRecognitionDetails"; visible: !panel.compactAutomatic || panel.recoveryExpanded; text: "打开候选列表（切到主界面）"; Layout.fillWidth: true; onClicked: clientCoordinator.openRecognitionDetails() }
         }
     }
     Component {

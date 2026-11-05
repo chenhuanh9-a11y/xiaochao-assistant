@@ -110,7 +110,7 @@ Item {
                     ? "自动候选：每次开图重新筛选，可信位姿自动显示候选整图；可直接切换，不代表地图身份已锁定。"
                     : page.state.candidateStructureAvailable === true && !page.state.manualAlignmentSession
                     ? "当前画面可读取已验证的 B1/B2 并列出结构候选；请选择并确认本局地图。"
-                    : "人工选择地图；自动观察当前 B1～B4。B3/B4 未实测，识别不确定时停止贴合。默认目标不代表已观察。"
+                    : "人工选择地图；自动观察当前 B1～B4。B3/B4 已有静态截图核验，实时贴合待测，识别不确定时停止贴合。默认目标不代表已观察。"
                 Layout.fillWidth: true; wrapMode: Text.WordWrap
             }
         }
@@ -141,7 +141,7 @@ Item {
             AppButton { objectName: "recognitionNext"; visible: !page.groupVisible; text: "下一候选"; enabled: page.candidates.length > 0 && page.available("next_candidate"); onClicked: session.dispatch("next_candidate") }
             Item { Layout.fillWidth: true }
             AppButton { objectName: "recognitionReselect"; text: "重新选图"; enabled: page.available("reselect_map"); onClicked: session.dispatch("reselect_map") }
-            AppButton { objectName: "recognitionConfirm"; visible: !page.groupVisible; text: page.state.candidateProvisionalDisplayEnabled === true ? "锁定本局地图（可选）" : page.state.identityLocked === true ? "地图已确认" : "确认此地图"; primary: true; enabled: page.hasSelection && page.available("confirm_route"); onClicked: session.dispatch("confirm_route") }
+            AppButton { objectName: "recognitionConfirm"; visible: !page.groupVisible; text: page.state.candidateProvisionalDisplayEnabled === true ? "人工确认本局地图（可选）" : page.state.identityLocked === true ? "地图已确认" : "确认此地图"; primary: true; enabled: page.hasSelection && page.available("confirm_route"); onClicked: session.dispatch("confirm_route") }
         }
         Rectangle {
             Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 150
@@ -247,7 +247,7 @@ Item {
                     required property string modelData
                     objectName: "recognitionFloor_" + modelData
                     visible: !(page.state.season === "s1" && page.state.automaticFloorObservationAvailable === true)
-                    text: page.floorName(modelData) + (page.state.season === "s1" ? " 回退" + ((modelData === "-3" || modelData === "-4") ? "（未实测）" : "") : "")
+                    text: page.floorName(modelData) + (page.state.season === "s1" ? " 回退" + ((modelData === "-3" || modelData === "-4") ? "（实时贴合待测）" : "") : "")
                     implicitWidth: page.state.season === "s1" ? Math.max(58, contentItem.implicitWidth + leftPadding + rightPadding) : 58
                     selected: page.state.season === "s1" ? String(page.state.manualFloor || "") === modelData : String(page.state.floor) === modelData
                     enabled: page.available("set_floor")
@@ -262,7 +262,7 @@ Item {
         Label {
             objectName: "recognitionCurrentFloor"
             visible: page.state.season === "s1"
-            text: (page.state.floorSource === "automatic-current-frame" || (page.state.candidateStructureAvailable === true && page.state.mapOpen === true)) && page.state.observedFloor ? "自动观察当前 " + page.floorName(page.state.observedFloor) + ((page.state.observedFloor === "-3" || page.state.observedFloor === "-4") ? "（未实测）" : "")
+            text: (page.state.floorSource === "automatic-current-frame" || (page.state.candidateStructureAvailable === true && page.state.mapOpen === true)) && page.state.observedFloor ? "自动观察当前 " + page.floorName(page.state.observedFloor) + ((page.state.observedFloor === "-3" || page.state.observedFloor === "-4") ? "（实时贴合待测）" : "")
                 : page.state.floorSource === "manual-unvalidated-fallback" ? "当前楼层未知 · 人工回退 " + page.floorName(page.state.targetFloor)
                 : "当前楼层未知" + (page.state.targetFloor ? " · 目标 " + page.floorName(page.state.targetFloor) : "")
             color: "#526785"; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true
