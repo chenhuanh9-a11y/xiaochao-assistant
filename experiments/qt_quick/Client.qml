@@ -21,7 +21,7 @@ ApplicationWindow {
     readonly property var routeOptions: {
         if (routeChoices.busy || routeChoices.season !== (settingsService.values.gameSeason || "s0")
                 || routeChoices.mode !== settingsService.values.gameMode) return []
-        var options = routeChoices.profiles.slice()
+        var options = routeChoices.profiles.filter(function(row) { return row.runtimeSelectable !== false })
         var custom = customGalleryService.snapshot
         if (!routeChoices.busy && routeChoices.season === "s0" && routeChoices.mode === "nightmare" && custom.available)
             for (var i = 0; i < custom.galleries.length; i++)

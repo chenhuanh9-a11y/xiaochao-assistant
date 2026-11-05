@@ -37,7 +37,7 @@ Item {
                         Label { text: (modelData.bytes / 1048576).toFixed(1) + " MiB"; color: "#567096" }
                         Item { Layout.fillWidth: true }
                         AppButton { text: "选择"; selected: modelData.packageId === panel.state.selectedPackageId; onClicked: onlinePackageService.selectPackage(modelData.packageId) }
-                        AppButton { text: "下载并检查导入"; primary: true; enabled: panel.state.canDownload; onClicked: onlinePackageService.downloadPackage(modelData.packageId) }
+                        AppButton { objectName: "onlineDownload-" + modelData.packageId; text: modelData.installation && modelData.installation.status === "installed" ? "校验本地安装" : "下载并检查导入"; primary: true; enabled: panel.state.canDownload; onClicked: onlinePackageService.downloadPackage(modelData.packageId) }
                     }
                 }
             }

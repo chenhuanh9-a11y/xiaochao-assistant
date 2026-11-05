@@ -1,5 +1,6 @@
 """Online UI transport/consent seam: synthetic files, no sockets or game calls."""
 import hashlib
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -110,6 +111,94 @@ class OnlineTests(unittest.TestCase):
         self.assertEqual(expected, {k:self.transport.rows[0][k] for k in ("packageId","bytes","sha256")})
         self.assertEqual(generation, 0)
         self.assertEqual(self.service.snapshot["progress"]["receivedBytes"], len(self.transport.data))
+
+    def installed_package(self):
+        from star_map_import import BASE_DEPENDENCIES
+        self.transport.rows[0]["packageId"] = "nightmare-suju"
+        target = self.root / "_internal/assets/suju/nightmare-03/floor-2.png"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"pixels")
+        receipt = self.root / "work/map-packages/nightmare-suju.json"
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        dependencies = []
+        for relative in sorted(BASE_DEPENDENCIES):
+            dependency = self.root / relative
+            dependency.parent.mkdir(parents=True, exist_ok=True)
+            dependency.write_bytes(b"base")
+            dependencies.append(dict(path=relative, bytes=4, sha256=hashlib.sha256(b"base").hexdigest()))
+        receipt.write_text(json.dumps(dict(packageId="nightmare-suju", revision=1,
+            archiveSha256=self.transport.rows[0]["sha256"], requiresFiles=dependencies, files=[dict(
+                path=target.relative_to(self.root).as_posix(), bytes=6,
+                sha256=hashlib.sha256(b"pixels").hexdigest())])))
+        return target, receipt
+
+    def test_installed_bytes_without_cached_zip_skip_download_and_import_after_restart(self):
+        self.installed_package()
+        self.assertFalse(self.transport.root.exists())
+        for _ in range(2):
+            self.index()
+            self.service.downloadPackage("nightmare-suju")
+            until(lambda: not self.service.busy)
+            self.assertEqual(self.transport.calls[-1], "index")
+            self.assertEqual(self.resources.calls, [])
+            self.assertEqual(self.service.snapshot["stage"], "ready")
+            self.assertEqual(self.service.snapshot["packages"][0]["installation"]["status"], "installed")
+            self.service.shutdown()
+            self.service = OnlinePackagesService(self.root, self.resources, transport=self.transport)
+
+    def test_missing_corrupt_receipt_or_new_digest_still_downloads(self):
+        for failure in ("missing", "corrupt", "receipt", "new-version", "base-missing", "base-corrupt"):
+            with self.subTest(failure=failure):
+                target, receipt = self.installed_package()
+                self.index()  # Earlier proof must not mask a subsequent change.
+                if failure == "missing":
+                    target.unlink()
+                elif failure == "corrupt":
+                    target.write_bytes(b"broken")  # Same size, different SHA.
+                elif failure == "receipt":
+                    receipt.write_text("{}")
+                elif failure.startswith("base-"):
+                    dependency = self.root / json.loads(receipt.read_text())["requiresFiles"][0]["path"]
+                    if failure == "base-missing":
+                        dependency.unlink()
+                    else:
+                        dependency.write_bytes(b"fail")  # Same size; hash must be checked.
+                else:
+                    document = json.loads(receipt.read_text())
+                    document["archiveSha256"] = "b" * 64
+                    receipt.write_text(json.dumps(document))
+                self.service.downloadPackage("nightmare-suju")
+                until(lambda: not self.service.busy)
+                self.assertEqual(self.transport.calls[-1], "nightmare-suju")
+                self.assertEqual(self.service.snapshot["stage"], "handoff")
+        self.assertEqual(len(self.resources.calls), 6)
+
+    def test_installed_verification_cannot_publish_after_cancel_selection_or_local_change(self):
+        self.installed_package()
+        self.transport.rows.append(dict(self.transport.rows[0], packageId="second-author"))
+        for change in ("cancel", "selection", "resources"):
+            self.index()
+            self.service.selectPackage("nightmare-suju")
+            entered, release = threading.Event(), threading.Event()
+            def verify(*args, **kwargs):
+                entered.set()
+                release.wait(2)
+                return dict(status="installed", archiveSha256=self.transport.rows[0]["sha256"])
+            with patch("client_downloads.verified_installed_package", side_effect=verify):
+                self.service.downloadPackage("nightmare-suju")
+                self.assertTrue(entered.wait(2))
+                if change == "cancel":
+                    self.service.cancel()
+                elif change == "selection":
+                    self.service.selectPackage("second-author")
+                    self.service.selectPackage("nightmare-suju")
+                else:
+                    self.resources.operationGeneration += 1
+                release.set()
+                until(lambda: not self.service.busy)
+            self.assertEqual(self.resources.calls, [])
+            self.assertNotIn("文件校验通过", self.service.snapshot["message"])
+        self.assertNotIn("nightmare-suju", self.transport.calls)
 
     def test_cancel_or_local_generation_change_blocks_late_handoff(self):
         for cancelled in (True, False):
@@ -241,9 +330,24 @@ until(lambda: not case.service.busy)
 QTest.qWait(40)
 assert case.transport.calls==['index'],case.transport.calls
 assert view.rootObject().findChild(QObject,'onlinePackageList').property('count')==1
+case.installed_package()
+QTest.mouseClick(view,Qt.LeftButton,Qt.NoModifier,point.toPoint())
+until(lambda: not case.service.busy)
+QTest.qWait(40)
+def visual_items(item):
+    for child in item.childItems():
+        yield child
+        yield from visual_items(child)
+installed=next(item for item in visual_items(view.rootObject()) if item.objectName()=='onlineDownload-nightmare-suju')
+assert installed.property('text')=='校验本地安装'
+point=installed.mapToScene(QPoint(10,10))
+QTest.mouseClick(view,Qt.LeftButton,Qt.NoModifier,point.toPoint())
+until(lambda: not case.service.busy)
+assert case.transport.calls==['index','index'],case.transport.calls
+assert not case.resources.calls,case.resources.calls
 assert not warnings,warnings
 view.setSource(QUrl());case.tearDown()
-print(json.dumps({'qmlWarnings':warnings,'actualButtonDispatch':True}))
+print(json.dumps({'qmlWarnings':warnings,'actualButtonDispatch':True,'installedClickSkipsDownload':True}))
 '''
         result = subprocess.run([sys.executable, "-c", code], cwd=Path(__file__).resolve().parents[2],
             env=dict(os.environ, QT_QPA_PLATFORM="offscreen", QT_QUICK_BACKEND="software"),

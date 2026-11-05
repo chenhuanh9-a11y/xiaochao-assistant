@@ -132,11 +132,19 @@ class OnlinePackagesService(QObject):
                 with self._lock:
                     self._progress_cell = (generation, received, total)
         def work():
-            service = self._get_transport()
             if operation == "index":
+                service = self._get_transport()
                 rows = service.read_index(cancel_event=cancel)
                 return [dict(row, installation=verified_installed_package(self.sandbox,
                     row["packageId"], row.get("sha256"), cancelled=cancel.is_set)) for row in rows]
+            # Startup may have pruned the ZIP after installation. Revalidate the
+            # receipt AND installed bytes in the worker before fetching it again;
+            # a card's earlier index snapshot is not proof of current contents.
+            installation = verified_installed_package(self.sandbox, package_id,
+                expected["sha256"], cancelled=cancel.is_set)
+            if installation.get("status") == "installed":
+                return dict(installation=installation)
+            service = self._get_transport()
             return dict(path=str(service.download_package(package_id, cancel_event=cancel, progress=progress)),
                         expected=expected)
         self._job = _Work(generation, work)
@@ -189,6 +197,16 @@ class OnlinePackagesService(QObject):
             except (KeyError, TypeError, ValueError) as problem:
                 self._stage = "error"
                 self._report_problem(problem)
+        elif result.get("installation", {}).get("status") == "installed":
+            self._stage = "ready"
+            if (self.resources.operationGeneration == self._resource_generation
+                    and self._selected == self._active
+                    and self._selection_generation == self._request_selection_generation):
+                self._entries[self._active]["installation"] = result["installation"]
+                self._rows = deepcopy(list(self._entries.values()))
+                self._message = "此图包已安装且文件校验通过。"
+            else:
+                self._message = "选择或本地资源已变化，请重新检查在线列表。"
         else:
             self._stage = "cached"
             if (self._selected != self._active

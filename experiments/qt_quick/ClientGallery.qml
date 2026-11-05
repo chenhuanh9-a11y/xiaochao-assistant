@@ -40,9 +40,14 @@ Item {
     }
     readonly property bool sameMode: backend.mode === session.currentMode && backend.season === session.currentSeason
     readonly property bool currentAuthor: sameMode && backend.profileId === session.currentProfile
-    readonly property bool canUseAuthor: sameMode && selectedProfile.available > 0 && !currentAuthor
+    readonly property bool canUseAuthor: backend.season === "s0" && sameMode && selectedProfile.available > 0 && !currentAuthor
         && !session.busy && !settingsService.busy && !resourceService.busy
-    function floorLabel(value) { return value === "B1" ? "B1 地下室" : value ? value + " 楼" : "全部楼层" }
+    function floorLabel(value) {
+        var options = backend.floorOptions || []
+        for (var i = 0; i < options.length; i++) if (options[i].value === value) return options[i].name
+        if (value && value.indexOf("source-height-") === 0) return "源高度 " + value.substring(14)
+        return value === "B1" ? "B1 地下室" : value ? value + " 楼" : "全部楼层"
+    }
     function chooseAuthor(id) {
         backend.setProfile(id)
         backend.selectFirstLayer()
@@ -93,10 +98,11 @@ Item {
                 id: galleryContextSelector; objectName: "galleryContext"
                 seasons: settingsService.seasonOptions
                 season: backend.season; mode: backend.mode
+                browseDifficulty2: true
                 enabled: true
                 onContextRequested: function(season, mode) { backend.setContext(season, mode) }
             }
-            Label { objectName: "galleryMapCount"; text: "仅浏览 · " + backend.mapCount + " 份图"; color: "#526785"; font.pixelSize: 12 }
+            Label { objectName: "galleryMapCount"; visible: !page.compact; text: "仅浏览 · " + backend.mapCount + " 份图"; color: "#526785"; font.pixelSize: 12 }
             Item { Layout.fillWidth: true }
             AppButton { objectName: "galleryManagePackages"; text: "图库管理"; onClicked: clientCoordinator.navigate("resources") }
         }
@@ -238,19 +244,22 @@ Item {
                         }
                         ComboBox {
                             id: floorPicker; objectName: "galleryFloorPicker"; Layout.preferredWidth: 100
-                            model: [{name:"全部楼层",value:""},{name:"1 楼",value:"1"},{name:"2 楼",value:"2"},{name:"B1 地下室",value:"B1"}]
+                            model: backend.floorOptions
                             textRole: "name"; valueRole: "value"
-                            currentIndex: backend.floor === "1" ? 1 : backend.floor === "2" ? 2 : backend.floor === "B1" ? 3 : 0
+                            currentIndex: {
+                                for (var n = 0; n < model.length; n++) if (model[n].value === backend.floor) return n
+                                return 0
+                            }
                             onActivated: backend.setFloor(currentValue)
                         }
                     }
                     Label { id: detailCoverage; text: "本地覆盖 " + page.selectedProfile.availableMaps + " / " + page.selectedProfile.mapCount + " 份图"; color: "#526785"; font.pixelSize: 11 }
                         }
                     }
-                    AppButton { objectName: "galleryUseAuthor"; text: page.currentAuthor ? "正在使用此作者" : "使用此作者"; Layout.fillWidth: true; primary: true; enabled: page.canUseAuthor; onClicked: clientCoordinator.setRouteProfile(backend.profileId) }
+                    AppButton { objectName: "galleryUseAuthor"; text: backend.season !== "s0" ? "离线资源 · 暂不用于识别" : page.currentAuthor ? "正在使用此作者" : "使用此作者"; Layout.fillWidth: true; primary: true; enabled: page.canUseAuthor; onClicked: clientCoordinator.setRouteProfile(backend.profileId) }
                     RowLayout {
                         Layout.fillWidth: true; spacing: 8
-                        AppButton { objectName: "galleryShowReference"; text: "打开独立预览"; enabled: backend.selectedImage !== ""; onClicked: clientCoordinator.showReference() }
+                        AppButton { objectName: "galleryShowReference"; text: "打开独立预览"; enabled: backend.selectedImage !== ""; onClicked: backend.showOverlay() }
                         Item { Layout.fillWidth: true }
                         AppButton {
                             objectName: "galleryRemovePackage"; text: "删除此图包"; enabled: page.canRemovePackage

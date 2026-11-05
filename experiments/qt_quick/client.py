@@ -517,9 +517,13 @@ def main():
     parser.add_argument("--probe-output", type=Path)
     parser.add_argument("--self-check", action="store_true", help="read-only packaged import/resource check, no windows or listeners")
     parser.add_argument("--verify-resources", action="store_true", help="with self-check, construct both explicit-root providers without capture")
+    parser.add_argument("--offline-resource-root", type=Path,
+                        help="with self-check, verify the explicit S1 offline gallery root and decode its images")
     args = parser.parse_args()
     if args.verify_resources and not args.self_check:
         parser.error("--verify-resources requires --self-check")
+    if args.offline_resource_root is not None and not args.self_check:
+        parser.error("--offline-resource-root requires --self-check")
     if args.self_check:
         from client_engine import EngineAdapter
         from client_providers import build_engine_factories
@@ -531,6 +535,10 @@ def main():
                           "ClientMapPicker.qml")),
                       tkLoaded="tkinter" in sys.modules,
                       nativeInputStarted=False)
+        if args.offline_resource_root is not None:
+            from season_map_resources import verify_offline_inventory
+            result["offlineGallery"] = verify_offline_inventory(args.offline_resource_root.resolve())
+            result["ready"] = result["offlineGallery"]["ready"]
         if args.verify_resources:
             root = RESOURCE_ROOT if FROZEN else args.sandbox.resolve() / "_internal"
             from client_resource_startup import readable_resources
@@ -540,7 +548,7 @@ def main():
                 registry.prepare()
                 result["providers"] = registry.capabilities()
             result["tkLoaded"] = "tkinter" in sys.modules
-            result["ready"] = all(row.get("available") for row in result["providers"].values())
+            result["ready"] = result["ready"] and all(row.get("available") for row in result["providers"].values())
         if FROZEN:
             WORK_ROOT.mkdir(parents=True, exist_ok=True)
             (WORK_ROOT / "client-self-check.json").write_text(json.dumps(result, indent=2), encoding="utf-8")

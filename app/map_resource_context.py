@@ -71,10 +71,11 @@ class BrowseContext:
     catalog: object | None
     model: MapResourceModel | None
     profiles: tuple[ProfileSummary, ...]
-    path_stamps: Mapping[Path, tuple[int, int] | None]
+    path_stamps: Mapping[Path, tuple[int, int] | tuple[int, int, str] | None]
     error: str = ""
     warnings: tuple[str, ...] = ()
     season: str = "s0"
+    floor_metadata: Mapping | None = None
 
 
 def load_browse_context(resource_root: Path, mode: str, *, season="s0", cancelled=lambda: False,
@@ -89,6 +90,9 @@ def load_browse_context(resource_root: Path, mode: str, *, season="s0", cancelle
     if cancelled():
         raise CancelledError()
     if season != "s0":
+        if season == "s1":
+            from season_map_resources import load_season_browse_context
+            return load_season_browse_context(root, mode, season=season, cancelled=cancelled)
         return BrowseContext(mode, root, None, None, None, (), MappingProxyType({}),
             error=f"{season_label(season)} 资源待补齐" if season in SEASONS else "unknown browse season", season=season)
     stamps = {}

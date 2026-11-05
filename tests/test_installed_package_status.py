@@ -24,4 +24,8 @@ class Installed(unittest.TestCase):
  def test_bad_receipt_and_pending_upgrade(self):
   self.receipt.write_text('{}');self.assertEqual(self.check(),'unverified');self.write();(self.receipt.parent/'pending-upgrade.json').write_text('{}');self.assertEqual(self.check(),'unverified')
  def test_cancelled_verification(self):self.write();self.assertEqual(self.check(cancelled=lambda:True),'unverified')
+ def test_missing_or_changed_base_dependency_is_incomplete(self):
+  self.write();base=self.root/sorted(BASE_DEPENDENCIES)[0]
+  base.write_bytes(b'fail');self.assertEqual(self.check(),'incomplete')
+  base.unlink();self.assertEqual(self.check(),'incomplete')
 if __name__=='__main__':unittest.main()

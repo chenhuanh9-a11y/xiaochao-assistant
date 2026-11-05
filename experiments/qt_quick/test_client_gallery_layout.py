@@ -42,6 +42,8 @@ class FakeBackend(QObject):
         dict(id="author-b", name="作者乙", available=12, availableMaps=12, mapCount=40, previewUrl=self.image)], notify=changed)
     profileId = Property(str, lambda self: self._profile, notify=changed)
     floor = Property(str, lambda self: self._floor, notify=changed)
+    floorOptions = Property("QVariantList", lambda self: [dict(name=name, value=value) for name, value in
+        (("全部楼层", ""), ("1 楼", "1"), ("2 楼", "2"), ("B1 地下室", "B1"))], notify=changed)
     count = Property(int, lambda self: len(self.model.rows), notify=changed)
     mapCount = Property(int, lambda self: len({row['mapId'] for row in self.model.rows if row['available']}), notify=changed)
     selectedKey = Property(str, lambda self: self.selected.get("key", ""), notify=changed)
@@ -70,6 +72,10 @@ class FakeBackend(QObject):
         self.calls.append(("refresh", None))
         self.model.reconcile(deepcopy(self.rows))
         self.changed.emit()
+
+    @Slot()
+    def showOverlay(self):
+        self.calls.append(("preview", None))
 
     def change(self, field, value):
         self.viewChanging.emit(self.viewKey)
@@ -236,7 +242,7 @@ class GalleryLayoutTests(unittest.TestCase):
         self.click("galleryUseAuthor")
         self.assertEqual(self.coordinator.calls[-1], ("use", "author-a"))
         self.click("galleryShowReference")
-        self.assertEqual(self.coordinator.calls[-1], ("reference", None))
+        self.assertEqual(self.backend.calls[-1], ("preview", None))
         self.click("galleryManagePackages")
         self.assertEqual(self.coordinator.calls[-1], ("navigate", "resources"))
         self.click("galleryBackToList")

@@ -12,6 +12,7 @@ from client_paths import RESOURCE_ROOT as ROOT, WORK_ROOT, runtime_paths, bundle
 sys.path.insert(0, str(ROOT / "app"))
 from season_context import SEASONS, season_label
 from map_resource_context import load_browse_context
+from season_map_resources import browse_modes
 from star_map_import import inspect_package, install_package
 from resource_transaction import assert_resources_ready, resource_read_lock
 
@@ -111,6 +112,7 @@ class Backend(QObject):
         self._profiles = []
         self._selections = {}
         self._mode_profiles = {}
+        self._context_floors = {}
         self._cancel = threading.Event()
         self._generation = 0
         self._jobs = set()
@@ -128,6 +130,7 @@ class Backend(QObject):
     profiles = Property("QVariantList", lambda s: s._profiles, notify=changed)
     profileId = Property(str, lambda s: s._profile, notify=changed)
     floor = Property(str, lambda s: s._floor, notify=changed)
+    floorOptions = Property("QVariantList", lambda s: s._floor_options(), notify=changed)
     busy = Property(bool, lambda s: s._busy, notify=changed)
     importing = Property(bool, lambda s: s._importing, notify=changed)
     clickThrough = Property(bool, lambda s: s._click_through, notify=changed)
@@ -142,12 +145,23 @@ class Backend(QObject):
     selectedTitle = Property(str, lambda s: s._selection.get("title", "先选一张地图"), notify=changed)
     selectedImage = Property(str, lambda s: s._selection.get("imageUrl", ""), notify=changed)
     selectedFloor = Property(str, lambda s: s._selection.get("floor", ""), notify=changed)
+    selectedFloorLabel = Property(str, lambda s: next((row["name"] for row in s._floor_options()
+        if row["value"] == s._selection.get("floor") and row["value"]), ""), notify=changed)
     count = Property(int, lambda s: len(s.model.rows), notify=changed)
     # A map is one installed map identity with at least one available layer.
     # Floors and route variants stay browseable rows, but do not add maps.
     mapCount = Property(int, lambda s: len({row["mapId"] for row in s.model.rows if row["available"]}), notify=changed)
     previewModel = Property(QObject, lambda s: s.preview_model, constant=True)
     viewKey = Property(str, lambda s: f"{s._season}/{s._mode}/{s._profile}/{s._floor}/{s._query}", notify=changed)
+
+    def _floor_options(self):
+        if self._season == "s0":
+            return [dict(name=name, value=value) for name, value in
+                    (("全部楼层", ""), ("1 楼", "1"), ("2 楼", "2"), ("B1 地下室", "B1"))]
+        metadata = getattr(self.context, "floor_metadata", None) or {}
+        return [dict(name="全部楼层", value="")] + [
+            dict(name=metadata.get(f"source-height-{height}", {}).get("label", f"源高度 {height}"),
+                 value=f"source-height-{height}") for height in (4, 3, 2, 1)]
 
     def _submit(self, function, callback):
         job = Work(function)
@@ -184,6 +198,7 @@ class Backend(QObject):
                 # Keep all declarations in the read context for package repair,
                 # but only offer authors with actual local images in the gallery.
                 self._profiles = [{"id": p.profile_id, "name": p.name, "packageId": p.package_id or "",
+                                   "runtimeSelectable": season == "s0",
                                    "available": p.available_layers,
                                    "availableMaps": p.available_maps, "mapCount": p.map_count,
                                    "previewUrl": self._preview_url(p.first_preview[2], context.path_stamps, self._season)
@@ -193,7 +208,8 @@ class Backend(QObject):
                     self._profile = next((p["id"] for p in self._profiles if p["available"]),
                                          self._profiles[0]["id"] if self._profiles else "")
                 self._apply_rows()
-                self._message = self._import_notice or f"已读取 {self.mapCount} 份图"
+                self._message = ("S1 离线图库 · -4至-1层 · 楼层控件与入口坐标合同待登记，暂不用于识别或贴合"
+                                 if season == "s1" else self._import_notice or f"已读取 {self.mapCount} 份图")
             self.changed.emit()
             if self.viewKey != initial_view:
                 self.viewChanged.emit(self.viewKey)
@@ -212,7 +228,7 @@ class Backend(QObject):
         if not stamp:
             return ""
         url = QUrl.fromLocalFile(str(path))
-        url.setQuery(f"v={stamp[0]}-{stamp[1]}&season={season}")
+        url.setQuery(f"v={'-'.join(map(str, stamp))}&season={season}")
         return url.toString()
 
     def _apply_rows(self):
@@ -228,14 +244,14 @@ class Backend(QObject):
                             continue
                         path = Path(path)
                         stamp = self.context.path_stamps.get(path)
-                        # File version is part of the cache URL: owned upgrades cannot show old art.
-                        url = QUrl.fromLocalFile(str(path))
-                        if stamp:
-                            url.setQuery(f"v={stamp[0]}-{stamp[1]}&season={self._season}")
+                        # The S1 producer hash also binds the preview cache.
+                        image_url = self._preview_url(path, self.context.path_stamps, self._season)
                         rows.append(dict(key=f"{self._season}/{self._mode}/{self._profile}/{item.id}/{variant.id}/{floor}",
                                          title=item.name, mapId=item.id, floor=str(floor),
-                                         variant=variant.name, imageUrl=url.toString() if stamp else "",
+                                         variant=variant.name, imageUrl=image_url,
                                          available=bool(stamp)))
+                        if self._season == "s1":
+                            rows[-1].update(dict((getattr(self.context, "floor_metadata", None) or {}).get(str(floor), {})))
         self.model.reconcile(rows)
         previews, seen = [], set()
         for row in rows:
@@ -271,7 +287,7 @@ class Backend(QObject):
 
     @Slot(str, str)
     def setContext(self, season, mode):
-        if season not in SEASONS or mode not in {"nightmare", "difficult"}:
+        if season not in SEASONS or mode not in browse_modes(season):
             return
         if (season, mode) == (self._season, self._mode):
             return
@@ -280,7 +296,9 @@ class Backend(QObject):
         self.viewChanging.emit(self.viewKey)
         self._selections[self.viewKey] = self._selected
         self._mode_profiles[(self._season, self._mode)] = self._profile
+        self._context_floors[(self._season, self._mode)] = self._floor
         self._season, self._mode = season, mode
+        self._floor = self._context_floors.get((season, mode), "")
         self.context = None
         self._profiles = []
         self.model.reconcile([])
@@ -303,7 +321,7 @@ class Backend(QObject):
 
     @Slot(str)
     def setFloor(self, value):
-        if value in {"", "1", "2", "B1"}:
+        if value in {row["value"] for row in self._floor_options()}:
             self._change("_floor", value)
 
     @Slot()

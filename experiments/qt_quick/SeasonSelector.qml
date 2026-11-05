@@ -8,6 +8,8 @@ RowLayout {
     property string season: ""
     property string mode: ""
     property bool allowCurrentContextRequest: false
+    // Gallery-only source category; it never appears in live mode selectors.
+    property bool browseDifficulty2: false
     property string nightmareObjectName: objectName + "Nightmare"
     property string difficultObjectName: objectName + "Difficult"
     signal contextRequested(string season, string mode)
@@ -36,7 +38,9 @@ RowLayout {
 
     function requestContext(nextSeason, nextMode) {
         if (!enabled || (nextSeason === season && nextMode === mode && !allowCurrentContextRequest)) return
-        if (nextMode !== "nightmare" && nextMode !== "difficult") return
+        if (nextMode === "difficulty2" && nextSeason !== "s1" && browseDifficulty2) nextMode = "difficult"
+        if (nextMode !== "nightmare" && nextMode !== "difficult"
+                && !(browseDifficulty2 && nextSeason === "s1" && nextMode === "difficulty2")) return
         for (var i = 0; i < seasons.length; i++) {
             if (seasons[i].id === nextSeason) {
                 contextRequested(nextSeason, nextMode)
@@ -82,5 +86,13 @@ RowLayout {
         selected: root.mode === "difficult"
         Accessible.name: text + (selected ? " · 已选" : "")
         onClicked: root.requestContext(root.season, "difficult")
+    }
+    AppButton {
+        objectName: root.objectName + "Difficulty2"
+        visible: root.browseDifficulty2 && root.season === "s1"
+        text: "普通"; implicitWidth: 64; implicitHeight: 34
+        selected: root.mode === "difficulty2"
+        Accessible.name: text + (selected ? " · 已选" : "")
+        onClicked: root.requestContext(root.season, "difficulty2")
     }
 }

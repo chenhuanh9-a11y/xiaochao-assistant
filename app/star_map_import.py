@@ -969,11 +969,13 @@ def _verified_installed_package_locked(root, package_id, expected_sha256=None, *
     root = Path(root).resolve()
     try:
         _pending_upgrade(root)
-        rows, receipt_digest = _owned_inventory(root, package_id)
+        rows, dependencies, receipt_digest = _installed_inventory(root, package_id)
         if not rows:
             return dict(status='not-installed')
         receipt = _json(_target(root, f"work/map-packages/{package_id}.json").read_bytes())
-        for row in rows.values():
+        # A complete author payload still depends on the exact installed base.
+        # Dependencies are compatibility constraints, never ownership grants.
+        for row in (*rows.values(), *dependencies.values()):
             if cancelled and cancelled():
                 return dict(status='unverified')
             target = _target(root, row['path'])
