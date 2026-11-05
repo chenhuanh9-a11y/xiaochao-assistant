@@ -17,62 +17,154 @@ class CommonCoordinateFilter:
         self.mode,self.resource_key=mode,resource_key
         self.entries=self.index['maps'][mode]
         self._cache=OrderedDict()
+        self._pool_pending=OrderedDict()
 
     def _pool(self, ids, floor, cancelled):
-        from fast_structure_alignment import prepare,PreparedStructure
-        key=(self.resource_key,tuple(sorted(ids)),floor)
-        if key in self._cache:return self._cache[key]
-        items=[]
-        for mid in ids:
-            if cancelled():return None
-            entry=self.entries[mid][floor];ref=self.provider(mid,floor)
-            if ref is None:raise ValueError('coordinate-reference-missing:'+mid)
-            meta=ref.metadata;geo=meta.get('sourceGeometry',{})
-            if (meta.get('sourceVersion')!=self.index['sourceVersion'] or geo.get('sourceCatalogSha256')!=entry['sourceCatalogSha256'] or
-                geo.get('rendererMetadataSha256')!=entry['sourceRendererMetadataSha256'] or list(ref.clean_mask.shape)!=entry['shapeHW']):
-                raise ValueError('coordinate-reference-binding-mismatch:'+mid)
-            t=np.asarray(entry['imageToEntranceXZ'],float)
-            if not np.array_equal(t[:2,:2],[[1,0],[0,-1]]):raise ValueError('coordinate-index-axes')
-            origin=np.array([t[0,2],-t[1,2]])
-            if not np.array_equal(origin,np.rint(origin)):raise ValueError('noninteger-native-origin')
-            items.append((mid,(np.asarray(ref.clean_mask)>0).astype(np.uint8),origin.astype(int)))
-        lo=np.min([x[2] for x in items],axis=0);hi=np.max([x[2]+np.array(x[1].shape[::-1]) for x in items],axis=0)
-        shape=tuple((hi-lo)[::-1]);masks=[];edges=[];fields=[]
-        for mid,mask,origin in items:
-            if cancelled():return None
-            canvas=np.zeros(shape,np.uint8);x,y=origin-lo;h,w=mask.shape;canvas[y:y+h,x:x+w]=mask;masks.append(canvas)
-            edge=cv2.morphologyEx(canvas,cv2.MORPH_GRADIENT,np.ones((3,3),np.uint8));edges.append(edge)
-            fields.append(cv2.distanceTransform(1-edge,cv2.DIST_L2,3))
-        common=np.minimum.reduce(masks);shared=np.minimum.reduce(edges);p=prepare(common);near=cv2.dilate(shared,np.ones((3,3),np.uint8));keep=[]
-        for i,chain in enumerate(p.chains):
-            good=True
-            for endpoint in (chain[0],chain[2]):
-                xy=np.rint(chain[1]+np.linspace(0,1,int(np.ceil(np.linalg.norm(endpoint-chain[1])))+1)[:,None]*(endpoint-chain[1])).astype(int)
-                if not near[xy[:,1],xy[:,0]].all():good=False;break
-            if good:keep.append(i)
-        distance=np.rint(np.minimum(cv2.distanceTransform(1-shared,cv2.DIST_L2,3),16383.75)*4).astype(np.uint16)
-        p=PreparedStructure(distance,p.chains[keep],p.rays[keep],p.pitch,p.shape)
-        union_chains, union_rays = [], []
+        """Resume only immutable resource work; no frame/pose/evidence is cached.
+
+        The runtime owns the single solver lane. Pending jobs are private and
+        never returned until every resource product has completed and bound.
+        """
+        from fast_structure_alignment import prepare, PreparedStructure
+        from single_map_structure import contour_graph
+        pool_key = (self.resource_key, tuple(sorted(ids)), floor)
+        if pool_key in self._cache:
+            self._cache.move_to_end(pool_key)
+            return None if cancelled() else self._cache[pool_key]
+        if cancelled():
+            return None
+        job = self._pool_pending.get(pool_key)
+        if job is None:
+            # Pending and complete products share the same three-pool bound.
+            # Drop the oldest partial job first, then the oldest complete pool.
+            while len(self._pool_pending) + len(self._cache) >= 3:
+                if self._pool_pending:
+                    self._pool_pending.popitem(last=False)
+                else:
+                    self._cache.popitem(last=False)
+            job = dict(items=[], masks=[], edges=[], fields=[], keep=[], chain_index=0,
+                       union_chains=[], union_rays=[], union_seen=set(), union_map=0,
+                       union_node=0)
+            self._pool_pending[pool_key] = job
+        self._pool_pending.move_to_end(pool_key)
+        items = job['items']
+        for mid in ids[len(items):]:
+            if cancelled():
+                return None
+            entry = self.entries[mid][floor]
+            ref = self.provider(mid, floor)
+            if ref is None:
+                raise ValueError('coordinate-reference-missing:' + mid)
+            meta = ref.metadata
+            geo = meta.get('sourceGeometry', {})
+            if (meta.get('sourceVersion') != self.index['sourceVersion'] or
+                geo.get('sourceCatalogSha256') != entry['sourceCatalogSha256'] or
+                geo.get('rendererMetadataSha256') != entry['sourceRendererMetadataSha256'] or
+                list(ref.clean_mask.shape) != entry['shapeHW']):
+                raise ValueError('coordinate-reference-binding-mismatch:' + mid)
+            transform = np.asarray(entry['imageToEntranceXZ'], float)
+            if not np.array_equal(transform[:2, :2], [[1, 0], [0, -1]]):
+                raise ValueError('coordinate-index-axes')
+            origin = np.array([transform[0, 2], -transform[1, 2]])
+            if not np.array_equal(origin, np.rint(origin)):
+                raise ValueError('noninteger-native-origin')
+            items.append((mid, (np.asarray(ref.clean_mask) > 0).astype(np.uint8), origin.astype(int)))
+        if cancelled():
+            return None
+        if 'origin' not in job:
+            job['origin'] = np.min([item[2] for item in items], axis=0)
+            hi = np.max([item[2] + np.array(item[1].shape[::-1]) for item in items], axis=0)
+            job['shape'] = tuple((hi - job['origin'])[::-1])
+        lo, shape = job['origin'], job['shape']
+        masks, edges, fields = job['masks'], job['edges'], job['fields']
+        for mid, mask, origin in items[len(fields):]:
+            if cancelled():
+                return None
+            # Commit a complete static layer together. Cancellation after its
+            # kernels retains the work for the next current-frame request.
+            canvas = np.zeros(shape, np.uint8)
+            x, y = origin - lo
+            h, w = mask.shape
+            canvas[y:y+h, x:x+w] = mask
+            edge = cv2.morphologyEx(canvas, cv2.MORPH_GRADIENT, np.ones((3, 3), np.uint8))
+            field = cv2.distanceTransform(1-edge, cv2.DIST_L2, 3)
+            masks.append(canvas); edges.append(edge); fields.append(field)
+        if cancelled():
+            return None
+        if 'common' not in job:
+            job['common'], job['shared'] = masks[0].copy(), edges[0].copy()
+            job['union_mask'] = masks[0].copy()
+            job['merge_index'] = 1
+        while job['merge_index'] < len(masks):
+            if cancelled():
+                return None
+            i = job['merge_index']
+            np.minimum(job['common'], masks[i], out=job['common'])
+            np.minimum(job['shared'], edges[i], out=job['shared'])
+            np.maximum(job['union_mask'], masks[i], out=job['union_mask'])
+            job['merge_index'] += 1
+        common, shared = job['common'], job['shared']
+        if cancelled():
+            return None
+        if 'prepared' not in job:
+            job['prepared'] = prepare(common)
+        if cancelled():
+            return None
+        if 'near' not in job:
+            job['near'] = cv2.dilate(shared, np.ones((3, 3), np.uint8))
+        prepared, near = job['prepared'], job['near']
+        while job['chain_index'] < len(prepared.chains):
+            if cancelled():
+                return None
+            i = job['chain_index']; chain = prepared.chains[i]; good = True
+            for endpoint in (chain[0], chain[2]):
+                xy = np.rint(chain[1] + np.linspace(0, 1, int(np.ceil(np.linalg.norm(endpoint-chain[1])))+1)[:, None] * (endpoint-chain[1])).astype(int)
+                if not near[xy[:, 1], xy[:, 0]].all():
+                    good = False; break
+            if good:
+                job['keep'].append(i)
+            job['chain_index'] += 1
+        if cancelled():
+            return None
+        if 'distance' not in job:
+            job['distance'] = np.rint(np.minimum(cv2.distanceTransform(1-shared, cv2.DIST_L2, 3), 16383.75)*4).astype(np.uint16)
         if floor == '-1':
-            from single_map_structure import contour_graph
-            seen = set()
-            for mask in masks:
-                for node_index, node in enumerate(nodes := contour_graph(mask)):
+            while job['union_map'] < len(masks):
+                if cancelled():
+                    return None
+                if 'union_nodes' not in job:
+                    job['union_nodes'] = contour_graph(masks[job['union_map']])
+                    job['union_node'] = 0
+                nodes = job['union_nodes']
+                while job['union_node'] < len(nodes):
+                    if cancelled():
+                        return None
+                    node_index = job['union_node']; node = nodes[node_index]
                     indices = [node['previous'], node_index, node['next']]
-                    if not all(nodes[i]['valid'] for i in indices):
-                        continue
-                    chain = np.asarray([nodes[i]['point'] for i in indices], float) + lo
-                    key = tuple(chain.ravel())
-                    if key not in seen:
-                        seen.add(key); union_chains.append(chain); union_rays.append(node['rays'])
-        data=dict(ids=tuple(ids),floor=floor,origin=lo,shape=shape,prepared=p,fields=fields,
-                  unionChains=np.asarray(union_chains).reshape(-1,3,2),
-                  unionRays=np.asarray(union_rays).reshape(-1,2,2),
-                  difference=cv2.dilate((np.maximum.reduce(masks)!=common).astype(np.uint8),np.ones((31,31),np.uint8)))
-        if cancelled():return None
-        self._cache[key]=data
-        while len(self._cache)>3:self._cache.popitem(last=False)
-        return data
+                    if all(nodes[i]['valid'] for i in indices):
+                        chain = np.asarray([nodes[i]['point'] for i in indices], float) + lo
+                        chain_key = tuple(chain.ravel())
+                        if chain_key not in job['union_seen']:
+                            job['union_seen'].add(chain_key)
+                            job['union_chains'].append(chain); job['union_rays'].append(node['rays'])
+                    job['union_node'] += 1
+                del job['union_nodes']
+                job['union_map'] += 1
+        if cancelled():
+            return None
+        if 'difference' not in job:
+            job['difference'] = cv2.dilate((job['union_mask'] != common).astype(np.uint8), np.ones((31, 31), np.uint8))
+        data = dict(ids=tuple(ids), floor=floor, origin=lo, shape=shape,
+                    prepared=PreparedStructure(job['distance'], prepared.chains[job['keep']], prepared.rays[job['keep']], prepared.pitch, prepared.shape),
+                    fields=fields, unionChains=np.asarray(job['union_chains']).reshape(-1, 3, 2),
+                    unionRays=np.asarray(job['union_rays']).reshape(-1, 2, 2), difference=job['difference'])
+        # Completed static data is safe to retain even if the owning frame has
+        # just expired. It must not authorize that obsolete frame's result.
+        self._cache[pool_key] = data
+        self._pool_pending.pop(pool_key, None)
+        while len(self._cache) > 3:
+            self._cache.popitem(last=False)
+        return None if cancelled() else data
 
     @staticmethod
     def _domains_from_common(frame, ctx, prepared, cancelled):
