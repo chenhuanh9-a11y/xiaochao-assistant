@@ -127,6 +127,14 @@ class S1NativeContext:
         if not self.live_gaps:
             self.live_gaps.append("s1-floor-control-detector-unvalidated")
 
+    @property
+    def floor_observation_capability(self):
+        """Narrow manual-map floor observation; never an automatic identity grant."""
+        from s1_floor_observation import CAPABILITY, SOURCE_REPLAY_FLOORS, ORDER
+        return dict(contract=CAPABILITY, manualMapObservation=True,
+                    automaticFloors=list(SOURCE_REPLAY_FLOORS), contractFloors=list(ORDER),
+                    evidence="saved-frame-replay", liveValidated=False)
+
     def local(self, relative):
         return local(self.root, relative)
 

@@ -251,6 +251,8 @@ class EngineFactories(dict):
                                        season=season, mode=mode, contextKey=key,
                                        mapCount=len(engine.pack.maps), floors=list(engine.identity_floors),
                                        liveAuthorization=False, resourceRoot=str(binding.root),
+                                       floorObservation=dict(getattr(getattr(engine, "qt_native_context", None),
+                                                                     "floor_observation_capability", {})),
                                        inventory=getattr(engine, "qt_resource_inventory", {}),
                                        liveGaps=list(getattr(engine, "qt_live_gaps", ())),
                                        liveReady=season == "s0" or bool(getattr(engine, "qt_live_ready", False)))

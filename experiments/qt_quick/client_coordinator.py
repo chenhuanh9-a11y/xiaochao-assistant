@@ -247,6 +247,7 @@ class ClientCoordinator(QObject):
         self._shortcut_recording = bool(getattr(settings, "shortcutRecording", False))
         self._requested_action = ""
         self._map_input_sequence = 0
+        self._last_manual_floor_observation_at = float("-inf")
         self._map_resource_notified = set()
         self._focus_loss_map_sequence = None
         self._pointer_drag = None
@@ -497,7 +498,18 @@ class ClientCoordinator(QObject):
             finish(token, committed)
         self.changed.emit()
 
-    def _map_resource_problem(self, state=None):
+    def _manual_floor_observation_ready(self, state):
+        """A narrow manual identity capability, never global live readiness."""
+        return bool(state.get("season") == "s1" and state.get("roundActive")
+                    and state.get("manualAlignmentSession") and state.get("mapId")
+                    and state.get("automaticFloorObservationAvailable")
+                    and not self._pending_context and not state.get("contextPending")
+                    and not self.resources.busy and not self.resources.pendingKind
+                    and not state.get("resourceLocked")
+                    and not self.session.snapshot.get("resourceLocked")
+                    and not self.session.snapshot.get("contextPending"))
+
+    def _map_resource_problem(self, state=None, *, allow_manual_floor=False):
         """Cached readiness only: never read or prepare resources on input/UI."""
         state = self.session.snapshot if state is None else state
         mode = state.get("mode", self._applied_context[0])
@@ -519,7 +531,8 @@ class ClientCoordinator(QObject):
             else:
                 summary = f"{label}地图识别资源未通过校验或无法读取，请到地图资源页检查并重新导入"
             return ((mode, reason), summary)
-        if season != "s0" and not report.get("liveReady", False):
+        if (season != "s0" and not report.get("liveReady", False)
+                and not (allow_manual_floor and self._manual_floor_observation_ready(state))):
             gaps = ";".join(report.get("liveGaps", ())) or "season-live-contract-unavailable"
             return ((season, mode, gaps), f"{season_label(season)} 生产结构资源可离线读取，楼层控件尚未完成验证，暂不能开始实机识别")
         return None
@@ -538,7 +551,7 @@ class ClientCoordinator(QObject):
         if self._focus_notice:
             return self._focus_notice
         state = self.session.snapshot
-        resource_problem = self._map_resource_problem(state)
+        resource_problem = self._map_resource_problem(state, allow_manual_floor=True)
         if resource_problem is not None:
             return resource_problem[1]
         if self.session.busy and state.get("pendingAction") != "refresh_map":
@@ -646,7 +659,9 @@ class ClientCoordinator(QObject):
         if not opening:
             self._close_map_from_input(payload)
         else:
-            problem = self._map_resource_problem()
+            state = self.session.snapshot
+            manual_floor = self._manual_floor_observation_ready(state)
+            problem = self._map_resource_problem(state, allow_manual_floor=manual_floor)
             if problem is not None:
                 # Reject this opening edge before dispatch, while preserving
                 # sequence identity. The next physical edge must retry opening,
@@ -663,7 +678,8 @@ class ClientCoordinator(QObject):
             self._revoke_runtime("map-key-open")
             # Runtime owns atomic ensure-start + original map preparation.
             # Distinct sequence payloads cannot be swallowed by Session dedup.
-            self.session.dispatchWithPayload("map", payload)
+            self.session.dispatchWithPayload("fit_manual_frame" if manual_floor else "map",
+                dict(payload, s1OpenEdge=True) if manual_floor else payload)
 
     @staticmethod
     def _pointer_context_fields(context):
@@ -880,11 +896,16 @@ class ClientCoordinator(QObject):
         # The picker has its own availability. It deliberately does not use
         # the advertised confirm_route command: that command stays tied to a
         # selected/floor-ready candidate for the existing confirm buttons.
-        if not self.runtime.snapshot().get("manualMapPickAvailable"):
+        state = self.runtime.snapshot()
+        if not state.get("manualMapPickAvailable"):
             self._message = "请先开始本局并等待地图资源就绪，再选择本局地图"
             self.changed.emit()
             return False
-        self.session.dispatchWithPayload("confirm_route", {"mapId": str(map_id)})
+        payload = {"mapId": str(map_id)}
+        if (state.get("season") == "s1" and state.get("manualAlignmentSession")
+                and state.get("automaticFloorObservationAvailable")):
+            payload["inputObservationSequence"] = self._map_input_sequence
+        self.session.dispatchWithPayload("confirm_route", payload)
         return True
 
     def _notification_geometry(self):
@@ -1114,7 +1135,11 @@ class ClientCoordinator(QObject):
             # observation synchronizes intent. A failed capture retries on the
             # next bounded discovery tick; management keys remain available.
             self._binding_resume_pending = True
-            self.session.dispatchWithPayload("capture_now", {
+            manual_floor = self._manual_floor_observation_ready(state)
+            if state.get("season") == "s1" and not manual_floor:
+                self._binding_resume_pending = False
+                return
+            self.session.dispatchWithPayload("fit_manual_frame" if manual_floor else "capture_now", {
                 "inputObservationSequence": self._map_input_sequence,
                 "foregroundReturn": True, "bindingResume": True})
             return
@@ -1804,7 +1829,7 @@ class ClientCoordinator(QObject):
                             and self._pending_context[0] == self._applied_context[0]
                             and self._pending_context[2] == self._applied_context[2])
             if not reprojecting and pending not in {
-                    "refresh_map", "recover_map_open", "probe_map_after_drag", "reselect_map", "previous_candidate", "next_candidate",
+                    "refresh_map", "observe_manual_floor", "recover_map_open", "probe_map_after_drag", "reselect_map", "previous_candidate", "next_candidate",
                     "select_candidate", "confirm_route", "set_floor", "cycle_floor",
                     "select_group_member"}:
                 self._invalidate_display()
@@ -1838,7 +1863,7 @@ class ClientCoordinator(QObject):
                 self._binding_suspended = self._binding_resume_pending = False
                 self.input.resumeGameBinding()
                 self._trace("binding-resumed", reason="same-window-current-map-observation")
-        if receipt.get("action") == "capture_now" and self._binding_suspended:
+        if receipt.get("action") in {"capture_now", "fit_manual_frame"} and self._binding_suspended:
             self._binding_resume_pending = False
         if receipt.get("action") == "bind_capture":
             if receipt.get("success") and self._bound:
@@ -2046,7 +2071,8 @@ class ClientCoordinator(QObject):
                 self.notificationRequested.emit("本局已结束", "本局显示与识别已停止", "info")
         receipt = state.get("lastReceipt", {})
         reason = receipt.get("reason", "")
-        if (receipt.get("success") is False and not receipt.get("fitReportingDeferred")
+        if (receipt.get("success") is False and receipt.get("action") != "observe_manual_floor"
+                and not receipt.get("fitReportingDeferred")
                 and not (receipt.get("action") == "recover_map_open" and receipt.get("recoveryPending"))):
             key = ("failure", state.get("roundId"), state.get("cycleId"), receipt.get("action"), reason)
             if key not in self._notified:
@@ -2153,7 +2179,7 @@ class ClientCoordinator(QObject):
             if foreground != int(self._bound or 0):
                 first_loss = not self._waiting_foreground
                 self._waiting_foreground = True
-                self._map_was_open = self._map_was_open or actual.get("mapOpen", state.get("mapOpen")) or (self.session.busy and self._requested_action in {"map", "capture_now"})
+                self._map_was_open = self._map_was_open or actual.get("mapOpen", state.get("mapOpen")) or (self.session.busy and self._requested_action in {"map", "capture_now", "fit_manual_frame"})
                 if first_loss:
                     self._trace("foreground-change", state=actual, reason="game-lost-foreground",
                                 window=self._foreground_details(foreground))
@@ -2172,6 +2198,10 @@ class ClientCoordinator(QObject):
             elif self._waiting_foreground:
                 if self.session.busy:
                     return
+                manual_floor = self._manual_floor_observation_ready(actual)
+                if (actual.get("season") == "s1" and self._map_was_open
+                        and not manual_floor):
+                    return
                 self._waiting_foreground = False
                 self._trace("foreground-change", state=actual, reason="game-regained-foreground",
                             window=self._foreground_details(foreground))
@@ -2185,7 +2215,8 @@ class ClientCoordinator(QObject):
                 if self._map_was_open:
                     self._map_was_open = False
                     self._invalidate_display("foreground-return-recapture")
-                    self.session.dispatchWithPayload("capture_now", dict(foregroundReturn=True))
+                    self.session.dispatchWithPayload("fit_manual_frame" if manual_floor else "capture_now",
+                                                     dict(foregroundReturn=True))
                 else:
                     self.showReference()
             elif self._aligned:
@@ -2343,6 +2374,38 @@ class ClientCoordinator(QObject):
             return
         state = self.session.snapshot
         if not state.get("roundActive") or state.get("resourceLocked"):
+            return
+        if self._pending_context or state.get("contextPending"):
+            return
+        if state.get("season") == "s1":
+            # Only an existing open cycle or its explicit bounded recovery is
+            # eligible. Unknown canvas frames may preserve that cycle; this
+            # timer cannot invent a new opening after close/end.
+            if (not (state.get("mapOpen") or state.get("mapRecoveryPending"))
+                    or not self._manual_floor_observation_ready(state)
+                    or "observe_manual_floor" not in state.get("availableCommands", ())):
+                return
+            recovery = None
+            if state.get("mapRecoveryPending"):
+                recovery = self.runtime.map_open_recovery_status()
+                if not recovery.get("pending"):
+                    self.runtime.cancel_map_open_recovery(recovery.get("reason", "recovery-expired"))
+                    self.session.refreshRuntime()
+                    return
+                if not recovery.get("due"):
+                    return
+            now = time.monotonic()
+            if now - self._last_manual_floor_observation_at < .5:
+                return
+            try:
+                if self._native_windows.foreground_window() == int(self._bound):
+                    self._last_manual_floor_observation_at = now
+                    if recovery is not None:
+                        self.session.dispatchWithPayload("observe_manual_floor", dict(recoveryId=recovery["id"]))
+                    else:
+                        self.session.dispatch("observe_manual_floor")
+            except OSError:
+                self._revoke_runtime("foreground-query-failed")
             return
         if state.get("mapRecoveryPending"):
             recovery = self.runtime.map_open_recovery_status()

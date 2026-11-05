@@ -69,7 +69,7 @@ Item {
         return !!state.commands && !!state.commands[action] && state.commands[action].available
                && !session.busy && !state.resourceLocked
     }
-    function floorName(floor) { return state.season === "s1" ? floor + "层" : String(floor) === "B1" ? "B1" : "F" + floor }
+    function floorName(floor) { return state.season === "s1" ? "B" + Math.abs(Number(floor)) : String(floor) === "B1" ? "B1" : "F" + floor }
 
     ColumnLayout {
         anchors.fill: parent
@@ -92,7 +92,7 @@ Item {
                 onClicked: clientCoordinator.fitManualFromMain()
             }
             Label {
-                text: "请自行打开游戏地图并选择楼层，再在游戏控制面板选相同楼层。"
+                text: "人工选择地图；自动观察当前 B1/B2。B3/B4 未实测，需人工回退。默认目标不代表已观察。"
                 Layout.fillWidth: true; wrapMode: Text.WordWrap
             }
         }
@@ -208,14 +208,21 @@ Item {
             Layout.fillWidth: true
             spacing: 8
             Label { text: "目标楼层"; color: "#354f75"; font.family: "Microsoft YaHei UI"; font.pixelSize: 13 }
+            AppButton {
+                objectName: "recognitionFloor_auto"
+                visible: page.state.season === "s1" && page.state.automaticFloorObservationAvailable === true
+                text: "自动 B1/B2"; selected: !page.state.manualFloor
+                enabled: page.available("set_floor")
+                onClicked: session.dispatchWithPayload("set_floor", {floor: "auto"})
+            }
             Repeater {
                 model: page.floors
                 delegate: AppButton {
                     required property string modelData
                     objectName: "recognitionFloor_" + modelData
-                    text: page.floorName(modelData)
+                    text: page.floorName(modelData) + (page.state.season === "s1" ? " 回退" + ((modelData === "-3" || modelData === "-4") ? "（未实测）" : "") : "")
                     implicitWidth: 58
-                    selected: String(page.state.floor) === modelData
+                    selected: page.state.season === "s1" ? String(page.state.manualFloor || "") === modelData : String(page.state.floor) === modelData
                     enabled: page.available("set_floor")
                     onClicked: session.dispatchWithPayload("set_floor", {floor: modelData})
                 }
@@ -225,6 +232,14 @@ Item {
             AppButton { objectName: "recognitionCycleFloor"; text: "切换楼层"; enabled: page.floors.length > 0 && page.available("cycle_floor"); onClicked: session.dispatch("cycle_floor") }
         }
         Label { text: "楼层选择是显示目标，地图确认不代表当前画面已经贴合。"; color: "#526785"; font.family: "Microsoft YaHei UI"; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+        Label {
+            objectName: "recognitionCurrentFloor"
+            visible: page.state.season === "s1"
+            text: page.state.floorSource === "auto" && page.state.observedFloor ? "自动观察当前 " + page.floorName(page.state.observedFloor)
+                : page.state.floorSource === "manual-fallback" ? "当前楼层未知 · 人工回退 " + page.floorName(page.state.targetFloor)
+                : "当前楼层未知" + (page.state.targetFloor ? " · 目标 " + page.floorName(page.state.targetFloor) : "")
+            color: "#526785"; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true
+        }
         Label { objectName: "recognitionMessage"; text: session.message; color: "#354f75"; font.family: "Microsoft YaHei UI"; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true }
     }
 }

@@ -139,6 +139,13 @@ Window {
         commit("compactPosition")
     }
     function floorText() {
+        if (snapshot.season === "s1") {
+            if (snapshot.floorSource === "auto" && snapshot.observedFloor)
+                return "自动观察当前 B" + Math.abs(Number(snapshot.observedFloor))
+            if (snapshot.floorSource === "manual-fallback" && snapshot.targetFloor)
+                return "人工回退 B" + Math.abs(Number(snapshot.targetFloor)) + " · 当前楼层未知"
+            return "当前楼层未知" + (snapshot.targetFloor ? " · 目标 B" + Math.abs(Number(snapshot.targetFloor)) : "")
+        }
         if (snapshot.controlFloorText) return snapshot.controlFloorText
         var floor = snapshot.observedFloor
         return floor === "B1" ? "观测楼层 B1" : floor === "1" || floor === "2" ? "观测楼层 F" + floor : "楼层待核对"
@@ -390,12 +397,12 @@ Window {
                 visible: panel.snapshot.season === "s1" && !panel.snapshot.manualAlignmentSession
                 text: "准备手动贴合"; Layout.fillWidth: true
                 enabled: panel.available("prepare_manual_alignment")
-                hint: "人工选择地图和楼层；请自行打开游戏地图，不自动认图或点击游戏楼层"
+                hint: "人工选择地图；当前 B1/B2 可自动观察，B3/B4 未实测，需人工回退"
                 onClicked: session.dispatch("prepare_manual_alignment")
             }
             KeyHint {
                 visible: panel.snapshot.manualAlignmentSession === true
-                text: "手动贴合：先在游戏中打开地图并选好楼层，再选相同的软件楼层"
+                text: "手动选图；自动观察当前 B1/B2。B3/B4 未实测，需人工回退；默认目标不代表已观察。"
             }
             RowLayout {
                 Layout.fillWidth: true; spacing: 4
@@ -428,13 +435,20 @@ Window {
                 visible: (panel.snapshot.availableFloors || []).length > 0
                 columns: panel.snapshot.season === "s1" ? 1 : 5
                 Layout.fillWidth: true; rowSpacing: 4; columnSpacing: 4
+                ControlButton {
+                    objectName: "controlManualFloor_auto"
+                    visible: panel.snapshot.season === "s1" && panel.snapshot.automaticFloorObservationAvailable === true
+                    text: "自动当前楼层（B1/B2）"; selected: !panel.snapshot.manualFloor
+                    enabled: panel.available("set_floor"); Layout.fillWidth: true
+                    onClicked: session.dispatchWithPayload("set_floor", {floor: "auto"})
+                }
                 Repeater {
                     model: panel.snapshot.availableFloors || []
                     delegate: ControlButton {
                         required property string modelData
                         objectName: "controlManualFloor_" + modelData
-                        text: panel.snapshot.season === "s1" ? modelData + "层" : modelData === "B1" ? "B1" : "F" + modelData
-                        selected: String(panel.snapshot.manualFloor || panel.snapshot.floor) === modelData
+                        text: panel.snapshot.season === "s1" ? "人工回退 B" + Math.abs(Number(modelData)) + ((modelData === "-3" || modelData === "-4") ? "（未实测）" : "") : modelData === "B1" ? "B1" : "F" + modelData
+                        selected: panel.snapshot.season === "s1" ? String(panel.snapshot.manualFloor || "") === modelData : String(panel.snapshot.manualFloor || panel.snapshot.floor) === modelData
                         enabled: panel.available("set_floor"); implicitWidth: 50; Layout.fillWidth: true
                         onClicked: session.dispatchWithPayload("set_floor", {floor: modelData})
                     }

@@ -131,15 +131,17 @@ class _PreparationHost:
         # The shared loop supplies the original cadence/deadline. Qt requires a
         # current explicit floor before ending preparation; it never converts a
         # remembered floor into fresh display evidence during the fade.
-        ready = verified_map_hotkey_frame(observation, floor_read)
+        s1_manual = self.runtime._manual_alignment and self.runtime._s1_floor_observer_available(self.engine)
+        ready = observation.get("mapOpen") is True if s1_manual else verified_map_hotkey_frame(observation, floor_read)
+        usable = ready and (floor is not None or s1_manual)
         before_deadline = time.perf_counter() < deadline_at
-        outcome = ("prepared-current-frame" if before_deadline else "ready-after-deadline") if ready and floor is not None else (
+        outcome = ("prepared-current-frame" if before_deadline else "ready-after-deadline") if usable else (
             "current-floor-unavailable" if map_detected and floor is None else "map-not-ready")
         self.diagnostics.last_outcome = outcome
         self.diagnostics.emit("observation-result", outcome,
             observation=self.diagnostics.observation(observation, floor, floor_read, ready),
             elapsedMs=round((time.perf_counter()-observed_at)*1000, 3), beforeDeadline=before_deadline)
-        if ready and floor is not None and before_deadline:
+        if usable and before_deadline:
             return (captured, observation, floor, capture_generation, floor_read), False
         return None, False
 
@@ -504,6 +506,10 @@ class LiveRuntime:
         self._selection_pending = False
         self._manual_floor = None
         self._manual_alignment = False
+        self._s1_floor_source = "unknown"
+        self._s1_raw_floor = None
+        self._s1_floor_reason = "not-observed"
+        self._manual_capture_owner = None
         self._observed_floor = ""
         self._last_observation = None
         self._pointer_context_snapshot = None
@@ -525,6 +531,24 @@ class LiveRuntime:
         """Manual mode waits for the player's pick instead of ranking identity."""
         return self._settings.get("mapSelectionMode") == "manual" and not self._map_id
 
+    def _s1_floor_observer_available(self, engine=None):
+        """Separate selected-context floor capability, not live/identity readiness."""
+        engine = self._engine if engine is None else engine
+        if (self._season != "s1" or engine is None or self._mode not in ("difficulty2", "difficult", "nightmare")
+                or getattr(engine.pack, "mode", None) != self._mode
+                or tuple(getattr(engine, "identity_floors", ())) != ("-1", "-2", "-3", "-4")):
+            return False
+        capability = getattr(getattr(engine, "qt_native_context", None), "floor_observation_capability", {})
+        return (isinstance(capability, dict)
+                and capability.get("contract") == "s1-floor-only-manual-map-use"
+                and capability.get("manualMapObservation") is True
+                and tuple(capability.get("automaticFloors", ())) == (-1, -2))
+
+    def _current_floor_source(self):
+        if self._manual_alignment and self._s1_floor_observer_available():
+            return self._s1_floor_source
+        return "manual" if self._manual_floor else "automatic"
+
     def _clear_candidates(self):
         self._reset_identity()
         self._reference_sheet = None
@@ -534,6 +558,9 @@ class LiveRuntime:
         self._candidate_edit = False
         self._selection_pending = False
         self._manual_floor = None
+        self._s1_floor_source = "unknown"
+        self._s1_raw_floor = None
+        self._s1_floor_reason = "not-observed"
         self._observed_floor = ""
         self._last_observation = None
         self._pointer_context_snapshot = None
@@ -1661,7 +1688,7 @@ class LiveRuntime:
                     return self._receipt(action, payload, success=False, reason="invalid-manual-map")
                 self._candidate_edit = True
                 self._gate.select(manual_map_id)
-                if not self._floor:
+                if not self._floor and not (self._manual_alignment and self._s1_floor_observer_available()):
                     self._floor = str(self._manual_floor
                                       or getattr(pack, "default_entry_floor", "1"))
                     self._floor_required = False
@@ -1669,7 +1696,8 @@ class LiveRuntime:
                 return self._receipt(action, payload, success=False, reason="start-round-before-confirming-map")
             if self._map_id and not self._candidate_edit:
                 return self._receipt(action, payload, success=False, reason="identity-locked")
-            if not self._floor or not self._gate.confirm():
+            if ((not self._floor and not (self._manual_alignment and self._s1_floor_observer_available()))
+                    or not self._gate.confirm()):
                 return self._receipt(action, payload, success=False, reason="candidate-or-floor-missing")
             selected = self._gate.confirmed_id
             self.invalidate("manual-identity-confirmed")
@@ -1757,7 +1785,7 @@ class LiveRuntime:
                 target = None if value in (None, "", "auto") else str(value)
                 if target is not None and target not in floors:
                     return self._receipt(action, payload, success=False, reason="unsupported-floor")
-            if self._manual_alignment and target is None:
+            if self._manual_alignment and target is None and not self._s1_floor_observer_available():
                 return self._receipt(action, payload, success=False, reason="manual-floor-required")
             self.invalidate("floor-changed")
             self._manual_floor = target
@@ -1769,6 +1797,12 @@ class LiveRuntime:
             self._reset_provisional_floor(target or self._observed_floor)
             self._floor = target or self._observed_floor
             if self._manual_alignment:
+                self._s1_floor_source = "unknown"
+                self._observed_floor = ""
+                self._s1_raw_floor = None
+                if self._s1_floor_observer_available():
+                    self._floor = ""
+                    self._floor_required = True
                 self._group = None
                 self._core.reset_round(reason="manual-floor-target-changed")
             for row in self._candidate_rows:
@@ -1856,8 +1890,10 @@ class LiveRuntime:
                 commands.append("prepare_manual_alignment")
             if self._manual_alignment and self._active:
                 commands.append("reselect_map")
-                if self._map_id and self._manual_floor:
+                if self._map_id and (self._manual_floor or self._s1_floor_observer_available()):
                     commands.append("fit_manual_frame")
+                    if (self._map_open or self.map_open_recovery_status().get("pending")) and self._s1_floor_observer_available():
+                        commands.append("observe_manual_floor")
             if self._candidate_edit and self._gate is not None:
                 commands += ["select_candidate", "previous_candidate", "next_candidate"]
             if self._engine is not None:
@@ -1916,7 +1952,14 @@ class LiveRuntime:
                 manualMapPickAvailable=manual_pick_available,
                 manualAlignmentSession=self._manual_alignment,
                 manualAlignmentAvailable=manual_ready,
-                mapObservationSource="manual-declaration" if self._manual_alignment else "automatic",
+                automaticFloorObservationAvailable=bool(self._manual_alignment and self._s1_floor_observer_available()),
+                automaticFloorSupportedFloors=["-1", "-2"] if self._s1_floor_observer_available() else [],
+                unvalidatedFloorPositions=["-3", "-4"] if self._season == "s1" else [],
+                automaticIdentityAvailable=False if self._season == "s1" else bool(ready),
+                targetFloor=self._floor, rawObservedFloor=self._s1_raw_floor,
+                floorObservationReason=self._s1_floor_reason,
+                mapObservationSource=("s1-current-frame" if self._manual_alignment and self._s1_floor_observer_available()
+                                      else "manual-declaration" if self._manual_alignment else "automatic"),
                 alignedVisible=self._aligned_visible,
                 automaticCandidateRows=self._candidate_summary(),
                 candidateRows=copy.deepcopy(self._candidate_rows), selectedCandidateIndex=selected,
@@ -1926,7 +1969,9 @@ class LiveRuntime:
                 siblingPending=self._pending_sibling is not None,
                 pendingSiblingToken=self._pending_sibling["render"]["token"] if self._pending_sibling is not None else "",
                 availableFloors=self._available_floors(), manualFloor=self._manual_floor,
-                observedFloor=self._observed_floor, floorSource="manual" if self._manual_floor else "automatic",
+                observedFloor=self._observed_floor,
+                floorSource=(self._s1_floor_source if self._manual_alignment and self._s1_floor_observer_available()
+                             else "manual" if self._manual_floor else "automatic"),
                 floorRequired=self._floor_required, floorPolicyReason=self._last_floor_policy,
                 manualFloorHoldRemaining=max(0.0, self._manual_hold_until - self._monotonic())
                     if self._manual_override and not self._floor_hard_locked else 0.0,
@@ -1988,6 +2033,13 @@ class LiveRuntime:
             if reason == "custom-gallery-changed":
                 self._reference_sheet = self._reference_capture_context = None
             self._epoch += 1
+            if self._manual_alignment and self._s1_floor_observer_available():
+                self._observed_floor = ""
+                self._s1_raw_floor = None
+                self._s1_floor_source = "unknown"
+                self._s1_floor_reason = str(reason)
+                self._floor = ""
+                self._floor_required = True
             self._core.close(reason=str(reason))
             self._render = None
             self._render_capture_context = None
@@ -2610,7 +2662,8 @@ class LiveRuntime:
                     epoch=self._epoch, roundId=self._round, cycleId=self._cycle, generation=self._frame_generation)
             context = self._context()
             request = {key: payload.get(key) for key in ("generation", "season", "mode", "profileId", "roundId", "frameId")}
-            self._message = reason
+            if not extra.get("stale"):
+                self._message = reason
             visual = payload.get("_mapInputVisual")
             if (visual is not None and visual["epoch"] == self._epoch
                     and visual["sequence"] == self._last_map_input_sequence
@@ -2782,7 +2835,7 @@ class LiveRuntime:
                     if not activated["success"]:
                         self.dispatch("end_round")
                     return self._receipt(action, payload, **activated)
-                if action == "fit_manual_frame":
+                if action in ("fit_manual_frame", "observe_manual_floor"):
                     return self._capture_manual_alignment(action, payload, cancelled)
                 if action == "recover_map_open":
                     return self._recover_map_open(payload, cancelled)
@@ -2894,10 +2947,15 @@ class LiveRuntime:
             self._clear_candidates()
             self._gate = RouteDisplayGate(engine.pack)
             self._update_candidates([], "")
-            if manual:
+            if manual and not self._s1_floor_observer_available(engine):
                 self._manual_floor = self._floor = str(engine.pack.default_entry_floor)
                 self._manual_override = True
                 self._floor_required = False
+            elif manual:
+                self._manual_floor = None
+                self._manual_override = False
+                self._observed_floor = self._floor = ""
+                self._floor_required = True
             if preselected and preselected in engine.pack.by_id:
                 self._gate.select(preselected)
                 self._candidate_edit = self._selection_pending = True
@@ -3186,8 +3244,18 @@ class LiveRuntime:
             return None
         canonical = np.asarray(row["canonicalMatrix"], np.float64)
         source_matrix = canonical @ np.asarray(basis, np.float64)
+        residual_options = {}
+        if self._manual_alignment and self._s1_floor_observer_available(engine):
+            from single_map_structure import current_geometry
+            context = current_geometry(frame, observation_bounds=(0, 0, frame.shape[1], frame.shape[0]))
+            if context is None or context.get("visible") is None:
+                with self._lock:
+                    if not obsolete():
+                        self._revoke_render("manual-current-geometry-unavailable")
+                return None
+            residual_options["visible_override"] = context["visible"]
         residual, _ = host._canonical_geometry_current_frame_residual(
-            frame, map_id, floor, "shared-structure", source_matrix, None)
+            frame, map_id, floor, "shared-structure", source_matrix, None, **residual_options)
         with self._lock:
             # The cancellation check and any rejection below are one owner
             # transaction. A first drag delta must not land between them.
@@ -3236,7 +3304,7 @@ class LiveRuntime:
             self._probe_misses = 0
             self._render = dict(row, authorizationId=token.authorization_id, frameId=frame_id,
                 generation=generation, observedFloor=self._observed_floor,
-                floorSource="manual" if self._manual_floor else "automatic")
+                floorSource=self._current_floor_source())
             payload["_refreshRenderOwner"] = self._refresh_render_owner()
             self._render_capture_context = captured.context
             if self._reference_sheet is not None:
@@ -3260,6 +3328,191 @@ class LiveRuntime:
                              diagnosticOnly=self._evidence_kind != "live-client-capture")
 
     def _capture_manual_alignment(self, action, payload, cancelled):
+        if self._s1_floor_observer_available():
+            return self._capture_s1_observed_floor(action, payload, cancelled)
+        return self._capture_operator_alignment(action, payload, cancelled)
+
+    def _capture_s1_observed_floor(self, action, payload, cancelled):
+        """Manual identity plus a fresh, independent floor observation.
+
+        A passive tick can maintain an open cycle, or consume an existing
+        opening edge's finite recovery budget. It can never open a new cycle.
+        B3/B4 require an explicit matching human target, not historical votes.
+        """
+        with self._work:
+            with self._lock:
+                if self._cancelled(cancelled):
+                    return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+                if not (self._manual_alignment and self._active and self._s1_floor_observer_available()
+                        and self._engine is not None and self._map_id):
+                    return self._receipt(action, payload, success=False, reason="manual-map-required")
+                recovery_owner = recovery_scope = None
+                if action == "observe_manual_floor" and (not self._map_open or "recoveryId" in payload):
+                    row = self._map_recovery
+                    status = self.map_open_recovery_status()
+                    if (row is None or payload.get("recoveryId") != row["id"]
+                            or not status.get("pending") or not status.get("due")):
+                        return self._receipt(action, payload, success=False, reason="manual-floor-observation-not-active")
+                    row["remaining"] -= 1
+                    row["nextAt"] = self._monotonic() + MAP_RECOVERY_INTERVAL
+                    recovery_owner, recovery_scope = row, row["scope"]
+                sequence = payload.get("inputSequence") if payload.get("s1OpenEdge") is True else payload.get("inputObservationSequence")
+                if sequence is not None:
+                    if (type(sequence) is not int or sequence < self._last_map_input_sequence
+                            or payload.get("s1OpenEdge") is True and sequence == self._last_map_input_sequence):
+                        return self._receipt(action, payload, success=False, reason="stale-map-input", stale=True)
+                    self._last_map_input_sequence = sequence
+                epoch, engine, map_id = self._epoch, self._engine, self._map_id
+                manual_target, old_floor = self._manual_floor, self._floor
+                owner = self._manual_capture_owner = object()
+                self._capture_pending = True
+                if action != "observe_manual_floor":
+                    self._revoke_render("manual-current-frame-request")
+
+            def obsolete():
+                return (self._cancelled(cancelled) or epoch != self._epoch or engine is not self._engine
+                        or not self._active or not self._manual_alignment or map_id != self._map_id
+                        or manual_target != self._manual_floor or not self._s1_floor_observer_available(engine)
+                        or recovery_owner is not None and (self._map_recovery is not recovery_owner
+                            or recovery_scope != self._map_recovery_scope()
+                            or self._monotonic() >= recovery_owner["expiresAt"]))
+
+            try:
+                if payload.get("s1OpenEdge") is True or payload.get("foregroundReturn") is True:
+                    from map_open_preparation import prepare_map_open_frame
+                    preparation = _PreparationHost(self, engine, obsolete, payload)
+                    try:
+                        prepared = prepare_map_open_frame(preparation, None, self._cycle + 1,
+                            time.perf_counter() + preparation.CAPTURE_VISUAL_DEADLINE_SECONDS,
+                            _Cancellation(obsolete), round_identity_locked=True,
+                            capture_context_provider=lambda hwnd: None)
+                    except Exception:
+                        preparation.diagnostics.finish("preparation-exception")
+                        raise
+                    if prepared is None:
+                        with self._lock:
+                            if obsolete():
+                                preparation.diagnostics.finish("cancelled-or-stale")
+                                return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+                            self._observed_floor = self._floor = ""
+                            self._s1_floor_source = "unknown"
+                            self._floor_required = True
+                            if not self._arm_map_open_recovery(cancelled, epoch, payload):
+                                return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+                            if payload.get("bindingResume") is True and preparation.last_capture is not None:
+                                captured, capture_generation = preparation.last_capture
+                                payload["_mapInputVisual"] = dict(open=None, epoch=self._epoch,
+                                    sequence=self._last_map_input_sequence, captured=captured,
+                                    captureGeneration=capture_generation)
+                            preparation.diagnostics.finish("map-open-preparation-deadline")
+                            return self._receipt(action, payload, success=False, reason="map-open-preparation-deadline", recoveryPending=True)
+                    preparation.diagnostics.finish("prepared-current-frame")
+                    captured, observation, observed, capture_generation, read = prepared
+                    frame = self._full_frame(captured).copy()
+                else:
+                    capture_generation = self._capture_generation()
+                    captured = self._capture_frame(obsolete)
+                    frame = self._full_frame(captured).copy()
+                    with self._lock:
+                        if obsolete() or not self._capture_is_current(captured.context, capture_generation):
+                            return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
+                    observation, observed, read = self._observe(engine, frame)
+                frame.setflags(write=False)
+                digest = hashlib.sha256(frame.tobytes()).hexdigest()
+                with self._lock:
+                    if obsolete() or not self._capture_is_current(captured.context, capture_generation):
+                        return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
+                    opened = read.get("mapOpen")
+                    raw = read.get("rawSelectedFloor")
+                    supported = (type(raw) is int and raw in (-1, -2)
+                                 and read.get("observedFloorValidated") is True)
+                    fallback = (type(raw) is int and raw in (-3, -4) and manual_target == str(raw))
+                    floor = str(raw) if opened is True and (supported or fallback) else ""
+                    self._observed_floor = str(raw) if supported and opened is True else ""
+                    self._s1_raw_floor = raw
+                    self._s1_floor_reason = read.get("reason", "s1-floor-unknown")
+                    self._s1_floor_source = "automatic-current-frame" if floor and supported else "manual-unvalidated-fallback" if floor else "unknown"
+                    if supported and manual_target is not None:
+                        # Retire an old operator fallback when trusted current
+                        # evidence contradicts it; never reuse it on a later B3.
+                        self._manual_floor = manual_target = None
+                    if opened is False:
+                        self.invalidate("map-closed")
+                        self._last_observation = None
+                        payload["_mapInputVisual"] = dict(open=False, epoch=self._epoch,
+                            sequence=self._last_map_input_sequence, captured=captured,
+                            captureGeneration=capture_generation)
+                        return self._receipt(action, payload, success=False, reason="s1-map-closed", mapOpen=False)
+                    if opened is True:
+                        # The current-frame proof consumes this ticket. Its
+                        # deadline cannot later cancel a valid ongoing fit.
+                        recovery_owner = recovery_scope = None
+                        if not self._map_open:
+                            self._cycle += 1
+                        self._map_open = True
+                        self._map_recovery = None
+                    payload["_mapInputVisual"] = dict(open=opened, epoch=self._epoch,
+                        sequence=self._last_map_input_sequence, captured=captured, captureGeneration=capture_generation)
+                    if not floor:
+                        self._revoke_render("s1-floor-unknown")
+                        self._group = None
+                        self._core.reset_round(reason="s1-floor-unknown")
+                        self._floor = ""
+                        self._floor_required = True
+                        self._frame_generation += 1
+                        self._frame_id = f"{self._round}:{self._frame_generation}:{digest[:16]}"
+                        self._last_observation = dict(captured=captured, frame=frame, floor=None, digest=digest,
+                            created_at=self._monotonic(), capture_generation=capture_generation,
+                            frame_id=self._frame_id, cycle_id=self._cycle, generation=self._frame_generation,
+                            observed_floor="", floor_read=copy.deepcopy(read))
+                        self._publish_game_pointer_context_locked()
+                        return self._receipt(action, payload, success=False,
+                            reason="s1-floor-unvalidated-manual-required" if raw in (-3, -4) else "s1-current-floor-unavailable")
+                    self._floor_required = False
+                    if floor != old_floor:
+                        self._revoke_render("s1-observed-floor-changed")
+                        self._group = None
+                        self._core.reset_round(reason="s1-observed-floor-changed")
+                        self._floor = floor
+                        self._reference_sheet = self._reference_capture_context = None
+                if action == "observe_manual_floor" and floor == old_floor:
+                    refreshed = self._try_refresh_current(payload, captured, frame, floor, digest,
+                        capture_generation, engine, epoch, obsolete, floor_read=read)
+                    if refreshed is not None:
+                        return dict(refreshed, action=action)
+                with self._lock:
+                    if obsolete() or not self._capture_is_current(captured.context, capture_generation):
+                        return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
+                    self._revoke_render("s1-current-floor-fit")
+                    if floor != old_floor:
+                        self._group = None
+                        self._core.reset_round(reason="s1-observed-floor-changed")
+                    self._floor = floor
+                    self._frame_generation += 1
+                    generation, cycle = self._frame_generation, self._cycle
+                    self._frame_id = frame_id = f"{self._round}:{generation}:{digest[:16]}"
+                    self._last_observation = dict(captured=captured, frame=frame, floor=floor, digest=digest,
+                        created_at=self._monotonic(), capture_generation=capture_generation, frame_id=frame_id,
+                        cycle_id=cycle, generation=generation, observed_floor=self._observed_floor,
+                        floor_read=copy.deepcopy(read))
+                    self._publish_game_pointer_context_locked()
+                    group = self._group
+                return self._solve_observation(action, payload, cancelled, engine, group, epoch,
+                    captured, frame, floor, digest, capture_generation, generation, frame_id, cycle, map_id)
+            except Exception as error:
+                with self._lock:
+                    if obsolete():
+                        return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True,
+                            errorType=type(error).__name__)
+                    self._revoke_render("s1-floor-observation-error")
+                raise
+            finally:
+                with self._lock:
+                    if self._manual_capture_owner is owner:
+                        self._manual_capture_owner = None
+                        self._capture_pending = False
+
+    def _capture_operator_alignment(self, action, payload, cancelled):
         """Human map/floor intent plus a fresh frame; never detector evidence.
 
         The existing fitter and canonical residual must establish the pose.
@@ -4051,6 +4304,22 @@ class LiveRuntime:
     def _observe(self, engine, frame):
         started = time.monotonic()
         settings = dict(getattr(self, "_settings", None) or {}, gameSeason=self._season)
+        if self._manual_alignment and self._s1_floor_observer_available(engine):
+            from s1_floor_observation import detect_s1_floor
+            read = detect_s1_floor(frame, season=self._season, mode=self._mode)
+            read = dict(read, rawSelectedFloor=read.get("selectedFloor"),
+                        controlGeometryVerified=False, floorSource="current-frame")
+            if read.get("observedFloorValidated") is not True:
+                read["selectedFloor"] = None
+            contract = self._floor_contract()
+            floor = contract.floor_id_for(read.get("selectedFloor")) if contract else None
+            opened = read.get("mapOpen")
+            observation = dict(read.get("mapObservation") or {}, detected=opened is True,
+                mapOpen=opened, floor=floor, layoutFamily="s1-vertical")
+            self._remember_control_observation(frame, engine.pack.mode, observation, read)
+            self._recognition_diagnostic("map-floor-observation", read["reason"], observation=observation,
+                floorRead=read, elapsedMs=(time.monotonic()-started)*1000)
+            return observation, floor, read
         if self._season == "s1":
             unavailable = dict(selectedFloor=None, reason="s1-floor-control-detector-unvalidated",
                 confidence=0., season="s1", mode=engine.pack.mode, controlAxis="vertical",

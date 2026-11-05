@@ -26,7 +26,7 @@ from season_context import normalize_season, context_key
 
 # Existing product control command names, plus the injected diagnostic protocol.
 COMMANDS = (
-    "prepare_manual_alignment", "fit_manual_frame",
+    "prepare_manual_alignment", "fit_manual_frame", "observe_manual_floor",
     "start_round", "end_round", "toggle_round", "capture_now",
     "previous_candidate", "next_candidate", "select_candidate", "confirm_route", "reselect_map", "cycle_floor",
     "toggle_sheet_visibility", "set_reference_sheet_visible", "move_sheet",
