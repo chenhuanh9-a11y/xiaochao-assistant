@@ -23,6 +23,7 @@ Window {
     readonly property var committedShortcuts: settingsService.persistedValues.actionHotkeys || []
     readonly property var layout: preferences.gameControlLayout || ({order: [], enabled: [], display: {}})
     readonly property var snapshot: session.snapshot
+    readonly property var privateExperiment: snapshot.privateExperiment || ({})
     property var groupChoices: []
     property string groupChoicesKey: ""
     readonly property bool groupVisible: !!snapshot.groupId && groupChoices.length > 1
@@ -116,6 +117,8 @@ Window {
             && snapshot.identityPhase !== "MEMBER_VERIFIED" && snapshot.identityPhase !== "MANUAL_MEMBER_CONFIRMED")
     }
     function mapText() {
+        if (privateExperiment.privateExperimental === true && privateExperiment.privateExperimentalLocked === true)
+            return "实验 " + (privateExperiment.privateLockMapId || "")
         if (snapshot.structureScanInProgress) return (snapshot.evidenceKind === "recorded" ? "录制研究" : "自动候选") + " · 继续扫描中，结束后可切换候选"
         if (snapshot.candidateDisplayOnly) return "候选 " + snapshot.provisionalMapId
         if (snapshot.identityPhase === "MANUAL_MEMBER_CONFIRMED") {
@@ -128,6 +131,10 @@ Window {
         return snapshot.mapName || snapshot.mapId || ""
     }
     function statusText() {
+        if (privateExperiment.privateExperimental === true && privateExperiment.privateExperimentalLocked === true)
+            return "实验锁定（未正式校准） · " + outputStatus()
+        if (privateExperiment.privateExperimental === true)
+            return "实验识别中 · 尚未锁定 · " + outputStatus()
         if (snapshot.candidateDisplayOnly) return (snapshot.evidenceKind === "recorded" ? "录制研究" : "自动候选") + " · 候选整图未锁定 · " + outputStatus()
         if (snapshot.contextPending) return "正在切换模式或路线"
         if (snapshot.manualSelectionPending) return "手动选图 · 等待选择本局地图"

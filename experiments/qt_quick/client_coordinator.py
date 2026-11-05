@@ -214,6 +214,7 @@ class ClientCoordinator(QObject):
         self._last_prepared_round = None
         self._last_round_preparing = False
         self._notified = set()
+        self._private_experiment_notice_state = None
         self._bound = ""
         self._message = "选择游戏窗口后，再按需启用实时功能"
         self._reference = {}
@@ -2263,6 +2264,35 @@ class ClientCoordinator(QObject):
                 pass
         return details
 
+    def _private_experiment_notice(self, name, event):
+        """Report only a current runtime experimental transition, never a grant."""
+        state = self.runtime.snapshot()
+        if (self._pending_context or not state.get("roundActive")
+                or any(event.get(key) != state.get(key) for key in ("epoch", "season", "mode", "roundId"))):
+            return
+        experiment = state.get("privateExperiment") or {}
+        locked = name == "private-experimental-locked"
+        if (experiment.get("privateExperimental") is not True
+                or experiment.get("privateExperimentalLocked") is not locked):
+            return
+        map_id = experiment.get("privateLockMapId") if locked else ""
+        if locked and (not isinstance(map_id, str) or not map_id):
+            return
+        key = (state.get("season"), state.get("mode"), state.get("roundId"), locked, map_id)
+        if key == self._private_experiment_notice_state:
+            return
+        self._private_experiment_notice_state = key
+        if locked:
+            self._message = "实验锁定（未正式校准） · " + map_id
+            self.notificationRequested.emit("实验锁定（未正式校准）", "实验地图 " + map_id + "，请以实机效果为准。", "info")
+        else:
+            self._message = "恢复识别 · 实验锁定已解除"
+            self.notificationRequested.emit("恢复识别", "实验锁定已解除；后续当前帧将继续核对候选。", "info")
+        # A producing worker owns its Session frame. Never cancel it to refresh UI.
+        if not self.session.busy:
+            self.session.refreshRuntime()
+        self.changed.emit()
+
     @Slot(object)
     def _on_runtime_event(self, event):
         if self._closed or self._closing or not isinstance(event, dict):
@@ -2328,6 +2358,10 @@ class ClientCoordinator(QObject):
             # This event is emitted only after capture activation succeeds,
             # before the first recognition/fit worker can finish.
             self._notify_session_transitions(self.runtime.snapshot())
+        elif name in {"private-experimental-locked", "private-experimental-unlocked"}:
+            self._private_experiment_notice(name, event)
+        elif name == "private-pool-observed":
+            return  # Runtime/trace diagnostics only; no notification or refresh.
         elif name == "sibling-material-pending":
             if self._pending_context:
                 self._trace("drop-event", payload=event, reason="presentation-context-pending")

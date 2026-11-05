@@ -8,6 +8,7 @@ import QtQuick.Layouts
 Item {
     id: page
     readonly property bool wide: width >= 720
+    readonly property var privateExperiment: session.snapshot.privateExperiment || ({})
     readonly property var hostWindow: page.Window.window
     property var pendingUpdate: ({})
     function showPendingUpdate() {
@@ -144,8 +145,8 @@ Item {
                             objectName: "homeRoundStats"
                             Layout.fillWidth: true; spacing: 10
                             Repeater {
-                                model: [{label: "状态", value: session.snapshot.controlStatusText || (session.snapshot.roundActive ? "本局进行中" : session.snapshot.roundPreparing ? "已准备" : "等待开始")},
-                                        {label: "地图", value: session.snapshot.mapName || session.snapshot.mapId || "尚未确认"},
+                                model: [{label: "状态", value: page.privateExperiment.privateExperimental === true && page.privateExperiment.privateExperimentalLocked === true ? "实验锁定（未正式校准）" : session.snapshot.controlStatusText || (session.snapshot.roundActive ? "本局进行中" : session.snapshot.roundPreparing ? "已准备" : "等待开始")},
+                                        {label: "地图", value: page.privateExperiment.privateExperimental === true && page.privateExperiment.privateExperimentalLocked === true ? "实验 " + (page.privateExperiment.privateLockMapId || "") : session.snapshot.mapName || session.snapshot.mapId || "尚未确认"},
                                         {label: "楼层", value: session.snapshot.observedFloor ? page.floorLabel(session.snapshot.observedFloor, "") : "尚未确认"}]
                                 delegate: Rectangle {
                                     required property var modelData

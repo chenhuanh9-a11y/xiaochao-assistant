@@ -7,6 +7,7 @@ Item {
     id: page
     objectName: "clientRecognition"
     readonly property var state: session.snapshot
+    readonly property var privateExperiment: state.privateExperiment || ({})
     readonly property var candidates: state.candidateRows || []
     readonly property var floors: state.availableFloors || []
     readonly property int selectedIndex: typeof state.selectedCandidateIndex === "number" ? state.selectedCandidateIndex : -1
@@ -127,6 +128,14 @@ Item {
                 ? "输入来源：录制画面，无实机显示授权。"
                 : "自动候选当前支持 B1/B2；B3/B4 可用手动选图与四层自动读层。整图包含尚未探索的区域。"
             color: "#526785"; wrapMode: Text.WordWrap
+        }
+        Label {
+            objectName: "recognitionPrivateExperiment"
+            visible: page.privateExperiment.privateExperimental === true
+            text: page.privateExperiment.privateExperimentalLocked === true
+                ? "实验锁定（未正式校准） · " + (page.privateExperiment.privateLockMapId || "")
+                : "实验识别中 · 候选 " + (page.privateExperiment.privatePoolMapIds || []).length + " 个 · 尚未锁定"
+            color: "#946000"; wrapMode: Text.WordWrap; Layout.fillWidth: true
         }
         Label {
             Layout.fillWidth: true
