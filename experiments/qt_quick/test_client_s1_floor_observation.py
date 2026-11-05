@@ -259,6 +259,11 @@ class S1FloorQmlTests(unittest.TestCase):
             label = next(item for item in items(window.contentItem())
                          if item.objectName() == "controlMapFloorText")
             self.assertTrue(label.property("text").endswith(controls_text), label.property("text"))
+            self.assertFalse(page_case.item("recognitionFloor_-3").property("visible"))
+            self.assertFalse(page_case.item("recognitionCycleFloor").property("visible"))
+            manual = next(item for item in items(window.contentItem())
+                          if item.objectName() == "controlManualFloor_-3")
+            self.assertFalse(manual.property("visible"))
 
         try:
             runtime_case.prepare()
@@ -267,11 +272,14 @@ class S1FloorQmlTests(unittest.TestCase):
             runtime_case.raw = -2
             self.assertTrue(runtime_case.runtime.dispatch("observe_manual_floor")["success"])
             check("自动观察当前 B2", "自动观察当前 B2")
-            runtime_case.raw = -3
+            for floor in (-3, -4):
+                runtime_case.raw = floor
+                self.assertTrue(runtime_case.runtime.dispatch("observe_manual_floor")["success"])
+                label = "自动观察当前 B" + str(abs(floor)) + "（未实测）"
+                check(label, label)
+            runtime_case.raw = None
             self.assertFalse(runtime_case.runtime.dispatch("observe_manual_floor")["success"])
             check("当前楼层未知", "当前楼层未知")
-            self.assertTrue(runtime_case.runtime.dispatch("set_floor", dict(floor="-3"))["success"])
-            check("当前楼层未知 · 人工回退 B3", "人工回退 B3 · 当前楼层未知")
             self.assertEqual(page_case.warnings, [])
             self.assertEqual(warnings, [])
         finally:

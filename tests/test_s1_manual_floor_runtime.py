@@ -45,7 +45,7 @@ class FloorRegistry(Registry):
         if capability:
             self.engine.qt_native_context = SimpleNamespace(floor_observation_capability=dict(
                 contract="s1-floor-only-manual-map-use", manualMapObservation=True,
-                automaticFloors=[-1, -2]))
+                automaticFloors=[-1, -2, -3, -4]))
 
     def invalidate(self):
         # The runtime's offline adapter requires this registry lifecycle hook.
@@ -55,7 +55,7 @@ class FloorRegistry(Registry):
 
 def stub_pixel_read(raw=-1, *, opened=True, reason="stub-pixel-floor"):
     return dict(season="s1", mode="nightmare", selectedFloor=raw,
-        observedFloorValidated=raw in (-1, -2), mapOpen=opened,
+        observedFloorValidated=raw in (-1, -2), automaticFloorEligible=raw in (-1, -2, -3, -4), mapOpen=opened,
         mapObservation=dict(detected=opened is True), reason=reason,
         capability="s1-floor-only-manual-map-use", floorUse="manual-map-only",
         controlAxis="vertical", observedOrder=[-1, -2, -3, -4], labelEvidence=[])
@@ -166,24 +166,19 @@ class ManualS1FloorRuntime(unittest.TestCase):
         self.assertTrue(self.runtime._map_open)
         self.assert_no_live_or_rank()
 
-    def test_stubpixel_b3_b4_need_matching_explicit_manual_target_b1_b2_clear_it(self):
+    def test_stubpixel_b3_b4_automatically_follow_current_frame_without_claiming_real_validation(self):
         self.prepare(); self.pick()
         for floor in (-3, -4):
             with self.subTest(floor=floor):
                 self.raw = floor
                 result = self.runtime.dispatch("observe_manual_floor")
-                self.assertFalse(result["success"], result)
-                state = self.runtime.snapshot()
-                self.assertEqual((state["floor"], state["observedFloor"]), ("", ""))
-                self.assertIsNone(self.runtime._render)
-                wrong = "-4" if floor == -3 else "-3"
-                self.assertFalse(self.runtime.dispatch("set_floor", dict(floor=wrong))["success"])
-                self.assertIsNone(self.runtime._render)
-                result = self.runtime.dispatch("set_floor", dict(floor=str(floor)))
                 self.assertTrue(result["success"], result)
                 state = self.runtime.snapshot()
-                self.assertEqual((state["floor"], state["observedFloor"]), (str(floor), ""))
-                self.assertEqual(state["floorSource"], "manual-unvalidated-fallback")
+                self.assertEqual((state["floor"], state["observedFloor"]), (str(floor), str(floor)))
+                self.assertIsNone(state["manualFloor"])
+                self.assertEqual(state["floorSource"], "automatic-current-frame")
+                self.assertFalse(self.runtime._last_observation["floor_read"]["observedFloorValidated"])
+                self.assertIsNotNone(self.runtime._render)
                 self.raw = -1 if floor == -3 else -2
                 self.assertTrue(self.runtime.dispatch("observe_manual_floor")["success"])
                 state = self.runtime.snapshot()
@@ -204,6 +199,20 @@ class ManualS1FloorRuntime(unittest.TestCase):
                 self.assertIsNone(self.runtime._render)
                 self.assertFalse(self.runtime._core.snapshot()["displayAuthorized"])
                 self.assertEqual(self.runtime.snapshot()["observedFloor"], "")
+
+    def test_four_floor_private_eligibility_never_comes_from_the_real_validation_flag(self):
+        for floor in (-1, -2, -3, -4):
+            with self.subTest(floor=floor):
+                self.runtime.dispatch("end_round"); self.raw = -1
+                self.prepare(); self.pick()
+                rejected = dict(stub_pixel_read(floor), automaticFloorEligible=False,
+                                observedFloorValidated=True)
+                with patch("s1_floor_observation.detect_s1_floor", return_value=rejected):
+                    result = self.runtime.dispatch("observe_manual_floor")
+                self.assertFalse(result["success"], result)
+                self.assertEqual(self.runtime.snapshot()["observedFloor"], "")
+                self.assertIsNone(self.runtime._render)
+                self.assert_no_live_or_rank()
 
     def test_stubpixel_cancellation_while_waiting_for_work_does_not_acquire_or_revoke(self):
         self.prepare(); self.pick()
@@ -390,14 +399,8 @@ class ManualS1FloorRuntime(unittest.TestCase):
                 self.runtime.dispatch("end_round")
                 self.raw, self.opened = floor, True
                 self.prepare()
-                if floor in (-1, -2):
-                    self.pick()
-                    expected = "automatic-current-frame"
-                else:
-                    result = self.runtime.dispatch("confirm_route", dict(mapId="fixture-map"))
-                    self.assertFalse(result["success"], result)
-                    self.assertTrue(self.runtime.dispatch("set_floor", dict(floor=str(floor)))["success"])
-                    expected = "manual-unvalidated-fallback"
+                self.pick()
+                expected = "automatic-current-frame"
                 self.assertEqual(self.runtime.snapshot()["floorSource"], expected)
                 self.assertEqual(self.runtime._render["floorSource"], expected)
                 first_token = self.runtime._render["token"]
@@ -506,17 +509,26 @@ class ManualS1FloorRuntime(unittest.TestCase):
 
     def test_synthetic_glyph_and_independent_canvas_gate_reach_real_manual_consumer(self):
         self.prepare()
-        self.capture.frame = mathematical_frame((-2,))
         self.fit_result["observationComponent"].update(bounds=(0, 0, 1920, 1200), center=(960, 600),
             width=1920, height=1200, area=2304000)
         with patch("s1_floor_observation.detect_s1_floor", side_effect=self.original_detector):
-            self.pick()
-        state = self.runtime.snapshot()
-        self.assertEqual((state["floor"], state["observedFloor"]), ("-2", "-2"))
-        self.assertTrue(self.runtime._last_observation["floor_read"]["mapObservation"]["detected"])
-        self.assertEqual(self.runtime._render["clientWidth"], 1920)
-        self.assertEqual(self.runtime._render["clientHeight"], 1200)
-        self.assert_no_live_or_rank()
+            for floor in (-1, -2, -3, -4):
+                with self.subTest(floor=floor):
+                    self.capture.frame = mathematical_frame((floor,))
+                    if floor == -1:
+                        self.pick()
+                    else:
+                        result = self.runtime.dispatch("observe_manual_floor")
+                        self.assertTrue(result["success"], result)
+                    state = self.runtime.snapshot()
+                    self.assertEqual((state["floor"], state["observedFloor"]), (str(floor), str(floor)))
+                    read = self.runtime._last_observation["floor_read"]
+                    self.assertTrue(read["mapObservation"]["detected"])
+                    self.assertEqual(read["observedFloorValidated"], floor in (-1, -2))
+                    self.assertTrue(read["automaticFloorEligible"])
+                    self.assertEqual(self.runtime._render["clientWidth"], 1920)
+                    self.assertEqual(self.runtime._render["clientHeight"], 1200)
+                    self.assert_no_live_or_rank()
 
 
 if __name__ == "__main__":

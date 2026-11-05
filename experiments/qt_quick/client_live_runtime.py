@@ -542,7 +542,7 @@ class LiveRuntime:
         return (isinstance(capability, dict)
                 and capability.get("contract") == "s1-floor-only-manual-map-use"
                 and capability.get("manualMapObservation") is True
-                and tuple(capability.get("automaticFloors", ())) == (-1, -2))
+                and tuple(capability.get("automaticFloors", ())) == (-1, -2, -3, -4))
 
     def _current_floor_source(self):
         if self._manual_alignment and self._s1_floor_observer_available():
@@ -1953,7 +1953,7 @@ class LiveRuntime:
                 manualAlignmentSession=self._manual_alignment,
                 manualAlignmentAvailable=manual_ready,
                 automaticFloorObservationAvailable=bool(self._manual_alignment and self._s1_floor_observer_available()),
-                automaticFloorSupportedFloors=["-1", "-2"] if self._s1_floor_observer_available() else [],
+                automaticFloorSupportedFloors=["-1", "-2", "-3", "-4"] if self._s1_floor_observer_available() else [],
                 unvalidatedFloorPositions=["-3", "-4"] if self._season == "s1" else [],
                 automaticIdentityAvailable=False if self._season == "s1" else bool(ready),
                 targetFloor=self._floor, rawObservedFloor=self._s1_raw_floor,
@@ -3336,7 +3336,8 @@ class LiveRuntime:
 
         A passive tick can maintain an open cycle, or consume an existing
         opening edge's finite recovery budget. It can never open a new cycle.
-        B3/B4 require an explicit matching human target, not historical votes.
+        All four positions may supply current-frame private-test evidence.
+        B3/B4 remain synthetic-only, independently of automatic admission.
         """
         with self._work:
             with self._lock:
@@ -3423,17 +3424,16 @@ class LiveRuntime:
                         return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
                     opened = read.get("mapOpen")
                     raw = read.get("rawSelectedFloor")
-                    supported = (type(raw) is int and raw in (-1, -2)
-                                 and read.get("observedFloorValidated") is True)
-                    fallback = (type(raw) is int and raw in (-3, -4) and manual_target == str(raw))
-                    floor = str(raw) if opened is True and (supported or fallback) else ""
+                    supported = (type(raw) is int and raw in (-1, -2, -3, -4)
+                                 and read.get("automaticFloorEligible") is True)
+                    floor = str(raw) if opened is True and supported else ""
                     self._observed_floor = str(raw) if supported and opened is True else ""
                     self._s1_raw_floor = raw
                     self._s1_floor_reason = read.get("reason", "s1-floor-unknown")
-                    self._s1_floor_source = "automatic-current-frame" if floor and supported else "manual-unvalidated-fallback" if floor else "unknown"
+                    self._s1_floor_source = "automatic-current-frame" if floor else "unknown"
                     if supported and manual_target is not None:
                         # Retire an old operator fallback when trusted current
-                        # evidence contradicts it; never reuse it on a later B3.
+                        # evidence contradicts it; never reuse it on a later layer.
                         self._manual_floor = manual_target = None
                     if opened is False:
                         self.invalidate("map-closed")
@@ -3466,7 +3466,7 @@ class LiveRuntime:
                             observed_floor="", floor_read=copy.deepcopy(read))
                         self._publish_game_pointer_context_locked()
                         return self._receipt(action, payload, success=False,
-                            reason="s1-floor-unvalidated-manual-required" if raw in (-3, -4) else "s1-current-floor-unavailable")
+                            reason="s1-current-floor-unavailable")
                     self._floor_required = False
                     if floor != old_floor:
                         self._revoke_render("s1-observed-floor-changed")
@@ -4308,7 +4308,7 @@ class LiveRuntime:
             read = detect_s1_floor(frame, season=self._season, mode=self._mode)
             read = dict(read, rawSelectedFloor=read.get("selectedFloor"),
                         controlGeometryVerified=False, floorSource="current-frame")
-            if read.get("observedFloorValidated") is not True:
+            if read.get("automaticFloorEligible") is not True:
                 read["selectedFloor"] = None
             contract = self._floor_contract()
             floor = contract.floor_id_for(read.get("selectedFloor")) if contract else None

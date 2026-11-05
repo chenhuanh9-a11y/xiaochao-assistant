@@ -1472,3 +1472,13 @@ CODES = CODES | frozenset({'map-capture', 'map-capture-diagnostic', 'current-fra
     'capture-scope-changed', 'capture-frame-invalid'})
 
 CODES = CODES | frozenset({'detector-control-band-unavailable'})
+
+# Fixed S1 private floor evidence; eligibility never implies real-image validation.
+FIELDS = FIELDS | frozenset({'automaticFloorEligible', 'observedFloorValidated',
+    'validationScope', 'rawSelectedFloor', 'sourceReplayFloors', 'syntheticOnlyFloors'})
+CODES = CODES | frozenset({'s1-floor-context-unsupported', 's1-floor-stale-frame',
+    's1-floor-frame-type', 's1-floor-frame-size', 's1-floor-map-not-open',
+    's1-floor-empty-roi', 's1-floor-signed-labels-incomplete', 's1-floor-column-ambiguous',
+    's1-floor-column-unverified', 's1-floor-observed', 'source-image-replay', 'synthetic-only',
+    'automatic-current-frame', 's1-signed-pixel-column', 'private-test-four-floor-contract',
+    's1-floor-only-manual-map-use', 'manual-map-only'})

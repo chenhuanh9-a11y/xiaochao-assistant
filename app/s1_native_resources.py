@@ -132,8 +132,10 @@ class S1NativeContext:
         """Narrow manual-map floor observation; never an automatic identity grant."""
         from s1_floor_observation import CAPABILITY, SOURCE_REPLAY_FLOORS, ORDER
         return dict(contract=CAPABILITY, manualMapObservation=True,
-                    automaticFloors=list(SOURCE_REPLAY_FLOORS), contractFloors=list(ORDER),
-                    evidence="saved-frame-replay", liveValidated=False)
+                    automaticFloors=list(ORDER), contractFloors=list(ORDER),
+                    sourceReplayFloors=list(SOURCE_REPLAY_FLOORS),
+                    syntheticOnlyFloors=[floor for floor in ORDER if floor not in SOURCE_REPLAY_FLOORS],
+                    evidence="private-test-four-floor-contract", liveValidated=False)
 
     def local(self, relative):
         return local(self.root, relative)

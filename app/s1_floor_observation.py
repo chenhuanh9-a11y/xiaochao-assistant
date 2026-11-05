@@ -24,7 +24,7 @@ SOURCE_REPLAY_FLOORS = (-1, -2)
 
 def _result(season, mode, reason, **extra):
     return dict(season=season, mode=mode, reason=reason, selectedFloor=None,
-                observedFloorValidated=False, capability=CAPABILITY,
+                observedFloorValidated=False, automaticFloorEligible=False, capability=CAPABILITY,
                 floorUse="manual-map-only", controlAxis="vertical",
                 observedOrder=list(ORDER), mapOpen=None, mapObservation=None,
                 centerPoints=[], centers=[], labelEvidence=[], **extra)
@@ -148,6 +148,7 @@ def detect_s1_floor(frame, *, season, mode, frame_id=None, expected_frame_id=Non
                      signBounds=row["signBounds"], digitBounds=row["digitBounds"])
                 for floor, row, fill in zip(ORDER, rows, fills)]
     return dict(out, reason="s1-floor-observed", selectedFloor=selected,
+                automaticFloorEligible=True,
                 observedFloorValidated=selected in SOURCE_REPLAY_FLOORS,
                 validationScope="source-image-replay" if selected in SOURCE_REPLAY_FLOORS else "synthetic-only",
                 centerPoints=points, centers=points, labelEvidence=evidence,

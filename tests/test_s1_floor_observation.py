@@ -40,6 +40,22 @@ def read(frame, **kwargs):
 
 
 class S1FloorPixelObservation(unittest.TestCase):
+    def test_safe_diagnostics_keep_private_eligibility_separate_from_real_validation(self):
+        import json
+        from diagnostic_privacy import safe_record
+        current = detector.detect_s1_floor(mathematical_frame((-3,)), season="s1", mode="nightmare")
+        row = safe_record(dict(floorRead=dict(current, rawSelectedFloor=-3),
+            sourceReplayFloors=[-1, -2], syntheticOnlyFloors=[-3, -4],
+            username="PrivateFloorSecret", reason="s1-floor-observed"))
+        read = row["floorRead"]
+        self.assertTrue(read["automaticFloorEligible"])
+        self.assertFalse(read["observedFloorValidated"])
+        self.assertEqual(read["validationScope"], "synthetic-only")
+        self.assertEqual(read["rawSelectedFloor"], -3)
+        self.assertEqual(row["sourceReplayFloors"], [-1, -2])
+        self.assertEqual(row["reason"], "s1-floor-observed")
+        self.assertNotIn("PrivateFloorSecret", json.dumps(row))
+
     def test_complete_signed_columns_in_all_declared_modes(self):
         for mode in ("difficulty2", "difficult", "nightmare"):
             for floor in detector.ORDER:
@@ -48,6 +64,8 @@ class S1FloorPixelObservation(unittest.TestCase):
                     self.assertEqual(result["selectedFloor"], floor, result)
                     self.assertTrue(result["mapOpen"])
                     self.assertEqual(result["observedFloorValidated"], floor in (-1, -2))
+                    self.assertTrue(result["automaticFloorEligible"])
+                    self.assertEqual(result["validationScope"], "source-image-replay" if floor in (-1, -2) else "synthetic-only")
                     self.assertEqual(result["capability"], "s1-floor-only-manual-map-use")
                     self.assertEqual(result["floorUse"], "manual-map-only")
                     self.assertEqual(result["observedOrder"], [-1, -2, -3, -4])
@@ -68,6 +86,7 @@ class S1FloorPixelObservation(unittest.TestCase):
         self.assertIsNone(result["selectedFloor"])
         self.assertFalse(result["mapOpen"])
         self.assertFalse(result["observedFloorValidated"])
+        self.assertFalse(result["automaticFloorEligible"])
         self.assertIsNone(read(mathematical_frame(anchors=False))["selectedFloor"])
 
     def test_invalid_context_types_and_known_stale_frames_fail_before_map_gate(self):

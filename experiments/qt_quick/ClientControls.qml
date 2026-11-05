@@ -141,7 +141,7 @@ Window {
     function floorText() {
         if (snapshot.season === "s1") {
             if (snapshot.floorSource === "automatic-current-frame" && snapshot.observedFloor)
-                return "自动观察当前 B" + Math.abs(Number(snapshot.observedFloor))
+                return "自动观察当前 B" + Math.abs(Number(snapshot.observedFloor)) + ((snapshot.observedFloor === "-3" || snapshot.observedFloor === "-4") ? "（未实测）" : "")
             if (snapshot.floorSource === "manual-unvalidated-fallback" && snapshot.targetFloor)
                 return "人工回退 B" + Math.abs(Number(snapshot.targetFloor)) + " · 当前楼层未知"
             return "当前楼层未知" + (snapshot.targetFloor ? " · 目标 B" + Math.abs(Number(snapshot.targetFloor)) : "")
@@ -397,12 +397,12 @@ Window {
                 visible: panel.snapshot.season === "s1" && !panel.snapshot.manualAlignmentSession
                 text: "准备手动贴合"; Layout.fillWidth: true
                 enabled: panel.available("prepare_manual_alignment")
-                hint: "人工选择地图；当前 B1/B2 可自动观察，B3/B4 未实测，需人工回退"
+                hint: "人工选择地图；B1～B4 自动观察，B3/B4 为未实测的私测能力"
                 onClicked: session.dispatch("prepare_manual_alignment")
             }
             KeyHint {
                 visible: panel.snapshot.manualAlignmentSession === true
-                text: "手动选图；自动观察当前 B1/B2。B3/B4 未实测，需人工回退；默认目标不代表已观察。"
+                text: "手动选图；自动观察当前 B1～B4。B3/B4 未实测，识别不确定时停止贴合；默认目标不代表已观察。"
             }
             RowLayout {
                 Layout.fillWidth: true; spacing: 4
@@ -438,7 +438,7 @@ Window {
                 ControlButton {
                     objectName: "controlManualFloor_auto"
                     visible: panel.snapshot.season === "s1" && panel.snapshot.automaticFloorObservationAvailable === true
-                    text: "自动当前楼层（B1/B2）"; selected: !panel.snapshot.manualFloor
+                    text: "自动当前楼层（B1～B4）"; selected: !panel.snapshot.manualFloor
                     enabled: panel.available("set_floor"); Layout.fillWidth: true
                     onClicked: session.dispatchWithPayload("set_floor", {floor: "auto"})
                 }
@@ -447,13 +447,14 @@ Window {
                     delegate: ControlButton {
                         required property string modelData
                         objectName: "controlManualFloor_" + modelData
+                        visible: !(panel.snapshot.season === "s1" && panel.snapshot.automaticFloorObservationAvailable === true)
                         text: panel.snapshot.season === "s1" ? "人工回退 B" + Math.abs(Number(modelData)) + ((modelData === "-3" || modelData === "-4") ? "（未实测）" : "") : modelData === "B1" ? "B1" : "F" + modelData
                         selected: panel.snapshot.season === "s1" ? String(panel.snapshot.manualFloor || "") === modelData : String(panel.snapshot.manualFloor || panel.snapshot.floor) === modelData
                         enabled: panel.available("set_floor"); implicitWidth: 50; Layout.fillWidth: true
                         onClicked: session.dispatchWithPayload("set_floor", {floor: modelData})
                     }
                 }
-                ControlButton { text: "切换"; implicitWidth: 54; enabled: panel.available("cycle_floor"); onClicked: session.dispatch("cycle_floor") }
+                ControlButton { visible: !(panel.snapshot.season === "s1" && panel.snapshot.automaticFloorObservationAvailable === true); text: "切换"; implicitWidth: 54; enabled: panel.available("cycle_floor"); onClicked: session.dispatch("cycle_floor") }
             }
             ControlButton {
                 objectName: "controlFitManualFrame"

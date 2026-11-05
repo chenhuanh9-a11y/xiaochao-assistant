@@ -92,7 +92,7 @@ Item {
                 onClicked: clientCoordinator.fitManualFromMain()
             }
             Label {
-                text: "人工选择地图；自动观察当前 B1/B2。B3/B4 未实测，需人工回退。默认目标不代表已观察。"
+                text: "人工选择地图；自动观察当前 B1～B4。B3/B4 未实测，识别不确定时停止贴合。默认目标不代表已观察。"
                 Layout.fillWidth: true; wrapMode: Text.WordWrap
             }
         }
@@ -211,7 +211,7 @@ Item {
             AppButton {
                 objectName: "recognitionFloor_auto"
                 visible: page.state.season === "s1" && page.state.automaticFloorObservationAvailable === true
-                text: "自动 B1/B2"; selected: !page.state.manualFloor
+                text: "自动 B1～B4"; selected: !page.state.manualFloor
                 enabled: page.available("set_floor")
                 onClicked: session.dispatchWithPayload("set_floor", {floor: "auto"})
             }
@@ -220,6 +220,7 @@ Item {
                 delegate: AppButton {
                     required property string modelData
                     objectName: "recognitionFloor_" + modelData
+                    visible: !(page.state.season === "s1" && page.state.automaticFloorObservationAvailable === true)
                     text: page.floorName(modelData) + (page.state.season === "s1" ? " 回退" + ((modelData === "-3" || modelData === "-4") ? "（未实测）" : "") : "")
                     implicitWidth: 58
                     selected: page.state.season === "s1" ? String(page.state.manualFloor || "") === modelData : String(page.state.floor) === modelData
@@ -229,13 +230,13 @@ Item {
             }
             Label { visible: page.floors.length === 0; text: "楼层选项尚不可用"; color: "#526785"; font.pixelSize: 12 }
             Item { Layout.fillWidth: true }
-            AppButton { objectName: "recognitionCycleFloor"; text: "切换楼层"; enabled: page.floors.length > 0 && page.available("cycle_floor"); onClicked: session.dispatch("cycle_floor") }
+            AppButton { objectName: "recognitionCycleFloor"; visible: !(page.state.season === "s1" && page.state.automaticFloorObservationAvailable === true); text: "切换楼层"; enabled: page.floors.length > 0 && page.available("cycle_floor"); onClicked: session.dispatch("cycle_floor") }
         }
-        Label { text: "楼层选择是显示目标，地图确认不代表当前画面已经贴合。"; color: "#526785"; font.family: "Microsoft YaHei UI"; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+        Label { text: page.state.season === "s1" && page.state.automaticFloorObservationAvailable === true ? "楼层随当前游戏画面自动同步；未知时停止贴合。地图确认不代表当前画面已经贴合。" : "楼层选择是显示目标，地图确认不代表当前画面已经贴合。"; color: "#526785"; font.family: "Microsoft YaHei UI"; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true }
         Label {
             objectName: "recognitionCurrentFloor"
             visible: page.state.season === "s1"
-            text: page.state.floorSource === "automatic-current-frame" && page.state.observedFloor ? "自动观察当前 " + page.floorName(page.state.observedFloor)
+            text: page.state.floorSource === "automatic-current-frame" && page.state.observedFloor ? "自动观察当前 " + page.floorName(page.state.observedFloor) + ((page.state.observedFloor === "-3" || page.state.observedFloor === "-4") ? "（未实测）" : "")
                 : page.state.floorSource === "manual-unvalidated-fallback" ? "当前楼层未知 · 人工回退 " + page.floorName(page.state.targetFloor)
                 : "当前楼层未知" + (page.state.targetFloor ? " · 目标 " + page.floorName(page.state.targetFloor) : "")
             color: "#526785"; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true
