@@ -32,6 +32,49 @@ Qt 入口：侧栏「路线广场」→「账号登录」，下载后点击「�
 
 暂不支持投稿、举报和「我的投稿」。
 
+## Qt 选中点标号
+
+路线广场与自定义图库的地图查看/编辑页都有「选中点标号」开关，共用一个偏好，默认关闭。
+点击后通过既有设置单写者异步保存 `routePointNumbers`；保存成功才生效，重启恢复，失败显示原因并保留原来已生效的选择。
+只保存该字段，不顺带保存设置页其他草稿，也不改下载图库的只读属性或路线文件。
+
+- **判定依据**：广场 `routePlans[].points` 是有序明确选点，`route_plaza.convert_plan()` 转为图库 `maps[mapId].points`；其中 `kind="room"` / `room` 表示选中的房间，`kind="via"` 表示明确选择的必经目标，`floor`、`x/y` 表示楼层与原生坐标。首尾点自然包含在该列表，`start=true` 仅表示另起一段。
+- **编号规则**：按保存的 `points` 顺序过滤到当前层，再从 1 递增；跨层后回到同一层继续该层序号，另起一段不重置。同层同房间按 `room` 合并、同位置必经点按取整坐标合并，保留每次访问的序号，例如 `1/3`。超过三次显示前三个序号及 `+剩余次数`，避免标签无限加宽。
+- **路过不标**：不从规划后的 `segments[].cells`、道路网节点或连线经过的房间推断选点。下载转换沿用已有行为：无法落点的目标丢弃，连续落在同一目标的安卓选点会折叠；编号针对最终成功保存的目标，不补造已丢弃的点。
+- **显示**：开启时深色底、浅色描边、白色数字，放在目标上方，靠画布边缘时收回画布内；只画当前层。游戏中的标号和路线使用同一原生图层与显示矩阵，随缩放/拖动移动；图库查看页按实际图片缩放换算，保持标签可读。关闭不画标号。
+- **适用范围**：下载的广场图库、其副本和个人图库共用显示链路。现有自定义路线仅支持噩梦；困难与作者位图没有明确选点数据，不推断房间或改写作者图片里的既有数字。
+
+开关成功保存后，`CustomGalleryDisplay` 清理相应图层缓存，并将偏好纳入实际显示资源身份；正在生成的旧图层即使开关往返也丢弃。
+运行时推进显示代际，旧定点/贴合像素立即失效；通过 `SessionService` 原有单线程队列更换显示图层，不重新识别、采集或求解位姿。
+已有后台任务完成后继续处理刷新，隐藏页面也不阻断。取消、结束本局或上下文变化后，迟到刷新按既有轮次/帧/楼层/资源/显示代际校验拒绝。
+
+离线验证新增 `test_client_route_point_numbers`，覆盖选点与路过节点区分、顺序、逐层重置、重复选点、保存/重启/失败重试、实际 QML 点击与像素显隐、切层/窗口缩放、缓存失效、取消与迟到结果，以及两模式无选点数据时的显示保持。
+合成地图的离屏截图保存在忽略目录 `outputs/route-room-numbers/`，没有提交素材。完整 QtClient 冒烟还验证了广场开关到保存设置、显示服务和运行时的实际连接。
+
+Linux / Python 3.13.5 / PySide6 6.11.1 的联合命令（沿用 #88/#93 的相关模块，再加本次显示/设置/生命周期覆盖；最新 main 尚无 #93 的投稿模块，不借入该分支）：
+
+```bash
+PYTHONPATH=/tmp/xiaochao-tk-runtime/usr/lib/python3.13:/tmp/xiaochao-tk-runtime/usr/lib/python3.13/lib-dynload:app:tests:tools:tools/maps:experiments/qt_quick \
+QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
+/tmp/xiaochao-qt-venv/bin/python -m unittest -q \
+  test_client_route_point_numbers test_client_route_plaza test_route_plaza \
+  test_custom_maps test_custom_map_editor test_client_custom_gallery \
+  test_client_composition test_client_custom_display test_client_gallery_export_dialog \
+  test_client_downloads test_client_shutdown test_client_coordinator test_client_resources \
+  test_client_import_upgrade_parity test_client_recapture_composition \
+  test_account_concurrency test_client_account_lifecycle test_route_plaza_redirect \
+  test_build_custom_map_package test_extend_custom_map_package test_prepare_qt_editor_base \
+  test_client_route_preferences test_client_route_reprojection test_client_settings \
+  test_client_live_runtime test_client_session test_client_reference_presentation \
+  test_client_aligned_transform test_client_material_identity test_client_material_handoff \
+  test_client_editor_upgrade
+```
+
+本次联合 473 项：471 通过、2 跳过（缺少 `QT_RESOURCE_PRIVATE_ZIP` 与 `QT_EDITOR_REAL_LIBRARY`）；新增 10 项全部通过。
+截图可额外设置 `XINGTU_QT_NUMBER_EVIDENCE_DIR=outputs/route-room-numbers`、`XINGTU_QT_PLAZA_EVIDENCE_DIR=outputs/route-room-numbers/plaza`。
+首次扩大回归时两个既有静态定点用例在 Linux 导入 Win32 模块失败；在未改动 `164ea36` 的干净 checkout 同样复现。本次仅为这两个用例补入既有 recapture 测试使用的有限空白图判断替身，保留全部断言，未改生产截图逻辑。
+没有线上路线/真实授权图库输入；Windows 字体/DPI、真实游戏缩放拖动、安装与 Setup 均未验证，也没有采集首贴/重开图端到端性能样本。
+
 ## 坐标换算
 
 安卓的路线点存的是导航网格的格子编号。网格画在旧版模板底图上，和本软件自定义地图资源包用的是同一套图：72 层的尺寸、网格全部一致，每格 2 像素，`cols = ceil(宽 / 2)`。

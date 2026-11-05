@@ -83,11 +83,14 @@ class PlazaTests(unittest.TestCase):
                                                default_path=self.root / "none.json")
         until(lambda: not self.galleries.busy and bool(self.galleries.snapshot["galleries"]))
         self.service = RoutePlazaService(self.root, self.galleries)
+        from client_settings import SettingsService
+        self.settings = SettingsService(self.root)
         self.threads = []
         self.service.changed.connect(lambda: self.threads.append(threading.get_ident()))
         self.addCleanup(self.cleanup)
 
     def cleanup(self):
+        self.settings.shutdown()
         self.service.shutdown()
         self.galleries.shutdown()
         APP.processEvents()
@@ -518,6 +521,7 @@ class PlazaTests(unittest.TestCase):
         router = Router()
         engine.rootContext().setContextProperty("routePlazaService", self.service)
         engine.rootContext().setContextProperty("clientCoordinator", router)
+        engine.rootContext().setContextProperty("settingsService", self.settings)
         warnings = []
         engine.warnings.connect(lambda rows: warnings.extend(str(row) for row in rows))
         engine.loadData(b'''import QtQuick
@@ -657,7 +661,17 @@ def composition():
             page = item(client.main, "routePlazaPage")
             click("nav_plaza")
             assert item(client.main, "routePlazaPage") is page
+            # Real root wiring: the saved intent reaches display workers before
+            # runtime presentation settings.
+            assert not client.settings.persistedValues["routePointNumbers"]
+            click("routePointNumbersSwitch")
+            until(lambda: not client.settings.busy and client.settings.persistedValues["routePointNumbers"])
+            assert client.custom_display._point_numbers
+            assert client.runtime._settings["routePointNumbers"]
             capture("qt-route-plaza.png")
+            click("routePointNumbersSwitch")
+            until(lambda: not client.settings.busy and not client.settings.persistedValues["routePointNumbers"])
+            assert not client.custom_display._point_numbers
             client.main.resize(650, 470)
             QTest.qWait(250)
             capture("qt-route-plaza-small.png")

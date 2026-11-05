@@ -10,6 +10,8 @@ Item {
     implicitHeight: 680
     readonly property var state: customGalleryService.snapshot
     readonly property bool editing: state.editing || false
+    readonly property bool showPointNumbers: settingsService && settingsService.persistedValues.routePointNumbers || false
+    onShowPointNumbersChanged: drawing.requestPaint()
     function selectedIndex(rows, id) {
         for (var i=0; i<rows.length; ++i) if (rows[i].id === id) return i
         return -1
@@ -46,6 +48,12 @@ Item {
             AppButton { text: "刷新"; objectName: "customRefresh"; enabled: !root.state.busy; onClicked: customGalleryService.refresh() }
         }
         Label { visible: !root.editing; text: "选择图库，再点地图排好路线。修改会自动保存。"; color: "#526785"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+        RowLayout {
+            visible: root.editing; Layout.fillWidth: true
+            RoutePointNumbersSwitch {}
+            Label { text: "每层从 1 开始 · 重复选点合并显示"; color: "#526785"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+        }
+        Label { visible: settingsService && (settingsService.loadFailed || settingsService.message.indexOf("失败") >= 0); text: settingsService ? settingsService.message : ""; color: "#b91c1c"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
         RowLayout {
             visible: !root.editing
             Layout.fillWidth: true; Layout.fillHeight: true; spacing: 12
@@ -199,12 +207,16 @@ Item {
                                     ctx.lineJoin="round"; ctx.lineCap="round"; ctx.stroke()
                                 }
                             }
+                            if (!root.showPointNumbers) return
                             for (var k=0; k<root.state.markers.length; ++k) {
                                 var marker=root.state.markers[k]
-                                ctx.beginPath(); ctx.arc(marker.x,marker.y,12/scale,0,Math.PI*2)
-                                ctx.fillStyle="#14334b";ctx.fill();ctx.strokeStyle="#c6efff";ctx.lineWidth=1/scale;ctx.stroke()
-                                ctx.font=(11/scale)+"px sans-serif";ctx.textAlign="center";ctx.textBaseline="middle"
-                                ctx.fillStyle="white";ctx.fillText(marker.label,marker.x,marker.y)
+                                ctx.font="bold "+(13/scale)+"px sans-serif";ctx.textAlign="center";ctx.textBaseline="middle"
+                                var half=Math.max(12/scale,ctx.measureText(marker.label).width/2+6/scale)
+                                var mx=Math.max(half, Math.min(root.state.imageWidth-half,marker.x))
+                                var my=Math.max(13/scale,marker.y-28/scale)
+                                ctx.fillStyle="#14334b";ctx.fillRect(mx-half,my-11/scale,half*2,22/scale)
+                                ctx.strokeStyle="#c6efff";ctx.lineWidth=1/scale;ctx.strokeRect(mx-half,my-11/scale,half*2,22/scale)
+                                ctx.fillStyle="white";ctx.fillText(marker.label,mx,my)
                             }
                         }
                     }

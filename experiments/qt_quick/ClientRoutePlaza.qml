@@ -17,6 +17,12 @@ Item {
         Label { text: "下载玩家分享的噩梦路线，到「自定义图库」中选用或复制编辑。"; color: "#526785"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
         RowLayout {
             Layout.fillWidth: true
+            RoutePointNumbersSwitch {}
+            Label { text: "仅标起终点和手选目标，每层从 1 开始"; color: "#526785"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+        }
+        Label { visible: settingsService && (settingsService.loadFailed || settingsService.message.indexOf("失败") >= 0); text: settingsService ? settingsService.message : ""; color: "#b91c1c"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+        RowLayout {
+            Layout.fillWidth: true
             Label { objectName: "plazaAccountStatus"; text: root.state.username ? "已登录：" + root.state.username : "未登录 · 登录后可下载"; color: "#354f75"; Layout.fillWidth: true; elide: Text.ElideRight }
             AppButton { objectName: "plazaLogin"; text: "账号登录"; primary: true; visible: !root.state.username; enabled: !root.state.busy; onClicked: routePlazaService.openAccount() }
             AppButton { objectName: "plazaRecovery"; text: "领取恢复码"; primary: true; visible: !!root.state.recoveryPending; enabled: !root.state.busy; onClicked: routePlazaService.openAccount() }
