@@ -3963,7 +3963,7 @@ class LiveRuntime:
         return frame
 
     def _observe(self, engine, frame):
-        from floor_control_region import apply_floor_region
+        from floor_control_region import apply_floor_region, locate_vertical_floor_controls
         started = time.monotonic()
         # One preference snapshot per frame; configure_settings swaps the dict.
         # Saved defaults may lead the applied context while a switch is pending
@@ -3974,10 +3974,39 @@ class LiveRuntime:
                 confidence=0., season="s1", mode=engine.pack.mode, controlAxis="vertical",
                 controlGeometryVerified=False, floorSource="unavailable")
             return dict(detected=False, mapOpen=None, reason=unavailable["reason"]), None, unavailable
+        # New S0 controls have their own visual order. Observe them before the
+        # difficult legacy template gate, but require independent map-canvas
+        # evidence. A readable number alone never grants map-open authority.
+        vertical = locate_vertical_floor_controls(frame, engine.pack.mode, season=self._season)
+        if vertical.get("selectedFloor") is not None:
+            from map_interface_observation import detect_map_interface
+            from s0_vertical_controls import bind_control_geometry
+            result = detect_map_interface(frame, floor_read={})
+            opened = result.get("detected") is True
+            floor_read = dict(vertical, season="s0", mode=engine.pack.mode,
+                layout="vertical-floor-read-only", mapOpen=opened, controlGeometryVerified=False)
+            if opened:
+                floor_read = apply_floor_region(settings, engine.pack.mode, frame, floor_read)
+            floor_read = bind_control_geometry(floor_read, engine.pack.mode, frame.shape[1::-1], map_open=opened)
+            contract = self._floor_contract()
+            floor = contract.floor_id_for(floor_read.get("selectedFloor")) if contract else None
+            result = dict(result, mapOpen=opened, floor=floor,
+                layoutFamily="s0-vertical", controlAxis="vertical")
+            if opened:
+                self._latest_map_frame = (frame, engine.pack.mode, floor_read)
+            if self._diagnostics is not None:
+                self._diagnostics.record("observation", mode=engine.pack.mode, floor=floor,
+                    mapDetected=opened, combinedSensor=False, floorSource=floor_read.get("floorSource"),
+                    elapsedMs=(time.monotonic()-started)*1000, roundId=self._round, cycleId=self._cycle)
+            self._remember_control_observation(frame, engine.pack.mode, result, floor_read)
+            self._recognition_diagnostic("map-floor-observation", result.get("reason", "reason-not-provided"),
+                observation=result, floorRead=floor_read, elapsedMs=(time.monotonic()-started)*1000)
+            return result, floor, floor_read
         if engine.pack.mode == "difficult":
             result = engine.qt_map_ui.observe(frame)
             floor = str(result["floor"]) if result.get("floor") is not None else None
             floor_read = dict(result, selectedFloor=int(floor) if floor in ("1", "2") else None,
+                controlSearchRegion=vertical.get("controlSearchRegion"),
                 scores={}, margin=result.get("highlightDifference", 0.), confidence=1. if floor else 0.,
                 layout="difficult-two-buttons", layoutFamily="difficult-two-buttons", difficultObservation=result,
                 centers=[g["center"][0] / frame.shape[1] for g in result.get("glyphs", [])],
@@ -3999,7 +4028,7 @@ class LiveRuntime:
                 elapsedMs=(time.monotonic()-started)*1000)
             return result, floor, floor_read
         from map_interface_observation import detect_map_interface, detect_selected_floor
-        floor_read = detect_selected_floor(frame)
+        floor_read = dict(detect_selected_floor(frame), controlSearchRegion=vertical.get("controlSearchRegion"))
         floor_ms = (time.monotonic()-started)*1000 if self._diagnostics is not None else 0
         # Map detection keeps using the fixed reading; the region only answers
         # which floor is selected once the map is known to be open.

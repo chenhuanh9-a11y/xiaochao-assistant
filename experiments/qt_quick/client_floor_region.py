@@ -17,9 +17,9 @@ from PySide6.QtQuick import QQuickImageProvider
 from floor_control_region import (MODE_FLOORS, locate_floor_row, normalized_region, read_floor_in_region,
                                   region_for_client)
 
-# Client part shown in the editor. Every supported layout keeps the floor
-# buttons inside the top-right corner, including 4:3 safe-area insets.
-VIEW = (.5, 0., .5, .32)
+# Client part shown in the editor: legacy top row and new right-side column.
+# Additional real aspect ratios still need independent acceptance.
+VIEW = (.5, 0., .5, .65)
 DEFAULT_RECT = (.70, .01, .24, .11)
 FLOOR_LABELS = {-1: "B1 层", 1: "1 楼", 2: "2 楼"}
 REASONS = {
@@ -28,6 +28,8 @@ REASONS = {
     "too-many-buttons": "框内按钮比本模式多，请把框收紧到楼层按钮这一排",
     "region-too-small": "框太小",
     "region-invalid": "框选范围无效",
+    "vertical-labels-unverified": "竖排楼层数字或负号不完整，请框住全部按钮",
+    "layouts-ambiguous": "发现多组楼层控件，请缩小框选范围",
 }
 
 
@@ -53,7 +55,22 @@ class FloorRegionImages(QQuickImageProvider):
 
 def suggested_rect(mode, floor_read, size):
     """A starting range around the fixed reading's buttons, else a default."""
-    centers = (floor_read or {}).get("centers")
+    read = floor_read or {}
+    if read.get("controlAxis") == "vertical":
+        # Vertical centers are 2D and in observedOrder, never legacy x slots.
+        try:
+            points = read["centerPoints"]
+            x, y, w, h = read["tileBounds"]
+            ys = [float(point[1]) for point in points]
+            x0, x1 = max(0., x - .3 * w), min(1., x + 1.3 * w)
+            y0, y1 = max(0., min(ys) - .7 * h), min(1., max(ys) + .7 * h)
+            rect = normalized_region((x0, y0, x1 - x0, y1 - y0))
+            if rect is not None:
+                return rect
+        except (KeyError, TypeError, ValueError):
+            pass
+        return DEFAULT_RECT
+    centers = read.get("centers")
     floors = MODE_FLOORS.get(mode, ())
     if not isinstance(centers, (list, tuple)) or len(centers) != len(floors) or len(centers) < 2:
         return DEFAULT_RECT
@@ -106,7 +123,7 @@ class FloorRegionService(QObject):
         # Compatibility for the old calibration-only owner/test protocol.
         return self._settings.values.get("gameSeason", "s0"), None
 
-    def _horizontal_context_current(self):
+    def _s0_context_current(self):
         season, mode = self._applied_context()
         return season == "s0" and (mode is None or self._mode is None or mode == self._mode)
 
@@ -114,13 +131,13 @@ class FloorRegionService(QObject):
         self._frame = self._mode = None
         self._image_url, self._draft, self._preview = "", [], ""
         self._images.publish(QImage())
-        self._message = "当前赛季尚未验证竖排楼层校准；不能写入 S0 横排框选范围。"
+        self._message = "当前赛季尚未验证竖排楼层校准；不能写入 S0 框选范围。"
         self.changed.emit()
         return False
 
     @Slot()
     def invalidateContext(self):
-        if self._frame is not None and not self._horizontal_context_current():
+        if self._frame is not None and not self._s0_context_current():
             self._reject_context()
 
     summary = Property(str, lambda s: region_summary(s._settings.values), notify=changed)
@@ -137,7 +154,7 @@ class FloorRegionService(QObject):
     @Slot(result=bool)
     def open(self):
         """Load the latest open-map frame; never captures by itself."""
-        if not self._horizontal_context_current():
+        if not self._s0_context_current():
             return self._reject_context()
         latest = self._runtime.latest_map_frame() if self._runtime is not None else None
         if latest is None:
@@ -168,8 +185,7 @@ class FloorRegionService(QObject):
             located = locate_floor_row(frame, mode)
             if located["selectedFloor"] is not None:
                 bounds = located["tileBounds"]
-                floor_read = dict(selectedFloor=located["selectedFloor"], centers=located["centers"],
-                                  regionTop=bounds[1], regionHeight=bounds[3])
+                floor_read = dict(located, regionTop=bounds[1], regionHeight=bounds[3])
         self._message = ""
         self._set_draft(saved or suggested_rect(mode, floor_read, (w, h)))
         return True
@@ -185,7 +201,7 @@ class FloorRegionService(QObject):
     @Slot(float, float, float, float, result=bool)
     def setDraft(self, x, y, width, height):
         """Client-normalized rectangle from the editor; clamped to the frame."""
-        if not self._horizontal_context_current():
+        if not self._s0_context_current():
             return self._reject_context()
         if self._frame is None:
             return False
@@ -202,7 +218,7 @@ class FloorRegionService(QObject):
     @Slot(result=bool)
     def useDraft(self):
         """Put the range into the settings draft and switch the draft to 框选."""
-        if not self._horizontal_context_current():
+        if not self._s0_context_current():
             return self._reject_context()
         if self._frame is None or not self._draft:
             return False

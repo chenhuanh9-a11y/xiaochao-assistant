@@ -64,9 +64,16 @@ def bounded_recognition(value, limit=2048):
 
 
 def control_band(frame, mode, observation, floor_read):
-    """Union of the actual top-right detector ROIs, in original client pixels."""
+    """Union of actual horizontal/vertical detector ROIs in client pixels."""
     height, width = frame.shape[:2]
     boxes = []
+    region = floor_read.get("controlSearchRegion")
+    if (isinstance(region, (list, tuple)) and len(region) == 4
+            and all(type(v) in (int, float) and math.isfinite(v) for v in region)):
+        x, y, w, h = region
+        if 0 <= x < x+w <= 1 and 0 <= y < y+h <= 1:
+            boxes.append([int(width*x), int(height*y),
+                          min(width, math.ceil(width*(x+w))), min(height, math.ceil(height*(y+h)))])
     if mode == 'difficult':
         for row in observation.get('diagnosticScales', [observation]):
             box = row.get('controlBounds')

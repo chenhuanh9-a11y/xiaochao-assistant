@@ -13,7 +13,7 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlComponent, QQmlEngine
 
 from client_settings import ROOT, SettingsService
-from client_floor_region import FloorRegionImages, FloorRegionService, suggested_rect
+from client_floor_region import FloorRegionImages, FloorRegionService, suggested_rect, VIEW
 from client_live_runtime import LiveRuntime
 from floor_control_region import apply_floor_region, locate_floor_row, read_floor_in_region, region_for_client
 
@@ -227,7 +227,7 @@ class FloorRegionServiceTests(unittest.TestCase):
         self.assertTrue(self.service.imageUrl.startswith("image://floorregion/"))
         self.assertEqual(self.service.preview, "框内读到：1 楼")
         image = self.images.requestImage("1", None, None)
-        self.assertEqual((image.width(), image.height()), (960, int(1080 * .32)))
+        self.assertEqual((image.width(), image.height()), (960, int(1080 * VIEW[3])))
         # Too tight: the box cuts the buttons; then a full range again.
         self.assertTrue(self.service.setDraft(ANCHOR / 1920, REGION[1], TILE / 1920, REGION[3]))
         self.assertIn("没读到", self.service.preview)

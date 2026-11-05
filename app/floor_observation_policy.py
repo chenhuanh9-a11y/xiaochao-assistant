@@ -108,6 +108,9 @@ def game_floor_control_hit(
     """Return the game floor button under a click, only for localized HUDs."""
     if cursor is None or not client_bounds or not isinstance(floor_read, dict):
         return None
+    if floor_read.get("layout") == "localized-s0-vertical":
+        from s0_vertical_controls import control_hit
+        return control_hit(cursor, client_bounds, floor_read)
     if floor_read.get("layout") == "localized-floor-contract":
         from floor_contract import floor_contract
         contract = floor_contract(floor_read.get("mode"), season=floor_read.get("season"))
