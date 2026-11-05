@@ -3,6 +3,7 @@ Free text and sensitive keys are additionally removed at the disk boundary.
 """
 
 FIELDS = frozenset("""
+candidateReuse scanSkipped
 diagnosticRecordTruncated originalSanitizedBytes
 ALT Accent Accept AlternateBase B1 BACKSPACE BadZipFile Base
 BrightText Button ButtonText CAPS CAPSLOCK CONTROL CTRL ConnectionError
@@ -668,6 +669,8 @@ zhan10CoffinVariantId zhanCanonicalConsensus zoomControl zoom_transform
 """.split())
 
 CODES = frozenset("""
+candidate-material-accepted preferred-current-frame preferred-material-committed
+preferred-material-id-first preferred-fit-unresolved s1-candidate-reselection
 legacy-text-redacted
 a a053cc53feb067edbbbdb510bb7587ccb9acbfc80bea461ceb039444e3e328c6 a30779908582099378b287112585f019534f2e4d1db681b85b52e062e746b715 a336f469e06a9b50d962ea3f9c0f5ebf16e229a4ee12f0a37a76f8b68dcfa7e3 a4e48b71dfa13d4309c77826bf2160785a35eeae99a198fe1ef5d9ba12d4f987 a5a5e67245c812d0229f01b97f999b80abd637483541ac61daa923819ac4756d a6c131ea1aa4a7f355077d8ba63a10db4aeb5434fab85a7fcba1cf645a67f748 a6dd1317a1326484183b7cd7fd1de0878d3d60c5e9479808371cafa2a3ca70db
 a70dc77c27def3eb557d0e1b8b9f46a667c1ec6cc4c248e3e1005794b873a566 a9092d28be69c4488ec0c57b7c7516ba1dcf298a9e72f69c55672b01b2b3cf1f a93a0d79136354b843e5689753f215809c9f6438640869ee88ed926ebea7bbe6 a93af26f3be44cbc7508633482899d9d24df8df842690033d454177742a25007 a9a7285688450154af1a0d6f9248f8c380a79f0203109384068f15736c5052cf aab2d37a131b75cca6113fb6d62883e701535a316107ca26d94ac9b2ef3a36f6 ab ab9ba33c17efc5cda314516780dad9eaaf75b930e78b99114fe963e5d43a10e5
@@ -1480,5 +1483,5 @@ CODES = CODES | frozenset({'s1-floor-context-unsupported', 's1-floor-stale-frame
     's1-floor-frame-type', 's1-floor-frame-size', 's1-floor-map-not-open',
     's1-floor-empty-roi', 's1-floor-signed-labels-incomplete', 's1-floor-column-ambiguous',
     's1-floor-column-unverified', 's1-floor-observed', 'source-image-replay', 'synthetic-only',
-    'automatic-current-frame', 's1-signed-pixel-column', 'private-test-four-floor-contract',
+    'automatic-current-frame', 's1-signed-pixel-column', 'private-test-four-floor-contract', 'B2', 'B3', 'B4',
     's1-floor-only-manual-map-use', 'manual-map-only'})

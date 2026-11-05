@@ -406,14 +406,17 @@ class EngineFactories(dict):
             from s1_structure_selection import StructureCatalog, StructureCandidateScanner
             catalog = StructureCatalog.from_engine(engine)
             def structure_scan(frame, *, floor, floor_source="operator-declared", cancelled=None, budget_seconds=None,
-                               on_progress=None, candidate_order=None):
+                               on_progress=None, candidate_order=None, preferred_map_id=None,
+                               preferred_material_committed=None):
                 # Lazy import keeps provider construction free of live IO.
                 from client_live_runtime import _AlignmentHost
                 host = _AlignmentHost(engine)
                 scanner = StructureCandidateScanner(catalog, host.fit, prepare_fit=host.prepare_structure_scan)
                 return scanner.scan(frame, floor=floor, floor_source=floor_source,
                                     cancelled=cancelled, budget_seconds=budget_seconds,
-                                    on_progress=on_progress, candidate_order=candidate_order)
+                                    on_progress=on_progress, candidate_order=candidate_order,
+                                    preferred_map_id=preferred_map_id,
+                                    preferred_material_committed=preferred_material_committed)
             def structure_rank(frame, *, floor, budget_seconds=None):
                 report = structure_scan(frame, floor=floor, budget_seconds=budget_seconds)
                 engine.last_s1_structure_scan = report

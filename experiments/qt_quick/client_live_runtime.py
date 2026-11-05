@@ -668,6 +668,7 @@ class LiveRuntime:
         self._reset_floor_policy()
 
     def _reset_identity(self):
+        self._s1_candidate_preference = None
         old_structure = getattr(self, "_s1_structure_session", None)
         if old_structure is not None:
             old_structure.end_round()
@@ -715,11 +716,26 @@ class LiveRuntime:
         context = captured.context
         return (tuple(context.full_client_size), tuple(context.client_screen_bounds), context.dpi)
 
-    def _register_material_proposal(self, render, frame, fit, captured, group, *, accepted=False):
+    def _s1_candidate_preference_scope(self, captured, catalog):
+        # Deliberately excludes frame/cycle/floor: it stores an ID, never a pose.
+        # A different floor must pass its own observation and full fit below.
+        return (self._round, self._season, self._mode, self._profile, id(self._engine),
+            catalog, self._settings_generation, getattr(self, "_display_generation", 0),
+            self._capture_generation(), captured.context)
+
+    def _register_material_proposal(self, render, frame, fit, captured, group, *, accepted=False,
+                                    candidate_only=False):
         # Worker only. Capture frames are already owned immutable BGR arrays.
         token = render["token"]
         self._remember_proposals[token] = dict(context=self._steady_context(), frame=frame,
-            fit=fit, captured=captured, group=group, mapId=render["mapId"], floor=render["floor"], accepted=accepted)
+            fit=fit, captured=captured, group=None if candidate_only else group,
+            mapId=render["mapId"], floor=render["floor"], accepted=accepted)
+        if candidate_only and self._s1_structure_session is not None:
+            session = self._s1_structure_session
+            self._remember_proposals[token].update(candidateOnly=True, candidateSession=session,
+                candidateTicket=self._s1_structure_ticket,
+                candidateCaptureGeneration=render["captureGeneration"],
+                candidateScope=self._s1_candidate_preference_scope(captured, session.catalog))
         while len(self._remember_proposals) > 3:
             self._remember_proposals.pop(next(iter(self._remember_proposals)))
 
@@ -731,14 +747,31 @@ class LiveRuntime:
                     or self._render["token"] != token or not self._display_current(self._render) or self._render.get("transient")
                     or proposal["context"] != self._steady_context() or proposal["group"] is not self._group):
                 return dict(success=False, reason="material-token-expired-or-already-accepted", token=token)
+            if proposal.get("candidateOnly"):
+                session = proposal["candidateSession"]
+                ticket = proposal["candidateTicket"]
+                if (not self._capture_is_current(proposal["captured"].context, proposal["candidateCaptureGeneration"])
+                        or self._render is None or self._render.get("token") != token
+                        or not self._s1_provisional_enabled() or session is not self._s1_structure_session
+                        or ticket != self._s1_structure_ticket
+                        or proposal["candidateScope"] != self._s1_candidate_preference_scope(proposal["captured"], session.catalog)
+                        or not session.choose_candidate(proposal["mapId"], ticket).get("success")):
+                    return dict(success=False, reason="material-token-expired-or-already-accepted", token=token)
+                # The UI accepted actual current material. Save only this ID.
+                # No steady prior, learning worker, identity or group is minted.
+                self._s1_candidate_preference = (proposal["candidateScope"], proposal["mapId"])
             proposal["accepted"] = True
+            candidate_only = proposal.get("candidateOnly", False)
+        if candidate_only:
+            self._notify("candidate-material-accepted", token=token, reason="current-material-accepted")
+            return dict(success=True, reason="current-material-accepted", token=token, needsWorker=False)
         self._notify("render-material-accepted", token=token, reason="current-material-accepted")
         return dict(success=True, reason="material-remember-queued", token=token, needsWorker=True)
 
     def _remember_render_material(self, token, payload, cancelled):
         with self._lock:
             proposal = self._remember_proposals.get(token)
-            if (proposal is None or not proposal["accepted"] or proposal.get("consumed")
+            if (proposal is None or proposal.get("candidateOnly") or not proposal["accepted"] or proposal.get("consumed")
                     or proposal["group"] is not self._group
                     or not self._steady_is_current(proposal["context"], proposal["captured"])):
                 return self._receipt("remember_render_material", payload, success=False, reason="material-context-expired")
@@ -932,6 +965,10 @@ class LiveRuntime:
                     session.end_round()
                 session = self._s1_structure_session = StructureEvidenceSession(catalog, str(self._round))
             prior = session.priority_supported(str(floor))
+            preference_scope = self._s1_candidate_preference_scope(captured, catalog)
+            if self._s1_candidate_preference is not None and self._s1_candidate_preference[0] != preference_scope:
+                self._s1_candidate_preference = None
+            preferred = self._s1_candidate_preference[1] if self._s1_candidate_preference is not None else None
             ticket = session.begin_observation(str(floor))
             self._s1_structure_ticket = ticket
             self._automatic_candidate_rows = []
@@ -1032,9 +1069,20 @@ class LiveRuntime:
                         first_result = result
             return True
 
+        def preferred_material_committed(map_id):
+            with self._lock:
+                row = self._render
+                return bool(map_id == preferred and current() and first_result is not None
+                    and row is not None and row.get("token") == first_result.get("renderToken")
+                    and row.get("mapId") == map_id and row.get("frameId") == frame_id
+                    and row.get("candidateDisplayOnly") and self._display_current(row))
+
         try:
             order, ordering = candidate_order(engine, catalog, str(floor), snapshot, prior,
                 self._recorded_s1_scan_order, self._recorded_s1_priority_index, priority_handles)
+            if preferred is not None:
+                order = (preferred,) + tuple(mid for mid in order if mid != preferred)
+                ordering = dict(ordering, reason="preferred-material-id-first")
             if obsolete():
                 withdraw("stream-order-cancelled")
                 return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
@@ -1048,7 +1096,8 @@ class LiveRuntime:
                 clientDimensions=list(dimensions))
             report = engine.qt_s1_structure_scan(frame, floor=str(floor), floor_source="current-frame-verified",
                 cancelled=obsolete, budget_seconds=self._recorded_s1_scan_budget,
-                on_progress=publish, candidate_order=order)
+                on_progress=publish, candidate_order=order, preferred_map_id=preferred,
+                preferred_material_committed=preferred_material_committed)
             with self._lock:
                 still_current = current()
             if report["status"] == "cancelled" or not still_current:
@@ -1059,7 +1108,8 @@ class LiveRuntime:
                 result = self._receipt(action, payload, success=False, reason="stream-final-rejected", stale=True)
             elif first_result is not None:
                 result = dict(first_result, structureScanStatus=report["status"],
-                    structureScanComplete=report["scanComplete"], structureScanElapsedSeconds=report["elapsedSeconds"])
+                    structureScanComplete=report["scanComplete"], structureScanElapsedSeconds=report["elapsedSeconds"],
+                    candidateReuse=report.get("candidateReuse", "none"), scanSkipped=report.get("scanSkipped", False))
             else:
                 result = self._receipt(action, payload, success=False, reason=last_material_reason,
                     posePending=True, identityUnresolved=True)
@@ -1067,6 +1117,7 @@ class LiveRuntime:
                 streamEpoch=epoch, streamRoundId=round_id, streamCycleId=cycle,
                 status=report["status"], scanComplete=report["scanComplete"], updateSeq=report["updateSeq"],
                 checkedMapIds=report["checkedMapIds"], supportedMapIds=report["supportedMapIds"],
+                candidateReuse=report.get("candidateReuse", "none"), scanSkipped=report.get("scanSkipped", False),
                 elapsedSeconds=report["elapsedSeconds"], totalSeconds=time.monotonic()-started,
                 firstVerifiedPoseElapsedSeconds=report.get("firstVerifiedPoseElapsedSeconds"))
             return result
@@ -1973,16 +2024,50 @@ class LiveRuntime:
         return dict(choice,action=action,choiceAction="select_group_member",
                     requestContext=copy.deepcopy(result.get("requestContext",{})))
 
-    def _select_s1_provisional(self, action, payload, cancelled):
+    def _select_s1_provisional(self, action, payload, cancelled, *, birth_ticket=None, request_id=None):
         # Fail stale clicks immediately even while another capture owns work.
         with self._lock:
-            if self._capture_pending or self._s1_structure_ticket is None or not self._identity_observation_current():
+            if birth_ticket is None:
+                birth_ticket = (self._epoch, self._request_lifetime_generation, self._settings_generation)
+            def owns_birth():
+                return (not self._cancelled(cancelled) and birth_ticket == (
+                    self._epoch, self._request_lifetime_generation, self._settings_generation))
+            if not owns_birth() or self._capture_pending or self._s1_structure_ticket is None or not self._identity_observation_current():
                 return self._receipt(action, payload, success=False, reason="stale-structure-candidate", stale=True)
+            original_session, original_ticket = self._s1_structure_session, self._s1_structure_ticket
         with self._work:
+            switch_from = None
+            with self._lock:
+                if (not owns_birth() or self._capture_pending or self._s1_structure_session is not original_session
+                        or self._s1_structure_ticket != original_ticket or not self._identity_observation_current()):
+                    return self._receipt(action, payload, success=False, reason="stale-structure-candidate", stale=True)
+                session = self._s1_structure_session
+                if (action in ("previous_candidate", "next_candidate") and session is not None
+                        and session.snapshot().get("currentStatus") == "preferred-material-committed"):
+                    # Other candidates have no pose on this frame. A deliberate
+                    # switch expands through a fresh full-catalogue observation.
+                    switch_from = self._provisional_display_map_id
+                    self._s1_candidate_preference = None
+                    rescan_owner = (birth_ticket[0], request_id if request_id is not None else object())
+                    self._capture_pending = True
+                    self._capture_pending_owner = rescan_owner
+            if switch_from:
+                try:
+                    # Keep this user's original lifetime across the handoff.
+                    # A nested dispatch could adopt a later close/new round.
+                    rescanned = self._capture_and_solve("capture_now", {}, cancelled,
+                        expected_epoch=birth_ticket[0])
+                finally:
+                    with self._lock:
+                        if self._capture_pending_owner is rescan_owner:
+                            self._capture_pending = False
+                            self._capture_pending_owner = None
+                if not rescanned.get("success"):
+                    return dict(rescanned, action=action)
             with self._lock:
                 session, ticket = self._s1_structure_session, self._s1_structure_ticket
                 observation = self._last_observation or {}
-                if (not self._active or not self._map_open or self._capture_pending
+                if (not owns_birth() or not self._active or not self._map_open or self._capture_pending
                         or session is None or ticket is None or not self._identity_observation_current()):
                     return self._receipt(action, payload, success=False, reason="stale-structure-candidate", stale=True)
                 rows = self._automatic_candidate_rows
@@ -1997,11 +2082,13 @@ class LiveRuntime:
                     ids = [row["mapId"] for row in rows]
                     if not ids:
                         return self._receipt(action, payload, success=False, reason="no-current-supported-candidates")
-                    index = ids.index(self._provisional_display_map_id) if self._provisional_display_map_id in ids else 0
+                    previous_id = switch_from or self._provisional_display_map_id
+                    index = ids.index(previous_id) if previous_id in ids else 0
                     mid = ids[(index + (-1 if action == "previous_candidate" else 1)) % len(ids)]
                 choice = session.choose_candidate(mid, ticket)
                 if not choice.get("success") or choice.get("frameKey") != observation.get("digest"):
                     return self._receipt(action, payload, success=False, reason="structure-candidate-not-current", stale=True)
+                self._s1_candidate_preference = None
                 # Revoke old material without erasing the current support ticket.
                 old_token = self._render.get("token", "") if self._render else ""
                 self._core.revoke_display(reason="provisional-candidate-switch")
@@ -2015,13 +2102,20 @@ class LiveRuntime:
                 observation["capture_generation"], observation["generation"], observation["frame_id"],
                 observation["cycle_id"], mid)
 
-    def _manual_action(self, action, payload, cancelled):
+    def _manual_action(self, action, payload, cancelled, *, birth_ticket=None, request_id=None):
         if self._s1_provisional_enabled() and action in ("select_candidate", "previous_candidate", "next_candidate"):
-            return self._select_s1_provisional(action, payload, cancelled)
+            return self._select_s1_provisional(action, payload, cancelled,
+                birth_ticket=birth_ticket, request_id=request_id)
 
         if action in ("set_floor", "cycle_floor"):
             return self._set_floor(action, payload, cancelled)
         if action in ("reselect_map", "map_reselection"):
+            with self._lock:
+                if self._s1_provisional_enabled():
+                    # Clear before waiting for work, so an old scan/ACK cannot
+                    # restore the preference after explicit re-identification.
+                    self._s1_candidate_preference = None
+                    self.invalidate("s1-candidate-reselection")
             with self._work:
                 with self._lock:
                     epoch, mode, season = self._epoch, self._mode, self._season
@@ -2463,6 +2557,8 @@ class LiveRuntime:
     def invalidate(self, reason="invalidated", *, source="", input_sequence=None):
         """Revoke immediately; return whether this close emitted a fit summary."""
         with self._lock:
+            if any(word in reason for word in ("resource", "context", "settings", "identity", "reselection", "candidate-selected", "end-round", "end_round", "reset_round", "stop_round")):
+                self._s1_candidate_preference = None
             if any(word in reason for word in ("resource", "context", "end-round")):
                 for handle in self._stream_priority_handles.values():
                     handle.invalidate()
@@ -2576,7 +2672,8 @@ class LiveRuntime:
                 self._diagnostics.record("runtime-event", eventName=event, reason=reason, token=token,
                     producedAt=packet["producedAt"], season=self._season, mode=self._mode, mapId=self._map_id,
                     floor=str(self._floor), frameId=self._frame_id, epoch=self._epoch,
-                    roundId=self._round, cycleId=self._cycle, generation=self._frame_generation)
+                    roundId=self._round, cycleId=self._cycle, generation=self._frame_generation,
+                    **{key: extra[key] for key in ("candidateReuse", "scanSkipped") if key in extra})
         if callback is not None:
             try:
                 callback(packet)
@@ -3253,6 +3350,10 @@ class LiveRuntime:
         return self.dispatch(action, context or {}, cancel_event)
 
     def dispatch(self, action, payload=None, cancelled=None):
+        # Capture the S1 operation kind before serial allocation/state waiting.
+        # An intervening season change cannot turn an old switch into S0 work.
+        s1_candidate_arrival = (self._season == "s1"
+            and str(action) in ("next_candidate", "previous_candidate", "select_candidate"))
         # Allocation is one atomic next(), before any state-lock wait. The
         # birth tuple itself is read entirely under the state lock below.
         arrival_serial = next(self._dispatch_serials)
@@ -3271,6 +3372,8 @@ class LiveRuntime:
                 activation_request = (action in ("capture_now", "refresh_map", "recover_map_open",
                         "probe_map_after_drag", "fit_manual_frame", "observe_manual_floor",
                         "prepare_manual_alignment", "start_round", "observe_candidate_floor")
+                    or s1_candidate_arrival or self._season == "s1"
+                        and action in ("next_candidate", "previous_candidate", "select_candidate")
                     or action == "map" and payload.get("openIntent") is not False
                     or action == "toggle_round" and not (self._active or self._round_preparing))
                 if activation_request and arrival_serial <= self._dispatch_cutoff:
@@ -3323,9 +3426,10 @@ class LiveRuntime:
                 return self._receipt(action, payload, success=False, reason="cancelled", cancelled=True)
             with self._lock:
                 candidate_operation = self._s1_provisional_enabled() or self._season == "s1"
-                candidate_owner_epoch = self._epoch
+                candidate_owner_epoch = capture_request_epoch if candidate_operation else self._epoch
             try:
-                return self._manual_action(action, payload, cancelled)
+                return self._manual_action(action, payload, cancelled,
+                    birth_ticket=birth_ticket, request_id=request_id)
             except Exception as error:
                 with self._lock:
                     if not candidate_operation or candidate_owner_epoch == self._epoch:
@@ -3339,6 +3443,17 @@ class LiveRuntime:
                 self._aligned_visible = not self._aligned_visible
             self._notify("aligned-visibility-changed", reason="visibility-toggled")
             return self._receipt(action, payload, success=True, reason="visibility-toggled")
+        if action == "capture_now" and payload.get("forceCatalogue") is True:
+            with self._lock:
+                if self._s1_provisional_enabled():
+                    if (capture_request_epoch != self._epoch or self._cancelled(cancelled)
+                            or request_settings_generation != self._settings_generation):
+                        return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+                    self._s1_candidate_preference = None
+                    capture_request_epoch = self._epoch + 1
+                    self.invalidate("s1-candidate-reselection")
+                    if capture_request_epoch != self._epoch:
+                        return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
         if action == "capture_now" and "inputObservationSequence" in payload:
             # A suspended binding can have accepted an edge while resources
             # blocked its worker dispatch. Synchronize the sequence only; the
@@ -4989,7 +5104,8 @@ class LiveRuntime:
                 variantId=display.get("variantId"), displayGeneration=display_generation,
                 liveAuthorization=live, evidenceKind=self._evidence_kind, **self._identity_fields())
             render_token = target_render["token"]
-            self._register_material_proposal(target_render, frame, fit, captured, target_group)
+            self._register_material_proposal(target_render, frame, fit, captured, target_group,
+                candidate_only=provisional_operation)
             if identity_stage is not None:
                 if manual_choice is None and (self._render is None or not self._display_current(self._render)):
                     return self._receipt(action, payload, success=False, reason="sibling-source-authorization-expired", stale=True)

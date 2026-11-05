@@ -95,6 +95,10 @@ def validated_s1_resources(root, *, required=False):
             "references/entries/entries.json", "references/entries/side-entries.json",
             "references/entries/entry-passports.json"}
         allowed.update(value for key, value in S1_INTERFACES.items() if key != "identityEntries")
+        # Optional display-only registration binds final native overlays to the
+        # original room-render hash. It never changes recognition resources.
+        if "references/native-display-bindings.json" in expected:
+            allowed.add("references/native-display-bindings.json")
         for mid in MODE_LAYOUTS[mode]:
             for floor in S1_FLOORS:
                 allowed.update((f"assets/game-native/{mid}/{floor}.png",

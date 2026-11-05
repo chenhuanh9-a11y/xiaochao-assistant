@@ -189,6 +189,13 @@ def prepare_display_layer(engine, map_id, floor, preferred, *, variant_id="varia
                 return metadata(layer, author_status=status, fallback_reason="selected-author-layer-missing")
     elif status == "available":
         status = "load-error" if available else "registration-failed"
+    native = getattr(engine, "qt_native_context", None)
+    rendered = getattr(native, "rendered_display_layer", None)
+    if getattr(engine, "qt_season", "s0") == "s1" and callable(rendered):
+        result = rendered(map_id, str(floor), reference)
+        if result.layer is not None:
+            return metadata(result.layer, author_status=status, fallback_reason=failure)
+        failure = result.reason or "s1-native-display-unavailable"
     pixels = np.zeros((*reference.shape, 4), np.uint8)
     pixels[reference.clean_mask != 0] = (218, 228, 238, 255)
     pixels.setflags(write=False)

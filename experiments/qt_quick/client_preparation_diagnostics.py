@@ -148,7 +148,8 @@ class PreparationDiagnostics:
     @staticmethod
     def observation(observation, floor, floor_read, ready):
         return dict(mapDetected=observation.get("mapOpen", observation.get("detected")) is True,
-            mapReady=bool(ready), floor=str(floor) if floor in ("1", "2", "B1") else None,
+            mapReady=bool(ready), floor=str(floor) if floor in ("1", "2", "B1", "B2", "B3", "B4") else None,
             mapReason=code(observation.get("reason"), "reason-not-provided"),
             floorReason=code(floor_read.get("reason"), "reason-not-provided"),
-            selectedFloor=floor_read.get("selectedFloor") if floor_read.get("selectedFloor") in (-1, 1, 2) else None)
+            selectedFloor=floor_read.get("selectedFloor") if (type(floor_read.get("selectedFloor")) is int
+                and floor_read.get("selectedFloor") in (-4, -3, -2, -1, 1, 2)) else None)

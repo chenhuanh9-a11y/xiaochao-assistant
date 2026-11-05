@@ -122,6 +122,8 @@ class S1NativeContext:
         if self.catalog.profiles:
             raise ValueError("S1 author catalogs require independent registration")
         self.neutral_relative = self.interfaces["neutralDisplay"]
+        from s1_native_display import S1NativeDisplay
+        self._rendered_display = S1NativeDisplay(self)
         pack = read(self.root, self.interfaces["identityPack"])
         self.version_pack = SimpleNamespace(by_id={row["id"]: row for row in pack["maps"]},
             floors=S1_FLOORS, identity_profiles=pack["identityProfiles"],
@@ -151,6 +153,10 @@ class S1NativeContext:
 
     def local(self, relative):
         return local(self.root, relative)
+
+    def rendered_display_layer(self, map_id, floor, reference):
+        """Display-only pixels; the typed renderer hash owns the native bridge."""
+        return self._rendered_display.resolve(map_id, floor, reference)
 
     def display_reference(self, map_id, floor="-1"):
         """Hash-inventoried game-native image for the picker, never a sensor."""

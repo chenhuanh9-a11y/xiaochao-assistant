@@ -97,6 +97,31 @@ class PrivatePackagingTests(unittest.TestCase):
         registry.prepare.assert_called_once_with(season='s1')
         self.assertTrue(all(row['available'] and not row['liveReady'] for row in result['providers'].values()))
 
+    def test_display_registration_is_optional_exact_inventoried_resource(self):
+        registry = self.packs()
+        name = 'references/native-display-bindings.json'
+        for mode in native.S1_MODES:
+            row = self.write(self.resources / 'seasons/s1' / mode / name, b'{"fixture":true}')
+            self.mutate_manifest(mode, lambda data, row=row: data['files'].append(dict(path=name, **row)))
+        with patch('client_providers.build_engine_factories', return_value=registry):
+            result = native.validated_s1_resources(self.resources, required=True)
+        self.assertEqual(len(result['files']), 564)
+        self.assertTrue(all(not row['liveReady'] and not row['liveAuthorization'] for row in result['providers'].values()))
+
+    def test_display_registration_must_be_declared_and_hash_verified(self):
+        self.packs()
+        name = 'references/native-display-bindings.json'
+        path = self.resources / 'seasons/s1/difficult' / name
+        row = self.write(path, b'{"fixture":true}')
+        with patch('client_providers.build_engine_factories') as factory:
+            with self.assertRaisesRegex(ValueError, 'exactly match'):
+                native.validated_s1_resources(self.resources)
+            self.mutate_manifest('difficult', lambda data: data['files'].append(dict(path=name, **row)))
+            path.write_bytes(b'{"fixture":false}')
+            with self.assertRaisesRegex(ValueError, 'size/hash mismatch'):
+                native.validated_s1_resources(self.resources)
+            factory.assert_not_called()
+
     def test_absent_optional_s1_is_compatible_but_private_profile_requires_it(self):
         self.assertFalse(native.validated_s1_resources(self.resources)['included'])
         with self.assertRaisesRegex(ValueError, 'requires all three'):
