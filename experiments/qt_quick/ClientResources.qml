@@ -38,6 +38,9 @@ Item {
         return labels[status] || "需要重新核对"
     }
     function stateDetail(row) {
+        if (row.builtin) return row.status === "bundled"
+            ? "安装包自带 · " + row.mapCount + " 份图 · " + row.layerCount + " 层，可在对应赛季和模式的图库浏览。"
+            : "内置资源有缺失或改动，请重新获取完整安装包。"
         if (row.status === "bundled") return "安装包自带，已导入的资源和当前选择保持优先。"
         if (row.status === "unmanaged") return "暂时无法确认这些文件是否属于图包，会保留原文件。"
         if (row.status === "incomplete") return "部分文件有改动或无法确认来源，会保留这些文件，删除可能无法全部完成。"
@@ -52,7 +55,7 @@ Item {
         spacing: 12
         RowLayout {
             Layout.fillWidth: true
-            Label { text: "管理 S0 本地资源"; color: "#142b4b"; font.pixelSize: 18; font.bold: true }
+            Label { text: "管理本地资源"; color: "#142b4b"; font.pixelSize: 18; font.bold: true }
             Item { Layout.fillWidth: true }
             AppButton { text: "恢复记录"; enabled: !panel.operationPending; onClicked: resourceService.inspectRecovery() }
             AppButton { text: "在线图包"; onClicked: clientCoordinator.navigate("downloads") }
@@ -62,7 +65,7 @@ Item {
         }
         Label {
             Layout.fillWidth: true
-            text: "此处管理已安装的 S0 资源。导入目标：" + backend.season.toUpperCase() + (backend.season !== "s0" ? "（资源待补齐，暂不接受导入）。" : "。") + "删除只清理已核对归属的图包和历史副本；官方基础资源、自定义路线与未知文件会保留。"
+            text: "此处显示内置资源与已安装的 S0 图包。导入目标：" + backend.season.toUpperCase() + (backend.season !== "s0" ? "（暂不接受导入，仅支持 S0 图包）。" : "。") + "删除只清理已核对归属的图包和历史副本；官方基础资源、自定义路线与未知文件会保留。"
             wrapMode: Text.Wrap; color: "#526785"; font.pixelSize: 12
         }
         ColumnLayout {
@@ -102,7 +105,7 @@ Item {
             objectName: "managedPackageList"
             anchors.fill: parent; anchors.margins: 4; anchors.leftMargin: 18; anchors.rightMargin: 12
             clip: true; spacing: 0
-            model: panel.packageManager ? panel.packageManager.packageRows.concat(resourceService.packageRows.filter(function(row) { return row.status === "bundled" })) : resourceService.packageRows
+            model: panel.packageManager ? panel.packageManager.packageRows.concat(resourceService.packageRows.filter(function(row) { return row.status === "bundled" || row.builtin === true })) : resourceService.packageRows
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar {}
             delegate: Item {

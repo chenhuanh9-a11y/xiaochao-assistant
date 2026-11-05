@@ -15,6 +15,8 @@ from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtCore import qVersion
 from backend import ROOT, Work
 from map_resource_context import load_browse_context
+from season_context import SEASONS
+from season_map_resources import browse_modes
 from client_paths import PRODUCTION, WORK_ROOT, runtime_paths, bundled_author_root
 from PySide6.QtCore import QThreadPool, Qt
 from update_service import UpdateService, DOWNLOAD_HOSTS
@@ -166,7 +168,7 @@ class ClientInfoService(QObject):
 
     def setHomeContext(self, mode, profile_id, *, season="s0", force=False):
         """Receive the actual applied runtime context, never the browsing selection."""
-        if self._closed or mode not in ("nightmare", "difficult"):
+        if self._closed or season not in SEASONS or mode not in browse_modes(season):
             return False
         context = (str(mode), str(profile_id or ""), str(season))
         if context == self._home_context and not force:
@@ -179,30 +181,45 @@ class ClientInfoService(QObject):
         return True
 
     @staticmethod
-    def _home_rows(root, mode, profile_id, season="s0"):
+    def _home_rows(root, mode, profile_id, season="s0", *, cancelled=lambda: False):
         fallback = bundled_author_root()
-        context = load_browse_context(root, mode, season=season, **({"display_fallback_root": fallback} if fallback else {}))
-        if context.error or context.pack is None:
+        context = load_browse_context(root, mode, season=season, cancelled=cancelled, **({"display_fallback_root": fallback} if fallback else {}))
+        if context.error:
             return []
         profile = next((p for p in context.profiles if p.profile_id == profile_id), None)
+        if season == "s1":
+            # The applied solver profile remains shared-structure. A native
+            # display profile is presentation data, never a runtime selection.
+            profile = profile or next(iter(context.profiles), None)
+        elif context.pack is None:
+            return []
         rows = []
         if profile is not None:
             for item in profile.maps:
-                floors = tuple(dict.fromkeys((str(context.pack.default_entry_floor), *item.floors)))
+                if cancelled():
+                    from concurrent.futures import CancelledError
+                    raise CancelledError()
+                floors = (tuple(next(iter(item.variants)).layers) if season == "s1" else
+                    tuple(dict.fromkeys((str(context.pack.default_entry_floor), *item.floors))))
                 chosen = next(((variant, floor, Path(variant.layers[floor]))
                     for floor in floors for variant in item.variants
-                    if floor in variant.layers and context.path_stamps.get(Path(variant.layers[floor]))), None)
+                    if floor in variant.layers and context.path_stamps.get(Path(variant.layers[floor]))
+                    and Path(variant.layers[floor]).suffix.lower() in {".png", ".webp", ".jpg", ".jpeg", ".bmp"}), None)
                 if chosen is None:
                     continue
                 variant, floor, path = chosen
                 stamp = context.path_stamps[path]
-                url = QUrl.fromLocalFile(str(path)); url.setQuery(f"v={stamp[0]}-{stamp[1]}&season={season}")
-                rows.append(dict(key=f"{season}/{mode}/{profile_id}/{item.id}/{variant.id}/{floor}",
-                    title=item.name, floor=floor, mode=mode, season=season, profileId=profile_id,
+                url = QUrl.fromLocalFile(str(path)); url.setQuery(f"v={'-'.join(map(str, stamp))}&season={season}")
+                metadata = (getattr(context, "floor_metadata", None) or {}).get(floor, {})
+                rows.append(dict(key=(f"{season}/{mode}/{profile_id}/{item.id}/{variant.id}/{floor}"
+                    if profile.profile_id == profile_id else ""),
+                    title=item.name, floor=floor, floorLabel=metadata.get("label", ""),
+                    mode=mode, season=season, profileId=profile_id,
+                    displayKind="原生底图" if profile.profile_id == "s1-native-structure" else "",
                     structure=False, imageUrl=url.toString()))
                 if len(rows) == 3:
                     break
-        if rows:
+        if rows or season == "s1":
             return rows
         from map_resource_overview import structure_previews, load_structure_preview
         for asset in structure_previews(context.pack):
@@ -226,7 +243,7 @@ class ClientInfoService(QObject):
             cancelled = lambda: self._closed or generation != self._home_preview_generation
             with resource_read_lock(self.sandbox, wait=True, cancelled=cancelled):
                 assert_resources_ready(self.sandbox)
-                return self._home_rows(self.paths.resource_root, *context)
+                return self._home_rows(self.paths.resource_root, *context, cancelled=cancelled)
         job = self._home_preview_job = Work(read_home)
         self._jobs.add(job)
         def done(value, error):

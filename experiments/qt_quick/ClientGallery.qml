@@ -177,7 +177,7 @@ Item {
                                     Label { width: parent.width; text: "导入 ZIP 图包"; font.bold: true; color: "#354f75"; horizontalAlignment: Text.AlignHCenter }
                                     Label {
                                         width: parent.width; leftPadding: 12; rightPadding: 12
-                                        text: backend.season !== "s0" ? galleryContextSelector.seasonLabel(backend.season) + " 资源待补齐，暂不可导入"
+                                        text: backend.season !== "s0" ? galleryContextSelector.seasonLabel(backend.season) + " 内置资源可浏览，暂不支持作者图包导入"
                                             : backend.busy && backend.profiles.length === 0 ? "正在读取地图资源…"
                                             : page.packageActions && page.packageActions.recoveryPending ? "请先在图库管理中完成上次操作"
                                             : "点击选择本地 ZIP 文件"

@@ -208,7 +208,7 @@ class Backend(QObject):
                     self._profile = next((p["id"] for p in self._profiles if p["available"]),
                                          self._profiles[0]["id"] if self._profiles else "")
                 self._apply_rows()
-                self._message = ("S1 离线图库 · -4至-1层 · 楼层控件与入口坐标合同待登记，暂不用于识别或贴合"
+                self._message = (f"S1 图库 · 已读取 {self.mapCount} 份图 · -1至-4层"
                                  if season == "s1" else self._import_notice or f"已读取 {self.mapCount} 份图")
             self.changed.emit()
             if self.viewKey != initial_view:

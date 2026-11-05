@@ -29,6 +29,12 @@ Item {
         function onVisibleChanged() { page.showPendingUpdate() }
         function onVisibilityChanged() { page.showPendingUpdate() }
     }
+    function floorLabel(floor, label) {
+        if (label) return label
+        if (session.appliedSeason === "s1" && /^-[1-4]$/.test(String(floor)))
+            return "B" + Math.abs(Number(floor))
+        return floor === "B1" ? "B1" : "F" + floor
+    }
     function canRun(action) {
         return session.snapshot.commands && session.snapshot.commands[action]
             && session.snapshot.commands[action].available && !session.busy && !resourceService.busy
@@ -140,7 +146,7 @@ Item {
                             Repeater {
                                 model: [{label: "状态", value: session.snapshot.controlStatusText || (session.snapshot.roundActive ? "本局进行中" : session.snapshot.roundPreparing ? "已准备" : "等待开始")},
                                         {label: "地图", value: session.snapshot.mapName || session.snapshot.mapId || "尚未确认"},
-                                        {label: "楼层", value: session.snapshot.observedFloor ? (session.snapshot.observedFloor === "B1" ? "B1" : "F" + session.snapshot.observedFloor) : "尚未确认"}]
+                                        {label: "楼层", value: session.snapshot.observedFloor ? page.floorLabel(session.snapshot.observedFloor, "") : "尚未确认"}]
                                 delegate: Rectangle {
                                     required property var modelData
                                     Layout.fillWidth: true; Layout.preferredWidth: 1; implicitHeight: 68
@@ -186,7 +192,7 @@ Item {
                                         anchors.left: parent.left; anchors.right: parent.right; height: 116; radius: 9; color: "#f0f5fc"
                                         Image { anchors.fill: parent; anchors.margins: 9; objectName: "homeMapPreview"; source: modelData.imageUrl; asynchronous: true; fillMode: Image.PreserveAspectFit; sourceSize.width: 320; sourceSize.height: 220 }
                                     }
-                                    Label { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; text: modelData.title + " · " + (modelData.floor === "B1" ? "B1" : "F" + modelData.floor) + (modelData.structure ? " · 结构图" : ""); color: "#567096"; font.pixelSize: 11; elide: Text.ElideRight }
+                                    Label { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; text: modelData.title + " · " + page.floorLabel(modelData.floor, modelData.floorLabel || "") + (modelData.displayKind ? " · " + modelData.displayKind : modelData.structure ? " · 结构图" : ""); color: "#567096"; font.pixelSize: 11; elide: Text.ElideRight }
                                     MouseArea { objectName: "homePreviewOpen"; anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { if (parent.modelData.key) infoService.openHomePreview(parent.modelData.key); else clientCoordinator.navigate("gallery") } }
                                 }
                             }
