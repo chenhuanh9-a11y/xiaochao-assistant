@@ -235,8 +235,8 @@ Item {
         Label {
             objectName: "recognitionCurrentFloor"
             visible: page.state.season === "s1"
-            text: page.state.floorSource === "auto" && page.state.observedFloor ? "自动观察当前 " + page.floorName(page.state.observedFloor)
-                : page.state.floorSource === "manual-fallback" ? "当前楼层未知 · 人工回退 " + page.floorName(page.state.targetFloor)
+            text: page.state.floorSource === "automatic-current-frame" && page.state.observedFloor ? "自动观察当前 " + page.floorName(page.state.observedFloor)
+                : page.state.floorSource === "manual-unvalidated-fallback" ? "当前楼层未知 · 人工回退 " + page.floorName(page.state.targetFloor)
                 : "当前楼层未知" + (page.state.targetFloor ? " · 目标 " + page.floorName(page.state.targetFloor) : "")
             color: "#526785"; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true
         }

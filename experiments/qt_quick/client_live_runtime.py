@@ -1970,8 +1970,7 @@ class LiveRuntime:
                 pendingSiblingToken=self._pending_sibling["render"]["token"] if self._pending_sibling is not None else "",
                 availableFloors=self._available_floors(), manualFloor=self._manual_floor,
                 observedFloor=self._observed_floor,
-                floorSource=(self._s1_floor_source if self._manual_alignment and self._s1_floor_observer_available()
-                             else "manual" if self._manual_floor else "automatic"),
+                floorSource=self._current_floor_source(),
                 floorRequired=self._floor_required, floorPolicyReason=self._last_floor_policy,
                 manualFloorHoldRemaining=max(0.0, self._manual_hold_until - self._monotonic())
                     if self._manual_override and not self._floor_hard_locked else 0.0,
@@ -4223,7 +4222,7 @@ class LiveRuntime:
                 originX=captured.context.client_screen_bounds[0], originY=captured.context.client_screen_bounds[1],
                 captureGeneration=capture_generation,
                 poseReason=fit.get("reason"), poseStrategy=fit.get("strategy", "not-recorded"),
-                floorSource="manual" if self._manual_floor else "automatic", observedFloor=self._observed_floor,
+                floorSource=self._current_floor_source(), observedFloor=self._observed_floor,
                 resourceIdentity=display["resourceIdentity"], displayKind=display["displayKind"],
                 referencePath=display.get("referencePath", ""),
                 displayLabel=display["displayLabel"], routeProfileId=display["routeProfileId"],

@@ -382,6 +382,34 @@ class ManualS1FloorRuntime(unittest.TestCase):
         self.assertIsNotNone(check.call_args.kwargs["visible_override"])
         self.assert_no_live_or_rank()
 
+    def test_stubpixel_floor_provenance_agrees_in_snapshot_first_fit_and_same_floor_refresh(self):
+        self.capture.frame[40:140, 20:120] = 80
+        residual = copy.deepcopy(self.fit_result["selectedRouteCurrentFrameResidual"])
+        for floor in (-1, -2, -3, -4):
+            with self.subTest(floor=floor):
+                self.runtime.dispatch("end_round")
+                self.raw, self.opened = floor, True
+                self.prepare()
+                if floor in (-1, -2):
+                    self.pick()
+                    expected = "automatic-current-frame"
+                else:
+                    result = self.runtime.dispatch("confirm_route", dict(mapId="fixture-map"))
+                    self.assertFalse(result["success"], result)
+                    self.assertTrue(self.runtime.dispatch("set_floor", dict(floor=str(floor)))["success"])
+                    expected = "manual-unvalidated-fallback"
+                self.assertEqual(self.runtime.snapshot()["floorSource"], expected)
+                self.assertEqual(self.runtime._render["floorSource"], expected)
+                first_token = self.runtime._render["token"]
+                with patch.object(_AlignmentHost, "_canonical_geometry_current_frame_residual", return_value=(residual, None)):
+                    result = self.runtime.dispatch("observe_manual_floor")
+                self.assertTrue(result["success"], result)
+                self.assertEqual(result["reason"], "current-pose-refreshed")
+                self.assertEqual(self.runtime._render["token"], first_token)
+                self.assertEqual(self.runtime.snapshot()["floorSource"], expected)
+                self.assertEqual(self.runtime._render["floorSource"], expected)
+                self.assert_no_live_or_rank()
+
     def one_probe_preparation(self, host, hwnd, token, deadline, cancelled, **kwargs):
         """Run the real coordinator and host once without real-time sleeping."""
         host.CAPTURE_VISUAL_DEADLINE_SECONDS = host.CAPTURE_READY_PROBE_SECONDS = .05

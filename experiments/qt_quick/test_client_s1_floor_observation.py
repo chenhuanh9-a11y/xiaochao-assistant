@@ -26,7 +26,7 @@ class S1FloorCoordinatorTests(unittest.TestCase):
     def setUp(self):
         coordinator_fixture.CoordinatorTests.setUp(self)
         self.session.snapshot.update(season="s1", mode="nightmare", mapId="s1-fixture-map",
-            roundId=1, floor="-1", observedFloor="-1", targetFloor="-1", floorSource="auto",
+            roundId=1, floor="-1", observedFloor="-1", targetFloor="-1", floorSource="automatic-current-frame",
             manualAlignmentSession=True, automaticFloorObservationAvailable=True,
             savedFrameCapabilities={"nightmare": dict(available=True, liveReady=False)},
             availableCommands=["fit_manual_frame", "observe_manual_floor", "close_map"])
@@ -211,6 +211,76 @@ class S1FloorCoordinatorTests(unittest.TestCase):
 
 
 class S1FloorQmlTests(unittest.TestCase):
+    def test_native_cap_runtime_snapshot_reaches_both_qml_floor_labels(self):
+        """Use Runtime's real source values through Session, never invented enums.
+
+        NativeCap resources, pixels and fitting remain synthetic fixtures; this
+        checks the production consumer seam, not live-game detector accuracy.
+        """
+        from pathlib import Path
+        from PySide6.QtCore import QObject, Property, QUrl
+        from PySide6.QtQml import QQmlApplicationEngine
+        from client_session import SessionService
+        from season_context import season_options
+        import test_client_control_actions as controls_fixture
+        from test_s1_manual_floor_runtime import ManualS1FloorRuntime
+
+        class Settings(controls_fixture.Settings):
+            seasonOptions = Property("QVariantList", lambda s: season_options(), constant=True)
+
+        runtime_case = ManualS1FloorRuntime()
+        runtime_case.setUp()
+        page_case = qml_fixture.RecognitionTests()
+        page_case.setUp()
+        session = SessionService(runtime_case.runtime)
+        page_case.engine.rootContext().setContextProperty("session", session)
+        settings = Settings()
+        coordinator = controls_fixture.Coordinator(settings)
+        windows = QObject()
+        engine = QQmlApplicationEngine()
+        warnings = []
+        engine.warnings.connect(lambda rows: warnings.extend(map(str, rows)))
+        for name, value in dict(settingsService=settings, session=session,
+                clientCoordinator=coordinator, windows=windows).items():
+            engine.rootContext().setContextProperty(name, value)
+        engine.load(QUrl.fromLocalFile(str(Path(__file__).with_name("ClientControls.qml"))))
+        self.assertEqual(len(engine.rootObjects()), 1, warnings)
+        window = engine.rootObjects()[0]
+
+        def items(item):
+            yield item
+            for child in item.childItems():
+                yield from items(child)
+
+        def check(recognition_text, controls_text):
+            session.refreshRuntime()
+            qml_fixture.APP.processEvents()
+            self.assertEqual(page_case.item("recognitionCurrentFloor").property("text"), recognition_text)
+            label = next(item for item in items(window.contentItem())
+                         if item.objectName() == "controlMapFloorText")
+            self.assertTrue(label.property("text").endswith(controls_text), label.property("text"))
+
+        try:
+            runtime_case.prepare()
+            runtime_case.pick()
+            check("自动观察当前 B1", "自动观察当前 B1")
+            runtime_case.raw = -2
+            self.assertTrue(runtime_case.runtime.dispatch("observe_manual_floor")["success"])
+            check("自动观察当前 B2", "自动观察当前 B2")
+            runtime_case.raw = -3
+            self.assertFalse(runtime_case.runtime.dispatch("observe_manual_floor")["success"])
+            check("当前楼层未知", "当前楼层未知")
+            self.assertTrue(runtime_case.runtime.dispatch("set_floor", dict(floor="-3"))["success"])
+            check("当前楼层未知 · 人工回退 B3", "人工回退 B3 · 当前楼层未知")
+            self.assertEqual(page_case.warnings, [])
+            self.assertEqual(warnings, [])
+        finally:
+            window.deleteLater()
+            qml_fixture.APP.processEvents()
+            session.shutdown()
+            page_case.tearDown()
+            runtime_case.doCleanups()
+
     def test_current_observation_and_fallback_labels_do_not_treat_default_as_observed(self):
         case = qml_fixture.RecognitionTests()
         case.setUp()
@@ -224,10 +294,10 @@ class S1FloorQmlTests(unittest.TestCase):
             label = case.page.findChild(qml_fixture.QObject, "recognitionCurrentFloor")
             self.assertIn("当前楼层未知", label.property("text"))
             self.assertNotIn("自动观察当前", label.property("text"))
-            state.update(floorSource="auto", observedFloor="-2", targetFloor="-2")
+            state.update(floorSource="automatic-current-frame", observedFloor="-2", targetFloor="-2")
             case.session.changed.emit(); qml_fixture.APP.processEvents()
             self.assertEqual(label.property("text"), "自动观察当前 B2")
-            state.update(floorSource="manual-fallback", observedFloor="", manualFloor="-3", targetFloor="-3")
+            state.update(floorSource="manual-unvalidated-fallback", observedFloor="", manualFloor="-3", targetFloor="-3")
             case.session.changed.emit(); qml_fixture.APP.processEvents()
             self.assertEqual(label.property("text"), "当前楼层未知 · 人工回退 B3")
             button = case.item("recognitionFloor_-3")

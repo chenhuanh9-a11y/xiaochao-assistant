@@ -140,9 +140,9 @@ Window {
     }
     function floorText() {
         if (snapshot.season === "s1") {
-            if (snapshot.floorSource === "auto" && snapshot.observedFloor)
+            if (snapshot.floorSource === "automatic-current-frame" && snapshot.observedFloor)
                 return "自动观察当前 B" + Math.abs(Number(snapshot.observedFloor))
-            if (snapshot.floorSource === "manual-fallback" && snapshot.targetFloor)
+            if (snapshot.floorSource === "manual-unvalidated-fallback" && snapshot.targetFloor)
                 return "人工回退 B" + Math.abs(Number(snapshot.targetFloor)) + " · 当前楼层未知"
             return "当前楼层未知" + (snapshot.targetFloor ? " · 目标 B" + Math.abs(Number(snapshot.targetFloor)) : "")
         }
