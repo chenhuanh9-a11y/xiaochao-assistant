@@ -9,6 +9,7 @@ from s1_private_resources import validated_s1_resources, _no_links
 
 def seed(source: Path, target: Path):
     from client_paths import WORK_ROOT
+    from packaged_product_identity import PRIVATE_S1_INSTANCES
     _no_links(source.absolute())
     _no_links(target.absolute())
     source, target = source.resolve(), target.resolve()
@@ -20,7 +21,7 @@ def seed(source: Path, target: Path):
     _no_links(profile_path)
     profile = json.loads(profile_path.read_text(encoding="utf-8")) if profile_path.is_file() else {}
     native = validated_s1_resources(source / "_internal",
-        required=profile.get("installerInstance", {}).get("id") == "s0-s1-test")
+        required=profile.get("installerInstance", {}).get("id") in PRIVATE_S1_INSTANCES)
     # Scan before creating any target; copytree must never follow source links.
     for name in ("assets", "references", "recognition"):
         tree = source / "_internal" / name

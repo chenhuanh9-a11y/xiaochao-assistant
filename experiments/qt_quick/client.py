@@ -553,10 +553,11 @@ def main():
                 registry.prepare()
                 result["providers"] = registry.capabilities()
                 from s1_private_resources import validated_s1_resources
+                from packaged_product_identity import PRIVATE_S1_INSTANCES
                 required_s1 = False
                 if FROZEN:
                     profile = json.loads((RESOURCE_ROOT / "installation-profile.json").read_text(encoding="utf-8"))
-                    required_s1 = profile["installerInstance"]["id"] == "s0-s1-test"
+                    required_s1 = profile["installerInstance"]["id"] in PRIVATE_S1_INSTANCES
                 native = validated_s1_resources(root, required=required_s1)
                 result["resourceContexts"] = {"s0:" + mode: row for mode, row in result["providers"].items()}
                 result["resourceContexts"].update({"s1:" + mode: row for mode, row in native["providers"].items()})

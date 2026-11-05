@@ -53,11 +53,20 @@
       #error Invalid S0 S1 installer identity
     #endif
     #define S0S1PrivateInstaller 1
+    #define PrivateS1Installer 1
+  #elif InstallerAppId == "{{3C271F5D-71FF-4EA8-9569-B8DAC30F3773}"
+    #if InstallerAppName != "Xingtu S1 Floor Private Test" || InstallerFolder != "XingtuS1FloorPrivateTest" || InstallerGroup != "Xingtu S1 Floor Private Test"
+      #error Invalid S1 floor installer identity
+    #endif
+    #define S1FloorPrivateInstaller 1
+    #define PrivateS1Installer 1
   #else
     #error Unknown private installer identity
   #endif
   #ifdef S0S1PrivateInstaller
     #define InstallerModelId "Xingtu.S0S1PrivateTest"
+  #elif defined(S1FloorPrivateInstaller)
+    #define InstallerModelId "Xingtu.S1FloorPrivateTest"
   #else
     #define InstallerModelId "Xingtu.QtClientTest"
   #endif
@@ -627,7 +636,7 @@ begin
     (Previous <> '') then
     Result := CompareText(NormalizedDirectory(Previous), Target) = 0;
 end;
-#ifdef S0S1PrivateInstaller
+#ifdef PrivateS1Installer
 function RegisteredOldPrivateDirectory(RootKey: Integer; Target: String): Boolean;
 var
   Previous: String;
@@ -642,6 +651,15 @@ begin
     'Software\Microsoft\Windows\CurrentVersion\Uninstall\{D4B8E562-EA62-4A43-AF1D-043A5646971E}_is1',
     'InstallLocation', Previous) and (Previous <> '') then
     Result := Pos(Lowercase(NormalizedDirectory(Previous) + '\'), Lowercase(Target + '\')) = 1;
+  #ifdef S1FloorPrivateInstaller
+  { Protect the previous private channel's custom registration too. This block
+    must not compile into that older channel's own legitimate upgrade path. }
+  if Result then Exit;
+  if RegQueryStringValue(RootKey,
+    'Software\Microsoft\Windows\CurrentVersion\Uninstall\{907F912D-58FD-4F84-A7A4-0C816AA70E52}_is1',
+    'InstallLocation', Previous) and (Previous <> '') then
+    Result := Pos(Lowercase(NormalizedDirectory(Previous) + '\'), Lowercase(Target + '\')) = 1;
+  #endif
 end;
 #endif
 function LastDirectoryError: LongWord;
@@ -687,7 +705,7 @@ var
 begin
   Result := '';
   Target := NormalizedDirectory(Target);
-  #ifdef S0S1PrivateInstaller
+  #ifdef PrivateS1Installer
   { Even empty residual directories from the older private products are reserved. }
   Path := NormalizedDirectory(ExpandConstant('{autopf}\XingtuQtClientTest'));
   Parent := NormalizedDirectory(ExpandConstant('{autopf}\XingtuQtLayoutPreview'));
@@ -695,11 +713,14 @@ begin
     (Pos(Lowercase(Path + '\'), Lowercase(Target + '\')) = 1) or
     (CompareText(Target, Parent) = 0) or
     (Pos(Lowercase(Parent + '\'), Lowercase(Target + '\')) = 1) or
+    #ifdef S1FloorPrivateInstaller
+    (Pos(Lowercase(NormalizedDirectory(ExpandConstant('{autopf}\XingtuS0S1PrivateTest')) + '\'), Lowercase(Target + '\')) = 1) or
+    #endif
     RegisteredOldPrivateDirectory(HKCU64, Target) or
     RegisteredOldPrivateDirectory(HKLM64, Target) or
     RegisteredOldPrivateDirectory(HKCU32, Target) or
     RegisteredOldPrivateDirectory(HKLM32, Target) then begin
-    Result := '旧私测目录保留，请选择本次独立的 S0 S1 私测目录。';
+    Result := '旧私测目录保留，请选择本次独立的私测目录。';
     Exit;
   end;
   #endif

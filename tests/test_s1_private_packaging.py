@@ -157,8 +157,10 @@ class PrivatePackagingTests(unittest.TestCase):
         registry = self.packs()
         inventory = self.inventory()
         with patch('client_providers.build_engine_factories', return_value=registry), patch.object(build, 'check_package', return_value=dict(success=True)):
-            result = build.validate_resources(self.resources, inventory, instance='s0-s1-test')
-            self.assertTrue(result[4]['s1']['included'])
+            for instance in identity.PRIVATE_S1_INSTANCES:
+                with self.subTest(instance=instance):
+                    result = build.validate_resources(self.resources, inventory, instance=instance)
+                    self.assertTrue(result[4]['s1']['included'])
             for instance in ('client', 'layout-preview', 'production'):
                 with self.subTest(instance=instance), self.assertRaisesRegex(ValueError, 'only the exact S1'):
                     build.validate_resources(self.resources, inventory, instance=instance)
@@ -197,24 +199,97 @@ class PrivatePackagingTests(unittest.TestCase):
         self.assertFalse(target.exists())
 
     def test_new_fixed_baked_identity_and_bundled_permission(self):
-        instance = dict(id='s0-s1-test', **build.INSTANCES['s0-s1-test'])
-        self.assertEqual(instance['appId'], identity._ISOLATED[instance['id']])
         self.assertEqual(len({row['appId'] for row in build.INSTANCES.values()}), len(build.INSTANCES))
         profile = self.root / 'installation-profile.json'
-        profile.write_text(json.dumps(dict(product=build.PRODUCT, installerInstance=instance)))
-        with patch.object(sys, 'frozen', True, create=True), patch.object(sys, '_MEIPASS', str(self.root), create=True):
-            self.assertEqual(identity.baked_identity(require_qt=True), 'qt-isolated')
-            self.assertEqual(identity.qt_application_model_id(), 'Xingtu.S0S1PrivateTest')
-            with self.assertRaisesRegex(ValueError, 'Isolated'):
-                identity.expected_application_executable()
-            instance['appId'] = build.INSTANCES['production']['appId']
+        models = {'s0-s1-test': 'Xingtu.S0S1PrivateTest', 's1-floor-test': 'Xingtu.S1FloorPrivateTest'}
+        self.assertEqual(identity.PRIVATE_S1_INSTANCES, frozenset(models))
+        self.assertIs(build.PRIVATE_S1_INSTANCES, identity.PRIVATE_S1_INSTANCES)
+        for name, model in models.items():
+            instance = dict(id=name, **build.INSTANCES[name])
+            self.assertEqual(instance['appId'], identity._ISOLATED[name])
             profile.write_text(json.dumps(dict(product=build.PRODUCT, installerInstance=instance)))
-            with self.assertRaises(identity.InstallationProfileError):
-                identity.baked_identity(require_qt=True)
+            with self.subTest(instance=name), patch.object(sys, 'frozen', True, create=True), patch.object(sys, '_MEIPASS', str(self.root), create=True):
+                self.assertEqual(identity.baked_identity(require_qt=True), 'qt-isolated')
+                self.assertEqual(identity.qt_application_model_id(), model)
+                with self.assertRaisesRegex(ValueError, 'Isolated'):
+                    identity.expected_application_executable()
+                instance['appId'] = build.INSTANCES['production']['appId']
+                profile.write_text(json.dumps(dict(product=build.PRODUCT, installerInstance=instance)))
+                with self.assertRaises(identity.InstallationProfileError):
+                    identity.baked_identity(require_qt=True)
         paths = {'assets/zhan10-native/fixture.png': {}}
-        self.assertEqual(build.selected_bundled_author_paths(paths, ['difficult-zhan10'], 's0-s1-test'), list(paths))
+        for instance in identity.PRIVATE_S1_INSTANCES:
+            self.assertEqual(build.selected_bundled_author_paths(paths, ['difficult-zhan10'], instance), list(paths))
         with self.assertRaises(ValueError):
             build.selected_bundled_author_paths(paths, ['difficult-zhan10'], 'layout-preview')
+
+    def test_original_channel_identity_remains_stable_and_new_identity_is_separate(self):
+        previous = build.INSTANCES['s0-s1-test']
+        self.assertEqual(previous, dict(appId='907F912D-58FD-4F84-A7A4-0C816AA70E52',
+            appName='Xingtu S0 S1 Private Test', installFolder='XingtuS0S1PrivateTest',
+            startMenuGroup='Xingtu S0 S1 Private Test', setupPrefix='XingtuS0S1Private-Setup',
+            versionSuffix='-s0-s1-private', product='XingtuQtClientTest'))
+        current = build.INSTANCES['s1-floor-test']
+        for key in ('appId', 'installFolder', 'startMenuGroup', 'setupPrefix', 'versionSuffix'):
+            self.assertNotEqual(current[key], previous[key])
+        self.assertEqual(current['product'], previous['product'])
+
+    def test_each_s1_channel_requires_native_packs_before_seed_creates_target(self):
+        source = self.root / 'program'
+        (source / '_internal/references').mkdir(parents=True)
+        target = self.root / 'work/seed'
+        for instance in identity.PRIVATE_S1_INSTANCES:
+            (source / '_internal/installation-profile.json').write_text(json.dumps(
+                dict(installerInstance=dict(id=instance))))
+            with self.subTest(instance=instance), patch('client_paths.WORK_ROOT', self.root / 'work'):
+                with self.assertRaisesRegex(ValueError, 'requires all three'):
+                    seed_sandbox.seed(source, target)
+            self.assertFalse(target.exists())
+
+    def test_frozen_self_check_requires_all_s1_packs_for_each_private_channel(self):
+        import client
+        registry = Mock()
+        registry.capabilities.return_value = {mode: dict(available=True) for mode in ('nightmare', 'difficult')}
+        for instance in identity.PRIVATE_S1_INSTANCES:
+            (self.root / 'installation-profile.json').write_text(json.dumps(dict(installerInstance=dict(id=instance))))
+            with self.subTest(instance=instance), patch.object(sys, 'argv', ['client', '--self-check', '--verify-resources']), patch.object(client, 'FROZEN', True), patch.object(client, 'PRODUCTION', False), patch.object(client, 'RESOURCE_ROOT', self.root), patch.object(client, 'WORK_ROOT', self.root / 'work'), patch.object(client, 'QGuiApplication', side_effect=AssertionError('GUI')), patch('client_providers.build_engine_factories', return_value=registry), patch.object(native, 'validated_s1_resources', side_effect=ValueError('required packs rejected')) as verify:
+                with self.assertRaisesRegex(ValueError, 'required packs rejected'):
+                    client.main()
+                verify.assert_called_once_with(self.root, required=True)
+
+    @staticmethod
+    def selected_guard(source, symbols):
+        """Expand only the guard's simple ifdef blocks; no native registry claims."""
+        active, lines = [True], []
+        for line in source.splitlines():
+            text = line.strip()
+            if text.startswith('#ifdef '):
+                active.append(active[-1] and text[7:] in symbols)
+            elif text == '#endif':
+                active.pop()
+            elif active[-1]:
+                lines.append(line)
+        return '\n'.join(lines)
+
+    def test_new_installer_protects_prior_registered_subtrees_without_blocking_old_upgrade(self):
+        source = (ROOT / 'tools/qt-client.iss').read_text(encoding='utf-8-sig')
+        block = source.split('#ifdef PrivateS1Installer\nfunction RegisteredOldPrivateDirectory', 1)[1]
+        block = '#ifdef PrivateS1Installer\nfunction RegisteredOldPrivateDirectory' + block.split('function LastDirectoryError', 1)[0]
+        previous = self.selected_guard(block, {'PrivateS1Installer', 'S0S1PrivateInstaller'})
+        current = self.selected_guard(block, {'PrivateS1Installer', 'S1FloorPrivateInstaller'})
+        third = '{907F912D-58FD-4F84-A7A4-0C816AA70E52}_is1'
+        self.assertNotIn(third, previous)
+        self.assertIn(third, current)
+        self.assertEqual(current.count("Lowercase(NormalizedDirectory(Previous) + '\\')"), 3)
+        directory = source.split('function PrivateDirectoryError', 1)[1].split('function NextButtonClick', 1)[0]
+        previous_directory = self.selected_guard(directory, {'PrivateS1Installer', 'S0S1PrivateInstaller'})
+        current_directory = self.selected_guard(directory, {'PrivateS1Installer', 'S1FloorPrivateInstaller'})
+        self.assertNotIn("{autopf}\\XingtuS0S1PrivateTest", previous_directory)
+        self.assertIn("{autopf}\\XingtuS0S1PrivateTest", current_directory)
+        for variant in (previous_directory, current_directory):
+            for hive in ('HKCU64', 'HKLM64', 'HKCU32', 'HKLM32'):
+                self.assertIn(f'RegisteredOldPrivateDirectory({hive}, Target)', variant)
+            self.assertIn('(Entries > 0) and not RegisteredPrivateDirectory(Target)', variant)
 
     def test_self_check_reports_all_contexts_without_constructing_gui(self):
         import client

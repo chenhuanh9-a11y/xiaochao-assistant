@@ -26,6 +26,7 @@ sys.path.insert(0, str(ROOT / "app"))
 from managed_base_resources import optional_author_sidecar
 from package_profiles import LIGHT_PROFILE, partition_resources
 from packaged_resource_contract import check_package
+from packaged_product_identity import PRIVATE_S1_INSTANCES
 from verify_admin_manifest import verify_administrator_manifest, verify_manifest_xml
 
 PRODUCT = "XingtuQtClientTest"
@@ -39,6 +40,9 @@ INSTANCES = {
     "s0-s1-test": dict(appId="907F912D-58FD-4F84-A7A4-0C816AA70E52", appName="Xingtu S0 S1 Private Test",
                        installFolder="XingtuS0S1PrivateTest", startMenuGroup="Xingtu S0 S1 Private Test",
                        setupPrefix="XingtuS0S1Private-Setup", versionSuffix="-s0-s1-private", product=PRODUCT),
+    "s1-floor-test": dict(appId="3C271F5D-71FF-4EA8-9569-B8DAC30F3773", appName="Xingtu S1 Floor Private Test",
+                          installFolder="XingtuS1FloorPrivateTest", startMenuGroup="Xingtu S1 Floor Private Test",
+                          setupPrefix="XingtuS1FloorPrivate-Setup", versionSuffix="-s1-floor-private", product=PRODUCT),
     "production": dict(appId="D04394A0-DACE-4FF9-874D-3DCB43EE53D1", appName="星图",
                        installFolder="XiaochaoAssistant", startMenuGroup="星图",
                        setupPrefix="星图", versionSuffix="", product="星图"),
@@ -450,8 +454,8 @@ def validate_resources(root, inventory, *, bundled_packages=(), instance="client
     for name, row in rows.items():
         path = _local_file(root, name)
         is_s1 = name.startswith("seasons/s1/") and len(PurePosixPath(name).parts) > 3 and PurePosixPath(name).parts[2] in {"difficulty2", "difficult", "nightmare"}
-        if name.startswith("seasons/") and (not is_s1 or instance != "s0-s1-test"):
-            raise ValueError("Season resources support only the exact S1 native roots in s0-s1-test Setup: " + name)
+        if name.startswith("seasons/") and (not is_s1 or instance not in PRIVATE_S1_INSTANCES):
+            raise ValueError("Season resources support only the exact S1 native roots in an allowlisted S1 private Setup: " + name)
         if not is_s1 and name not in ("version.json", "difficult-native-manifest.json") and PurePosixPath(name).parts[0] not in {
                 "assets", "references", "recognition"}:
             raise ValueError(f"Unexpected runtime-resource category: {name}")
@@ -474,7 +478,7 @@ def validate_resources(root, inventory, *, bundled_packages=(), instance="client
     contract = check_package(root)
     if not contract["success"]:
         raise ValueError(f"Packaged runtime path contract rejected: {contract['errors']}")
-    if instance == "s0-s1-test":
+    if instance in PRIVATE_S1_INSTANCES:
         sys.path.insert(0, str(ROOT / "experiments/qt_quick"))
         from s1_private_resources import validated_s1_resources
         contract["s1"] = validated_s1_resources(root, required=True)
@@ -548,8 +552,8 @@ BUNDLED_AUTHOR_ROOT = "_internal/qt-author-base/"
 
 def selected_bundled_author_paths(resources, packages, instance):
     """Explicit build input, not permission inferred from resources on disk."""
-    if packages and instance not in {"client", "production", "s0-s1-test"}:
-        raise ValueError("Bundled author defaults support only client, s0-s1-test or production Setup")
+    if packages and instance not in {"client", "production"} | PRIVATE_S1_INSTANCES:
+        raise ValueError("Bundled author defaults require client, production or an allowlisted S1 private Setup")
     if set(packages) - {"difficult-zhan10"}:
         raise ValueError("Unsupported bundled author package")
     names = sorted(name for name in resources if name.startswith(BUNDLED_AUTHOR_PREFIXES))
@@ -839,7 +843,7 @@ def main(argv=None):
                    importHelper=dict(included=args.instance == "production", executable="star-map-import-helper.exe"),
                    resourceVersion=declaration["resourceVersion"], authorDisplayPackagesIncluded=args.bundled_package,
                    includedResourceContexts=(["s0:nightmare", "s0:difficult", "s1:difficulty2", "s1:difficult", "s1:nightmare"]
-                       if args.instance == "s0-s1-test" else ["s0:nightmare", "s0:difficult"]),
+                       if args.instance in PRIVATE_S1_INSTANCES else ["s0:nightmare", "s0:difficult"]),
                    authorDisplayFilesIncluded=len(author_paths), omittedAuthorDisplayFiles=len(omitted),
                    omittedAuthorDisplayBytes=sum(row["bytes"] for row in omitted.values()),
                    publicDownloadConfigured=False, localMapImportPreserved=True)
