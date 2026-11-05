@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import tempfile
 import time
 import unittest
-from test_s0_vertical_controls import synthetic_read
+from s0_test_fixtures import synthetic_read
 from unittest.mock import Mock, patch
 import numpy as np
 from PySide6.QtCore import QObject, Signal, QUrl

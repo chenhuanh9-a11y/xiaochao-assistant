@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 from client_live_runtime import _AlignmentHost
 import test_client_recapture_focus as focus_fixtures
-from test_s0_vertical_controls import synthetic_read
+from s0_test_fixtures import synthetic_read
 
 
 class FloorReadyForegroundReturnTests(unittest.TestCase):

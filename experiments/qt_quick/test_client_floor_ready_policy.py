@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import test_client_live_runtime as fixture
 from client_live_runtime import _AlignmentHost
-from test_s0_vertical_controls import synthetic_read
+from s0_test_fixtures import synthetic_read
 
 
 class FloorReadyPolicyTests(unittest.TestCase):

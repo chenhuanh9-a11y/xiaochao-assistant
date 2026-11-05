@@ -10,7 +10,7 @@ from client_engine import clone_similarity_state, stage_similarity_rank
 import test_client_live_runtime as fixtures
 from client_live_runtime import _AlignmentHost
 from native_similarity_groups import NativeSimilarityState
-from test_s0_vertical_controls import synthetic_read
+from s0_test_fixtures import synthetic_read
 
 IDS = ("fixture-map", "second-map")
 

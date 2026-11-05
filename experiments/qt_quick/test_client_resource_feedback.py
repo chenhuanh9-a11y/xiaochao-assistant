@@ -48,7 +48,8 @@ class ResourceFeedbackTests(unittest.TestCase):
             c.notificationRequested.connect(lambda *args: notices.append(args))
             session.actionRequested.connect(lambda action, payload: actions.append((action, payload)))
             try:
-                yield owner, c, session, runtime, factories, keys, notices, actions, Path(directory)
+                # Factories resolve their explicit root; direct read fixtures use the same identity.
+                yield owner, c, session, runtime, factories, keys, notices, actions, Path(directory).resolve()
             finally:
                 c._closed = True
                 for timer in (c._foreground_timer, c._tracking_timer, c._context_timer,

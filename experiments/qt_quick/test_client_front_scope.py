@@ -8,7 +8,7 @@ from pathlib import Path
 import threading
 from types import SimpleNamespace
 import unittest
-from test_s0_vertical_controls import synthetic_read
+from s0_test_fixtures import synthetic_read
 from unittest.mock import Mock, patch
 
 import numpy as np

@@ -3,7 +3,7 @@ import copy
 import unittest
 from unittest.mock import Mock,patch
 import test_client_live_runtime as fixtures
-from test_s0_vertical_controls import synthetic_read
+from s0_test_fixtures import synthetic_read
 
 
 class VerticalRuntimeContracts(unittest.TestCase):

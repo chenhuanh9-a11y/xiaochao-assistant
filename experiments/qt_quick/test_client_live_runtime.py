@@ -17,7 +17,7 @@ import numpy as np
 from client_live_runtime import LiveRuntime, _AlignmentHost
 from client_region_capture import ClientCaptureContext, RegionCapture
 from shared_structure_reference import SharedStructureReference
-from test_s0_vertical_controls import synthetic_read
+from s0_test_fixtures import synthetic_read
 
 
 class FixtureCapture:

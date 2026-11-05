@@ -92,6 +92,7 @@ class FailureSamplingContracts(unittest.TestCase):
             self.assertEqual(sample['sampleIdentity'], [info.st_dev, info.st_ino])
             self.assertEqual(sample['sampleBytes'], info.st_size)
         self.assertEqual(controls['diagnostic']['sampleRole'], 'detector-control-band')
+        self.assertEqual(controls['cropBounds'], [960, 108, 231, 324])
         x,y,w,h = controls['cropBounds']
         import cv2
         np.testing.assert_array_equal(cv2.imread(str(self.store.root/controls['samplePath'])), self.f.capture.frame[y:y+h,x:x+w])

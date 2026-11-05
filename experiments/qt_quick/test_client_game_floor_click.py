@@ -8,7 +8,7 @@ import test_client_live_runtime as fixtures
 from client_live_runtime import _AlignmentHost
 from floor_observation_policy import game_floor_control_hit
 from s0_vertical_controls import bind_control_geometry
-from test_s0_vertical_controls import synthetic_read
+from s0_test_fixtures import synthetic_read
 
 
 class FloorClickContracts(unittest.TestCase):

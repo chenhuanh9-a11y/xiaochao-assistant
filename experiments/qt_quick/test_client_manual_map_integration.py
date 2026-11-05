@@ -12,7 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
-from test_s0_vertical_controls import synthetic_read
+from s0_test_fixtures import synthetic_read
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")

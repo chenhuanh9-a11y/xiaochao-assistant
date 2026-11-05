@@ -22,7 +22,7 @@ from client_region_capture import ClientCaptureContext
 import test_client_capture_full as capture_fixtures
 import test_client_coordinator as coordinator_fixtures
 import test_client_live_runtime as runtime_fixtures
-from test_s0_vertical_controls import synthetic_read
+from s0_test_fixtures import synthetic_read
 
 
 class QueuedPresentation(QObject):
