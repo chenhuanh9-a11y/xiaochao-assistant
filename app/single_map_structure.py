@@ -70,10 +70,11 @@ def regional_observed_edges(frame,query):
     return result
 
 
-def current_geometry(frame, *, observation_bounds=None):
+def current_geometry(frame, *, observation_bounds=None, visible_override=None):
     """One solver-owned observation; never retained across frames/cycles."""
     from map_observation import structure_current_map_evidence
-    current=structure_current_map_evidence(frame, observation_bounds=observation_bounds) if observation_bounds is not None else structure_current_map_evidence(frame)
+    current=(structure_current_map_evidence(frame, observation_bounds=observation_bounds, visible_override=visible_override)
+             if observation_bounds is not None or visible_override is not None else structure_current_map_evidence(frame))
     if current is None: return None
     return dict(query=current['query'],observationBounds=current['observationBounds'],visible=current.get('visible'))
 

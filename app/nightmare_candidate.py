@@ -533,13 +533,13 @@ def adaptive_exit_icon_scales(frame_shape: tuple[int, ...]) -> np.ndarray:
     return np.concatenate((low_tail, legacy))
 
 
-def visible_map_component(
+def visible_map_components(
     frame: np.ndarray,
     *,
     minimum_area: int = 1000,
     observation_bounds: tuple[int, int, int, int] | None = None,
-) -> tuple[np.ndarray, tuple[int, int, int, int], dict] | None:
-    """Return the largest explored-map island in the central game-map canvas."""
+) -> list[tuple[np.ndarray, tuple[int, int, int, int], dict]]:
+    """Enumerate the original eligible islands, largest first, without source data."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     h, w = gray.shape
     search = np.zeros_like(gray, dtype=np.uint8)
@@ -561,15 +561,22 @@ def visible_map_component(
             "index": index, "x": x, "y": y, "width": width,
             "height": height, "area": area, "center": [cx, cy],
         })
-    if not candidates:
-        return None
-    chosen = max(candidates, key=lambda row: row["area"])
-    pad = 8
-    x = max(0, chosen["x"] - pad)
-    y = max(0, chosen["y"] - pad)
-    right = min(w, chosen["x"] + chosen["width"] + pad)
-    bottom = min(h, chosen["y"] + chosen["height"] + pad)
-    return frame[y:bottom, x:right], (x, y, right, bottom), chosen
+    result = []
+    for chosen in sorted(candidates, key=lambda row: -row["area"]):
+        pad = 8
+        x = max(0, chosen["x"] - pad)
+        y = max(0, chosen["y"] - pad)
+        right = min(w, chosen["x"] + chosen["width"] + pad)
+        bottom = min(h, chosen["y"] + chosen["height"] + pad)
+        result.append((frame[y:bottom, x:right], (x, y, right, bottom), chosen))
+    return result
+
+
+def visible_map_component(frame, *, minimum_area=1000, observation_bounds=None):
+    """Preserve the legacy largest-island extraction and default search domain."""
+    rows = visible_map_components(frame, minimum_area=minimum_area,
+                                  observation_bounds=observation_bounds)
+    return rows[0] if rows else None
 
 
 def live_stair_screen_candidates(frame: np.ndarray, *, visible_override: tuple | None = None) -> list[dict]:

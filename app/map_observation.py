@@ -63,7 +63,7 @@ def map_reuse_evidence(
     }
 
 
-def structure_current_map_evidence(frame: np.ndarray | None, *, observation_bounds=None) -> dict | None:
+def structure_current_map_evidence(frame: np.ndarray | None, *, observation_bounds=None, visible_override=None) -> dict | None:
     """Return existing pixels plus their actual, exclusive observation bounds.
 
     The consumer must treat the 3px crop-edge band as unknown, not a wall.
@@ -72,7 +72,9 @@ def structure_current_map_evidence(frame: np.ndarray | None, *, observation_boun
     """
     if frame is None:
         return None
-    visible = visible_map_component(frame, observation_bounds=observation_bounds) if observation_bounds is not None else visible_map_component(frame)
+    visible = visible_override
+    if visible is None:
+        visible = visible_map_component(frame, observation_bounds=observation_bounds) if observation_bounds is not None else visible_map_component(frame)
     if visible is None:
         return None
     current = map_reuse_evidence(frame, maximum_width=frame.shape[1],

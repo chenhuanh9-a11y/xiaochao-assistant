@@ -276,6 +276,102 @@ class _AlignmentHost:
         return None
 
     def fit(self, frame, map_id, floor, cancelled, entry_candidate=None, *, observation_bounds=None):
+        if observation_bounds is None:
+            return self._fit_observation(frame, map_id, floor, cancelled, entry_candidate)
+        # Preserve the existing result whenever the largest island has usable
+        # structure (including wall-only success). Only an unsupported failure
+        # can trigger the wider search for map pixels behind brighter scenery.
+        import numpy as np
+        from nightmare_candidate import visible_map_components
+        from single_map_structure import current_geometry, observed_corner_chains
+        original = current_geometry(frame, observation_bounds=observation_bounds)
+        initial = (self._fit_observation(frame, map_id, floor, cancelled, entry_candidate,
+            observation_bounds=observation_bounds, _context=original) if original is not None
+            else dict(success=False, reason="manual-current-geometry-unavailable"))
+        initial_reason = str(initial.get("reason", ""))
+        if initial.get("success") and cancelled and cancelled():
+            return dict(success=False, reason="structure-work-obsolete")
+        if (initial.get("success") or any(word in initial_reason for word in
+                ("obsolete", "ambiguous", "budget-unresolved"))
+                or original is not None and observed_corner_chains(frame, original)):
+            return initial
+        islands = visible_map_components(frame, observation_bounds=observation_bounds)
+        if len(islands) > 32:
+            return dict(success=False, reason="manual-component-budget-unresolved",
+                        componentCount=len(islands), componentBudget=32)
+        reference = self._shared_structure_reference("shared-structure", map_id, floor)
+        if reference is None:
+            return dict(success=False, reason="shared-reference-unavailable")
+        h, w = reference.clean_mask.shape
+        extent = np.array([[0, 0, 1], [w, 0, 1], [0, h, 1], [w, h, 1]])
+        accepted, diagnostics, evidence_contexts, unresolved = [], [], [], False
+        for island in islands:
+            if cancelled and cancelled():
+                return dict(success=False, reason="structure-work-obsolete")
+            if original is not None and tuple(island[1]) == tuple(original["observationBounds"]):
+                diagnostics.append(dict(bounds=list(island[1]), area=island[2]["area"],
+                                        success=False, reason=initial_reason))
+                continue
+            context = current_geometry(frame, observation_bounds=observation_bounds,
+                                       visible_override=island)
+            if context is None:
+                continue
+            if observed_corner_chains(frame, context):
+                evidence_contexts.append(context)
+            fit = self._fit_observation(frame, map_id, floor, cancelled, entry_candidate,
+                observation_bounds=observation_bounds, _context=context)
+            reason = str(fit.get("reason", ""))
+            diagnostics.append(dict(bounds=list(island[1]), area=island[2]["area"],
+                                    success=bool(fit.get("success")), reason=reason))
+            if "obsolete" in reason:
+                return dict(success=False, reason="structure-work-obsolete")
+            if "ambiguous" in reason or "budget-unresolved" in reason:
+                unresolved = True
+            if fit.get("success"):
+                matrix = np.asarray(fit["matrixSourceToClient"])
+                if not any(np.linalg.norm((extent @ (matrix - np.asarray(old["matrixSourceToClient"])).T)[:, :2], axis=1).max() <= 3
+                           for old in accepted):
+                    accepted.append(fit)
+        if cancelled and cancelled():
+            return dict(success=False, reason="structure-work-obsolete")
+        if unresolved or len(accepted) > 1:
+            return dict(success=False, reason="manual-component-pose-ambiguous",
+                        componentFits=diagnostics, acceptedPoseCount=len(accepted), unresolved=unresolved)
+        if len(accepted) == 1:
+            fit = accepted[0]
+            # Do not explain one convenient small island while contradicting
+            # other independently observed structure. A conflict fails closed.
+            for context in evidence_contexts:
+                if cancelled and cancelled():
+                    return dict(success=False, reason="structure-work-obsolete")
+                if tuple(context["observationBounds"]) == tuple(fit.get("observationBounds") or ()):
+                    continue
+                consistent = self._component_pose_consistent(frame, reference, fit["matrixSourceToClient"], context)
+                if cancelled and cancelled():
+                    return dict(success=False, reason="structure-work-obsolete")
+                if not consistent:
+                    return dict(success=False, reason="manual-components-inconsistent",
+                                componentFits=diagnostics, conflictingBounds=list(context["observationBounds"]))
+            if cancelled and cancelled():
+                return dict(success=False, reason="structure-work-obsolete")
+            return dict(fit, componentFits=diagnostics, acceptedPoseCount=1, manualComponentFallback=True)
+        return dict(success=False, reason="manual-components-current-geometry-rejected" if diagnostics
+                    else "manual-current-geometry-unavailable", componentFits=diagnostics)
+
+    def _component_pose_consistent(self, frame, reference, matrix, context):
+        from single_map_structure import projected_geometry, regional_validation, _static_validation_context
+        from alignment_observation import rendered_profile_residual_is_verified
+        import numpy as np
+        projected = projected_geometry(frame, reference.clean_mask, np.asarray(matrix), context)["mask"]
+        validation_context = _static_validation_context(frame, context, np.asarray(matrix),
+            getattr(reference, "unknown_mask", None))
+        if not regional_validation(frame, context["query"], projected, _context=validation_context).get("regionalEdgeVerified"):
+            return False
+        residual = self._rendered_profile_current_frame_residual(frame, reference.clean_mask, matrix,
+            profile_id="shared-structure", visible_override=context.get("visible"))
+        return rendered_profile_residual_is_verified(residual)
+
+    def _fit_observation(self, frame, map_id, floor, cancelled, entry_candidate=None, *, observation_bounds=None, _context=None):
         from alignment_observation import rendered_profile_residual_is_verified
         from fast_structure_alignment import try_alignment
         from single_map_structure import current_geometry, solve, solve_initial_structure
@@ -284,7 +380,7 @@ class _AlignmentHost:
         if reference is None:
             return dict(success=False, reason="shared-reference-unavailable")
         explicit_domain = observation_bounds is not None
-        context = current_geometry(frame, observation_bounds=observation_bounds) if explicit_domain else None
+        context = (_context if _context is not None else current_geometry(frame, observation_bounds=observation_bounds)) if explicit_domain else None
         if explicit_domain and context is None:
             return dict(success=False, reason="manual-current-geometry-unavailable")
         # Original structure-fit order: default 0059 prior before entry/fast.
