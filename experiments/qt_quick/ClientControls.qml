@@ -132,7 +132,7 @@ Window {
     }
     function statusText() {
         if (privateExperiment.privateExperimental === true && privateExperiment.privateExperimentalLocked === true)
-            return "实验锁定（未正式校准） · " + outputStatus()
+            return "实验锁定（未正式校准） · " + (snapshot.structureScanInProgress ? "当前地图贴合中" : outputStatus())
         if (privateExperiment.privateExperimental === true)
             return "实验识别中 · 尚未锁定 · " + outputStatus()
         if (snapshot.candidateDisplayOnly) return (snapshot.evidenceKind === "recorded" ? "录制研究" : "自动候选") + " · 候选整图未锁定 · " + outputStatus()

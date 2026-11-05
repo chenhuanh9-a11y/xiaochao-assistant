@@ -113,3 +113,10 @@ Tk 和 Qt 客户端启动时都做同样的清理（`diagnostic_export.prune_dia
 自动局部图只接受显式传入、属于同一尝试及相同 epoch/对局/赛季/模式/资源实例/采集代次的完整游戏客户区帧。开始新采集或失效时清除旧凭据，失败后不得回退上一帧；写入前后继续核当前窗口、前台与关闭选项。原几何失败及准备超时之外，当前身份不唯一、相似组待定、采集后的待确认、当前楼层不可用、恢复耗尽可产生证据决定。采集前待确认、正常关图和过渡重试不因此抓图；生命周期已撤销或没有可证明的局部区域时只记缺图原因。新增身份类失败只保留地图颜色区，楼层类失败只保留实际检测控件带；无控件范围时不得退回地图或整帧。地图颜色区仍未经过身份验证，局部图不保证匿名，不扩大到整窗/桌面兜底。
 
 只有图片和最终 journal 都提交成功才消耗图片成功冷却；无帧/无 ROI 的元数据独立有界限流，不阻断同次控件局部图或下一次有效图；真实编码/存储错误保留失败退避。容量、7 天清理与会话匹配导出合同不变，有限缓存并不保证每次失败都有图，导出的 ZIP 不受本地缓存轮换自动删除。例行刷新不逐帧写采集成功日志；重复缺图状态按 60 秒合并并报告抑制数量，成功保存的样本事件仍及时记录。
+
+
+### S1 private experimental package 1.0.13 (2026-11-05)
+
+Includes the verified joint color-display/preferred-candidate base, common entrance coordinates, within-round B1-B4 positive-contradiction candidate accumulation, and a unique experimental lock only after current-frame material validation. A failed singleton fit restores competition. This is a private experiment, not formally calibrated identity. B3/B4 static screenshot evidence is distinct from pending real-time game acceptance. The compact UI shows experimental lock/current-map fit separately and explicit rediscovery resets the pool.
+
+Cloud delta: 11 text files / 34 segments / 228035 bytes, SHA256 2bca682b87ceaff102c1b7d4b1d3a3dac00744c7b95843f13c1fa4391bb75281; all cloud after hashes and the locally derived pinned glyph verified before the Windows merge. Local four-floor qualification and installer identity are preserved; final runtime has its own hash. Six display-only JSONs match their target hashes; PNG/NPZ resources are unchanged. All 176 coordinate bindings match production typed metadata. Per user instruction no simulated recognition tests or accuracy matrix are a delivery gate; only integrity/build/startup/install/data-protection checks are run and recorded separately. No actual game acceptance is claimed.

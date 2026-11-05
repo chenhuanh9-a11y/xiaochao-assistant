@@ -405,18 +405,32 @@ class EngineFactories(dict):
             engine.qt_optional_displays = None
             from s1_structure_selection import StructureCatalog, StructureCandidateScanner
             catalog = StructureCatalog.from_engine(engine)
+            private_observer = None
+            def private_coordinate_prepare(frame, pool_ids, floor, *, cancelled):
+                nonlocal private_observer
+                from client_paths import RESOURCE_ROOT
+                from s1_private_experiment import PrivateCoordinateObserver
+                if private_observer is None:
+                    private_observer = PrivateCoordinateObserver(engine, catalog, RESOURCE_ROOT / "s1-private-assets")
+                return private_observer.prepare(frame, pool_ids, floor, cancelled=cancelled)
+            engine.qt_s1_private_coordinate_prepare = private_coordinate_prepare
             def structure_scan(frame, *, floor, floor_source="operator-declared", cancelled=None, budget_seconds=None,
                                on_progress=None, candidate_order=None, preferred_map_id=None,
-                               preferred_material_committed=None):
+                               preferred_material_committed=None, private_coordinate_report=None, planned_map_ids=None):
                 # Lazy import keeps provider construction free of live IO.
                 from client_live_runtime import _AlignmentHost
                 host = _AlignmentHost(engine)
-                scanner = StructureCandidateScanner(catalog, host.fit, prepare_fit=host.prepare_structure_scan)
+                fixed = private_coordinate_report is not None and private_coordinate_report.get("coordinateVerified") is True
+                fit = (lambda f, mid, fl, cancel, **kw: private_observer.fixed_fit(
+                    f, mid, fl, cancel, report=private_coordinate_report, **kw)) if fixed else host.fit
+                scanner = StructureCandidateScanner(catalog, fit,
+                    prepare_fit=None if fixed else host.prepare_structure_scan)
                 return scanner.scan(frame, floor=floor, floor_source=floor_source,
                                     cancelled=cancelled, budget_seconds=budget_seconds,
                                     on_progress=on_progress, candidate_order=candidate_order,
                                     preferred_map_id=preferred_map_id,
-                                    preferred_material_committed=preferred_material_committed)
+                                    preferred_material_committed=preferred_material_committed,
+                                    planned_map_ids=planned_map_ids)
             def structure_rank(frame, *, floor, budget_seconds=None):
                 report = structure_scan(frame, floor=floor, budget_seconds=budget_seconds)
                 engine.last_s1_structure_scan = report

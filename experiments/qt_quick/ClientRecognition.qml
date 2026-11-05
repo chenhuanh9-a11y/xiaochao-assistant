@@ -105,10 +105,12 @@ Item {
                 onClicked: clientCoordinator.fitManualFromMain()
             }
             Label {
-                text: page.state.structureScanInProgress === true
+                text: page.state.privateExperiment && page.state.privateExperiment.privateExperimentalLocked === true
+                    ? "实验锁定（未正式校准）：重新开图只核对当前地图贴合；出现矛盾或贴合失败时恢复识别。"
+                    : page.state.structureScanInProgress === true
                     ? "自动候选：首个候选可先显示，后台继续扫描；扫描结束后可切换，当前仍未锁定地图。"
                     : page.state.candidateProvisionalDisplayEnabled === true
-                    ? "自动候选：每次开图重新筛选，可信位姿自动显示候选整图；可直接切换，不代表地图身份已锁定。"
+                    ? "实验识别：同局跨层累计候选；唯一候选经当前画面核对后实验锁定，尚未正式校准。"
                     : page.state.candidateStructureAvailable === true && !page.state.manualAlignmentSession
                     ? "当前画面可读取静态核验过的 B1–B4 并列出结构候选；请选择并确认本局地图。"
                     : "人工选择地图；自动观察当前 B1～B4。B3/B4 已有静态截图核验，实时贴合待测，识别不确定时停止贴合。默认目标不代表已观察。"
@@ -126,7 +128,7 @@ Item {
             visible: page.state.candidateProvisionalDisplayEnabled === true
             text: page.state.evidenceKind === "recorded"
                 ? "输入来源：录制画面，无实机显示授权。"
-                : "自动候选当前支持 B1/B2；B3/B4 可用手动选图与四层自动读层。整图包含尚未探索的区域。"
+                : "实验自动候选支持 B1–B4；B3/B4 静态截图已核验，实时游戏效果待测。整图包含尚未探索的区域。"
             color: "#526785"; wrapMode: Text.WordWrap
         }
         Label {

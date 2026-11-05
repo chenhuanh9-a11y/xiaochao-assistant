@@ -20,6 +20,8 @@ resource_stage = Path(inputs["resourceStage"])
 bundled_author_paths = set(inputs.get("bundledAuthorPaths", []))
 datas = [(str(resource_stage / name), str(Path("qt-author-base" if name in bundled_author_paths else ".") / Path(name).parent))
          for name in inputs["resources"]]
+for name in ("native_glyph_template.png", "template_manifest.json", "s1_entrance_coordinate_index.json"):
+    datas.append((str(root / "s1-private-assets" / name), "s1-private-assets"))
 for path in qt_root.glob("*.qml"):
     datas.append((str(path), "."))
 for path in (qt_root / "icons").glob("*.png"):

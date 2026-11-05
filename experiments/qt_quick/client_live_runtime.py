@@ -669,6 +669,7 @@ class LiveRuntime:
 
     def _reset_identity(self):
         self._s1_candidate_preference = None
+        self._s1_private_pool = None
         old_structure = getattr(self, "_s1_structure_session", None)
         if old_structure is not None:
             old_structure.end_round()
@@ -968,7 +969,14 @@ class LiveRuntime:
             preference_scope = self._s1_candidate_preference_scope(captured, catalog)
             if self._s1_candidate_preference is not None and self._s1_candidate_preference[0] != preference_scope:
                 self._s1_candidate_preference = None
+                self._s1_private_pool = None
             preferred = self._s1_candidate_preference[1] if self._s1_candidate_preference is not None else None
+            private_prepare = getattr(engine, "qt_s1_private_coordinate_prepare", None)
+            private_enabled = self._native_s1_candidate_preview and callable(private_prepare)
+            pool = getattr(self, "_s1_private_pool", None)
+            if private_enabled and (pool is None or pool.scope != preference_scope):
+                from s1_private_experiment import PrivateRoundPool
+                pool = self._s1_private_pool = PrivateRoundPool(preference_scope, catalog.map_ids)
             ticket = session.begin_observation(str(floor))
             self._s1_structure_ticket = ticket
             self._automatic_candidate_rows = []
@@ -983,6 +991,8 @@ class LiveRuntime:
         attempted = set()
         last_material_reason = "no-current-supported-candidates"
         started = time.monotonic()
+        private_report = None
+        private_material_ms = 0.0
 
         def owns_ticket():
             return (self._stream_owner is owner and epoch == self._epoch
@@ -1027,7 +1037,7 @@ class LiveRuntime:
                     self._revoke_render(reason)  # Last mutation; notification may reenter.
 
         def publish(report):
-            nonlocal first_result, last_material_reason
+            nonlocal first_result, last_material_reason, private_material_ms
             rows = StructureCandidateScanner.rank_rows(report, engine.pack)
             with self._lock:
                 if (not current() or report.get("frameKey") != digest
@@ -1051,6 +1061,7 @@ class LiveRuntime:
                 if first_result is not None or mid in attempted or obsolete():
                     continue
                 attempted.add(mid)
+                material_started = time.monotonic()
                 try:
                     result = self._solve_observation(action, payload, cancelled, engine, None, epoch,
                         captured, frame, floor, digest, capture_generation, frame_generation,
@@ -1061,12 +1072,18 @@ class LiveRuntime:
                 except Exception as error:
                     last_material_reason = type(error).__name__ + ":" + str(error)
                     continue
+                private_material_ms += (time.monotonic() - material_started) * 1000
                 last_material_reason = result.get("reason", "material-unavailable")
                 with self._lock:
                     if (current() and result.get("success") and self._render is not None
                             and self._render.get("frameId") == frame_id
                             and self._display_current(self._render)):
                         first_result = result
+                        if (private_enabled and self._s1_private_pool is pool
+                                and pool.accept_material(mid, coordinate_current=bool(private_report
+                                    and private_report.get("coordinateVerified") is True))):
+                            self._notify("private-experimental-locked", reason="private-unique-pool-current-material",
+                                **pool.snapshot(), privateResourceDigest=catalog.resource_key)
             return True
 
         def preferred_material_committed(map_id):
@@ -1077,7 +1094,56 @@ class LiveRuntime:
                     and row.get("mapId") == map_id and row.get("frameId") == frame_id
                     and row.get("candidateDisplayOnly") and self._display_current(row))
 
+        def prepare_private():
+            nonlocal private_report, preferred
+            if not private_enabled or obsolete():
+                return
+            before = tuple(pool.remaining)
+            was_locked = pool.locked_id
+            try:
+                evidence = private_prepare(frame, before, str(floor), cancelled=obsolete)
+            except MemoryError:
+                raise
+            except Exception:
+                evidence = dict(coordinateVerified=False, evaluatedMapIds=list(before),
+                    contradictedMapIds=[], unknownMapIds=list(before), reason="private-coordinate-unavailable")
+            with self._lock:
+                if not current() or self._s1_private_pool is not pool:
+                    return
+                # Provider evidence belongs to this selected mode/resource/floor.
+                if (evidence.get("mode"), evidence.get("resourceKey"), evidence.get("floor")) != (
+                        catalog.mode, catalog.resource_key, str(floor)):
+                    evidence = dict(coordinateVerified=False, evaluatedMapIds=list(before),
+                        contradictedMapIds=[], unknownMapIds=list(before), reason="private-coordinate-unavailable")
+                private_report = evidence
+                reason = pool.observe(evidence)
+                preferred = (pool.locked_id or (pool.remaining[0] if len(pool.remaining) == 1 else preferred))
+                if preferred not in pool.remaining:
+                    preferred = None
+                summary = evidence.get("coordinateEvidence", {})
+                self._notify("private-pool-observed", reason=reason,
+                    privatePoolBefore=list(before), privatePoolAfter=list(pool.remaining),
+                    privateContradictedMapIds=evidence.get("contradictedMapIds", []),
+                    privateUnknownMapIds=evidence.get("unknownMapIds", list(before)),
+                    privateResourceDigest=catalog.resource_key, privateFrameDigest=digest,
+                    privateCoordinateReason=evidence.get("reason", ""),
+                    privateCoordinateVerified=evidence.get("coordinateVerified") is True,
+                    privatePoseDomainNarrow=evidence.get("poseAvailable") is True,
+                    privateCoordinateBasis=summary.get("basis", ""),
+                    privateScaleRange=summary.get("scaleRange", []),
+                    privateCoordinateErrorPx=summary.get("pointCoordinateErrorBoundPx", summary.get("anchorErrorPx", 0)),
+                    privateHypothesisCount=summary.get("sharedHypothesisCount", 0),
+                    privateGateStatus=evidence.get("gateStatus", "unknown"),
+                    privateGateReason=evidence.get("gateReason", "private-coordinate-unavailable"),
+                    privateGateMs=evidence.get("gateMs", 0), privateObservationMs=evidence.get("observationMs", 0),
+                    privateCompareMs=evidence.get("elapsedMs", 0), privateTotalMs=evidence.get("totalMs", 0),
+                    **pool.snapshot())
+                if current() and was_locked and not pool.locked_id:
+                    self._notify("private-experimental-unlocked", reason=reason,
+                        **pool.snapshot(), privateResourceDigest=catalog.resource_key)
+
         try:
+            prepare_private()
             order, ordering = candidate_order(engine, catalog, str(floor), snapshot, prior,
                 self._recorded_s1_scan_order, self._recorded_s1_priority_index, priority_handles)
             if preferred is not None:
@@ -1094,10 +1160,38 @@ class LiveRuntime:
                 candidateOrder=list(order), ordering=ordering, budgetSeconds=self._recorded_s1_scan_budget,
                 rawFrameDigest=digest, shapeSnapshotId=snapshot.sha256, frameShape=list(shape),
                 clientDimensions=list(dimensions))
-            report = engine.qt_s1_structure_scan(frame, floor=str(floor), floor_source="current-frame-verified",
-                cancelled=obsolete, budget_seconds=self._recorded_s1_scan_budget,
-                on_progress=publish, candidate_order=order, preferred_map_id=preferred,
-                preferred_material_committed=preferred_material_committed)
+            def scan_current():
+                options = dict(private_coordinate_report=private_report,
+                    planned_map_ids=pool.remaining) if private_enabled else {}
+                return engine.qt_s1_structure_scan(frame, floor=str(floor), floor_source="current-frame-verified",
+                    cancelled=obsolete, budget_seconds=self._recorded_s1_scan_budget,
+                    on_progress=publish, candidate_order=order, preferred_map_id=preferred,
+                    preferred_material_committed=preferred_material_committed, **options)
+            report = scan_current()
+            # A singleton's fit/material failure is UNKNOWN, never elimination.
+            # Restore competition once on the same immutable frame with a new
+            # session ticket; no public redispatch or freshly acquired owner.
+            if private_enabled and len(pool.remaining) == 1 and first_result is None:
+                with self._lock:
+                    if current() and self._s1_private_pool is pool:
+                        pool.restore()
+                        preferred = None
+                        attempted.clear()
+                        ticket = session.begin_observation(str(floor))
+                        self._s1_structure_ticket = ticket
+                        self._notify("private-experimental-unlocked", reason="private-current-fit-unknown",
+                            **pool.snapshot(), privateResourceDigest=catalog.resource_key)
+                if not obsolete():
+                    prepare_private()
+                    # This frame cannot re-eliminate the same unknown fit and
+                    # thereby prevent recovery. Retain diagnostics, reopen all
+                    # IDs, and do not promote on this recovery pass.
+                    with self._lock:
+                        if current() and self._s1_private_pool is pool:
+                            pool.restore()
+                            private_report = None
+                            preferred = None
+                    report = scan_current()
             with self._lock:
                 still_current = current()
             if report["status"] == "cancelled" or not still_current:
@@ -1118,6 +1212,7 @@ class LiveRuntime:
                 status=report["status"], scanComplete=report["scanComplete"], updateSeq=report["updateSeq"],
                 checkedMapIds=report["checkedMapIds"], supportedMapIds=report["supportedMapIds"],
                 candidateReuse=report.get("candidateReuse", "none"), scanSkipped=report.get("scanSkipped", False),
+                privateScanMs=report["elapsedSeconds"] * 1000, privateMaterialMs=private_material_ms,
                 elapsedSeconds=report["elapsedSeconds"], totalSeconds=time.monotonic()-started,
                 firstVerifiedPoseElapsedSeconds=report.get("firstVerifiedPoseElapsedSeconds"))
             return result
@@ -2043,11 +2138,12 @@ class LiveRuntime:
                     return self._receipt(action, payload, success=False, reason="stale-structure-candidate", stale=True)
                 session = self._s1_structure_session
                 if (action in ("previous_candidate", "next_candidate") and session is not None
-                        and session.snapshot().get("currentStatus") == "preferred-material-committed"):
+                        and session.snapshot().get("currentStatus") in ("preferred-material-committed", "subset-unresolved")):
                     # Other candidates have no pose on this frame. A deliberate
                     # switch expands through a fresh full-catalogue observation.
                     switch_from = self._provisional_display_map_id
                     self._s1_candidate_preference = None
+                    self._s1_private_pool = None
                     rescan_owner = (birth_ticket[0], request_id if request_id is not None else object())
                     self._capture_pending = True
                     self._capture_pending_owner = rescan_owner
@@ -2089,6 +2185,7 @@ class LiveRuntime:
                 if not choice.get("success") or choice.get("frameKey") != observation.get("digest"):
                     return self._receipt(action, payload, success=False, reason="structure-candidate-not-current", stale=True)
                 self._s1_candidate_preference = None
+                self._s1_private_pool = None
                 # Revoke old material without erasing the current support ticket.
                 old_token = self._render.get("token", "") if self._render else ""
                 self._core.revoke_display(reason="provisional-candidate-switch")
@@ -2115,6 +2212,7 @@ class LiveRuntime:
                     # Clear before waiting for work, so an old scan/ACK cannot
                     # restore the preference after explicit re-identification.
                     self._s1_candidate_preference = None
+                    self._s1_private_pool = None
                     self.invalidate("s1-candidate-reselection")
             with self._work:
                 with self._lock:
@@ -2531,6 +2629,9 @@ class LiveRuntime:
                 availableCommands=sorted(set(commands)), savedFrameCapabilities=capabilities,
                 capture=copy.deepcopy(capture_state), render=metadata,
                 displayAuthorized=bool(metadata), liveAuthorization=bool(metadata.get("liveAuthorization")),
+                privateExperiment=(self._s1_private_pool.snapshot() if getattr(self, "_s1_private_pool", None)
+                    else dict(privateExperimental=bool(self._native_s1_candidate_preview and self._season == "s1" and not self._manual_alignment),
+                        privateExperimentalLocked=False, privateLockMapId="", privatePoolMapIds=[])),
                 message=self._message, core=self._core.snapshot(), evidenceKind=self._evidence_kind)
 
     def _candidate_summary(self):
@@ -2559,6 +2660,7 @@ class LiveRuntime:
         with self._lock:
             if any(word in reason for word in ("resource", "context", "settings", "identity", "reselection", "candidate-selected", "end-round", "end_round", "reset_round", "stop_round")):
                 self._s1_candidate_preference = None
+                self._s1_private_pool = None
             if any(word in reason for word in ("resource", "context", "end-round")):
                 for handle in self._stream_priority_handles.values():
                     handle.invalidate()
@@ -2660,6 +2762,16 @@ class LiveRuntime:
         with self._lock:
             self._event_callback = callback
 
+    @staticmethod
+    def _private_diagnostic_fields():
+        return ("privateExperimental", "privateExperimentalLocked", "privateLockMapId",
+            "privatePoolMapIds", "privateEliminatedMapIds", "privateObservationCount",
+            "privatePoolBefore", "privatePoolAfter", "privateContradictedMapIds", "privateUnknownMapIds",
+            "privateResourceDigest", "privateCoordinateReason", "privateCoordinateVerified", "privateCoordinateBasis",
+            "privateScaleRange", "privateCoordinateErrorPx", "privateHypothesisCount", "privateGateStatus",
+            "privateGateReason", "privateGateMs", "privateObservationMs", "privateCompareMs", "privateTotalMs",
+            "privateFrameDigest", "privateScanMs", "privateMaterialMs", "privatePoseDomainNarrow")
+
     def _notify(self, event, *, reason="", token="", **extra):
         with self._lock:
             callback = self._event_callback
@@ -2673,7 +2785,7 @@ class LiveRuntime:
                     producedAt=packet["producedAt"], season=self._season, mode=self._mode, mapId=self._map_id,
                     floor=str(self._floor), frameId=self._frame_id, epoch=self._epoch,
                     roundId=self._round, cycleId=self._cycle, generation=self._frame_generation,
-                    **{key: extra[key] for key in ("candidateReuse", "scanSkipped") if key in extra})
+                    **{key: extra[key] for key in ("candidateReuse", "scanSkipped", *self._private_diagnostic_fields()) if key in extra})
         if callback is not None:
             try:
                 callback(packet)
@@ -3450,6 +3562,7 @@ class LiveRuntime:
                             or request_settings_generation != self._settings_generation):
                         return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
                     self._s1_candidate_preference = None
+                    self._s1_private_pool = None
                     capture_request_epoch = self._epoch + 1
                     self.invalidate("s1-candidate-reselection")
                     if capture_request_epoch != self._epoch:
