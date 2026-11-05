@@ -17,6 +17,7 @@ import numpy as np
 from client_live_runtime import LiveRuntime, _AlignmentHost
 from client_region_capture import ClientCaptureContext, RegionCapture
 from shared_structure_reference import SharedStructureReference
+from test_s0_vertical_controls import synthetic_read
 
 
 class FixtureCapture:
@@ -61,7 +62,7 @@ def fixture_engine(mode="nightmare"):
         engine.rank_count += 1
         return [dict(mapId="fixture-map", identityHardGatePassed=True, strongSuggestion=True)]
     engine.rank = rank
-    engine.qt_map_ui = SimpleNamespace(observe=lambda *a: dict(mapOpen=True, floor="1"))
+    engine.qt_map_ui = SimpleNamespace(observe=Mock(side_effect=AssertionError("legacy horizontal sensor called")))
     return engine
 
 
@@ -78,7 +79,8 @@ class LiveRuntimeContracts(unittest.TestCase):
                 profileRenderDerivedFromCanonical=True, coordinatePackId="fixture-pack",
                 validationBasis="shared-canonical-geometry-current-frame"))
         self.patches = [patch("map_interface_observation.detect_map_interface", return_value=dict(detected=True)),
-                        patch("map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=1)),
+                        patch("floor_control_region.locate_vertical_floor_controls",
+                              side_effect=lambda frame, mode, **kw: synthetic_read(mode)),
                         patch.object(_AlignmentHost, "fit", side_effect=lambda *a: copy.deepcopy(self.fit))]
         for item in self.patches:
             item.start(); self.addCleanup(item.stop)
@@ -133,7 +135,7 @@ class LiveRuntimeContracts(unittest.TestCase):
         old_root = first.root_pose.copy()
         desired_root = old_root.copy(); desired_root[0, 2] += 3
         self.fit["matrixSourceToClient"] = desired_root @ relation
-        with patch("map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=2)):
+        with patch("floor_control_region.locate_vertical_floor_controls", return_value=synthetic_read(selected=2)):
             result = self.dispatch("set_floor", floor="2")
         self.assertTrue(result["success"], result)
         group = self.runtime._group
@@ -148,7 +150,7 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.begin_and_capture()
         first = self.runtime._group
         self.assertEqual(set(first.relations), {"1"})
-        with patch("map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=2)):
+        with patch("floor_control_region.locate_vertical_floor_controls", return_value=synthetic_read(selected=2)):
             result = self.dispatch("set_floor", floor="2")
         self.assertTrue(result["success"], result)
         group = self.runtime._group
@@ -310,12 +312,12 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertEqual(conflict["reason"],"current-frame-floor-conflict")
         self.assertIsNone(self.runtime.reference_payload())
         self.fit = dict(success=False,reason="fixture-pose-failed")
-        with patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=2)):
+        with patch("floor_control_region.locate_vertical_floor_controls",return_value=synthetic_read(selected=2)):
             self.assertFalse(self.dispatch("refresh_map")["success"])
         self.assertEqual(self.runtime.reference_payload()["floor"],"2")
         self.runtime.invalidate("custom-gallery-changed")
         self.assertIsNone(self.runtime.reference_payload())
-        with patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=2)):
+        with patch("floor_control_region.locate_vertical_floor_controls",return_value=synthetic_read(selected=2)):
             self.dispatch("refresh_map")
         self.assertIsNotNone(self.runtime.reference_payload())
         self.runtime.invalidate("resources-changed")
@@ -423,7 +425,7 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertEqual(conflict["reason"], "current-frame-floor-conflict")
         self.assertEqual((conflict["observedFloor"], conflict["targetFloor"], conflict["fitAttempted"]), ("1", "2", False))
         self.assertEqual(self.runtime.snapshot()["poseResult"]["status"], "rejected")
-        with patch("map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=None)):
+        with patch("floor_control_region.locate_vertical_floor_controls", return_value=dict(selectedFloor=None)):
             self.assertTrue(self.dispatch("set_floor", floor="2")["success"])
             state = self.runtime.snapshot()
             self.assertEqual((state["render"]["floor"], state["render"]["observedFloor"]), ("2", ""))
@@ -456,8 +458,7 @@ class LiveRuntimeContracts(unittest.TestCase):
                 self.dispatch("set_game_mode", mode=mode)
                 self.dispatch("start_round")
                 engine = self.runtime._engine
-                engine.qt_map_ui.observe = lambda *a: dict(mapOpen=True, floor=None)
-                with patch("map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=None)):
+                with patch("floor_control_region.locate_vertical_floor_controls", return_value=dict(selectedFloor=None)):
                     result = self.dispatch("capture_now")
                     self.assertEqual(result["reason"], "current-floor-unavailable")
                     self.assertTrue(self.runtime.snapshot()["mapOpen"])
@@ -480,7 +481,7 @@ class LiveRuntimeContracts(unittest.TestCase):
             self.assertTrue(release.wait(5))
             return copy.deepcopy(self.fit)
         with patch.object(_AlignmentHost, "fit", side_effect=slow_fit), patch(
-                "map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=2)):
+                "floor_control_region.locate_vertical_floor_controls", return_value=synthetic_read(selected=2)):
             worker = threading.Thread(target=lambda: result.append(self.dispatch("set_floor", floor="2")))
             worker.start()
             try:
@@ -839,9 +840,16 @@ class LiveRuntimeContracts(unittest.TestCase):
 
     def test_capture_context_change_after_solver_rejects_commit(self):
         self.capture.generation = 5
-        self.capture.is_current = lambda context, generation=None: False
+        valid = [True]
+        self.capture.is_current = lambda context, generation=None: valid[0] and generation == 5
+        def change_after_solver(*args):
+            result = copy.deepcopy(self.fit)
+            valid[0] = False
+            return result
         self.dispatch("start_round")
-        result = self.dispatch("capture_now")
+        with patch.object(_AlignmentHost, "fit", side_effect=change_after_solver) as fit:
+            result = self.dispatch("capture_now")
+        fit.assert_called_once()
         self.assertFalse(result["success"])
         self.assertEqual(result["reason"], "capture-context-changed")
         self.assertFalse(self.runtime.snapshot()["core"]["displayAuthorized"])
@@ -900,7 +908,7 @@ class LiveRuntimeContracts(unittest.TestCase):
             if not release.wait(5):
                 raise AssertionError("test release timeout")
             return copy.deepcopy(self.fit)
-        with patch("map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=2)), \
+        with patch("floor_control_region.locate_vertical_floor_controls", return_value=synthetic_read(selected=2)), \
              patch.object(_AlignmentHost, "fit", side_effect=slow):
             worker = threading.Thread(target=lambda: output.append(self.dispatch("refresh_map")))
             worker.start(); self.assertTrue(entered.wait(5))
@@ -943,7 +951,7 @@ class LiveRuntimeContracts(unittest.TestCase):
         first = self.begin_and_capture()
         events = []
         self.runtime.set_event_callback(lambda row: events.append(row) if row["event"] != "recognition-diagnostic" else None)
-        with patch("map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=None)), \
+        with patch("floor_control_region.locate_vertical_floor_controls", return_value=dict(selectedFloor=None)), \
              patch.object(_AlignmentHost, "fit", side_effect=AssertionError("unknown must not solve")):
             unknown = self.dispatch("refresh_map")
         self.assertEqual(unknown["reason"], "current-floor-unavailable")
@@ -1231,13 +1239,18 @@ class SharedFloorPolicyContracts(unittest.TestCase):
         self.assertTrue(same.clear_floor_required)
         self.assertFalse(same.apply_target)
 
-    def test_strong_highlight_thresholds_remain_diagnostic_without_added_frames(self):
+    def test_vertical_evidence_uses_current_labels_without_legacy_highlight_scores(self):
         from floor_observation_policy import read_floor_evidence
-        for margin, score, strong in [(12., 32., True), (11.99, 32., False), (12., 31.99, False)]:
-            evidence = read_floor_evidence(dict(selectedFloor=1, layout="localized-triplet",
-                margin=margin, scores={"1": score}), [])
-            self.assertEqual(evidence.strong_latest, strong)
-            self.assertEqual(evidence.stable, 1)
+        from s0_vertical_controls import bind_control_geometry
+        for mode in ("nightmare", "difficult"):
+            for selected in ((2, 1, -1) if mode == "nightmare" else (2, 1)):
+                read = bind_control_geometry(synthetic_read(mode, selected), mode,
+                    (1280, 720), map_open=True)
+                self.assertNotIn("margin", read)
+                self.assertNotIn("scores", read)
+                evidence = read_floor_evidence(read, [])
+                self.assertEqual(evidence.stable, selected)
+                self.assertFalse(evidence.strong_latest)
 
 
 if __name__ == "__main__":

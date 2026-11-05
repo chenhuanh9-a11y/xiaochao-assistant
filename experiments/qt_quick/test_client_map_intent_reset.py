@@ -80,8 +80,7 @@ class MapIntentResetTests(unittest.TestCase):
             with self.subTest(mode=mode), self.chain(mode) as (owner, live, keys, events, actions):
                 self.press(keys)
                 owner.app.processEvents()
-                detector = (patch("map_interface_observation.detect_map_interface", return_value=dict(detected=False))
-                    if mode == "nightmare" else patch.object(live.runtime._engine.qt_map_ui, "observe", return_value=dict(mapOpen=False)))
+                detector = patch("map_interface_observation.detect_map_interface", return_value=dict(detected=False))
                 with detector:
                     live.dispatch("refresh_map")
                     owner.app.processEvents()

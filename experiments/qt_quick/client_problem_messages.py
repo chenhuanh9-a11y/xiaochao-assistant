@@ -101,7 +101,7 @@ def operation_problem(receipt, state):
         elif shape == 'capture-shape-aspect':
             title, phase = '游戏窗口比例过窄', 'map-preparation'
             summary = size + '当前宽高比低于 1.25。请适当加宽游戏窗口（宽度至少为高度的 1.25 倍），再打开地图重试。'
-        elif preparation_observation.get('mapDetected') and preparation_observation.get('floorLayout') == 'unlocalized':
+        elif preparation_observation.get('mapDetected') and preparation_observation.get('floorLayout') in {'unlocalized', 'vertical-floor-read-only'}:
             title, phase = '尚未定位楼层控件', 'floor'
             summary = size + '已看到地图，但尚未定位楼层按钮。请确保楼层按钮未被遮挡，等待地图展开稳定后重试。'
         elif raw == 'current-floor-unavailable':

@@ -1,9 +1,10 @@
-"""Same synthetic inputs against pinned diagnostic and approved feature baselines.
+"""Current vertical diagnostics and retained algorithms against pinned baselines.
 
 OS/pixels/resources/fit measurements are fixtures. Capture guards and runtime
 commit/pose decisions run unchanged. This is not a real game test.
 """
 import copy
+from contextlib import ExitStack
 import hashlib
 import importlib.util
 import json
@@ -20,6 +21,8 @@ import numpy as np
 import client_live_runtime as current
 from difficult_map_ui import DifficultMapUI
 from recognition_diagnostics import bounded_recognition, scale_observations
+from floor_control_region import locate_vertical_floor_controls
+from test_client_floor_region import column, ORDERS, REGION
 from test_client_live_runtime import FixtureCapture, fixture_engine
 
 ROOT = Path(__file__).parents[2]
@@ -80,7 +83,7 @@ class NoninterferenceTests(unittest.TestCase):
         self.assertTrue(hasattr(module, 'DifficultMapUI'))
         self.assertEqual(MANIFEST['sourceCommit'], BASE)
 
-    def test_same_pixels_difficult_scales_and_decisions_are_equal(self):
+    def test_retained_template_algorithm_matches_pinned_fixture(self):
         with tempfile.TemporaryDirectory() as folder:
             one = np.zeros((22, 18), np.uint8); two = one.copy()
             cv2.putText(one, '1', (2,18), cv2.FONT_HERSHEY_SIMPLEX, .6, 255, 2)
@@ -112,18 +115,64 @@ class NoninterferenceTests(unittest.TestCase):
                 self.assertIn('glyphs',compact['scales'][0])
 
 
-    def test_same_pixels_nightmare_decision_and_floor_are_equal(self):
+    def test_unchanged_canvas_measurements_match_pinned_algorithms(self):
         import map_interface_observation as after
         rng = np.random.default_rng(12)
-        for width,height in ((800,600),(1280,720),(1280,960)):
-            for frame in (np.zeros((height,width,3),np.uint8), rng.integers(0,256,(height,width,3),dtype=np.uint8)):
-                for name in ('detect_selected_floor','detect_map_interface'):
-                    original = getattr(self.before_observation,name)(frame)
-                    observed = getattr(after,name)(frame)
-                    for key,value in original.items(): self.assertEqual(value,observed[key],key)
+        for width, height in ((800, 600), (1280, 720), (1280, 960)):
+            self.assertEqual(self.before_observation.map_interface_shape(width, height),
+                             after.map_interface_shape(width, height))
+            for frame in (np.zeros((height, width, 3), np.uint8),
+                          rng.integers(0, 256, (height, width, 3), dtype=np.uint8)):
+                for name in ("backdrop_ratio", "backdrop_texture"):
+                    self.assertEqual(getattr(self.before_observation, name)(frame),
+                                     getattr(after, name)(frame), name)
 
-    def _runtime_result(self, module, mode, fit_success, live):
+    def test_current_vertical_pixels_are_identical_with_diagnostics_off_on(self):
+        rng = np.random.default_rng(12)
+        for mode, order in ORDERS:
+            for size in ((800, 600), (1280, 720), (1280, 960)):
+                width, height = size
+                frames = [np.zeros((height, width, 3), np.uint8),
+                          rng.integers(0, 256, (height, width, 3), dtype=np.uint8)]
+                frames.extend(column(order, floor, size=size) for floor in order)
+                for index, frame in enumerate(frames):
+                    with self.subTest(mode=mode, size=size, index=index):
+                        outputs, records, measurements = [], [], []
+                        for enabled in (False, True):
+                            runtime = current.LiveRuntime(engine_factories={}, capture_provider=FixtureCapture())
+                            runtime._mode = mode
+                            events, measured = [], []
+                            runtime._diagnostics = types.SimpleNamespace(
+                                record=lambda *args, **kwargs: measured.append((args, kwargs))) if enabled else None
+                            runtime.set_event_callback(events.append)
+                            with ExitStack() as stack:
+                                if not enabled:
+                                    stack.enter_context(patch.object(runtime, "_recognition_diagnostic"))
+                                # Independent canvas evidence is held constant;
+                                # the current signed-pixel floor sensor is real.
+                                stack.enter_context(patch("map_interface_observation.detect_map_interface",
+                                    return_value=dict(detected=True)))
+                                outputs.append(runtime._observe(fixture_engine(mode), frame))
+                            runtime.shutdown()
+                            records.append([row for row in events if row["event"] == "recognition-diagnostic"])
+                            measurements.append(measured)
+                        self.assertEqual(outputs[0], outputs[1])
+                        self.assertFalse(records[0])
+                        self.assertTrue(records[1])
+                        self.assertFalse(measurements[0])
+                        self.assertTrue(measurements[1])
+                        # Signed-glyph positives are validated at 16:9. The
+                        # stretched 4:3 inputs still check diagnostic parity
+                        # when the current sensor rejects their glyph shapes.
+                        if index >= 2 and size == (1280, 720):
+                            self.assertEqual(outputs[1][2]["selectedFloor"], order[index - 2])
+                        for row in records[1]:
+                            self.assertLessEqual(len(json.dumps(row["recognitionDiagnostics"],
+                                separators=(",", ":")).encode()), 2048)
+
+    def _runtime_result(self, module, mode, fit_success, live, *, diagnostics=True):
         capture, engine = FixtureCapture(), fixture_engine(mode)
+        capture.frame = column(dict(ORDERS)[mode], 1, size=(1280, 720))
         capture.generation = 3
         capture.is_current = lambda context, generation=None: generation == 3
         runtime = module.LiveRuntime(engine_factories={mode:lambda:engine},capture_provider=capture,
@@ -136,9 +185,20 @@ class NoninterferenceTests(unittest.TestCase):
             selectedRouteCurrentFrameResidual=dict(verified=True,poseVerifiedAgainstCanonicalGeometry=True,
                 profileRenderDerivedFromCanonical=True,coordinatePackId='fixture-pack',
                 validationBasis='shared-canonical-geometry-current-frame'))
-        with patch('map_interface_observation.detect_map_interface',return_value={'detected':True}), \
-             patch('map_interface_observation.detect_selected_floor',return_value={'selectedFloor':1}), \
-             patch.object(module._AlignmentHost,'fit',return_value=copy.deepcopy(fit)):
+        with ExitStack() as stack:
+            stack.enter_context(patch('map_interface_observation.detect_map_interface', return_value={'detected': True}))
+            stack.enter_context(patch.object(module._AlignmentHost, 'fit', return_value=copy.deepcopy(fit)))
+            if not diagnostics:
+                stack.enter_context(patch.object(runtime, '_recognition_diagnostic'))
+            if module is not current:
+                # The old UI detector is intentionally retired. Supply the
+                # current observation contract to the pinned downstream pose
+                # pipeline; this comparison makes no old-pixel parity claim.
+                from s0_vertical_controls import observe_s0_map
+                def current_observation(owner, observed_engine, frame):
+                    result, reading = observe_s0_map(frame, observed_engine.pack.mode)
+                    return result, result.get('floor'), reading
+                stack.enter_context(patch.object(module.LiveRuntime, '_observe', current_observation))
             start=runtime.dispatch('start_round',{})
             self.assertTrue(start['success'],start)
             result=runtime.dispatch('capture_now',{})
@@ -152,7 +212,7 @@ class NoninterferenceTests(unittest.TestCase):
             runtime.shutdown()
         return normalized, events
 
-    def test_same_inputs_pose_decisions_and_live_authority_match_main(self):
+    def test_current_observations_preserve_pinned_downstream_pose_decisions(self):
         for mode in ('nightmare','difficult'):
             for success in (False,True):
                 for live in (False,True):
@@ -166,11 +226,36 @@ class NoninterferenceTests(unittest.TestCase):
                             self.assertNotIn('captureDiagnostics',row)
                             self.assertLessEqual(len(json.dumps(row['recognitionDiagnostics'],separators=(',',':')).encode()),2048)
 
+    def test_current_pose_decisions_and_live_authority_match_with_diagnostics_off_on(self):
+        for mode in ('nightmare', 'difficult'):
+            for success in (False, True):
+                for live in (False, True):
+                    with self.subTest(mode=mode, success=success, live=live):
+                        before, quiet = self._runtime_result(current, mode, success, live, diagnostics=False)
+                        after, events = self._runtime_result(current, mode, success, live)
+                        self.assertEqual(before, after)
+                        self.assertFalse(any(row['event'] == 'recognition-diagnostic' for row in quiet))
+                        self.assertTrue(any(row['event'] == 'recognition-diagnostic' for row in events))
+
     def test_control_band_is_absent_when_small_frame_skips_all_pixel_detectors(self):
         from recognition_diagnostics import control_band
         frame=np.zeros((300,400,3),np.uint8)
         self.assertIsNone(control_band(frame,'nightmare',dict(detectionMode='shape-rejected'),
             dict(layout='unlocalized')))
+
+    def test_control_band_uses_only_the_current_vertical_detector_region(self):
+        from recognition_diagnostics import control_band
+        frame = column((2, 1, -1), 1)
+        reading = locate_vertical_floor_controls(frame, 'nightmare')
+        self.assertEqual(control_band(frame, 'nightmare', {}, reading), [1440, 162, 346, 486])
+        # Historical scalar bands and template glyphs cannot widen current
+        # evidence, and malformed regions never fall back to the full frame.
+        old = dict(layout='localized-triplet', centers=[.75, .78, .81],
+                   controlVertical=dict(regionTop=.01, regionHeight=.08))
+        observation = dict(glyphs=[dict(center=[1500, 50])])
+        self.assertIsNone(control_band(frame, 'nightmare', observation, old))
+        for region in ((.9, .1, .2, .2), (0., 0., float('nan'), 1.), (0., 0., 0., 1.)):
+            self.assertIsNone(control_band(frame, 'nightmare', {}, dict(controlSearchRegion=region)))
 
     def test_foreground_and_cancellation_capture_authority_match_approved_baselines(self):
         import client_capture
@@ -222,7 +307,6 @@ class NoninterferenceTests(unittest.TestCase):
             self.assertEqual(expected, after)
 
     def _recapture_with_diagnostics(self, mode, boundary, enabled):
-        from contextlib import ExitStack
         from types import SimpleNamespace
         from test_client_live_runtime import LiveRuntimeContracts
         from test_client_capture_full import Native, Backend
@@ -236,8 +320,18 @@ class NoninterferenceTests(unittest.TestCase):
                     client_frame_is_blank=lambda pixels: not pixels.any())))
             fixture.setUp()
             stack.callback(fixture.doCleanups)
+            stack.enter_context(patch('floor_control_region.locate_vertical_floor_controls',
+                wraps=locate_vertical_floor_controls))
             runtime = fixture.runtime
             native, backend = Native(), Backend()
+            backend.current = ClientCaptureContext((1280, 720), (10, 20, 1290, 740), 96)
+            def capture_column(hwnd, region):
+                backend.captures.append((hwnd, region))
+                if backend.on_capture:
+                    backend.on_capture()
+                left, top, right, bottom = region
+                return column(dict(ORDERS)[mode], 1, size=(right-left, bottom-top))
+            backend.capture = capture_column
             capture = ClientCaptureProvider(native, backend)
             stack.callback(capture.shutdown)
             capture.bindFullClient(42)
@@ -252,7 +346,8 @@ class NoninterferenceTests(unittest.TestCase):
             if mode == 'difficult':
                 self.assertTrue(fixture.dispatch('set_context', mode=mode)['success'])
             self.assertTrue(fixture.dispatch('start_round')['success'])
-            self.assertTrue(fixture.dispatch('capture_now')['success'])
+            initial = fixture.dispatch('capture_now')
+            self.assertTrue(initial['success'], initial)
             old = runtime.snapshot()['pendingRenderToken']
             before = len(backend.captures)
             native.foreground_window = lambda: 77
@@ -292,31 +387,45 @@ class NoninterferenceTests(unittest.TestCase):
                     self.assertEqual(self._recapture_with_diagnostics(mode, boundary, False),
                                      self._recapture_with_diagnostics(mode, boundary, True))
 
-    def test_difficult_region_override_is_actual_logged_floor_and_source(self):
-        from test_client_floor_region import hud, REGION
+    def test_vertical_region_override_is_actual_logged_floor_and_source(self):
         from diagnostic_storage import append_record
-        frame=hud((1,2),2)
-        settings=dict(floorControlMode='region',floorControlRegion=dict(rect=REGION,clientSize=[1920,1080]))
-        outputs=[];events=[]
-        for module in (self.before_runtime,current):
-            engine=fixture_engine('difficult')
-            engine.qt_map_ui.observe=lambda frame: dict(mapOpen=True,floor=None,reason='fixture')
-            runtime=module.LiveRuntime(engine_factories={'difficult':lambda:engine})
-            runtime._settings=settings;runtime.set_event_callback(events.append)
-            outputs.append(runtime._observe(engine,frame))
-        self.assertEqual(outputs[0],outputs[1])
-        self.assertEqual(outputs[1][1],'2')
-        evidence=next(e['recognitionDiagnostics'] for e in events if e['event']=='recognition-diagnostic')
-        self.assertEqual(evidence['floor'],2)
-        self.assertEqual(evidence['floorRead']['floorSource'],'region')
-        self.assertEqual(evidence['floorRead']['regionRead']['selectedFloor'],2)
-        with tempfile.TemporaryDirectory() as folder:
-            path=Path(folder)/'events-region.jsonl'
-            append_record(path,dict(event='recognition-diagnostic',recognitionDiagnostics=evidence))
-            saved=json.loads(path.read_bytes())['recognitionDiagnostics']
-        self.assertEqual(saved['floor'],2)
-        self.assertEqual(saved['floorRead']['floorSource'],'region')
-        self.assertEqual(saved['floorRead']['regionRead']['selectedFloor'],2)
+        for mode, order in ORDERS:
+            with self.subTest(mode=mode):
+                frame = column(order, 2)
+                settings = dict(floorControlMode='region',
+                    floorControlRegion=dict(rect=REGION, clientSize=[1920, 1080]))
+                outputs, diagnostic_events = [], []
+                for enabled in (False, True):
+                    engine = fixture_engine(mode)
+                    runtime = current.LiveRuntime(engine_factories={}, capture_provider=FixtureCapture())
+                    runtime._mode, runtime._settings = mode, settings
+                    events = []
+                    runtime.set_event_callback(events.append)
+                    with ExitStack() as stack:
+                        stack.enter_context(patch('map_interface_observation.detect_map_interface',
+                            return_value=dict(detected=True)))
+                        if not enabled:
+                            stack.enter_context(patch.object(runtime, '_recognition_diagnostic'))
+                        outputs.append(runtime._observe(engine, frame))
+                    runtime.shutdown()
+                    diagnostic_events.append([event['recognitionDiagnostics'] for event in events
+                        if event['event'] == 'recognition-diagnostic'])
+                self.assertEqual(outputs[0], outputs[1])
+                self.assertEqual(outputs[1][1], '2')
+                self.assertFalse(diagnostic_events[0])
+                evidence = diagnostic_events[1][0]
+                self.assertEqual(evidence['observation']['floor'], '2')
+                self.assertEqual(evidence['floorRead']['selectedFloor'], 2)
+                self.assertEqual(evidence['floorRead']['floorSource'], 'region')
+                self.assertEqual(evidence['floorRead']['regionRead']['selectedFloor'], 2)
+                with tempfile.TemporaryDirectory(prefix='qt-vertical-diag-', dir=ROOT) as folder:
+                    path = Path(folder) / 'events-region.jsonl'
+                    append_record(path, dict(event='recognition-diagnostic', recognitionDiagnostics=evidence))
+                    saved = json.loads(path.read_bytes())['recognitionDiagnostics']
+                self.assertEqual(saved['observation']['floor'], '2')
+                self.assertEqual(saved['floorRead']['selectedFloor'], 2)
+                self.assertEqual(saved['floorRead']['floorSource'], 'region')
+                self.assertEqual(saved['floorRead']['regionRead']['selectedFloor'], 2)
 
     def test_bad_diagnostic_sink_does_not_change_verdict(self):
         original=current.LiveRuntime._recognition_diagnostic
@@ -324,7 +433,7 @@ class NoninterferenceTests(unittest.TestCase):
             # Inject inside the metadata builder covered by production catch.
             with patch('recognition_diagnostics.bounded_recognition',side_effect=ValueError('injected')):
                 return original(self,*args,**kwargs)
-        reference,_=self._runtime_result(self.before_runtime,'nightmare',True,True)
+        reference,_=self._runtime_result(current,'nightmare',True,True,diagnostics=False)
         with patch.object(current.LiveRuntime,'_recognition_diagnostic',failing):
             observed,_=self._runtime_result(current,'nightmare',True,True)
         self.assertEqual(reference,observed)

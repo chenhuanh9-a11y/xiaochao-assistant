@@ -14,13 +14,12 @@ from PySide6.QtCore import QObject, Property, Signal, Slot
 from PySide6.QtGui import QImage
 from PySide6.QtQuick import QQuickImageProvider
 
-from floor_control_region import (MODE_FLOORS, locate_floor_row, normalized_region, read_floor_in_region,
+from floor_control_region import (MODE_FLOORS, locate_vertical_floor_controls, normalized_region, read_floor_in_region,
                                   region_for_client)
 
-# Client part shown in the editor. Every supported layout keeps the floor
-# buttons inside the top-right corner, including 4:3 safe-area insets.
-VIEW = (.5, 0., .5, .32)
-DEFAULT_RECT = (.70, .01, .24, .11)
+# Current S0 column in the right-side editor. Other aspect ratios need acceptance.
+VIEW = (.5, 0., .5, .65)
+DEFAULT_RECT = (.75, .15, .18, .45)
 FLOOR_LABELS = {-1: "B1 层", 1: "1 楼", 2: "2 楼"}
 REASONS = {
     "highlight-not-found": "框内没有找到高亮的楼层按钮",
@@ -28,6 +27,8 @@ REASONS = {
     "too-many-buttons": "框内按钮比本模式多，请把框收紧到楼层按钮这一排",
     "region-too-small": "框太小",
     "region-invalid": "框选范围无效",
+    "vertical-labels-unverified": "竖排楼层数字或负号不完整，请框住全部按钮",
+    "columns-ambiguous": "发现多组楼层控件，请缩小框选范围",
 }
 
 
@@ -53,30 +54,22 @@ class FloorRegionImages(QQuickImageProvider):
 
 def suggested_rect(mode, floor_read, size):
     """A starting range around the fixed reading's buttons, else a default."""
-    centers = (floor_read or {}).get("centers")
-    floors = MODE_FLOORS.get(mode, ())
-    if not isinstance(centers, (list, tuple)) or len(centers) != len(floors) or len(centers) < 2:
+    read = floor_read or {}
+    if read.get("controlAxis") == "vertical":
+        # Vertical centers are 2D and in observedOrder, never legacy x slots.
+        try:
+            points = read["centerPoints"]
+            x, y, w, h = read["tileBounds"]
+            ys = [float(point[1]) for point in points]
+            x0, x1 = max(0., x - .3 * w), min(1., x + 1.3 * w)
+            y0, y1 = max(0., min(ys) - .7 * h), min(1., max(ys) + .7 * h)
+            rect = normalized_region((x0, y0, x1 - x0, y1 - y0))
+            if rect is not None:
+                return rect
+        except (KeyError, TypeError, ValueError):
+            pass
         return DEFAULT_RECT
-    try:
-        centers = sorted(float(c) for c in centers)
-    except (TypeError, ValueError):
-        return DEFAULT_RECT
-    pitch = (centers[-1] - centers[0]) / (len(centers) - 1)
-    if not pitch > 0:
-        return DEFAULT_RECT
-    # The selected button keeps its place while the row slides, so any button
-    # may come to rest up to (count - 1) pitches either side of it.
-    reach = (len(floors) - 1) * pitch + .7 * pitch
-    vertical = (floor_read or {}).get("controlVertical") or floor_read or {}
-    top = vertical.get("regionTop")
-    height = vertical.get("regionHeight")
-    if not isinstance(top, (int, float)) or not isinstance(height, (int, float)) or height <= 0:
-        top, height = DEFAULT_RECT[1], DEFAULT_RECT[3]
-    selected = floor_read.get("selectedFloor")
-    anchor = centers[floors.index(selected)] if selected in floors else sum(centers) / len(centers)
-    x0, x1 = max(0., anchor - reach), min(1., anchor + reach)
-    y0, y1 = max(0., top - .3 * height), min(1., top + 1.3 * height)
-    return normalized_region((x0, y0, x1 - x0, y1 - y0)) or DEFAULT_RECT
+    return DEFAULT_RECT
 
 
 class FloorRegionService(QObject):
@@ -128,14 +121,12 @@ class FloorRegionService(QObject):
         self._serial += 1
         self._image_url = f"image://floorregion/{self._serial}"
         saved = region_for_client(self._settings.values.get("floorControlRegion"), (w, h))
-        centers = (floor_read or {}).get("centers")
-        if not isinstance(centers, (list, tuple)) or len(centers) != len(MODE_FLOORS.get(mode, ())):
-            # The fixed detector missed the row; start from the automatic search.
-            located = locate_floor_row(frame, mode)
+        if ((floor_read or {}).get("controlAxis") != "vertical"
+                or (floor_read or {}).get("selectedFloor") not in MODE_FLOORS.get(mode, ())):
+            located = locate_vertical_floor_controls(frame, mode)
             if located["selectedFloor"] is not None:
                 bounds = located["tileBounds"]
-                floor_read = dict(selectedFloor=located["selectedFloor"], centers=located["centers"],
-                                  regionTop=bounds[1], regionHeight=bounds[3])
+                floor_read = dict(located, regionTop=bounds[1], regionHeight=bounds[3])
         self._message = ""
         self._set_draft(saved or suggested_rect(mode, floor_read, (w, h)))
         return True

@@ -3,7 +3,7 @@
 Provider inventory/cache and missing-resource parsing are production; successful
 engines, capture, windows and fit are synthetic. No native IO or user assets.
 """
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 import tempfile
 import time
@@ -88,7 +88,7 @@ class ResourceFeedbackTests(unittest.TestCase):
                 # Successful map-open crosses real Session worker and runtime;
                 # only visual detection/solver evidence is synthetic.
                 with patch("map_interface_observation.detect_map_interface", return_value=dict(detected=True)), \
-                     patch("map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=1)), \
+                     patch("floor_control_region.locate_vertical_floor_controls", return_value=runtime_fixture.synthetic_read(mode)), \
                      patch.object(runtime_fixture._AlignmentHost, "fit", return_value=dict(success=False)):
                     self.press(k); self.drain(o,s)
                 self.assertEqual(a[-1][0], "map")
@@ -158,50 +158,81 @@ class ResourceFeedbackTests(unittest.TestCase):
             self.assertEqual(len(self.resource_notices(n)), 2)
             self.assertEqual(self.resource_notices(n)[0], self.resource_notices(n)[1])
 
-    def test_difficult_missing_ui_template_is_distinct_from_missing_pack(self):
-        with self.chain("difficult") as (o,c,s,r,f,k,n,a,root):
-            from client_providers import _load_difficult_map_ui
-            def build(mode):
-                if mode == "difficult": _load_difficult_map_ui(root / "arbitrary-fixture-name.npz")
-                return runtime_fixture.fixture_engine(mode)
-            f._build = build
-            s.dispatch("inspect_engine_resources"); self.drain(o,s)
-            self.assertIn("FileNotFoundError", s.snapshot["liveUnavailableReason"])
-            self.press(k); self.press(k)
-            self.assertIn("困难模式", c.runtimeStatus)
-            self.assertIn("模板", c.runtimeStatus)
-            self.assertEqual(len(self.resource_notices(n)), 1)
-            self.assertNotIn(str(root), self.resource_notices(n)[0][1])
-            # Fixing templates/readiness rearms an identical later failure.
-            f._build = runtime_fixture.fixture_engine
-            c._resources_changed()
-            s.dispatch("inspect_engine_resources"); self.drain(o,s)
-            self.assertTrue(s.snapshot["liveEngineAvailable"])
-            f._build = build
-            c._resources_changed()
-            s.dispatch("inspect_engine_resources"); self.drain(o,s)
-            self.press(k)
-            self.assertEqual(len(self.resource_notices(n)), 2)
-
-    def test_template_damage_and_permission_keep_original_error_without_claiming_missing(self):
-        from client_providers import ProviderUnavailable, _load_difficult_map_ui
-        for error in (ValueError("fixture-damaged"), PermissionError("fixture-denied")):
-            with self.subTest(error=type(error).__name__), self.chain("difficult") as (o,c,s,r,f,k,n,a,root):
-                with patch("difficult_map_ui.DifficultMapUI", side_effect=error):
-                    with self.assertRaises(ProviderUnavailable) as raised:
-                        _load_difficult_map_ui(root / "arbitrary-fixture-name.npz")
-                    self.assertIs(raised.exception.__cause__, error)
-                    self.assertIn(type(error).__name__, str(raised.exception))
-                    def build(mode):
-                        if mode == "difficult": return _load_difficult_map_ui(root / "arbitrary-fixture-name.npz")
-                        return runtime_fixture.fixture_engine(mode)
+    def test_missing_retained_resources_keep_mode_reason_redaction_and_ready_rearm(self):
+        from client_providers import _read
+        retained_resources = {
+            "nightmare": ("references/nightmare-map-pack.json",
+                          "references/nightmare-shared-structure-index.json",
+                          "references/native-similarity-groups.json"),
+            "difficult": ("difficult-native-manifest.json",
+                          "references/native-similarity-groups.json"),
+        }
+        for mode, resources in retained_resources.items():
+            for relative in resources:
+                with self.subTest(mode=mode, resource=relative), self.chain(mode) as (o,c,s,r,f,k,n,a,root):
+                    def build(current_mode):
+                        if current_mode == mode: _read(root, relative)
+                        return runtime_fixture.fixture_engine(current_mode)
                     f._build = build
                     s.dispatch("inspect_engine_resources"); self.drain(o,s)
-                self.press(k); self.press(k)
-                self.assertIn(type(error).__name__, s.snapshot["liveUnavailableReason"])
-                self.assertIn("模板未通过校验或无法读取", c.runtimeStatus)
-                self.assertNotIn("缺少", c.runtimeStatus)
-                self.assertEqual(len(self.resource_notices(n)), 1)
+                    reason = s.snapshot["liveUnavailableReason"]
+                    self.assertTrue(reason.startswith(mode + ":ProviderUnavailable:"), reason)
+                    self.assertIn("missing-resource:" + relative, reason)
+                    self.press(k); self.press(k)
+                    self.assertIn("困难模式" if mode == "difficult" else "噩梦模式", c.runtimeStatus)
+                    self.assertIn("缺少", c.runtimeStatus)
+                    self.assertEqual(len(self.resource_notices(n)), 1)
+                    self.assertNotIn(str(root), self.resource_notices(n)[0][1])
+                    self.assertNotIn(relative, self.resource_notices(n)[0][1])
+                    # A real resource-change/recheck rearms the identical reason.
+                    f._build = lambda current_mode: runtime_fixture.fixture_engine(current_mode)
+                    c._resources_changed()
+                    s.dispatch("inspect_engine_resources"); self.drain(o,s)
+                    self.assertTrue(s.snapshot["liveEngineAvailable"])
+                    f._build = build
+                    c._resources_changed()
+                    s.dispatch("inspect_engine_resources"); self.drain(o,s)
+                    self.press(k)
+                    self.assertEqual(len(self.resource_notices(n)), 2)
+                    self.assertEqual(self.resource_notices(n)[0], self.resource_notices(n)[1])
+                    self.assertFalse(k._map_input.open_intent)
+
+    def test_read_damage_permission_and_file_disappearance_keep_original_error(self):
+        from client_providers import ProviderUnavailable, _read
+        for mode in ("nightmare", "difficult"):
+            for error_type in (ValueError, PermissionError, FileNotFoundError):
+                with self.subTest(mode=mode, error=error_type.__name__), self.chain(mode) as (o,c,s,r,f,k,n,a,root):
+                    relative = "references/nightmare-map-pack.json" if mode == "nightmare" else "difficult-native-manifest.json"
+                    path = root / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("{damaged" if error_type is ValueError else "{}", encoding="utf8")
+                    error = error_type(str(root / "private-fixture-detail"))
+                    def build(current_mode):
+                        if current_mode == mode: _read(root, relative)
+                        return runtime_fixture.fixture_engine(current_mode)
+                    f._build = build
+                    # Malformed JSON is parsed normally. IO failures are injected
+                    # at read_text after the normal is_file admission succeeds.
+                    with patch.object(Path, "read_text", side_effect=error) if error_type is not ValueError else nullcontext():
+                        with self.assertRaises(ProviderUnavailable) as raised:
+                            f[mode]()
+                        self.assertIsInstance(raised.exception.__cause__, error_type)
+                        if error_type is not ValueError:
+                            self.assertIs(raised.exception.__cause__, error)
+                        s.dispatch("inspect_engine_resources"); self.drain(o,s)
+                    self.press(k); self.press(k)
+                    reason = s.snapshot["liveUnavailableReason"]
+                    self.assertTrue(reason.startswith(mode + ":"), reason)
+                    self.assertIn(type(raised.exception.__cause__).__name__, reason)
+                    self.assertIn("困难模式" if mode == "difficult" else "噩梦模式", c.runtimeStatus)
+                    if error_type is FileNotFoundError:
+                        self.assertIn("缺少", c.runtimeStatus)
+                    else:
+                        self.assertIn("未通过校验或无法读取", c.runtimeStatus)
+                        self.assertNotIn("缺少", c.runtimeStatus)
+                    self.assertEqual(len(self.resource_notices(n)), 1)
+                    self.assertNotIn(str(root), self.resource_notices(n)[0][1])
+                    self.assertNotIn("private-fixture-detail", self.resource_notices(n)[0][1])
 
     def test_unready_does_not_block_close_or_management_shortcuts(self):
         with self.chain() as (o,c,s,r,f,k,n,a,root):

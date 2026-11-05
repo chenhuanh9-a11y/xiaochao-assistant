@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT / "work" / "vendor"))
 
 import cv2
 import numpy as np
-from map_interface_observation import (BACKDROP, FLOOR_BUTTON_REGIONS, MAP_INTERFACE_MIN_ASPECT, MAP_INTERFACE_MIN_WIDTH, MAP_INTERFACE_NARROW_BACKDROP, MAP_INTERFACE_WIDE_ASPECT, MAP_REGIONS, _floor_button_layout_in_geometry, _legacy_floor_control_vertical_geometry, _locate_floor_button_layout, backdrop_ratio, backdrop_texture, detect_map_interface, detect_selected_floor, floor_control_vertical_geometry, map_interface_shape, neutral_ratio, region_pixels)
+from map_interface_observation import (BACKDROP, MAP_INTERFACE_MIN_ASPECT, MAP_INTERFACE_MIN_WIDTH, MAP_INTERFACE_NARROW_BACKDROP, MAP_INTERFACE_WIDE_ASPECT, MAP_REGIONS, backdrop_ratio, backdrop_texture, detect_map_interface, detect_selected_floor, map_interface_shape, neutral_ratio, region_pixels)
 from PIL import ImageGrab
 
 from client_space_geometry import (
@@ -579,43 +579,6 @@ def capture_client(hwnd: int) -> tuple[np.ndarray, tuple[int, int, int, int]]:
             bounds = client_rect(hwnd)
             rgb = np.asarray(ImageGrab.grab(bbox=bounds, all_screens=True))
             return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), bounds
-
-
-FLOOR_CONTROL_SAFE_ASPECT = 16.0 / 9.0
-
-
-
-
-
-
-
-
-def _locate_floor_button_centers_in_geometry(
-    frame: np.ndarray, vertical: dict,
-) -> list[float] | None:
-    found = _floor_button_layout_in_geometry(frame, vertical)
-    return found[0] if found is not None else None
-
-
-
-
-def locate_floor_button_centers(frame: np.ndarray) -> list[float] | None:
-    centers, _vertical = _locate_floor_button_layout(frame)
-    return centers
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 @dataclass

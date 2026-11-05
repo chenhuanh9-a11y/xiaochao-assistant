@@ -21,18 +21,6 @@ if APP not in sys.path:
 class ProviderUnavailable(RuntimeError):
     unavailable = True
 
-
-def _load_difficult_map_ui(templates):
-    """Keep the failing stage in cached readiness, without changing validation."""
-    from difficult_map_ui import DifficultMapUI
-    try:
-        return DifficultMapUI(templates)
-    except FileNotFoundError as error:
-        raise ProviderUnavailable(f"difficult-map-ui-template-missing:{type(error).__name__}:{error}") from error
-    except Exception as error:
-        raise ProviderUnavailable(f"difficult-map-ui-template-unavailable:{type(error).__name__}:{error}") from error
-
-
 def _local(root, relative):
     path = (root / str(relative)).resolve()
     if not path.is_relative_to(root):
@@ -50,14 +38,11 @@ def _read(root, relative):
     return data
 
 
-def _build_memory_store(pack, memory_root, resource_root, *, map_ui=None, production=PRODUCTION):
+def _build_memory_store(pack, memory_root, resource_root, *, production=PRODUCTION):
     """Original exemplar policy, with diagnostic stores/seeds kept isolated."""
     from nightmare_candidate import NightmareMemoryStore
-    if pack.mode == "difficult":
-        validator = lambda frame: map_ui.observe(frame).get("mapOpen") is True
-    else:
-        from map_interface_observation import detect_map_interface
-        validator = lambda frame: detect_map_interface(frame).get("detected") is True
+    from s0_vertical_controls import observe_s0_map
+    validator = lambda frame: observe_s0_map(frame, pack.mode)[0].get("detected") is True
     return NightmareMemoryStore(pack, memory_root, sample_validator=validator,
         portable_seed_path=Path(resource_root) / "references" / "nightmare-portable-layout-seeds.json"
         if production else Path(resource_root) / ".qt-no-portable-seeds.json")
@@ -273,11 +258,7 @@ class EngineFactories(dict):
         # Explicit live manual confirmation reuses this store on its worker.
         # Source/test diagnostics retain isolated memory.
         memory_root = runtime_paths().memory_root(mode) if PRODUCTION else root / ".qt-saved-frame-memory" / mode
-        if mode == "difficult":
-            map_ui = _load_difficult_map_ui(native.local(native.interfaces["uiControls"]))
-        else:
-            map_ui = None
-        memory = _build_memory_store(pack, memory_root, root, map_ui=map_ui)
+        memory = _build_memory_store(pack, memory_root, root)
         provider = SharedReferenceProvider(root, resources, {}, native=native)
         engine = engine_type(pack, identity_root=entry_root, identity_profile_id=profile,
             identity_floors=pack.floors, exit_icon_path=exit_icon,
@@ -330,8 +311,6 @@ class EngineFactories(dict):
         optional = OptionalAuthorDisplays(root, pack, catalog, adapters, versions, mode=mode)
         engine.qt_optional_displays = optional
         engine.qt_adapters, engine.qt_catalog = optional.adapters, optional.catalog
-        if mode == "difficult":
-            engine.qt_map_ui = map_ui
         return engine
 
 

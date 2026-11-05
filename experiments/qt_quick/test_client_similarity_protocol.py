@@ -10,6 +10,7 @@ from client_engine import clone_similarity_state, stage_similarity_rank
 import test_client_live_runtime as fixtures
 from client_live_runtime import _AlignmentHost
 from native_similarity_groups import NativeSimilarityState
+from test_s0_vertical_controls import synthetic_read
 
 IDS = ("fixture-map", "second-map")
 
@@ -252,7 +253,7 @@ class SimilarityProtocolTests(unittest.TestCase):
         self.assertTrue(self.runtime.snapshot()["manualGroupMemberHeld"])
         self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
         self.engine.rank.return_value=rows(IDS[1],floor="2")
-        with patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=2)):
+        with patch("floor_control_region.locate_vertical_floor_controls",return_value=synthetic_read(selected=2)):
             result=self.dispatch("capture_now")
             self.assertTrue(result["success"],result)
         state=self.runtime.snapshot()
@@ -382,8 +383,7 @@ class SimilarityProtocolTests(unittest.TestCase):
                 self.assertTrue(self.dispatch("set_route_profile",profileId="another-author")["success"])
                 self.assertEqual(self.runtime.snapshot()["provisionalMapId"],IDS[0])
                 self.engine.rank.return_value=rows(IDS[1],mode,"2")
-                self.engine.qt_map_ui.observe=lambda *a:dict(mapOpen=True,floor="2")
-                with patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=2)):
+                with patch("floor_control_region.locate_vertical_floor_controls",return_value=synthetic_read(mode,2)):
                     self.assertTrue(self.dispatch("set_floor",floor="2")["success"])
                     result=self.dispatch("capture_now");self.assertTrue(result["success"],result)
                 self.assertEqual(self.runtime.snapshot()["provisionalMapId"],IDS[0])
@@ -457,8 +457,7 @@ class SimilarityProtocolTests(unittest.TestCase):
                 target=self.group_choice(IDS[0])["pendingSiblingToken"]
                 self.assertTrue(self.runtime.acknowledge_sibling(target,True)["success"])
                 self.engine.rank.return_value=rows(IDS[1],mode,"2")
-                self.engine.qt_map_ui.observe=lambda *a:dict(mapOpen=True,floor="2")
-                with patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=2)):
+                with patch("floor_control_region.locate_vertical_floor_controls",return_value=synthetic_read(mode,2)):
                     self.dispatch("set_floor",floor="2")
                     result=self.dispatch("capture_now");self.assertTrue(result["success"],result)
                 self.assertEqual(self.runtime.snapshot()["currentGroupMemberId"],IDS[0])
@@ -654,7 +653,7 @@ class SimilarityProtocolTests(unittest.TestCase):
         self.assertFalse(state["displayAuthorized"])
         self.assertIsNone(self.runtime.reference_payload())
         self.engine.rank.return_value=rows(IDS[1],floor="2")
-        with patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=2)):
+        with patch("floor_control_region.locate_vertical_floor_controls",return_value=synthetic_read(selected=2)):
             result=self.dispatch("capture_now")
             self.assertTrue(result["success"],result)
         self.assertEqual(self.runtime.snapshot()["provisionalMapId"],IDS[0])
@@ -816,20 +815,20 @@ class SimilarityProtocolTests(unittest.TestCase):
             root = Path(temp)
             for mode in ("nightmare", "difficult"):
                 pack = SimpleNamespace(mode=mode, by_id={})
-                ui = SimpleNamespace(observe=Mock(return_value=dict(mapOpen=True)))
-                with patch("map_interface_observation.detect_map_interface", return_value=dict(detected=True)) as detect:
-                    memory = _build_memory_store(pack, root / mode, root / "resources", map_ui=ui, production=True)
+                with patch("s0_vertical_controls.observe_s0_map", return_value=(dict(detected=True), {})) as observe:
+                    memory = _build_memory_store(pack, root / mode, root / "resources", production=True)
                     self.assertIsInstance(memory, NightmareMemoryStore)
                     self.assertEqual(memory.portable_seed_path, root / "resources/references/nightmare-portable-layout-seeds.json")
                     self.assertTrue(memory.sample_validator(self.capture.frame))
-                    if mode == "nightmare":
-                        detect.return_value = dict(detected=False)
-                    else:
-                        ui.observe.return_value = dict(mapOpen=False)
-                    self.assertFalse(memory.sample_validator(self.capture.frame))
-                    isolated = _build_memory_store(pack, root / "isolated", root / "resources", map_ui=ui, production=False)
+                    observe.assert_called_once_with(self.capture.frame, mode)
+                    for observation in (dict(detected=False), dict(detected=None), dict(detected=1), {}):
+                        observe.return_value = (observation, {})
+                        self.assertFalse(memory.sample_validator(self.capture.frame))
+                    isolated = _build_memory_store(pack, root / "isolated", root / "resources", production=False)
                     self.assertEqual(isolated.portable_seed_path, root / "resources/.qt-no-portable-seeds.json")
+                    self.assertNotEqual(isolated.root, memory.root)
                     self.assertFalse(memory.log_path.exists())
+                    self.assertFalse(isolated.log_path.exists())
 
     def test_initial_none_still_cannot_authorize_a_logical_group(self):
         self.prepare_group();self.engine.rank.return_value=[]

@@ -17,6 +17,7 @@ from test_client_drag_probe_presentation import DragProbePresentationContracts
 class PreparationDiagnosticContracts(unittest.TestCase):
     mode = "nightmare"
     setUp = DragProbePresentationContracts.setUp
+
     dispatch = DragProbePresentationContracts.dispatch
     _stop_timers = DragProbePresentationContracts._stop_timers
     _cleanup_input_session = DragProbePresentationContracts._cleanup_input_session
@@ -41,7 +42,9 @@ class PreparationDiagnosticContracts(unittest.TestCase):
         return [row for row in self.traces if row.get("stage") == "map-preparation"]
 
     def test_capture_oserror_survives_default_log_and_standard_export(self):
-        with tempfile.TemporaryDirectory() as folder:
+        # The real Windows writer pins directory ancestors; workspace fixtures
+        # avoid unrelated user-profile ACLs while exercising the full writer.
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[2]) as folder:
             root = Path(folder)
             service = ProblemsService(SimpleNamespace(work_root=root / "work"),
                 build_fingerprint="TEST", source_commit="a" * 40)
@@ -72,6 +75,8 @@ class PreparationDiagnosticContracts(unittest.TestCase):
                 time.sleep(.001)
             self.coordinator.traceReported.disconnect(service.recordTrace)
             self.assertFalse(service.pendingWrites)
+            self.assertFalse(service.writeError, service.writeErrorDetails)
+            self.assertTrue(service.log_path.is_file(), service.log_path)
             bundle = export_safe_diagnostic_bundle(root, service.log_path.parent,
                 app_version="fixture", build_fingerprint="TEST", destination=root / "diagnostic.zip")
             with zipfile.ZipFile(bundle["path"]) as archive:
@@ -87,8 +92,7 @@ class PreparationDiagnosticContracts(unittest.TestCase):
 
     def test_negative_observation_is_distinct_from_capture_failure(self):
         with patch("map_interface_observation.detect_map_interface", return_value=dict(detected=False, reason="map-ui-not-observed")), \
-                patch("map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=None, reason="no-floor-highlight")), \
-                patch.object(self.engine.qt_map_ui, "observe", return_value=dict(mapOpen=False, floor=None, reason="map-ui-not-observed")):
+                patch("floor_control_region.locate_vertical_floor_controls", return_value=dict(selectedFloor=None, reason="no-floor-highlight")):
             receipt = self.open_first_map()
         self.assertEqual(receipt["reason"], "map-open-preparation-deadline")
         rows = self.rows()
@@ -120,8 +124,7 @@ class PreparationDiagnosticContracts(unittest.TestCase):
             self.backend.current = ClientCaptureContext((1280, 720), (200, 200, 1480, 920), 96)
             return dict(detected=False, mapOpen=False, floor=None, reason="map-ui-not-observed")
         with patch("map_interface_observation.detect_map_interface", side_effect=moved_observation), \
-                patch("map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=None)), \
-                patch.object(self.engine.qt_map_ui, "observe", side_effect=moved_observation):
+                patch("floor_control_region.locate_vertical_floor_controls", return_value=dict(selectedFloor=None)):
             receipt = self.open_first_map()
         self.assertEqual(receipt["reason"], "map-open-preparation-deadline")
         terminal = self.rows()[-1]
@@ -130,8 +133,7 @@ class PreparationDiagnosticContracts(unittest.TestCase):
         self.assertEqual(terminal["diag"]["probe"], 2)
 
     def test_visible_map_unknown_floor_keeps_its_distinct_terminal(self):
-        with patch("map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=None, reason="no-floor-highlight")), \
-                patch.object(self.engine.qt_map_ui, "observe", return_value=dict(mapOpen=True, floor=None, reason="floor-highlight-ambiguous")):
+        with patch("floor_control_region.locate_vertical_floor_controls", return_value=dict(selectedFloor=None, reason="no-floor-highlight")):
             receipt = self.open_first_map()
         self.assertEqual(receipt["reason"], "current-floor-unavailable")
         terminal = self.rows()[-1]

@@ -141,10 +141,9 @@ class DragProbePresentationContracts(unittest.TestCase):
     def test_two_negative_post_drag_observations_still_revoke_display(self):
         token = self.runtime.snapshot()["render"]["token"]
         work = self.queued_probe_after_gesture()
-        # Both mode-specific observation providers return actual negative evidence;
+        # Independent current-map evidence is negative in both modes;
         # the production two-miss policy and final presentation path still run.
-        with patch("map_interface_observation.detect_map_interface", return_value={"detected": False}), \
-                patch.object(self.engine.qt_map_ui, "observe", return_value={"mapOpen": False}):
+        with patch("map_interface_observation.detect_map_interface", return_value={"detected": False}):
             self.finish_worker(work)
             self.assertEqual(self.session.snapshot["lastReceipt"]["reason"], "map-not-observed")
             self.assertTrue(self.runtime.snapshot()["mapOpen"])

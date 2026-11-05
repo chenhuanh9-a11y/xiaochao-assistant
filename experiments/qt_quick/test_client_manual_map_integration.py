@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+from test_s0_vertical_controls import synthetic_read
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -224,7 +225,8 @@ class PickerPreparedRoundLifecycleTests(unittest.TestCase):
         from test_client_live_runtime import FixtureCapture, fixture_engine
         import test_client_coordinator as seams
         with patch("map_interface_observation.detect_map_interface", return_value={"detected": True}), \
-             patch("map_interface_observation.detect_selected_floor", return_value={"selectedFloor": 1}):
+             patch("floor_control_region.locate_vertical_floor_controls",
+                   side_effect=lambda frame, mode, **kw: synthetic_read(mode)):
             original = fixture_engine("difficult")
             original.pack.maps[0].name = "旧资源地图"
             current = {"engine": original}

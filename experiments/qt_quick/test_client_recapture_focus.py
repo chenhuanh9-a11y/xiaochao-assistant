@@ -20,6 +20,7 @@ from PySide6.QtQml import QQmlComponent, QQmlEngine
 from PySide6.QtQuick import QQuickWindow
 from PySide6.QtTest import QTest
 from client_capture import ClientCaptureProvider
+from client_region_capture import ClientCaptureContext
 from client_session import SessionService
 from client_windows import WindowController
 from test_client_capture_full import Backend
@@ -44,6 +45,7 @@ class RecaptureFocusTests(unittest.TestCase):
         self.native.foreground_window = self.native.GetForegroundWindow
         self.native.is_window = self.native.IsWindow
         self.backend = Backend()
+        self.backend.current = ClientCaptureContext((1280, 720), (100, 200, 1380, 920), 96)
         self.capture = ClientCaptureProvider(self.native, self.backend)
         self.capture.bindFullClient(42)
         self.addCleanup(self.capture.shutdown)
@@ -230,8 +232,8 @@ class RecaptureFocusTests(unittest.TestCase):
         self.fixture.settings.values['mode'] = 'difficult'
         self.native.foreground = 77
         before = len(self.backend.captures)
-        with patch.object(self.runtime._engine.qt_map_ui, 'observe', side_effect=[
-                dict(mapOpen=False), dict(mapOpen=False), dict(mapOpen=True, floor='1')]):
+        with patch('map_interface_observation.detect_map_interface', side_effect=[
+                dict(detected=False), dict(detected=False), dict(detected=True)]):
             self.return_to_game(); self.settle()
         receipt = self.session.snapshot['lastReceipt']
         self.assertTrue(receipt.get('success'), receipt)
