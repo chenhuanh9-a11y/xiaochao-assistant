@@ -129,4 +129,3 @@ def control_hit(cursor, client_bounds, read):
         return hits[0] if len(hits) == 1 else None
     except (TypeError, ValueError):
         return None
-
