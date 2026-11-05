@@ -222,8 +222,12 @@ class SubmissionQtTests(unittest.TestCase):
 
     def test_qml_mouse_form_submit_mine_and_withdraw(self):
         self.sign_in()
+        from client_settings import SettingsService
+        settings = SettingsService(self.root)
+        self.addCleanup(settings.shutdown)
         engine = QQmlApplicationEngine()
         engine.rootContext().setContextProperty("routePlazaService", self.service)
+        engine.rootContext().setContextProperty("settingsService", settings)
         router = Router()
         engine.rootContext().setContextProperty("clientCoordinator", router)
         warnings = []
@@ -244,6 +248,8 @@ ClientAccount {}
             QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, point)
             APP.processEvents()
         try:
+            click("routePointNumbersSwitch")
+            until(lambda: not settings.busy and settings.persistedValues["routePointNumbers"])
             click("plazaSubmit")
             until(lambda: item(window, "routeSubmissionDialog").property("opened"))
             title = item(window, "submissionTitle")
@@ -259,6 +265,7 @@ ClientAccount {}
             until(lambda: item(window, "submissionWithdraw_" + VERSION) is not None)
             click("submissionWithdraw_" + VERSION); self.finish()
             self.assertEqual(self.service.submissions.rows[0]["statusLabel"], "已撤回")
+            self.assertTrue(settings.persistedValues["routePointNumbers"])
             self.assertFalse(warnings, warnings)
         finally:
             window.close(); engine.deleteLater()

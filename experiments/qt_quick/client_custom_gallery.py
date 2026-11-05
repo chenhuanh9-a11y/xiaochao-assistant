@@ -246,7 +246,7 @@ class CustomGalleryService(QObject):
             return dict(x=float(x / z), y=float(y / z))
         lines = [dict(points=[xy(p) for p in line], color=color)
                  for line, color in graph.floor_lines(segments, self._floor)]
-        markers = [dict(**xy((x, y)), label=label) for x, y, label in marker_groups(points, self._floor)]
+        markers = [dict(**xy((x, y)), label=label) for x, y, label in marker_groups(points, self._floor, per_floor=True)]
         state.update(floors=[dict(id=f, name=FLOOR_LABELS[f]) for f in floors], selectedFloor=self._floor,
             imageUrl=QUrl.fromLocalFile(str(asset.image_path)).toString(), imageWidth=int(asset.image_size[0]),
             imageHeight=int(asset.image_size[1]), points=points, lines=lines, markers=markers)

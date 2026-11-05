@@ -36,7 +36,7 @@ class CustomDisplayTests(unittest.TestCase):
         binding_before = dict(reference.metadata["binding"])
         layer = display.layer(profile, "synthetic-map", "1", reference, "nightmare")
         original = render_game_layer(self.service.display_snapshot(gid)["library"], "synthetic-map", "1",
-                                     self.service.display_snapshot(gid, "synthetic-map")["points"])
+                                     self.service.display_snapshot(gid, "synthetic-map")["points"], point_numbers=False)
         self.assertTrue(np.array_equal(layer["pixels"], original))
         self.assertEqual(layer["pixelFormat"], "BGRA")
         self.assertEqual(layer["pixels"][150, 150].tolist(), [253, 242, 234, 255])
@@ -83,8 +83,8 @@ class CustomDisplayTests(unittest.TestCase):
         self.assertFalse(display.eligibility(gid, "difficult")["allowed"])
         self.assertEqual(display.active_gallery(profile, "nightmare"), gid)
         real = render_game_layer
-        def changed(library, mid, floor, points):
-            pixels = real(library, mid, floor, points)
+        def changed(library, mid, floor, points, **kwargs):
+            pixels = real(library, mid, floor, points, **kwargs)
             self.service.path.write_text("external change", encoding="utf-8")
             return pixels
         display.invalidate()

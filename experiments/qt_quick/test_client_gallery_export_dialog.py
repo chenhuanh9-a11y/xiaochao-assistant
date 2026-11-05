@@ -21,6 +21,7 @@ class GallerySaveDialogTests(unittest.TestCase):
         warnings = []
         engine.warnings.connect(lambda rows:warnings.extend(r.toString() for r in rows))
         engine.rootContext().setContextProperty('customGalleryService',self.service)
+        engine.rootContext().setContextProperty('settingsService',self.settings)
         engine.loadData(b'import QtQuick\nimport QtQuick.Window\nWindow { width: 1000; height: 720; visible: true; ClientCustomGallery { anchors.fill: parent } }',QUrl.fromLocalFile(str(Path(__file__).with_name('GallerySaveEvidence.qml'))))
         self.assertTrue(engine.rootObjects(), warnings)
         window = engine.rootObjects()[0]

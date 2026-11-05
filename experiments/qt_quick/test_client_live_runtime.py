@@ -244,6 +244,7 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertIsNone(self.runtime.reference_payload())
 
     def test_static_reference_ignores_live_geometry_and_foreground_but_not_binding_lifetime(self):
+        self._offline_blank_classifier()
         from client_capture import ClientCaptureProvider
         from test_client_capture_full import Backend, Native
         backend, native = Backend(), Native()
@@ -268,6 +269,7 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertIsNone(self.runtime.reference_payload())
 
     def test_static_reference_preparation_survives_pose_geometry_recheck_rejection(self):
+        self._offline_blank_classifier()
         from client_capture import ClientCaptureProvider
         from test_client_capture_full import Backend, Native
         backend, native = Backend(), Native()
@@ -290,6 +292,16 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
         self.dispatch("end_round")
         self.assertIsNone(self.runtime.reference_payload())
+
+    def _offline_blank_classifier(self):
+        if sys.platform != "win32":
+            # These two tests use synthetic Backend pixels, not native DC IO.
+            # Match the existing recapture fixture's bounded native boundary;
+            # leave all geometry, lifetime and presentation assertions intact.
+            native = patch.dict(sys.modules, identityv_live_mvp=SimpleNamespace(
+                client_frame_is_blank=lambda pixels: not pixels.any()))
+            native.start()
+            self.addCleanup(native.stop)
 
     def test_static_reference_still_rejects_current_floor_conflict_and_new_resource_owner(self):
         self.begin_and_capture()

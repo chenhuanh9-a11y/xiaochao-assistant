@@ -83,6 +83,7 @@ class EditorUpgradeTests(fixture.CustomGalleryTests):
         self.call('selectMap', 'synthetic-map')
         engine = QQmlApplicationEngine()
         engine.rootContext().setContextProperty('customGalleryService', self.service)
+        engine.rootContext().setContextProperty('settingsService', self.settings)
         engine.loadData(b'import QtQuick\nimport QtQuick.Window\nWindow { width: 1000; height: 720; visible: true; ClientCustomGallery { anchors.fill: parent; anchors.margins: 24 } }', QUrl.fromLocalFile(str(Path(__file__).with_name('EditorEvidence.qml'))))
         window = engine.rootObjects()[0]
         APP.processEvents()
@@ -120,6 +121,7 @@ class EditorUpgradeTests(fixture.CustomGalleryTests):
         warnings = []
         engine.warnings.connect(lambda rows: warnings.extend(str(r) for r in rows))
         engine.rootContext().setContextProperty('customGalleryService', self.service)
+        engine.rootContext().setContextProperty('settingsService', self.settings)
         engine.loadData(b'import QtQuick\nimport QtQuick.Window\nWindow { width: 1180; height: 820; visible: true; color: "#edf4ff"; ClientCustomGallery { anchors.fill: parent; anchors.margins: 24 } }', QUrl.fromLocalFile(str(Path(__file__).with_name('EditorEvidence.qml'))))
         self.assertTrue(engine.rootObjects(), warnings)
         window = engine.rootObjects()[0]
