@@ -21,10 +21,8 @@ withdraws the display; a changed valid floor captures and scans again. Old
 capture errors and cleanup cannot revoke a newer request's material or pending
 owner. All publication still rechecks runtime and capture ownership.
 
-Automatic candidate floor evidence is limited to B1/B2. The existing manually
-selected S1 map with automatic four-floor observation remains separate. B3/B4
-source-image validation, game accuracy, scaling and latency remain unverified in
-this private preview. The 500 ms identity-lock timing target is inapplicable to
+The private automatic candidate entry accepts B1–B4 after current-frame signed-column qualification. The existing manually
+selected S1 map with automatic four-floor observation remains separate. B3/B4 have static source-image detector replay evidence; their real-time candidate/display behavior, game accuracy, scaling and latency remain unverified in this private preview. The 500 ms identity-lock timing target is inapplicable to
 an unlocked candidate. Synthetic runtime/QML tests are not game validation.
 
 The new installer has its own AppId, application model, default installation

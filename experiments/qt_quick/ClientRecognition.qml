@@ -110,7 +110,7 @@ Item {
                     : page.state.candidateProvisionalDisplayEnabled === true
                     ? "自动候选：每次开图重新筛选，可信位姿自动显示候选整图；可直接切换，不代表地图身份已锁定。"
                     : page.state.candidateStructureAvailable === true && !page.state.manualAlignmentSession
-                    ? "当前画面可读取已验证的 B1/B2 并列出结构候选；请选择并确认本局地图。"
+                    ? "当前画面可读取静态核验过的 B1–B4 并列出结构候选；请选择并确认本局地图。"
                     : "人工选择地图；自动观察当前 B1～B4。B3/B4 已有静态截图核验，实时贴合待测，识别不确定时停止贴合。默认目标不代表已观察。"
                 Layout.fillWidth: true; wrapMode: Text.WordWrap
             }

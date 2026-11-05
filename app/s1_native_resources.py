@@ -13,11 +13,11 @@ from season_map_resources import EXPECTED_LAYOUTS, GROUPS, SOURCE_VERSION
 S1_MODES = ("difficulty2", "difficult", "nightmare")
 S1_FLOORS = ("-1", "-2", "-3", "-4")
 
-# Recorded candidate evaluation remains limited to source-replayed B1/B2.
-# This does not grant live capture, durable identity or official group authority.
+# All four signed rows have static source-image replay for private candidates.
+# This does not grant general live readiness, durable identity or group authority.
 S1_RECORDED_CANDIDATE_CAPABILITY = dict(
     contract="s1-recorded-structure-candidate-floor-v2", candidateReady=True,
-    observedFloors=(-1, -2), contractFloors=(-1, -2, -3, -4),
+    observedFloors=(-1, -2, -3, -4), contractFloors=(-1, -2, -3, -4),
     liveValidated=False)
 MODE_LAYOUTS = {mode: frozenset(mid for mid in EXPECTED_LAYOUTS if int(mid[:3]) == group)
                 for group, (_difficulty, mode) in GROUPS.items()}

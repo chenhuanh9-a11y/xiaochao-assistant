@@ -615,7 +615,7 @@ class LiveRuntime:
             return False
         return (not self._native_s1_candidate_preview or (
             capability.get("contract") == "s1-recorded-structure-candidate-floor-v2"
-            and tuple(capability.get("observedFloors", ())) == (-1, -2)))
+            and tuple(capability.get("observedFloors", ())) == (-1, -2, -3, -4)))
 
     def _candidate_preview_requested(self):
         return self._recorded_s1_provisional_display or self._native_s1_candidate_preview
@@ -2483,7 +2483,7 @@ class LiveRuntime:
                 recordedStreamingEnabled=bool(self._recorded_s1_streaming and self._s1_provisional_enabled()),
                 nativeCandidatePreviewAvailable=candidate_ready and self._native_s1_candidate_preview,
                 candidateStructureAvailable=candidate_ready,
-                candidateSupportedFloors=["-1", "-2"] if candidate_ready else [],
+                candidateSupportedFloors=["-1", "-2", "-3", "-4"] if candidate_ready else [],
                 candidateUnvalidatedFloors=["-3", "-4"] if self._season == "s1" else [],
                 candidateProvisionalDisplayEnabled=self._s1_provisional_enabled(),
                 candidateStreamingEnabled=bool(self._candidate_streaming_requested() and self._s1_provisional_enabled()),
@@ -5207,7 +5207,11 @@ class LiveRuntime:
         if self._season == "s1" and self._s1_candidate_available(engine=engine):
             from s1_floor_observation import detect_s1_floor
             floor_read = detect_s1_floor(frame, season=self._season, mode=engine.pack.mode)
-            if floor_read.get("selectedFloor") is not None and floor_read.get("observedFloorValidated") is not True:
+            selected = floor_read.get("selectedFloor")
+            if selected is not None and (type(selected) is not int or selected not in (-1, -2, -3, -4)
+                    or floor_read.get("observedFloorValidated") is not True
+                    or floor_read.get("automaticFloorEligible") is not True
+                    or floor_read.get("mapOpen") is not True):
                 floor_read = dict(floor_read, selectedFloor=None, reason="s1-floor-current-evidence-unvalidated")
             floor_read.update(controlAxis="vertical", controlGeometryVerified=False,
                               floorSource="current-frame-structure-candidate")

@@ -1,7 +1,8 @@
 """Observe the S1 signed floor column for a manually selected map.
 
 This pixel observer supplies neither map identity nor input/pose permission.
-B1/B2 have source-image replay evidence; B3/B4 remain synthetic-only. The
+All four rows have static source-image replay; real-time candidate/display
+acceptance is separate. The
 glyph geometry checks a narrow first digit and three wider digits, not OCR of
 each numeral. Capture freshness and context ownership remain the caller's job.
 """
@@ -19,7 +20,7 @@ from map_interface_observation import detect_map_interface
 CAPABILITY = "s1-floor-only-manual-map-use"
 ORDER = (-1, -2, -3, -4)
 SEARCH_BOUNDS = (.80, .12, .92, .56)
-SOURCE_REPLAY_FLOORS = (-1, -2)
+SOURCE_REPLAY_FLOORS = (-1, -2, -3, -4)
 
 
 def _result(season, mode, reason, **extra):

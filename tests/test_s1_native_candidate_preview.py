@@ -23,6 +23,7 @@ class NativeCandidateContracts(unittest.TestCase):
     def setUp(self):
         self.registry = Registry()
         self.registry.capability['contract'] = 's1-recorded-structure-candidate-floor-v2'
+        self.registry.capability['observedFloors'] = (-1, -2, -3, -4)
         self.capture = CurrentFixtureCapture()
         self.runtime = LiveRuntime(engine_factories=self.registry, capture_provider=self.capture,
             evidence_kind='live-client-capture', s1_candidate_purpose=_NATIVE_S1_PREVIEW)
