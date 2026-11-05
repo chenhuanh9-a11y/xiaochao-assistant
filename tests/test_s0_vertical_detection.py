@@ -36,6 +36,26 @@ class DetectionPixels(unittest.TestCase):
                         self.assertEqual(locate_floor_row(frame,mode)['selectedFloor'],floor)
                         self.assertEqual(read_floor_in_region(frame,legacy.REGION,mode)['selectedFloor'],floor)
 
+    def test_round_hud_with_adjacent_label_is_not_a_floor_row(self):
+        for diameter in (44, 64, 84):
+            frame=np.full((1080,1920,3),33,np.uint8)
+            center=(1500,200);radius=diameter//2
+            cv2.circle(frame,center,radius,(110,)*3,-1)
+            left=round(center[0]-diameter*.94)
+            cv2.rectangle(frame,(left-3,190),(left+2,209),(225,)*3,-1)
+            with self.subTest(diameter=diameter):
+                self.assertIsNone(locate_floor_row(frame,'difficult')['selectedFloor'])
+                self.assertIsNone(read_floor_in_region(frame,(.65,.12,.20,.15),'difficult')['selectedFloor'])
+
+    def test_incomplete_nightmare_column_does_not_authorize_round_hud(self):
+        frame=column((2,1,-1),1)
+        frame[465:495,1600:1640]=33
+        cv2.circle(frame,(1810,300),42,(110,)*3,-1)
+        cv2.rectangle(frame,(1728,290),(1733,309),(225,)*3,-1)
+        # The declared nightmare context requires all three labels. Removing
+        # B1 is indistinguishable from a genuine two-button difficult column.
+        self.assertIsNone(locate_floor_row(frame,'nightmare')['selectedFloor'])
+
     def test_signed_vertical_pixels_read_each_mode_and_floor(self):
         for size in [(1920,1080),(1600,900),(2560,1440)]:
             for mode,order in [('difficult',(2,1)),('nightmare',(2,1,-1))]:

@@ -66,6 +66,30 @@ def _candidate_tiles(gray: np.ndarray, kernel: int, min_height: float, max_heigh
     return sorted(tiles, key=lambda tile: tile[4], reverse=True)[:limit]
 
 
+def _horizontal_tiles(gray, tiles, *, verified_column=False):
+    """Keep legacy rectangular near-square fills, not nearby round HUD icons.
+
+    Aspect alone cannot distinguish the old square highlight from a circular
+    exit icon. Unsupported near-square silhouettes fail closed; the wide
+    legacy path is unchanged. A verified column retains its stricter filter.
+    """
+    accepted = []
+    for tile in tiles:
+        x, y, w, h, _ = tile
+        if w >= 1.15 * h:
+            accepted.append(tile)
+            continue
+        if verified_column:
+            continue
+        fill = gray[y:y+h, x:x+w] > FILL_LEVEL
+        corner = max(1, round(min(w, h) * .20))
+        corners = (fill[:corner, :corner], fill[:corner, -corner:],
+                   fill[-corner:, :corner], fill[-corner:, -corner:])
+        if float(fill.mean()) >= .85 and all(float(part.mean()) >= .50 for part in corners):
+            accepted.append(tile)
+    return accepted
+
+
 def _labelled_button(gray: np.ndarray, center: float, top: int, width: int, height: int,
                      selected: tuple[int, int]):
     """True/False for a labelled unselected button around ``center``; None if clipped."""
@@ -259,12 +283,12 @@ def read_floor_in_region(frame: np.ndarray, region, mode: str, *, season="s0") -
     if gray is None:
         return _unread("region-too-small")
     # A verified column needs the stricter horizontal check to exclude nearby
-    # circular exit HUD icons. Otherwise preserve legacy tile aspect ratios.
+    # circular exit HUD icons. Otherwise require rectangular near-square fills.
     # The player framed the row: its tile fills a good part of the height.
     height = gray.shape[0]
     tiles = _candidate_tiles(gray, round(height * .12), height * .25, height)
     vertical = _read_vertical(gray, floors, origin, frame.shape[1::-1], "region-highlight-read")
-    horizontal_tiles = [t for t in tiles if t[2] >= 1.15 * t[3]] if vertical.get("selectedFloor") is not None else tiles
+    horizontal_tiles = _horizontal_tiles(gray, tiles, verified_column=vertical.get("selectedFloor") is not None)
     horizontal = _read_row(gray, floors, horizontal_tiles, origin, frame.shape[1::-1], "region-highlight-read")
     if horizontal.get("selectedFloor") is not None and vertical.get("selectedFloor") is not None:
         return _unread("layouts-ambiguous")
@@ -305,7 +329,7 @@ def locate_floor_row(frame: np.ndarray, mode: str, *, season="s0") -> dict:
     width = frame.shape[1]
     tiles = _candidate_tiles(gray, round(width * .0036), width * .010, width * .06)
     vertical = locate_vertical_floor_controls(frame, mode, season=season)
-    horizontal_tiles = [t for t in tiles if t[2] >= 1.15 * t[3]] if vertical.get("selectedFloor") is not None else tiles
+    horizontal_tiles = _horizontal_tiles(gray, tiles, verified_column=vertical.get("selectedFloor") is not None)
     horizontal = _read_row(gray, floors, horizontal_tiles, origin, frame.shape[1::-1], "auto-located")
     if horizontal.get("selectedFloor") is not None and vertical.get("selectedFloor") is not None:
         return _unread("layouts-ambiguous")
