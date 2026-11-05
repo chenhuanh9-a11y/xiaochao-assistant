@@ -208,8 +208,7 @@ class DragGroupChoiceContracts(unittest.TestCase):
 
     def test_fresh_target_capture_without_map_retires_source_and_does_not_fit(self):
         self.finish_drag()
-        with patch("map_interface_observation.detect_map_interface", return_value=dict(detected=False)), \
-                patch.object(self.engine.qt_map_ui, "observe", return_value=dict(mapOpen=False, floor=None)):
+        with patch("map_interface_observation.detect_map_interface", return_value=dict(detected=False)):
             self.choose_target()
         self.assertEqual(self.fit_calls, [])
         self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
@@ -219,8 +218,7 @@ class DragGroupChoiceContracts(unittest.TestCase):
 
     def test_fresh_target_capture_without_floor_does_not_reuse_old_floor_pose(self):
         self.finish_drag()
-        with patch("map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=None)), \
-                patch.object(self.engine.qt_map_ui, "observe", return_value=dict(mapOpen=True, floor=None)):
+        with patch("floor_control_region.locate_vertical_floor_controls", return_value=dict(selectedFloor=None)):
             self.choose_target()
         self.assertEqual(self.fit_calls, [])
         self.assertFalse(self.runtime.snapshot()["displayAuthorized"])

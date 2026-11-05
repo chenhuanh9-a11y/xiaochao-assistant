@@ -2,43 +2,10 @@ from __future__ import annotations
 
 
 def verified_map_hotkey_frame(evidence: dict, floor_read: dict | None) -> bool:
-    """Accept either strong map canvas proof or a settled floor selector.
-
-    The floor triplet is itself map-only UI.  Requiring the generic canvas
-    detector in the same frame made real G opens fail whenever the map fade or
-    fog briefly weakened its legacy anchors, even though the selected floor
-    was already unambiguous.  A strong selector therefore becomes an
-    independent map-open edge; it still cannot authorize any aligned pixels.
-    Current-frame route geometry remains the separate display gate.
-    """
-    floor = floor_read or {}
-    selected = floor.get("selectedFloor")
-    if selected not in (-1, 1, 2):
-        return False
-    if evidence.get("detected"):
-        return True
-    localized_triplet = bool(
-        floor.get("layout") == "localized-triplet"
-        and float(floor.get("margin", 0.0)) >= 8.0
-        and float(evidence.get("backdropRatio", 0.0)) >= 0.80
-    )
-    if localized_triplet:
-        return True
-    # During the real F1 map fade, the canvas texture can be non-flat while
-    # the map-only UI remains unambiguous.  Accept that combination only when
-    # shape, all stable neutral anchors, and the localized three-button floor
-    # triplet agree.  This is still an open-edge signal, never route-display
-    # authority; the current-frame residual gate remains downstream.
-    return bool(
-        evidence.get("shapeAccepted") is True
-        and evidence.get("layoutFamily") == "wide"
-        and int(evidence.get("matchedAnchors", 0) or 0) >= 4
-        and int(evidence.get("neutralMatchedAnchors", 0) or 0) >= 4
-        and floor.get("layout") == "localized-triplet"
-        and len(floor.get("centers") or ()) == 3
-        and float(floor.get("margin", 0.0) or 0.0) >= 12.0
-        and float(evidence.get("backdropRatio", 0.0) or 0.0) >= 0.72
-    )
+    """Require current canvas proof and an allowed current S0 floor reading."""
+    selected = (floor_read or {}).get("selectedFloor")
+    return bool(type(selected) is int and selected in (-1, 1, 2)
+                and evidence.get("detected") is True)
 
 
 def locked_map_canvas_without_floor_is_authorized(
@@ -88,7 +55,7 @@ def stable_floor_from_observations(
     remains compatible with callers; detector validity is the confirmation.
     """
     latest = observations[-1] if observations else None
-    return latest if latest in (-1, 1, 2) else None
+    return latest if type(latest) is int and latest in (-1, 1, 2) else None
 
 
 def map_closed_after_probe_misses(previous_misses: int, probe_open: bool, required: int = 2) -> tuple[int, bool]:

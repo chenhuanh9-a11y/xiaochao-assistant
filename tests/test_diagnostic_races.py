@@ -58,22 +58,22 @@ class RaceTests(unittest.TestCase):
   row=safe_record({'floorRead':{'scores':{'-1':.2,'1':.3,'2':.4,'99':.5,'Alice':.9}},'scores':{'-1':.8}})
   self.assertEqual(row['floorRead']['scores'],{'-1':.2,'1':.3,'2':.4})
   self.assertEqual(row['scores'],{})
- def test_production_floor_read_bounded_writer_keeps_scores(self):
-  import numpy as np
+ def test_production_vertical_read_bounded_writer_keeps_floor(self):
   from map_interface_observation import detect_selected_floor
   from recognition_diagnostics import bounded_recognition
+  from test_client_floor_region import column
   with tempfile.TemporaryDirectory() as d:
-   frame=np.random.default_rng(1).integers(0,100,(720,1280,3),dtype=np.uint8)
-   vertical={'regionTop':.1,'regionHeight':.1,'layoutFamily':'legacy-client-height','safeTop':0,'safeHeight':720,'filledFloor':1}
-   # Only layout is a fixture; production detector computes all three values.
-   with patch('map_interface_observation._locate_floor_button_layout',return_value=([.75,.85,.95],vertical)):
-    read=detect_selected_floor(frame)
+   read=detect_selected_floor(column((2,1,-1),1))
+   self.assertEqual(read['selectedFloor'],1)
    bounded=bounded_recognition({'floorRead':read})
    p=Path(d)/'events-floor.jsonl';w=AsyncEventLog(p)
    w.emit('capture-error',{'recognitionDiagnostics':bounded});self.assertTrue(w.flush(2));w.close();w.thread.join(1)
    row=json.loads(p.read_bytes())
-   self.assertEqual(row['recognitionDiagnostics']['floorRead']['scores'],{k:round(v,5) for k,v in read['scores'].items()})
-   self.assertEqual(set(read['scores']),{'-1','1','2'})
+   saved=row['recognitionDiagnostics']['floorRead']
+   self.assertEqual(saved['selectedFloor'],1)
+   # Existing privacy allowlist still excludes new geometry metadata.
+   self.assertNotIn('controlAxis',saved)
+   self.assertNotIn('scores',saved)
  def test_watchdog_progress_while_event_write_blocked(self):
   with tempfile.TemporaryDirectory() as d:
    entered=threading.Event();release=threading.Event();original=s._append

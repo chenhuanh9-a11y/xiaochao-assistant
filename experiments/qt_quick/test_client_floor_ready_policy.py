@@ -5,12 +5,14 @@ sensors and solver are explicit synthetic boundaries (not live-game evidence).
 """
 import copy
 import threading
+import map_open_preparation
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 import test_client_live_runtime as fixture
 from client_live_runtime import _AlignmentHost
+from s0_test_fixtures import synthetic_read
 
 
 class FloorReadyPolicyTests(unittest.TestCase):
@@ -27,40 +29,36 @@ class FloorReadyPolicyTests(unittest.TestCase):
             generation == self.live.capture.generation and context == self.capture_context)
         self.capture_context = fixture.ClientCaptureContext((1280, 720), (100, 200, 1380, 920), 96)
 
-    def evidence(self, floor=1, margin=8., backdrop=.80):
-        return (dict(detected=False, reason="map-canvas-texture-mismatch", flatMapCanvas=False,
-                     shapeAccepted=True, layoutFamily="wide", matchedAnchors=4,
-                     neutralMatchedAnchors=4, backdropRatio=backdrop),
-                dict(selectedFloor=floor, layout="localized-triplet", margin=margin,
-                     centers=[.45, .50, .55], scores={str(floor): 40.}))
+    def evidence(self, floor=1):
+        return (dict(detected=True, reason="independent-map-proof"),
+                synthetic_read(selected=floor))
 
     def open_with(self, observation, floor_read, **kwargs):
         with patch("map_interface_observation.detect_map_interface", return_value=observation), \
-             patch("map_interface_observation.detect_selected_floor", return_value=floor_read):
+             patch("floor_control_region.locate_vertical_floor_controls", return_value=floor_read):
             return self.live.dispatch("map", **kwargs)
 
-    def test_existing_ready_boundaries_reach_floor_policy_for_b1_f1_f2(self):
+    def test_independent_map_and_vertical_read_reach_floor_policy_for_b1_f1_f2(self):
         for floor in (-1, 1, 2):
-            for margin, backdrop in ((8., .80), (12., .72)):
-                with self.subTest(floor=floor, margin=margin):
-                    self.live.dispatch("end_round")
-                    self.live.dispatch("start_round")
-                    result = self.open_with(*self.evidence(floor, margin, backdrop))
-                    self.assertTrue(result["success"], result)
-                    self.assertEqual(self.runtime.snapshot()["floor"], "B1" if floor == -1 else str(floor))
-                    self.assertIsNotNone(self.runtime._last_observation)
+            with self.subTest(floor=floor):
+                self.live.dispatch("end_round")
+                self.live.dispatch("start_round")
+                result = self.open_with(*self.evidence(floor))
+                self.assertTrue(result["success"], result)
+                self.assertEqual(self.runtime.snapshot()["floor"], "B1" if floor == -1 else str(floor))
+                self.assertIsNotNone(self.runtime._last_observation)
 
-    def test_prepare_independently_rejects_weak_floor_and_bare_map_ready(self):
-        cases = [self.evidence(floor, margin, backdrop)
+    def test_prepare_independently_rejects_closed_tint_and_bare_map_ready(self):
+        cases = [(dict(detected=False, reason=reason), synthetic_read(selected=floor))
                  for floor in (-1, 1, 2)
-                 for margin, backdrop in ((7.99, .80), (11.99, .72))]
+                 for reason in ("map-ui-not-observed", "map-canvas-texture-mismatch")]
         cases += [(dict(detected=False, mapReady=True), dict(selectedFloor=None)),
-                  (dict(self.evidence()[0], mapReady=True), dict(self.evidence()[1], margin=7.99))]
+                  (dict(detected=True), dict(selectedFloor=None))]
         self.live.dispatch("start_round")
         for observation, floor_read in cases:
             with self.subTest(floor=floor_read, observation=observation):
                 result = self.open_with(observation, floor_read)
-                self.assertEqual(result["reason"], "map-open-preparation-deadline")
+                self.assertEqual(result["reason"], "current-floor-unavailable" if observation.get("detected") else "map-open-preparation-deadline")
                 self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
         self.assertEqual(self.live.engine.rank_count, 0)
 
@@ -79,29 +77,26 @@ class FloorReadyPolicyTests(unittest.TestCase):
                 self.live.dispatch("end_round")
                 self.live.begin_and_capture()
                 self.live.dispatch("close_map")
-                original = self.runtime._full_frame
-                calls = 0
+                original = map_open_preparation.prepare_map_open_frame
                 cancelled = threading.Event()
-                def after_preparation(captured):
-                    nonlocal calls
-                    frame = original(captured)
-                    calls += 1
-                    if calls == 2:  # Original prepare consumed this exact first full frame.
-                        if mutation == "close": self.live.dispatch("close_map")
-                        elif mutation == "floor": self.live.dispatch("set_floor", floor="1")
-                        elif mutation == "map": self.live.dispatch("confirm_route", mapId="fixture-other")
-                        elif mutation == "end": self.live.dispatch("end_round")
-                        elif mutation == "cancel": cancelled.set()
-                        elif mutation == "engine": self.runtime._engine = copy.copy(self.runtime._engine)
-                        elif mutation == "group": self.runtime._group = copy.copy(self.runtime._group)
-                        elif mutation == "generation": self.live.capture.generation += 1
-                        elif mutation == "context": self.capture_context = fixture.ClientCaptureContext((1280, 720), (101, 200, 1381, 920), 96)
-                    return frame
+                def after_preparation(*args, **kwargs):
+                    prepared = original(*args, **kwargs)
+                    self.assertIsNotNone(prepared)
+                    if mutation == "close": self.live.dispatch("close_map")
+                    elif mutation == "floor": self.live.dispatch("set_floor", floor="1")
+                    elif mutation == "map": self.live.dispatch("confirm_route", mapId="fixture-other")
+                    elif mutation == "end": self.live.dispatch("end_round")
+                    elif mutation == "cancel": cancelled.set()
+                    elif mutation == "engine": self.runtime._engine = copy.copy(self.runtime._engine)
+                    elif mutation == "group": self.runtime._group = copy.copy(self.runtime._group)
+                    elif mutation == "generation": self.live.capture.generation += 1
+                    elif mutation == "context": self.capture_context = fixture.ClientCaptureContext((1280, 720), (101, 200, 1381, 920), 96)
+                    return prepared
                 observation, floor_read = self.evidence(2)
-                with patch.object(self.runtime, "_full_frame", side_effect=after_preparation), \
+                with patch("map_open_preparation.prepare_map_open_frame", side_effect=after_preparation), \
                      patch.object(self.runtime, "_observe_floor_policy", wraps=self.runtime._observe_floor_policy) as policy, \
                      patch("map_interface_observation.detect_map_interface", return_value=observation), \
-                     patch("map_interface_observation.detect_selected_floor", return_value=floor_read):
+                     patch("floor_control_region.locate_vertical_floor_controls", return_value=floor_read):
                     result = self.runtime.dispatch("map", {}, cancelled)
                 self.assertFalse(result["success"], result)
                 self.assertTrue(result.get("stale"), result)
@@ -126,25 +121,20 @@ class FloorReadyPolicyTests(unittest.TestCase):
                 self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
                 self.assertIsNone(self.runtime._render)
 
-    def test_region_remains_a_floor_reader_only_after_generic_map_proof_in_both_modes(self):
-        from test_client_floor_region import hud, REGION
-        for mode, floors in (("nightmare", (-1, 1, 2)), ("difficult", (1, 2))):
+    def test_retired_region_setting_keeps_vertical_sensor_and_independent_map_proof(self):
+        for mode in ("nightmare", "difficult"):
             with self.subTest(mode=mode):
                 self.live.dispatch("end_round")
                 self.live.dispatch("set_context", mode=mode, profileId="fixture")
                 self.runtime.configure_settings(dict(floorControlMode="region",
-                    floorControlRegion=dict(rect=REGION, clientSize=[1920, 1080])))
-                self.capture_context = fixture.ClientCaptureContext((1920, 1080), (0, 0, 1920, 1080), 96)
-                frame = hud(floors, 1)
-                self.live.capture.capture = lambda cancelled=None: fixture.RegionCapture(frame.copy(),
-                    (0, 0, 1920, 1080), (0, 0, 1920, 1080), self.capture_context, "synthetic-fixture")
+                    floorControlRegion=dict(rect=[.1, .1, .2, .2], clientSize=[1280, 720])))
                 self.live.dispatch("start_round")
-                if mode == "difficult":
-                    self.runtime._engine.qt_map_ui.observe = lambda frame: dict(mapOpen=True, floor=None, glyphs=[], reason="fixture-map-open")
-                result = self.open_with(dict(detected=True), dict(selectedFloor=None, layout="unlocalized"))
+                result = self.open_with(dict(detected=True), synthetic_read(mode))
                 self.assertTrue(result["success"], result)
                 self.assertEqual(self.runtime.snapshot()["floor"], "1")
-                self.assertEqual(self.runtime._last_observation["floor_read"]["floorSource"], "region")
+                read = self.runtime._last_observation["floor_read"]
+                self.assertEqual(read["layout"], "localized-s0-vertical")
+                self.assertTrue(read["controlGeometryVerified"])
 
     def test_normal_both_modes_and_manual_selection_keep_existing_behavior(self):
         for mode in ("nightmare", "difficult"):

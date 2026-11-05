@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import tempfile
 import time
 import unittest
+from s0_test_fixtures import synthetic_read
 from unittest.mock import patch
 
 from PIL import Image
@@ -528,7 +529,8 @@ class RuntimeManualModeTests(unittest.TestCase):
         import numpy as np
         self.fit["matrixSourceToClient"] = np.array(self.fit["matrixSourceToClient"])
         self.patches = [patch("map_interface_observation.detect_map_interface", return_value=dict(detected=True)),
-                        patch("map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=1)),
+                        patch("floor_control_region.locate_vertical_floor_controls",
+                              side_effect=lambda frame, mode, **kw: synthetic_read(mode)),
                         patch.object(_AlignmentHost, "fit", side_effect=lambda *a: copy.deepcopy(self.fit))]
         for entry in self.patches:
             entry.start(); self.addCleanup(entry.stop)

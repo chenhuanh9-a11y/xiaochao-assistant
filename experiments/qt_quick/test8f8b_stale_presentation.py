@@ -22,6 +22,7 @@ from client_region_capture import ClientCaptureContext
 import test_client_capture_full as capture_fixtures
 import test_client_coordinator as coordinator_fixtures
 import test_client_live_runtime as runtime_fixtures
+from s0_test_fixtures import synthetic_read
 
 
 class QueuedPresentation(QObject):
@@ -63,7 +64,8 @@ class StalePresentationContracts(unittest.TestCase):
                 poseVerifiedAgainstCanonicalGeometry=True, profileRenderDerivedFromCanonical=True,
                 coordinatePackId="fixture-pack", validationBasis="shared-canonical-geometry-current-frame"))
         for p in (patch("map_interface_observation.detect_map_interface", return_value=dict(detected=True)),
-                  patch("map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=1)),
+                  patch("floor_control_region.locate_vertical_floor_controls",
+                        side_effect=lambda frame, mode, **kw: synthetic_read(mode)),
                   patch.object(_AlignmentHost, "fit", side_effect=lambda *a: deepcopy(fit))):
             p.start(); self.addCleanup(p.stop)
         self.traces = []
