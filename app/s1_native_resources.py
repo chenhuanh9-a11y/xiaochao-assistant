@@ -12,6 +12,13 @@ from season_map_resources import EXPECTED_LAYOUTS, GROUPS, SOURCE_VERSION
 
 S1_MODES = ("difficulty2", "difficult", "nightmare")
 S1_FLOORS = ("-1", "-2", "-3", "-4")
+
+# Recorded candidate evaluation remains limited to source-replayed B1/B2.
+# This does not grant live capture, durable identity or official group authority.
+S1_RECORDED_CANDIDATE_CAPABILITY = dict(
+    contract="s1-recorded-structure-candidate-floor-v2", candidateReady=True,
+    observedFloors=(-1, -2), contractFloors=(-1, -2, -3, -4),
+    liveValidated=False)
 MODE_LAYOUTS = {mode: frozenset(mid for mid in EXPECTED_LAYOUTS if int(mid[:3]) == group)
                 for group, (_difficulty, mode) in GROUPS.items()}
 MANIFEST = "native-map-manifest.json"
@@ -136,6 +143,11 @@ class S1NativeContext:
                     sourceReplayFloors=list(SOURCE_REPLAY_FLOORS),
                     syntheticOnlyFloors=[floor for floor in ORDER if floor not in SOURCE_REPLAY_FLOORS],
                     evidence="private-test-four-floor-contract", liveValidated=False)
+
+    @property
+    def structure_candidate_capability(self):
+        """Recorded-frame candidate contract; does not waive live resource gaps."""
+        return dict(S1_RECORDED_CANDIDATE_CAPABILITY)
 
     def local(self, relative):
         return local(self.root, relative)

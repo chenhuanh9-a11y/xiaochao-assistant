@@ -254,6 +254,7 @@ class EngineFactories(dict):
                                        floorObservation=dict(getattr(getattr(engine, "qt_native_context", None),
                                                                      "floor_observation_capability", {})),
                                        inventory=getattr(engine, "qt_resource_inventory", {}),
+                                       candidateObservation=dict(getattr(getattr(engine, "qt_native_context", None), "structure_candidate_capability", {})),
                                        liveGaps=list(getattr(engine, "qt_live_gaps", ())),
                                        liveReady=season == "s0" or bool(getattr(engine, "qt_live_ready", False)))
             return engine
@@ -391,6 +392,9 @@ class EngineFactories(dict):
         from client_group_registry import ConfirmedFrontGroups
         engine.qt_logical_group_registry = ConfirmedFrontGroups(pack, season=season)
         engine.qt_resource_root = root
+        if season == "s1":
+            # Separate complete schema2 inventory root from selected mode root.
+            engine.qt_s1_index_resource_root = self.root
         engine.qt_adapters = adapters
         engine.qt_catalog = catalog
         engine.qt_native_context = native
@@ -399,6 +403,24 @@ class EngineFactories(dict):
         engine.qt_live_ready = not engine.qt_live_gaps
         if season == "s1":
             engine.qt_optional_displays = None
+            from s1_structure_selection import StructureCatalog, StructureCandidateScanner
+            catalog = StructureCatalog.from_engine(engine)
+            def structure_scan(frame, *, floor, floor_source="operator-declared", cancelled=None, budget_seconds=None,
+                               on_progress=None, candidate_order=None):
+                # Lazy import keeps provider construction free of live IO.
+                from client_live_runtime import _AlignmentHost
+                host = _AlignmentHost(engine)
+                scanner = StructureCandidateScanner(catalog, host.fit, prepare_fit=host.prepare_structure_scan)
+                return scanner.scan(frame, floor=floor, floor_source=floor_source,
+                                    cancelled=cancelled, budget_seconds=budget_seconds,
+                                    on_progress=on_progress, candidate_order=candidate_order)
+            def structure_rank(frame, *, floor, budget_seconds=None):
+                report = structure_scan(frame, floor=floor, budget_seconds=budget_seconds)
+                engine.last_s1_structure_scan = report
+                engine.last_difficult_evidence = {key: value for key, value in report.items() if key != "poses"}
+                return StructureCandidateScanner.rank_rows(report, engine.pack)
+            engine.qt_s1_structure_scan = structure_scan
+            engine.qt_s1_structure_rank = structure_rank
             return engine
         from optional_author_displays import OptionalAuthorDisplays
         optional = OptionalAuthorDisplays(root, pack, catalog, adapters, versions, mode=mode)

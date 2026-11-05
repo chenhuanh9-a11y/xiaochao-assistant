@@ -307,10 +307,15 @@ def propose(frame, reference, prepared, *, prior=None, cancelled=None, context=N
     if context is None:
         return [], context, {'reason': 'fast-observation-unavailable'}
     edge = current_part(frame, context, 'observed')
-    points = sample_edges(edge, 300)
+    sampled = context.get("_sampled_observation_edges")
+    if sampled is not None and sampled[0] is edge:
+        points, coarse = sampled[1], sampled[2]
+    else:
+        points, coarse = sample_edges(edge, 300), None
     if len(points) < 40:
         return [], context, {'reason': 'fast-insufficient-edges', 'points': len(points)}
-    coarse = sample_edges(edge, 96)
+    if coarse is None:
+        coarse = sample_edges(edge, 96)
     rows = []
     searches = []
     def grid(scale, seed):

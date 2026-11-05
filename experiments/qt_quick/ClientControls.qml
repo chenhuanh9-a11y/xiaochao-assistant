@@ -62,6 +62,18 @@ Window {
         const key = JSON.stringify(rows)
         if (key !== groupChoicesKey) { groupChoicesKey = key; groupChoices = rows }
     }
+    function chooseCandidate(index, row) {
+        let payload = {index: index}
+        if (row && row.selectionSeason === "s1")
+            payload.candidateMapId = row.mapId
+        if (row && row.structureSupported === true) {
+            payload.mapId = row.mapId
+            payload.structureFrameId = row.structureFrameId
+            payload.structureGeneration = row.structureGeneration
+            payload.structureRoundId = row.structureRoundId
+        }
+        session.dispatchWithPayload("select_candidate", payload)
+    }
     function groupName(id) {
         const row = groupChoices.find(row => row.mapId === id)
         return row ? row.name : (id || "待核对")
@@ -101,6 +113,8 @@ Window {
             && snapshot.identityPhase !== "MEMBER_VERIFIED" && snapshot.identityPhase !== "MANUAL_MEMBER_CONFIRMED")
     }
     function mapText() {
+        if (snapshot.structureScanInProgress) return "录制研究 · 继续扫描中，结束后可切换候选"
+        if (snapshot.candidateDisplayOnly) return "候选 " + snapshot.provisionalMapId
         if (snapshot.identityPhase === "MANUAL_MEMBER_CONFIRMED") {
             var id = snapshot.currentGroupMemberId || snapshot.manualGroupMemberId || snapshot.mapId || ""
             var rows = snapshot.groupMemberRows || []
@@ -111,6 +125,7 @@ Window {
         return snapshot.mapName || snapshot.mapId || ""
     }
     function statusText() {
+        if (snapshot.candidateDisplayOnly) return "录制研究 · 候选整图未锁定 · " + outputStatus()
         if (snapshot.contextPending) return "正在切换模式或路线"
         if (snapshot.manualSelectionPending) return "手动选图 · 等待选择本局地图"
         if (session.busy && snapshot.pendingAction === "start_round") return "正在准备本局"
@@ -140,7 +155,7 @@ Window {
     }
     function floorText() {
         if (snapshot.season === "s1") {
-            if (snapshot.floorSource === "automatic-current-frame" && snapshot.observedFloor)
+            if ((snapshot.floorSource === "automatic-current-frame" || (snapshot.recordedStructureCandidateAvailable === true && snapshot.mapOpen === true)) && snapshot.observedFloor)
                 return "自动观察当前 B" + Math.abs(Number(snapshot.observedFloor)) + ((snapshot.observedFloor === "-3" || snapshot.observedFloor === "-4") ? "（未实测）" : "")
             if (snapshot.floorSource === "manual-unvalidated-fallback" && snapshot.targetFloor)
                 return "人工回退 B" + Math.abs(Number(snapshot.targetFloor)) + " · 当前楼层未知"
@@ -410,7 +425,11 @@ Window {
                     objectName: "controlMapSelectionAuto"
                     text: "自动识别"; selected: !panel.manualSelection
                     enabled: !settingsService.busy; Layout.fillWidth: true
-                    hint: "打开地图后自动识别本局地图"
+                    hint: panel.snapshot.recordedProvisionalDisplayEnabled === true
+                        ? "每次开图重新筛选，可信位姿自动显示未锁定候选整图"
+                        : panel.snapshot.recordedStructureCandidateAvailable === true
+                        ? "读取当前楼层并列出结构候选，地图身份仍需确认"
+                        : "打开地图后自动识别本局地图"
                     onClicked: clientCoordinator.setMapSelectionMode("auto")
                 }
                 ControlButton {
@@ -478,13 +497,13 @@ Window {
                 displayText: count > 0 && currentIndex >= 0 ? "候选：" + currentText : "尚无候选"
                 font.family: "Microsoft YaHei UI"; font.pixelSize: 13
                 Accessible.name: "选择识别候选地图"
-                onActivated: function(index) { session.dispatchWithPayload("select_candidate", {index: index}) }
+                onActivated: function(index) { panel.chooseCandidate(index, model[index]) }
             }
             ControlButton { text: "上一候选"; enabled: panel.available("previous_candidate"); Layout.fillWidth: true; onClicked: session.dispatch("previous_candidate") }
             KeyHint { text: panel.shortcut("candidate-prev") }
             ControlButton { text: "下一候选"; enabled: panel.available("next_candidate"); Layout.fillWidth: true; onClicked: session.dispatch("next_candidate") }
             KeyHint { text: panel.shortcut("candidate-next") }
-            ControlButton { text: "确认地图"; enabled: panel.available("confirm_route"); Layout.fillWidth: true; onClicked: session.dispatch("confirm_route") }
+            ControlButton { text: panel.snapshot.recordedProvisionalDisplayEnabled === true ? "锁定本局地图（可选）" : "确认地图"; enabled: panel.available("confirm_route"); Layout.fillWidth: true; onClicked: session.dispatch("confirm_route") }
             KeyHint { text: panel.shortcut("confirm-round") }
             ControlButton { text: "重新识别"; enabled: panel.available("capture_now"); Layout.fillWidth: true; onClicked: session.dispatch("capture_now") }
             ControlButton { objectName: "controlsRecognitionDetails"; text: "打开候选列表（切到主界面）"; Layout.fillWidth: true; onClicked: clientCoordinator.openRecognitionDetails() }

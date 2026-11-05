@@ -250,6 +250,16 @@ def graph_point_geometry(frame, reference, target, *, _context=None, allow_scale
 
 
 def observed_corner_chains(frame,context):
+    # Scan contexts may carry immutable, source-independent chain results.
+    # A filtered observation or replacement node set must never reuse them.
+    cached=context.get('_observed_corner_chains')
+    if (cached is not None and cached[0] is context.get('nodes')
+            and cached[1] is context.get('observed')):
+        return cached[2]
+    return _observed_corner_chains(frame,context)
+
+
+def _observed_corner_chains(frame,context):
     """Sharp connected chains are hypotheses, not proof of complete walls."""
     nodes=current_part(frame,context,'nodes')
     observed=current_part(frame,context,'observed')
