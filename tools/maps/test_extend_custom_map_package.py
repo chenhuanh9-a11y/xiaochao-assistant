@@ -90,7 +90,9 @@ class InputPathTests(unittest.TestCase):
     def test_resource_paths_are_relative_and_contained(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
-            self.assertEqual(contained(root,'images/map/1.webp'),root/'images/map/1.webp')
+            # Windows temporary roots can use 8.3 aliases (RUNNER~1). The
+            # containment API deliberately returns the resolved, canonical path.
+            self.assertEqual(contained(root,'images/map/1.webp'),(root/'images/map/1.webp').resolve())
             for value in ('../outside','/outside','C:/outside','a\\b','a/../b','a//b','a/CON','a/trailing.','a/x:stream'):
                 with self.subTest(value=value),self.assertRaises(ValueError):contained(root,value)
 

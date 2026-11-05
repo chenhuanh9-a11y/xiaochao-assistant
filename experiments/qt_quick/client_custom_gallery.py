@@ -591,6 +591,36 @@ class CustomGalleryService(QObject):
         return {row["source"]["workId"]: dict(row["source"])
                 for row in self._state["galleries"] if row.get("source")}
 
+    def submissionChoices(self):
+        """UI snapshot only; never read the writer's mutable GalleryStore."""
+        return [dict(id=row["id"], name=row["name"]) for row in self._state["galleries"]
+                if row["id"] != "default" and not row.get("readonly") and not row.get("source")]
+
+    def submissionSnapshot(self, gallery_id):
+        if self._closed or self._busy or self._pending or self._refresh_pending or self._data_error:
+            raise ValueError("自定义图库正忙或资源已变化，请完成当前操作后重试")
+        if not any(row["id"] == gallery_id for row in self.submissionChoices()):
+            raise ValueError("请选择自己的可编辑图库")
+        with self._committed_lock:
+            gallery = deepcopy(self._committed.get(gallery_id))
+            library = self._committed_library
+        if gallery is None:
+            raise ValueError("图库已变化，请重新选择")
+        return library, self._resource_generation, gallery
+
+    def submissionContextCurrent(self, context):
+        library, generation, gallery = context
+        with self._committed_lock:
+            current = self._committed.get(gallery["id"])
+        return (self.plazaContextCurrent((library, generation)) and current == gallery)
+
+    def submissionDiskCurrent(self, context):
+        """Worker-only external-write guard; never hash the file on the UI thread."""
+        with self._committed_lock:
+            digest = self._committed_digest
+        return (self.submissionContextCurrent(context) and not self.path.is_symlink()
+                and _file_digest(self.path) == digest)
+
     def plazaInstallContext(self):
         """UI-thread capture; the read-only library survives selection changes."""
         if self._closed or self._pending:
