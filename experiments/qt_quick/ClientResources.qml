@@ -10,6 +10,20 @@ Item {
     property var packageManager: typeof packageManagerService !== "undefined" ? packageManagerService : null
     property var confirmationOwner: resourceService
     property bool managerRefreshPending: false
+    // Persistent hidden pages must not turn construction into a full audit.
+    property bool active: false
+    property bool refreshAllowed: true
+    property bool activationRefreshPending: false
+    property bool pageReady: false
+    onActiveChanged: {
+        activationRefreshPending = active
+    }
+    Timer {
+        interval: 120
+        running: panel.pageReady && panel.active && panel.activationRefreshPending
+                 && panel.refreshAllowed && !panel.operationPending && !panel.recoveryPending
+        onTriggered: panel.refreshPackages()
+    }
     signal importSelectionCancelled()
     readonly property bool operationPending: archiveDialog.visible || resourceService.busy || resourceService.pendingKind !== "" || (packageManager && (packageManager.busy || packageManager.pendingKind !== ""))
     readonly property bool recoveryPending: resourceService.recoveryRequired || (packageManager && packageManager.recoveryRequired)
@@ -28,8 +42,12 @@ Item {
     }
 
     function refreshPackages() {
-        managerRefreshPending = !!packageManager
+        activationRefreshPending = false
+        managerRefreshPending = false
         resourceService.refresh()
+        // Only a started read owns the follow-up management scan. A lease
+        // refusal must not silently enqueue another hidden reader.
+        managerRefreshPending = !!packageManager && resourceService.busy
     }
 
     function stateLabel(status) {
@@ -216,5 +234,8 @@ Item {
             confirmation.open()
         }
     }
-    Component.onCompleted: panel.refreshPackages()
+    Component.onCompleted: {
+        pageReady = true
+        activationRefreshPending = active
+    }
 }

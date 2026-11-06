@@ -185,6 +185,7 @@ browse=BrowseContext()
 view.rootContext().setContextProperty('backend',browse)
 view.setSource(QUrl.fromLocalFile(str(Path('experiments/qt_quick/ClientResources.qml').resolve())))
 assert view.status()==QQuickView.Ready, view.errors()
+view.rootObject().setProperty("active", True)  # Explicitly open the management page.
 view.setResizeMode(QQuickView.SizeRootObjectToView);view.resize(1100,680);view.show()
 case.settle(lambda:len(case.service.packageRows)==2);QTest.qWait(60)
 assert len(case.fixture.completions)==2,case.fixture.completions

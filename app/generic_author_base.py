@@ -70,7 +70,15 @@ class _BrowseValidation:
 
 
 @contextmanager
-def browse_validation_request(cancelled=lambda: False):
+def browse_validation_request(cancelled=lambda: False, *, reuse=False):
+    # A package consumer can join its caller's validation boundary. Results
+    # remain provisional until that outer request verifies every source byte.
+    current = _BROWSE_REQUEST.get()
+    if reuse and current is not None:
+        current.check()
+        yield
+        current.check()
+        return
     request = _BrowseValidation(cancelled)
     token = _BROWSE_REQUEST.set(request)
     try:

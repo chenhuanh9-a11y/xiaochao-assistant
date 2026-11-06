@@ -78,7 +78,7 @@ import QtQuick.Controls.Basic
 ApplicationWindow {
     width: 1000; height: 650; visible: true
     ClientGallery { objectName: "galleryPage"; anchors.fill: parent; packageActions: resources }
-    ClientResources { id: resources; anchors.fill: parent; visible: false }
+    ClientResources { id: resources; objectName: "resourcePage"; anchors.fill: parent; visible: false }
 }''', QUrl.fromLocalFile(str(Path(__file__).with_name("GalleryActionsFixture.qml"))))
         self.assertTrue(self.engine.rootObjects(), self.warnings)
         self.window = self.engine.rootObjects()[0]
@@ -86,8 +86,47 @@ ApplicationWindow {
         self.page = self.window.findChild(QObject, "galleryPage")
         self.dialog = self.window.findChild(QObject, "resourceArchiveDialog")
         self.assertTrue(self.dialog.setProperty("options", 8))  # Qt-owned fallback chooser.
+        self.resources_page = self.window.findChild(QObject, "resourcePage")
+        # Hidden persistent chooser construction must not scan the library.
+        QTest.qWait(160)
+        self.assertFalse(self.fixture.service.busy)
+        self.assertEqual(self.manager.packageRows, [])
+        # Existing action tests explicitly request the inventory they inspect.
+        QMetaObject.invokeMethod(self.resources_page, "refreshPackages")
         self.until(lambda: len(self.manager.packageRows) == 1 and not self.manager.busy)
         QTest.qWait(60)
+
+    def test_activation_waits_for_idle_and_never_refreshes_hidden_or_same_page(self):
+        from unittest.mock import patch
+        service = self.fixture.service
+        with patch.object(service, '_snapshot', wraps=service._snapshot) as scan:
+            self.resources_page.setProperty('refreshAllowed', False)
+            self.resources_page.setProperty('active', True)
+            QTest.qWait(200)
+            self.assertEqual(scan.call_count, 0)
+            # Leaving before idle cancels the intent, not a later hidden scan.
+            self.resources_page.setProperty('active', False)
+            self.resources_page.setProperty('refreshAllowed', True)
+            QTest.qWait(200)
+            self.assertEqual(scan.call_count, 0)
+            self.resources_page.setProperty('active', True)
+            self.until(lambda: scan.call_count == 1 and not service.busy and not self.manager.busy)
+            self.resources_page.setProperty('active', True)
+            QTest.qWait(200)
+            self.assertEqual(scan.call_count, 1)
+            self.resources_page.setProperty('active', False)
+            self.resources_page.setProperty('active', True)
+            self.until(lambda: scan.call_count == 2 and not service.busy and not self.manager.busy)
+
+    def test_failed_activation_scan_does_not_retry_forever(self):
+        from unittest.mock import patch
+        service = self.fixture.service
+        with patch.object(service, '_snapshot', side_effect=ValueError('controlled-read-failure')) as scan:
+            self.resources_page.setProperty('active', True)
+            self.until(lambda: scan.call_count == 1 and not service.busy and not self.manager.busy)
+            QTest.qWait(350)
+            self.assertEqual(scan.call_count, 1)
+            self.assertFalse(self.resources_page.property('activationRefreshPending'))
 
     def close_window(self):
         self.window.hide()

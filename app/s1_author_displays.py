@@ -24,6 +24,13 @@ import generic_author_package as generic_package
 
 class InstalledAuthorPackage:
     def __init__(self, resource_root, package_id=PACKAGE_ID):
+        from generic_author_base import browse_validation_request
+        # Receipt closure and image bindings resolve the same base layers.
+        # Share only this validation request, never a persistent trust cache.
+        with browse_validation_request(reuse=True):
+            self._load(resource_root, package_id)
+
+    def _load(self, resource_root, package_id):
         import star_map_import as api
         api._no_links(Path(resource_root))
         self.root=Path(resource_root).resolve()

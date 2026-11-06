@@ -333,7 +333,11 @@ class EngineAdapter:
                 return result(success=True, reason=action, snapshot=self.snapshot())
         try:
             if action == "inspect_engine_resources" and self._provider_registry is not None:
-                data = dict(capabilities=self._provider_registry.prepare(cancelled, season=context["season"]), diagnosticOnly=True)
+                prepare_context = getattr(self._provider_registry, "prepare_context", None)
+                capabilities = (prepare_context(context["mode"], cancelled, season=context["season"])
+                    if prepare_context is not None else
+                    self._provider_registry.prepare(cancelled, season=context["season"]))
+                data = dict(capabilities=capabilities, diagnosticOnly=True)
                 scope = "resource-inventory"
             elif action == "rank_saved_frame":
                 data = self._rank_saved_frame(payload, context, cancelled)

@@ -189,6 +189,21 @@ class EngineFactories(dict):
                 pass
         return self.capabilities(season)
 
+    def prepare_context(self, mode, cancelled=None, *, season="s0"):
+        """Prepare only the applied mode; other modes retain explicit pending state.
+
+        Full inventory/self-check callers keep using prepare(). The client's
+        existing context-change scheduler prepares another mode when selected.
+        """
+        if mode not in modes_for_season(season):
+            raise ValueError("unknown resource preparation context")
+        if not (cancelled and (cancelled.is_set() if hasattr(cancelled, "is_set") else cancelled())):
+            try:
+                self._get(mode, season)
+            except ProviderUnavailable:
+                pass
+        return self.capabilities(season)
+
     def invalidate(self):
         """Nonblocking resource-lifetime boundary; old worker builds cannot publish."""
         with self._lock:

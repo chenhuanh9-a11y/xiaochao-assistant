@@ -37,6 +37,9 @@ class SeasonPreparationTests(unittest.TestCase):
                 self.assertTrue(evidence["closed"], evidence)
         return evidence
 
+    def test_hidden_resource_page_does_not_scan_until_opened(self):
+        self.run_scenario("lazy-inventory")
+
     def test_saved_s1_cold_restart_switch_to_s0_prepares_and_allows_start(self):
         self.run_scenario("cold-restart")
 
@@ -68,12 +71,18 @@ def scenario(name, root):
     app = QGuiApplication.instance() or QGuiApplication([])
     calls, builds = [], []
     entered, release = threading.Event(), threading.Event()
-    original_prepare = EngineFactories.prepare
-    def prepare(self, cancelled=None, *, season="s0"):
+    from client_resources import ResourceService
+    inventory_reads = []
+    original_snapshot = ResourceService._snapshot
+    def snapshot(service, cancel):
+        inventory_reads.append(True)
+        return original_snapshot(service, cancel)
+    original_prepare = EngineFactories.prepare_context
+    def prepare(self, mode, cancelled=None, *, season="s0"):
         calls.append(season)
         if name == "prepare-error":
             raise RuntimeError("controlled-prepare-error")
-        return original_prepare(self, cancelled, season=season)
+        return original_prepare(self, mode, cancelled, season=season)
     def build(self, mode, *, season="s0"):
         assert season == "s0", "Unregistered season reached the resource builder"
         builds.append(mode)
@@ -114,7 +123,8 @@ def scenario(name, root):
              patch("client_capture.ClientCaptureProvider", return_value=capture), \
              patch("client_coordinator.another_assistant_running", return_value=False), \
              patch.object(EngineFactories, "_build", build), \
-             patch.object(EngineFactories, "prepare", prepare):
+             patch.object(EngineFactories, "prepare_context", prepare), \
+             patch.object(ResourceService, "_snapshot", snapshot):
             client = QtClient(app, root, probe_output=root / "unused.json", info_fetch=lambda *a, **k: {})
             if name == "cancelled-late":
                 wait(entered.is_set, "startup entered controlled build")
@@ -221,6 +231,19 @@ def scenario(name, root):
                 choose_home_season("s0")
                 wait(lambda: idle() and client.settings.persistedValues["gameSeason"] == "s0",
                      "choose actual context after failure")
+            elif name == "lazy-inventory":
+                wait(ready, "current mode ready without management scan")
+                assert inventory_reads == [], inventory_reads
+                client.main.setProperty("page", "resources")
+                wait(lambda: bool(inventory_reads) and idle() and not client.package_manager.busy,
+                     "opening management page triggers inventory")
+                assert len(inventory_reads) == 1, inventory_reads
+                client.main.setProperty("page", "resources")
+                QTest.qWait(350)
+                assert len(inventory_reads) == 1, inventory_reads
+                client.main.setProperty("page", "home")
+                QTest.qWait(200)
+                assert len(inventory_reads) == 1, inventory_reads
             elif name == "save-s1":
                 select("s1")
             elif name == "cold-restart":
@@ -242,7 +265,7 @@ def scenario(name, root):
                 assert "start_round" not in client.session.snapshot["availableCommands"]
                 select("s0")
                 wait(ready, "invalidated S0 must prepare on return")
-                assert len(builds) == 4, builds
+                assert len(builds) == 2, builds
             elif name == "rapid-switch":
                 wait(ready, "initial S0 ready")
                 for _ in range(3):
@@ -260,7 +283,7 @@ def scenario(name, root):
                 count = len(calls)
                 QTest.qWait(500)
                 assert len(calls) == count, (count, calls)
-                assert len(builds) == 2, builds
+                assert len(builds) == 1, builds
             elif name == "prepare-error":
                 QTest.qWait(700)
                 assert len(calls) == 1, ("preparation exception must not spin", calls)
@@ -276,7 +299,7 @@ def scenario(name, root):
                 QTest.qWait(400)
                 assert len(calls) == 3, calls
             elif name == "failed-close":
-                wait(lambda: idle() and all(x["prepared"] for x in client.providers.capabilities().values()), "failed preparation complete")
+                wait(lambda: idle() and client.providers.capabilities()[client.session.appliedMode]["prepared"], "failed preparation complete")
                 assert "start_round" not in client.session.snapshot["availableCommands"]
                 # A preparation timer queued while S1 was selected may still
                 # inspect the now-cached S0 context once. Drain that bounded
@@ -286,7 +309,7 @@ def scenario(name, root):
                 count = len(calls)
                 QTest.qWait(500)
                 assert len(calls) == count == 1, calls
-                assert len(builds) == 2, builds
+                assert len(builds) == 1, builds
             before_close = len(calls)
             client.coordinator.requestClose()
             client.resources.resourcesChanged.emit()

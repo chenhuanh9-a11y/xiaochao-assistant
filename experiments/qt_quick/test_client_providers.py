@@ -42,7 +42,11 @@ class ClientProviderTests(unittest.TestCase):
         self.assertTrue(result["success"])
         reports = engine.snapshot()["savedFrameCapabilities"]
         self.assertIn("missing-resource:references/nightmare-map-pack.json", reports["nightmare"]["reason"])
-        self.assertIn("missing-resource:difficult-native-manifest.json", reports["difficult"]["reason"])
+        self.assertEqual("resource-validation-pending", reports["difficult"]["reason"])
+        engine.dispatch("set_game_mode", dict(mode="difficult"))
+        engine.dispatch("inspect_engine_resources")
+        self.assertIn("missing-resource:difficult-native-manifest.json",
+                      engine.snapshot()["savedFrameCapabilities"]["difficult"]["reason"])
         self.assertNotIn("rank_saved_frame", engine.snapshot()["availableCommands"])
         self.assertFalse(engine.snapshot()["liveEngineAvailable"])
 

@@ -147,7 +147,14 @@ ApplicationWindow {
             currentIndex: root.pages.indexOf(root.page)
             ClientHome {}
             ClientGallery { packageActions: resourcePage }
-            ClientResources { id: resourcePage }
+            ClientResources {
+                id: resourcePage
+                active: root.page === "resources" && !clientCoordinator.closing
+                refreshAllowed: !session.busy && !session.snapshot.resourceLocked
+                    && !session.snapshot.contextPending && !session.snapshot.roundActive
+                    && !session.snapshot.roundWorkActive && !session.snapshot.roundPreparing
+                    && !session.snapshot.closed && !clientCoordinator.closing
+            }
             ClientSettings { profileOptions: root.routeOptions; profilesMode: routeChoices.mode; profilesSeason: routeChoices.season; profilesBusy: routeChoices.busy }
             ColumnLayout {
                 spacing: 16

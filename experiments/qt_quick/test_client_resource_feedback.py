@@ -143,6 +143,10 @@ class ResourceFeedbackTests(unittest.TestCase):
             o.settings.persistedValues["gameMode"] = "difficult"
             o.settings.saved.emit(); self.drain(o,s)
             self.assertEqual(s.snapshot["mode"], "difficult")
+            # This fixture does not own QtClient's context-change timer. The
+            # full lifecycle test covers that automatic scheduling boundary.
+            self.assertFalse(s.snapshot["liveEngineAvailable"])
+            s.dispatch("inspect_engine_resources"); self.drain(o,s)
             self.assertTrue(s.snapshot["liveEngineAvailable"])
             self.assertIsNone(c._pending_context)
             self.assertIsNone(c._map_resource_problem())
