@@ -73,7 +73,7 @@ def scenario(name, root):
     entered, release = threading.Event(), threading.Event()
     from client_resources import ResourceService
     inventory_reads = []
-    original_snapshot = ResourceService._snapshot
+    original_snapshot = ResourceService._declarations
     def snapshot(service, cancel):
         inventory_reads.append(True)
         return original_snapshot(service, cancel)
@@ -124,7 +124,7 @@ def scenario(name, root):
              patch("client_coordinator.another_assistant_running", return_value=False), \
              patch.object(EngineFactories, "_build", build), \
              patch.object(EngineFactories, "prepare_context", prepare), \
-             patch.object(ResourceService, "_snapshot", snapshot):
+             patch.object(ResourceService, "_declarations", snapshot):
             client = QtClient(app, root, probe_output=root / "unused.json", info_fetch=lambda *a, **k: {})
             if name == "cancelled-late":
                 wait(entered.is_set, "startup entered controlled build")

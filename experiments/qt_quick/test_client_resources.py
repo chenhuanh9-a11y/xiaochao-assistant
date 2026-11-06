@@ -185,6 +185,22 @@ class ResourceServiceTests(unittest.TestCase):
         self.assertEqual(list((self.root / "work/map-packages").glob("staging-*")), [])
         self.assertLessEqual((directory / "journal.json").stat().st_size, 1024)
 
+    def test_declarations_skip_content_audit_and_never_retain_stale_verified_state(self):
+        self.install()
+        with patch.object(self.service, '_snapshot', side_effect=AssertionError('full audit on list')):
+            self.service.listPackages(); self.settle()
+        self.assertFalse(self.service.inventoryVerified)
+        self.assertIn('尚未核对', self.service.message)
+        self.service.refresh(); self.settle()
+        self.assertTrue(self.service.inventoryVerified)
+        self.service.resourcesChanged.emit()
+        self.assertFalse(self.service.inventoryVerified)
+        self.service.refresh(); self.settle()
+        self.assertTrue(self.service.inventoryVerified)
+        with patch.object(self.service, '_snapshot', side_effect=ValueError('failed-check')):
+            self.service.refresh(); self.settle()
+        self.assertFalse(self.service.inventoryVerified)
+
     def test_recovery_restores_old_resources_and_rescans_with_one_lease(self):
         transaction_id = self.upgrade(interrupted=True)
         self.service.inspectRecovery()

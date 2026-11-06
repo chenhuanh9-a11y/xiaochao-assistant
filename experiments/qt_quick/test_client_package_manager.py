@@ -203,6 +203,28 @@ def click(name):
     QTest.mouseClick(view,Qt.LeftButton,Qt.NoModifier,point.toPoint());QTest.qWait(30)
 assert find(view.contentItem(),'managedPackageList').property('count')==3
 assert not find(view.contentItem(),'removePackageButton-builtin-difficult-zhan10').isEnabled()
+def builtin_status():
+    return find(view.contentItem(),'packageStatusLabel-builtin-difficult-zhan10').property('text')
+def visible_builtin():
+    rows=view.rootObject().property('visibleResourceRows')
+    rows=rows.toVariant() if hasattr(rows,'toVariant') else rows
+    return next(row for row in rows if row['packageId']=='builtin-difficult-zhan10')
+assert '待核对' in builtin_status(),builtin_status()
+case.fixture.service.refresh();case.fixture.settle();QTest.qWait(30)
+assert case.fixture.service.inventoryVerified
+assert '内置默认资源' in builtin_status(),builtin_status()
+assert visible_builtin()['bundledFiles']==1
+case.fixture.service.resourcesChanged.emit();QTest.qWait(30)
+assert not case.fixture.service.inventoryVerified
+assert '待核对' in builtin_status(),builtin_status()
+assert not {'mapCount','layerCount','bundledFiles'} & visible_builtin().keys()
+case.fixture.service.refresh();case.fixture.settle();QTest.qWait(30)
+assert '内置默认资源' in builtin_status(),builtin_status()
+with patch.object(case.fixture.service,'_snapshot',side_effect=ValueError('controlled-check-failure')):
+    case.fixture.service.refresh();case.fixture.settle();QTest.qWait(30)
+assert not case.fixture.service.inventoryVerified
+assert '待核对' in builtin_status(),builtin_status()
+assert not {'mapCount','layerCount','bundledFiles'} & visible_builtin().keys()
 click('removePackageButton-nightmare-suju');case.settle();QTest.qWait(30)
 assert case.service.pendingKind=='remove'
 click('resourceConfirmCancelButton')

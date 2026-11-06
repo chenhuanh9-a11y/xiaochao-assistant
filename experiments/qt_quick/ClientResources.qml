@@ -22,11 +22,18 @@ Item {
         interval: 120
         running: panel.pageReady && panel.active && panel.activationRefreshPending
                  && panel.refreshAllowed && !panel.operationPending && !panel.recoveryPending
-        onTriggered: panel.refreshPackages()
+        onTriggered: panel.listPackages()
     }
     signal importSelectionCancelled()
     readonly property bool operationPending: archiveDialog.visible || resourceService.busy || resourceService.pendingKind !== "" || (packageManager && (packageManager.busy || packageManager.pendingKind !== ""))
     readonly property bool recoveryPending: resourceService.recoveryRequired || (packageManager && packageManager.recoveryRequired)
+    readonly property var visibleResourceRows: resourceService.packageRows.map(function(row) {
+        if (resourceService.inventoryVerified || (row.status !== "bundled" && row.status !== "installed")) return row
+        // Previous successful checks are presentation history, not current
+        // content evidence. Drop their verified counts as well as the label.
+        return {packageId: row.packageId, title: row.title, builtin: row.builtin === true || row.status === "bundled",
+                status: "declared", canRemove: false, verified: false}
+    })
 
     // Both persistent pages share this single chooser and confirmation owner.
     // Capture the browsing season before opening, never the running game season.
@@ -41,6 +48,13 @@ Item {
         panel.packageManager.requestRemove(packageId)
     }
 
+    function listPackages() {
+        activationRefreshPending = false
+        managerRefreshPending = false
+        resourceService.listPackages()
+        managerRefreshPending = !!packageManager && resourceService.busy
+    }
+
     function refreshPackages() {
         activationRefreshPending = false
         managerRefreshPending = false
@@ -51,11 +65,13 @@ Item {
     }
 
     function stateLabel(status) {
-        const labels = {"installed": "已安装，可以使用", "not-installed": "未安装", "incomplete": "文件缺失或有改动",
+        const labels = {"declared": "已登记，内容待核对", "history-unchecked": "有历史记录，范围待核对", "installed": "已安装，可以使用", "not-installed": "未安装", "incomplete": "文件缺失或有改动",
             "unmanaged": "已有文件，暂时无法确认来源", "unverified": "还没确认是否可用", "recovery-required": "上次操作还没完成", "managed-remnants": "有旧图包文件可清理", "bundled": "内置默认资源"}
         return labels[status] || "需要重新核对"
     }
     function stateDetail(row) {
+        if (row.status === "declared" || row.status === "history-unchecked")
+            return row.builtin ? "内置资源清单已读取，文件内容尚未核对。" : "仅显示安装记录；点击检查并删除后，会先核对实际文件范围，再请你确认。"
         if (row.builtin) return row.status === "bundled"
             ? "安装包自带 · " + row.mapCount + " 份图 · " + row.layerCount + " 层，可在对应赛季和模式的图库浏览。"
             : "内置资源有缺失或改动，请重新获取完整安装包。"
@@ -130,7 +146,10 @@ Item {
             objectName: "managedPackageList"
             anchors.fill: parent; anchors.margins: 4; anchors.leftMargin: 18; anchors.rightMargin: 12
             clip: true; spacing: 0
-            model: panel.packageManager ? panel.packageManager.packageRows.concat(resourceService.packageRows.filter(function(row) { return row.status === "bundled" || row.builtin === true })) : resourceService.packageRows
+            model: panel.packageManager ? panel.packageManager.packageRows.map(function(row) {
+                const checked = resourceService.inventoryVerified && panel.visibleResourceRows.find(function(item) { return item.packageId === row.packageId })
+                return checked ? Object.assign({}, row, checked, {canRemove: false, canInspectRemoval: row.canInspectRemoval}) : row
+            }).concat(panel.visibleResourceRows.filter(function(row) { return row.status === "bundled" || row.builtin === true })) : panel.visibleResourceRows
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar {}
             delegate: Item {
@@ -145,6 +164,7 @@ Item {
                         Label { Layout.fillWidth: true; text: modelData.title; elide: Text.ElideRight; font.pixelSize: 14; color: "#142b4b"; font.bold: true }
                         Label {
                             Layout.fillWidth: true
+                            objectName: "packageStatusLabel-" + modelData.packageId
                             text: panel.stateLabel(modelData.status) + (modelData.fileCount !== undefined ? " · " + modelData.fileCount + " 个图包文件（含旧副本）" : "")
                             color: modelData.status === "installed" ? "#17775a" : "#526785"; font.pixelSize: 12; wrapMode: Text.Wrap
                         }
@@ -155,7 +175,7 @@ Item {
                     }
                     AppButton {
                         objectName: "removePackageButton-" + modelData.packageId
-                        text: "删除图包"; enabled: !!panel.packageManager && !!modelData.canRemove && !panel.operationPending && !panel.recoveryPending
+                        text: modelData.canInspectRemoval ? "检查并删除" : "删除图包"; enabled: !!panel.packageManager && (!!modelData.canRemove || !!modelData.canInspectRemoval) && !panel.operationPending && !panel.recoveryPending
                         Accessible.name: "删除图包 " + modelData.title
                         onClicked: panel.removePackage(modelData.packageId)
                     }

@@ -99,7 +99,7 @@ ApplicationWindow {
     def test_activation_waits_for_idle_and_never_refreshes_hidden_or_same_page(self):
         from unittest.mock import patch
         service = self.fixture.service
-        with patch.object(service, '_snapshot', wraps=service._snapshot) as scan:
+        with patch.object(service, '_declarations', wraps=service._declarations) as scan:
             self.resources_page.setProperty('refreshAllowed', False)
             self.resources_page.setProperty('active', True)
             QTest.qWait(200)
@@ -121,7 +121,7 @@ ApplicationWindow {
     def test_failed_activation_scan_does_not_retry_forever(self):
         from unittest.mock import patch
         service = self.fixture.service
-        with patch.object(service, '_snapshot', side_effect=ValueError('controlled-read-failure')) as scan:
+        with patch.object(service, '_declarations', side_effect=ValueError('controlled-read-failure')) as scan:
             self.resources_page.setProperty('active', True)
             self.until(lambda: scan.call_count == 1 and not service.busy and not self.manager.busy)
             QTest.qWait(350)
@@ -222,10 +222,16 @@ ApplicationWindow {
         unknown.write_bytes(b"unknown-synthetic")
         self.manager.refresh()
         self.until(lambda: not self.manager.busy)
-        self.assertFalse(self.item("galleryRemovePackage").isEnabled())
+        # Lightweight metadata only enables an inspection, never deletion.
+        self.assertTrue(self.item("galleryRemovePackage").isEnabled())
+        self.assertFalse(self.confirmations)
+        self.click("galleryRemovePackage")
+        self.until(lambda: self.manager.pendingKind == "remove")
+        self.assertTrue(self.manager._pending["preserved"])
+        self.manager.confirmOperation(False)
         self.assertEqual((self.fixture.root / resources_fixture.IMAGE).read_bytes(), b"user-edited-synthetic")
         self.assertEqual(unknown.read_bytes(), b"unknown-synthetic")
-        self.assertFalse(self.confirmations)
+        self.assertEqual(len(self.confirmations), 1)
         self.backend.setProfile("author-b")
         self.assertFalse(self.item("galleryRemovePackage").isEnabled())
         self.backend.setProfile("author-a")

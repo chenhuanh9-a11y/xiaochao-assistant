@@ -198,7 +198,7 @@ def inspect_author_package_removal(install_root, package_id) -> dict:
     return plan
 
 
-def managed_author_packages_snapshot(install_root, *, cancelled=None) -> list[dict]:
+def managed_author_packages_snapshot(install_root, *, cancelled=None, inspect_removal=True) -> list[dict]:
     """Local state remains available even when there is no online catalog."""
     root = Path(os.path.abspath(install_root))
     result = []
@@ -228,6 +228,9 @@ def managed_author_packages_snapshot(install_root, *, cancelled=None) -> list[di
         _check_cancelled(cancelled)
         state = verified_installed_package(root, package_id, cancelled=cancelled)
         item.update(state)
+        if not inspect_removal:
+            result.append(item)
+            continue
         try:
             plan = inspect_author_package_removal(root, package_id)
         except (ImportRejected, OSError) as error:

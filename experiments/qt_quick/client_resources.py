@@ -144,6 +144,8 @@ class ResourceService(QObject):
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(1)
         self._rows, self._busy, self._message = [], False, ""
+        self._inventory_verified = False
+        self.resourcesChanged.connect(self._invalidate_inventory_verification)
         self._pending, self._kind = None, ""
         self._token, self._jobs = 0, {}
         self._cancel = threading.Event()
@@ -396,6 +398,8 @@ class ResourceService(QObject):
                 self.changed.emit()
                 return
             self._lease_id = lease
+        if kind in {"list", "refresh", "refresh-after-write"}:
+            self._inventory_verified = False
         self._token += 1
         self._kind, self._busy, self._can_cancel = kind, True, cancellable
         self._message = message
@@ -412,12 +416,36 @@ class ResourceService(QObject):
 
     def _snapshot(self, cancel):
         importer._pending_upgrade(self.sandbox)
-        rows = manager.managed_author_packages_snapshot(self.sandbox, cancelled=cancel.is_set)
+        rows = manager.managed_author_packages_snapshot(self.sandbox, cancelled=cancel.is_set, inspect_removal=False)
         from bundled_author_resources import bundled_summary
         bundled = bundled_summary(bundled_author_root())
         from season_map_resources import native_builtin_summaries
         native = native_builtin_summaries(runtime_paths(self.sandbox).resource_root, cancelled=cancel.is_set)
         return rows + ([bundled] if bundled else []) + native
+
+    inventoryVerified = Property(bool, lambda s: s._inventory_verified, notify=changed)
+
+    def _invalidate_inventory_verification(self):
+        self._inventory_verified = False
+        self.changed.emit()
+
+    def _declarations(self, cancel):
+        from map_package_summary import declared_builtins
+        from resource_transaction import resource_read_lock, assert_resources_ready
+        with resource_read_lock(self.sandbox, wait=True, cancelled=cancel.is_set):
+            assert_resources_ready(self.sandbox)
+            return declared_builtins(runtime_paths(self.sandbox).resource_root,
+                                     bundled_author_root(), cancelled=cancel.is_set)
+
+    @Slot()
+    def listPackages(self):
+        if self._available():
+            # A pending helper receipt retains its original full readback and
+            # completion notification. Plain page opening has no such claim.
+            if self._import_receipt_notification or self._receipt_needs_notification:
+                self.refresh()
+            else:
+                self._start("list", self._declarations, "正在读取图包清单…")
 
     @Slot()
     def refresh(self):
@@ -620,7 +648,7 @@ class ResourceService(QObject):
                 # the live package manager owns deletion invalidation.
                 self.resourcesChanged.emit()
             return
-        if kind in ("refresh", "inspect", "inspect-remove", "refresh-after-write", "recovery-history", "inspect-recovery") and self._cancel.is_set():
+        if kind in ("list", "refresh", "inspect", "inspect-remove", "refresh-after-write", "recovery-history", "inspect-recovery") and self._cancel.is_set():
             self._message, self._kind = "操作已取消。", ""
             if kind == "refresh-after-write":
                 self._import_completion_message = ""
@@ -665,6 +693,10 @@ class ResourceService(QObject):
             self.changed.emit()
             self.importCloseRequested.emit()
             return
+        elif kind == "list":
+            self._inventory_verified = False
+            self._rows, self._recovery, self._kind = result, False, ""
+            self._message = "清单已读取，内容尚未核对；使用“核对状态”检查文件。"
         elif kind == "refresh":
             self._rows, self._recovery, self._kind = result, False, ""
             if self._import_receipt_notification:
@@ -682,6 +714,7 @@ class ResourceService(QObject):
                 self._receipt_needs_notification = False
                 self._recovery_notice = self._recovery_verified_notice
                 self.resourcesChanged.emit()
+            self._inventory_verified = True
         elif kind == "inspect":
             path, inspection = result
             self._import_package_id = str(inspection.get("packageId", ""))
@@ -730,6 +763,7 @@ class ResourceService(QObject):
             return
         elif kind == "refresh-after-write":
             self._rows, self._recovery, self._kind = result, False, ""
+            self._inventory_verified = True
             if self._import_completion_message:
                 self._message = self._import_completion_message
                 title = next((str(row.get("title") or row.get("name") or package_title(self._import_package_id))

@@ -27,7 +27,7 @@ Item {
             if (rows[n].packageId === selectedProfile.packageId && rows[n].mode === backend.mode) return rows[n]
         return null
     }
-    readonly property bool canRemovePackage: !!selectedPackage && !!selectedPackage.canRemove && !packageOperationPending
+    readonly property bool canRemovePackage: !!selectedPackage && (!!selectedPackage.canRemove || !!selectedPackage.canInspectRemoval) && !packageOperationPending
     function importPackage() {
         if (!canImportPackage) return
         packageStatusOwner = resourceService
