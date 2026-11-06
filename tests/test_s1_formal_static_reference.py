@@ -51,16 +51,21 @@ class FormalStaticReferenceContracts(static.StaticReferenceContracts):
 
 
 class LockedStaticReferenceContracts(formal.FormalRoundLockContracts):
-    def test_locked_failed_new_observation_keeps_identity_not_static_pixels(self):
+    def test_locked_unknown_keeps_historical_reference_without_aligned_authority(self):
         pool, old_row = self.locked()
-        self.assertIsNotNone(self.runtime.reference_payload())
+        historical = self.runtime.reference_payload()
+        self.assertIsNotNone(historical)
         self.runtime.dispatch('close_map')
         self.assertIsNotNone(self.runtime.reference_payload())
         self.unknown.add('a')
         self.assertFalse(self.runtime.dispatch('capture_now')['success'])
         self.idle()
-        self.assertIsNone(self.runtime.reference_payload())
+        retained = self.runtime.reference_payload()
+        self.assertEqual(retained['token'], historical['token'])
+        self.assertNotIn('matrix', retained)
+        self.assertNotIn('liveAuthorization', retained)
         self.assert_pending_identity(pool, old_row)
+        self.assertFalse(self.runtime.snapshot()['displayAuthorized'])
         self.assertTrue(self.runtime.snapshot()['identityLocked'])
         self.unknown.clear()
         self.assertTrue(self.runtime.dispatch('capture_now')['success'])

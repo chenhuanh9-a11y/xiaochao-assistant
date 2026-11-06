@@ -57,6 +57,72 @@ class StaticReferenceContracts(unittest.TestCase):
         self.runtime.configure_settings(dict(self.runtime._settings, sheetVisibilityEnabled=False))
         self.assert_reference()
 
+    def test_reopen_keeps_static_pixels_through_intent_capture_and_fit(self):
+        self.wire(); self.show(); self.idle()
+        self.assertFalse(self.runtime._s1_private_pool.locked_id)
+        retained = self.assert_reference()
+        points = []
+        original_capture = self.capture.capture
+        original_display = self.runtime._display_layer.side_effect
+        def observe_point(name):
+            row = self.runtime.reference_payload()
+            points.append((name, None if row is None else row["token"]))
+        def capture(*args, **kwargs):
+            observe_point("capture")
+            return original_capture(*args, **kwargs)
+        def display(*args, **kwargs):
+            observe_point("display-preparation")
+            return original_display(*args, **kwargs) if original_display else self.display
+        self.runtime.set_event_callback(lambda event: observe_point(event["reason"])
+            if event["event"] == "render-revoked" else None)
+        with patch.object(self.capture, "capture", side_effect=capture), \
+                patch.object(self.runtime, "_display_layer", side_effect=display):
+            for sequence in (1, 3, 5):
+                retained = self.assert_reference()
+                points.clear()
+                self.assertTrue(self.runtime.dispatch("map", dict(openIntent=False, inputSequence=sequence))["success"])
+                result = self.runtime.dispatch("map", dict(openIntent=True, inputSequence=sequence + 1))
+                self.idle()
+                self.assertTrue(result["success"], result)
+                self.assertTrue(points)
+                self.assertTrue(all(token == retained["token"] for _, token in points), points)
+                self.assert_reference()
+                self.assertEqual(self.runtime._s1_private_pool.locked_id, "a")
+
+    def test_new_floor_drops_static_pixels_before_replacement_preparation(self):
+        self.show(); self.assert_reference()
+        self.runtime.dispatch("close_map")
+        self.floor = "-2"
+        seen = []
+        def display(*args, **kwargs):
+            seen.append(self.runtime.reference_payload())
+            return self.display
+        with patch.object(self.runtime, "_display_layer", side_effect=display):
+            self.show()
+        self.assertEqual(seen, [None])
+        self.assert_reference(floor="-2")
+
+    def test_unknown_or_cancelled_scan_keeps_historical_sheet_but_explicit_cancel_clears(self):
+        from s1_structure_selection import StructureCandidateScanner
+        for cancel_scan in (False, True):
+            with self.subTest(cancel_scan=cancel_scan):
+                self.show()
+                retained = self.assert_reference()
+                self.runtime.dispatch("close_map")
+                stopped = [False]
+                def unknown(*args, **kwargs):
+                    stopped[0] = cancel_scan
+                    return dict(success=False, reason="fixture-unknown-no-positive-contradiction")
+                def scan(frame, **kwargs):
+                    return StructureCandidateScanner(self.registry.catalog, unknown).scan(frame, **kwargs)
+                with patch.object(self.registry.engine, "qt_s1_structure_scan", side_effect=scan):
+                    result = self.runtime.dispatch("capture_now", cancelled=lambda: stopped[0])
+                self.assertFalse(result["success"])
+                self.assertEqual(self.assert_reference()["token"], retained["token"])
+                self.assertIsNone(self.current_payload())
+                self.runtime.dispatch("cancel")
+                self.assertIsNone(self.runtime.reference_payload())
+
     def test_all_s1_modes_share_static_reference_lifecycle(self):
         for mode in ("nightmare", "difficult", "difficulty2"):
             with self.subTest(mode=mode):

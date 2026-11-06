@@ -312,6 +312,39 @@ class S1AuthorSettingsChainTests(unittest.TestCase):
         self.assertEqual(self.coordinator.referenceData, shown)
         self.assertEqual(self.runtime.reference_payload()["token"], current["token"])
 
+    def test_normal_reopen_never_hides_static_view_while_capture_is_blocked(self):
+        self.runtime.dispatch("map", dict(openIntent=False, inputSequence=1))
+        self.session.refreshRuntime()
+        self.app.processEvents()
+        shown = deepcopy(self.coordinator.referenceData)
+        self.assertTrue(shown)
+        self.windows.hide.reset_mock()
+        entered, release = threading.Event(), threading.Event()
+        original = self.fx.capture.capture
+        def capture(*args, **kwargs):
+            entered.set()
+            if not release.wait(4):
+                raise AssertionError("capture release deadline")
+            return original(*args, **kwargs)
+        results = []
+        with patch.object(self.fx.capture, "capture", side_effect=capture):
+            worker = threading.Thread(target=lambda: results.append(self.runtime.dispatch(
+                "map", dict(openIntent=True, inputSequence=2))))
+            worker.start()
+            try:
+                self.until(entered.is_set)
+                self.coordinator._watch_foreground()
+                self.assertEqual(self.coordinator.referenceData, shown)
+                self.assertFalse(any(call.args == ("reference",) for call in self.windows.hide.call_args_list))
+            finally:
+                release.set(); worker.join(4)
+        self.fx.idle()
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(results[0]["success"], results)
+        self.session.refreshRuntime()
+        self.assertTrue(self.coordinator.referenceData)
+        self.assertFalse(any(call.args == ("reference",) for call in self.windows.hide.call_args_list))
+
     def test_queued_saved_author_cannot_revive_display_or_private_lock_after_end_round(self):
         entered, release = threading.Event(), threading.Event()
         original = self.runtime.dispatch

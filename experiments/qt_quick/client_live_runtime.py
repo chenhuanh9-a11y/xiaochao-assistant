@@ -2916,9 +2916,10 @@ class LiveRuntime:
     def invalidate(self, reason="invalidated", *, source="", input_sequence=None):
         """Revoke immediately; return whether this close emitted a fit summary."""
         with self._lock:
-            # A closed-map reference is explicitly historical, not a retained
-            # pose. Every other hard boundary revokes this separate S1 grant.
-            if reason not in ("map-closed", "escape", "foreground-lost"):
+            # A static reference is explicitly historical, not a retained
+            # pose. Normal reopen must not blank it while acquiring fresh
+            # evidence; conflict/reselection/context boundaries still revoke.
+            if reason not in ("map-closed", "escape", "foreground-lost", "s1-provisional-open-intent"):
                 self._clear_s1_reference()
             if any(word in reason for word in ("resource", "context", "settings", "identity", "reselection", "candidate-selected", "end-round", "end_round", "reset_round", "stop_round")):
                 self._s1_candidate_preference = None
@@ -3059,9 +3060,10 @@ class LiveRuntime:
                 with self._lock:
                     self._event_delivery_error = f"{type(error).__name__}:{error}"[:256]
 
-    def _revoke_s1_current_candidates(self):
+    def _revoke_s1_current_candidates(self, *, preserve_reference=False):
         """Called under the lifetime lock before acquisition and on revocation."""
-        self._clear_s1_reference()
+        if not preserve_reference:
+            self._clear_s1_reference()
         self._provisional_display_map_id = ""
         if self._s1_structure_session is not None:
             self._s1_structure_session.revoke_current()
@@ -3073,7 +3075,8 @@ class LiveRuntime:
     def _revoke_render(self, reason):
         """Revoke presentation without invalidating the current worker lifetime."""
         with self._lock:
-            self._revoke_s1_current_candidates()
+            self._revoke_s1_current_candidates(
+                preserve_reference=reason in ("new-capture", "new-provisional-capture"))
             token = self._render.get("token", "") if self._render is not None else ""
             self._discard_sibling()
             self._core.revoke_display(reason=reason)
@@ -3395,8 +3398,9 @@ class LiveRuntime:
         """Display-only ownership, independent of the legacy identity gate.
 
         A successful current candidate material may be kept across map close.
-        It is never a new pose or a durable map identity. New observations,
-        explicit reselection and hard boundaries revoke it before blocking.
+        It is never a new pose or a durable map identity. Routine recapture
+        retains it until replaced; explicit reselection, conflicting floor or
+        candidate evidence and hard boundaries revoke it before blocking.
         """
         pool = self._s1_private_pool
         return bool(row.get("s1CandidateReference") and self._season == "s1"
@@ -3679,7 +3683,7 @@ class LiveRuntime:
                 # Notify the actual presentation consumer before pixels block.
                 self._revoke_render("new-provisional-capture")
             else:
-                self._revoke_s1_current_candidates()
+                self._revoke_s1_current_candidates(preserve_reference=True)
         # Retire prior evidence BEFORE a new acquisition, including failures.
         self._failure_capture_stamp = None
         self._failure_control_observation = None
