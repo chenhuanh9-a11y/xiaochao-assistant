@@ -1529,3 +1529,16 @@ FIELDS = FIELDS | frozenset({"controlSearchBounds", "controlSearchRegion",
     "controlLocalScale", "localization"})
 CODES = CODES | frozenset({"s1-floor-localization-budget",
     "s1-floor-localization-ui-unverified", "signed-column-position-scale"})
+
+# Typed local fit evidence. No arbitrary diagnostics, exception text or pixels.
+FIELDS = FIELDS | frozenset({'fitEvidence', 'observations', 'priorAttempts', 'fastAttempts',
+    'statistics', 'rejection', 'regionMetrics', 'resourceBinding', 'priorBinding', 'priorReason',
+    'searchKind', 'frameShapeHW', 'cropOriginClientXY', 'cropShapeHW', 'sampleScaleXY',
+    'referenceShapeHW', 'referenceMetadataSha256', 'indexSha256', 'ownerScopeDigest',
+    'queryPixelCount', 'observedEdgePixels', 'nodeCount', 'lineCount', 'pointRejectionCount', 'omittedObservationCount',
+    'omittedPriorCount', 'omittedFastCount', 'omittedCandidateCount', 'omittedRegionCount',
+    'omittedEvidenceCount'})
+CODES = CODES | frozenset({'local-prior', 'global-search', 'fast-prepared-unavailable',
+    'preferred-fit-unresolved', 'fast-existing-validation-rejected', 'fast-attempt-unavailable',
+    'shared-fast-alignment', 'shared-established-group-recovery', 'shared-registered-floor-recovery',
+    'verified-entry-current-frame', 'shared-initial-structure'})

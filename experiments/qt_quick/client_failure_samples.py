@@ -201,6 +201,15 @@ class FailureSampleRecorder:
                 'observationBounds', 'cropPaddingRemoved', 'sampleRole',
                 'season', 'contextKey', 'attemptId', 'openingId', 'inputSequence',
                 'requestGeneration', 'epoch', 'roundId', 'frameCapturedMonotonicAt') if k in diagnostic}
+            if diagnostic.get('fitEvidence') and frame is not None and current():
+                from s1_fit_diagnostics import safe_evidence
+                # These crop dimensions describe the saved local sample, not
+                # necessarily the component used by any solver attempt.
+                safe_diagnostic['fitEvidence'] = safe_evidence(dict(safe_evidence(diagnostic['fitEvidence']),
+                    frameShapeHW=list(frame.shape[:2]), cropBounds=list(crop_bounds) if crop_bounds else None,
+                    cropOriginClientXY=list(crop_bounds[:2]) if crop_bounds else None,
+                    cropShapeHW=[crop_bounds[3], crop_bounds[2]] if crop_bounds else None,
+                    sampleScaleXY=[1, 1]))
             row = dict(event='automatic-failure-sample', reason=reason,
                        recordedAt=datetime.now(timezone.utc).isoformat(timespec='milliseconds'),
                        capturedAt=diagnostic.get('frameCapturedAtUtc'), diagnostic=bounded_evidence(safe_diagnostic)[0],

@@ -153,7 +153,8 @@ class _PreparationHost:
 
 class _AlignmentHost:
     """Only explicit resource/pose inputs needed by the unchanged shared solvers."""
-    def __init__(self, engine, group=None, settings=None, *, steady=None, pose_priors=None):
+    def __init__(self, engine, group=None, settings=None, *, steady=None, pose_priors=None,
+                 collect_fit_diagnostics=False):
         self.engine, self.pack = engine, engine.pack
         self.author_coordinate_adapters = engine.qt_adapters
         self.group = group
@@ -162,8 +163,12 @@ class _AlignmentHost:
         self.events = []
         self.steady = steady
         self.pose_priors = dict(pose_priors or {})
+        self.collect_fit_diagnostics = collect_fit_diagnostics
+        self.diagnostic_event_counts = {}
 
     def _log(self, event, **values):
+        if self.collect_fit_diagnostics:
+            self.diagnostic_event_counts[event] = min(1000000, self.diagnostic_event_counts.get(event, 0)+1)
         self.events.append(dict(event=event, **values))
         del self.events[:-24]
 
@@ -487,20 +492,29 @@ class _AlignmentHost:
             fit = self._alignment_v2_independent_member_fit(frame, reference.clean_mask, map_id, floor,
                 "shared-structure", cancelled=cancelled, context=context)
             strategy = "shared-initial-structure"
+        def record_fit(value):
+            if self.collect_fit_diagnostics:
+                try:
+                    from s1_fit_diagnostics import observation_summary
+                    self._log('s1-fit-observation', mapId=str(map_id), floor=str(floor),
+                        **observation_summary(frame, context, value, strategy, reference))
+                except Exception:
+                    pass  # Optional evidence cannot change the actual fit verdict.
+            return value
         if not fit.get("success"):
-            return fit
+            return record_fit(fit)
         # Independently wrap/verify the final matrix in its actual typed canvas,
         # exactly as the production canonical consumer does after any sensor.
         residual = self._rendered_profile_current_frame_residual(
             frame, reference.clean_mask, fit["matrixSourceToClient"], profile_id="shared-structure",
             visible_override=context.get("visible") if explicit_domain else None)
         if not rendered_profile_residual_is_verified(residual):
-            return dict(success=False, reason="canonical-current-frame-residual-unverified", residual=residual)
-        return dict(fit, selectedRouteCurrentFrameResidual=residual,
+            return record_fit(dict(success=False, reason="canonical-current-frame-residual-unverified", residual=residual))
+        return record_fit(dict(fit, selectedRouteCurrentFrameResidual=residual,
                     observationBounds=context["observationBounds"] if explicit_domain else None,
                     observationComponent=dict(context["visible"][2], bounds=context["visible"][1]) if explicit_domain else None,
                     coordinateSpace="shared-structure-to-client", routeProfileId="shared-structure",
-                    strategy=strategy)
+                    strategy=strategy))
 
 
 class LiveRuntime:
@@ -1062,6 +1076,7 @@ class LiveRuntime:
         private_material_ms = 0.0
         scan_plan, scan_revision = (), None
         pose_priors = {}
+        prior_binding = {}
 
         def owns_ticket():
             return (self._stream_owner is owner and epoch == self._epoch
@@ -1204,6 +1219,11 @@ class LiveRuntime:
                         if matrix is not None:
                             pose_priors[(prior_source.map_id, str(floor))] = matrix
                             prior_reason = "pose-prior-bound"
+                            if self._failure_samples.automatic_enabled:
+                                prior_binding = dict(mode=catalog.mode, resourceKey=catalog.resource_key,
+                                    mapId=prior_source.map_id, sourceFloor=str(prior_source.floor), targetFloor=str(floor),
+                                    indexSha256=getattr(hint, 'index_sha256', None),
+                                    ownerScopeDigest=hashlib.sha256(repr(preference_scope).encode()).hexdigest())
                         else:
                             prior_reason = "pose-prior-scope-rejected"
                 except (ValueError, TypeError, KeyError, OSError):
@@ -1243,6 +1263,9 @@ class LiveRuntime:
                             and action not in ("reselect_map", "map_reselection") else None)) if private_enabled else {}
                     if pose_priors:
                         options["pose_priors"] = dict(pose_priors)
+                    if (private_enabled and pool.retain_locked_identity and pool.locked_id
+                            and self._failure_samples.automatic_enabled):
+                        options['collect_fit_diagnostics'] = True
                     self._recognition_diagnostic("s1-scan-plan", prior_reason,
                         inputs=self._failure_diagnostic(payload),
                         plannedCount=len(scan_plan) if private_enabled else len(catalog.map_ids),
@@ -1305,7 +1328,10 @@ class LiveRuntime:
                     pass
                 self._terminal_failure_sample(
                     "no-current-supported-candidates" if not report["supportedMapIds"] else "s1-no-current-material",
-                    payload, captured, lambda: not obsolete())
+                    payload, captured, lambda: not obsolete(),
+                    diagnostic=(dict(fitEvidence=dict(report['fitEvidence'], priorBinding=prior_binding,
+                        priorReason=prior_reason)) if report.get('fitEvidence')
+                        and private_enabled and pool.retain_locked_identity and pool.locked_id else None))
             with self._lock:
                 if (recovery_scan and current() and self._s1_private_pool is pool
                         and pool.recovery_revision == recovery_revision
@@ -3649,10 +3675,10 @@ class LiveRuntime:
         except Exception:
             pass  # Diagnostics must never change capture/observation decisions.
 
-    def _terminal_failure_sample(self, reason, payload, captured, current):
+    def _terminal_failure_sample(self, reason, payload, captured, current, diagnostic=None):
         return self._automatic_failure_sample(reason, captured=captured,
             attempt_id=payload.get("_diagnosticAttemptId"), current=current,
-            diagnostic=self._failure_diagnostic(payload))
+            diagnostic=dict(self._failure_diagnostic(payload), **(diagnostic or {})))
 
     def _record_automatic_failure_sample(self, reason, *, captured=None, attempt_id=None, current=None, diagnostic=None):
         stamp = self._failure_capture_stamp
