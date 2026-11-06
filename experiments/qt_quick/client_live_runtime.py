@@ -516,14 +516,14 @@ class LiveRuntime:
                  recorded_s1_scan_order="natural", recorded_s1_scan_budget=S1_STRUCTURE_CANDIDATE_BUDGET_SECONDS,
                  recorded_s1_priority_index=None, s1_candidate_purpose=None):
         self._diagnostics = diagnostics
-        from s1_candidate_purpose import native_candidate_purpose_is_valid, private_native_candidate_purpose_is_valid
+        from s1_candidate_purpose import native_candidate_purpose_is_valid, private_native_candidate_purpose_is_valid, native_round_lock_purpose_is_valid
         self._native_s1_candidate_preview = bool(
             evidence_kind == "live-client-capture"
             and native_candidate_purpose_is_valid(s1_candidate_purpose)
             and callable(getattr(capture_provider, "is_current", None)))
-        # Production permits only current-frame candidate composition. Private
-        # elimination/locking research is a separate capability, not an implied
-        # consequence of candidate display permission.
+        # Scoped cumulative evidence is independent of private trace permission.
+        self._native_s1_round_lock = bool(self._native_s1_candidate_preview
+            and native_round_lock_purpose_is_valid(s1_candidate_purpose))
         self._native_s1_private_experiment = bool(self._native_s1_candidate_preview
             and private_native_candidate_purpose_is_valid(s1_candidate_purpose))
         # Explicit research opt-in cannot grant live capture readiness.
@@ -688,6 +688,7 @@ class LiveRuntime:
         self._reset_floor_policy()
 
     def _reset_identity(self):
+        self._clear_s1_reference()
         self._s1_candidate_preference = None
         self._s1_candidate_pose_hint = None
         self._clear_private_pool()
@@ -878,9 +879,16 @@ class LiveRuntime:
         phase = ("MANUAL_MEMBER_CONFIRMED" if held else "MEMBER_VERIFIED" if self._durable_map_id
                  else "GROUP_LOCKED" if grouped else "UNLOCKED")
         provisional_id = self._provisional_display_map_id
-        return dict(identityPhase="CANDIDATE_DISPLAY" if provisional_id else phase, identitySource=self._identity_source,
+        pool = getattr(self, "_s1_private_pool", None)
+        formal_lock = (pool.locked_id if pool is not None and self._native_s1_round_lock
+            and not self._native_s1_private_experiment and self._private_pool_scope_current(pool) else "")
+        return dict(identityPhase="MEMBER_VERIFIED" if formal_lock else "CANDIDATE_DISPLAY" if provisional_id else phase, identitySource=self._identity_source,
             candidateFullImage=bool(provisional_id), candidateDisplayOnly=bool(provisional_id),
-            identityLocked=bool(self._durable_map_id), durableMapId=self._durable_map_id,
+            identityLocked=bool(self._durable_map_id or formal_lock), durableMapId=self._durable_map_id or formal_lock,
+            s1RoundLockEnabled=bool(self._native_s1_round_lock and self._season == "s1" and not self._manual_alignment),
+            s1FormalRoundLock=bool(self._native_s1_round_lock and not self._native_s1_private_experiment
+                and self._season == "s1" and not self._manual_alignment),
+            s1RemainingCandidateCount=len(pool.remaining) if pool is not None else 0,
             provisionalMapId=provisional_id or ((native.provisional_member_id or self._map_id) if grouped else ""),
             provisional=bool(provisional_id) or (grouped and not bool(self._durable_map_id)), groupLocked=grouped,
             groupId=native.group_id if grouped else None,
@@ -1018,11 +1026,13 @@ class LiveRuntime:
                 self._s1_candidate_preference is not None and payload.get("forceCatalogue") is not True
                 and action not in ("reselect_map", "map_reselection")) else None
             private_prepare = getattr(engine, "qt_s1_private_coordinate_prepare", None)
-            private_enabled = self._native_s1_private_experiment and callable(private_prepare)
+            private_enabled = self._native_s1_round_lock and callable(private_prepare)
             pool = getattr(self, "_s1_private_pool", None)
             if private_enabled and (pool is None or pool.scope != preference_scope):
                 from s1_private_experiment import PrivateRoundPool
                 pool = self._s1_private_pool = PrivateRoundPool(preference_scope, catalog.map_ids)
+                self._notify("s1-candidate-pool-changed", reason="s1-pool-created",
+                    **pool.snapshot(), privateResourceDigest=catalog.resource_key)
             recovery_revision = pool.recovery_revision if private_enabled else None
             recovery_scan = bool(private_enabled and pool.recovery_pending)
             if recovery_scan:
@@ -1234,7 +1244,7 @@ class LiveRuntime:
                 retry_full = False
                 with self._lock:
                     if (current() and self._s1_private_pool is pool and pool.revision == scan_revision
-                            and not pool.locked_id):
+                            and not pool.locked_id and self._native_s1_private_experiment):
                         pool.restore()
                         retry_full = True
                         preferred = None
@@ -1427,6 +1437,17 @@ class LiveRuntime:
                         **pool.snapshot())
                     if reason == "private-contradiction-recovery":
                         self._private_contradiction_recovered(pool, was_locked, evidence, catalog)
+                    if reason == "private-pool-updated" and tuple(pool.remaining) != before:
+                        # Historical positive evidence may complete after paint.
+                        # Retire a now-excluded candidate immediately, not only
+                        # when a future foreground scan happens to publish.
+                        row = self._render
+                        if (row is not None and row.get("candidateDisplayOnly")
+                                and row.get("mapId") not in pool.remaining):
+                            self._s1_candidate_preference = self._s1_candidate_pose_hint = None
+                            self._revoke_render("s1-candidate-excluded")
+                        self._notify("s1-candidate-pool-changed", reason=reason,
+                            **pool.snapshot(), privateResourceDigest=catalog.resource_key)
                     state = "finished"
             except BaseException as error:
                 state = "failed"
@@ -1446,6 +1467,7 @@ class LiveRuntime:
         No Session refresh/dispatch, epoch change, hotkey or foreground cancel.
         The next fresh observation owns a full-catalogue recovery scan.
         """
+        self._clear_s1_reference()
         self._s1_candidate_preference = self._s1_candidate_pose_hint = None
         self._remember_proposals = {token: proposal for token, proposal in self._remember_proposals.items()
             if not proposal.get("candidateOnly")}
@@ -2419,6 +2441,7 @@ class LiveRuntime:
                 self._s1_candidate_preference = None
                 self._clear_private_pool()
                 # Revoke old material without erasing the current support ticket.
+                self._clear_s1_reference()
                 old_token = self._render.get("token", "") if self._render else ""
                 self._core.revoke_display(reason="provisional-candidate-switch")
                 self._render = self._render_capture_context = None
@@ -2801,7 +2824,8 @@ class LiveRuntime:
                 capture_state = capture_state()
             metadata = ({key: copy.deepcopy(value) for key, value in self._render.items()
                          if key not in ("pixels",)} if self._render is not None else {})
-            return dict(**self._context(), epoch=self._epoch, cycleId=self._cycle, mapId=self._durable_map_id, floor=self._floor,
+            identity_fields = self._identity_fields()
+            return dict(**self._context(), epoch=self._epoch, cycleId=self._cycle, mapId=identity_fields["durableMapId"], floor=self._floor,
                 generation=self._frame_generation, preferredProfileId=self._profile,
                 effectiveProfileId=metadata.get("effectiveProfileId", ""),
                 displayFallback=metadata.get("fallback", False), fallbackReason=metadata.get("fallbackReason", ""),
@@ -2847,7 +2871,7 @@ class LiveRuntime:
                 automaticCandidateRows=self._candidate_summary(),
                 candidateRows=copy.deepcopy(self._candidate_rows), selectedCandidateIndex=selected,
                 selectedCandidate=copy.deepcopy(self._candidate_rows[selected]) if selected >= 0 else {},
-                **self._identity_fields(), candidateEditMode=self._candidate_edit,
+                **identity_fields, candidateEditMode=self._candidate_edit,
                 poseAttempt=copy.deepcopy(self._pose_attempt), poseResult=copy.deepcopy(self._pose_result),
                 siblingPending=self._pending_sibling is not None,
                 pendingSiblingToken=self._pending_sibling["render"]["token"] if self._pending_sibling is not None else "",
@@ -2862,6 +2886,7 @@ class LiveRuntime:
                 capture=copy.deepcopy(capture_state), render=metadata,
                 displayAuthorized=bool(metadata), liveAuthorization=bool(metadata.get("liveAuthorization")),
                 privateExperiment=(dict(self._s1_private_pool.snapshot(),
+                    privateExperimental=self._native_s1_private_experiment,
                     privateResourceDigest=self._s1_private_pool.scope[4].resource_key) if getattr(self, "_s1_private_pool", None)
                     else dict(privateExperimental=bool(self._native_s1_private_experiment and self._season == "s1" and not self._manual_alignment),
                         privateExperimentalLocked=False, privateLockMapId="", privatePoolMapIds=[])),
@@ -2891,6 +2916,10 @@ class LiveRuntime:
     def invalidate(self, reason="invalidated", *, source="", input_sequence=None):
         """Revoke immediately; return whether this close emitted a fit summary."""
         with self._lock:
+            # A closed-map reference is explicitly historical, not a retained
+            # pose. Every other hard boundary revokes this separate S1 grant.
+            if reason not in ("map-closed", "escape", "foreground-lost"):
+                self._clear_s1_reference()
             if any(word in reason for word in ("resource", "context", "settings", "identity", "reselection", "candidate-selected", "end-round", "end_round", "reset_round", "stop_round")):
                 self._s1_candidate_preference = None
                 self._clear_private_pool()
@@ -3032,6 +3061,7 @@ class LiveRuntime:
 
     def _revoke_s1_current_candidates(self):
         """Called under the lifetime lock before acquisition and on revocation."""
+        self._clear_s1_reference()
         self._provisional_display_map_id = ""
         if self._s1_structure_session is not None:
             self._s1_structure_session.revoke_current()
@@ -3194,6 +3224,11 @@ class LiveRuntime:
                         # durable identity or a fresh canonical pose from this.
                         map_id = source["mapId"]
                         candidate_proposal = proposal
+                if (not map_id and sheet is not None and sheet.get("s1CandidateReference")
+                        and self._s1_reference_current(sheet, check_display=False)):
+                    # Closed-map author changes need no current pose and must
+                    # not promote a candidate into the legacy identity owner.
+                    map_id = sheet["mapId"]
                 if not self._active or engine is None or not map_id or not floor:
                     return self._receipt(action, payload, success=True, reason="context-updated")
                 source_context = self._render_capture_context
@@ -3226,6 +3261,10 @@ class LiveRuntime:
                         self._frame_id, self._engine, self._profile, self._map_id, self._floor,
                         getattr(self, "_display_generation", 0))):
                     return self._receipt(action, payload, success=False, reason="stale-display-settings", stale=True)
+                if (sheet is not None and sheet.get("s1CandidateReference")
+                        and (self._reference_sheet is not sheet
+                             or not self._s1_reference_current(sheet, check_display=False))):
+                    return self._receipt(action, payload, success=False, reason="stale-reference-context", stale=True)
                 if candidate_proposal is not None:
                     session = candidate_proposal["candidateSession"]
                     if (session is not self._s1_structure_session
@@ -3347,6 +3386,34 @@ class LiveRuntime:
                     floor=self._floor, frame_generation=self._frame_generation)):
             self._provisional_reference_context = self._reference_owner_context(row)
 
+    def _clear_s1_reference(self):
+        """Revoke candidate static pixels without touching S0 reference policy."""
+        if (self._reference_sheet or {}).get("s1CandidateReference"):
+            self._reference_sheet = self._reference_capture_context = None
+
+    def _s1_reference_current(self, row, *, check_display=True):
+        """Display-only ownership, independent of the legacy identity gate.
+
+        A successful current candidate material may be kept across map close.
+        It is never a new pose or a durable map identity. New observations,
+        explicit reselection and hard boundaries revoke it before blocking.
+        """
+        pool = self._s1_private_pool
+        return bool(row.get("s1CandidateReference") and self._season == "s1"
+            and self._candidate_preview_requested() and not self._manual_alignment
+            and self._active and not self._selection_pending and not self._floor_required
+            and not self._current_frame_floor_conflicts(self._floor)
+            and all(row.get(key) == expected for key, expected in (
+                ("season", self._season), ("mode", self._mode), ("floor", self._floor),
+                ("roundId", self._round), ("engineIdentity", id(self._engine)),
+                ("captureGeneration", self._capture_generation()),
+                ("s1ReferencePoolIdentity", id(pool) if pool is not None else None),
+                ("s1ReferenceRecoveryRevision", pool.recovery_revision if pool is not None else None)))
+            and (self._evidence_kind != "live-client-capture" or row.get("captureGeneration") is not None)
+            and (not check_display or (row.get("profileId") == self._profile
+                and row.get("displayGeneration") == getattr(self, "_display_generation", 0)))
+            and (pool is None or row.get("mapId") in pool.remaining))
+
     def reference_payload(self):
         """Current selection/floor grants a static sheet, never an aligned pose.
 
@@ -3358,6 +3425,13 @@ class LiveRuntime:
         """
         with self._lock:
             row = self._reference_sheet
+            if row is not None and row.get("s1CandidateReference"):
+                if not self._s1_reference_current(row):
+                    return None
+                # Preserve the committed candidate label across close. Current
+                # identity fields may have been reset and cannot relabel it.
+                return {key: value if key == "pixels" else copy.deepcopy(value)
+                        for key, value in row.items()}
             if (row is None or not self._active or self._selection_pending or self._floor_required
                     or self._current_frame_floor_conflicts(self._floor)
                     or self._gate is None or self._gate.confirmed_id != self._map_id
@@ -3680,6 +3754,10 @@ class LiveRuntime:
         return True  # Explicit synthetic/offline capture provider only.
 
     def _display_current(self, row):
+        pool = getattr(self, "_s1_private_pool", None)
+        if (row.get("candidateDisplayOnly") and pool is not None
+                and (not self._private_pool_scope_current(pool) or row.get("mapId") not in pool.remaining)):
+            return False
         observation = self._core.active_observation
         return bool(self._active and self._map_open and row["epoch"] == self._epoch and observation
             and self._core.can_display(cycle_id=self._cycle, map_id=self._provisional_display_map_id or self._map_id, floor=self._floor,
@@ -5525,8 +5603,14 @@ class LiveRuntime:
                     payload["_recoveryRenderOwner"] = self._refresh_render_owner()
                     payload["_recoveryResultScope"] = self._map_recovery_scope()
                 self._render_capture_context = captured.context
-                self._reference_sheet = None if provisional_operation else reference_sheet
-                self._reference_capture_context = None if provisional_operation else captured.context
+                if provisional_operation:
+                    pool = self._s1_private_pool
+                    reference_sheet.update(self._identity_fields(), s1CandidateReference=True,
+                        s1ReferencePoolIdentity=id(pool) if pool is not None else None,
+                        s1ReferenceRecoveryRevision=pool.recovery_revision if pool is not None else None,
+                        referenceAuthorizationScope="current-candidate-static-reference")
+                self._reference_sheet = reference_sheet
+                self._reference_capture_context = captured.context
                 self._remember_provisional_reference()
         self._set_pose_phase("valid", "current-frame-pose-authorized", map_id, floor, frame_id, frame_generation,
             staged_observation=staged_observation)

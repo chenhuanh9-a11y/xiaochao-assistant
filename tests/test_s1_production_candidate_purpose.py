@@ -186,18 +186,16 @@ class ProductionCandidateRuntimeContracts(native.NativeCandidateContracts):
             self.assertFalse(self.runtime.dispatch('start_round')['success'])
             self.assertIsNone(self.current_payload())
 
-    def test_production_candidate_does_not_run_private_elimination_or_lock_identity(self):
-        prepare = self.registry.engine.qt_s1_private_coordinate_prepare = Mock(
-            side_effect=AssertionError('production must not call private observation'))
-        first = self.show()
+    def test_production_runs_scoped_evidence_without_private_trace_permission(self):
+        prepare = self.registry.engine.qt_s1_private_coordinate_prepare = Mock(return_value={})
+        self.show()
+        thread = self.runtime._s1_private_jobs._thread
+        if thread:
+            thread.join(4)
         self.assertFalse(self.runtime._native_s1_private_experiment)
-        self.assertFalse(self.runtime.snapshot()['privateExperiment']['privateExperimental'])
-        self.assertIsNone(self.runtime._s1_private_pool)
-        self.assertFalse(self.runtime._s1_private_jobs.busy)
-        self.assertTrue(self.runtime.acknowledge_render_material(first['token'])['success'])
-        self.runtime.dispatch('close_map')
-        self.assertTrue(self.runtime.dispatch('capture_now')['success'])
-        prepare.assert_not_called()
+        self.assertTrue(self.runtime._native_s1_round_lock)
+        self.assertIsNotNone(self.runtime._s1_private_pool)
+        prepare.assert_called()
         self.assertFalse(self.runtime.snapshot()['identityLocked'])
         self.assertFalse(self.registry.capability['liveValidated'])
 
@@ -241,6 +239,9 @@ class ProductionCandidateRuntimeContracts(native.NativeCandidateContracts):
                 evidence_kind='live-client-capture', s1_candidate_purpose=token)
             runtime.configure_settings(dict(mapSelectionMode='auto'))
             self.addCleanup(runtime.shutdown); runtimes.append(runtime)
+        for runtime in runtimes:
+            self.assertFalse(runtime.snapshot()["s1FormalRoundLock"])
+            self.assertFalse(runtime.snapshot()["s1RoundLockEnabled"])
         for mode in ('nightmare', 'difficult'):
             states = []
             for runtime in runtimes:

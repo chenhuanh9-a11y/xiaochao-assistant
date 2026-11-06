@@ -134,6 +134,10 @@ Window {
     }
     function statusText() {
         if (snapshot.contextPending) return "正在切换模式或路线"
+        if (snapshot.s1FormalRoundLock === true && snapshot.identityLocked === true)
+            return "地图已锁定 · " + (snapshot.displayAuthorized ? outputStatus() : "位置待核对")
+        if (snapshot.s1FormalRoundLock === true && snapshot.roundActive && snapshot.s1RemainingCandidateCount > 0)
+            return "正在核对 · 剩余 " + snapshot.s1RemainingCandidateCount + " 个候选"
         if (privateIdentityRetained) return "实验锁定 · " + (privatePoseCurrent ? outputStatus() : "位置待核对")
         if (unconfirmedCandidate) return (snapshot.evidenceKind === "recorded" ? "录制研究" : "自动候选")
             + " · 地图未确认 · " + (snapshot.displayAuthorized ? outputStatus() : "位置待核对")
@@ -396,14 +400,14 @@ Window {
                     KeyHint { text: panel.shortcut("toggle-sheet-visibility") }
                 }
                 ColumnLayout {
-                    visible: !panel.compactAutomatic || panel.recoveryExpanded
+                    visible: true
                     Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop; spacing: 2
                     ControlButton { objectName: "controlReferenceVisibility"; text: panel.preferences.referenceSheetVisible ? "隐藏定点" : "显示定点"; icon.source: "icons/map.png"; selected: panel.preferences.referenceSheetVisible === true; enabled: !settingsService.busy; Layout.fillWidth: true; hint: "切换定点地图显示，保留已选择的地图"; onClicked: clientCoordinator.toggleReferenceVisibility() }
                     ControlButton { visible: !!panel.layout.display.referencePosition && !panel.editing; objectName: "controlEditReferencePosition"; text: "编辑位置"; hint: "拖动定点地图，完成后保存位置"; implicitHeight: 30; Layout.fillWidth: true; onClicked: clientCoordinator.beginReferenceEdit() }
                 }
             }
             OpacityControl { visible: !!panel.layout.display.alignedOpacity; settingKey: "sheetOpacity"; title: "贴合层不透明度" }
-            OpacityControl { visible: !!panel.layout.display.referenceOpacity && (!panel.compactAutomatic || panel.recoveryExpanded); settingKey: "referenceOpacity"; title: "定点不透明度" }
+            OpacityControl { visible: !!panel.layout.display.referenceOpacity; settingKey: "referenceOpacity"; title: "定点不透明度" }
         }
     }
     Component {

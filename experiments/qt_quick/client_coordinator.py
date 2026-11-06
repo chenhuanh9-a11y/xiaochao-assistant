@@ -1440,9 +1440,10 @@ class ClientCoordinator(QObject):
             url = self.images.publish(key, payload["pixels"])
             self._reference = dict(imageUrl=url, context=context, key=key,
                 mapId=payload.get("mapId"), floor=payload.get("floor"), profileId=payload.get("profileId"))
-        for key in ("identityPhase", "provisional", "groupId", "durableMapId", "roundId", "cycleId", "frameId", "generation"):
+        for key in ("identityPhase", "provisional", "groupId", "durableMapId", "roundId", "cycleId", "frameId", "generation", "s1CandidateReference"):
             self._reference[key] = payload.get(key)
-        label = "暂用地图" if payload.get("provisional") else "定点地图"
+        label = ("定点地图（暂用）" if payload.get("s1CandidateReference") else
+                 "暂用地图" if payload.get("provisional") else "定点地图")
         self._reference["title"] = f"{label} · {payload.get('mapId')} · {payload.get('floor')}层"
         self._trace("reference-publish", payload=self._reference)
         self._show_reference_current()
@@ -2184,6 +2185,13 @@ class ClientCoordinator(QObject):
     def _watch_foreground(self):
         if self._closed or self._closing or self._binding_suspended:
             return
+        if self._reference.get("s1CandidateReference") and self._edit is None:
+            # Historical private evidence can withdraw a candidate without a
+            # new capture/session completion. Recheck the static owner too.
+            getter = getattr(self.runtime, "reference_payload", None)
+            if callable(getter) and getter() is None:
+                self._clear_reference()
+                self.changed.emit()
         if self._edit is not None:
             self._show_reference_current()
         state = self.session.snapshot
@@ -2294,7 +2302,7 @@ class ClientCoordinator(QObject):
         if (not event.get("privatePoolId") or any(event.get(key) != experiment.get(key) for key in
                 ("privatePoolId", "privatePoolRevision", "privateResourceDigest"))):
             return
-        if (experiment.get("privateExperimental") is not True
+        if (not (experiment.get("privateExperimental") is True or state.get("s1FormalRoundLock"))
                 or experiment.get("privateExperimentalLocked") is not locked):
             return
         map_id = experiment.get("privateLockMapId") if locked else ""
@@ -2305,13 +2313,16 @@ class ClientCoordinator(QObject):
         if key == self._private_experiment_notice_state:
             return
         self._private_experiment_notice_state = key
-        if locked:
+        if locked and state.get("s1FormalRoundLock"):
+            self._message = "地图已锁定 · " + map_id
+            self.notificationRequested.emit("地图已锁定", "已确认地图 " + map_id + "，后续开图将只核对该图当前位置。", "info")
+        elif locked:
             self._message = "实验锁定（未正式校准） · " + map_id
             self.notificationRequested.emit("实验锁定（未正式校准）", "实验地图 " + map_id + "，请以实机效果为准。", "info")
         else:
             self._message = "结构矛盾 · 已恢复候选识别"
             self.notificationRequested.emit("结构矛盾，恢复识别",
-                "新结构与实验锁定地图矛盾，已解除锁定并恢复候选识别，下次开图继续核对。", "info")
+                "新结构与锁定地图矛盾，已解除锁定并恢复候选识别，下次开图继续核对。", "info")
         # Informational only. Never refresh Session or mutate/cancel its worker.
         self.changed.emit()
 
@@ -2383,6 +2394,13 @@ class ClientCoordinator(QObject):
             self._notify_session_transitions(self.runtime.snapshot())
         elif name in {"private-experimental-locked", "private-experimental-unlocked"}:
             self._private_experiment_notice(name, event)
+        elif name == "s1-candidate-pool-changed":
+            current = getattr(self.runtime, "private_experiment_event_is_current", None)
+            state = self.runtime.snapshot()
+            if (not self._pending_context and callable(current) and current(event)
+                    and state.get("s1FormalRoundLock") and not state.get("identityLocked")):
+                self._message = "正在核对地图 · 剩余 " + str(state.get("s1RemainingCandidateCount", 0)) + " 个候选"
+                self.changed.emit()
         elif name == "private-pool-observed":
             return  # Runtime/trace diagnostics only; no notification or refresh.
         elif name == "sibling-material-pending":
@@ -2412,6 +2430,13 @@ class ClientCoordinator(QObject):
             # continues. Present it without changing Session's request/frame ID.
             self._present_runtime_state(state, trigger=name)
         elif name == "render-revoked":
+            if self._reference.get("s1CandidateReference"):
+                # Read the current owner, never replay a queued event's sheet.
+                # A normal close retains it; switching/failed work clears it
+                # before that worker can block or complete.
+                getter = getattr(self.runtime, "reference_payload", None)
+                if callable(getter):
+                    self._sync_reference_payload(getter())
             # Runtime may close after preparation/probe failure without a key
             # edge. Reconcile only that exact input and still-current lifetime;
             # a queued old close must never flip a newer open back to closed.

@@ -233,10 +233,14 @@ class S1AuthorSettingsChainTests(unittest.TestCase):
                 self.assertIsNone(self.runtime.render_payload(previous["token"]))
                 self.assertEqual(self.coordinator.alignedData["token"], current["token"])
                 self.assertEqual(self.coordinator.alignedData["profileId"], profile)
-                # Native candidate preview grants aligned pixels only; saving
-                # an author must not invent a durable/static reference grant.
-                self.assertIsNone(self.runtime.reference_payload())
-                self.assertFalse(self.coordinator.referenceData)
+                # Static candidate pixels share display ownership, never the
+                # legacy confirmed/durable identity or an aligned pose grant.
+                reference = self.runtime.reference_payload()
+                self.assertTrue(reference["s1CandidateReference"])
+                self.assertFalse(reference["identityLocked"])
+                self.assertEqual(reference["profileId"], profile)
+                np.testing.assert_array_equal(reference["pixels"], current["pixels"])
+                self.assertEqual(self.coordinator.referenceData["profileId"], profile)
                 previous = current
         self.assertEqual(self.fx.capture.count, captures)
         self.assertEqual(self.fx.calls, fits)
@@ -250,6 +254,11 @@ class S1AuthorSettingsChainTests(unittest.TestCase):
         self.assert_identity_unchanged()
         self.assertIsNone(self.fx.current_payload())
         self.assertFalse(self.coordinator.alignedData)
+        reference = self.runtime.reference_payload()
+        self.assertTrue(reference["s1CandidateReference"])
+        self.assertEqual(reference["profileId"], "s1-jiaye-handnotes")
+        self.assertTrue(np.all(reference["pixels"] == 123))
+        self.assertEqual(self.coordinator.referenceData["profileId"], "s1-jiaye-handnotes")
         reopened = self.fx.show()
         self.fx.idle()
         self.session.refreshRuntime()
@@ -268,6 +277,40 @@ class S1AuthorSettingsChainTests(unittest.TestCase):
         self.assertEqual(self.fx.current_payload()["token"], old["token"])
         self.assertEqual(self.coordinator.alignedData["token"], old["token"])
         self.assertFalse(self.dispatch_threads)
+
+    def test_static_reference_revocation_reaches_view_without_session_completion(self):
+        self.session.refreshRuntime()
+        self.assertTrue(self.coordinator.referenceData["s1CandidateReference"])
+        self.assertIn("暂用", self.coordinator.referenceData["title"])
+        self.runtime.dispatch("close_map")
+        self.app.processEvents()
+        self.assertTrue(self.coordinator.referenceData)
+        self.runtime.invalidate("game-floor-control-intent")
+        self.until(lambda: not self.coordinator.referenceData)
+        self.assertIsNone(self.runtime.reference_payload())
+
+    def test_static_owner_poll_rejects_changed_binding_without_pose(self):
+        self.runtime.dispatch("close_map")
+        self.session.refreshRuntime()
+        self.assertTrue(self.coordinator.referenceData)
+        self.fx.capture.generation += 1
+        self.coordinator._watch_foreground()
+        self.assertFalse(self.coordinator.referenceData)
+
+    def test_queued_old_revocation_keeps_new_current_static_reference(self):
+        old = self.runtime.reference_payload()
+        self.runtime.dispatch("close_map")
+        self.fx.show(); self.fx.idle()
+        self.session.refreshRuntime()
+        current = self.runtime.reference_payload()
+        self.assertNotEqual(old["token"], current["token"])
+        shown = deepcopy(self.coordinator.referenceData)
+        self.assertTrue(shown)
+        self.coordinator._on_runtime_event(dict(event="render-revoked", reason="old-candidate-switch",
+                                               token=old["token"], epoch=-1))
+        # Identical resource/profile pixels intentionally reuse their image key.
+        self.assertEqual(self.coordinator.referenceData, shown)
+        self.assertEqual(self.runtime.reference_payload()["token"], current["token"])
 
     def test_queued_saved_author_cannot_revive_display_or_private_lock_after_end_round(self):
         entered, release = threading.Event(), threading.Event()

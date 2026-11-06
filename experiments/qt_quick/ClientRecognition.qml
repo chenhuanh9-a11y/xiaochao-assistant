@@ -105,6 +105,8 @@ Item {
             return state.roundPreparing ? "已准备；打开游戏地图后自动识别。" : "开始本局后自动识别地图与楼层。"
         if (state.manualAlignmentSession === true || state.manualSelectionPending === true)
             return "当前为旧的手动选图会话；结束本局后重新开始自动识别。"
+        if (state.s1FormalRoundLock === true && state.identityLocked === true)
+            return "本局地图已锁定；当前楼层与贴合仍须核对当前画面。"
         if (state.identityLocked === true && state.candidateDisplayOnly !== true
                 && state.identityPhase !== "CANDIDATE_DISPLAY")
             return "本局地图已确认；当前楼层与贴合仍须核对当前画面。"
