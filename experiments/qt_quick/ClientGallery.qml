@@ -39,8 +39,11 @@ Item {
         packageActions.removePackage(selectedPackage.packageId)
     }
     readonly property bool sameMode: backend.mode === session.currentMode && backend.season === session.currentSeason
-    readonly property bool currentAuthor: sameMode && backend.profileId === session.currentProfile
-    readonly property bool canUseAuthor: backend.season === "s0" && sameMode && selectedProfile.available > 0 && !currentAuthor
+    readonly property string selectedRuntimeProfile: selectedProfile.runtimeProfileId || selectedProfile.id || ""
+    readonly property bool selectableAuthor: selectedProfile.runtimeSelectable === true
+    readonly property bool currentAuthor: sameMode && selectedRuntimeProfile === session.currentProfile
+    readonly property bool canUseAuthor: selectableAuthor && sameMode && selectedProfile.available > 0 && !currentAuthor
+        && !backend.busy
         && !session.busy && !settingsService.busy && !resourceService.busy
     function floorLabel(value) {
         var options = backend.floorOptions || []
@@ -58,7 +61,7 @@ Item {
         if (session.currentProfile === "shared-structure") return "结构底图"
         if (page.sameMode) {
             for (var n = 0; n < backend.profiles.length; n++)
-                if (backend.profiles[n].id === session.currentProfile) return backend.profiles[n].name
+                if ((backend.profiles[n].runtimeProfileId || backend.profiles[n].id) === session.currentProfile) return backend.profiles[n].name
         }
         return session.currentProfile ? "当前工作模式已保存的路线" : "未选择"
     }
@@ -256,7 +259,7 @@ Item {
                     Label { id: detailCoverage; text: "本地覆盖 " + page.selectedProfile.availableMaps + " / " + page.selectedProfile.mapCount + " 份图"; color: "#526785"; font.pixelSize: 11 }
                         }
                     }
-                    AppButton { objectName: "galleryUseAuthor"; text: backend.season !== "s0" ? "离线资源 · 暂不用于识别" : page.currentAuthor ? "正在使用此作者" : "使用此作者"; Layout.fillWidth: true; primary: true; enabled: page.canUseAuthor; onClicked: clientCoordinator.setRouteProfile(backend.profileId) }
+                    AppButton { objectName: "galleryUseAuthor"; text: !page.selectableAuthor ? "此图包仅供预览" : !page.sameMode ? "请先切换游戏赛季与难度" : page.currentAuthor ? "正在使用此作者" : "使用此作者"; Layout.fillWidth: true; primary: true; enabled: page.canUseAuthor; onClicked: clientCoordinator.useGalleryAuthor(backend.season, backend.mode, backend.profileId) }
                     RowLayout {
                         Layout.fillWidth: true; spacing: 8
                         AppButton { objectName: "galleryShowReference"; text: "打开独立预览"; enabled: backend.selectedImage !== ""; onClicked: backend.showOverlay() }
@@ -269,7 +272,7 @@ Item {
                             onClicked: page.removeSelectedPackage()
                         }
                     }
-                    Label { text: "预览不会自动更换作者。"; color: "#526785"; font.pixelSize: 11; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+                    Label { text: "作者图仅用于显示，不参与识别。预览不会自动更换作者。"; color: "#526785"; font.pixelSize: 11; Layout.fillWidth: true; wrapMode: Text.WordWrap }
                 }
             }
         }

@@ -1399,6 +1399,21 @@ class ClientCoordinator(QObject):
         if self.settings.setValue("gameSeason", season) and self.settings.setValue("gameMode", mode):
             self.settings.saveFields(["gameSeason", "gameMode"])
 
+    @Slot(str, str, str)
+    def useGalleryAuthor(self, season, mode, profile):
+        """Apply an installed display choice, never the gallery's browsing context."""
+        if (season not in SEASONS or self.backend.busy or self.session.busy
+                or self.settings.busy or self.resources.busy
+                or (season, mode, profile) != (self.backend.season, self.backend.mode, self.backend.profileId)
+                or (season, mode) != (self.session.currentSeason, self.session.currentMode)):
+            return
+        row = next((row for row in self.backend.profiles if row.get("id") == profile), None)
+        if not row or row.get("runtimeSelectable") is not True or row.get("available", 0) <= 0:
+            return
+        target = row.get("runtimeProfileId") or profile
+        if target != self.session.currentProfile:
+            self.setRouteProfile(target)
+
     @Slot(str)
     def setRouteProfile(self, profile):
         if self.settings.busy or self.resources.busy:

@@ -88,6 +88,42 @@ class CoordinatorTests(unittest.TestCase):
             timer.stop()
         self.app.processEvents()
 
+    def test_gallery_author_persists_only_matching_context_and_runtime_alias(self):
+        self.backend.busy = False
+        self.backend.season = self.session.currentSeason = "s1"
+        self.backend.mode = self.session.currentMode = "nightmare"
+        self.backend.profileId = "s1-jiaye-handnotes"
+        self.session.currentProfile = "shared-structure"
+        self.backend.profiles = [dict(id=self.backend.profileId, runtimeSelectable=True, available=1)]
+        self.settings.setValue = Mock(side_effect=lambda key, value: self.settings.values.update({key: value}) or True)
+        self.settings.saveFields = Mock()
+        self.settings.values["contextRouteProfiles"] = {"s0:nightmare": "old-s0", "s1:difficult": "other"}
+        before = deepcopy(self.settings.values)
+        self.coordinator.useGalleryAuthor("s1", "nightmare", self.backend.profileId)
+        from season_context import context_key
+        key = context_key("nightmare", "s1")
+        expected = dict(before["contextRouteProfiles"], **{key: self.backend.profileId})
+        self.assertEqual(self.settings.values["contextRouteProfiles"], expected)
+        self.assertEqual(self.settings.values["routeProfileId"], before["routeProfileId"])
+        self.settings.saveFields.assert_called_once_with(["contextRouteProfiles"])
+        self.settings.saveFields.reset_mock()
+        for season, mode, profile in [("s0", "nightmare", self.backend.profileId), ("s1", "difficult", self.backend.profileId), ("s1", "nightmare", "unknown")]:
+            self.coordinator.useGalleryAuthor(season, mode, profile)
+        self.backend.profiles[0]["runtimeSelectable"] = False
+        self.coordinator.useGalleryAuthor("s1", "nightmare", self.backend.profileId)
+        self.backend.profiles[0]["runtimeSelectable"] = True
+        self.backend.profiles[0]["available"] = 0
+        self.coordinator.useGalleryAuthor("s1", "nightmare", self.backend.profileId)
+        self.settings.saveFields.assert_not_called()
+        self.backend.profiles[0].update(available=1, runtimeProfileId="shared-structure")
+        self.session.currentProfile = "old"
+        self.coordinator.useGalleryAuthor("s1", "nightmare", self.backend.profileId)
+        self.assertEqual(self.settings.values["contextRouteProfiles"][key], "shared-structure")
+        self.backend.season = self.session.currentSeason = "s0"
+        self.coordinator.useGalleryAuthor("s0", "nightmare", self.backend.profileId)
+        self.assertEqual(self.settings.values["routeProfileId"], "shared-structure")
+        self.assertEqual(self.settings.values["modeRouteProfiles"]["nightmare"], "shared-structure")
+
     def test_same_token_presentation_syncs_reference_once_and_rechecks_live_grant(self):
         row = dict(token="current", liveAuthorization=True)
         self.coordinator._aligned = dict(row)

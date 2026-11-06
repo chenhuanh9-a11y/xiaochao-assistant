@@ -38,8 +38,8 @@ class FakeBackend(QObject):
 
     season = Property(str, lambda self: self._season, notify=changed)
     mode = Property(str, lambda self: self._mode, notify=changed)
-    profiles = Property("QVariantList", lambda self: [dict(id="author-a", name="作者甲", available=40, availableMaps=40, mapCount=40, previewUrl=self.image),
-        dict(id="author-b", name="作者乙", available=12, availableMaps=12, mapCount=40, previewUrl=self.image)], notify=changed)
+    profiles = Property("QVariantList", lambda self: getattr(self, "_profiles_override", None) or [dict(id="author-a", name="作者甲", runtimeSelectable=True, available=40, availableMaps=40, mapCount=40, previewUrl=self.image),
+        dict(id="author-b", name="作者乙", runtimeSelectable=True, available=12, availableMaps=12, mapCount=40, previewUrl=self.image)], notify=changed)
     profileId = Property(str, lambda self: self._profile, notify=changed)
     floor = Property(str, lambda self: self._floor, notify=changed)
     floorOptions = Property("QVariantList", lambda self: [dict(name=name, value=value) for name, value in
@@ -51,7 +51,8 @@ class FakeBackend(QObject):
     selectedTitle = Property(str, lambda self: self.selected.get("title", ""), notify=changed)
     selectedFloor = Property(str, lambda self: self.selected.get("floor", ""), notify=changed)
     selectedImage = Property(str, lambda self: self.selected.get("imageUrl", ""), notify=changed)
-    busy = Property(bool, lambda self: False, notify=changed)
+    _busy = False
+    busy = Property(bool, lambda self: self._busy, notify=changed)
     hasError = Property(bool, lambda self: False, notify=changed)
     message = Property(str, lambda self: "隔离测试资源", notify=changed)
     viewKey = Property(str, lambda self: f"{self._mode}/{self._profile}/{self._floor}/{self._query}", notify=changed)
@@ -116,10 +117,13 @@ class FakeBackend(QObject):
 class FakeState(QObject):
     changed = Signal()
     seasonOptions = Property("QVariantList", lambda self: [{"id":"s0","label":"S0"},{"id":"s1","label":"S1"}], constant=True)
-    currentSeason = Property(str, lambda self: "s0", notify=changed)
+    _season = "s0"
+    currentSeason = Property(str, lambda self: self._season, notify=changed)
     currentMode = Property(str, lambda self: "nightmare", notify=changed)
-    currentProfile = Property(str, lambda self: "shared-structure", notify=changed)
-    busy = Property(bool, lambda self: False, notify=changed)
+    _profile = "shared-structure"
+    currentProfile = Property(str, lambda self: self._profile, notify=changed)
+    _busy = False
+    busy = Property(bool, lambda self: self._busy, notify=changed)
 
 
 class FakeCoordinator(QObject):
@@ -130,8 +134,8 @@ class FakeCoordinator(QObject):
     @Slot(str)
     def navigate(self, value): self.calls.append(("navigate", value))
 
-    @Slot(str)
-    def setRouteProfile(self, value): self.calls.append(("use", value))
+    @Slot(str, str, str)
+    def useGalleryAuthor(self, season, mode, value): self.calls.append(("use", value))
 
     @Slot()
     def showReference(self): self.calls.append(("reference", None))
@@ -208,6 +212,47 @@ class GalleryLayoutTests(unittest.TestCase):
         QTest.mouseClick(self.window, Qt.LeftButton, Qt.NoModifier, QPoint(round(point.x()), round(point.y())))
         APP.processEvents()
         QTest.qWait(10)
+
+    def test_author_capability_alias_and_busy_states_fail_closed(self):
+        row = dict(id="author-a", name="测试作者", available=1, availableMaps=1, mapCount=1)
+        self.backend._profiles_override = [row]
+        self.backend.changed.emit()
+        APP.processEvents()
+        self.assertFalse(self.item("galleryUseAuthor").isEnabled())
+        row["runtimeSelectable"] = False
+        self.backend.changed.emit()
+        self.assertFalse(self.item("galleryUseAuthor").isEnabled())
+        row.update(runtimeSelectable=True, runtimeProfileId="shared-structure")
+        self.backend.changed.emit()
+        self.assertEqual(self.item("galleryUseAuthor").property("text"), "正在使用此作者")
+        self.assertFalse(self.item("galleryUseAuthor").isEnabled())
+        self.state._profile = "another"
+        self.state.changed.emit()
+        self.assertTrue(self.item("galleryUseAuthor").isEnabled())
+        for owner in (self.backend, self.state):
+            owner._busy = True
+            owner.changed.emit()
+            self.assertFalse(self.item("galleryUseAuthor").isEnabled())
+            owner._busy = False
+            owner.changed.emit()
+        row["available"] = 0
+        self.backend.changed.emit()
+        self.assertFalse(self.item("galleryUseAuthor").isEnabled())
+
+    def test_s1_author_uses_explicit_action_and_context_guard(self):
+        self.backend.setContext("s1", "nightmare")
+        self.assertFalse(self.item("galleryUseAuthor").isEnabled())
+        self.state._season = "s1"
+        self.state.changed.emit()
+        APP.processEvents()
+        self.assertTrue(self.item("galleryUseAuthor").isEnabled())
+        self.click("galleryViewAuthor_author-b")
+        self.click("galleryShowReference")
+        self.assertEqual(self.coordinator.calls, [])
+        self.click("galleryUseAuthor")
+        self.assertEqual(self.coordinator.calls, [("use", "author-b")])
+        self.backend.setMode("difficult")
+        self.assertFalse(self.item("galleryUseAuthor").isEnabled())
 
     def test_keyed_refresh_and_narrow_list_detail_keep_selection_and_actions(self):
         self.assertFalse(self.page.findChild(QObject, "clientGallerySearch"))
