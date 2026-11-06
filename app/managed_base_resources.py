@@ -225,6 +225,11 @@ def _retained_legacy_constraints(root, package):
     if not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
         raise files.ImportRejected("invalid-installed-package-receipt")
     receipt = files._json(path.read_bytes())
+    from generic_author_package import SCHEMA as GENERIC_SCHEMA
+    if receipt.get("schema") == GENERIC_SCHEMA:
+        # V2 has an explicit complete contract. A rejected V2 receipt cannot
+        # fall back to the older preservation-only envelope.
+        raise files.ImportRejected("invalid-installed-package-receipt")
     if (receipt.get("packageId") != package or type(receipt.get("revision")) is not int
             or receipt["revision"] < 1 or not isinstance(receipt.get("archiveSha256"), str)
             or not re.fullmatch(r"[a-f0-9]{64}", receipt["archiveSha256"])):
@@ -242,7 +247,7 @@ def _retained_legacy_constraints(root, package):
     return rows, dependencies
 
 
-def _package_constraints(root):
+def _package_constraints(root, *, prospective_base_root=None):
     owned, dependencies, unrecorded = {}, [], []
     directory = files._target(root, "work/map-packages")
     if not directory.exists():
@@ -260,11 +265,16 @@ def _package_constraints(root):
         if (path.name in reserved or re.fullmatch(r"recovery-request-[A-Za-z0-9-]{1,64}\.json", path.name)
                 or re.fullmatch(r"helper-result-[a-z0-9_]{8}\.json", path.name)):
             continue
-        package = path.stem
+        from generic_author_package import is_generic_profile
+        package = path.stem.casefold() if is_generic_profile(path.stem.casefold()) else path.stem
         try:
-            if package in files.PACKAGE_IDS:
+            if files.known_package_id(package):
                 try:
-                    inventory, package_dependencies, _ = files._installed_inventory(root, package)
+                    if is_generic_profile(package):
+                        inventory, package_dependencies, _ = files._installed_inventory(
+                            root, package, base_root=prospective_base_root)
+                    else:
+                        inventory, package_dependencies, _ = files._installed_inventory(root, package)
                 except files.ImportRejected as error:
                     if error.code == "invalid-reviewed-author-receipt-policy":
                         raise
@@ -350,7 +360,20 @@ def plan_managed_base_resources(install_root):
     previous = _rows(_manifest(state)["files"]) if state.exists() else {}
     if not state.exists():
         previous = _legacy_s0_previous(root, inventory)
-    owned, dependencies, unrecorded = _package_constraints(root)
+    # A V2 closure needs source/index/typed metadata, which may be the very
+    # missing files this transaction repairs. Validate the complete prospective
+    # plane before using it for closure discovery; receipt hashes still constrain
+    # every desired byte below. No incomplete/corrupt candidate supplies authority.
+    candidate_root = files._target(root, CANDIDATE + "/payload")
+    candidate_issues = []
+    for row in inventory.values():
+        source = files._target(candidate_root, row["path"])
+        if not transaction._matches(source, row):
+            candidate_issues.append(_issue(row, _actual(source), "candidate-integrity-mismatch"))
+    if candidate_issues:
+        return dict(status="blocked", manifest=manifest, files=manifest["files"],
+                    changes=[], issues=candidate_issues, retainedLegacyPackages=[])
+    owned, dependencies, unrecorded = _package_constraints(root, prospective_base_root=candidate_root)
     # Do not drop S1 ownership while leaving retired bytes active. Removal,
     # rename or S1-to-S0 downgrade needs a separately reviewed retirement
     # transaction; until then block the whole preflight without changing files.
@@ -359,9 +382,6 @@ def plan_managed_base_resources(install_root):
               if key.startswith("_internal/seasons/s1/") and key not in inventory]
     changes = []
     for key, row in inventory.items():
-        source = files._target(root, CANDIDATE + "/payload/" + row["path"])
-        if not transaction._matches(source, row):
-            issues.append(_issue(row, _actual(source), "candidate-integrity-mismatch"))
         actual = _actual(files._target(root, row["path"]))
         if _same(actual, row):
             continue

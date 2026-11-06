@@ -20,6 +20,7 @@ import uuid
 import star_map_import as files
 import map_package_upgrade as upgrade
 from author_package_management import PACKAGE_NAMES
+from generic_author_package import is_generic_profile
 from managed_base_resources import managed_base_inventory
 from resource_transaction import resource_read_lock, resource_write_lock, assert_resources_ready
 
@@ -128,15 +129,37 @@ def _valid_target(package, relative):
 def _legacy_owner(name):
     # IDs can be prefixes of other IDs (suju / suju-speed). Bind the exact
     # longest registered prefix before consulting the user's selected set.
+    generic = re.fullmatch(r"(author-[a-z0-9][a-z0-9-]{0,47})-[a-z0-9_]{8}", name)
+    if generic and is_generic_profile(generic.group(1)):
+        return generic.group(1)
     return next((package for package in sorted(files.PACKAGE_IDS, key=len, reverse=True)
                  if re.fullmatch(re.escape(package) + r"-[A-Za-z0-9_-]{1,100}", name)), None)
 
 
 def _plan_locked(root, package_id=None, cancelled=None):
     assert_resources_ready(root)
-    if package_id is not None and package_id not in files.PACKAGE_IDS:
+    if package_id is not None and not files.known_package_id(package_id):
         _reject("unsupported-author-package")
-    selected = set(files.PACKAGE_IDS) if package_id is None else {package_id}
+    known = set(files.package_ids(root))
+    # Historical display removals retain their receipt even without an active package.
+    for directory in _children(root, "work/map-package-removals"):
+        package = _legacy_owner(directory.name)
+        if package is not None:
+            known.add(package)
+    for directory in _children(root, "work/map-packages/upgrades"):
+        source = _target(directory, "journal.json")
+        if source.is_file():
+            package = upgrade._read_json(source).get("packageId")
+            if files.known_package_id(package):
+                known.add(package)
+    for directory in _children(root, "work/map-packages"):
+        if re.fullmatch(r"staging-[A-Za-z0-9_-]+", directory.name):
+            source = _target(directory, "addition-journal.json")
+            if source.is_file():
+                package = upgrade._read_json(source).get("packageId")
+                if files.known_package_id(package):
+                    known.add(package)
+    selected = known if package_id is None else {package_id}
     protected = set(managed_base_inventory(root))
     active, histories, witnesses, archives = {}, [], {}, {}
 
@@ -144,11 +167,11 @@ def _plan_locked(root, package_id=None, cancelled=None):
         value = upgrade._read_json(path)
         digest = upgrade._digest(value.get("archiveSha256"))
         archives.setdefault(package, set()).add(digest)
-    for package in sorted(files.PACKAGE_IDS):
+    for package in sorted(known):
         path = _target(root, f"work/map-packages/{package}.json")
         if not path.exists():
             continue
-        inventory, dependencies = _receipt(path, package)
+        inventory, dependencies, _ = files._installed_inventory(root, package)
         active[package] = inventory
         remember_archive(package, path)
         witnesses[path.relative_to(root).as_posix()] = _stamp(path)
@@ -342,11 +365,24 @@ def managed_packages_snapshot(install_root, *, cancelled=None):
             active = _target(Path(root), f"work/map-packages/{package}.json").exists()
             inventory = _receipt(_target(Path(root), f"work/map-packages/{package}.json"), package)[0] if active else {}
             modified = any(row["reason"] == "modified-or-unverified" and row["path"].casefold() in inventory for row in plan["preserved"])
+            metadata = {}
+            if is_generic_profile(package):
+                metadata = dict(title=package, season="unknown", mode="unknown")
+                if active:
+                    try:
+                        from s1_author_displays import InstalledAuthorPackage
+                        installed = InstalledAuthorPackage(Path(root) / "_internal", package)
+                        modes = {row["mode"] for row in installed.document["layers"]}
+                        metadata.update(title=installed.display_name, season=installed.document["season"],
+                            mode=next(iter(modes)) if len(modes) == 1 else "both")
+                    except (OSError, ValueError, KeyError, TypeError):
+                        pass
             result.append(dict(packageId=package, title=PACKAGE_NAMES.get(package, package),
                 status="incomplete" if modified else "installed" if active else "managed-remnants", canRemove=bool(rows),
                 fileCount=len(rows), bytes=sum(row["bytes"] for row in rows),
                 mode="both" if package in ("s1-jiaye-handnotes", "s1-aichicu-routes") else ("difficult" if package.startswith("difficult-") else "nightmare"),
                 **({"season": "s1"} if package in ("s1-jiaye-handnotes", "s1-aichicu-routes") else {})))
+            result[-1].update(metadata)
         return result
 
 
@@ -384,7 +420,7 @@ def _load_pending(root):
             or journal["rootIdentity"] != upgrade._identity(root.stat())
             or journal["status"] not in {"preparing", "prepared", "committed", "rolled-back"}
             or not isinstance(journal["packageIds"], list) or not journal["packageIds"]
-            or any(not isinstance(p, str) or p not in files.PACKAGE_IDS for p in journal["packageIds"])
+            or any(not isinstance(p, str) or not files.known_package_id(p) for p in journal["packageIds"])
             or not isinstance(journal["entries"], list) or not 1 <= len(journal["entries"]) <= MAX_ENTRIES):
         _reject("removal-invalid-journal")
     seen = set()

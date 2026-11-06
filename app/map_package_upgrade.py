@@ -277,7 +277,7 @@ def _load_journal(root, transaction_id):
     if journal.get("schema") == RETIRED_SCHEMA:
         if (set(journal) != {"schema", "transactionId", "packageId", "rootIdentity", "status"}
                 or journal["transactionId"] != transaction_id
-                or journal["packageId"] not in adapter.PACKAGE_IDS
+                or not adapter.known_package_id(journal["packageId"])
                 or journal["status"] not in RETIRED_STATES
                 or _valid_identity(journal["rootIdentity"]) != _identity(root.stat())
                 or len(_encoded(journal)) > 1024):
@@ -288,7 +288,7 @@ def _load_journal(root, transaction_id):
     extended = set(journal) == legacy_keys | {"receiptData", "stage", "stagedIdentities", "cachedArchives"}
     if ((set(journal) != legacy_keys and not extended)
             or journal["schema"] != SCHEMA or journal["transactionId"] != transaction_id
-            or not isinstance(journal["packageId"], str) or journal["packageId"] not in adapter.PACKAGE_IDS
+            or not isinstance(journal["packageId"], str) or not adapter.known_package_id(journal["packageId"])
             or not isinstance(journal["status"], str) or journal["status"] not in STATES
             or _valid_identity(journal["rootIdentity"]) != _identity(root.stat())):
         _reject("invalid-upgrade-journal")
@@ -708,7 +708,7 @@ def commit_upgrade(root: Path, result: dict, stage: Path, *, live=False, cancell
     if _pending_id(root) is not None:
         _reject("pending-upgrade-recovery-required")
     package_id = result.get("packageId")
-    if not isinstance(package_id, str) or package_id not in adapter.PACKAGE_IDS:
+    if not isinstance(package_id, str) or not adapter.known_package_id(package_id):
         _reject("invalid-upgrade-package-id")
     inventory = _rows(result.get("files"), package_id)
     replacements = _rows(result.get("replaceFiles"), package_id)
@@ -970,7 +970,7 @@ def _addition_journal(root):
     if (set(journal) != {'schema', 'packageId', 'transactionId', 'stage', 'rootIdentity',
                          'files', 'entries', 'oldReceiptSha256', 'stagedIdentities', 'newReceipt'}
             or journal['schema'] != ADDITIONS_SCHEMA
-            or not isinstance(journal['packageId'], str) or journal['packageId'] not in adapter.PACKAGE_IDS
+            or not isinstance(journal['packageId'], str) or not adapter.known_package_id(journal['packageId'])
             or _valid_identity(journal['rootIdentity']) != _identity(root.stat())):
         _reject('invalid-additions-journal')
     _transaction_id(journal['transactionId'])

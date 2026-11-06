@@ -360,8 +360,9 @@ def load_browse_context(resource_root: Path, mode: str, *, season="s0", cancelle
         for asset in structure_previews(pack, limit=len(pack.maps)):
             stamp(asset.path)
         check()
-        return BrowseContext(mode, root, pack, catalog, model, tuple(summaries),
-            MappingProxyType(stamps), warnings=tuple(warnings))
+        from s1_author_displays import append_browse_profile
+        return append_browse_profile(BrowseContext(mode, root, pack, catalog, model, tuple(summaries),
+            MappingProxyType(stamps), warnings=tuple(warnings)))
     except CancelledError:
         raise
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:

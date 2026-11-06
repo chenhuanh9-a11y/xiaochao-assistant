@@ -15,6 +15,7 @@ import tempfile
 import unicodedata
 import zipfile
 from packaged_product_identity import CLOSED_EXE_NAMES
+from generic_author_package import is_generic_profile
 from resource_transaction import (ResourceTransactionError, resource_read_lock,
                                   resource_write_lock, assert_resources_ready,
                                   preflight_hardlinks)
@@ -51,6 +52,15 @@ LIVE_AUTHOR_IMAGE_ROOTS = {
     "nightmare-lianghapi": ("_internal/assets/authors/lianghapi-single/",),
 }
 PACKAGE_IDS = {"nightmare-suju", "difficult-zhan10", S1_AUTHOR_PACKAGE_ID} | set(AUTHOR_PACKAGES) | S1_AUTHOR_PACKAGE_IDS
+def known_package_id(value):
+    return isinstance(value, str) and (value in PACKAGE_IDS or is_generic_profile(value))
+
+
+def package_ids(root):
+    from generic_author_package import profile_ids
+    return PACKAGE_IDS | set(profile_ids(Path(root) / '_internal', strict=True))
+
+
 SUPPORTED_DISPLAY_VERSIONS = {"1.0", "1.0.1", "1.0.2", "1.0.3", "1.0.4", "1.0.5", "1.0.6", "1.0.7", "1.0.17", "1.1.0", "1.1.1"}
 CLIENT_COMPATIBILITY = {"displayVersion": "1.0", "numericLine": "1.0.0.N",
                         "minimumBuild": 1, "maximumBuild": 65535}
@@ -284,6 +294,9 @@ def _relative(value: str) -> str:
 
 
 def _allowed(package_id: str, path: str) -> bool:
+    if is_generic_profile(package_id):
+        from generic_author_package import allowed
+        return allowed(path, package_id)
     if package_id in S1_AUTHOR_PACKAGE_IDS:
         from s1_author_package import allowed
         return allowed(path, package_id)
@@ -369,7 +382,7 @@ def _rows(rows, *, dependencies=False):
     return found
 
 
-def _installed_inventory(root: Path, package_id: str):
+def _installed_inventory(root: Path, package_id: str, *, base_root=None):
     """Read ownership and dependency constraints from the same receipt bytes."""
     path = _target(root, f"work/map-packages/{package_id}.json")
     if not path.exists():
@@ -377,7 +390,13 @@ def _installed_inventory(root: Path, package_id: str):
     if not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
         raise ImportRejected("invalid-installed-package-receipt")
     raw = path.read_bytes()
-    rows, dependencies = _receipt_inventory(_json(raw), package_id)
+    receipt = _json(raw)
+    rows, dependencies = _receipt_inventory(receipt, package_id)
+    if is_generic_profile(package_id):
+        from generic_author_package import validate_receipt_closure
+        # Startup alone may supply its fully verified prospective base plane;
+        # ordinary mutation and display readers always validate the active root.
+        validate_receipt_closure(root if base_root is None else base_root, receipt, rows, dependencies)
     return rows, dependencies, hashlib.sha256(raw).hexdigest()
 
 
@@ -433,6 +452,9 @@ def _receipt_inventory(receipt, package_id):
             or not isinstance(receipt.get("archiveSha256"), str)
             or not re.fullmatch(r"[0-9a-f]{64}", receipt["archiveSha256"])):
         raise ImportRejected("invalid-installed-package-receipt")
+    if is_generic_profile(package_id):
+        from generic_author_package import receipt_rows
+        return receipt_rows(receipt)
     if package_id in S1_AUTHOR_PACKAGE_IDS:
         from s1_author_package import receipt_rows
         return receipt_rows(receipt)
@@ -480,7 +502,7 @@ def _check_other_package_constraints(root, package_id, incoming, replacements):
     its bytes unchanged must not prevent updating unrelated author images.
     """
     replaced = {row["path"].casefold() for row in replacements}
-    for other in PACKAGE_IDS - {package_id}:
+    for other in package_ids(root) - {package_id}:
         owned, dependencies, _digest = _installed_inventory(root, other)
         shared = replaced & owned.keys()
         if shared:
@@ -524,18 +546,24 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None, *
         raise ImportRejected("unsupported-package-season" if season == "s0" else "package-season-mismatch")
     if (type(metadata.get("schemaVersion")) is not int or metadata["schemaVersion"] != 1
             or type(metadata.get("revision")) is not int or metadata["revision"] != 1
-            or metadata.get("packageId") not in PACKAGE_IDS):
+            or not known_package_id(metadata.get("packageId"))):
         raise ImportRejected("unsupported-package-version")
     package_id = metadata["packageId"]
-    if (package_id in S1_AUTHOR_PACKAGE_IDS) != (season == "s1"):
+    generic = is_generic_profile(package_id)
+    if not generic and season != ("s1" if package_id in S1_AUTHOR_PACKAGE_IDS else "s0"):
         raise ImportRejected("package-season-mismatch")
     compatibility = metadata.get("clientCompatibility")
-    if (not isinstance(compatibility, dict) or compatibility != CLIENT_COMPATIBILITY
+    if ((generic and compatibility != {"authorDisplayProtocol": 2}) or (not generic and
+            (not isinstance(compatibility, dict) or compatibility != CLIENT_COMPATIBILITY
             or type(compatibility.get("minimumBuild")) is not int
-            or type(compatibility.get("maximumBuild")) is not int):
+            or type(compatibility.get("maximumBuild")) is not int))):
         raise ImportRejected("unsupported-client-compatibility")
     rows = _rows(metadata.get("files"))
-    if season == "s1":
+    if generic:
+        from generic_author_package import dependency_rows
+        dependencies = dependency_rows(metadata.get("requiresFiles"), season)
+        required = set()  # Exact trusted base closure checked by the V2 validator.
+    elif season == "s1":
         from s1_author_package import dependency_rows, required_dependencies
         dependencies = dependency_rows(metadata.get("requiresFiles"))
         required = required_dependencies()
@@ -555,7 +583,7 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None, *
     build = re.fullmatch(r"1\.0\.0\.([1-9][0-9]{0,4})", numeric) if isinstance(numeric, str) else None
     # 1.0.1 changes only the desktop UI and update notices, not the resource layout.
     supported_versions = SUPPORTED_DISPLAY_VERSIONS | ({f"1.0.{n}" for n in range(8, 16)} if season == "s1" else set())
-    if version.get("displayVersion") not in supported_versions or build is None or int(build[1]) > 65535:
+    if not generic and (version.get("displayVersion") not in supported_versions or build is None or int(build[1]) > 65535):
         raise ImportRejected("unsupported-client-version")
     for row in dependencies.values():
         dependency = _target(root, row["path"])
@@ -573,7 +601,16 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None, *
     total = sum(row["bytes"] for row in rows.values())
     if total > MAX_TOTAL_BYTES:
         raise ImportRejected("archive-expanded-size-limit")
-    if season == "s1":
+    if generic:
+        from generic_author_package import validate_archive
+        display_document = validate_archive(metadata, archive, root, rows, dependencies)
+        previous = _target(root, f"work/map-packages/{package_id}.json")
+        if previous.exists():
+            if not previous.is_file() or previous.stat().st_size > 2 * 1024 * 1024:
+                raise ImportRejected("invalid-installed-package-receipt")
+            if _json(previous.read_bytes()).get('season') != season:
+                raise ImportRejected("author-v2-package-season-cannot-change")
+    elif season == "s1":
         from s1_author_package import validate_archive
         validate_archive(metadata, archive, root, rows, dependencies)
     existing = 0
@@ -637,6 +674,10 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None, *
         if count != row["bytes"] or digest.hexdigest() != row["sha256"]:
             raise ImportRejected(f"file-integrity-mismatch: {path}")
     installed, installed_dependencies, installed_digest = _installed_inventory(root, package_id)
+    if generic and not installed.keys() <= rows.keys():
+        # Existing transactions replace/add; they do not retire omitted payloads.
+        # Do not silently orphan older images by dropping their receipt ownership.
+        raise ImportRejected("author-v2-shrinking-package-requires-remove")
     if (installed_digest is not None and not replacements and not missing
             and installed == rows and installed_dependencies != dependencies):
         raise ImportRejected("dependency-contract-changed-reimport-unsupported")
@@ -645,7 +686,9 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None, *
     if installed_digest is not None:
         receipt_digest = installed_digest
     _check_other_package_constraints(root, package_id, rows, replacements)
-    return {**({"schema": metadata["schema"], "sourceVersion": metadata["sourceVersion"]} if season == "s1" else {}),
+    return {**({"schema": metadata["schema"], "authorName": display_document["authorName"],
+                "displayName": display_document["displayName"]} if generic else
+               ({"schema": metadata["schema"], "sourceVersion": metadata["sourceVersion"]} if season == "s1" else {})),
             "season": season, "packageId": package_id, "revision": 1, "files": list(rows.values()),
             "requiresFiles": list(dependencies.values()),
             "fileCount": len(rows), "bytes": total, "alreadyPresent": existing,
@@ -671,7 +714,8 @@ def _open_archive(zip_path, expected_sha256=None):
 
 
 def _require_season(season):
-    if season not in {"s0", "s1"}:
+    from generic_author_package import valid_season
+    if not valid_season(season):
         raise ImportRejected("unsupported-package-season")
 
 
@@ -819,7 +863,7 @@ def rollback_package_upgrade(install_root, transaction_id, *, application_stoppe
 
 def _live_author_path(package_id, path):
     """Only display pixels and the two exact sidecars of each optional author."""
-    if package_id in S1_AUTHOR_PACKAGE_IDS:
+    if package_id in S1_AUTHOR_PACKAGE_IDS or is_generic_profile(package_id):
         return _allowed(package_id, path)
     if path.startswith(LIVE_AUTHOR_IMAGE_ROOTS.get(package_id, ())):
         return PurePosixPath(path).suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
@@ -839,7 +883,7 @@ def supports_live_author_import(result) -> bool:
         return False
     package_id = result.get('packageId')
     replacements, missing = result.get('replaceFiles'), result.get('missingFiles')
-    if (not isinstance(package_id, str) or package_id not in LIVE_AUTHOR_IMAGE_ROOTS
+    if (not isinstance(package_id, str) or (package_id not in LIVE_AUTHOR_IMAGE_ROOTS and not is_generic_profile(package_id))
             or not isinstance(replacements, list)
             or not isinstance(missing, list)):
         return False
@@ -901,7 +945,7 @@ def _commit_additions(root, result, stage, *, live=False, cancelled=None):
             owned, dependencies, _ = _installed_inventory(root, result['packageId'])
             if owned == _rows(result['files']):
                 incoming_dependencies = (_receipt_inventory(result, result['packageId'])[1]
-                    if result['packageId'] in S1_AUTHOR_PACKAGE_IDS else _rows(result['requiresFiles'], dependencies=True))
+                    if result['packageId'] in S1_AUTHOR_PACKAGE_IDS or is_generic_profile(result['packageId']) else _rows(result['requiresFiles'], dependencies=True))
                 if dependencies != incoming_dependencies:
                     raise ImportRejected('dependency-contract-changed-reimport-unsupported')
                 # A no-op must retain the receipt inode/transaction witness

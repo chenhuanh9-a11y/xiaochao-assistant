@@ -15,9 +15,10 @@ from star_map_import import (
     ImportRejected, LIVE_AUTHOR_IMAGE_ROOTS, PACKAGE_IDS,
     _allowed, _check_cancelled, _live_author_path, _no_links, _owned_inventory, _rows,
     _pending_upgrade, _sha, _target, _writer_locked_installation,
-    verified_installed_package,
+    verified_installed_package, package_ids,
 )
 from legacy_author_inventory import LEGACY_AUTHOR_INVENTORY
+from generic_author_package import is_generic_profile, profile_ids
 
 PACKAGE_NAMES = {
     's1-jiaye-handnotes': '爱吃醋 · S1 原图（旧包）',
@@ -53,7 +54,7 @@ def package_inspection_message(error) -> str:
 
 
 def _package_id(package_id):
-    if package_id not in PACKAGE_NAMES:
+    if package_id not in PACKAGE_NAMES and not is_generic_profile(package_id):
         raise ImportRejected('unsupported-author-package')
     return package_id
 
@@ -82,7 +83,7 @@ def _legacy_author_plan_locked(root, package_id, cancelled=None):
         raise ImportRejected('invalid-legacy-author-inventory')
     if not any(_target(root, row['path']).exists() for row in rows.values()):
         return dict(status='not-installed')
-    for other in PACKAGE_IDS - {package_id}:
+    for other in package_ids(root) - {package_id}:
         other_rows, _ = _owned_inventory(root, other)
         if rows.keys() & other_rows.keys():
             raise ImportRejected('shared-author-file-ownership')
@@ -163,7 +164,7 @@ def inspect_author_package_removal(install_root, package_id) -> dict:
     removable = [r for r in rows.values() if _live_author_path(package_id, r['path'])]
     if not removable:
         raise ImportRejected('no-managed-author-files')
-    for other in PACKAGE_IDS - {package_id}:
+    for other in package_ids(root) - {package_id}:
         other_rows, _ = _owned_inventory(root, other)
         if any(r['path'].casefold() in other_rows for r in removable):
             raise ImportRejected('shared-author-file-ownership')
@@ -187,7 +188,7 @@ def inspect_author_package_removal(install_root, package_id) -> dict:
             if before.st_size != row['bytes'] or digest != row['sha256']:
                 modified.append(row['path'])
             present.append(dict(path=row['path'], bytes=before.st_size, sha256=digest))
-    plan = dict(packageId=package_id, title=PACKAGE_NAMES[package_id],
+    plan = dict(packageId=package_id, title=PACKAGE_NAMES.get(package_id, package_id),
                 receiptSha256=receipt_sha, files=present, missingFiles=missing,
                 preservedCoreFiles=len(rows)-len(removable), fileCount=len(present),
                 bytes=sum(r['bytes'] for r in present), modifiedFiles=modified, restartRequired=False)
@@ -201,12 +202,24 @@ def managed_author_packages_snapshot(install_root, *, cancelled=None) -> list[di
     """Local state remains available even when there is no online catalog."""
     root = Path(os.path.abspath(install_root))
     result = []
-    for package_id, title in PACKAGE_NAMES.items():
+    names = dict(PACKAGE_NAMES)
+    names.update({pid: pid for pid in profile_ids(root / "_internal")})
+    for package_id, title in names.items():
         _check_cancelled(cancelled)
         item = dict(packageId=package_id, title=title,
                     mode='both' if package_id in ('s1-jiaye-handnotes', 's1-aichicu-routes') else ('difficult' if package_id.startswith('difficult-') else 'nightmare'),
                     season='s1' if package_id in ('s1-jiaye-handnotes', 's1-aichicu-routes') else 's0',
                     canRemove=False)
+        if is_generic_profile(package_id):
+            item.update(mode="unknown", season="unknown")
+            try:
+                from s1_author_displays import InstalledAuthorPackage
+                package = InstalledAuthorPackage(root / '_internal', package_id)
+                modes = {row['mode'] for row in package.document['layers']}
+                item.update(title=package.display_name, season=package.document['season'],
+                            mode=next(iter(modes)) if len(modes) == 1 else 'both')
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
         adoption = None
         try:
             adoption = adopt_legacy_author_package(root, package_id, cancelled=cancelled)
@@ -223,7 +236,7 @@ def managed_author_packages_snapshot(install_root, *, cancelled=None) -> list[di
                 # Existence is only a warning, never ownership or deletion authority.
                 unowned = False
                 try:
-                    for prefix in LIVE_AUTHOR_IMAGE_ROOTS[package_id]:
+                    for prefix in LIVE_AUTHOR_IMAGE_ROOTS.get(package_id, ()):
                         folder = _target(root, prefix.rstrip('/'))
                         if folder.is_dir():
                             for path in folder.rglob('*'):

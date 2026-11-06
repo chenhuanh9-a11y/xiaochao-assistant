@@ -462,6 +462,13 @@ class EngineFactories(dict):
             return engine
         from optional_author_displays import OptionalAuthorDisplays
         optional = OptionalAuthorDisplays(root, pack, catalog, adapters, versions, mode=mode)
+        from s1_author_displays import S1AuthorDisplays
+        from types import SimpleNamespace
+        generic = S1AuthorDisplays(self.root, SimpleNamespace(root=root, mode=mode,
+            catalog=optional.catalog, adapters=optional.adapters), season=season, fallback=optional)
+        engine.qt_resource_inventory["optionalAuthorErrors"] = dict(generic.errors)
+        if generic.profiles - optional.profiles:
+            optional = generic
         engine.qt_optional_displays = optional
         engine.qt_adapters, engine.qt_catalog = optional.adapters, optional.catalog
         return engine
