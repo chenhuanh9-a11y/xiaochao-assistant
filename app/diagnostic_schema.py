@@ -1508,3 +1508,10 @@ CODES = CODES | frozenset({"observe_candidate_floor", "candidate-probe-not-curre
 # Scoped private conflict transitions; IDs/revisions contain no image data.
 FIELDS = FIELDS | frozenset({"privatePoolId", "privatePoolRevision", "privateRecoveryRevision",
     "privateRecoveryPending", "privatePreviousLockMapId"})
+
+# Bounded current-frame S1 scan failure, not identity-negative evidence.
+FIELDS = FIELDS | frozenset({"structureScanFailure", "scanComplete", "checkedCount",
+    "supportedCount", "unscannedCount", "outcomes", "reasonCounts",
+    "omittedOutcomeCount", "omittedReasonCount"})
+CODES = CODES | frozenset({"s1-scan-no-material", "s1-no-current-material",
+    "s1-pose-not-verified", "budget-unresolved", "candidate-pose-unavailable"})

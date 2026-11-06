@@ -173,6 +173,36 @@ ClientHelp { anchors.fill: parent } }
         self.assertLessEqual(len(json.dumps(row['recognitionDiagnostics'],separators=(',',':')).encode()),2048)
 
 
+    def test_s1_no_material_reasons_reach_persisted_log_and_text_only_export(self):
+        from client_coordinator import ClientCoordinator
+        from recognition_diagnostics import s1_scan_failure
+        report = dict(status='complete', scanComplete=True, elapsedSeconds=.8,
+            checkedMapIds=['107002'], supportedMapIds=[], unscannedMapIds=[],
+            outcomes=[dict(mapId='107002', outcome='unknown',
+                reason='initial-structure-current-geometry-failed')])
+        measured = dict(stage='s1-scan-no-material', reason='no-current-supported-candidates',
+            inputs=dict(attemptId='a'*32, cycleId=28, floor='-1', sourceFrameGeneration=28),
+            structureScanFailure=s1_scan_failure(report, '107002'))
+        target = SimpleNamespace(_closed=False, _closing=False)
+        target._trace = lambda stage, **values: self.problems.recordTrace(dict(stage=stage, **values))
+        ClientCoordinator._on_runtime_event(target, dict(event='recognition-diagnostic',
+            reason='no-current-supported-candidates', recognitionDiagnostics=measured))
+        self.problems.shutdown()
+        self.fixture.wait(lambda: not self.problems.pendingWrites)
+        persisted = [json.loads(line) for line in self.problems.recognition_path.read_bytes().splitlines()]
+        self.assertEqual(persisted[0]['recognitionDiagnostics'], measured)
+        self.info.setTextOnlyDiagnostics(True)
+        destination = self.fixture.root / 's1-no-material.zip'
+        self.info.exportDiagnosticsTo(QUrl.fromLocalFile(str(destination)).toString())
+        self.fixture.wait(lambda: not self.info.checking)
+        self.assertTrue(self.info.diagnosticsReceipt['success'], self.info.diagnosticsReceipt)
+        with zipfile.ZipFile(destination) as archive:
+            rows = [json.loads(line) for line in archive.read(
+                'logs/'+self.problems.recognition_path.name).splitlines()]
+            self.assertFalse(any(name.endswith('.png') for name in archive.namelist()))
+        row = next(row for row in rows if 'recognitionDiagnostics' in row)
+        self.assertEqual(row['recognitionDiagnostics'], measured)
+
     def test_failed_sampling_save_keeps_effective_choice(self):
         with patch.object(self.settings, '_write', side_effect=OSError('fixture denied')):
             self.assertTrue(self.info.setAutomaticFailureSampling(False))

@@ -99,6 +99,15 @@ class AutomaticFailureSampleAdmissionTests(unittest.TestCase):
         decoded = cv2.imread(str(self.root / row['samplePath']))
         np.testing.assert_array_equal(decoded, self.frame[3:14, 2:12])
 
+    def test_s1_no_material_uses_existing_cropped_admission_and_cooldown(self):
+        for reason in ('no-current-supported-candidates', 's1-no-current-material'):
+            with self.subTest(reason=reason):
+                first = self.record(reason=reason, diagnostic=dict(
+                    evidenceKind='live-client-capture', mode='nightmare', season='s1'))
+                self.assertTrue(first['saved'], first)
+                self.assertFalse(self.record(reason=reason)['saved'])
+        self.assertEqual(len(list(self.directory.glob('*.png'))), 2)
+
     def test_invalid_or_untrusted_crop_does_not_consume_next_valid_image(self):
         for bounds, provenance in (((-1, 3, 10, 11), 'color-component-unvalidated'),
                                    ((2, 3, 10, 11), 'untrusted-provenance'),

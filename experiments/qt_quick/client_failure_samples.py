@@ -105,7 +105,8 @@ class FailureSampleRecorder:
                           'current-geometry-failed', 'map-open-preparation-deadline',
                           'identity-not-uniquely-verified', 'similar-group-pending',
                           'candidate-awaiting-confirmation', 'current-floor-unavailable',
-                          'map-open-recovery-exhausted'):
+                          'map-open-recovery-exhausted', 'no-current-supported-candidates',
+                          's1-no-current-material'):
             return dict(result, missingReason='failure-reason-not-eligible')
         if not current():
             return dict(result, missingReason='capture-not-current')

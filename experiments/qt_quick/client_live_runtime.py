@@ -1260,6 +1260,18 @@ class LiveRuntime:
             else:
                 result = self._receipt(action, payload, success=False, reason=last_material_reason,
                     posePending=True, identityUnresolved=True)
+                # Reuse this ticket's guarded capture and the existing bounded
+                # recorder/settings. Diagnostic failure must not change the scan.
+                try:
+                    from recognition_diagnostics import s1_scan_failure
+                    self._recognition_diagnostic("s1-scan-no-material", last_material_reason,
+                        inputs=self._failure_diagnostic(payload),
+                        structureScanFailure=s1_scan_failure(report, preferred))
+                except Exception:
+                    pass
+                self._terminal_failure_sample(
+                    "no-current-supported-candidates" if not report["supportedMapIds"] else "s1-no-current-material",
+                    payload, captured, lambda: not obsolete())
             with self._lock:
                 if (recovery_scan and current() and self._s1_private_pool is pool
                         and pool.recovery_revision == recovery_revision
@@ -3565,7 +3577,8 @@ class LiveRuntime:
                         return self._receipt(action, payload, success=False, reason="candidate-floor-unavailable")
                     if str(floor) == self._floor and self._render is not None:
                         return self._receipt(action, payload, success=True, reason="candidate-floor-current", unchanged=True)
-                    self._revoke_render("candidate-floor-changed")
+                    self._revoke_render("candidate-floor-changed" if str(floor) != self._floor
+                        else "candidate-pose-unavailable")
                 return self._capture_and_solve("capture_now", payload, cancelled, expected_epoch=epoch)
             except Exception as error:
                 with self._lock:
