@@ -30,7 +30,7 @@ class ReviewedReleasePolicyTests(unittest.TestCase):
 
     def test_actual_version_author_registration_and_legacy_adoption_are_source_pinned(self):
         version = json.loads((ROOT / 'version.json').read_text(encoding='utf8'))
-        self.assertEqual((version['displayVersion'], version['numericVersion']), ('1.0.17', '1.0.0.21'))
+        self.assertEqual((version['displayVersion'], version['numericVersion']), ('1.1.0', '1.0.0.22'))
         self.assertIn(version['displayVersion'], SUPPORTED_DISPLAY_VERSIONS)
         self.assertIn('8e5a11d41c2bdd5c4fdc55a19089e1005e8fd47434bde75affa40f8928ac4b9d', author.APPROVED_BINDINGS)
         self.assertEqual(len(REVIEWED_LEGACY_S0_BASE_RELEASES[0][2]), 307)

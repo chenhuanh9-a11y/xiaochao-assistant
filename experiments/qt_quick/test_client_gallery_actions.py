@@ -202,7 +202,7 @@ ApplicationWindow {
         self.addCleanup(author.doCleanups)
         shutil.copytree(author.root, self.fixture.root, dirs_exist_ok=True)
         self.fixture.write("_internal/version.json", json.dumps(dict(
-            displayVersion="1.0.17", numericVersion="1.0.0.21")).encode())
+            displayVersion="1.1.0", numericVersion="1.0.0.22")).encode())
         self.backend.change("_season", "s1")
         self.fixture.completions.clear()
         self.fixture.changes.clear()
