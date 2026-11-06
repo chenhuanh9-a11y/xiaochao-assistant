@@ -229,7 +229,10 @@ class S1AuthorPackageTests(unittest.TestCase):
             with self.subTest(dependencies=len(dependencies)):
                 doc=copy.deepcopy(before);doc['requiresFiles']=dependencies;path.write_bytes(encoded(doc))
                 malformed=path.read_bytes()
-                with self.assertRaises(imp.ImportRejected):managed.repair_managed_base_resources(self.root)
+                with self.assertRaises(managed.ManagedBaseResourceError) as caught:
+                    managed.repair_managed_base_resources(self.root)
+                self.assertEqual(caught.exception.code,'installed-package-receipt-rejected')
+                self.assertIsInstance(caught.exception.__cause__,imp.ImportRejected)
                 self.assertFalse(base.exists());self.assertEqual(path.read_bytes(),malformed)
 
 
