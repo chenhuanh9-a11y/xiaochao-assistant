@@ -3570,7 +3570,7 @@
         "sourceCommit": "9d7fa8024f1f5adf27fb664e2fcd1788d4dc883a"
       }
     ],
-    "sourcePayloadSha256": "2a64c629d2b1d928f7dab7c9774a018e3dc7140304d5d1f3cd412b8006fa5dd3",
+    "sourcePayloadSha256": "8e83260061e6e311e20a824bed380cb45ebbcc08c1587294962c9416f8f7e364",
     "versionSha256": "75494fe0083b1b66f1001a446e136b043f16927a24512772ee58a23ac641b634"
   },
   "schema": "xingtu-s1-production-release-lock-v1"
