@@ -168,7 +168,12 @@ class StaticReferenceContracts(unittest.TestCase):
             with self.subTest(reason=reason):
                 self.show(); self.assert_reference()
                 self.runtime.invalidate(reason)
-                self.assertIsNone(self.runtime.reference_payload())
+                if reason == "game-floor-control-intent" and self.runtime.snapshot()["s1FormalRoundLock"]:
+                    retained = self.runtime.reference_payload()
+                    self.assertIsNotNone(retained)
+                    self.assertFalse(retained["referenceFloorCurrent"])
+                else:
+                    self.assertIsNone(self.runtime.reference_payload())
         self.show(); self.assert_reference()
         self.capture.generation += 1
         self.assertIsNone(self.runtime.reference_payload())

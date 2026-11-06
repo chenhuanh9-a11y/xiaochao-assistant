@@ -1445,7 +1445,9 @@ class ClientCoordinator(QObject):
         label = ("定点地图（已锁定）" if payload.get("s1CandidateReference") and payload.get("identityLocked") else
                  "定点地图（暂用）" if payload.get("s1CandidateReference") else
                  "暂用地图" if payload.get("provisional") else "定点地图")
-        self._reference["title"] = f"{label} · {payload.get('mapId')} · {payload.get('floor')}层"
+        floor_label = (f"上次 {payload.get('floor')}层 · 当前楼层待核对"
+            if payload.get("referenceFloorCurrent") is False else f"{payload.get('floor')}层")
+        self._reference["title"] = f"{label} · {payload.get('mapId')} · {floor_label}"
         self._trace("reference-publish", payload=self._reference)
         self._show_reference_current()
 
@@ -2424,7 +2426,7 @@ class ClientCoordinator(QObject):
                 self._pending_aligned = {}
                 self._material_timer.stop()
                 self.changed.emit()
-        elif name in {"render-ready", "group-state", "pose-result", "identity-committed"}:
+        elif name in {"render-ready", "reference-ready", "group-state", "pose-result", "identity-committed"}:
             state = self.runtime.snapshot()
             context = (state.get("mode", self._applied_context[0]), state.get("profileId", self._applied_context[1]), state.get("season", "s0"))
             if self._pending_context or context != self._applied_context:

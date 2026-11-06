@@ -31,6 +31,20 @@ class FormalStaticReferenceContracts(static.StaticReferenceContracts):
         self.assertNotIn('liveAuthorization', row)
         return row
 
+    def test_unknown_floor_revokes_previous_reference(self):
+        # Formal static display is independent from current-floor pose. Keep
+        # the last sheet explicitly historical rather than silently hiding it.
+        self.show()
+        previous = self.runtime.reference_payload()
+        self.floor = None
+        self.assertFalse(self.runtime.dispatch("capture_now")["success"])
+        self.idle()
+        row = self.runtime.reference_payload()
+        self.assertIsNotNone(row)
+        self.assertEqual(row["token"], previous["token"])
+        self.assertFalse(row["referenceFloorCurrent"])
+        self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
+
     def test_closed_reference_revoked_by_late_positive_exclusion(self):
         entered, release = threading.Event(), threading.Event()
         self.addCleanup(release.set)

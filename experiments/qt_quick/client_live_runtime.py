@@ -1190,6 +1190,8 @@ class LiveRuntime:
                     and row.get("candidateDisplayOnly") and self._display_current(row))
 
         try:
+            if private_enabled and pool.retain_locked_identity:
+                self._prepare_s1_static_reference(engine, pool, captured, floor, current)
             prior_reason = "pose-prior-source-unavailable"
             prior_provider = getattr(engine, "qt_s1_pose_prior", None)
             if prior_source is not None and callable(prior_provider):
@@ -2993,7 +2995,11 @@ class LiveRuntime:
             # A static reference is explicitly historical, not a retained
             # pose. Normal reopen must not blank it while acquiring fresh
             # evidence; conflict/reselection/context boundaries still revoke.
-            if reason not in ("map-closed", "escape", "foreground-lost", "map-key-open",
+            keep_static_floor_intent = (self._native_s1_round_lock and not self._native_s1_private_experiment
+                and reason in ("game-floor-control-intent", "floor-changed", "floor-unknown"))
+            if keep_static_floor_intent:
+                self._floor_required = True
+            if not keep_static_floor_intent and reason not in ("map-closed", "escape", "foreground-lost", "map-key-open",
                               "s1-provisional-open-intent"):
                 self._clear_s1_reference()
             if any(word in reason for word in ("resource", "context", "settings", "identity", "reselection", "candidate-selected", "end-round", "end_round", "reset_round", "stop_round")):
@@ -3151,7 +3157,9 @@ class LiveRuntime:
         """Revoke presentation without invalidating the current worker lifetime."""
         with self._lock:
             self._revoke_s1_current_candidates(
-                preserve_reference=reason in ("new-capture", "new-provisional-capture"))
+                preserve_reference=(reason in ("new-capture", "new-provisional-capture")
+                    or self._native_s1_round_lock and not self._native_s1_private_experiment
+                    and reason not in ("s1-candidate-excluded", "private-contradiction-recovery")))
             token = self._render.get("token", "") if self._render is not None else ""
             self._discard_sibling()
             self._core.revoke_display(reason=reason)
@@ -3469,6 +3477,46 @@ class LiveRuntime:
         if (self._reference_sheet or {}).get("s1CandidateReference"):
             self._reference_sheet = self._reference_capture_context = None
 
+    def _prepare_s1_static_reference(self, engine, pool, captured, floor, current):
+        """Prepare a selected map's static floor, without requesting a pose."""
+        import numpy as np
+        with self._lock:
+            if not current() or self._s1_private_pool is not pool:
+                return
+            previous = self._reference_sheet or {}
+            map_id = pool.locked_id or previous.get("mapId")
+            if not map_id or map_id not in pool.remaining:
+                return
+            if previous.get("mapId") == map_id and self._s1_reference_current(previous):
+                return
+            profile, generation = self._profile, getattr(self, "_display_generation", 0)
+            variant = self._settings.get("zhan10CoffinVariantId", "variant-01")
+        try:
+            display = self._display_layer(engine, map_id, floor, profile, variant_id=variant)
+            pixels = np.ascontiguousarray(display["pixels"][:, :, [2, 1, 0, 3]])
+            pixels.setflags(write=False)
+        except (ValueError, KeyError, OSError):
+            return  # Missing static resources cannot be replaced by old-floor pixels.
+        with self._lock:
+            if (not current() or self._s1_private_pool is not pool or map_id not in pool.remaining
+                    or profile != self._profile or generation != getattr(self, "_display_generation", 0)):
+                return
+            self._reference_sheet = dict(token=uuid4().hex, pixels=pixels,
+                season=self._season, mode=self._mode, profileId=profile, mapId=map_id,
+                floor=str(floor), roundId=self._round, engineIdentity=id(engine),
+                captureGeneration=self._capture_generation(), displayGeneration=generation,
+                variantId=display.get("variantId"), resourceIdentity=display["resourceIdentity"],
+                referenceAuthorized=self._evidence_kind == "live-client-capture", evidenceKind=self._evidence_kind,
+                preferredProfileId=profile, effectiveProfileId=display.get("effectiveProfileId", display["routeProfileId"]),
+                displayKind=display["displayKind"], displayLabel=display["displayLabel"],
+                routeProfileId=display["routeProfileId"], authorStatus=display.get("authorStatus", "none"),
+                fallback=display.get("fallback", False), fallbackReason=display.get("fallbackReason", ""),
+                s1CandidateReference=True, s1ReferencePoolIdentity=id(pool),
+                s1ReferenceRecoveryRevision=pool.recovery_revision,
+                referenceAuthorizationScope="current-candidate-static-reference", **self._identity_fields())
+            self._reference_capture_context = captured.context
+        self._notify("reference-ready", reason="reference-sheet")
+
     def _s1_reference_current(self, row, *, check_display=True):
         """Display-only ownership, independent of the legacy identity gate.
 
@@ -3478,12 +3526,15 @@ class LiveRuntime:
         candidate evidence and hard boundaries revoke it before blocking.
         """
         pool = self._s1_private_pool
+        historical_floor = bool(self._native_s1_round_lock and not self._native_s1_private_experiment
+            and (self._floor_required or not self._observed_floor))
         return bool(row.get("s1CandidateReference") and self._season == "s1"
             and self._candidate_preview_requested() and not self._manual_alignment
-            and self._active and not self._selection_pending and not self._floor_required
-            and not self._current_frame_floor_conflicts(self._floor)
+            and self._active and not self._selection_pending
+            and (historical_floor or not self._floor_required
+                and not self._current_frame_floor_conflicts(self._floor) and row.get("floor") == self._floor)
             and all(row.get(key) == expected for key, expected in (
-                ("season", self._season), ("mode", self._mode), ("floor", self._floor),
+                ("season", self._season), ("mode", self._mode),
                 ("roundId", self._round), ("engineIdentity", id(self._engine)),
                 ("captureGeneration", self._capture_generation()),
                 ("s1ReferencePoolIdentity", id(pool) if pool is not None else None),
@@ -3515,7 +3566,9 @@ class LiveRuntime:
                 return dict({key: value if key == "pixels" else copy.deepcopy(value)
                         for key, value in row.items()}, identityLocked=locked,
                     durableMapId=row["mapId"] if locked else "", provisional=not locked,
-                    identityPhase="MEMBER_VERIFIED" if locked else "CANDIDATE_DISPLAY")
+                    identityPhase="MEMBER_VERIFIED" if locked else "CANDIDATE_DISPLAY",
+                    referenceFloorCurrent=bool(not self._floor_required and self._observed_floor
+                        and row.get("floor") == self._floor == self._observed_floor))
             if (row is None or not self._active or self._selection_pending or self._floor_required
                     or self._current_frame_floor_conflicts(self._floor)
                     or self._gate is None or self._gate.confirmed_id != self._map_id
