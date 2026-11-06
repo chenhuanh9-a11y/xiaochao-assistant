@@ -9,6 +9,7 @@ from PySide6.QtTest import QTest
 
 import test_client_recognition as ui
 import test_client_control_actions as controls
+from client_control_layout import preset_layout
 
 
 class Coordinator(QObject):
@@ -167,6 +168,7 @@ class ControlsSession(QObject):
 class CompactControlsIsolationTests(unittest.TestCase):
     def test_s1_hides_group_picker_and_preserves_compact_layout_and_season_switcher(self):
         session, settings = ControlsSession(), controls.Settings()
+        settings.data["gameControlLayout"] = preset_layout("compact")
         session.state.update(season='s0', roundActive=True, groupId='group-ab',
             groupMemberIds=['map-a', 'map-b'], identityPhase='GROUP_LOCKED',
             currentGroupMemberId='map-a')

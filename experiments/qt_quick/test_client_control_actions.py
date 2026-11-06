@@ -97,13 +97,14 @@ class ControlActionsTests(unittest.TestCase):
             self.app.processEvents()
             self.assertEqual(reference.property("text"), "显示定点")
             self.assertEqual(settings.saved[-1], ["referenceSheetVisible"])
-            self.assertFalse(any(i.objectName() == "controlReselectMap" for i in items(window.contentItem())))
+            self.assertFalse(named("controlReselectMap").property("enabled"))
             self.assertFalse(named("controlRoundAction").property("enabled"))
             session.manual_ready = True; session.changed.emit(); self.app.processEvents()
-            self.assertFalse(any(i.objectName() == "controlReselectMap" for i in items(window.contentItem())))
-            self.assertEqual(coordinator.manual_requests, 0)
+            self.assertTrue(named("controlReselectMap").property("enabled"))
+            self.assertTrue(QMetaObject.invokeMethod(named("controlReselectMap"), "clicked"))
+            self.assertEqual(coordinator.manual_requests, 1)
             self.assertFalse(named("controlRoundAction").property("enabled"))
-            self.assertEqual(window.property("activeModules").toVariant(), ["display", "mode", "round"])
+            self.assertEqual(window.property("activeModules").toVariant(), ["display", "manual_map", "round"])
             self.assertEqual(warnings, [])
         finally:
             # Dispose QML bindings before local context services leave scope.

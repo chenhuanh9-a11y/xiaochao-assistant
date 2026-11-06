@@ -21,9 +21,7 @@ Window {
     readonly property real naturalExpandedHeight: header.height + 24 + scrollContent.implicitHeight + (editing ? 76 : 0)
     readonly property var preferences: settingsService.values
     readonly property var committedShortcuts: settingsService.persistedValues.actionHotkeys || []
-    readonly property var layout: ({order: ["display", "mode", "round"],
-        enabled: ["display", "mode", "round"],
-        display: {alignedOpacity: false, referenceOpacity: false, referencePosition: false}})
+    readonly property var layout: preferences.gameControlLayout || ({order: [], enabled: [], display: {}})
     readonly property var snapshot: session.snapshot
     property var groupChoices: []
     property string groupChoicesKey: ""
@@ -42,7 +40,10 @@ Window {
     readonly property string appliedMode: session.appliedMode || session.currentMode
     readonly property bool compactAutomatic: false
     property bool recoveryExpanded: false
-    readonly property var activeModules: layout.order
+    readonly property var activeModules: layout.order.filter(function(key) {
+        return layout.enabled.indexOf(key) >= 0
+            && (snapshot.season !== "s1" || (key !== "manual_map" && key !== "recognition"))
+    })
     readonly property var privateIdentity: snapshot.privateExperiment || ({})
     readonly property string privateLockedMap: privateIdentity.privateLockMapId || ""
     readonly property bool privateIdentityRetained: snapshot.season === "s1" && snapshot.roundActive === true

@@ -24,6 +24,10 @@ GridLayout {
     readonly property int modeCount: ordinaryAvailable ? 3 : 2
     readonly property real singleRowWidth: seasonMinimumWidth + modeCount * 64 + modeCount * columnSpacing
     readonly property bool stacked: width < singleRowWidth
+    // Parent layouts must be allowed to shrink below the single-row minimum;
+    // otherwise they force that width before the responsive breakpoint can fire.
+    Layout.minimumWidth: Math.max(seasonMinimumWidth, modeCount * 64 + (modeCount - 1) * columnSpacing)
+    Layout.preferredWidth: singleRowWidth
     columns: stacked ? modeCount : modeCount + 1
     columnSpacing: 6; rowSpacing: 6
     implicitWidth: singleRowWidth
