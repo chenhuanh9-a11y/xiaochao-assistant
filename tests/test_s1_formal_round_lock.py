@@ -108,3 +108,28 @@ class FormalRoundLockContracts(LockedIdentityContracts):
         self.assertFalse(self.runtime.snapshot()['displayAuthorized'])
         self.assertTrue(any(e['event'] == 'render-revoked' and e.get('reason') == 's1-candidate-excluded'
             for e in self.events))
+
+    def test_late_old_background_cannot_restore_or_replace_new_pool(self):
+        # Production stops identity work at lock. Exercise a task admitted
+        # before lock instead of requiring a new forbidden post-lock task.
+        import threading
+        from test_s1_locked_identity import evidence
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        def delayed(frame, ids, floor, **kw):
+            entered.set()
+            self.assertTrue(release.wait(3))
+            return evidence(ids, floor, ('a',))
+        self.registry.engine.qt_s1_private_coordinate_prepare = delayed
+        self.show()
+        self.assertTrue(entered.wait(3))
+        pool = self.runtime._s1_private_pool
+        pool.observe(evidence(pool.remaining, bad=('b',)))
+        self.assertTrue(self.runtime.dispatch('capture_now')['success'])
+        self.assertEqual(pool.locked_id, 'a')
+        before = pool.snapshot()
+        release.set(); self.idle()
+        self.assertEqual(pool.snapshot(), before)
+        self.assertEqual(self.current_payload()['mapId'], 'a')
+        self.assertFalse(any(e['event'] == 'private-experimental-unlocked' for e in self.events))
+        self.assertTrue(any(e['event'] == 'private-evidence-discarded' for e in self.records))

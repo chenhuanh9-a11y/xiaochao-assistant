@@ -71,6 +71,11 @@ class S1ResourceRevocationChainTests(unittest.TestCase):
         for token in (purpose._NATIVE_S1_PREVIEW, purpose._NATIVE_S1_PRODUCTION_CANDIDATE):
             with self.subTest(formal=token is purpose._NATIVE_S1_PRODUCTION_CANDIDATE):
                 fx = self.fixture(token)
+                # The fixture starts locked. Production correctly stops new
+                # identity jobs at lock, so admit this task in a fresh round.
+                fx.runtime.dispatch('end_round')
+                fx.session.refreshRuntime()
+                self.assertIsNone(fx.runtime._s1_private_pool)
                 entered, release = threading.Event(), threading.Event()
                 self.addCleanup(release.set)
                 cancelled_after_boundary = []

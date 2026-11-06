@@ -1030,7 +1030,8 @@ class LiveRuntime:
             pool = getattr(self, "_s1_private_pool", None)
             if private_enabled and (pool is None or pool.scope != preference_scope):
                 from s1_private_experiment import PrivateRoundPool
-                pool = self._s1_private_pool = PrivateRoundPool(preference_scope, catalog.map_ids)
+                pool = self._s1_private_pool = PrivateRoundPool(preference_scope, catalog.map_ids,
+                    retain_locked_identity=not self._native_s1_private_experiment)
                 self._notify("s1-candidate-pool-changed", reason="s1-pool-created",
                     **pool.snapshot(), privateResourceDigest=catalog.resource_key)
             recovery_revision = pool.recovery_revision if private_enabled else None
@@ -1205,8 +1206,13 @@ class LiveRuntime:
                             prior_reason = "pose-prior-scope-rejected"
                 except (ValueError, TypeError, KeyError, OSError):
                     pass  # A missing/unbound hint leaves the original full fit.
-            order, ordering = candidate_order(engine, catalog, str(floor), snapshot, prior,
-                self._recorded_s1_scan_order, self._recorded_s1_priority_index, priority_handles)
+            if private_enabled and pool.retain_locked_identity and pool.locked_id:
+                # No catalogue ordering or identity competition after the round
+                # lock. Reuse the guarded fit/material pipeline for this ID only.
+                order, ordering = (pool.locked_id,), dict(reason="preferred-material-id-first")
+            else:
+                order, ordering = candidate_order(engine, catalog, str(floor), snapshot, prior,
+                    self._recorded_s1_scan_order, self._recorded_s1_priority_index, priority_handles)
             if preferred is not None:
                 order = (preferred,) + tuple(mid for mid in order if mid != preferred)
                 ordering = dict(ordering, reason="preferred-material-id-first")
@@ -1344,7 +1350,7 @@ class LiveRuntime:
             # A valid captured frame remains historical evidence after an
             # ordinary close, even if first paint lost the race. No UI authority
             # follows it. Queue ordering is capture admission, not finish time.
-            if private_enabled:
+            if private_enabled and not (pool.retain_locked_identity and pool.locked_id):
                 self._enqueue_private_observation(pool, engine, catalog, captured, frame, str(floor),
                     digest, epoch, frame_id, round_id, cycle, payload, private_sequence)
 
@@ -1421,7 +1427,7 @@ class LiveRuntime:
             stage("prepare", "started", 0.)
             try:
                 with self._lock:
-                    if not scope_current():
+                    if not scope_current() or (pool.retain_locked_identity and pool.locked_id):
                         return
                     # Read remaining/revision at START, not queue admission.
                     before, revision = tuple(pool.remaining), pool.revision
@@ -2987,7 +2993,8 @@ class LiveRuntime:
             # A static reference is explicitly historical, not a retained
             # pose. Normal reopen must not blank it while acquiring fresh
             # evidence; conflict/reselection/context boundaries still revoke.
-            if reason not in ("map-closed", "escape", "foreground-lost", "s1-provisional-open-intent"):
+            if reason not in ("map-closed", "escape", "foreground-lost", "map-key-open",
+                              "s1-provisional-open-intent"):
                 self._clear_s1_reference()
             if any(word in reason for word in ("resource", "context", "settings", "identity", "reselection", "candidate-selected", "end-round", "end_round", "reset_round", "stop_round")):
                 self._s1_candidate_preference = None

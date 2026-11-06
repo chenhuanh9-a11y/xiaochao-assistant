@@ -16,6 +16,7 @@ class PrivateRoundPool:
     map_ids: tuple
     remaining: tuple = field(init=False)
     locked_id: str = ""
+    retain_locked_identity: bool = False
     eliminated: set = field(default_factory=set)
     observation_count: int = 0
     revision: int = 0
@@ -33,6 +34,11 @@ class PrivateRoundPool:
         self.locked_id = ""
 
     def observe(self, report):
+        # Production identity is final within this round. Historical evidence
+        # can narrow an unconfirmed pool, but cannot reopen a committed ID.
+        # Current-frame pose/material validation remains a separate authority.
+        if self.retain_locked_identity and self.locked_id:
+            return "private-coordinate-unknown"
         before = self.remaining
         if report.get("reason") == "coordinate-or-catalogue-conflict":
             # The comparator deliberately leaves coordinateVerified false when
