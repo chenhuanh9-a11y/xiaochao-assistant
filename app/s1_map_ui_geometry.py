@@ -14,8 +14,7 @@ import numpy as np
 
 from client_space_geometry import centered_safe_viewport
 
-# Relative to the game's safe HUD viewport. Sizes/distances use client width,
-# consistently with the signed-floor control contract.
+# Positions, sizes and group distances share the centered safe HUD viewport.
 SEARCH = {'close': (.92, .02, .99, .18), 'plus': (.92, .25, .99, .46),
           'minus': (.92, .66, .99, .86)}
 SIZES = (.024, .026, .028, .030, .032, .034, .036, .038)
@@ -135,29 +134,31 @@ def observe_s1_map_ui_geometry(frame, *, floor_search_right=.92):
     height,width=frame.shape[:2]
     if width<1000 or height<600:
         return dict(verified=False,reason='s1-map-ui-size-unsupported')
-    viewport=centered_safe_viewport((width,height));right=round(width*floor_search_right)
+    viewport=centered_safe_viewport((width,height))
+    scale_width=viewport.width
+    right=round(viewport.left+scale_width*floor_search_right)
     # Isolate bytes before *all* preprocessing. Blurring the full frame would
     # let floor pixels across the boundary change external shape evidence.
     # Keep global coordinates, but never sample or convolve the floor ROI.
     band=np.ascontiguousarray(frame[:,right:])
     gray=np.zeros((height,width),np.uint8)
     gray[:,right:]=cv2.GaussianBlur(cv2.cvtColor(band,cv2.COLOR_BGR2GRAY),
-                                  (0,0),max(1,width/1920))
+                                  (0,0),max(1,scale_width/1920))
     shapes={}
     for kind in ('close','plus','minus'):
-        shape=_match(gray,width,viewport,kind,right)
+        shape=_match(gray,scale_width,viewport,kind,right)
         if shape is None:
             return dict(verified=False,reason='s1-map-ui-'+kind+'-unverified',shapes=shapes)
         shapes[kind]=shape
     close,plus,minus=(shapes[k] for k in ('close','plus','minus'))
     xs=[s['center'][0] for s in (close,plus,minus)]
-    close_gap=(plus['center'][1]-close['center'][1])/width
-    zoom_gap=(minus['center'][1]-plus['center'][1])/width
+    close_gap=(plus['center'][1]-close['center'][1])/scale_width
+    zoom_gap=(minus['center'][1]-plus['center'][1])/scale_width
     size_ratio=plus['bounds'][2]/minus['bounds'][2]
-    if (max(xs)-min(xs)>.010*width or not .13<=close_gap<=.18
+    if (max(xs)-min(xs)>.010*scale_width or not .13<=close_gap<=.18
             or not .22<=zoom_gap<=.28 or not .85<=size_ratio<=1.15):
         return dict(verified=False,reason='s1-map-ui-group-misaligned',shapes=shapes)
-    rail=_rail(gray,width,plus,minus,right)
+    rail=_rail(gray,scale_width,plus,minus,right)
     if rail is None:
         return dict(verified=False,reason='s1-map-ui-rail-unverified',shapes=shapes)
     return dict(verified=True,reason='s1-map-ui-shape-group',shapes=shapes,rail=rail)

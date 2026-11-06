@@ -249,8 +249,9 @@ def _package_constraints(root):
         return owned, dependencies, unrecorded
     # This directory also carries handoff/result metadata. These exact writer
     # namespaces are not ownership receipts; ignore their contents here, leave
-    # them intact, and let their own consumers validate them. Unknown JSON is
-    # still rejected rather than silently classed as an installed author.
+    # them intact, and let their own consumers validate them. Other records must
+    # satisfy the bounded legacy envelope/path checks to constrain preservation;
+    # they never silently become a registered or writable installed author.
     reserved = {Path(STATE).name, Path(PENDING).name, "pending-upgrade.json",
                 "pending-additions.json", "pending-removal.json", "qt-import-pending.json",
                 "qt-recovery-pending.json", "last-import-result.json", "last-recovery-result.json",

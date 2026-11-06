@@ -13,6 +13,7 @@ from itertools import combinations
 import cv2
 import numpy as np
 
+from client_space_geometry import centered_safe_viewport
 from floor_contract import floor_contract
 from map_interface_observation import MAP_REGIONS, detect_map_interface, neutral_ratio
 from s1_map_ui_geometry import observe_s1_map_ui_geometry
@@ -32,14 +33,18 @@ def _result(season, mode, reason, **extra):
                 centerPoints=[], centers=[], labelEvidence=[], **extra)
 
 
-def _labels(gray, width, origin):
+def _label_components(gray):
+    return [(polarity, cv2.connectedComponentsWithStats(mask.astype(np.uint8), 8)[2][1:])
+            for polarity, mask in (("light", gray > 110), ("dark", gray < 65))]
+
+
+def _labels(gray, width, origin, components=None):
     """Match one distinct same-polarity minus to one digit component."""
     labels = []
     ox, oy = origin
-    for polarity, mask in (("light", gray > 110), ("dark", gray < 65)):
-        count, _, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), 8)
+    for polarity, stats in (_label_components(gray) if components is None else components):
         digits, signs = [], []
-        for x, y, w, h, area in stats[1:count]:
+        for x, y, w, h, area in stats:
             box = tuple(int(v) for v in (x, y, w, h))
             if (width * .008 <= h <= width * .017
                     and width * .0015 <= w <= width * .010
@@ -48,16 +53,33 @@ def _labels(gray, width, origin):
             if (width * .004 <= w <= width * .009
                     and 1 <= h <= width * .003 and w >= 2.5 * h):
                 signs.append(box)
+        # Index the exact same sign/digit predicate by local coordinates. Dense
+        # map/text components must not pay digit*sign comparisons at every scale
+        # followed by repeated scans of the complete match list.
+        gap_limit, y_limit = width * .006, width * .004
+        cell_width, cell_height = max(1., gap_limit), max(1., y_limit * 2)
+        sign_cells = {}
+        for si, (sx, sy, sw, sh) in enumerate(signs):
+            cell = (int((sx + sw) // cell_width), int((sy + sh / 2) // cell_height))
+            sign_cells.setdefault(cell, []).append(si)
         matches = []
+        digit_degree, sign_degree = [0] * len(digits), [0] * len(signs)
         for digit_index, (dx, dy, dw, dh) in enumerate(digits):
-            for sign_index, (sx, sy, sw, sh) in enumerate(signs):
-                if (0 <= dx - (sx + sw) <= width * .006
-                        and abs(sy + sh / 2 - (dy + dh / 2)) <= width * .004):
-                    matches.append((digit_index, sign_index))
+            center_y = dy + dh / 2
+            for cx in range(int((dx - gap_limit) // cell_width), int(dx // cell_width) + 1):
+                for cy in range(int((center_y - y_limit) // cell_height),
+                                int((center_y + y_limit) // cell_height) + 1):
+                    for sign_index in sign_cells.get((cx, cy), ()):
+                        sx, sy, sw, sh = signs[sign_index]
+                        if (0 <= dx - (sx + sw) <= gap_limit
+                                and abs(sy + sh / 2 - center_y) <= y_limit):
+                            matches.append((digit_index, sign_index))
+                            digit_degree[digit_index] += 1
+                            sign_degree[sign_index] += 1
         for di, si in matches:
             # Reusing one sign for multiple glyphs, or choosing between two
             # signs for one glyph, is ambiguous even within the same column.
-            if sum(d == di for d, _ in matches) != 1 or sum(s == si for _, s in matches) != 1:
+            if digit_degree[di] != 1 or sign_degree[si] != 1:
                 continue
             dx, dy, dw, dh = digits[di]
             sx, sy, sw, sh = signs[si]
@@ -115,10 +137,20 @@ def detect_s1_floor(frame, *, season, mode, frame_id=None, expected_frame_id=Non
                mapOpen=map_observation.get("detected") is True)
     independent = None
     if out["mapOpen"] is not True:
+        # Preserve the cheap closed-frame exit. This is only a precheck; a
+        # discovered column is masked and corroborated again below.
         independent = _s1_independent_map_evidence(frame, map_observation)
         if independent is None:
             return dict(out, reason="s1-floor-map-not-open")
     column = _observe_signed_column(frame, width, height)
+    localized = column.get("localization") == "signed-column-position-scale"
+    if out["mapOpen"] is not True or localized:
+        independent = _s1_independent_map_evidence(frame, map_observation,
+            floor_bounds=column.get("controlBounds"),
+            floor_scale=column.get("controlLocalScale") if localized else None)
+        if independent is None:
+            return dict(out, reason="s1-floor-localization-ui-unverified" if localized
+                        and out["mapOpen"] is True else "s1-floor-map-not-open")
     if out["mapOpen"] is not True:
         if column.get("selectedFloor") is None:
             return dict(out, reason="s1-floor-map-not-open")
@@ -139,7 +171,7 @@ def detect_s1_floor(frame, *, season, mode, frame_id=None, expected_frame_id=Non
                 floorSource="s1-signed-pixel-column")
 
 
-def _s1_independent_map_evidence(frame, observation):
+def _s1_independent_map_evidence(frame, observation, *, floor_bounds=None, floor_scale=None):
     """Additional map evidence only, excluding the signed column's ROI.
 
     Large revealed S1 structures can violate the old whole-canvas texture
@@ -149,6 +181,9 @@ def _s1_independent_map_evidence(frame, observation):
     A caller must separately require a complete unique signed S1 column and
     single highlight. This helper never reads or assumes any selected floor.
     """
+    if (floor_scale is not None and (floor_bounds is None
+            or type(floor_scale) not in (int, float) or not np.isfinite(floor_scale) or floor_scale <= 0)):
+        return None
     if observation.get("shapeAccepted") is not True:
         return None
     required = observation.get("requiredBackdropRatio")
@@ -166,14 +201,39 @@ def _s1_independent_map_evidence(frame, observation):
     # oversized floor highlight cannot supply its own corroborating anchor.
     # Keep the original anchor denominator and thresholds (zero is not neutral).
     height, width = frame.shape[:2]
-    x0, y0, x1, y1 = (round(width * SEARCH_BOUNDS[0]), round(height * SEARCH_BOUNDS[1]),
-                      round(width * SEARCH_BOUNDS[2]), round(height * SEARCH_BOUNDS[3]))
+    viewport = centered_safe_viewport((width, height))
+    x0, y0, x1, y1 = (round(viewport.left + viewport.width * SEARCH_BOUNDS[0]),
+                      round(viewport.top + viewport.height * SEARCH_BOUNDS[1]),
+                      round(viewport.left + viewport.width * SEARCH_BOUNDS[2]),
+                      round(viewport.top + viewport.height * SEARCH_BOUNDS[3]))
     anchor_frame = frame.copy()
     anchor_frame[y0:y1, x0:x1] = 0
+    geometry_frame = frame
+    if floor_bounds is not None:
+        if (not isinstance(floor_bounds, (list, tuple)) or len(floor_bounds) != 4
+                or any(type(value) is not int for value in floor_bounds)):
+            return None
+        fx0, fy0, fx1, fy1 = floor_bounds
+        if not (0 <= fx0 < fx1 <= width and 0 <= fy0 < fy1 <= height):
+            return None
+        anchor_frame[fy0:fy1, fx0:fx1] = 0
+        geometry_frame = frame.copy()
+        geometry_frame[fy0:fy1, fx0:fx1] = 0
     ratios = {name: neutral_ratio(anchor_frame, MAP_REGIONS[name]) for name in independent}
     if all(ratios.get(name, 0.0) >= MAP_REGIONS[name][4] for name in independent):
-        geometry = observe_s1_map_ui_geometry(frame, floor_search_right=SEARCH_BOUNDS[2])
+        geometry = observe_s1_map_ui_geometry(geometry_frame, floor_search_right=SEARCH_BOUNDS[2])
         if geometry.get("verified") is True:
+            if floor_scale is not None:
+                # New search-domain columns must sit beside the independent
+                # control group; a signed list elsewhere on an open map is not
+                # the floor HUD. Only disjoint shape pixels supply this proof.
+                shapes = geometry["shapes"]
+                center = (fx0 + fx1) / 2
+                gap = (shapes["plus"]["center"][0] - center) / floor_scale
+                if (not .025 <= gap <= .16
+                        or shapes["close"]["center"][1] > fy0 + .075 * floor_scale
+                        or fy1 > shapes["minus"]["center"][1] + .075 * floor_scale):
+                    return None
             return "s1-signed-controls-ui-geometry"
     return None
 
@@ -181,6 +241,37 @@ def _s1_independent_map_evidence(frame, observation):
 def _observe_signed_column(frame, width, height):
     """Uninterpreted current pixel proof, without map-open or runtime authority."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    original = _signed_column_from_gray(gray, width, height)
+    # Keep every accepted original observation and never resolve two valid
+    # columns by making one disappear during exposure normalization.
+    if (original.get("selectedFloor") is not None
+            or original["reason"] == "s1-floor-column-ambiguous"):
+        return original
+    x0, y0, x1, y1 = (round(width * SEARCH_BOUNDS[0]), round(height * SEARCH_BOUNDS[1]),
+                      round(width * SEARCH_BOUNDS[2]), round(height * SEARCH_BOUNDS[3]))
+    roi = gray[y0:y1, x0:x1]
+    if not roi.size:
+        return original
+    # Damage effects dim the whole control, including its selected background.
+    # Normalize one bounded exposure from the current control band only; using
+    # independent thresholds for glyphs and fill would change their meaning.
+    # Bright pixels elsewhere in the map must not determine this exposure.
+    # Geometry, distinct signed pairs, complete-column and unique-fill checks
+    # below remain mandatory. This does not normalize any map-open evidence.
+    reference = float(np.percentile(roi, 99.8))
+    if 75 <= reference < 150:
+        exposed = cv2.convertScaleAbs(gray, alpha=150 / reference)
+        result = _signed_column_from_gray(exposed, width, height)
+        if result.get("selectedFloor") is not None or result["reason"] == "s1-floor-column-ambiguous":
+            return result
+    localized = _joint_signed_column(gray, width, height)
+    if localized is not None:
+        return localized
+    return original
+
+
+def _signed_column_from_gray(gray, width, height):
+    """One exposure must independently prove the entire signed column."""
     x0, y0, x1, y1 = (round(width * SEARCH_BOUNDS[0]), round(height * SEARCH_BOUNDS[1]),
                       round(width * SEARCH_BOUNDS[2]), round(height * SEARCH_BOUNDS[3]))
     roi = gray[y0:y1, x0:x1]
@@ -208,11 +299,116 @@ def _observe_signed_column(frame, width, height):
     if len(columns) != 1:
         return dict(reason="s1-floor-column-ambiguous" if columns else "s1-floor-column-unverified")
     rows, fills = columns[0]
+    return _column_evidence(rows, fills, width, height)
+
+
+def _column_evidence(rows, fills, width, height):
     selected = ORDER[next(i for i, value in enumerate(fills) if value >= .65)]
     points = [[row["centerX"] / width, row["y"] / height] for row in rows]
     evidence = [dict(floor=floor, negative=True, digitAspect=row["glyphAspect"],
                      polarity=row["polarity"], highlightFill=fill,
                      signBounds=row["signBounds"], digitBounds=row["digitBounds"])
                 for floor, row, fill in zip(ORDER, rows, fills)]
+    bounds = [max(0, round(min(row["centerX"] for row in rows) - .025 * width)),
+              max(0, round(rows[0]["y"] - .025 * width)),
+              min(width, round(max(row["centerX"] for row in rows) + .025 * width)),
+              min(height, round(rows[-1]["y"] + .025 * width))]
     return dict(reason="s1-floor-observed", selectedFloor=selected,
-                centerPoints=points, centers=points, labelEvidence=evidence)
+                centerPoints=points, centers=points, labelEvidence=evidence, controlBounds=bounds)
+
+
+def _joint_signed_column(gray, width, height):
+    """Fallback position/scale hypotheses, each proving one whole column.
+
+    The right-side domain is only a search prior. Local row pitch supplies the
+    scale used to recheck *all* glyph pairs and fill windows. Exposures/scales
+    never contribute different rows to one proof, and conflicting hypotheses
+    are rejected rather than ranked. No map-open or click authority is granted.
+    """
+    viewport = centered_safe_viewport((width, height))
+    x0, y0, x1, y1 = round(.55 * width), round(.04 * height), round(.985 * width), round(.93 * height)
+    reference_width = viewport.width
+    scales = sorted({round(reference_width * factor) for factor in (.5, .65, .8, 1., 1.25, 1.6, 2.)})
+    accepted = []
+    for exposure in (1., 1.25, 1.6, 2.):
+        image = gray if exposure == 1. else cv2.convertScaleAbs(gray, alpha=exposure)
+        roi = image[y0:y1, x0:x1]
+        components = _label_components(roi)
+        if any(len(stats) > 4096 for _, stats in components):
+            continue
+        labels = {}
+        for scale in scales:
+            measured = _labels(roi, scale, (x0, y0), components)
+            if len(measured) > 16:
+                continue
+            for row in measured:
+                key = (tuple(row["signBounds"]), tuple(row["digitBounds"]), row["polarity"])
+                labels[key] = row
+        labels = list(labels.values())
+        if not 4 <= len(labels) <= 32:
+            continue
+        hypotheses = 0
+        for first in labels:
+            if first["glyphAspect"] > .45:
+                continue
+            for second in labels:
+                pitch = second["y"] - first["y"]
+                local_width = pitch / .045
+                if (second["glyphAspect"] < .35
+                        or not .4 * reference_width <= local_width <= 2.2 * reference_width
+                        or abs(first["x"] - second["x"]) > .003 * local_width):
+                    continue
+                rows = [first, second]
+                for index in (2, 3):
+                    matches = [row for row in labels if row["glyphAspect"] >= .35
+                        and abs(row["x"] - first["x"]) <= .003 * local_width
+                        and abs(row["y"] - first["y"] - index * pitch) <= .004 * local_width]
+                    if len(matches) != 1:
+                        break
+                    rows.extend(matches)
+                if len(rows) != 4:
+                    continue
+                gaps = np.diff([row["y"] for row in rows])
+                heights = [row["digitBounds"][3] for row in rows]
+                if max(gaps) - min(gaps) > .004 * local_width or max(heights) > 1.35 * min(heights):
+                    continue
+                # A fifth adjacent signed row is a list, not the four-row HUD.
+                if any(row not in rows and abs(row["x"] - first["x"]) <= .003 * local_width
+                       and any(abs(row["y"] - first["y"] - i * pitch) <= .004 * local_width for i in (-1, 4))
+                       for row in labels):
+                    continue
+                hypotheses += 1
+                if hypotheses > 32:
+                    return dict(reason="s1-floor-localization-budget")
+                left = max(0, round(min(row["centerX"] for row in rows) - .025 * local_width))
+                right = min(width, round(max(row["centerX"] for row in rows) + .025 * local_width))
+                top = max(0, round(first["y"] - .025 * local_width))
+                bottom = min(height, round(rows[-1]["y"] + .025 * local_width))
+                # Re-extract at the pitch-derived scale. This catches a sign
+                # pairing ambiguity hidden by a coarser seed-scale hypothesis.
+                verified = _labels(image[top:bottom, left:right], local_width, (left, top))
+                identities = {(tuple(row["signBounds"]), tuple(row["digitBounds"]), row["polarity"]) for row in verified}
+                if any((tuple(row["signBounds"]), tuple(row["digitBounds"]), row["polarity"]) not in identities for row in rows):
+                    continue
+                fills = [_fill(image, row, local_width) for row in rows]
+                if (any(value is None or .20 < value < .65 for value in fills)
+                        or sum(value >= .65 for value in fills if value is not None) != 1):
+                    continue
+                result = _column_evidence(rows, fills, width, height)
+                result.update(localization="signed-column-position-scale", controlLocalScale=float(local_width),
+                              controlBounds=[left, top, right, bottom],
+                              controlSearchBounds=[x0, y0, x1, y1],
+                              controlSearchRegion=[left / width, top / height,
+                                                   (right - left) / width, (bottom - top) / height])
+                same = [old for old in accepted if all(
+                    abs(a[0] - b[0]) * width <= .003 * local_width
+                    and abs(a[1] - b[1]) * height <= .004 * local_width
+                    for a, b in zip(old["centerPoints"], result["centerPoints"]))]
+                if same:
+                    if any(old["selectedFloor"] != result["selectedFloor"] for old in same):
+                        return dict(reason="s1-floor-column-ambiguous")
+                else:
+                    accepted.append(result)
+                    if len(accepted) > 1:
+                        return dict(reason="s1-floor-column-ambiguous")
+    return accepted[0] if accepted else None

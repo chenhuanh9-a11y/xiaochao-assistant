@@ -1523,3 +1523,9 @@ FIELDS = FIELDS | frozenset({"plannedCount", "plannedMapIds", "posePriorAvailabl
     "unavoidableMissCount", "unavoidableSpanPx", "explicitContradiction"})
 CODES = CODES | frozenset({"s1-scan-plan", "s1-scan-result", "pose-prior-source-unavailable",
     "pose-prior-unavailable", "pose-prior-scope-rejected", "pose-prior-bound"})
+
+# Current-frame localization geometry and fixed failure vocabulary, no pixels.
+FIELDS = FIELDS | frozenset({"controlSearchBounds", "controlSearchRegion",
+    "controlLocalScale", "localization"})
+CODES = CODES | frozenset({"s1-floor-localization-budget",
+    "s1-floor-localization-ui-unverified", "signed-column-position-scale"})

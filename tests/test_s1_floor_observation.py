@@ -40,6 +40,44 @@ def read(frame, **kwargs):
 
 
 class S1FloorPixelObservation(unittest.TestCase):
+    def test_original_success_and_ambiguous_columns_never_reexposed(self):
+        dimmed = cv2.convertScaleAbs(mathematical_frame((-2,)), alpha=.8)
+        with patch.object(detector.cv2, "convertScaleAbs", side_effect=AssertionError("reexposed accepted frame")):
+            result = detector._observe_signed_column(dimmed, 1920, 1200)
+        self.assertEqual(result["selectedFloor"], -2)
+        frame = mathematical_frame((-2,))
+        draw_column(frame, selected=(-2,), offset=-90)
+        with patch.object(detector.cv2, "convertScaleAbs", side_effect=AssertionError("reexposed ambiguous frame")):
+            result = detector._observe_signed_column(frame, 1920, 1200)
+        self.assertEqual(result["reason"], "s1-floor-column-ambiguous")
+        self.assertIsNone(result.get("selectedFloor"))
+
+    def test_dimmed_controls_keep_signed_geometry_and_single_highlight(self):
+        # Exposure simulation only; the private damaged control-band replay
+        # is separate and cannot establish the missing full-frame map gate.
+        for mode in ("nightmare", "difficult", "difficulty2"):
+            for floor in detector.ORDER:
+                for gain in (.65, .8, 1.):
+                    frame = cv2.convertScaleAbs(mathematical_frame((floor,)), alpha=gain)
+                    with self.subTest(mode=mode, floor=floor, gain=gain), patch.object(
+                            detector, "detect_map_interface", return_value={"detected": True}):
+                        result = detector.detect_s1_floor(frame, season="s1", mode=mode)
+                        self.assertEqual(result["selectedFloor"], floor, result)
+                        self.assertEqual(len(result["labelEvidence"]), 4)
+
+    def test_dimmed_malformed_controls_and_absent_map_still_rejected(self):
+        frames = [mathematical_frame(selected) for selected in ((), (-1, -2))]
+        frames.extend(mathematical_frame(missing_sign=floor) for floor in detector.ORDER)
+        for frame in frames:
+            dimmed = cv2.convertScaleAbs(frame, alpha=.65)
+            with patch.object(detector, "detect_map_interface", return_value={"detected": True}):
+                self.assertIsNone(read(dimmed)["selectedFloor"])
+        dimmed = cv2.convertScaleAbs(mathematical_frame((-2,)), alpha=.65)
+        with patch.object(detector, "detect_map_interface", return_value={"detected": False}):
+            self.assertIsNone(read(dimmed)["selectedFloor"])
+        # A valid other-season column never grants S0 floor authority.
+        self.assertIsNone(detector.detect_s1_floor(dimmed, season="s0", mode="nightmare")["selectedFloor"])
+
     def test_safe_diagnostics_preserve_source_replay_scope_without_private_details(self):
         import json
         from diagnostic_privacy import safe_record
