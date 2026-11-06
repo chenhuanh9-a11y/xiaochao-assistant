@@ -1,7 +1,9 @@
 """Current S1 failure evidence with synthetic capture/solver, no game or file IO."""
 import json
+import os
 from pathlib import Path
 import sys
+import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
@@ -67,6 +69,33 @@ class S1FailureEvidenceTests(unittest.TestCase):
         self.assertEqual(recorder.automatic_saved_count, 0)
         self.assertTrue(any(row['event'] == 'automatic-failure-sample' and
             row['failureSample']['missingReason'] == 'automatic-sampling-disabled' for row in self.events))
+
+    @unittest.skipUnless(os.name == 'nt', 'automatic storage requires Windows handles')
+    def test_real_runtime_recorder_saves_only_current_s1_map_crop(self):
+        import cv2
+        import numpy as np
+        self.prepare_failure()
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        self.registry.engine.memory_store.root = root
+        from client_failure_samples import FailureSampleRecorder
+        recorder = FailureSampleRecorder()
+        recorder.automatic_enabled = True
+        self.runtime._failure_samples = recorder
+        self.capture.frame = np.zeros((300, 400, 3), np.uint8)
+        self.capture.frame[100:170, 100:200] = 150
+        result = self.runtime.dispatch('capture_now')
+        self.assertEqual(result['reason'], 'no-current-supported-candidates')
+        self.assertEqual(self.capture.count, 1)
+        self.assertEqual(recorder.automatic_saved_count, 1)
+        rows = [json.loads(line) for line in (root / 'failures/automatic-v2/automatic-failures.jsonl').read_bytes().splitlines()]
+        sample = next(row for row in rows if row.get('samplePath'))
+        self.assertEqual(sample['reason'], result['reason'])
+        self.assertEqual(sample['diagnostic']['attemptId'], result['mapAttempt']['attemptId'])
+        self.assertEqual(sample['diagnostic']['season'], 's1')
+        self.assertEqual(sample['cropBounds'], [100, 100, 100, 70])
+        np.testing.assert_array_equal(cv2.imread(str(root / sample['samplePath'])), self.capture.frame[100:170, 100:200])
 
     def test_cancelled_observations_do_not_sample_as_no_material(self):
         self.prepare_failure()

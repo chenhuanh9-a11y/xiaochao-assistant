@@ -48,7 +48,7 @@ class FailureCaptureTerminalTests(unittest.TestCase):
 
     def test_floor_unreadable_keeps_result_and_records_only_current_frame(self):
         self.enable_evidence('nightmare')
-        with patch('map_interface_observation.detect_selected_floor', return_value=dict(selectedFloor=None)), \
+        with patch('floor_control_region.locate_vertical_floor_controls', return_value=dict(selectedFloor=None)), \
                 patch('recognition_diagnostics.control_band', return_value=(2, 2, 4, 4)):
             result = self.dispatch('capture_now')
         self.assertEqual(result['reason'], 'current-floor-unavailable')
@@ -88,7 +88,7 @@ class FailureCaptureTerminalTests(unittest.TestCase):
             return dict(saved=False, missingReason='capture-not-current')
         self.runtime._failure_samples.record_automatic = blocked
         result = []
-        with patch('map_interface_observation.detect_selected_floor', return_value=dict(selectedFloor=None)), \
+        with patch('floor_control_region.locate_vertical_floor_controls', return_value=dict(selectedFloor=None)), \
                 patch('recognition_diagnostics.control_band', return_value=(2, 2, 4, 4)):
             worker = threading.Thread(target=lambda:result.append(self.dispatch('capture_now')))
             worker.start()
@@ -141,7 +141,8 @@ class FailureCaptureTerminalTests(unittest.TestCase):
                     ticket['remaining'], ticket['nextAt'] = 1, 99.
                     invoke = lambda:self.runtime._recover_map_open(dict(recoveryId=ticket['id']), None)
                 selected = 1 if family == 'unsupported-floor' else None
-                with patch('map_interface_observation.detect_selected_floor', return_value=dict(selectedFloor=selected)), \
+                with patch('floor_control_region.locate_vertical_floor_controls', return_value=(
+                        fixtures.synthetic_read(selected=selected) if selected is not None else dict(selectedFloor=None))), \
                         patch('map_interface_observation.detect_map_interface', return_value=dict(detected=family!='recovery-exhausted')), \
                         patch('recognition_diagnostics.control_band', return_value=(2,2,4,4)):
                     worker = threading.Thread(target=invoke)
