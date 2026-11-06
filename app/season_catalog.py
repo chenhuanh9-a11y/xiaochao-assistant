@@ -5,8 +5,8 @@ Names must come from confirmed product information; blanks display the number.
 Resource status is descriptive only. It never grants a provider access to assets.
 """
 SEASON_DEFINITIONS = (
-    {"id": "s0", "number": 0, "name": "", "resources": {
+    {"id": "s0", "number": 0, "name": "厄运之女", "resources": {
         "nightmare": "legacy-s0", "difficult": "legacy-s0"}},
-    {"id": "s1", "number": 1, "name": "", "resources": {
+    {"id": "s1", "number": 1, "name": "磷光症", "resources": {
         "nightmare": "native-s1", "difficult": "native-s1", "difficulty2": "native-s1"}},
 )

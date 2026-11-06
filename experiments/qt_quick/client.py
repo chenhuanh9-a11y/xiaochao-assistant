@@ -519,6 +519,7 @@ class QtClient:
 
 
 def main():
+    from qt_startup_splash import close_startup_splash
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sandbox", type=Path, default=DEFAULT_SANDBOX)
     parser.add_argument("--probe-output", type=Path)
@@ -614,6 +615,7 @@ def main():
             sandbox=args.sandbox, probe_output=args.probe_output), app)
         primary = guard.start()
     except (SingleInstanceError, OSError) as error:
+        close_startup_splash()
         message = str(error) if isinstance(error, SingleInstanceError) else f"无法确认当前用户会话的启动锁，未启动第二个实例：{error}"
         print(message, file=sys.stderr)
         if os.name == "nt":
@@ -623,14 +625,18 @@ def main():
             guard.close()
         return 2
     if not primary:
+        close_startup_splash()
         guard.close()
         return 0
     from client_resource_startup import production_resources
     from client_resource_startup_recovery import offer_startup_recovery
+    def recover_startup(error):
+        close_startup_splash()
+        return offer_startup_recovery(resource_root, error)
     try:
         resource_root = owned_sandbox(args.sandbox.resolve()) if PRODUCTION else args.sandbox.resolve()
         with production_resources(resource_root, production=PRODUCTION,
-                on_failure=lambda error: offer_startup_recovery(resource_root, error)) as recovery:
+                on_failure=recover_startup) as recovery:
             if recovery is not None:
                 return recovery.exit_code
             return _run_primary_client(app, args, guard)
@@ -639,6 +645,7 @@ def main():
 
 
 def _run_primary_client(app, args, guard):
+    from qt_startup_splash import close_startup_splash
     from client_single_instance import restore_main_window
     app.setWindowIcon(QIcon(str(HERE / "icons" / "xingtu-round.png")))
     from client_theme import apply_light_theme
@@ -667,10 +674,12 @@ def _run_primary_client(app, args, guard):
     guard.setActivationHandler(restore_existing_main)
     def open_client(sandbox):
         try:
+            sandbox = owned_sandbox(sandbox)
             local_manifest = (lambda url: dict(schemaVersion=1, platform="windows", version="1.0.5",
                               versionCode=9, releaseNotes="Local probe", publishedAt="2026-10-30", releases=[])) if args.probe_output else None
             client = holder["client"] = QtClient(app, sandbox, probe_output=args.probe_output, info_fetch=local_manifest,
                 on_created=lambda partial: holder.update(client=partial))
+            close_startup_splash()
             if holder.pop("activationPending", False):
                 restore_main_window(client.main)
             holder["quit_journal"] = lambda: client.lifecycle.record_event(dict(stage="about-to-quit"))
@@ -681,15 +690,19 @@ def _run_primary_client(app, args, guard):
                 from probe_client import run_client_probe
                 run_client_probe(client, args.probe_output)
         except Exception as error:
+            close_startup_splash()
             holder["startup_error"] = error
             app.exit(1)
     if args.sandbox.exists():
-        QTimer.singleShot(0, lambda: open_client(owned_sandbox(args.sandbox)))
+        QTimer.singleShot(0, lambda: open_client(args.sandbox))
     else:
         from backend import Work
         boot = holder["boot"] = QQmlApplicationEngine()
         boot.rootContext().setContextProperty("productionProduct", PRODUCTION)
         boot.load(QUrl.fromLocalFile(str(HERE / "ClientBoot.qml")))
+        if not boot.rootObjects():
+            raise RuntimeError("Startup preparation window could not be loaded")
+        close_startup_splash()
         pool = holder["bootPool"] = QThreadPool(app)
         job = holder["bootJob"] = Work(lambda: prepare_first_run(args.sandbox))
         def prepared(path, error):

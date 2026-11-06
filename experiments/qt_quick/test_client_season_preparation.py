@@ -169,7 +169,7 @@ def scenario(name, root):
                 choose_home_season("s1")
                 wait(entered.is_set, "context worker entered")
                 assert home.property("season") == "s0", home.property("season")
-                assert picker.property("displayText") == "S0"
+                assert picker.property("displayText") == "S0 · 厄运之女"
                 assert not home.property("enabled")
                 assert "正在切换" in client.coordinator.runtimeStatus
                 assert "尚未登记" not in client.coordinator.runtimeStatus
@@ -187,7 +187,7 @@ def scenario(name, root):
                 assert len(attempts) == 1, attempts
                 assert home.property("season") == "s0"
                 assert home.property("enabled")
-                assert picker.property("displayText") == "S0"
+                assert picker.property("displayText") == "S0 · 厄运之女"
                 assert not client.session.snapshot.get("contextPending")
                 if name == "context-error":
                     assert "controlled-context-failure" in client.session.message

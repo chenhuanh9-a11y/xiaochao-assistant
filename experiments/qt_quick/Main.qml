@@ -106,8 +106,8 @@ ApplicationWindow {
             }
             RowLayout {
                 spacing: 6
-                AppButton { text: "S0"; selected: backend.season === "s0"; onClicked: backend.setSeason("s0") }
-                AppButton { text: "S1"; selected: backend.season === "s1"; onClicked: backend.setSeason("s1") }
+                AppButton { text: "S0 · 厄运之女"; selected: backend.season === "s0"; onClicked: backend.setSeason("s0") }
+                AppButton { text: "S1 · 磷光症"; selected: backend.season === "s1"; onClicked: backend.setSeason("s1") }
                 AppButton { objectName: "nightmareButton"; text: "噩梦"; selected: backend.mode === "nightmare"; onClicked: backend.setMode("nightmare") }
                 AppButton { objectName: "difficultButton"; text: "困难"; selected: backend.mode === "difficult"; onClicked: backend.setMode("difficult") }
                 Item { Layout.fillWidth: true }

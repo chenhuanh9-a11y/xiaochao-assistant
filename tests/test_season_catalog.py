@@ -15,15 +15,16 @@ from season_context import validate_catalog, season_options
 
 
 class SeasonCatalogTests(unittest.TestCase):
-    def test_missing_names_show_only_confirmed_number_and_are_copied(self):
+    def test_confirmed_names_are_display_only_and_are_copied(self):
         rows = season_options()
-        self.assertEqual([r['label'] for r in rows], ['S0', 'S1'])
+        self.assertEqual([r['label'] for r in rows], ['S0 · 厄运之女', 'S1 · 磷光症'])
         self.assertTrue(rows[0]['capabilities']['nightmare']['registered'])
         self.assertTrue(rows[1]['capabilities']['nightmare']['registered'])
         self.assertEqual(rows[1]['capabilities']['nightmare']['status'], 'resource-validation-required')
         rows[0]['name'] = 'mutated'
         rows[0]['capabilities']['nightmare']['registered'] = False
-        self.assertEqual(season_options()[0]['name'], '')
+        self.assertEqual(season_options()[0]['name'], '厄运之女')
+        self.assertEqual([row['id'] for row in rows], ['s0', 's1'])
         self.assertTrue(season_options()[0]['capabilities']['nightmare']['registered'])
 
     def test_invalid_catalog_is_rejected_instead_of_defaulting_to_s0(self):

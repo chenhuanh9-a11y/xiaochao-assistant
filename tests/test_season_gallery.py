@@ -177,7 +177,7 @@ if QT:
     from test_client_control_actions import Settings, Coordinator
     class CommittedSettings(QObject):
         changed = Signal()
-        seasonOptions = Property("QVariantList", lambda self: [{"id":"s0","label":"S0","capabilities":{"nightmare":{"registered":True},"difficult":{"registered":True}}},{"id":"s1","label":"S1","capabilities":{"nightmare":{"registered":False},"difficult":{"registered":False}}}], constant=True)
+        seasonOptions = Property("QVariantList", lambda self: __import__("season_context").season_options(), constant=True)
         def __init__(self):
             super().__init__()
             self.data = dict(interfaceOpacity=1.0, sheetVisibilityEnabled=True, referenceSheetVisible=True,
@@ -291,7 +291,7 @@ class SeasonSelectorLayout(unittest.TestCase):
             self.assertEqual(coordinator.requests[-1], ('s1','nightmare'))
             self.assertFalse(popup_visible())
             # The stub owner has not acknowledged the request, so S0 remains.
-            self.assertEqual(picker.property('displayText'), 'S0')
+            self.assertEqual(picker.property('displayText'), 'S0 · 厄运之女')
             state.data['roundActive'] = True
             state.changed.emit()
             self.app.processEvents()
@@ -313,7 +313,7 @@ class SeasonSelectorLayout(unittest.TestCase):
     def test_shell_route_options_binding_excludes_s1_custom_and_busy_rows(self):
         from PySide6.QtCore import QUrl, QCoreApplication, QEvent
         from PySide6.QtQml import QQmlEngine, QQmlComponent
-        source = (ROOT/'experiments/qt_quick/Client.qml').read_text()
+        source = (ROOT/'experiments/qt_quick/Client.qml').read_text(encoding='utf-8')
         start = source.index('    readonly property var routeOptions:')
         end = source.index('    Connections {', start)
         # Evaluate the production derived binding in Qt with only its two inputs.

@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
-RowLayout {
+GridLayout {
     id: root
     property var seasons: []
     property string season: ""
@@ -13,8 +13,21 @@ RowLayout {
     property string nightmareObjectName: objectName + "Nightmare"
     property string difficultObjectName: objectName + "Difficult"
     signal contextRequested(string season, string mode)
-    spacing: 6
-    implicitWidth: 270
+    // Keep confirmed season names readable in the narrow floating controls.
+    readonly property real seasonMinimumWidth: {
+        var textWidth = seasonFontMetrics.advanceWidth("选择赛季")
+        for (var i = 0; i < seasons.length; i++)
+            textWidth = Math.max(textWidth, seasonFontMetrics.advanceWidth(seasons[i].label))
+        return Math.max(130, Math.ceil(textWidth) + seasonPicker.leftPadding + seasonPicker.rightPadding + 2)
+    }
+    readonly property bool ordinaryAvailable: season === "s1" && (browseDifficulty2 || registeredContext(season, "difficulty2"))
+    readonly property int modeCount: ordinaryAvailable ? 3 : 2
+    readonly property real singleRowWidth: seasonMinimumWidth + modeCount * 64 + modeCount * columnSpacing
+    readonly property bool stacked: width < singleRowWidth
+    columns: stacked ? modeCount : modeCount + 1
+    columnSpacing: 6; rowSpacing: 6
+    implicitWidth: singleRowWidth
+    FontMetrics { id: seasonFontMetrics; font: seasonPicker.font }
 
     function seasonIndex(identity) {
         for (var i = 0; i < seasons.length; i++)
@@ -59,7 +72,8 @@ RowLayout {
     ComboBox {
         id: seasonPicker
         objectName: root.objectName + "Season"
-        Layout.fillWidth: true; Layout.minimumWidth: 82; Layout.preferredWidth: 118
+        Layout.fillWidth: true; Layout.minimumWidth: root.seasonMinimumWidth; Layout.preferredWidth: root.seasonMinimumWidth
+        Layout.columnSpan: root.stacked ? root.columns : 1
         model: root.seasons; textRole: "label"; valueRole: "id"
         currentIndex: root.seasonIndex(root.season)
         displayText: currentIndex < 0 ? "选择赛季" : currentText
@@ -95,8 +109,9 @@ RowLayout {
         onClicked: root.requestContext(root.season, "difficult")
     }
     AppButton {
+        id: ordinaryButton
         objectName: root.objectName + "Difficulty2"
-        visible: root.season === "s1" && (root.browseDifficulty2 || root.registeredContext(root.season, "difficulty2"))
+        visible: root.ordinaryAvailable
         text: "普通"; implicitWidth: 64; implicitHeight: 34
         selected: root.mode === "difficulty2"
         Accessible.name: text + (selected ? " · 已选" : "")
