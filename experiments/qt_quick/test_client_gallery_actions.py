@@ -3,11 +3,16 @@
 The browse rows are fixtures; no native Windows picker or game is exercised.
 """
 from pathlib import Path
+import json
+import shutil
+import sys
 import time
 import unittest
 
 from test_client_gallery_layout import APP, FakeBackend, FakeState, FakeCoordinator
 import test_client_resources as resources_fixture
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests"))
+import test_s1_author_package as s1_fixture
 from client_package_manager import PackageManagerService
 from PySide6.QtCore import QObject, Property, QPointF, Qt, QUrl, QMetaObject, QCoreApplication, QEvent
 from PySide6.QtGui import QImage
@@ -188,7 +193,38 @@ ApplicationWindow {
         for season in ("s1", "s7"):
             self.backend.change("_season", season)
             self.assertFalse(self.item("galleryRemovePackage").isEnabled())
-            self.assertFalse(self.item("galleryImportCard").isEnabled())
+            self.assertEqual(self.item("galleryImportCard").isEnabled(), season == "s1")
+        self.assert_clean_qml()
+
+    def test_s1_card_imports_through_shared_dialog_with_frozen_browse_season(self):
+        author = s1_fixture.S1AuthorPackageTests()
+        author.setUp()
+        self.addCleanup(author.doCleanups)
+        shutil.copytree(author.root, self.fixture.root, dirs_exist_ok=True)
+        self.fixture.write("_internal/version.json", json.dumps(dict(
+            displayVersion="1.0.17", numericVersion="1.0.0.21")).encode())
+        self.backend.change("_season", "s1")
+        self.fixture.completions.clear()
+        self.fixture.changes.clear()
+        self.dialog.setProperty("currentFolder", QUrl.fromLocalFile(str(author.archive.parent)))
+        self.dialog.setProperty("selectedFile", QUrl.fromLocalFile(str(author.archive)))
+        self.show_import()
+        self.assertEqual(self.dialog.property("targetSeason"), "s1")
+        self.assertFalse(self.item("galleryImportCard").isEnabled())
+        # A browse change while the chooser is open must not relabel its ZIP.
+        self.backend.change("_season", "s0")
+        QMetaObject.invokeMethod(self.dialog, "accept")
+        self.until(lambda: bool(self.fixture.completions) or bool(self.fixture.problems))
+        self.until(lambda: not self.fixture.service.busy and not self.manager.busy)
+        self.assertFalse(self.fixture.problems, self.fixture.problems)
+        self.assertEqual(len(self.fixture.completions), 1)
+        receipt = json.loads((self.fixture.root / "work/map-packages/s1-jiaye-handnotes.json").read_text())
+        self.assertEqual(receipt["season"], "s1")
+        self.assertEqual(len(receipt["files"]), 88)
+        self.assertTrue(self.fixture.changes)
+        self.assertIn(("refresh", None), self.backend.calls)
+        self.assertEqual(self.coordinator.calls, [])
+        self.assertFalse(self.fixture.lease.active)
         self.assert_clean_qml()
 
     def test_plus_card_empty_narrow_keyboard_open_cancel_and_accept_import(self):
