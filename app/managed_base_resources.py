@@ -212,6 +212,36 @@ def _issue(row, actual, reason, **extra):
                 actual=actual, reason=reason, **extra)
 
 
+def _retained_legacy_constraints(root, package):
+    """Read old metadata as preservation constraints, never import authority.
+
+    Dependency-free receipts can reserve files but cannot authorize replacing
+    any existing base byte. Strict import/removal receipt parsing is unchanged.
+    Unknown authors are retained without registering a profile or executable.
+    """
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,95}", package):
+        raise files.ImportRejected("invalid-installed-package-receipt")
+    path = files._target(root, "work/map-packages/" + package + ".json")
+    if not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
+        raise files.ImportRejected("invalid-installed-package-receipt")
+    receipt = files._json(path.read_bytes())
+    if (receipt.get("packageId") != package or type(receipt.get("revision")) is not int
+            or receipt["revision"] < 1 or not isinstance(receipt.get("archiveSha256"), str)
+            or not re.fullmatch(r"[a-f0-9]{64}", receipt["archiveSha256"])):
+        raise files.ImportRejected("invalid-installed-package-receipt")
+    rows = files._rows(receipt.get("files"))
+    known = package in files.PACKAGE_IDS
+    if any(not (files._allowed(package, row["path"]) if known else _base_path(row["path"]))
+           for row in rows.values()):
+        raise files.ImportRejected("invalid-installed-package-receipt")
+    if known and "requiresFiles" in receipt:
+        # Present but invalid dependencies are not the old missing-field format.
+        raise files.ImportRejected("invalid-installed-package-dependencies")
+    dependencies = (files._rows(receipt["requiresFiles"], dependencies=True)
+                    if "requiresFiles" in receipt else {})
+    return rows, dependencies
+
+
 def _package_constraints(root):
     owned, dependencies, unrecorded = {}, [], []
     directory = files._target(root, "work/map-packages")
@@ -230,10 +260,19 @@ def _package_constraints(root):
                 or re.fullmatch(r"helper-result-[a-z0-9_]{8}\.json", path.name)):
             continue
         package = path.stem
-        if package not in files.PACKAGE_IDS:
-            raise ManagedBaseResourceError("unrecognized-installed-package-receipt", [dict(path="work/map-packages/" + path.name, reason="unknown-package")])
         try:
-            inventory, package_dependencies, _ = files._installed_inventory(root, package)
+            if package in files.PACKAGE_IDS:
+                try:
+                    inventory, package_dependencies, _ = files._installed_inventory(root, package)
+                except files.ImportRejected as error:
+                    if error.code == "invalid-reviewed-author-receipt-policy":
+                        raise
+                    inventory, package_dependencies = _retained_legacy_constraints(root, package)
+            else:
+                inventory, package_dependencies = _retained_legacy_constraints(root, package)
+                # Even a structurally valid unknown declaration cannot prove
+                # the entire dependency closure. Keep every existing byte.
+                unrecorded.append(package)
         except files.ImportRejected as error:
             # The startup reporter deliberately omits arbitrary exception text.
             # Identify the registered receipt without adopting or rewriting it.
@@ -245,9 +284,11 @@ def _package_constraints(root):
         for key, row in inventory.items():
             owned.setdefault(key, []).append((package, row))
         # The shared receipt parser validates the package's exact season scope.
-        # Only an approved legacy adoption can return no dependency contract.
+        # Missing legacy metadata constrains repair to adding missing files;
+        # it grants no replacement, deletion, import or display capability.
         if not package_dependencies:
-            unrecorded.append(package)
+            if package not in unrecorded:
+                unrecorded.append(package)
         else:
             dependencies.extend((package, row) for row in package_dependencies.values())
     return owned, dependencies, unrecorded
@@ -343,7 +384,8 @@ def plan_managed_base_resources(install_root):
         if not _same(actual, row):
             issues.append(_issue(row, actual, "installed-package-dependency-conflict", packageId=package))
     return dict(status="blocked" if issues else "repair-needed" if changes else "healthy",
-                manifest=manifest, files=manifest["files"], changes=changes, issues=issues)
+                manifest=manifest, files=manifest["files"], changes=changes, issues=issues,
+                retainedLegacyPackages=unrecorded)
 
 
 def _write_journal(directory, journal):
@@ -740,7 +782,8 @@ def repair_managed_base_resources(install_root):
         state = files._target(root, STATE)
         encoded = _encoded(plan["manifest"])
         if not plan["changes"] and state.exists() and state.read_bytes() == encoded:
-            return dict(status="healthy", bundleId=plan["manifest"]["bundleId"], checked=len(plan["files"]), changed=0)
+            return dict(status="healthy", bundleId=plan["manifest"]["bundleId"], checked=len(plan["files"]), changed=0,
+                        retainedLegacyPackages=plan["retainedLegacyPackages"])
         state_row = dict(path=STATE, bytes=len(encoded), sha256=hashlib.sha256(encoded).hexdigest())
         old_state = dict(path=STATE, bytes=state.stat().st_size, sha256=files._sha(state)) if state.exists() else None
         changes = [*plan["changes"], dict(new=state_row, old=old_state)]
@@ -816,4 +859,5 @@ def repair_managed_base_resources(install_root):
             raise
         _finish_cleanup(root, directory, journal)
         return dict(status="repaired" if plan["changes"] else "healthy", bundleId=plan["manifest"]["bundleId"],
-                    checked=len(plan["files"]), changed=len(plan["changes"]), transactionId=transaction_id)
+                    checked=len(plan["files"]), changed=len(plan["changes"]), transactionId=transaction_id,
+                    retainedLegacyPackages=plan["retainedLegacyPackages"])

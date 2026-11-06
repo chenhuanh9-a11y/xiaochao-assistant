@@ -158,11 +158,11 @@ class ManagedBaseResourcesTests(unittest.TestCase):
         self.write(path, data)
         return path, data
 
-    def test_unreviewed_missing_dependency_receipt_blocks_before_any_resource_write(self):
+    def test_invalid_present_dependency_receipt_blocks_before_any_resource_write(self):
         self.project()
         path, _ = self.receipt(dependencies=[])
         receipt = json.loads(path.read_bytes())
-        receipt.pop("requiresFiles")
+        receipt["requiresFiles"] = receipt["requiresFiles"][:1]
         self.write(path, json.dumps(receipt).encode())
         protected = {item: item.read_bytes() for item in self.target.rglob("*") if item.is_file()}
         with self.assertRaises(managed.ManagedBaseResourceError) as caught:
@@ -748,10 +748,10 @@ class ManagedBaseResourcesTests(unittest.TestCase):
         for name, data in before.items():
             self.assertEqual((self.target / "work/map-packages" / name).read_bytes(), data)
 
-    def test_unknown_json_still_blocks_as_unrecognized_receipt(self):
+    def test_malformed_unknown_json_still_blocks_as_invalid_receipt(self):
         self.project()
         self.write(self.target / "work/map-packages/unknown-author.json", b"{}")
-        with self.assertRaisesRegex(managed.ManagedBaseResourceError, "unrecognized-installed-package-receipt"):
+        with self.assertRaisesRegex(managed.ManagedBaseResourceError, "installed-package-receipt-rejected"):
             managed.repair_managed_base_resources(self.target)
 
     def test_real_import_completion_acknowledgement_survives_next_base_repair(self):

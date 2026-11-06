@@ -131,3 +131,5 @@ Preserve the local B1-B4 qualification, compact UI, experimental labels, isolate
 All nine transmitted file diffs plus the separately pinned helper were checked against exact cloud parent/source targets before local safety integration. Twelve narrow async ownership/queue/disk/purpose checks passed in 0.917 seconds. Initial default C:Temp disk check hit restricted-token WinError5; the owned task E:Temp check passed without changing storage safeguards. No accuracy matrix or game operation is an acceptance gate. Setup build and packaged startup evidence are separate. The user current 1.0.13 installation is preserved.
 
 已核验旧作者导入收据的缺失依赖字段，只能按源码登记的原始发布 ZIP、包 ID、归档 SHA256 与完整拥有清单摘要精确匹配后，只读恢复原包全部 requiresFiles。不改写收据，不从安装目录推定依赖；未知或不匹配收据仍失败关闭。
+
+启动阶段另按保留原则处理旧回执：缺少依赖字段但基本格式及路径合法时，仅把其文件声明作为禁止覆盖的约束，不恢复或猜测依赖，也不授予导入、删除或作者显示能力。格式合法的未知作者记录同样保留，不动态注册作者。此时基础资源修复可添加经过当前候选清单校验的缺失文件，不能替换任何已有基础字节；与旧声明冲突、坏记录、路径越界、无效的已有依赖字段及未完成事务继续明确阻断。严格图包操作与作者显示 provider 的独立校验不变；旧版基础资源确需替换时须另核其历史依赖与迁移范围，不能把“保留启动”当成已批准迁移或兼容所有旧资源。
