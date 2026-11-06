@@ -3570,8 +3570,8 @@
         "sourceCommit": "9d7fa8024f1f5adf27fb664e2fcd1788d4dc883a"
       }
     ],
-    "sourcePayloadSha256": "8e83260061e6e311e20a824bed380cb45ebbcc08c1587294962c9416f8f7e364",
-    "versionSha256": "75494fe0083b1b66f1001a446e136b043f16927a24512772ee58a23ac641b634"
+    "sourcePayloadSha256": "2cfa9633b9739167b2f88f703d30de3fb3ab68c56aab8bad10c553db37f06372",
+    "versionSha256": "96a71b6d4362aa35d5b39fd03bff209ed1d652adf44d1e338d7172359e607b7b"
   },
   "schema": "xingtu-s1-production-release-lock-v1"
 }
