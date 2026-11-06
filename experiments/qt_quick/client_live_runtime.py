@@ -1189,8 +1189,10 @@ class LiveRuntime:
                     and row.get("candidateDisplayOnly") and self._display_current(row))
 
         try:
+            prior_reason = "pose-prior-source-unavailable"
             prior_provider = getattr(engine, "qt_s1_pose_prior", None)
             if prior_source is not None and callable(prior_provider):
+                prior_reason = "pose-prior-unavailable"
                 try:
                     hint = prior_provider(prior_source, str(floor), preference_scope)
                     if hint is not None and not obsolete():
@@ -1198,6 +1200,9 @@ class LiveRuntime:
                             map_id=prior_source.map_id, floor=str(floor), owner_scope=preference_scope)
                         if matrix is not None:
                             pose_priors[(prior_source.map_id, str(floor))] = matrix
+                            prior_reason = "pose-prior-bound"
+                        else:
+                            prior_reason = "pose-prior-scope-rejected"
                 except (ValueError, TypeError, KeyError, OSError):
                     pass  # A missing/unbound hint leaves the original full fit.
             order, ordering = candidate_order(engine, catalog, str(floor), snapshot, prior,
@@ -1230,6 +1235,17 @@ class LiveRuntime:
                             and action not in ("reselect_map", "map_reselection") else None)) if private_enabled else {}
                     if pose_priors:
                         options["pose_priors"] = dict(pose_priors)
+                    self._recognition_diagnostic("s1-scan-plan", prior_reason,
+                        inputs=self._failure_diagnostic(payload),
+                        plannedCount=len(scan_plan) if private_enabled else len(catalog.map_ids),
+                        plannedMapIds=list(scan_plan) if private_enabled else list(catalog.map_ids),
+                        posePriorAvailable=bool(pose_priors),
+                        sourceFloor=str(prior_source.floor) if prior_source is not None else None,
+                        targetFloor=str(floor),
+                        privatePoolId=pool.pool_id if private_enabled else None,
+                        privatePoolRevision=pool.revision if private_enabled else None,
+                        privateExperimentalLocked=bool(private_enabled and pool.locked_id),
+                        privateRecoveryPending=recovery_scan)
                 return engine.qt_s1_structure_scan(frame, floor=str(floor), floor_source="current-frame-verified",
                     cancelled=obsolete, budget_seconds=self._recorded_s1_scan_budget,
                     on_progress=publish, candidate_order=order, preferred_map_id=preferred,
@@ -1296,6 +1312,11 @@ class LiveRuntime:
                 privateScanMs=report["elapsedSeconds"] * 1000, privateMaterialMs=private_material_ms,
                 elapsedSeconds=report["elapsedSeconds"], totalSeconds=time.monotonic()-started,
                 firstVerifiedPoseElapsedSeconds=report.get("firstVerifiedPoseElapsedSeconds"))
+            self._recognition_diagnostic("s1-scan-result", report["status"],
+                inputs=self._failure_diagnostic(payload), checkedCount=len(report["checkedMapIds"]),
+                supportedCount=len(report["supportedMapIds"]),
+                elapsedMs=report["elapsedSeconds"] * 1000,
+                posePriorOutcomes=report.get("posePriorOutcomes", []))
             return result
         except (MemoryError, KeyboardInterrupt, SystemExit):
             withdraw("stream-scan-exception")
@@ -1448,6 +1469,26 @@ class LiveRuntime:
                             self._revoke_render("s1-candidate-excluded")
                         self._notify("s1-candidate-pool-changed", reason=reason,
                             **pool.snapshot(), privateResourceDigest=catalog.resource_key)
+                    # Formal evidence needs bounded reasons too; the optional
+                    # private timing sink is deliberately disabled in production.
+                    try:
+                        self._recognition_diagnostic("s1-round-evidence", reason,
+                            inputs={key: context[key] for key in
+                                ("attemptId", "openingId", "roundId", "epoch", "cycleId", "floor")},
+                            remainingCount=len(pool.remaining),
+                            contradictedCount=len(evidence.get("contradictedMapIds", [])),
+                            unknownCount=len(evidence.get("unknownMapIds", before)),
+                            privatePoolAfter=list(pool.remaining),
+                            privateCoordinateReason=evidence.get("reason", "private-coordinate-unknown"),
+                            privateCoordinateVerified=evidence.get("coordinateVerified") is True,
+                            privatePoseDomainNarrow=evidence.get("poseAvailable") is True,
+                            candidateChecks=[{key: check[key] for key in
+                                ("mapId", "unavoidableMissCount", "sampleCount", "unavoidableSpanPx", "explicitContradiction")
+                                if key in check} for check in evidence.get("candidateChecks", [])[:32]],
+                            privatePoolId=pool.pool_id, privatePoolRevision=pool.revision,
+                            privateExperimentalLocked=bool(pool.locked_id))
+                    except Exception:
+                        pass  # Diagnostics cannot change the ledger result.
                     state = "finished"
             except BaseException as error:
                 state = "failed"
@@ -3432,10 +3473,15 @@ class LiveRuntime:
             if row is not None and row.get("s1CandidateReference"):
                 if not self._s1_reference_current(row):
                     return None
-                # Preserve the committed candidate label across close. Current
-                # identity fields may have been reset and cannot relabel it.
-                return {key: value if key == "pixels" else copy.deepcopy(value)
-                        for key, value in row.items()}
+                # Static pixels retain their owner; formal identity metadata is
+                # current and must reflect a later scoped lock without repaint.
+                identity = self._identity_fields()
+                locked = bool(identity["s1FormalRoundLock"] and identity["identityLocked"]
+                    and identity["durableMapId"] == row["mapId"])
+                return dict({key: value if key == "pixels" else copy.deepcopy(value)
+                        for key, value in row.items()}, identityLocked=locked,
+                    durableMapId=row["mapId"] if locked else "", provisional=not locked,
+                    identityPhase="MEMBER_VERIFIED" if locked else "CANDIDATE_DISPLAY")
             if (row is None or not self._active or self._selection_pending or self._floor_required
                     or self._current_frame_floor_conflicts(self._floor)
                     or self._gate is None or self._gate.confirmed_id != self._map_id

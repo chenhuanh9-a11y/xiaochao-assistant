@@ -442,12 +442,16 @@ class EngineFactories(dict):
                     f, mid, fl, cancel, report=private_coordinate_report, **kw)) if fixed else host.fit
                 scanner = StructureCandidateScanner(catalog, fit,
                     prepare_fit=None if fixed else host.prepare_structure_scan)
-                return scanner.scan(frame, floor=floor, floor_source=floor_source,
+                report = scanner.scan(frame, floor=floor, floor_source=floor_source,
                                     cancelled=cancelled, budget_seconds=budget_seconds,
                                     on_progress=on_progress, candidate_order=candidate_order,
                                     preferred_map_id=preferred_map_id,
                                     preferred_material_committed=preferred_material_committed,
                                     planned_map_ids=planned_map_ids, first_material_committed=first_material_committed)
+                report["posePriorOutcomes"] = [{key: event[key] for key in
+                    ("mapId", "floor", "accepted", "fallback", "elapsedMs") if key in event}
+                    for event in host.events if event.get("event") == "experimental-pose-prior"][:6]
+                return report
             def structure_rank(frame, *, floor, budget_seconds=None):
                 report = structure_scan(frame, floor=floor, budget_seconds=budget_seconds)
                 engine.last_s1_structure_scan = report

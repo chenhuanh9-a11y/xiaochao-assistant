@@ -58,6 +58,20 @@ class FormalRoundLockContracts(LockedIdentityContracts):
         self.runtime.dispatch('end_round')
         self.assertFalse(self.runtime.private_experiment_event_is_current(events[-1]))
 
+    def test_formal_round_diagnostic_retains_unresolved_reason_without_private_trace(self):
+        from diagnostic_privacy import safe_record
+        self.show(); self.idle()
+        rows = [row['recognitionDiagnostics'] for row in self.events
+            if row['event'] == 'recognition-diagnostic' and
+                row['recognitionDiagnostics'].get('stage') == 's1-round-evidence']
+        self.assertTrue(rows)
+        row = safe_record(rows[-1])
+        self.assertEqual(row['remainingCount'], 1)
+        self.assertEqual(row['contradictedCount'], 1)
+        self.assertEqual(row['privateCoordinateReason'], 'same-coordinate-positive-contradictions-only')
+        self.assertFalse(row['privateExperimentalLocked'])
+        self.assertFalse(self.runtime._native_s1_private_experiment)
+
     def test_three_candidates_accumulate_only_positive_cross_floor_evidence(self):
         from s1_private_experiment import PrivateRoundPool
         from test_s1_locked_identity import evidence

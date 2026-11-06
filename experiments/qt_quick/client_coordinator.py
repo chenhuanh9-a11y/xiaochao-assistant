@@ -1440,9 +1440,10 @@ class ClientCoordinator(QObject):
             url = self.images.publish(key, payload["pixels"])
             self._reference = dict(imageUrl=url, context=context, key=key,
                 mapId=payload.get("mapId"), floor=payload.get("floor"), profileId=payload.get("profileId"))
-        for key in ("identityPhase", "provisional", "groupId", "durableMapId", "roundId", "cycleId", "frameId", "generation", "s1CandidateReference"):
+        for key in ("season", "mode", "identityPhase", "identityLocked", "provisional", "groupId", "durableMapId", "roundId", "cycleId", "frameId", "generation", "s1CandidateReference"):
             self._reference[key] = payload.get(key)
-        label = ("定点地图（暂用）" if payload.get("s1CandidateReference") else
+        label = ("定点地图（已锁定）" if payload.get("s1CandidateReference") and payload.get("identityLocked") else
+                 "定点地图（暂用）" if payload.get("s1CandidateReference") else
                  "暂用地图" if payload.get("provisional") else "定点地图")
         self._reference["title"] = f"{label} · {payload.get('mapId')} · {payload.get('floor')}层"
         self._trace("reference-publish", payload=self._reference)
@@ -2324,6 +2325,9 @@ class ClientCoordinator(QObject):
             self.notificationRequested.emit("结构矛盾，恢复识别",
                 "新结构与锁定地图矛盾，已解除锁定并恢复候选识别，下次开图继续核对。", "info")
         # Informational only. Never refresh Session or mutate/cancel its worker.
+        getter = getattr(self.runtime, "reference_payload", None)
+        if callable(getter):
+            self._sync_reference_payload(getter())
         self.changed.emit()
 
     @Slot(object)

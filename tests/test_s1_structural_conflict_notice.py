@@ -170,6 +170,18 @@ class StructuralConflictNotice(unittest.TestCase):
         self.assertEqual(self.conflict_notices()[0][2], 'info')
         self.assertIsNone(self.runtime.render_payload(self.locked_payload['token']))
         self.assertFalse(self.coordinator._aligned)
+        diagnostic = next(e['recognitionDiagnostics'] for e in reversed(self.events)
+            if e['event'] == 'recognition-diagnostic' and
+            e['recognitionDiagnostics']['stage'] == 's1-round-evidence')
+        self.assertEqual(diagnostic['privatePoolId'], pool.pool_id)
+        self.assertEqual(diagnostic['privatePoolRevision'], pool.revision)
+        self.assertTrue(diagnostic['candidateChecks'][0]['explicitContradiction'])
+        self.assertGreater(diagnostic['candidateChecks'][0]['unavoidableMissCount'], 0)
+        from diagnostic_privacy import safe_record
+        persisted = safe_record(diagnostic)
+        self.assertEqual(persisted['candidateChecks'], diagnostic['candidateChecks'])
+        self.assertEqual(persisted['privatePoolId'], pool.pool_id)
+        self.assertEqual(persisted['privatePoolRevision'], pool.revision)
 
     def test_unknown_generic_unlock_never_notifies_conflict_or_unlock(self):
         self.lock()

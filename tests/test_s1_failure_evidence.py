@@ -104,7 +104,8 @@ class S1FailureEvidenceTests(unittest.TestCase):
         self.registry.engine.qt_s1_structure_scan = lambda frame, **kw: dict(status='cancelled')
         self.assertTrue(self.runtime.dispatch('capture_now')['stale'])
         terminal.assert_not_called()
-        self.assertFalse(any(row['event'] == 'recognition-diagnostic' for row in self.events))
+        self.assertFalse(any(row['event'] == 'recognition-diagnostic' and
+            row['recognitionDiagnostics']['stage'] == 's1-scan-no-material' for row in self.events))
 
     def test_success_does_not_sample_as_no_material(self):
         self.events = []

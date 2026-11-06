@@ -1515,3 +1515,11 @@ FIELDS = FIELDS | frozenset({"structureScanFailure", "scanComplete", "checkedCou
     "omittedOutcomeCount", "omittedReasonCount"})
 CODES = CODES | frozenset({"s1-scan-no-material", "s1-no-current-material",
     "s1-pose-not-verified", "budget-unresolved", "candidate-pose-unavailable"})
+
+FIELDS = FIELDS | frozenset({"remainingCount", "contradictedCount", "unknownCount"})
+CODES = CODES | frozenset({"s1-round-evidence"})
+FIELDS = FIELDS | frozenset({"plannedCount", "plannedMapIds", "posePriorAvailable",
+    "sourceFloor", "targetFloor", "posePriorOutcomes", "candidateChecks",
+    "unavoidableMissCount", "unavoidableSpanPx", "explicitContradiction"})
+CODES = CODES | frozenset({"s1-scan-plan", "s1-scan-result", "pose-prior-source-unavailable",
+    "pose-prior-unavailable", "pose-prior-scope-rejected", "pose-prior-bound"})

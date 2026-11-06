@@ -40,12 +40,20 @@ class RuntimePriorContracts(unittest.TestCase):
         self.assertFalse(self.runtime.acknowledge_render_material(first['token'])['success'])
         self.assertIsNone(self.runtime._s1_candidate_pose_hint)
     def test_same_round_cross_floor_consumes_only_acked_map_hint(self):
+        events=[];self.runtime.set_event_callback(events.append)
         first=self.accepted();source=self.runtime._s1_candidate_pose_hint
         self.assertIs(type(source),AcknowledgedPose);self.assertEqual(source.floor,'-1')
         second=self.reopen('-2');self.assertNotEqual(second['frameId'],first['frameId'])
         self.assertEqual(second['floor'],'-2');self.assertFalse(self.runtime.snapshot()['identityLocked'])
         self.assertEqual(self.prior_calls[-1][0],source)
         self.assertEqual(set(self.scans[-1]['pose_priors']),{(first['mapId'],'-2')})
+        plan=next(e['recognitionDiagnostics'] for e in reversed(events)
+            if e['event']=='recognition-diagnostic' and e['recognitionDiagnostics'].get('stage')=='s1-scan-plan')
+        self.assertEqual(plan['reason'],'pose-prior-bound')
+        self.assertTrue(plan['posePriorAvailable'])
+        self.assertEqual((plan['sourceFloor'],plan['targetFloor']),('-1','-2'))
+        from diagnostic_privacy import safe_record
+        self.assertEqual(safe_record(plan), plan)
         self.assertIsNone(self.runtime.render_payload(first['token']))
         self.assertTrue(self.runtime.acknowledge_render_material(second['token'])['success'])
         self.assertEqual(self.runtime._s1_candidate_pose_hint.floor,'-2')
