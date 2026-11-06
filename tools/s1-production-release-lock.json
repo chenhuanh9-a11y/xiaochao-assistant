@@ -3,7 +3,7 @@
   "enabled": true,
   "release": {
     "resourceVersion": "s0-1.0.7+S1-native-2.104.3099014-20261106",
-    "sourcePayloadSha256": "0307f52b9ae626d48dd9c3457f83bb1930685b27921ade94f028a959c4a648d7",
+    "sourcePayloadSha256": "3d2fdd94a6e6b57179e6586f860e571774a6b65a82e0ed70897ee6f5be1226fc",
     "versionSha256": "b668cef06b8dac7b78447838875a4a53570484b2ecd78f02ee3f8daf5a9aab34",
     "files": {
       "seasons/s1/difficult/assets/game-native/106001/-1.png": {
