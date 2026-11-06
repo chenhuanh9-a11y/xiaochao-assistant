@@ -334,7 +334,7 @@ def load_season_browse_context(root, mode, *, season, cancelled=lambda: False):
         if cancelled():
             raise CancelledError()
         from s1_author_displays import append_browse_profile
-        context=append_browse_profile(context)
+        context=append_browse_profile(context, cancelled=cancelled)
         if cancelled():
             raise CancelledError()
     return context

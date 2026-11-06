@@ -169,6 +169,7 @@ class ResourceService(QObject):
     packageRows = Property("QVariantList", lambda s: s._rows, notify=changed)
     busy = Property(bool, lambda s: s._busy, notify=changed)
     message = Property(str, lambda s: "\n".join(filter(None, (s._import_notice, s._recovery_notice, s._message))), notify=changed)
+    operationStage = Property(str, lambda s: ("cancelling" if s._cancel.is_set() else s._kind) if s._busy else "", notify=changed)
     pendingKind = Property(str, lambda s: s._kind if s._pending else "", notify=changed)
     canCancel = Property(bool, lambda s: s._can_cancel, notify=changed)
     recoveryRequired = Property(bool, lambda s: s._recovery, notify=changed)

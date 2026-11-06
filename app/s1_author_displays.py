@@ -52,11 +52,14 @@ class InstalledAuthorPackage:
         return api._target(self.root,relative[len('_internal/'):])
 
     def _read(self, relative):
+        from generic_author_base import check_browse_cancelled
+        check_browse_cancelled()
         row=self._inventory.get(relative.casefold())
         if row is None:
             raise ValueError('s1-author-resource-undeclared')
         with self._path(relative).open('rb') as stream:
             data=stream.read(row['bytes']+1)
+        check_browse_cancelled()
         if len(data)!=row['bytes'] or hashlib.sha256(data).hexdigest()!=row['sha256']:
             raise ValueError('s1-author-resource-changed')
         return data
@@ -191,9 +194,12 @@ class S1AuthorDisplays:
         return pixels
 
 
-def append_browse_profile(context):
-    for profile_id in (*(PROFILE_IDS if context.season == "s1" else ()), *profile_ids(context.root)):
-        context = _append_browse_profile(context, profile_id)
+def append_browse_profile(context, *, cancelled=lambda: False):
+    from generic_author_base import browse_validation_request, check_browse_cancelled
+    with browse_validation_request(cancelled):
+        for profile_id in (*(PROFILE_IDS if context.season == "s1" else ()), *profile_ids(context.root)):
+            check_browse_cancelled()
+            context = _append_browse_profile(context, profile_id)
     return context
 
 
@@ -217,6 +223,8 @@ def _append_browse_profile(context, profile_id):
     maps={}
     stamps=dict(context.path_stamps)
     for row in package.document['layers']:
+        from generic_author_base import check_browse_cancelled
+        check_browse_cancelled()
         if row['mode']!=context.mode:
             continue
         path=package._path(row['displayPath'])

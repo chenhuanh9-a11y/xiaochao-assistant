@@ -77,6 +77,28 @@ class ResourceServiceTests(unittest.TestCase):
         APP.processEvents()
         self.temp.cleanup()
 
+    def test_progress_stage_uses_real_job_and_cancel_lifecycle(self):
+        gate = threading.Event()
+        self.addCleanup(gate.set)
+        def work(cancel):
+            gate.wait(3)
+            importer._check_cancelled(cancel.is_set)
+            return []
+        self.service._start("inspect", work, "checking")
+        self.assertEqual(self.service.operationStage, "inspect")
+        self.service.cancel()
+        self.assertEqual(self.service.operationStage, "cancelling")
+        gate.set()
+        self.settle()
+        self.assertEqual(self.service.operationStage, "")
+        stages = []
+        self.service.changed.connect(lambda: stages.append(self.service.operationStage))
+        self.install()
+        self.assertIn("inspect", stages)
+        self.assertIn("install", stages)
+        self.assertIn("refresh-after-write", stages)
+        self.assertEqual(self.service.operationStage, "")
+
     def write(self, path, data):
         target = self.root / path
         target.parent.mkdir(parents=True, exist_ok=True)

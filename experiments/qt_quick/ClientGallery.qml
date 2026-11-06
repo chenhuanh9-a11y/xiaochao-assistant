@@ -109,6 +109,10 @@ Item {
             Item { Layout.fillWidth: true }
             AppButton { objectName: "galleryManagePackages"; text: "图库管理"; onClicked: clientCoordinator.navigate("resources") }
         }
+        ClientPackageProgress {
+            Layout.fillWidth: true
+            localService: resourceService
+        }
         RowLayout {
             Layout.fillWidth: true; Layout.fillHeight: true; spacing: 12
             Item {

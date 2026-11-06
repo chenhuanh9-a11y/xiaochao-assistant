@@ -15,12 +15,10 @@ Item {
             AppButton { text: "取消下载"; enabled: panel.state.canCancel; onClicked: onlinePackageService.cancel() }
         }
         Label { text: panel.state.message; wrapMode: Text.WordWrap; Layout.fillWidth: true; color: "#567096" }
-        ProgressBar {
-            visible: panel.state.busy; Layout.fillWidth: true
-            indeterminate: !panel.state.progress.totalBytes
-            from: 0; to: panel.state.progress.totalBytes || 1; value: panel.state.progress.receivedBytes
+        ClientPackageProgress {
+            Layout.fillWidth: true
+            onlineState: panel.state
         }
-        Label { visible: panel.state.busy && panel.state.progress.totalBytes > 0; text: Math.round(panel.state.progress.receivedBytes / 1024) + " / " + Math.round(panel.state.progress.totalBytes / 1024) + " KiB"; color: "#567096"; font.pixelSize: 12 }
         ListView {
             objectName: "onlinePackageList"; Layout.fillWidth: true; Layout.fillHeight: true
             clip: true; spacing: 8; model: panel.state.packages

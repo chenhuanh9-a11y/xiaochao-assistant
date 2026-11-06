@@ -123,7 +123,9 @@ class FakeState(QObject):
     _profile = "shared-structure"
     currentProfile = Property(str, lambda self: self._profile, notify=changed)
     _busy = False
-    busy = Property(bool, lambda self: self._busy, notify=changed)
+    busy = Property(bool, lambda self: self._busy or getattr(self, "_resource_busy", False), notify=changed)
+    operationStage = Property(str, lambda self: getattr(self, "_resource_stage", ""), notify=changed)
+    message = Property(str, lambda self: "正在核对图包", notify=changed)
 
 
 class FakeCoordinator(QObject):
@@ -253,6 +255,31 @@ class GalleryLayoutTests(unittest.TestCase):
         self.assertEqual(self.coordinator.calls, [("use", "author-b")])
         self.backend.setMode("difficult")
         self.assertFalse(self.item("galleryUseAuthor").isEnabled())
+
+    def test_import_progress_stays_visible_across_browse_context_and_narrow_layout(self):
+        self.state._resource_busy, self.state._resource_stage = True, "install"
+        self.state.changed.emit()
+        self.resize(514, 440)
+        card = self.item("packageProgressCard")
+        self.assertTrue(card.isVisible())
+        self.assertEqual(card.property("phase"), "解压并导入")
+        self.assertGreater(card.height(), 60)
+        self.assertGreater(self.item("packageProgressBar").width(), 100)
+        self.backend.setContext("s1", "difficult")
+        QTest.qWait(20)
+        self.assertTrue(card.isVisible())
+        self.assertEqual(self.item("packageProgressCard"), card)
+        self.page.setVisible(False)
+        self.state._resource_stage = "refresh-after-write"
+        self.state.changed.emit()
+        self.page.setVisible(True)
+        QTest.qWait(20)
+        self.assertEqual(card.property("phase"), "核对安装结果")
+        self.state._resource_busy = False
+        self.state.changed.emit()
+        QTest.qWait(20)
+        self.assertFalse(card.isVisible())
+        self.assertEqual(self.warnings, [])
 
     def test_keyed_refresh_and_narrow_list_detail_keep_selection_and_actions(self):
         self.assertFalse(self.page.findChild(QObject, "clientGallerySearch"))

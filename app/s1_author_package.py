@@ -162,6 +162,7 @@ def _image(data, shape, profile_id=PROFILE_ID):
 def validate_bindings(raw, rows, dependencies, read):
     """Check same bytes for image decode, registration, and current native inputs."""
     api = _api()
+    from generic_author_base import check_browse_cancelled
     digest = hashlib.sha256(raw).hexdigest()
     doc = api._json(raw)
     profile_id = doc.get('profileId')
@@ -185,6 +186,7 @@ def validate_bindings(raw, rows, dependencies, read):
         _reject('s1-author-layer-coverage-mismatch')
     native = {}
     for mode in MODES:
+        check_browse_cancelled()
         prefix = f'_internal/seasons/s1/{mode}/'
         manifest = api._json(read(prefix+'native-map-manifest.json'))
         index = api._json(read(prefix+'references/shared-structure-index.json'))
@@ -196,6 +198,7 @@ def validate_bindings(raw, rows, dependencies, read):
             {(r['mapId'],r['floor']):r for r in index['entries']}, coordinates['maps'])
     found=set()
     for row in entries:
+        check_browse_cancelled()
         key=(row.get('mode'),row.get('mapId'),row.get('floor'))
         if key not in expected or key in found or row.get('season')!='s1':
             _reject('s1-author-duplicate-or-foreign-layer')
@@ -236,6 +239,7 @@ def validate_bindings(raw, rows, dependencies, read):
                 or not re.fullmatch('[0-9a-f]{64}',reg['evidenceSha256'])):
             _reject('s1-author-registration-evidence-missing')
         _image(read(path),row['displayShapeHW'],profile_id)
+        check_browse_cancelled()
     if found!=expected:
         _reject('s1-author-layer-coverage-mismatch')
     return doc

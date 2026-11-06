@@ -362,7 +362,7 @@ def load_browse_context(resource_root: Path, mode: str, *, season="s0", cancelle
         check()
         from s1_author_displays import append_browse_profile
         return append_browse_profile(BrowseContext(mode, root, pack, catalog, model, tuple(summaries),
-            MappingProxyType(stamps), warnings=tuple(warnings)))
+            MappingProxyType(stamps), warnings=tuple(warnings)), cancelled=cancelled)
     except CancelledError:
         raise
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:

@@ -35,6 +35,7 @@ class Resources(QObject):
     changed = Signal()
     busy = False
     pendingKind = ""
+    operationStage = ""
     recoveryRequired = False
     operationGeneration = 0
     message = "local status"

@@ -110,10 +110,11 @@ def validate_receipt_closure(root, receipt, rows, dependencies):
     Derive layer identities from owned namespace paths, independently of the
     mutable display binding/pixels. Modified images remain removable.
     """
-    from generic_author_base import resolve_layer
+    from generic_author_base import resolve_layer, check_browse_cancelled
     prefix = f'_internal/assets/authors/{receipt["packageId"]}/{receipt["season"]}/'
     required = set()
     for row in rows.values():
+        check_browse_cancelled()
         if row['path'] == bindings_path(receipt['packageId']):
             continue
         mode, map_id, filename = row['path'][len(prefix):].split('/')
@@ -186,7 +187,7 @@ def validate_display_affine(value):
 
 
 def validate_bindings(raw, rows, dependencies, read, *, root, dependency_paths=None):
-    from generic_author_base import resolve_layer
+    from generic_author_base import resolve_layer, check_browse_cancelled
     from s1_author_package import _shape
     from PIL import Image, UnidentifiedImageError
     api = _api()
@@ -205,6 +206,7 @@ def validate_bindings(raw, rows, dependencies, read, *, root, dependency_paths=N
     required = set()
     seen = set()
     for row in layers:
+        check_browse_cancelled()
         if not isinstance(row, dict):
             _reject('invalid-layer')
         key = (row.get('mode'), row.get('mapId'), row.get('floor'))
@@ -243,6 +245,7 @@ def validate_bindings(raw, rows, dependencies, read, *, root, dependency_paths=N
                 _reject('native-inventory-mismatch')
         validate_display_affine(row.get('matrixDisplayToReference'))
         data = read(path)
+        check_browse_cancelled()
         try:
             with Image.open(io.BytesIO(data)) as image:
                 if (image.format != {'png': 'PNG', 'jpeg': 'JPEG'}[extension]
@@ -251,6 +254,7 @@ def validate_bindings(raw, rows, dependencies, read, *, root, dependency_paths=N
                         or getattr(image, 'n_frames', 1) != 1):
                     _reject('image-format-mismatch')
                 image.load()
+                check_browse_cancelled()
         except (OSError, ValueError, UnidentifiedImageError, Image.DecompressionBombError) as error:
             _reject('invalid-image')
     if expected != {row['path'] for row in rows.values()}:
@@ -259,6 +263,7 @@ def validate_bindings(raw, rows, dependencies, read, *, root, dependency_paths=N
         _reject('dependency-closure-mismatch')
     # Re-check all dependency bytes at use time, not only at initial import.
     for path in required:
+        check_browse_cancelled()
         read(path)
     return doc
 

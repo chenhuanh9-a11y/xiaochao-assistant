@@ -42,12 +42,13 @@ def read(root, relative):
     return data
 
 
-def registration(root, mode):
+def registration(root, mode, *, reader=None):
     """Small explicit declarations must validate before a cached engine is used."""
     root = Path(root).resolve()
     if mode not in S1_MODES:
         raise ValueError("S1 mode not declared")
-    raw = read(root, MANIFEST)
+    read_declaration = read if reader is None else reader
+    raw = read_declaration(root, MANIFEST)
     if ((raw.get("schemaVersion"), raw.get("season"), raw.get("mode"), raw.get("sourceVersion"))
             != (1, "s1", mode, SOURCE_VERSION)):
         raise ValueError("S1 native manifest context/source mismatch")
@@ -56,7 +57,7 @@ def registration(root, mode):
         raise ValueError("S1 native interfaces incomplete")
     for name in REQUIRED_INTERFACES:
         local(root, interfaces[name])
-    pack = read(root, interfaces["identityPack"])
+    pack = read_declaration(root, interfaces["identityPack"])
     rows = pack.get("maps") or []
     if ((pack.get("schemaVersion"), pack.get("season"), pack.get("mode")) != (1, "s1", mode)
             or pack.get("floors") != list(S1_FLOORS) or pack.get("defaultEntryFloor") != -1

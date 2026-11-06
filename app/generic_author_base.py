@@ -9,10 +9,82 @@ import hashlib
 import json
 import re
 import zipfile
+import io
+from concurrent.futures import CancelledError
+from contextlib import contextmanager
+from contextvars import ContextVar
+from copy import deepcopy
 from pathlib import Path
 
 VERSION_FIELDS = ('structureVersionKey', 'baseSnapshot', 'sourceVersion')
 _PROVIDERS = {}
+_BROWSE_REQUEST = ContextVar('author_browse_validation', default=None)
+
+
+def check_browse_cancelled():
+    request = _BROWSE_REQUEST.get()
+    if request is not None:
+        request.check()
+
+
+class _BrowseValidation:
+    """One reader request, never a process-wide installation trust cache."""
+    def __init__(self, cancelled):
+        self.cancelled = cancelled
+        self.files = {}
+        self.documents = {}
+        self.layers = {}
+        self.registrations = {}
+
+    def check(self):
+        if self.cancelled():
+            raise CancelledError()
+
+    @staticmethod
+    def identity(info):
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    def read(self, root, relative):
+        self.check()
+        path = _path(root, relative)
+        before = self.identity(path.stat())
+        blocks = []
+        with path.open('rb') as stream:
+            while block := stream.read(1024 * 1024):
+                self.check()
+                blocks.append(block)
+        data = b''.join(blocks)
+        self.check()
+        after = self.identity(path.stat())
+        evidence = (after, hashlib.sha256(data).digest())
+        if before != after or (path in self.files and self.files[path] != evidence):
+            raise ValueError('base changed during browse validation')
+        self.files[path] = evidence
+        return data
+
+    def verify(self):
+        # Re-read bytes, not just timestamps. Same-size/timestamp replacements,
+        # links and changes during validation cannot authorize a cached binding.
+        for path in tuple(self.files):
+            self.read(path.parent, path.name)
+
+
+@contextmanager
+def browse_validation_request(cancelled=lambda: False):
+    request = _BrowseValidation(cancelled)
+    token = _BROWSE_REQUEST.set(request)
+    try:
+        request.check()
+        yield
+        request.verify()
+        request.check()
+    finally:
+        _BROWSE_REQUEST.reset(token)
+
+
+def _read_bytes(root, relative):
+    request = _BROWSE_REQUEST.get()
+    return request.read(root, relative) if request is not None else _path(root, relative).read_bytes()
 
 
 def register_provider(season, mode, resolver):
@@ -40,9 +112,16 @@ def _json(root, relative):
     path = _path(root, relative)
     if path.stat().st_size > 32 * 1024 * 1024:
         raise ValueError('base declaration too large')
-    value = json.loads(path.read_text(encoding='utf-8'))
+    request = _BROWSE_REQUEST.get()
+    if request is not None:
+        request.check()
+        if path in request.documents:
+            return request.documents[path]
+    value = json.loads(_read_bytes(root, relative).decode('utf-8'))
     if not isinstance(value, dict):
         raise ValueError('base declaration must be an object')
+    if request is not None:
+        request.documents[path] = value
     return value
 
 
@@ -66,7 +145,15 @@ def _resolve(root, season, mode, mid, floor):
         from s1_native_resources import registration, MODE_LAYOUTS, S1_FLOORS
         if mid not in MODE_LAYOUTS[mode] or floor not in S1_FLOORS:
             raise ValueError('unknown S1 map or floor')
-        manifest = registration(base, mode)
+        request = _BROWSE_REQUEST.get()
+        registration_key = (base, mode)
+        if request is not None and registration_key in request.registrations:
+            manifest = request.registrations[registration_key]
+        elif request is not None:
+            manifest = registration(base, mode, reader=_json)
+            request.registrations[registration_key] = manifest
+        else:
+            manifest = registration(base, mode)
         dependencies.add('native-map-manifest.json')
         interfaces = manifest['runtimeInterfaces']
         source_relative = interfaces['identityPack']
@@ -142,7 +229,9 @@ def _resolve(root, season, mode, mid, floor):
     # The typed product owns shape. S0 index entries do not necessarily carry
     # geometry dimensions; neither an author nor a guessed floor can supply them.
     import numpy as np
-    with np.load(_path(base, reference), allow_pickle=False) as archive:
+    source = (io.BytesIO(_read_bytes(base, reference)) if _BROWSE_REQUEST.get() is not None
+              else _path(base, reference))
+    with np.load(source, allow_pickle=False) as archive:
         metadata = json.loads(str(archive['metadata'].item()))
     typed_canvas = metadata['canvas']
     shape = typed_canvas['shapeHW']
@@ -168,7 +257,7 @@ def _resolve(root, season, mode, mid, floor):
         inventory = manifest['files']
         for relative in dependencies - {'native-map-manifest.json'}:
             row = _one(inventory, lambda r: r.get('path') == relative)
-            data = _path(base, relative).read_bytes()
+            data = _read_bytes(base, relative)
             if row.get('bytes') != len(data) or row.get('sha256') != hashlib.sha256(data).hexdigest():
                 raise ValueError('base inventory hash mismatch')
     for relative in dependencies:
@@ -184,8 +273,20 @@ def resolve_layer(root, season, mode, map_id, floor):
     provider = _PROVIDERS.get((season, mode))
     if provider is None:
         raise ValueError('unsupported base resource provider')
+    request = _BROWSE_REQUEST.get()
+    # Only the built-in resolver records all source bytes for final verification.
+    # An extension provider keeps its original behavior on every call.
+    cacheable = request is not None and provider is _resolve
+    key = (Path(root).absolute(), season, mode, map_id, floor)
+    check_browse_cancelled()
+    if cacheable and key in request.layers:
+        return deepcopy(request.layers[key])
     try:
-        return provider(Path(root).absolute(), season, mode, map_id, floor)
+        result = provider(Path(root).absolute(), season, mode, map_id, floor)
+        check_browse_cancelled()
+        if cacheable:
+            request.layers[key] = deepcopy(result)
+        return result
     except (OSError, KeyError, TypeError, AttributeError, IndexError, zipfile.BadZipFile) as error:
         raise ValueError('base layer contract unavailable') from error
 

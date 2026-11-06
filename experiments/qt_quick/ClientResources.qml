@@ -95,6 +95,10 @@ Item {
                 }
             }
         }
+        ClientPackageProgress {
+            Layout.fillWidth: true
+            localService: resourceService
+        }
         // The package list sits on one white card like the other pages.
         Rectangle {
             Layout.fillWidth: true; Layout.fillHeight: true
