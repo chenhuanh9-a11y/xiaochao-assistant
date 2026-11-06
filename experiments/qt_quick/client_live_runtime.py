@@ -2067,6 +2067,7 @@ class LiveRuntime:
             cycle = dict(self._transient_cycle)
             scope = self._sibling_scope()
             engine, epoch, target = self._engine, self._epoch, self._floor
+            render_owner = self._refresh_render_owner()
             input_sequence = self._last_map_input_sequence
             if (payload.get("gestureId") is not None and (payload["gestureId"] != cycle["gestureId"]
                     or payload.get("pointerSequence") != cycle["pointerSequence"])):
@@ -2077,17 +2078,37 @@ class LiveRuntime:
                 return self._receipt("probe_map_after_drag", payload, success=False, reason="transient-probe-expired", stale=True)
         self._new_diagnostic_attempt(payload)
         capture_generation = self._capture_generation()
-        captured = self._capture_frame(cancelled, attempt_id=payload.get("_diagnosticAttemptId"))
-        frame = self._full_frame(captured)
         obsolete = lambda: self._cancelled(cancelled) or epoch != self._epoch
-        if obsolete():
-            return self._receipt("probe_map_after_drag", payload, success=False, reason="cancelled-or-stale", stale=True)
-        observation, floor, floor_read = self._observe(engine, frame)
+        try:
+            # Observation does not replace this opening's candidate geometry.
+            captured = self._capture_frame(cancelled, attempt_id=payload.get("_diagnosticAttemptId"),
+                                           preserve_candidate=True)
+            frame = self._full_frame(captured)
+            if obsolete():
+                self._retire_refresh_owner(render_owner)
+                return self._receipt("probe_map_after_drag", payload, success=False, reason="cancelled-or-stale", stale=True)
+            observation, floor, floor_read = self._observe(engine, frame)
+        except Exception as error:
+            with self._lock:
+                if obsolete() or render_owner != self._refresh_render_owner():
+                    self._retire_refresh_owner(render_owner)
+                    return self._receipt("probe_map_after_drag", payload, success=False,
+                        reason="cancelled-or-stale", stale=True, errorType=type(error).__name__)
+                # Consume a current failure under the ownership lock. Handing
+                # it to the generic dispatcher would open a window where a new
+                # drag owns these pixels before the old error revokes them.
+                self.invalidate("runtime-error", source=f'execute:probe_map_after_drag:{type(error).__name__}')
+                return self._receipt("probe_map_after_drag", payload, success=False,
+                    reason=f"{type(error).__name__}:{error}", error=True, stale=False,
+                    unavailable=bool(getattr(error, "unavailable", False)),
+                    **self._error_fields(error, "probe_map_after_drag"))
         detected = self._map_observed(engine, observation, floor_read)
         with self._lock:
             current_scope = self._sibling_scope()
-            if (obsolete() or scope[:7] + scope[8:] != current_scope[:7] + current_scope[8:]
+            if (obsolete() or render_owner != self._refresh_render_owner()
+                    or scope[:7] + scope[8:] != current_scope[:7] + current_scope[8:]
                     or not self._capture_is_current(captured.context, capture_generation)):
+                self._retire_refresh_owner(render_owner)
                 return self._receipt("probe_map_after_drag", payload, success=False, reason="transient-probe-expired", stale=True)
             if not detected:
                 self._probe_misses += 1
@@ -2101,6 +2122,12 @@ class LiveRuntime:
             payload["_mapInputVisual"] = dict(open=True, epoch=epoch, sequence=input_sequence,
                 captured=captured, captureGeneration=capture_generation)
             self._observe_floor_policy(floor_read, obsolete=obsolete)
+            if (self._native_s1_candidate_preview and self._season == "s1"
+                    and not self._manual_alignment and floor is None):
+                self._observed_floor = ""
+                self._revoke_render("current-floor-unavailable")
+                return self._receipt("probe_map_after_drag", payload, success=False,
+                    reason="current-floor-unavailable", fitAttempted=False)
             if self._transient_cycle is not None:
                 self._transient_cycle["probePending"]=False
             projected_floor=str(self._floor)
@@ -3723,6 +3750,11 @@ class LiveRuntime:
     def _capture_frame(self, cancelled, *, attempt_id=None, preserve_candidate=False):
         # Candidate freshness ends before entering a possibly blocked capture.
         with self._lock:
+            if (not preserve_candidate and self._native_s1_candidate_preview
+                    and self._season == "s1" and not self._manual_alignment):
+                # A new candidate fit supersedes manual pixels, including after
+                # a failed probe withdrew them. No persistent pose is updated.
+                self._transient_drag = self._transient_cycle = None
             if preserve_candidate and self._native_s1_candidate_preview and self._map_open:
                 pass  # A floor-only probe cannot renew pose or candidate evidence.
             elif self._s1_provisional_enabled() and self._render is not None:
