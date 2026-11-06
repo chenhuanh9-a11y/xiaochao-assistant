@@ -298,7 +298,7 @@ def refine(points, prepared, scale, translation, *, lock_scale):
     return confidence, current_scale, current
 
 
-def propose(frame, reference, prepared, *, prior=None, cancelled=None, context=None):
+def propose(frame, reference, prepared, *, prior=None, cancelled=None, context=None, local_only=False):
     from single_map_structure import current_geometry, current_part
     started = time.perf_counter()
     if cancelled and cancelled():
@@ -307,10 +307,15 @@ def propose(frame, reference, prepared, *, prior=None, cancelled=None, context=N
     if context is None:
         return [], context, {'reason': 'fast-observation-unavailable'}
     edge = current_part(frame, context, 'observed')
-    points = sample_edges(edge, 300)
+    sampled = context.get("_sampled_observation_edges")
+    if sampled is not None and sampled[0] is edge:
+        points, coarse = sampled[1], sampled[2]
+    else:
+        points, coarse = sample_edges(edge, 300), None
     if len(points) < 40:
         return [], context, {'reason': 'fast-insufficient-edges', 'points': len(points)}
-    coarse = sample_edges(edge, 96)
+    if coarse is None:
+        coarse = sample_edges(edge, 96)
     rows = []
     searches = []
     def grid(scale, seed):
@@ -322,7 +327,7 @@ def propose(frame, reference, prepared, *, prior=None, cancelled=None, context=N
         return found
     if prior is not None:
         rows = grid(float(prior[0,0]), prior)
-        if not rows or rows[0][0] < .50:
+        if (not rows or rows[0][0] < .50) and not local_only:
             rows.extend(grid(float(prior[0,0]), None))
     else:
         seeds = _chain_seeds(frame, context, prepared, cancelled)
@@ -397,7 +402,33 @@ def native_point_geometry(frame, prepared, matrix, context, *, lock_scale):
     return geometry
 
 
-def try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_seed=None, context=None):
+def try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_seed=None, context=None, pose_prior=None):
+    """Optional geometry hint, never a verified group or display authority.
+
+    A rejected local hint always falls back to the original unrestricted path,
+    including fresh scale estimation. The default None path is unchanged.
+    Runtime must scope-check any acknowledged-material hint before this call.
+    """
+    attempted_local = False
+    if pose_prior is not None:
+        from s1_pose_prior import isotropic_matrix
+        hint = isotropic_matrix(pose_prior)
+        if hint is not None:
+            attempted_local = True
+            began = time.perf_counter()
+            result = _try_alignment(assistant, frame, map_id, floor, cancelled=cancelled,
+                                    entry_seed=entry_seed, context=context, _external_prior=hint)
+            accepted = bool(result and result.get('success'))
+            assistant._log('experimental-pose-prior', mapId=map_id, floor=floor,
+                           accepted=accepted, elapsedMs=(time.perf_counter()-began)*1000,
+                           fallback=result is None)
+            if result is not None:
+                return result
+    return _try_alignment(assistant, frame, map_id, floor, cancelled=cancelled,
+                          entry_seed=entry_seed, context=context, _force_unseeded=attempted_local)
+
+
+def _try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_seed=None, context=None, _external_prior=None, _force_unseeded=False):
     """Full production proposal + existing residual consumers; no state writer."""
     if os.environ.get('IDENTITYV_FAST_ALIGNMENT', '1') == '0' or not assistant._shared_structure_mode_enabled():
         return None
@@ -412,7 +443,7 @@ def try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_seed
         return None
     prior = None
     group = assistant._active_round_layer_group(map_id)
-    if group is not None and str(floor) in group.verified_floors:
+    if _external_prior is None and not _force_unseeded and group is not None and str(floor) in group.verified_floors:
         view = assistant._round_group_floor_view(map_id, floor, render_overlay=False)
         if view is not None:
             canonical = view.get('canonicalMatrixSourceToClient')
@@ -421,7 +452,10 @@ def try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_seed
                 matrix = np.asarray(canonical) @ adapter
                 if np.isfinite(matrix).all() and matrix[0,0] > 0 and np.allclose(matrix[:2,:2], np.eye(2)*matrix[0,0]):
                     prior = matrix
-    rows, context, diagnostics = propose(frame, reference, prepared, prior=prior, cancelled=cancelled, context=context)
+    if _external_prior is not None:
+        prior = _external_prior
+    rows, context, diagnostics = propose(frame, reference, prepared, prior=prior, cancelled=cancelled, context=context,
+                                         local_only=_external_prior is not None)
     if rows:
         from single_map_structure import graph_point_geometry, partial_wall_geometry, projected_geometry, regional_validation
         score, scale, translation = rows[0]

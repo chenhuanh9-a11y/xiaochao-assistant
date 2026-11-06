@@ -13,6 +13,7 @@ APP_ROOT = RESOURCE_ROOT / "app"
 INSTALL_ROOT = Path(sys.executable).resolve().parent
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
+from season_context import SeasonContext, SEASONS, MODES, modes_for_season
 from packaged_product_identity import PRODUCTION_APP_ID, PRODUCTION_PRODUCT, baked_identity
 
 
@@ -72,10 +73,11 @@ class RuntimePaths:
     def work_root(self):
         return self.installation_root / "work"
 
-    def memory_root(self, mode):
-        if mode not in ("nightmare", "difficult"):
-            raise ValueError("Unknown game mode")
-        return self.work_root / (mode + "-memory")
+    def memory_root(self, mode, season="s0"):
+        context = SeasonContext(season, mode)
+        # Keep every existing S0 data path byte-for-byte compatible.
+        root = self.work_root if context.season == "s0" else self.work_root / "seasons" / context.season
+        return root / (mode + "-memory")
 
     @property
     def settings_path(self):
@@ -145,6 +147,7 @@ def runtime_paths(root=None):
     paths = RuntimePaths(validate_installation_root(DEFAULT_SANDBOX if root is None else root), PRODUCTION)
     for path in (paths.settings_path, paths.custom_galleries_path, paths.update_state_path, paths.tutorial_state_path,
                  paths.editor_base_root, paths.resource_root, paths.work_root,
-                 paths.memory_root("nightmare"), paths.memory_root("difficult")):
+                 *(paths.memory_root(mode, season) for season in SEASONS
+                   for mode in modes_for_season(season))):
         _no_links(path)
     return paths

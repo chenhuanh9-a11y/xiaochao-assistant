@@ -9,7 +9,7 @@ Item {
         anchors.fill: parent; spacing: 12
         RowLayout {
             Layout.fillWidth: true
-            Label { text: "在线图包"; font.pixelSize: 20; font.bold: true; color: "#17365e" }
+            Label { text: "S0 在线图包"; font.pixelSize: 20; font.bold: true; color: "#17365e" }
             Item { Layout.fillWidth: true }
             AppButton { objectName: "onlineCheck"; text: "检查在线列表"; enabled: panel.state.canCheck; onClicked: onlinePackageService.checkPackages() }
             AppButton { text: "取消下载"; enabled: panel.state.canCancel; onClicked: onlinePackageService.cancel() }

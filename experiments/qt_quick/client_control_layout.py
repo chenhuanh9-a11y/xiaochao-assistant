@@ -10,7 +10,7 @@ def preset_layout(name='compact'):
         raise ValueError('unknown-control-layout-preset')
     common = name == 'common'
     return dict(schemaVersion=2, order=list(MODULES),
-                enabled=['display', 'mode', 'manual_map', 'round'] if common else ['display', 'round'],
+                enabled=['display', 'mode', 'manual_map', 'round'] if common else ['display', 'mode', 'round'],
                 display=dict(alignedOpacity=common, referenceOpacity=common, referencePosition=False))
 
 

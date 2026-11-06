@@ -87,6 +87,35 @@ class FloorRegionService(QObject):
         # The summary follows the settings draft.
         settings.changed.connect(self.changed)
 
+    def _applied_context(self):
+        snapshot = getattr(self._runtime, "snapshot", None)
+        if callable(snapshot):
+            try:
+                state = snapshot()
+                if isinstance(state, dict):
+                    return state.get("season", "s0"), state.get("mode")
+            except Exception:
+                return None, None
+        # Compatibility for the old calibration-only owner/test protocol.
+        return self._settings.values.get("gameSeason", "s0"), None
+
+    def _s0_context_current(self):
+        season, mode = self._applied_context()
+        return season == "s0" and (mode is None or self._mode is None or mode == self._mode)
+
+    def _reject_context(self):
+        self._frame = self._mode = None
+        self._image_url, self._draft, self._preview = "", [], ""
+        self._images.publish(QImage())
+        self._message = "当前赛季尚未验证竖排楼层校准；不能写入 S0 框选范围。"
+        self.changed.emit()
+        return False
+
+    @Slot()
+    def invalidateContext(self):
+        if self._frame is not None and not self._s0_context_current():
+            self._reject_context()
+
     summary = Property(str, lambda s: region_summary(s._settings.values), notify=changed)
     available = Property(bool, lambda s: s._frame is not None, notify=changed)
     imageUrl = Property(str, lambda s: s._image_url, notify=changed)
@@ -101,6 +130,8 @@ class FloorRegionService(QObject):
     @Slot(result=bool)
     def open(self):
         """Load the latest open-map frame; never captures by itself."""
+        if not self._s0_context_current():
+            return self._reject_context()
         latest = self._runtime.latest_map_frame() if self._runtime is not None else None
         if latest is None:
             self._frame = self._mode = None
@@ -109,6 +140,9 @@ class FloorRegionService(QObject):
             self.changed.emit()
             return False
         frame, mode, floor_read = latest
+        current_season, current_mode = self._applied_context()
+        if current_season != "s0" or (current_mode is not None and mode != current_mode):
+            return self._reject_context()
         self._frame, self._mode = frame, mode
         h, w = frame.shape[:2]
         x0, y0 = int(w * VIEW[0]), int(h * VIEW[1])
@@ -142,6 +176,8 @@ class FloorRegionService(QObject):
     @Slot(float, float, float, float, result=bool)
     def setDraft(self, x, y, width, height):
         """Client-normalized rectangle from the editor; clamped to the frame."""
+        if not self._s0_context_current():
+            return self._reject_context()
         if self._frame is None:
             return False
         x0, y0 = max(0., min(1., x)), max(0., min(1., y))
@@ -157,6 +193,8 @@ class FloorRegionService(QObject):
     @Slot(result=bool)
     def useDraft(self):
         """Put the range into the settings draft and switch the draft to 框选."""
+        if not self._s0_context_current():
+            return self._reject_context()
         if self._frame is None or not self._draft:
             return False
         h, w = self._frame.shape[:2]

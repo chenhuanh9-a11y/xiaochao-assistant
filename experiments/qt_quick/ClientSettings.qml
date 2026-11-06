@@ -9,6 +9,14 @@ Item {
     readonly property var preferences: settingsService.values
     property var profileOptions: []
     property string profilesMode: ""
+    property string profilesSeason: ""
+    property bool profilesBusy: false
+    readonly property string draftSeason: preferences.gameSeason || "s0"
+    readonly property bool automaticMapSelection: draftSeason === "s1"
+    readonly property string draftContextKey: draftSeason + ":" + preferences.gameMode
+    readonly property string draftProfile: (preferences.contextRouteProfiles || {})[draftContextKey]
+        || (draftSeason === "s0" ? ((preferences.modeRouteProfiles || {})[preferences.gameMode] || preferences.routeProfileId || "") : "")
+    readonly property bool profilesCurrent: !profilesBusy && profilesMode === preferences.gameMode && profilesSeason === draftSeason
     readonly property var actionNames: ["显示/隐藏面板", "上一个候选", "下一个候选", "确认本局", "切换楼层", "结束本局", "显示/隐藏小抄", "开始本局", "开始/结束本局", "手动选图"]
     readonly property var actionIds: ["toggle-panel", "candidate-prev", "candidate-next", "confirm-round", "cycle-floor", "end-round", "toggle-sheet-visibility", "start-round", "toggle-round", "manual-map-picker"]
     readonly property var moduleNames: ({display: "显示", mode: "游戏模式", manual_map: "选择地图与楼层", recognition: "候选与再识别", round: "本局动作"})
@@ -16,9 +24,28 @@ Item {
     property bool advancedDisplay: false
     property bool modeExpanded: false
     property bool modulesExpanded: false
+    property bool referenceEditRequested: false
+    readonly property bool referenceEditing: typeof clientCoordinator !== "undefined" && clientCoordinator.referenceEditing === true
     readonly property bool layoutDirty: settingsService.controlLayoutDirty
+    function manualMapAction(target) {
+        return ["candidate-prev", "candidate-next", "confirm-round", "manual-map-picker"].indexOf(target) >= 0
+    }
+    onAutomaticMapSelectionChanged: {
+        // Settings changes notify all bindings; drain that notification before
+        // cancelling a recorder, and recheck after a rapid return to S0.
+        Qt.callLater(function() {
+            if (root.automaticMapSelection && settingsService.shortcutRecording
+                    && root.manualMapAction(settingsService.shortcutTarget)) settingsService.cancelShortcutCapture()
+        })
+    }
     function recordShortcut(target) {
+        if (automaticMapSelection && manualMapAction(target)) return
         if (settingsService.beginShortcutCapture(target)) captureArea.forceActiveFocus()
+    }
+    function saveMapSelectionMode(mode) {
+        if (automaticMapSelection) return
+        settingsService.setValue("mapSelectionMode", mode)
+        settingsService.saveFields(["mapSelectionMode"])
     }
     function shortcutLabel(target) {
         var index = actionIds.indexOf(target)
@@ -73,6 +100,8 @@ Item {
         id: keyRow
         required property int actionIndex
         required property string title
+        visible: !root.automaticMapSelection || [1, 2, 3, 9].indexOf(actionIndex) < 0
+        enabled: visible
         Layout.fillWidth: true
         Layout.minimumHeight: 54
         spacing: 8
@@ -238,6 +267,61 @@ Item {
                                 }
                             }
                             Note { text: "点击录入后按键并确认；保存后生效。清空可解绑。" }
+                            Disclosure { objectName: "controlLayoutToggle"; text: root.modulesExpanded ? "收起悬浮面板控件" : "自定义悬浮面板控件"; expanded: root.modulesExpanded; onClicked: root.modulesExpanded = !root.modulesExpanded }
+                            ColumnLayout {
+                                visible: root.modulesExpanded
+                                Layout.fillWidth: true
+                                spacing: 10
+                                Note { text: "勾选显示的模块，用上移 / 下移调整顺序。修改会预览到游戏控制面板，保存布局后保留到下次启动。" }
+                                ColumnLayout {
+                                    objectName: "controlLayoutEditor"
+                                    Layout.fillWidth: true
+                                    spacing: 4
+                                    Repeater {
+                                        model: root.preferences.gameControlLayout.order
+                                        delegate: RowLayout {
+                                            required property string modelData
+                                            required property int index
+                                            visible: !root.automaticMapSelection || (modelData !== "manual_map" && modelData !== "recognition")
+                                            enabled: visible
+                                            Layout.fillWidth: true
+                                            CheckBox {
+                                                objectName: "layout_enabled_" + modelData
+                                                text: root.moduleNames[modelData]
+                                                Layout.fillWidth: true
+                                                font.family: "Microsoft YaHei UI"; font.pixelSize: 13
+                                                checked: root.preferences.gameControlLayout.enabled.indexOf(modelData) >= 0
+                                                onToggled: root.setLayoutFlag("module", modelData, checked)
+                                            }
+                                            AppButton { objectName: "layout_up_" + modelData; text: "上移"; implicitWidth: 54; padding: 6; enabled: index > 0; Accessible.name: root.moduleNames[modelData] + "上移"; onClicked: settingsService.moveControlModule(modelData, -1) }
+                                            AppButton { objectName: "layout_down_" + modelData; text: "下移"; implicitWidth: 54; padding: 6; enabled: index < root.preferences.gameControlLayout.order.length - 1; Accessible.name: root.moduleNames[modelData] + "下移"; onClicked: settingsService.moveControlModule(modelData, 1) }
+                                        }
+                                    }
+                                }
+                                Flow {
+                                    Layout.fillWidth: true
+                                    spacing: 8
+                                    Repeater {
+                                        model: [{key: "alignedOpacity", title: "贴合不透明度控件"}, {key: "referenceOpacity", title: "定点不透明度控件"}, {key: "referencePosition", title: "定点位置编辑控件"}]
+                                        delegate: CheckBox {
+                                            required property var modelData
+                                            objectName: "layout_display_" + modelData.key
+                                            text: modelData.title
+                                            enabled: root.preferences.gameControlLayout.enabled.indexOf("display") >= 0
+                                            font.family: "Microsoft YaHei UI"; font.pixelSize: 13
+                                            checked: root.preferences.gameControlLayout.display[modelData.key]
+                                            onToggled: root.setLayoutFlag("display", modelData.key, checked)
+                                        }
+                                    }
+                                }
+                                Flow {
+                                    Layout.fillWidth: true; spacing: 8
+                                    AppButton { objectName: "layout_preset_compact"; text: "精简预设"; onClicked: settingsService.setControlLayoutPreset("compact") }
+                                    AppButton { objectName: "layout_preset_common"; text: "常用预设"; onClicked: settingsService.setControlLayoutPreset("common") }
+                                    AppButton { objectName: "layout_save"; text: "保存布局"; primary: true; enabled: root.layoutDirty && !settingsService.busy; onClicked: settingsService.saveFields(["gameControlLayout"]) }
+                                    AppButton { objectName: "layout_reset"; text: "撤销布局"; enabled: root.layoutDirty && !settingsService.busy; onClicked: settingsService.resetControlLayout() }
+                                }
+                            }
                         }
                         ColumnLayout {
                             objectName: "settingsDisplayColumn"
@@ -272,12 +356,37 @@ Item {
                             }
                             OpacityBlock { settingKey: "sheetOpacity"; title: "不透明度" }
                             OpacityBlock { settingKey: "sheetScale"; title: "小抄大小"; minimum: 50; maximum: 150 }
+                            OpacityBlock { settingKey: "referenceOpacity"; title: "定点地图不透明度" }
+                            Flow {
+                                Layout.fillWidth: true; spacing: 8
+                                AppButton {
+                                    objectName: "settingsEditReferencePosition"
+                                    text: "编辑定点地图位置"; visible: !root.referenceEditing
+                                    enabled: !settingsService.busy
+                                    onClicked: { root.referenceEditRequested = true; clientCoordinator.beginReferenceEdit() }
+                                }
+                                AppButton {
+                                    objectName: "settingsFinishReferencePosition"
+                                    text: "完成位置编辑"; visible: root.referenceEditing
+                                    enabled: !settingsService.busy; primary: true
+                                    onClicked: { clientCoordinator.finishReferenceEdit(); root.referenceEditRequested = false }
+                                }
+                                AppButton {
+                                    objectName: "settingsCancelReferencePosition"
+                                    text: "取消位置编辑"; visible: root.referenceEditing || root.referenceEditRequested
+                                    onClicked: { clientCoordinator.cancelReferenceEdit(); root.referenceEditRequested = false }
+                                }
+                            }
+                            Note {
+                                objectName: "settingsReferencePositionMessage"
+                                visible: root.referenceEditing || root.referenceEditRequested
+                                text: visible && typeof clientCoordinator !== "undefined" ? clientCoordinator.message : ""
+                            }
+                            OpacityBlock { settingKey: "interfaceOpacity"; title: "界面不透明度"; minimum: 65; maximum: 95 }
                             Disclosure { objectName: "advancedDisplayToggle"; text: root.advancedDisplay ? "收起更多显示设置" : "更多显示设置"; expanded: root.advancedDisplay; onClicked: root.advancedDisplay = !root.advancedDisplay }
                             ColumnLayout {
                                 visible: root.advancedDisplay
                                 Layout.fillWidth: true; spacing: 10
-                                OpacityBlock { settingKey: "referenceOpacity"; title: "定点地图不透明度" }
-                                OpacityBlock { settingKey: "interfaceOpacity"; title: "界面不透明度"; minimum: 65; maximum: 95 }
                                 Repeater {
                                     model: [
                                         {key: "referenceSheetVisible", title: "显示定点地图"},
@@ -305,7 +414,16 @@ Item {
                     Rectangle { Layout.fillWidth: true; height: 1; color: "#edf2fa" }
                     ClientChestAutoTap { Layout.fillWidth: true }
                     Rectangle { Layout.fillWidth: true; height: 1; color: "#edf2fa" }
-                    ClientFloorRegion { Layout.fillWidth: true }
+                    ClientFloorRegion {
+                        Layout.fillWidth: true
+                        visible: !root.automaticMapSelection
+                        enabled: visible
+                    }
+                    Note {
+                        objectName: "settingsS1FloorObservation"
+                        visible: root.automaticMapSelection
+                        text: "S1 楼层随当前画面自动识别 B1～B4；未知时停止贴合。S0 的框选与固定位置设置不参与 S1 识别。"
+                    }
                     Disclosure { objectName: "modeSettingsToggle"; text: root.modeExpanded ? "收起模式与路线" : "模式与路线"; expanded: root.modeExpanded; onClicked: root.modeExpanded = !root.modeExpanded }
                     ColumnLayout {
                         visible: root.modeExpanded
@@ -313,26 +431,39 @@ Item {
                         spacing: 10
                 RowLayout {
                     Layout.fillWidth: true
-                    AppButton { text: "噩梦"; selected: root.preferences.gameMode === "nightmare"; onClicked: settingsService.setValue("gameMode", "nightmare") }
-                    AppButton { text: "困难"; selected: root.preferences.gameMode === "difficult"; onClicked: settingsService.setValue("gameMode", "difficult") }
+                    SeasonSelector {
+                        id: settingsContextSelector; objectName: "setting_gameContext"
+                        seasons: settingsService.seasonOptions
+                        season: root.draftSeason; mode: root.preferences.gameMode
+                        enabled: !settingsService.busy
+                        onContextRequested: function(season, mode) { settingsService.setValue("gameSeason", season); settingsService.setValue("gameMode", mode) }
+                    }
                     Item { Layout.fillWidth: true }
                 }
-                Note { text: "保存默认工作模式与路线作者；可用作者来自当前模式的本地图包。" }
+                Note { text: "保存默认赛季、难度与路线作者；可用作者来自对应赛季的本地图包。" }
                 RowLayout {
+                    objectName: "settingsMapSelectionActions"
+                    visible: !root.automaticMapSelection
+                    enabled: !root.automaticMapSelection
                     Layout.fillWidth: true
                     Label { text: "选图方式"; color: "#354f75"; font.pixelSize: 13; Layout.fillWidth: true }
                     AppButton {
                         objectName: "setting_mapSelectionMode_auto"
                         text: "自动识别"; selected: root.preferences.mapSelectionMode !== "manual"
-                        onClicked: { settingsService.setValue("mapSelectionMode", "auto"); settingsService.saveFields(["mapSelectionMode"]) }
+                        onClicked: root.saveMapSelectionMode("auto")
                     }
                     AppButton {
                         objectName: "setting_mapSelectionMode_manual"
                         text: "手动选图"; selected: root.preferences.mapSelectionMode === "manual"
-                        onClicked: { settingsService.setValue("mapSelectionMode", "manual"); settingsService.saveFields(["mapSelectionMode"]) }
+                        onClicked: root.saveMapSelectionMode("manual")
                     }
                 }
-                Note { text: "手动选图时不自动识别地图，按“手动选图”快捷键或游戏控件里的“选择本局地图”自己选；锁图后两种方式相同。" }
+                Note {
+                    objectName: "settingsMapSelectionExplanation"
+                    text: root.automaticMapSelection
+                        ? "S1 自动识别地图并跨层核对；候选显示不代表身份已锁定。S0 的选图方式与手动选图快捷键保留，切回 S0 后可设置。"
+                        : "手动选图时不自动识别地图，按“手动选图”快捷键或游戏控件里的“选择本局地图”自己选；锁图后两种方式相同。"
+                }
                 GridLayout {
                     columns: root.width < 560 ? 1 : 2
                     columnSpacing: 16; rowSpacing: 8
@@ -343,15 +474,21 @@ Item {
                         objectName: "setting_routeProfileId"
                         Layout.fillWidth: true
                         model: root.profileOptions; textRole: "name"; valueRole: "id"
-                        enabled: count > 0 && root.profilesMode===root.preferences.gameMode && !settingsService.busy
-                        currentIndex: { for(var i=0;i<root.profileOptions.length;i++) if(root.profileOptions[i].id===root.preferences.routeProfileId)return i; return -1 }
-                        displayText: currentIndex < 0 ? "当前作者未安装" : currentText
+                        enabled: count > 0 && root.profilesCurrent && !settingsService.busy
+                        currentIndex: { for(var i=0;i<root.profileOptions.length;i++) if(root.profileOptions[i].id===root.draftProfile)return i; return -1 }
+                        displayText: !root.profilesCurrent ? "正在读取对应赛季作者…" : !settingsContextSelector.registeredContext(root.draftSeason, root.preferences.gameMode) && count === 0 ? settingsContextSelector.seasonLabel(root.draftSeason) + " 资源待补齐" : currentIndex < 0 ? "当前作者未安装" : currentText
                         Accessible.name: "默认路线作者"
                         onActivated: {
-                            var profiles = JSON.parse(JSON.stringify(root.preferences.modeRouteProfiles || {}))
-                            profiles[root.preferences.gameMode] = currentValue
-                            settingsService.setValue("modeRouteProfiles", profiles)
-                            settingsService.setValue("routeProfileId", currentValue)
+                            if (!root.profilesCurrent || !currentValue) return
+                            var profiles = JSON.parse(JSON.stringify(root.preferences.contextRouteProfiles || {}))
+                            profiles[root.draftContextKey] = currentValue
+                            settingsService.setValue("contextRouteProfiles", profiles)
+                            if (root.draftSeason === "s0") {
+                                var legacy = JSON.parse(JSON.stringify(root.preferences.modeRouteProfiles || {}))
+                                legacy[root.preferences.gameMode] = currentValue
+                                settingsService.setValue("modeRouteProfiles", legacy)
+                                settingsService.setValue("routeProfileId", currentValue)
+                            }
                         }
                     }
                     Label { text: "全棺路线版本"; color: "#354f75"; font.pixelSize: 13 }
@@ -362,7 +499,8 @@ Item {
                         currentIndex: { for (var i=0;i<settingsService.coffinVariantOptions.length;i++) if(settingsService.coffinVariantOptions[i].id===root.preferences.zhan10CoffinVariantId) return i; return -1 }
                         displayText: currentIndex < 0 ? "当前版本不可用（偏好保留）" : currentText
                         enabled: !settingsService.busy && root.preferences.gameMode===settingsService.coffinVariantContext.mode
-                                 && (root.preferences.modeRouteProfiles[root.preferences.gameMode] || root.preferences.routeProfileId)===settingsService.coffinVariantContext.profileId
+                                 && root.draftSeason === (settingsService.coffinVariantContext.season || "s0")
+                                 && root.draftProfile===settingsService.coffinVariantContext.profileId
                                  && settingsService.coffinVariantOptions.some(function(row) { return row.available })
                         delegate: ItemDelegate {
                             required property var modelData
@@ -376,59 +514,7 @@ Item {
                     Note { text: settingsService.coffinVariantMessage; Layout.columnSpan: parent.columns }
                 }
                     }
-                    Disclosure { objectName: "controlLayoutToggle"; text: root.modulesExpanded ? "收起悬浮面板控件" : "自定义悬浮面板控件"; expanded: root.modulesExpanded; onClicked: root.modulesExpanded = !root.modulesExpanded }
-                    ColumnLayout {
-                        visible: root.modulesExpanded
-                        Layout.fillWidth: true; Layout.maximumWidth: 760
-                        spacing: 10
-                Note { text: "勾选显示的模块，用上移 / 下移调整顺序。修改会预览到游戏控制面板，保存布局后保留到下次启动。" }
-                ColumnLayout {
-                    objectName: "controlLayoutEditor"
-                    Layout.fillWidth: true
-                    spacing: 4
-                    Repeater {
-                        model: root.preferences.gameControlLayout.order
-                        delegate: RowLayout {
-                            required property string modelData
-                            required property int index
-                            Layout.fillWidth: true
-                            CheckBox {
-                                objectName: "layout_enabled_" + modelData
-                                text: root.moduleNames[modelData]
-                                Layout.fillWidth: true
-                                font.family: "Microsoft YaHei UI"; font.pixelSize: 13
-                                checked: root.preferences.gameControlLayout.enabled.indexOf(modelData) >= 0
-                                onToggled: root.setLayoutFlag("module", modelData, checked)
-                            }
-                            AppButton { objectName: "layout_up_" + modelData; text: "上移"; enabled: index > 0; Accessible.name: root.moduleNames[modelData] + "上移"; onClicked: settingsService.moveControlModule(modelData, -1) }
-                            AppButton { objectName: "layout_down_" + modelData; text: "下移"; enabled: index < root.preferences.gameControlLayout.order.length - 1; Accessible.name: root.moduleNames[modelData] + "下移"; onClicked: settingsService.moveControlModule(modelData, 1) }
-                        }
-                    }
-                }
-                Flow {
-                    Layout.fillWidth: true
-                    spacing: 8
-                    Repeater {
-                        model: [{key: "alignedOpacity", title: "贴合不透明度控件"}, {key: "referenceOpacity", title: "定点不透明度控件"}, {key: "referencePosition", title: "定点位置编辑控件"}]
-                        delegate: CheckBox {
-                            required property var modelData
-                            objectName: "layout_display_" + modelData.key
-                            text: modelData.title
-                            enabled: root.preferences.gameControlLayout.enabled.indexOf("display") >= 0
-                            font.family: "Microsoft YaHei UI"; font.pixelSize: 13
-                            checked: root.preferences.gameControlLayout.display[modelData.key]
-                            onToggled: root.setLayoutFlag("display", modelData.key, checked)
-                        }
-                    }
-                }
-                Flow {
-                    Layout.fillWidth: true; spacing: 8
-                    AppButton { objectName: "layout_preset_compact"; text: "精简预设"; onClicked: settingsService.setControlLayoutPreset("compact") }
-                    AppButton { objectName: "layout_preset_common"; text: "常用预设"; onClicked: settingsService.setControlLayoutPreset("common") }
-                    AppButton { objectName: "layout_save"; text: "保存布局"; primary: true; enabled: root.layoutDirty && !settingsService.busy; onClicked: settingsService.saveFields(["gameControlLayout"]) }
-                    AppButton { objectName: "layout_reset"; text: "撤销布局"; enabled: root.layoutDirty && !settingsService.busy; onClicked: settingsService.resetControlLayout() }
-                }
-                    }
+
                 }
             }
         }

@@ -128,6 +128,7 @@
       "一直认不出来，看“排查与反馈”一章"
      ],
      "keys": ["manual-map-picker"],
+     "showSelectionMode": true,
      "sketch": true
     },
     {
