@@ -17,20 +17,24 @@ import numpy as np
 from author_route_catalog import AuthorRouteCatalog, AuthorRouteProfile, AuthorRouteVariant
 from optional_author_displays import OptionalAuthorDisplayAdapters
 from s1_author_package import (PACKAGE_ID, PROFILE_ID, TITLE, BINDINGS_PATH,
-    SOURCE_VERSION, validate_bindings, receipt_rows)
+    SOURCE_VERSION, validate_bindings, receipt_rows, PROFILE_IDS, TRANSPARENT_PROFILE_ID, bindings_path, title)
 
 
 class InstalledAuthorPackage:
-    def __init__(self, resource_root):
+    def __init__(self, resource_root, package_id=PACKAGE_ID):
         import star_map_import as api
         api._no_links(Path(resource_root))
         self.root=Path(resource_root).resolve()
-        owned,deps,_=api._installed_inventory(self.root.parent,PACKAGE_ID)
+        owned,deps,_=api._installed_inventory(self.root.parent,package_id)
         if not owned:
             raise FileNotFoundError('s1-author-not-installed')
         self._inventory={**deps,**owned}
-        raw=self._read(BINDINGS_PATH)
+        self.profile_id = package_id
+        self.bindings_path = bindings_path(package_id)
+        raw=self._read(self.bindings_path)
         self.document=validate_bindings(raw,owned,deps,self._read)
+        if self.document["profileId"] != package_id:
+            raise ValueError("s1-author-binding-context-mismatch")
         self.registration_sha=hashlib.sha256(raw).hexdigest()
 
     def _path(self, relative):
@@ -58,7 +62,7 @@ class S1AuthorCatalog(AuthorRouteCatalog):
         self._raw=copy.deepcopy(base._raw)
 
     def route_path(self, profile_id, map_id, floor, variant_id=None, *, include_inactive=False):
-        if profile_id!=PROFILE_ID or str(floor) not in {'-1','-2','-3'}:
+        if profile_id not in PROFILE_IDS or str(floor) not in {'-1','-2','-3'}:
             return None
         variants=self.variants(profile_id,str(map_id),include_inactive=include_inactive)
         variant=next((v for v in variants if v.id==(variant_id or 'variant-01')),None)
@@ -83,36 +87,35 @@ class S1AuthorDisplays:
         if native.root != self.root/'seasons/s1'/native.mode:
             self.errors[PROFILE_ID]='s1-author-resource-root-mismatch'
             return
-        receipt=api._target(self.root.parent,f'work/map-packages/{PACKAGE_ID}.json')
-        if not receipt.exists():
-            return
-        try:
-            package=InstalledAuthorPackage(self.root)
-            self._read,self._path=package._read,package._path
-            doc=package.document
-            self.registration_sha=package.registration_sha
-            maps={}
-            for row in doc['layers']:
-                if row['mode']!=native.mode:
-                    continue
-                path=self._path(row['displayPath'])
-                matrix=np.asarray(row['matrixDisplayToReference'],dtype=np.float64)
-                matrix.setflags(write=False)
-                self.bindings[(PROFILE_ID,row['mapId'],row['floor'])]=dict(
-                    path=path,matrix=matrix,usable=True,status='offline-reviewed',declaration=row)
-                maps.setdefault(row['mapId'],{})[row['floor']]=path
-            variants={mid:(AuthorRouteVariant(PROFILE_ID,mid,'variant-01','加页手记',layers,
-                'display-only-reviewed','display-only'),) for mid,layers in maps.items()}
-            self.catalog.profiles[PROFILE_ID]=AuthorRouteProfile(PROFILE_ID,TITLE,'加页手记','S1',
-                True,True,True,variants)
-            self.catalog._raw['profiles'].append(dict(id=PROFILE_ID,maps={mid:[dict(id='variant-01',
-                layerMeta={floor:dict(sha256=self.bindings[(PROFILE_ID,mid,floor)]['declaration']['displaySha256'])
-                    for floor in layers})] for mid,layers in maps.items()}))
-            self.profiles.add(PROFILE_ID)
-            self.adapters=OptionalAuthorDisplayAdapters(native.adapters,self.bindings,self.profiles)
-        except (OSError,ValueError,KeyError,TypeError,cv2.error) as error:
-            self.bindings.clear()
-            self.errors[PROFILE_ID]=str(error)
+        for profile_id in PROFILE_IDS:
+            receipt=api._target(self.root.parent,f'work/map-packages/{profile_id}.json')
+            if not receipt.exists():
+                continue
+            try:
+                package=InstalledAuthorPackage(self.root, profile_id)
+                doc=package.document
+                maps={}
+                for row in doc['layers']:
+                    if row['mode']!=native.mode:
+                        continue
+                    path=package._path(row['displayPath'])
+                    matrix=np.asarray(row['matrixDisplayToReference'],dtype=np.float64)
+                    matrix.setflags(write=False)
+                    self.bindings[(profile_id,row['mapId'],row['floor'])]=dict(
+                        path=path,matrix=matrix,usable=True,status='offline-reviewed',declaration=row,package=package)
+                    maps.setdefault(row['mapId'],{})[row['floor']]=path
+                variants={mid:(AuthorRouteVariant(profile_id,mid,'variant-01','爱吃醋',layers,
+                    'display-only-reviewed','display-only'),) for mid,layers in maps.items()}
+                self.catalog.profiles[profile_id]=AuthorRouteProfile(profile_id,title(profile_id),'爱吃醋','S1',
+                    True,True,True,variants)
+                self.catalog._raw['profiles'].append(dict(id=profile_id,maps={mid:[dict(id='variant-01',
+                    layerMeta={floor:dict(sha256=self.bindings[(profile_id,mid,floor)]['declaration']['displaySha256'])
+                        for floor in layers})] for mid,layers in maps.items()}))
+                self.profiles.add(profile_id)
+                self.adapters=OptionalAuthorDisplayAdapters(native.adapters,self.bindings,self.profiles)
+            except (OSError,ValueError,KeyError,TypeError,cv2.error) as error:
+                self.bindings={key: value for key, value in self.bindings.items() if key[0] != profile_id}
+                self.errors[profile_id]=str(error)
 
     def binding(self, profile, map_id, floor):
         return self.bindings.get((str(profile),str(map_id),str(floor)))
@@ -126,21 +129,28 @@ class S1AuthorDisplays:
             raise ValueError('s1-author-display-path-unregistered')
         row=binding['declaration']
         # Revalidate before cache hits. Invalid data never revives earlier pixels.
-        data=self._read(row['displayPath'])
-        self._read(BINDINGS_PATH)
-        self._read(row['referenceResource'])
-        key=(row['displaySha256'],self.registration_sha)
+        package=binding['package']
+        data=package._read(row['displayPath'])
+        package._read(package.bindings_path)
+        package._read(row['referenceResource'])
+        key=(row['displaySha256'],package.registration_sha)
         with self._cache_lock:
             pixels=self._cache.get(key)
             if pixels is not None:
                 self._cache.move_to_end(key)
         if pixels is None:
-            pixels=cv2.imdecode(np.frombuffer(data,np.uint8),cv2.IMREAD_COLOR)
+            pixels=cv2.imdecode(np.frombuffer(data,np.uint8),cv2.IMREAD_UNCHANGED)
             if pixels is None or list(pixels.shape[:2])!=row['displayShapeHW']:
                 raise ValueError('s1-author-display-decode-failed')
             # Preserve the entire author canvas and annotations, including margins.
             # This is format conversion only: no crop, rescale, threshold or rewrite.
-            pixels=cv2.cvtColor(pixels,cv2.COLOR_BGR2BGRA)
+            if package.profile_id == TRANSPARENT_PROFILE_ID:
+                if pixels.ndim != 3 or pixels.shape[2] != 4:
+                    raise ValueError('s1-author-transparent-alpha-missing')
+            elif pixels.ndim == 2:
+                pixels=cv2.cvtColor(pixels,cv2.COLOR_GRAY2BGRA)
+            else:
+                pixels=cv2.cvtColor(pixels,cv2.COLOR_BGR2BGRA)
             pixels.setflags(write=False)
             with self._cache_lock:
                 self._cache[key]=pixels
@@ -151,6 +161,12 @@ class S1AuthorDisplays:
 
 
 def append_browse_profile(context):
+    for profile_id in PROFILE_IDS:
+        context = _append_browse_profile(context, profile_id)
+    return context
+
+
+def _append_browse_profile(context, profile_id):
     """Join a reviewed display snapshot without constructing any runtime engine."""
     from dataclasses import replace
     from types import MappingProxyType
@@ -159,7 +175,7 @@ def append_browse_profile(context):
     if context.mode not in ('difficult','nightmare') or context.error:
         return context
     try:
-        package=InstalledAuthorPackage(context.root)
+        package=InstalledAuthorPackage(context.root, profile_id)
     except FileNotFoundError:
         return context
     except (OSError,ValueError,KeyError,TypeError) as error:
@@ -173,11 +189,11 @@ def append_browse_profile(context):
         info=path.stat()
         stamps[path]=(info.st_mtime_ns,info.st_size,row['displaySha256'])
         maps.setdefault(row['mapId'],{})[f"source-height-{5+int(row['floor'])}"]=path
-    items=tuple(ResourceMap(mid,mid,(ResourceVariant('variant-01','加页手记',layers),))
+    items=tuple(ResourceMap(mid,mid,(ResourceVariant('variant-01','爱吃醋',layers),))
         for mid,layers in sorted(maps.items()))
     first=next((item.id,floor,path) for item in items
         for variant in item.variants for floor,path in variant.layers.items())
-    profile=ProfileSummary(PROFILE_ID,TITLE,PACKAGE_ID,len(items),len(items),0,len(items),
+    profile=ProfileSummary(profile_id,title(profile_id),profile_id,len(items),len(items),0,len(items),
         len(items)*4,len(items)*3,first,items)
     return replace(context,profiles=(*context.profiles,profile),path_stamps=MappingProxyType(stamps),
         warnings=(*context.warnings,'s1-author-b4-not-provided;canonical-native-fallback'))

@@ -345,8 +345,8 @@ def managed_packages_snapshot(install_root, *, cancelled=None):
             result.append(dict(packageId=package, title=PACKAGE_NAMES.get(package, package),
                 status="incomplete" if modified else "installed" if active else "managed-remnants", canRemove=bool(rows),
                 fileCount=len(rows), bytes=sum(row["bytes"] for row in rows),
-                mode="both" if package == "s1-jiaye-handnotes" else ("difficult" if package.startswith("difficult-") else "nightmare"),
-                **({"season": "s1"} if package == "s1-jiaye-handnotes" else {})))
+                mode="both" if package in ("s1-jiaye-handnotes", "s1-aichicu-routes") else ("difficult" if package.startswith("difficult-") else "nightmare"),
+                **({"season": "s1"} if package in ("s1-jiaye-handnotes", "s1-aichicu-routes") else {})))
         return result
 
 

@@ -35,8 +35,10 @@ AUTHOR_PACKAGES = {
     "nightmare-lianghapi": "lianghapi-single",
 }
 S1_AUTHOR_PACKAGE_ID = "s1-jiaye-handnotes"
+S1_AUTHOR_PACKAGE_IDS = frozenset({S1_AUTHOR_PACKAGE_ID, "s1-aichicu-routes"})
 AUTHOR_SIDECARS = {"catalog.json", "display-bindings.json"}
 LIVE_AUTHOR_IMAGE_ROOTS = {
+    "s1-aichicu-routes": ("_internal/assets/authors/s1-aichicu-routes/",),
     S1_AUTHOR_PACKAGE_ID: ("_internal/assets/authors/s1-jiaye-handnotes/",),
     "nightmare-zhan10": ("_internal/assets/authors/zhan10-nightmare/",),
     "nightmare-suju-speed": ("_internal/assets/authors/suju-speed-nightmare/",),
@@ -48,8 +50,8 @@ LIVE_AUTHOR_IMAGE_ROOTS = {
     "nightmare-nightingale": ("_internal/assets/authors/nightingale/",),
     "nightmare-lianghapi": ("_internal/assets/authors/lianghapi-single/",),
 }
-PACKAGE_IDS = {"nightmare-suju", "difficult-zhan10", S1_AUTHOR_PACKAGE_ID} | set(AUTHOR_PACKAGES)
-SUPPORTED_DISPLAY_VERSIONS = {"1.0", "1.0.1", "1.0.2", "1.0.3", "1.0.4", "1.0.5", "1.0.6", "1.0.7", "1.0.17"}
+PACKAGE_IDS = {"nightmare-suju", "difficult-zhan10", S1_AUTHOR_PACKAGE_ID} | set(AUTHOR_PACKAGES) | S1_AUTHOR_PACKAGE_IDS
+SUPPORTED_DISPLAY_VERSIONS = {"1.0", "1.0.1", "1.0.2", "1.0.3", "1.0.4", "1.0.5", "1.0.6", "1.0.7", "1.0.17", "1.1.0"}
 CLIENT_COMPATIBILITY = {"displayVersion": "1.0", "numericLine": "1.0.0.N",
                         "minimumBuild": 1, "maximumBuild": 65535}
 BASE_DEPENDENCIES = {
@@ -282,9 +284,9 @@ def _relative(value: str) -> str:
 
 
 def _allowed(package_id: str, path: str) -> bool:
-    if package_id == S1_AUTHOR_PACKAGE_ID:
+    if package_id in S1_AUTHOR_PACKAGE_IDS:
         from s1_author_package import allowed
-        return allowed(path)
+        return allowed(path, package_id)
     if package_id == "difficult-zhan10" and path in DIFFICULT_R6_PATHS:
         return True
     author = AUTHOR_PACKAGES.get(package_id)
@@ -407,7 +409,7 @@ def _reviewed_pre_dependency_contract(receipt, package_id, rows):
     for record in REVIEWED_PRE_DEPENDENCY_AUTHOR_RELEASES:
         if (type(record) is not tuple or len(record) != 4 or type(record[0]) is not str
                 or record[0] not in PACKAGE_IDS
-                or record[0] == S1_AUTHOR_PACKAGE_ID
+                or record[0] in S1_AUTHOR_PACKAGE_IDS
                 or any(type(value) is not str or not re.fullmatch(r'[a-f0-9]{64}', value)
                        for value in record[1:])
                 or (record[0], record[1]) in seen or record[3] not in contracts):
@@ -431,7 +433,7 @@ def _receipt_inventory(receipt, package_id):
             or not isinstance(receipt.get("archiveSha256"), str)
             or not re.fullmatch(r"[0-9a-f]{64}", receipt["archiveSha256"])):
         raise ImportRejected("invalid-installed-package-receipt")
-    if package_id == S1_AUTHOR_PACKAGE_ID:
+    if package_id in S1_AUTHOR_PACKAGE_IDS:
         from s1_author_package import receipt_rows
         return receipt_rows(receipt)
     rows = _rows(receipt.get("files"))
@@ -525,7 +527,7 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None, *
             or metadata.get("packageId") not in PACKAGE_IDS):
         raise ImportRejected("unsupported-package-version")
     package_id = metadata["packageId"]
-    if (package_id == S1_AUTHOR_PACKAGE_ID) != (season == "s1"):
+    if (package_id in S1_AUTHOR_PACKAGE_IDS) != (season == "s1"):
         raise ImportRejected("package-season-mismatch")
     compatibility = metadata.get("clientCompatibility")
     if (not isinstance(compatibility, dict) or compatibility != CLIENT_COMPATIBILITY
@@ -817,7 +819,7 @@ def rollback_package_upgrade(install_root, transaction_id, *, application_stoppe
 
 def _live_author_path(package_id, path):
     """Only display pixels and the two exact sidecars of each optional author."""
-    if package_id == S1_AUTHOR_PACKAGE_ID:
+    if package_id in S1_AUTHOR_PACKAGE_IDS:
         return _allowed(package_id, path)
     if path.startswith(LIVE_AUTHOR_IMAGE_ROOTS.get(package_id, ())):
         return PurePosixPath(path).suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
@@ -899,7 +901,7 @@ def _commit_additions(root, result, stage, *, live=False, cancelled=None):
             owned, dependencies, _ = _installed_inventory(root, result['packageId'])
             if owned == _rows(result['files']):
                 incoming_dependencies = (_receipt_inventory(result, result['packageId'])[1]
-                    if result['packageId'] == S1_AUTHOR_PACKAGE_ID else _rows(result['requiresFiles'], dependencies=True))
+                    if result['packageId'] in S1_AUTHOR_PACKAGE_IDS else _rows(result['requiresFiles'], dependencies=True))
                 if dependencies != incoming_dependencies:
                     raise ImportRejected('dependency-contract-changed-reimport-unsupported')
                 # A no-op must retain the receipt inode/transaction witness

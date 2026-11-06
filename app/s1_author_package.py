@@ -13,7 +13,15 @@ from pathlib import Path
 
 PACKAGE_ID = "s1-jiaye-handnotes"
 PROFILE_ID = PACKAGE_ID
-TITLE = "加页手记 · S1 困难与噩梦"
+TITLE = "爱吃醋 · S1 原图（旧包）"
+TRANSPARENT_PROFILE_ID = "s1-aichicu-routes"
+PROFILE_IDS = (PROFILE_ID, TRANSPARENT_PROFILE_ID)
+
+def title(profile_id):
+    return "爱吃醋 · S1 透明路线" if profile_id == TRANSPARENT_PROFILE_ID else TITLE
+
+def bindings_path(profile_id):
+    return f"_internal/references/author-packs/{profile_id}/display-bindings.json"
 SCHEMA = "xingtu-s1-author-display-package-v1"
 BINDINGS_SCHEMA = "xingtu-s1-author-display-bindings-v1"
 SOURCE_VERSION = "2.104.3099014"
@@ -32,6 +40,9 @@ APPROVED_BINDINGS = frozenset({
 })
 
 
+# Separately pinned transparent display; never accepts an archive self-approval.
+APPROVED_TRANSPARENT_BINDINGS = frozenset({'919b1f71fbdfaa3c3ff48433960ac9ba2323d6da3ba3da2165239a3a8686a24c'})
+
 def _api():
     import star_map_import
     return star_map_import
@@ -46,16 +57,19 @@ def layouts(mode):
     return MODE_LAYOUTS[mode] if mode in MODES else frozenset()
 
 
-def image_path(mode, map_id, floor):
-    return f"{IMAGE_PREFIX}{mode}/{map_id}/B{abs(int(floor))}.jpeg"
+def image_path(mode, map_id, floor, profile_id=PROFILE_ID):
+    suffix = "png" if profile_id == TRANSPARENT_PROFILE_ID else "jpeg"
+    return f"_internal/assets/authors/{profile_id}/{mode}/{map_id}/B{abs(int(floor))}.{suffix}"
 
 
-def allowed(path):
-    if path == BINDINGS_PATH:
+def allowed(path, package_id=PACKAGE_ID):
+    if package_id not in PROFILE_IDS:
+        return False
+    if path == bindings_path(package_id):
         return True
     for mode in MODES:
         for mid in layouts(mode):
-            if path in {image_path(mode, mid, floor) for floor in FLOORS}:
+            if path in {image_path(mode, mid, floor, package_id) for floor in FLOORS}:
                 return True
     return False
 
@@ -100,12 +114,13 @@ def dependency_rows(rows):
 
 def receipt_rows(receipt):
     api = _api()
-    if receipt.get('season') != 's1' or receipt.get('schema') != SCHEMA:
+    package_id = receipt.get('packageId')
+    if package_id not in PROFILE_IDS or receipt.get('season') != 's1' or receipt.get('schema') != SCHEMA:
         _reject('s1-author-receipt-context-mismatch')
     rows = api._rows(receipt.get('files'))
-    if not all(allowed(r['path']) for r in rows.values()):
+    if not all(allowed(r['path'], package_id) for r in rows.values()):
         _reject('s1-author-receipt-file-scope-mismatch')
-    expected = {BINDINGS_PATH} | {image_path(mode,mid,floor)
+    expected = {bindings_path(package_id)} | {image_path(mode,mid,floor,package_id)
         for mode in MODES for mid in layouts(mode) for floor in FLOORS}
     if {r['path'] for r in rows.values()} != expected:
         _reject('s1-author-receipt-incomplete')
@@ -129,14 +144,16 @@ def _matrix(value):
         _reject('s1-author-invalid-display-transform')
 
 
-def _image(data, shape):
+def _image(data, shape, profile_id=PROFILE_ID):
     from PIL import Image, UnidentifiedImageError
     try:
         with Image.open(io.BytesIO(data)) as image:
-            if image.format != 'JPEG' or list(reversed(image.size)) != shape or not _shape(shape):
+            expected_format = 'PNG' if profile_id == TRANSPARENT_PROFILE_ID else 'JPEG'
+            if image.format != expected_format or list(reversed(image.size)) != shape or not _shape(shape):
                 _reject('s1-author-image-canvas-mismatch')
             image.load()
-            if image.mode not in ('RGB', 'L'):
+            expected_modes = ('RGBA',) if profile_id == TRANSPARENT_PROFILE_ID else ('RGB', 'L')
+            if image.mode not in expected_modes:
                 _reject('s1-author-image-pixel-format')
     except (OSError, ValueError, UnidentifiedImageError, Image.DecompressionBombError) as error:
         _reject('s1-author-invalid-image')
@@ -146,11 +163,13 @@ def validate_bindings(raw, rows, dependencies, read):
     """Check same bytes for image decode, registration, and current native inputs."""
     api = _api()
     digest = hashlib.sha256(raw).hexdigest()
-    if digest not in APPROVED_BINDINGS:
-        _reject('s1-author-registration-not-reviewed')
     doc = api._json(raw)
+    profile_id = doc.get('profileId')
+    approved = APPROVED_TRANSPARENT_BINDINGS if profile_id == TRANSPARENT_PROFILE_ID else APPROVED_BINDINGS
+    if profile_id not in PROFILE_IDS or digest not in approved:
+        _reject('s1-author-registration-not-reviewed')
     if (doc.get('schema') != BINDINGS_SCHEMA or doc.get('season') != 's1'
-            or doc.get('sourceVersion') != SOURCE_VERSION or doc.get('profileId') != PROFILE_ID
+            or doc.get('sourceVersion') != SOURCE_VERSION or doc.get('profileId') != profile_id
             or doc.get('identityAuthority') is not False or doc.get('structureValidationAuthority') is not False
             or doc.get('crossFloorProjectionAllowed') is not False
             or doc.get('currentFrameGeometryFitRequired') is not True):
@@ -182,7 +201,7 @@ def validate_bindings(raw, rows, dependencies, read):
             _reject('s1-author-duplicate-or-foreign-layer')
         found.add(key)
         mode,mid,floor=key
-        path=image_path(*key)
+        path=image_path(*key,profile_id)
         inv=rows.get(path.casefold())
         if (row.get('displayPath')!=path or inv is None
                 or row.get('displaySha256')!=inv['sha256'] or row.get('displayBytes')!=inv['bytes']
@@ -216,7 +235,7 @@ def validate_bindings(raw, rows, dependencies, read):
                 or not isinstance(reg.get('evidenceSha256'),str)
                 or not re.fullmatch('[0-9a-f]{64}',reg['evidenceSha256'])):
             _reject('s1-author-registration-evidence-missing')
-        _image(read(path),row['displayShapeHW'])
+        _image(read(path),row['displayShapeHW'],profile_id)
     if found!=expected:
         _reject('s1-author-layer-coverage-mismatch')
     return doc
@@ -225,7 +244,7 @@ def validate_bindings(raw, rows, dependencies, read):
 def validate_archive(metadata, archive, root, rows, dependencies):
     api=_api()
     if (metadata.get('schema')!=SCHEMA or metadata.get('season')!='s1'
-            or metadata.get('packageId')!=PACKAGE_ID or metadata.get('sourceVersion')!=SOURCE_VERSION):
+            or metadata.get('packageId') not in PROFILE_IDS or metadata.get('sourceVersion')!=SOURCE_VERSION):
         _reject('s1-author-package-context-mismatch')
     receipt_rows(metadata)
     # Reuse the archive's normalized, inventory-checked data names.
@@ -241,4 +260,7 @@ def validate_archive(metadata, archive, root, rows, dependencies):
         if len(data)!=row['bytes'] or hashlib.sha256(data).hexdigest()!=row['sha256']:
             _reject('s1-author-file-changed')
         return data
-    return validate_bindings(read(BINDINGS_PATH),rows,dependencies,read)
+    document = validate_bindings(read(bindings_path(metadata['packageId'])),rows,dependencies,read)
+    if document['profileId'] != metadata['packageId']:
+        _reject('s1-author-binding-context-mismatch')
+    return document

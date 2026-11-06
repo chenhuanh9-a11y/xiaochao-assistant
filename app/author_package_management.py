@@ -20,7 +20,8 @@ from star_map_import import (
 from legacy_author_inventory import LEGACY_AUTHOR_INVENTORY
 
 PACKAGE_NAMES = {
-    's1-jiaye-handnotes': '加页手记 · S1 困难与噩梦',
+    's1-jiaye-handnotes': '爱吃醋 · S1 原图（旧包）',
+    's1-aichicu-routes': '爱吃醋 · S1 透明路线',
     'nightmare-zhan10': '展十 · 噩梦',
     'nightmare-suju-speed': '酥居速刷 · 噩梦',
     'difficult-suju-speed': '酥居速刷 · 困难',
@@ -203,8 +204,8 @@ def managed_author_packages_snapshot(install_root, *, cancelled=None) -> list[di
     for package_id, title in PACKAGE_NAMES.items():
         _check_cancelled(cancelled)
         item = dict(packageId=package_id, title=title,
-                    mode='both' if package_id == 's1-jiaye-handnotes' else ('difficult' if package_id.startswith('difficult-') else 'nightmare'),
-                    season='s1' if package_id == 's1-jiaye-handnotes' else 's0',
+                    mode='both' if package_id in ('s1-jiaye-handnotes', 's1-aichicu-routes') else ('difficult' if package_id.startswith('difficult-') else 'nightmare'),
+                    season='s1' if package_id in ('s1-jiaye-handnotes', 's1-aichicu-routes') else 's0',
                     canRemove=False)
         adoption = None
         try:

@@ -198,7 +198,7 @@ class Backend(QObject):
                 # Keep all declarations in the read context for package repair,
                 # but only offer authors with actual local images in the gallery.
                 self._profiles = [{"id": p.profile_id, "name": p.name, "packageId": p.package_id or "",
-                                   "runtimeSelectable": season == "s0" or p.profile_id in {"s1-jiaye-handnotes", "s1-native-structure"},
+                                   "runtimeSelectable": season == "s0" or p.profile_id in {"s1-jiaye-handnotes", "s1-aichicu-routes", "s1-native-structure"},
                                    "runtimeProfileId": "shared-structure" if p.profile_id == "s1-native-structure" else p.profile_id,
                                    "available": p.available_layers,
                                    "availableMaps": p.available_maps, "mapCount": p.map_count,
