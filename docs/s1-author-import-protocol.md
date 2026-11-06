@@ -35,6 +35,24 @@ Each of exactly 87 unique `(mode,mapId,floor)` entries explicitly binds:
 
 The entire sidecar must match the code's independently reviewed hash allowlist. An archive cannot approve its own matrix by claiming `offline-reviewed`, substituting metrics, or changing its declared hashes. A new registration requires separate review and a deliberate allowlist change. These hashes establish integrity/approved bytes, not a publisher signature or an external guarantee of provenance.
 
+## Windows native re-registration, 2026-11-06
+
+The original local source contains the same 87 JPEGs / 83 unique hashes as the
+candidate source inventory. They were re-registered against the actual Windows
+native PNG/typed-NPZ inventory; the incompatible cloud dependency declarations
+were not relabeled. The generic full-affine candidate was rejected by the
+existing importer. RANSAC similarity fitting with held-out feature matches then
+produced 87 valid bridges: minimum filled-outline IoU 0.991193, minimum 18 train
+inliers and maximum supported hold-out median residual 4.305515 native pixels.
+The six lowest-IoU native/warped-author overlays were visually reviewed. This
+does not validate route instructions, every internal wall, or game accuracy.
+
+Approved Windows sidecar SHA256:
+`8e5a11d41c2bdd5c4fdc55a19089e1005e8fd47434bde75affa40f8928ac4b9d`.
+It preserves original JPEG bytes/canvases, binds all 182 actual read-only native
+dependencies and retains native-only B4 fallback. The older cloud registration
+remains separately pinned and still rejects incompatible Windows dependencies.
+
 A separate `missingAuthorLayers` list contains all 29 B4 identities with `fallback=canonical-native-if-available`. Missing/duplicate/foreign layers, forged B4 images, invalid matrices, mismatched native references and unreviewed draft bindings reject.
 
 ## Evidence for this registration

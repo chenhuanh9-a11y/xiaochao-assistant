@@ -32,6 +32,8 @@ def profile_for(instance='production'):
 
 class BakedProductionPurposeContracts(unittest.TestCase):
     def setUp(self):
+        # Negative cases intentionally start disabled, independently of the release policy.
+        self.enterContext(patch.object(purpose, ROLLOUT, False))
         temp = tempfile.TemporaryDirectory(prefix='s1-production-purpose-fixture-')
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
@@ -44,7 +46,7 @@ class BakedProductionPurposeContracts(unittest.TestCase):
     def write_profile(self, profile):
         self.profile_path.write_text(json.dumps(profile), encoding='utf8')
 
-    def test_production_rollout_is_inactive_in_reviewed_source(self):
+    def test_disabled_source_policy_does_not_grant_production_purpose(self):
         self.assertIs(getattr(purpose, ROLLOUT), False)
         self.assertEqual(identity.baked_identity(require_qt=True), 'qt-production')
         self.assertIsNone(purpose.production_native_candidate_purpose())

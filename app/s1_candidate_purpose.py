@@ -14,11 +14,12 @@ import sys
 _NATIVE_S1_PREVIEW = object()
 _NATIVE_S1_PRODUCTION_CANDIDATE = object()
 
-# INACTIVE: final native bytes and production season-resource installation have
-# not been validated. Do not derive this from a profile, setting or environment.
-# Enabling this alone is insufficient: the production builder still rejects S1
-# until the separate resource ownership/upgrade contract is reviewed and tested.
-_PRODUCTION_S1_CANDIDATE_ROLLOUT_ENABLED = False
+# Exact Windows native inventory, guarded repair, author-display dependencies
+# and five-context self-check were verified for the formal 1.0.17 candidate.
+# The separate source-owned builder lock must still match clean source/version
+# and complete resource bytes. This does not enable private experiments or
+# assert live identity calibration.
+_PRODUCTION_S1_CANDIDATE_ROLLOUT_ENABLED = True
 
 
 def private_native_candidate_purpose():

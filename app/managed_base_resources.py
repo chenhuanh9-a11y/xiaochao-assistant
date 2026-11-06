@@ -17,6 +17,8 @@ import uuid
 
 import map_package_upgrade as transaction
 import star_map_import as files
+from s0_legacy_base_releases import REVIEWED_LEGACY_S0_BASE_RELEASES
+from s1_reviewed_base_releases import REVIEWED_S1_BASE_RELEASES
 
 SCHEMA = "xingtu-managed-base-v1"
 CANDIDATE = "_internal/managed-base-resources"
@@ -28,12 +30,12 @@ RETIRED_SCHEMA = "xingtu-base-repair-retired-v1"
 MAX_RETIRED_RECORDS = 16
 MAX_RETIRED_BYTES = 1024
 
-# INACTIVE, source-owned release locks. Populate only from verified FINAL native
-# bytes, never from installation profiles, incoming manifests or private release
-# metadata. Each entry is (resourceVersion, ((exact path, bytes, sha256), ...)).
+# Source-owned inventories verified against final Windows native bytes, never
+# installation profiles or incoming metadata. Each entry is
+# (resourceVersion, ((exact path, bytes, sha256), ...)).
 # Retain reviewed predecessor inventories while their state/journals may exist;
 # a candidate rollout toggle must never make recovery history unreadable.
-_REVIEWED_S1_BASE_RELEASES = ()
+_REVIEWED_S1_BASE_RELEASES = REVIEWED_S1_BASE_RELEASES
 _UNSPECIFIED_RESOURCE_VERSION = object()
 
 
@@ -243,6 +245,37 @@ def _package_constraints(root):
     return owned, dependencies, unrecorded
 
 
+def _legacy_s0_previous(root, candidate):
+    """Recognize only an entire source-reviewed predecessor, before any write."""
+    if type(REVIEWED_LEGACY_S0_BASE_RELEASES) is not tuple:
+        raise ManagedBaseResourceError("invalid-reviewed-legacy-s0-policy")
+    seen, catalogue = set(), []
+    for release in REVIEWED_LEGACY_S0_BASE_RELEASES:
+        if (type(release) is not tuple or len(release) != 3
+                or type(release[0]) is not str or not re.fullmatch("[0-9a-f]{40}", release[0])
+                or type(release[1]) is not str or not re.fullmatch("[0-9a-f]{64}", release[1])
+                or release[1] in seen or type(release[2]) is not tuple or not release[2]):
+            raise ManagedBaseResourceError("invalid-reviewed-legacy-s0-policy")
+        seen.add(release[1])
+        rows = []
+        for value in release[2]:
+            if type(value) is not tuple or len(value) != 3:
+                raise ManagedBaseResourceError("invalid-reviewed-legacy-s0-policy")
+            rows.append(dict(zip(("path", "bytes", "sha256"), value)))
+        previous = _rows(rows)
+        if any(key.startswith("_internal/seasons/") or optional_author_sidecar(row["path"])
+               for key, row in previous.items()):
+            raise ManagedBaseResourceError("invalid-reviewed-legacy-s0-policy")
+        catalogue.append(previous)
+    for previous in catalogue:
+        # This recognition adds no retirement authority or partial adoption.
+        if (set(previous) <= set(candidate) and all(
+                _same(_actual(files._target(root, row["path"])), row)
+                for row in previous.values())):
+            return previous
+    return {}
+
+
 def plan_managed_base_resources(install_root):
     """Read-only complete preflight. Call under a resource lease for a stable view."""
     root = Path(os.path.abspath(install_root))
@@ -265,6 +298,8 @@ def plan_managed_base_resources(install_root):
     inventory = _rows(manifest["files"])
     state = files._target(root, STATE)
     previous = _rows(_manifest(state)["files"]) if state.exists() else {}
+    if not state.exists():
+        previous = _legacy_s0_previous(root, inventory)
     owned, dependencies, unrecorded = _package_constraints(root)
     # Do not drop S1 ownership while leaving retired bytes active. Removal,
     # rename or S1-to-S0 downgrade needs a separately reviewed retirement

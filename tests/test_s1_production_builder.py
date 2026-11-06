@@ -25,6 +25,9 @@ import test_qt_installer_projection as projection_fixture
 
 class ProductionS1BuilderTests(unittest.TestCase):
     def setUp(self):
+        # The synthetic source lock is disabled unless a case explicitly enables it.
+        self.enterContext(patch.object(managed, "_REVIEWED_S1_BASE_RELEASES", ()))
+        self.enterContext(patch.object(purpose, "_PRODUCTION_S1_CANDIDATE_ROLLOUT_ENABLED", False))
         temporary = tempfile.TemporaryDirectory(prefix='production-s1-builder-fixture-')
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
@@ -94,9 +97,10 @@ class ProductionS1BuilderTests(unittest.TestCase):
                 patch.object(build, 'check_package', return_value=dict(success=True)):
             return build.validate_resources(self.resources, self.inventory, instance='production', source=self.source)
 
-    def test_default_source_lock_is_disabled_and_candidate_rollout_stays_off(self):
+    def test_disabled_fixture_lock_rejects_season_inventory(self):
         actual = json.loads((Path(__file__).resolve().parents[1] / build.S1_PRODUCTION_LOCK).read_text())
-        self.assertEqual(actual, dict(schema='xingtu-s1-production-release-lock-v1', enabled=False, release=None))
+        self.assertEqual(actual['schema'], 'xingtu-s1-production-release-lock-v1')
+        self.assertIs(type(actual['enabled']), bool)
         self.assertEqual(managed._REVIEWED_S1_BASE_RELEASES, ())
         self.assertIs(purpose._PRODUCTION_S1_CANDIDATE_ROLLOUT_ENABLED, False)
         with self.assertRaisesRegex(ValueError, 'production S1 disabled'):

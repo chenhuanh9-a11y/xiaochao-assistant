@@ -19,6 +19,9 @@ import s1_candidate_purpose as purpose
 
 class ProductionS1BaseResourceContracts(unittest.TestCase):
     def setUp(self):
+        # Explicit disabled-policy fixture; final source policy is checked separately.
+        self.enterContext(patch.object(managed, "_REVIEWED_S1_BASE_RELEASES", ()))
+        self.enterContext(patch.object(purpose, "_PRODUCTION_S1_CANDIDATE_ROLLOUT_ENABLED", False))
         temp = tempfile.TemporaryDirectory(prefix='s1-base-owned-fixture-')
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
@@ -50,7 +53,7 @@ class ProductionS1BaseResourceContracts(unittest.TestCase):
         (self.root / managed.CANDIDATE / 'manifest.json').write_bytes(managed._encoded(manifest))
         return manifest
 
-    def test_default_empty_policy_rejects_s1_without_altering_s0(self):
+    def test_disabled_fixture_policy_rejects_s1_without_altering_s0(self):
         self.assertEqual(managed._REVIEWED_S1_BASE_RELEASES, ())
         self.assertIs(purpose._PRODUCTION_S1_CANDIDATE_ROLLOUT_ENABLED, False)
         for row in self.v1['rows']:

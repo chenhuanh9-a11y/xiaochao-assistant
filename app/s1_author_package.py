@@ -24,7 +24,12 @@ FLOORS = ("-1", "-2", "-3")
 MAX_PIXELS = 16 * 1024 * 1024
 # Filled only after the offline source/native registration and independent review.
 # This is a coordinate approval, not a publisher signature or provenance claim.
-APPROVED_BINDINGS = frozenset({'bde70366bbdaec962d14ffbb1b45f3423d5f0dde703eb2068bf28b2d97c8655c'})
+APPROVED_BINDINGS = frozenset({
+    'bde70366bbdaec962d14ffbb1b45f3423d5f0dde703eb2068bf28b2d97c8655c',
+    # Original JPEGs, exact Windows native bytes, similarity-only registration.
+    # Full outlines, held-out features and six-worst visual overlays reviewed.
+    '8e5a11d41c2bdd5c4fdc55a19089e1005e8fd47434bde75affa40f8928ac4b9d',
+})
 
 
 def _api():

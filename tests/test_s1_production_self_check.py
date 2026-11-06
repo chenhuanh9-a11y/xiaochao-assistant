@@ -33,6 +33,9 @@ REAL_NATIVE = object()
 
 class ProductionSelfCheckTests(unittest.TestCase):
     def setUp(self):
+        # Resource validation is independent of release activation.
+        self.enterContext(patch.object(managed, "_REVIEWED_S1_BASE_RELEASES", ()))
+        self.enterContext(patch.object(purpose, "_PRODUCTION_S1_CANDIDATE_ROLLOUT_ENABLED", False))
         temp = tempfile.TemporaryDirectory(prefix='formal-self-check-fixture-')
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
