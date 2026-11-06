@@ -16,6 +16,7 @@ LOG_NAME = "qt-client-startup-error.txt"
 MAX_REPORT_BYTES = 16 * 1024
 _STAGES = {"validate-profile", "import-client", "run-client", "create-client"}
 _RESOURCE_ACTIONS = {
+    "installed-package-receipt-rejected": "无法核对旧图包的安装记录，暂时无法启动。请保留现有图包和设置，附上诊断记录反馈，不要卸载或删除图包。",
     "upgrade-cleanup-incomplete": "图包更新已结束，但临时文件还没清理完。请按提示继续清理，已经更新的图包不会被还原。",
     "base-cleanup-incomplete": "上次修复留下的临时文件还没清理完。请关闭可能占用文件的程序后重开星图；仍出现此提示时，请附上诊断记录反馈。",
     "resource-busy": "其他资源操作正在进行，请稍后重试。",
@@ -54,6 +55,9 @@ for _code in (
     _RESOURCE_ACTIONS[_code] = _RESOURCE_ACTIONS["resource-initialization-failed"]
 
 _ISSUE_REASONS = {
+    "invalid-installed-package-receipt": "图包安装记录格式未通过校验",
+    "invalid-installed-package-dependencies": "图包依赖记录未匹配已复核契约",
+    "receipt-validation-rejected": "图包安装记录未通过校验",
     "cleanup-object-changed": "临时对象已变化",
     "cleanup-object-unknown": "存在归属未知的临时对象",
     "cleanup-object-unwritable": "临时对象无法清理",
@@ -107,6 +111,7 @@ def _safe_issues(error):
             if (isinstance(path, str) and len(path) <= 240
                     and (path in {"_internal/difficult-native-manifest.json",
                                   "work/map-packages/pending-base-repair.json", "work/map-packages/pending-upgrade.json"}
+                         or _registered_receipt_path(path)
                          or path.startswith(("_internal/references/", "_internal/recognition/", "_internal/assets/",
                                               "references/", "recognition/", "assets/",
                                               "work/map-packages/base-repairs/", "work/map-packages/upgrades/")))
@@ -127,6 +132,14 @@ def _safe_issues(error):
         count = details.get("issueCount")
         return result, count if type(count) is int and 0 <= count < 1000000 else len(issues)
     return [], 0
+
+
+def _registered_receipt_path(path):
+    # Only source-registered package IDs, never arbitrary user JSON filenames.
+    if not path.startswith("work/map-packages/") or not path.endswith(".json"):
+        return False
+    packages = getattr(sys.modules.get("star_map_import"), "PACKAGE_IDS", ())
+    return path[len("work/map-packages/"):-len(".json")] in packages
 
 
 def _token(value, limit=100):

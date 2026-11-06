@@ -158,6 +158,34 @@ class ManagedBaseResourcesTests(unittest.TestCase):
         self.write(path, data)
         return path, data
 
+    def test_unreviewed_missing_dependency_receipt_blocks_before_any_resource_write(self):
+        self.project()
+        path, _ = self.receipt(dependencies=[])
+        receipt = json.loads(path.read_bytes())
+        receipt.pop("requiresFiles")
+        self.write(path, json.dumps(receipt).encode())
+        protected = {item: item.read_bytes() for item in self.target.rglob("*") if item.is_file()}
+        with self.assertRaises(managed.ManagedBaseResourceError) as caught:
+            managed.repair_managed_base_resources(self.target)
+        self.assertEqual(caught.exception.code, "installed-package-receipt-rejected")
+        self.assertEqual(caught.exception.details["issues"], [dict(
+            path="work/map-packages/nightmare-suju.json", reason="invalid-installed-package-dependencies")])
+        self.assertIsInstance(caught.exception.__cause__, managed.files.ImportRejected)
+        for item, data in protected.items():
+            self.assertEqual(item.read_bytes(), data, item)
+        self.assertFalse((self.target / managed.STATE).exists())
+        self.assertFalse((self.target / managed.PENDING).exists())
+
+    def test_invalid_receipt_does_not_become_an_approved_legacy_receipt(self):
+        self.project()
+        path, _ = self.receipt(dependencies=[])
+        self.write(path, b'{"private-user-value":"never serialize"}')
+        with self.assertRaises(managed.ManagedBaseResourceError) as caught:
+            managed.plan_managed_base_resources(self.target)
+        self.assertEqual(caught.exception.details["issues"], [dict(
+            path="work/map-packages/nightmare-suju.json", reason="invalid-installed-package-receipt")])
+        self.assertEqual(path.read_bytes(), b'{"private-user-value":"never serialize"}')
+
     def test_registered_author_receipt_and_images_preserved_when_dependencies_match(self):
         row = dict(self.resources["references/catalog.json"], path="_internal/references/catalog.json")
         path, original = self.receipt(dependencies=[row])

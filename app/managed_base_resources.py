@@ -232,7 +232,16 @@ def _package_constraints(root):
         package = path.stem
         if package not in files.PACKAGE_IDS:
             raise ManagedBaseResourceError("unrecognized-installed-package-receipt", [dict(path="work/map-packages/" + path.name, reason="unknown-package")])
-        inventory, package_dependencies, _ = files._installed_inventory(root, package)
+        try:
+            inventory, package_dependencies, _ = files._installed_inventory(root, package)
+        except files.ImportRejected as error:
+            # The startup reporter deliberately omits arbitrary exception text.
+            # Identify the registered receipt without adopting or rewriting it.
+            reason = (error.code if error.code in {
+                "invalid-installed-package-receipt", "invalid-installed-package-dependencies"
+            } else "receipt-validation-rejected")
+            raise ManagedBaseResourceError("installed-package-receipt-rejected", [dict(
+                path="work/map-packages/" + path.name, reason=reason)]) from error
         for key, row in inventory.items():
             owned.setdefault(key, []).append((package, row))
         # The shared receipt parser validates the package's exact season scope.
