@@ -77,14 +77,7 @@ def _children(root, relative):
 
 def _receipt(path, package):
     value = upgrade._read_json(path)
-    if value.get("packageId") != package or value.get("revision") != 1:
-        _reject("removal-invalid-receipt")
-    upgrade._digest(value.get("archiveSha256"))
-    inventory = files._rows(value.get("files"))
-    if any(not files._allowed(package, row["path"]) for row in inventory.values()):
-        _reject("removal-invalid-receipt-ownership")
-    dependencies = files._rows(value["requiresFiles"], dependencies=True) if value.get("requiresFiles") else {}
-    return inventory, dependencies
+    return files._receipt_inventory(value, package)
 
 
 def _unknown_history(directory, known):
@@ -352,7 +345,8 @@ def managed_packages_snapshot(install_root, *, cancelled=None):
             result.append(dict(packageId=package, title=PACKAGE_NAMES.get(package, package),
                 status="incomplete" if modified else "installed" if active else "managed-remnants", canRemove=bool(rows),
                 fileCount=len(rows), bytes=sum(row["bytes"] for row in rows),
-                mode="difficult" if package.startswith("difficult-") else "nightmare"))
+                mode="both" if package == "s1-jiaye-handnotes" else ("difficult" if package.startswith("difficult-") else "nightmare"),
+                **({"season": "s1"} if package == "s1-jiaye-handnotes" else {})))
         return result
 
 

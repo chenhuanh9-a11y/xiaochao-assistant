@@ -18,8 +18,9 @@ if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 from reference_position_editor import ReferencePositionEdit
 from client_problem_messages import operation_problem
-from client_input_diagnostics import InputDiagnostics
+from client_input_diagnostics import InputDiagnostics, map_attempt
 from client_manual_map import MANUAL_PICKER_ACTION, normalize_selection_mode
+from season_context import SEASONS, season_label, normalize_season, context_key, selected_profile, CONTEXTS
 
 
 def _presentation_error_details(error):
@@ -30,7 +31,7 @@ def _presentation_error_details(error):
 def _aligned_material_scope(payload):
     """Content scope, deliberately separate from per-frame live authorization."""
     return tuple(deepcopy(payload.get(key)) for key in
-                 ("roundId", "mode", "profileId", "mapId", "floor", "resourceIdentity",
+                 ("roundId", "season", "mode", "profileId", "mapId", "floor", "resourceIdentity",
                   "routeWidth", "routeHeight"))
 
 
@@ -213,6 +214,7 @@ class ClientCoordinator(QObject):
         self._last_prepared_round = None
         self._last_round_preparing = False
         self._notified = set()
+        self._private_experiment_notice_state = None
         self._bound = ""
         self._message = "选择游戏窗口后，再按需启用实时功能"
         self._reference = {}
@@ -234,7 +236,7 @@ class ClientCoordinator(QObject):
         self._last_render_token = None
         values = settings.persistedValues
         mode = values.get("gameMode", "nightmare")
-        self._applied_context = (mode, values.get("modeRouteProfiles", {}).get(mode) or values.get("routeProfileId", ""))
+        self._applied_context = self._settings_context(values)
         self._pending_context = None
         self._pending_display_refresh = False
         self._route_point_numbers = values.get("routePointNumbers", False)
@@ -246,6 +248,7 @@ class ClientCoordinator(QObject):
         self._shortcut_recording = bool(getattr(settings, "shortcutRecording", False))
         self._requested_action = ""
         self._map_input_sequence = 0
+        self._last_manual_floor_observation_at = float("-inf")
         self._map_resource_notified = set()
         self._focus_loss_map_sequence = None
         self._pointer_drag = None
@@ -275,7 +278,7 @@ class ClientCoordinator(QObject):
         self._startup_timer.timeout.connect(self.startLiveServices)
         guard = getattr(settings, "setModeChangeGuard", None)
         if callable(guard):
-            guard(lambda: not self.session.snapshot.get("roundActive", False))
+            guard(lambda: not self._game_context_locked())
         settings.changed.connect(self._draft_changed)
         settings.saved.connect(self._settings_saved)
         controls_failure = getattr(settings, "controlsVisibilitySaveFailed", None)
@@ -285,6 +288,9 @@ class ClientCoordinator(QObject):
         if recording_signal is not None:
             recording_signal.connect(self._set_shortcut_recording)
         session.changed.connect(self._session_changed)
+        context_finished = getattr(session, "contextFinished", None)
+        if context_finished is not None:
+            context_finished.connect(self._context_finished)
         session.actionRequested.connect(self._action_requested)
         resources.resourcesChanged.connect(self._resources_changed)
         resources.changed.connect(self._resource_readiness_changed)
@@ -337,7 +343,7 @@ class ClientCoordinator(QObject):
     def _trace(self, stage, *, state=None, payload=None, reason="", window=None, **extra):
         data = payload or state or {}
         row = dict(role="presentation", stage=stage, reason=reason,
-                   mode=data.get("mode"), groupid=data.get("groupId"),
+                   season=data.get("season", "s0"), contextKey=data.get("contextKey"), mode=data.get("mode"), groupid=data.get("groupId"),
                    identityPhase=data.get("identityPhase"), provisional=data.get("provisional"),
                    durablemap=data.get("durableMapId", data.get("mapId")), floor=data.get("floor"),
                    round=data.get("roundId"), cycle=data.get("cycleId"), frame=data.get("frameId"),
@@ -401,10 +407,10 @@ class ClientCoordinator(QObject):
             return
         from route_display_notice import DisplayNoticeContext
         def context(payload):
-            return DisplayNoticeContext(payload.get("roundId"), payload.get("mode"),
+            return DisplayNoticeContext((payload.get("season", "s0"), payload.get("roundId")), payload.get("mode"),
                 payload.get("mapId"), payload.get("floor"), repr(payload.get("resourceIdentity")),
-                (payload.get("cycleId"), payload.get("frameId"), payload.get("generation")))
-        self._fallback_notices.begin_round(current.get("roundId"))
+                (payload.get("season", "s0"), payload.get("cycleId"), payload.get("frameId"), payload.get("generation")))
+        self._fallback_notices.begin_round((current.get("season", "s0"), current.get("roundId")))
         notice = self._fallback_notices.consume(context(data), context(current),
             display_kind=current.get("displayKind", ""), author_status=current.get("authorStatus", "none"),
             current_commit=True)
@@ -493,25 +499,50 @@ class ClientCoordinator(QObject):
             finish(token, committed)
         self.changed.emit()
 
-    def _map_resource_problem(self, state=None):
+    def _manual_floor_observation_ready(self, state):
+        """A narrow manual identity capability, never global live readiness."""
+        return bool(state.get("season") == "s1" and state.get("roundActive")
+                    and state.get("manualAlignmentSession") and state.get("mapId")
+                    and state.get("automaticFloorObservationAvailable")
+                    and not self._pending_context and not state.get("contextPending")
+                    and not self.resources.busy and not self.resources.pendingKind
+                    and not state.get("resourceLocked")
+                    and not self.session.snapshot.get("resourceLocked")
+                    and not self.session.snapshot.get("contextPending"))
+
+    @staticmethod
+    def _native_candidate_preview_ready(state):
+        return (state.get("season") == "s1"
+                and state.get("nativeCandidatePreviewAvailable") is True
+                and not state.get("manualAlignmentSession"))
+
+    def _map_resource_problem(self, state=None, *, allow_manual_floor=False):
         """Cached readiness only: never read or prepare resources on input/UI."""
         state = self.session.snapshot if state is None else state
         mode = state.get("mode", self._applied_context[0])
-        if self.resources.busy or self.resources.pendingKind or state.get("resourceLocked"):
-            return ((mode, "resource-operation"), "正在更新地图资源，请等待资源操作完成后再打开地图")
+        season = state.get("season", "s0")
         if self._pending_context or state.get("contextPending"):
             return ((mode, "context-pending"), "正在切换地图资源，请稍后再打开地图")
+        if not CONTEXTS[context_key(mode, season)].registered:
+            return ((season, mode, "season-resources-unregistered"), f"{season_label(season)} 地图资源尚未登记，暂不能开始识别")
+        if self.resources.busy or self.resources.pendingKind or state.get("resourceLocked"):
+            return ((mode, "resource-operation"), "正在更新地图资源，请等待资源操作完成后再打开地图")
         report = (state.get("savedFrameCapabilities") or {}).get(mode) or {}
         reason = str(report.get("reason") or state.get("liveUnavailableReason") or "")
         if reason == "resource-validation-pending" or state.get("pendingAction") == "inspect_engine_resources":
             return ((mode, "resource-validation-pending"), "正在校验地图识别资源，请稍后再打开地图")
         if report.get("available") is False:
-            label = "困难模式" if mode == "difficult" else "噩梦模式"
+            label = {"difficulty2": "普通模式", "difficult": "困难模式", "nightmare": "噩梦模式"}.get(mode, "当前模式")
             if "missing-resource:" in reason or "FileNotFoundError" in reason:
                 summary = f"{label}缺少地图识别资源，请到地图资源页补齐或重新导入资源"
             else:
                 summary = f"{label}地图识别资源未通过校验或无法读取，请到地图资源页检查并重新导入"
             return ((mode, reason), summary)
+        if (season != "s0" and not report.get("liveReady", False)
+                and not (allow_manual_floor and self._manual_floor_observation_ready(state))
+                and not self._native_candidate_preview_ready(state)):
+            gaps = ";".join(report.get("liveGaps", ())) or "season-live-contract-unavailable"
+            return ((season, mode, gaps), f"{season_label(season)} 生产结构资源可离线读取，楼层控件尚未完成验证，暂不能开始实机识别")
         return None
 
     @Slot()
@@ -528,7 +559,7 @@ class ClientCoordinator(QObject):
         if self._focus_notice:
             return self._focus_notice
         state = self.session.snapshot
-        resource_problem = self._map_resource_problem(state)
+        resource_problem = self._map_resource_problem(state, allow_manual_floor=True)
         if resource_problem is not None:
             return resource_problem[1]
         if self.session.busy and state.get("pendingAction") != "refresh_map":
@@ -611,6 +642,17 @@ class ClientCoordinator(QObject):
         except OSError:
             return
         self._map_input_sequence = sequence
+        # Only the already-accepted game action, never raw keys or other apps.
+        # Sequence participates in dedup; the existing bounded writer owns IO.
+        try:
+            input_state = self.session.snapshot
+            self._trace("map-input", state=input_state, role="input", reason="map-input-accepted",
+                decision=dict(inputSequence=sequence),
+                diag=dict(inputSequence=sequence, openIntent=opening, inputCreatedAt=created,
+                    inputSource=event.get("source") if event.get("source") in {"hotkey", "escape"} else "map-key",
+                    state=InputDiagnostics._state(input_state)))
+        except Exception:
+            pass  # Optional diagnostic delivery cannot swallow the accepted action.
         cancel_recovery = getattr(self.runtime, "cancel_map_open_recovery", None)
         if callable(cancel_recovery):
             cancel_recovery("new-map-input")
@@ -625,7 +667,9 @@ class ClientCoordinator(QObject):
         if not opening:
             self._close_map_from_input(payload)
         else:
-            problem = self._map_resource_problem()
+            state = self.session.snapshot
+            manual_floor = self._manual_floor_observation_ready(state)
+            problem = self._map_resource_problem(state, allow_manual_floor=manual_floor)
             if problem is not None:
                 # Reject this opening edge before dispatch, while preserving
                 # sequence identity. The next physical edge must retry opening,
@@ -642,7 +686,8 @@ class ClientCoordinator(QObject):
             self._revoke_runtime("map-key-open")
             # Runtime owns atomic ensure-start + original map preparation.
             # Distinct sequence payloads cannot be swallowed by Session dedup.
-            self.session.dispatchWithPayload("map", payload)
+            self.session.dispatchWithPayload("fit_manual_frame" if manual_floor else "map",
+                dict(payload, s1OpenEdge=True) if manual_floor else payload)
 
     @staticmethod
     def _pointer_context_fields(context):
@@ -773,7 +818,7 @@ class ClientCoordinator(QObject):
 
     def _action_requested(self, action, payload):
         if (action in {"end_round", "stop_round", "reset_round", "bind_capture"}
-                or (action == "set_context" and payload.get("mode") != self._applied_context[0])):
+                or (action == "set_context" and (payload.get("mode"), payload.get("season", "s0")) != (self._applied_context[0], self._applied_context[2]))):
             self._reset_map_input("action-" + action)
         if action in {"end_round", "stop_round", "reset_round", "set_floor", "cycle_floor"}:
             self._clear_reference()
@@ -828,8 +873,14 @@ class ClientCoordinator(QObject):
     def requestManualMapSelection(self):
         if self._closing or self._closed:
             return
-        if (normalize_selection_mode(self.settings.persistedValues.get("mapSelectionMode")) == "manual"
+        state = self.runtime.snapshot()
+        if state.get("season") == "s1" and not state.get("manualAlignmentSession"):
+            return
+        if ((normalize_selection_mode(self.settings.persistedValues.get("mapSelectionMode")) == "manual"
+                or self.runtime.snapshot().get("manualAlignmentSession"))
                 and self._manual_map_picker is not None):
+            if self.runtime.snapshot().get("manualAlignmentSession") and self._bound:
+                self._game_focus.requestFocus()
             # Manual mode keeps the game in the foreground and offers the
             # picker directly; no candidate reshuffle is needed.
             self._manual_map_picker.open(source="map-button")
@@ -839,7 +890,8 @@ class ClientCoordinator(QObject):
 
     @Slot(str)
     def setMapSelectionMode(self, mode):
-        if mode not in ("auto", "manual"):
+        # A stale S1 control must not overwrite the saved S0 preference.
+        if mode not in ("auto", "manual") or self.runtime.snapshot().get("season") == "s1":
             return
         if self.settings.setValue("mapSelectionMode", mode):
             self.settings.saveFields(["mapSelectionMode"])
@@ -856,11 +908,18 @@ class ClientCoordinator(QObject):
         # The picker has its own availability. It deliberately does not use
         # the advertised confirm_route command: that command stays tied to a
         # selected/floor-ready candidate for the existing confirm buttons.
-        if not self.runtime.snapshot().get("manualMapPickAvailable"):
+        state = self.runtime.snapshot()
+        if state.get("season") == "s1" and not state.get("manualAlignmentSession"):
+            return False
+        if not state.get("manualMapPickAvailable"):
             self._message = "请先开始本局并等待地图资源就绪，再选择本局地图"
             self.changed.emit()
             return False
-        self.session.dispatchWithPayload("confirm_route", {"mapId": str(map_id)})
+        payload = {"mapId": str(map_id)}
+        if (state.get("season") == "s1" and state.get("manualAlignmentSession")
+                and state.get("automaticFloorObservationAvailable")):
+            payload["inputObservationSequence"] = self._map_input_sequence
+        self.session.dispatchWithPayload("confirm_route", payload)
         return True
 
     def _notification_geometry(self):
@@ -949,13 +1008,21 @@ class ClientCoordinator(QObject):
     @Slot()
     def recaptureFromMain(self):
         """Explicit main-page click only; never called by polling/background IO."""
+        self._capture_from_main("capture_now", force_catalogue=True)
+
+    @Slot()
+    def fitManualFromMain(self):
+        """Return to the bound game before an explicitly requested manual fit."""
+        self._capture_from_main("fit_manual_frame")
+
+    def _capture_from_main(self, action, *, force_catalogue=False):
         if (self._main_recapture_active or self._closing or self._closed or self.session.busy or self.resources.busy
                 or self.resources.pendingKind or self._pending_context
                 or self.session.snapshot.get("resourceLocked")
-                or "capture_now" not in self.session.snapshot.get("availableCommands", ())):
+                or action not in self.session.snapshot.get("availableCommands", ())):
             return
         state = self.runtime.snapshot()
-        fields = ("mode", "profileId", "roundId", "roundActive", "roundPreparing")
+        fields = ("season", "mode", "profileId", "roundId", "roundActive", "roundPreparing")
         scope = tuple(state.get(key) for key in fields)
         binding, generation = self._bound, getattr(self.capture, "generation", None)
         session_generation = self.session.snapshot.get("generation")
@@ -988,7 +1055,10 @@ class ClientCoordinator(QObject):
                     if callable(reset):
                         reset(bool(self._map_was_open))
                 self._clear_focus_return_plan()
-                self.session.dispatch("capture_now")
+                if force_catalogue and action == "capture_now" and self._native_candidate_preview_ready(current):
+                    self.session.dispatchWithPayload(action, {"forceCatalogue": True})
+                else:
+                    self.session.dispatch(action)
             else:
                 self._message = self._focus_notice = "识别环境已变化，未截图；请确认游戏地图已打开后重试"
         self.changed.emit()
@@ -1082,7 +1152,12 @@ class ClientCoordinator(QObject):
             # observation synchronizes intent. A failed capture retries on the
             # next bounded discovery tick; management keys remain available.
             self._binding_resume_pending = True
-            self.session.dispatchWithPayload("capture_now", {
+            manual_floor = self._manual_floor_observation_ready(state)
+            if (state.get("season") == "s1" and not manual_floor
+                    and not self._native_candidate_preview_ready(state)):
+                self._binding_resume_pending = False
+                return
+            self.session.dispatchWithPayload("fit_manual_frame" if manual_floor else "capture_now", {
                 "inputObservationSequence": self._map_input_sequence,
                 "foregroundReturn": True, "bindingResume": True})
             return
@@ -1268,31 +1343,83 @@ class ClientCoordinator(QObject):
         self.notificationRequested.emit("控件偏好未保存", self._message, "warning")
         self.changed.emit()
 
+    def _game_context_locked(self):
+        state = self.session.snapshot
+        # The round worker can have started before its UI-thread receipt lands.
+        # Include both the queued start intent and the current runtime authority.
+        if state.get("pendingAction") in {"start_round", "toggle_round"}:
+            return True
+        runtime = getattr(self, "runtime", None)
+        actual = runtime.snapshot() if runtime is not None else {}
+        return any(source.get(key) for source in (state, actual)
+                   for key in ("roundActive", "roundPreparing", "roundWorkActive"))
+
+    @staticmethod
+    def _settings_context(values):
+        season = normalize_season(values.get("gameSeason", "s0"))
+        mode = values.get("gameMode", "nightmare")
+        profile = selected_profile(values, mode, season)
+        return mode, profile, season
+
     @Slot(str)
     def setMode(self, mode):
-        if mode not in {"nightmare", "difficult"} or self.settings.busy or self.resources.busy:
+        self.requestGameMode(mode)
+
+    @Slot(str)
+    def requestGameMode(self, mode):
+        self.requestGameContext(self.settings.persistedValues.get("gameSeason", "s0"), mode)
+
+    @Slot(str)
+    def requestGameSeason(self, season):
+        self.requestGameContext(season, self.settings.persistedValues.get("gameMode", "nightmare"))
+
+    @Slot(str, str)
+    def requestGameContext(self, season, mode):
+        from season_context import modes_for_season
+        if season not in SEASONS or mode not in modes_for_season(season) or self.settings.busy or self.resources.busy:
             return
-        if mode != self.settings.persistedValues.get("gameMode") and self.session.snapshot.get("roundActive"):
-            self._message = "请先结束本局，再切换游戏模式"
-            self.notificationRequested.emit("暂不能切换模式", self._message, "warning")
+        current = self._settings_context(self.settings.persistedValues)
+        if (mode, season) == (current[0], current[2]):
+            # Saved defaults are intent, not evidence that the runtime applied
+            # them. An explicit selection retries a failed saved target once.
+            if (current == self._applied_context or self._pending_context
+                    or self._game_context_locked()):
+                return
+            self._pending_context = current
+            self._context_timer.start()
+            self._try_apply_context()
+            return
+        if self._game_context_locked():
+            self._message = "请先结束本局，再切换赛季或难度"
+            self.notificationRequested.emit("暂不能切换", self._message, "warning")
             self.changed.emit()
             return
-        if mode == self.settings.persistedValues.get("gameMode"):
-            return
         self._clear_reference()
-        self._revoke_runtime("mode-preference-changed")
-        if self.settings.setValue("gameMode", mode):
-            self.settings.saveFields(["gameMode"])
+        self._revoke_runtime("game-context-preference-changed")
+        if self.settings.setValue("gameSeason", season) and self.settings.setValue("gameMode", mode):
+            self.settings.saveFields(["gameSeason", "gameMode"])
 
     @Slot(str)
     def setRouteProfile(self, profile):
         if self.settings.busy or self.resources.busy:
             return
         values = self.settings.values
-        choices = dict(values.get("modeRouteProfiles", {}))
-        choices[self.session.currentMode] = profile
-        if self.settings.setValue("routeProfileId", profile) and self.settings.setValue("modeRouteProfiles", choices):
-            self.settings.saveFields(["routeProfileId", "modeRouteProfiles"])
+        season = getattr(self.session, "currentSeason", "s0")
+        choices = dict(values.get("contextRouteProfiles", {}))
+        choices[context_key(self.session.currentMode, season)] = profile
+        fields = ["contextRouteProfiles"]
+        if not self.settings.setValue("contextRouteProfiles", choices):
+            return
+        if season == "s0":
+            if not self.settings.setValue("routeProfileId", profile):
+                return
+            fields.append("routeProfileId")
+            legacy = dict(values.get("modeRouteProfiles", {}))
+            legacy[self.session.currentMode] = profile
+            if not self.settings.setValue("modeRouteProfiles", legacy):
+                return
+            fields.append("modeRouteProfiles")
+        self.settings.saveFields(fields)
 
     def _sync_reference_payload(self, payload):
         if self._edit is not None and self._reference.get("previewOnly"):
@@ -1301,7 +1428,7 @@ class ClientCoordinator(QObject):
         if not payload or not payload.get("referenceAuthorized"):
             self._clear_reference()
             return
-        context = (payload.get("mode"), payload.get("roundId"), payload.get("mapId"),
+        context = (payload.get("season", "s0"), payload.get("mode"), payload.get("roundId"), payload.get("mapId"),
             payload.get("floor"), payload.get("profileId"), payload.get("variantId"),
             payload.get("displayGeneration"), repr(payload.get("resourceIdentity")))
         if tuple(self._reference.get("context", ())) != context:
@@ -1436,7 +1563,7 @@ class ClientCoordinator(QObject):
                 self._edit_generation += 1
                 context = (*self._applied_context, self._edit_generation)
                 self._reference_preview_context = context
-                provider.request(*self._applied_context, context=context,
+                provider.request(*self._applied_context[:2], season=self._applied_context[2], context=context,
                     variant_id=self.settings.values.get("zhan10CoffinVariantId", "variant-01"))
                 self._message = "正在准备位置预览，不参与本局识别"
                 self.changed.emit()
@@ -1464,7 +1591,7 @@ class ClientCoordinator(QObject):
         context = self._reference_preview_context
         if (self._closed or self._closing or context is None
                 or tuple(payload.get("context", ())) != context
-                or tuple(context[:2]) != self._applied_context
+                or tuple(context[:3]) != self._applied_context
                 or payload.get("previewOnly") is not True
                 or payload.get("referenceAuthorized") or payload.get("liveAuthorization")):
             return
@@ -1592,18 +1719,16 @@ class ClientCoordinator(QObject):
         configure = getattr(self.runtime, "configure_settings", None)
         if configure:
             configure(values)
-        mode = values.get("gameMode", "nightmare")
-        profile = values.get("modeRouteProfiles", {}).get(mode) or values.get("routeProfileId", "")
+        mode, profile, season = self._settings_context(values)
         if numbers_changed and str(profile).startswith("custom:"):
             self.cancelReferenceEdit()
             self._cancel_pending_material("route-point-numbers-changed")
             self._clear_reference()
             self._pending_display_refresh = True
-        # Mode and author reconfiguration is serialized by SessionService; don't
-        # race two independent commands with different generation tokens.
-        if (mode, profile) != self._applied_context or self._pending_display_refresh:
+        # Context includes season; a display-only refresh must not erase it.
+        if (mode, profile, season) != self._applied_context or self._pending_display_refresh:
             self._cancel_pointer_drag("preferences-committed")
-            if mode != self._applied_context[0]:
+            if (mode, season) != (self._applied_context[0], self._applied_context[2]):
                 self._clear_reference()
                 self._revoke_runtime("preferences-committed")
             else:
@@ -1611,12 +1736,23 @@ class ClientCoordinator(QObject):
                 # identity or the already verified canonical pose.
                 self.cancelReferenceEdit()
                 self._cancel_pending_material("route-preference-changed")
-            self._pending_context = (mode, profile)
+            self._pending_context = (mode, profile, season)
             self._context_timer.start()
             self._try_apply_context()
         if self._saving_position:
             self._saving_position = False
             self._message = "定点位置已保存，已恢复鼠标穿透"
+        self.changed.emit()
+
+    def _context_finished(self, target):
+        if self._pending_context != tuple(target):
+            return
+        # Completion (including rejection/cancellation) ends this attempt.
+        # Keep the persisted default intact, but never retry it on a timer.
+        self._pending_context = None
+        self._context_timer.stop()
+        self._applied_context = (self.session.appliedMode, self.session.appliedProfile,
+                                 self.session.appliedSeason)
         self.changed.emit()
 
     def _try_apply_context(self):
@@ -1625,24 +1761,28 @@ class ClientCoordinator(QObject):
             return
         if self.resources.busy or self.resources.pendingKind or self.session.snapshot.get("resourceLocked"):
             return
-        mode, profile = self._pending_context
-        if self.session.snapshot.get("roundActive") and mode != self._applied_context[0]:
+        mode, profile, season = self._pending_context
+        if (self._game_context_locked()
+                and (mode, season) != (self._applied_context[0], self._applied_context[2])):
             self._message = "请先结束本局，再切换游戏模式"
             return
-        if self._pending_display_refresh and (mode, profile) == self._applied_context:
+        if self._pending_display_refresh and (mode, profile, season) == self._applied_context:
             if self.session.busy:
                 return
             self._pending_display_refresh = False
-            self.session.dispatchWithPayload("set_context", dict(mode=mode, profileId=profile, refreshDisplay=True))
+            self.session.dispatchWithPayload("set_context", dict(season=season, mode=mode, profileId=profile, refreshDisplay=True))
             self._context_timer.stop()
             return
-        if self.session.reconfigure(mode, profile):
+        if self.session.reconfigure(mode, profile, season):
             self._pending_display_refresh = False
             self._context_timer.stop()
             if not self.session.busy:
                 self._session_changed()
         else:
             self._message = self.session.message
+            self._pending_context = None
+            self._context_timer.stop()
+            self.changed.emit()
 
     def _resources_changed(self):
         if self._closing or self._closed:
@@ -1704,9 +1844,10 @@ class ClientCoordinator(QObject):
         if self.session.busy:
             pending = self.session.snapshot.get("pendingAction")
             reprojecting = (pending == "set_context" and self._pending_context
-                            and self._pending_context[0] == self._applied_context[0])
+                            and self._pending_context[0] == self._applied_context[0]
+                            and self._pending_context[2] == self._applied_context[2])
             if not reprojecting and pending not in {
-                    "refresh_map", "recover_map_open", "probe_map_after_drag", "reselect_map", "previous_candidate", "next_candidate",
+                    "refresh_map", "observe_manual_floor", "observe_candidate_floor", "recover_map_open", "probe_map_after_drag", "reselect_map", "previous_candidate", "next_candidate",
                     "select_candidate", "confirm_route", "set_floor", "cycle_floor",
                     "select_group_member"}:
                 self._invalidate_display()
@@ -1715,7 +1856,7 @@ class ClientCoordinator(QObject):
         self._notify_session_transitions(state)
         actual_context = self.runtime.snapshot()
         if (self._pending_context and not self._pending_display_refresh
-                and (actual_context.get("mode"), actual_context.get("profileId")) == self._pending_context):
+                and (actual_context.get("mode"), actual_context.get("profileId"), actual_context.get("season", "s0")) == self._pending_context):
             self._applied_context = self._pending_context
             self._pending_context = None
             self._context_timer.stop()
@@ -1740,7 +1881,7 @@ class ClientCoordinator(QObject):
                 self._binding_suspended = self._binding_resume_pending = False
                 self.input.resumeGameBinding()
                 self._trace("binding-resumed", reason="same-window-current-map-observation")
-        if receipt.get("action") == "capture_now" and self._binding_suspended:
+        if receipt.get("action") in {"capture_now", "fit_manual_frame"} and self._binding_suspended:
             self._binding_resume_pending = False
         if receipt.get("action") == "bind_capture":
             if receipt.get("success") and self._bound:
@@ -1786,7 +1927,7 @@ class ClientCoordinator(QObject):
                 self.changed.emit()
                 return
             if current and current.get("liveAuthorization"):
-                scope = ("epoch", "mode", "profileId", "mapId", "floor", "roundId", "cycleId",
+                scope = ("epoch", "season", "mode", "profileId", "mapId", "floor", "roundId", "cycleId",
                          "captureGeneration", "displayGeneration", "variantId",
                          "resourceIdentity", "routeWidth", "routeHeight", "clientWidth", "clientHeight")
                 if any(current.get(key) != self._aligned.get(key) for key in scope):
@@ -1925,10 +2066,10 @@ class ClientCoordinator(QObject):
         current = self.runtime.snapshot()
         active = bool(current.get("roundActive", state.get("roundActive")))
         receipt = state.get("lastReceipt", {})
-        prepared = (current.get("mode", state.get("mode")), current.get("roundId", state.get("roundId")))
+        prepared = (current.get("season", "s0"), current.get("mode", state.get("mode")), current.get("roundId", state.get("roundId")))
         preparing = bool(current.get("roundPreparing", state.get("roundPreparing")))
         if (preparing and not active
-                and prepared == (state.get("mode"), state.get("roundId"))
+                and prepared == (state.get("season", "s0"), state.get("mode"), state.get("roundId"))
                 and receipt.get("action") == "start_round" and receipt.get("success")
                 and prepared != self._last_prepared_round):
             self._last_prepared_round = prepared
@@ -1948,7 +2089,12 @@ class ClientCoordinator(QObject):
                 self.notificationRequested.emit("本局已结束", "本局显示与识别已停止", "info")
         receipt = state.get("lastReceipt", {})
         reason = receipt.get("reason", "")
-        if (receipt.get("success") is False and not receipt.get("fitReportingDeferred")
+        expected_candidate_close = (receipt.get("action") == "observe_candidate_floor"
+                                    and reason == "candidate-map-closed" and not receipt.get("error"))
+        if (receipt.get("success") is False and receipt.get("action") != "observe_manual_floor"
+                and not expected_candidate_close
+                and not (reason == "private-contradiction-recovery" and not receipt.get("error"))
+                and not receipt.get("fitReportingDeferred")
                 and not (receipt.get("action") == "recover_map_open" and receipt.get("recoveryPending"))):
             key = ("failure", state.get("roundId"), state.get("cycleId"), receipt.get("action"), reason)
             if key not in self._notified:
@@ -1969,6 +2115,9 @@ class ClientCoordinator(QObject):
             self.toggleAlignedVisibility()
             return
         if action == MANUAL_PICKER_ACTION:
+            state = self.runtime.snapshot()
+            if state.get("season") == "s1" and not state.get("manualAlignmentSession"):
+                return
             if self._manual_map_picker is not None:
                 self._manual_map_picker.toggle(source="hotkey")
             return
@@ -2055,7 +2204,7 @@ class ClientCoordinator(QObject):
             if foreground != int(self._bound or 0):
                 first_loss = not self._waiting_foreground
                 self._waiting_foreground = True
-                self._map_was_open = self._map_was_open or actual.get("mapOpen", state.get("mapOpen")) or (self.session.busy and self._requested_action in {"map", "capture_now"})
+                self._map_was_open = self._map_was_open or actual.get("mapOpen", state.get("mapOpen")) or (self.session.busy and self._requested_action in {"map", "capture_now", "fit_manual_frame"})
                 if first_loss:
                     self._trace("foreground-change", state=actual, reason="game-lost-foreground",
                                 window=self._foreground_details(foreground))
@@ -2074,6 +2223,10 @@ class ClientCoordinator(QObject):
             elif self._waiting_foreground:
                 if self.session.busy:
                     return
+                manual_floor = self._manual_floor_observation_ready(actual)
+                if (actual.get("season") == "s1" and self._map_was_open
+                        and not manual_floor and not self._native_candidate_preview_ready(actual)):
+                    return
                 self._waiting_foreground = False
                 self._trace("foreground-change", state=actual, reason="game-regained-foreground",
                             window=self._foreground_details(foreground))
@@ -2087,7 +2240,8 @@ class ClientCoordinator(QObject):
                 if self._map_was_open:
                     self._map_was_open = False
                     self._invalidate_display("foreground-return-recapture")
-                    self.session.dispatchWithPayload("capture_now", dict(foregroundReturn=True))
+                    self.session.dispatchWithPayload("fit_manual_frame" if manual_floor else "capture_now",
+                                                     dict(foregroundReturn=True))
                 else:
                     self.showReference()
             elif self._aligned:
@@ -2123,6 +2277,44 @@ class ClientCoordinator(QObject):
                 pass
         return details
 
+    def _private_experiment_notice(self, name, event):
+        """Report only a current runtime experimental transition, never a grant."""
+        current = getattr(self.runtime, "private_experiment_event_is_current", None)
+        if not callable(current) or not current(event):
+            return
+        state = self.runtime.snapshot()
+        if (self._pending_context or not state.get("roundActive")
+                or any(event.get(key) != state.get(key) for key in ("epoch", "season", "mode", "roundId"))):
+            return
+        experiment = state.get("privateExperiment") or {}
+        locked = name == "private-experimental-locked"
+        if (not locked and (event.get("reason") != "private-contradiction-recovery"
+                or not event.get("privatePreviousLockMapId"))):
+            return  # UNKNOWN/unconfirmed singleton recovery is not a contradiction.
+        if (not event.get("privatePoolId") or any(event.get(key) != experiment.get(key) for key in
+                ("privatePoolId", "privatePoolRevision", "privateResourceDigest"))):
+            return
+        if (experiment.get("privateExperimental") is not True
+                or experiment.get("privateExperimentalLocked") is not locked):
+            return
+        map_id = experiment.get("privateLockMapId") if locked else ""
+        if locked and (not isinstance(map_id, str) or not map_id):
+            return
+        key = (state.get("season"), state.get("mode"), state.get("roundId"),
+            event["privatePoolId"], event["privatePoolRevision"], locked, map_id)
+        if key == self._private_experiment_notice_state:
+            return
+        self._private_experiment_notice_state = key
+        if locked:
+            self._message = "实验锁定（未正式校准） · " + map_id
+            self.notificationRequested.emit("实验锁定（未正式校准）", "实验地图 " + map_id + "，请以实机效果为准。", "info")
+        else:
+            self._message = "结构矛盾 · 已恢复候选识别"
+            self.notificationRequested.emit("结构矛盾，恢复识别",
+                "新结构与实验锁定地图矛盾，已解除锁定并恢复候选识别，下次开图继续核对。", "info")
+        # Informational only. Never refresh Session or mutate/cancel its worker.
+        self.changed.emit()
+
     @Slot(object)
     def _on_runtime_event(self, event):
         if self._closed or self._closing or not isinstance(event, dict):
@@ -2130,13 +2322,22 @@ class ClientCoordinator(QObject):
         name = event.get("event", "unknown")
         if name in ('automatic-failure-sample', 'failure-sample'):
             self._trace(name, payload=event, role='diagnostics', reason=event.get('reason', ''),
-                failureSample=event.get('failureSample', {}))
+                failureSample=event.get('failureSample', {}),
+                **({'mapAttempt': event['mapAttempt']} if 'mapAttempt' in event else {}))
             return  # Evidence delivery has no presentation or recognition authority.
+        if name == "map-capture-diagnostic":
+            self._trace("map-capture", payload=event, role="runtime", reason=event.get("reason", ""),
+                phase=event.get("phase"), mapAttempt=map_attempt(event.get("mapAttempt")),
+                diag={key: event[key] for key in ("capture", "observation", "exception") if key in event})
+            return  # Observational metadata has no display or input authority.
         if name == "map-preparation":
             details = event.get("preparation") or {}
+            request = details.get("requestScope") or {}
+            correlation = map_attempt(dict(details, requestGeneration=request.get("generation")))
             self._trace(name, payload=event, role="runtime", reason=event.get("reason", ""),
-                phase=details.get("phase"), diag=details,
-                decision=dict(openingId=details.get("openingId"), ordinal=details.get("ordinal")))
+                phase=details.get("phase"), diag=details, mapAttempt=correlation,
+                decision=dict(openingId=details.get("openingId"), attemptId=details.get("attemptId"),
+                    ordinal=details.get("ordinal")))
             return
         if name == 'recognition-diagnostic':
             self._trace(name, payload=event, role='recognition', reason=event.get('reason', ''),
@@ -2156,13 +2357,15 @@ class ClientCoordinator(QObject):
                                           groupEvidence=event.get("groupEvidence", {})))
         self._trace(name, payload=payload, reason=event.get("reason", ""),
                     role="runtime", status=event.get("status"),
-                    diag={key: event.get(key) for key in ("poseResult", "poseAttempt", "groupMemberIds", "invalidationOrigin") if key in event},
+                    diag={key: event.get(key) for key in ("poseResult", "poseAttempt", "groupMemberIds", "invalidationOrigin",
+                        *getattr(self.runtime, "_private_diagnostic_fields", lambda: ())()) if key in event},
                     **({'fitReport': event['fitReport']} if 'fitReport' in event else {}),
+                    **({'mapAttempt': event['mapAttempt']} if 'mapAttempt' in event else {}),
                     **decision)
         if name == "map-fit-incomplete":
             # A finalized historical segment is independent of the current open.
             # It cannot mutate current runtime/input/display state.
-            key = ("map-fit-incomplete", event.get("mode"), event.get("roundId"),
+            key = ("map-fit-incomplete", event.get("season", "s0"), event.get("mode"), event.get("roundId"),
                    event.get("cycleId"), event.get("epoch"))
             if key not in self._notified:
                 from client_fit_reporting import incomplete_problem
@@ -2171,13 +2374,17 @@ class ClientCoordinator(QObject):
         elif name == "map-fit-waiting":
             state = self.runtime.snapshot()
             if all(event.get(k) == state.get(k) for k in
-                   ("epoch", "mode", "roundId", "cycleId", "generation")) and state.get("mapOpen"):
+                   ("epoch", "season", "mode", "roundId", "cycleId", "generation")) and state.get("mapOpen"):
                 self._message = "正在继续核对地图位置，请保持地图打开"
                 self.changed.emit()
         elif name == "round-started":
             # This event is emitted only after capture activation succeeds,
             # before the first recognition/fit worker can finish.
             self._notify_session_transitions(self.runtime.snapshot())
+        elif name in {"private-experimental-locked", "private-experimental-unlocked"}:
+            self._private_experiment_notice(name, event)
+        elif name == "private-pool-observed":
+            return  # Runtime/trace diagnostics only; no notification or refresh.
         elif name == "sibling-material-pending":
             if self._pending_context:
                 self._trace("drop-event", payload=event, reason="presentation-context-pending")
@@ -2197,7 +2404,7 @@ class ClientCoordinator(QObject):
                 self.changed.emit()
         elif name in {"render-ready", "group-state", "pose-result", "identity-committed"}:
             state = self.runtime.snapshot()
-            context = (state.get("mode", self._applied_context[0]), state.get("profileId", self._applied_context[1]))
+            context = (state.get("mode", self._applied_context[0]), state.get("profileId", self._applied_context[1]), state.get("season", "s0"))
             if self._pending_context or context != self._applied_context:
                 self._trace("drop-event", payload=event, reason="presentation-context-pending")
                 return
@@ -2213,7 +2420,7 @@ class ClientCoordinator(QObject):
                     and event["inputSequence"] == self._map_input_sequence
                     and self._bound and event.get("inputWindow") == str(self._bound)):
                 state = self.runtime.snapshot()
-                fields = ("epoch", "mode", "profileId", "roundId", "frameId", "generation", "cycleId")
+                fields = ("epoch", "season", "mode", "profileId", "roundId", "frameId", "generation", "cycleId")
                 if (state.get("mapOpen") is False
                         and all(key in event and event[key] == state.get(key) for key in fields)
                         and str(state.get("capture", {}).get("hwnd", "")) == str(self._bound)):
@@ -2235,6 +2442,52 @@ class ClientCoordinator(QObject):
             return
         state = self.session.snapshot
         if not state.get("roundActive") or state.get("resourceLocked"):
+            return
+        if self._pending_context or state.get("contextPending"):
+            return
+        if self._native_candidate_preview_ready(state) and not state.get("mapRecoveryPending"):
+            if (not state.get("mapOpen")
+                    or "observe_candidate_floor" not in state.get("availableCommands", ())):
+                return
+            now = time.monotonic()
+            if now - self._last_manual_floor_observation_at < .5:
+                return
+            try:
+                if self._native_windows.foreground_window() == int(self._bound):
+                    self._last_manual_floor_observation_at = now
+                    self.session.dispatch("observe_candidate_floor")
+            except OSError:
+                self._revoke_runtime("foreground-query-failed")
+            return
+        if state.get("season") == "s1" and not self._native_candidate_preview_ready(state):
+            # Only an existing open cycle or its explicit bounded recovery is
+            # eligible. Unknown canvas frames may preserve that cycle; this
+            # timer cannot invent a new opening after close/end.
+            if (not (state.get("mapOpen") or state.get("mapRecoveryPending"))
+                    or not self._manual_floor_observation_ready(state)
+                    or "observe_manual_floor" not in state.get("availableCommands", ())):
+                return
+            recovery = None
+            if state.get("mapRecoveryPending"):
+                recovery = self.runtime.map_open_recovery_status()
+                if not recovery.get("pending"):
+                    self.runtime.cancel_map_open_recovery(recovery.get("reason", "recovery-expired"))
+                    self.session.refreshRuntime()
+                    return
+                if not recovery.get("due"):
+                    return
+            now = time.monotonic()
+            if now - self._last_manual_floor_observation_at < .5:
+                return
+            try:
+                if self._native_windows.foreground_window() == int(self._bound):
+                    self._last_manual_floor_observation_at = now
+                    if recovery is not None:
+                        self.session.dispatchWithPayload("observe_manual_floor", dict(recoveryId=recovery["id"]))
+                    else:
+                        self.session.dispatch("observe_manual_floor")
+            except OSError:
+                self._revoke_runtime("foreground-query-failed")
             return
         if state.get("mapRecoveryPending"):
             recovery = self.runtime.map_open_recovery_status()
@@ -2272,6 +2525,9 @@ class ClientCoordinator(QObject):
         self._foreground_timer.stop()
         self._tracking_timer.stop()
         self._context_timer.stop()
+        stop_evidence = getattr(self.runtime, "stop_private_evidence", None)
+        if callable(stop_evidence):
+            stop_evidence()
         shutdown_input = getattr(self.input, "shutdown", None)
         self._material_timer.stop()
         if callable(shutdown_input):
@@ -2301,6 +2557,8 @@ class ClientCoordinator(QObject):
             return
         pools = dict(session=self.session._pool.activeThreadCount(),
                      resources=self.resources.pool.activeThreadCount(), settings=self.settings.pool.activeThreadCount())
+        evidence_busy = bool(getattr(self.runtime, "private_evidence_busy", False))
+        pools["privateEvidence"] = int(evidence_busy)
         for index, writer in enumerate(self.close_writers):
             pool = getattr(writer, "pool", getattr(writer, "_pool", None))
             if pool is not None:
@@ -2315,7 +2573,7 @@ class ClientCoordinator(QObject):
                                          hookRunning=hook_running, pendingWrites=writes))
         if getattr(self.input, "snapshot", {}).get("hookRunning", False):
             return
-        if (self.resources.pool.activeThreadCount() or self.settings.pool.activeThreadCount()
+        if (evidence_busy or self.resources.pool.activeThreadCount() or self.settings.pool.activeThreadCount()
                 or bool(getattr(self.settings, "pendingWrites", False))
                 or self.session._pool.activeThreadCount()):
             return

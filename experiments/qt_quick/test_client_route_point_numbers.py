@@ -299,7 +299,7 @@ class CoordinatorNumberTests(unittest.TestCase):
         case.settings.persistedValues["routePointNumbers"] = True
         owner._settings_saved()
         case.session.dispatchWithPayload.assert_not_called()
-        owner._applied_context = ("nightmare", "custom:fixture")
+        owner._applied_context = ("nightmare", "custom:fixture", "s0")
         case.runtime_state["profileId"] = "custom:fixture"
         case.settings.persistedValues.update(routePointNumbers=False, routeProfileId="custom:fixture")
         case.session.busy = True
@@ -311,7 +311,7 @@ class CoordinatorNumberTests(unittest.TestCase):
         self.assertTrue(owner._pending_display_refresh)
         owner._try_apply_context()
         case.session.dispatchWithPayload.assert_called_once_with("set_context",
-            dict(mode="nightmare", profileId="custom:fixture", refreshDisplay=True))
+            dict(season="s0", mode="nightmare", profileId="custom:fixture", refreshDisplay=True))
 
 
 if __name__ == "__main__":

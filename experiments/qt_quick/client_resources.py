@@ -18,7 +18,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, QTimer, QUrl, Qt, Signal, Slot
 
-from client_paths import RESOURCE_ROOT as ROOT, validate_installation_root, bundled_author_root
+from client_paths import RESOURCE_ROOT as ROOT, validate_installation_root, bundled_author_root, runtime_paths
 sys.path.insert(0, str(ROOT / "app"))
 import star_map_import as importer
 import author_package_management as manager
@@ -54,6 +54,8 @@ def package_problem(error, action, *, online=False, recovery_required=False):
         summary = "图包中的文件与包内说明不一致，暂时不能导入。请重新获取图包提供者发布的完整文件。"
     elif category == "limit":
         summary = "这个图包或下载列表过大，当前软件无法处理。请向图包提供者获取适用于当前版本的文件。"
+    elif code == "dependency-contract-changed-reimport-unsupported":
+        summary = "图包文件相同，但依赖要求已改变，当前不能仅更新依赖记录。本次未导入，原图包和安装记录未改动。"
     elif category == "dependency":
         summary = "这个图包需要的地图文件有缺失，或版本与当前软件不匹配，暂时不能导入。请查看图包适用的版本，使用与当前软件配套的图包。"
     elif category == "conflict":
@@ -115,7 +117,7 @@ class _Work(QRunnable):
 def _confirmation_fingerprint(result):
     return json.dumps({key: result.get(key) for key in (
         "packageId", "archiveSha256", "previousReceiptSha256", "files",
-        "replaceFiles", "missingFiles")}, sort_keys=True, separators=(",", ":"))
+        "replaceFiles", "missingFiles", "legacyReceiptSha256")}, sort_keys=True, separators=(",", ":"))
 
 
 def _duplicate_import(result):
@@ -412,7 +414,9 @@ class ResourceService(QObject):
         rows = manager.managed_author_packages_snapshot(self.sandbox, cancelled=cancel.is_set)
         from bundled_author_resources import bundled_summary
         bundled = bundled_summary(bundled_author_root())
-        return rows + ([bundled] if bundled else [])
+        from season_map_resources import native_builtin_summaries
+        native = native_builtin_summaries(runtime_paths(self.sandbox).resource_root, cancelled=cancel.is_set)
+        return rows + ([bundled] if bundled else []) + native
 
     @Slot()
     def refresh(self):
@@ -420,8 +424,13 @@ class ResourceService(QObject):
             self._start("refresh", self._snapshot, "正在核对本地资源…")
 
     @Slot(str)
-    def importArchive(self, file_url):
+    @Slot(str, str)
+    def importArchive(self, file_url, season="s0"):
         if not self._available() or self._recovery:
+            return
+        if season not in {"s0", "s1"}:
+            self._message = "这个赛季尚未支持作者图包导入"
+            self.changed.emit()
             return
         url = QUrl(file_url)
         path = Path(url.toLocalFile()) if url.isLocalFile() else Path(file_url)
@@ -429,7 +438,7 @@ class ResourceService(QObject):
             self._message = self._report_problem("non-local-archive", "inspect")
             self.changed.emit()
             return
-        self._start("inspect", lambda cancel: (str(path), importer.inspect_package(path, self.sandbox)),
+        self._start("inspect", lambda cancel: (str(path), importer.inspect_package(path, self.sandbox, season=season)),
                     "正在检查图包文件…")
 
     @Slot(str)
@@ -466,7 +475,7 @@ class ResourceService(QObject):
             importer._no_links(path)
             if path.stat().st_size != expected["bytes"]:
                 raise importer.ImportRejected("online-archive-size-mismatch")
-            result = importer.inspect_package(path, self.sandbox)
+            result = importer.inspect_package(path, self.sandbox, season="s0")
             if (result.get("packageId") != expected["packageId"]
                     or result.get("archiveSha256") != expected["sha256"]
                     or path.stat().st_size != expected["bytes"]):
@@ -476,12 +485,13 @@ class ResourceService(QObject):
         return self._busy
 
     def _install(self, path, result):
+        season = result.get("season", "s0")
         live = importer.supports_live_author_import(result)
         if not live and self._import_launcher is not None:
             launcher = self._import_launcher
             def launch(_cancel):
                 with importer._writer_locked_installation(self.sandbox, require_closed=False) as (root, _state):
-                    current = importer.inspect_package(path, root)
+                    current = importer.inspect_package(path, root, season=season)
                     if _confirmation_fingerprint(current) != _confirmation_fingerprint(result):
                         raise importer.ImportRejected("resource-plan-changed-reinspect-required")
                     request_id = launcher(path, dict(result))
@@ -496,18 +506,18 @@ class ResourceService(QObject):
                 # consent under the same OS writer lock as the shared live
                 # transaction, including the previous receipt fingerprint.
                 with importer._writer_locked_installation(self.sandbox, require_closed=False) as (root, state):
-                    current = importer.inspect_package(path, root)
+                    current = importer.inspect_package(path, root, season=season)
                     if _confirmation_fingerprint(current) != _confirmation_fingerprint(result):
                         raise importer.ImportRejected("resource-plan-changed-reinspect-required")
-                    return importer._install_staged(path, root, state, live=True,
+                    return importer._install_staged(path, root, state, season=season, live=True,
                         expected_archive_sha256=result["archiveSha256"], cancelled=cancel.is_set)
             # Hold the same writer lock between confirmation recheck and the
             # existing staging/upgrade transaction; never expand an old consent.
             with importer._locked_installation(self.sandbox, True) as (root, state):
-                current = importer.inspect_package(path, root)
+                current = importer.inspect_package(path, root, season=season)
                 if _confirmation_fingerprint(current) != _confirmation_fingerprint(result):
                     raise importer.ImportRejected("resource-plan-changed-reinspect-required")
-                return importer._install_staged(path, root, state,
+                return importer._install_staged(path, root, state, season=season,
                     expected_archive_sha256=result["archiveSha256"])
         self._start("install", install, "正在安装图包，请等待完成…",
                     cancellable=live)
@@ -679,7 +689,7 @@ class ResourceService(QObject):
                 self._kind, self._pending = "overwrite", (path, inspection)
                 self._message = "请确认是否更新这个图包。"
                 self.changed.emit()
-                self.confirmationRequested.emit("更新图包", "将更新“%s”中的 %s 个文件，并新增 %s 个文件。\n\n只替换能确认属于这个图包、且没有被改动的文件。处理失败时会恢复尚未完成的更改；成功后会清理临时文件。\n点击取消可返回，不会开始更新。" % (
+                self.confirmationRequested.emit("更新图包", ("已识别到受支持的旧版图包，无需手动寻找或删除文件。\n\n" if inspection.get("legacyReceiptSha256") else "") + "将更新“%s”中的 %s 个文件，并新增 %s 个文件。\n\n只替换能确认属于这个图包、且没有被改动的文件。处理失败时会恢复尚未完成的更改；成功后会清理临时文件。\n点击取消可返回，不会开始更新。" % (
                     package_title(inspection["packageId"]), len(inspection["replaceFiles"]), len(inspection["missingFiles"]))
                     + ("\n\n确认后软件会正常退出再导入，完成后请重新打开查看结果。" if self._import_launcher is not None and not importer.supports_live_author_import(inspection) else ""))
                 return

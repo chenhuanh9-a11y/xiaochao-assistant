@@ -40,6 +40,9 @@ def manual_map_thumbnail_source(pack, item, mode: str = "nightmare", native=None
     ``manualReference`` metadata), nightmare maps use the first existing layer
     in entry-floor/1/2/B1 order. Display only; never identity evidence.
     """
+    if getattr(pack, "raw", {}).get("season") == "s1":
+        display = getattr(native, "display_reference", None)
+        return display(item.id, str(getattr(pack, "default_entry_floor", "-1"))) if callable(display) else None
     if mode == "difficult":
         try:
             if native is not None:

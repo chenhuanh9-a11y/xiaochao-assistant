@@ -21,10 +21,12 @@ if str(APP) not in sys.path:
     sys.path.insert(0, str(APP))
 from ui_action_state import ImmediateUiActionStateMachine
 from session_state_machine import ranked_event_is_current
+from season_context import normalize_season, context_key
 
 
 # Existing product control command names, plus the injected diagnostic protocol.
 COMMANDS = (
+    "prepare_manual_alignment", "fit_manual_frame", "observe_manual_floor",
     "start_round", "end_round", "toggle_round", "capture_now",
     "previous_candidate", "next_candidate", "select_candidate", "confirm_route", "reselect_map", "cycle_floor",
     "toggle_sheet_visibility", "set_reference_sheet_visible", "move_sheet",
@@ -81,6 +83,7 @@ class _RuntimeWork(QRunnable):
 class SessionService(QObject):
     changed = Signal()
     actionRequested = Signal(str, dict)
+    contextFinished = Signal(object)
 
     def __init__(self, runtime=None, parent=None):
         super().__init__(parent)
@@ -89,6 +92,7 @@ class SessionService(QObject):
         self._state = {}
         self._last_receipt = {}
         self._mode, self._profile = "nightmare", ""
+        self._season = "s0"
         self._message = "Live engine is not attached."
         self._generation = 0
         self._closed = False
@@ -112,7 +116,8 @@ class SessionService(QObject):
     def _snapshot(self):
         state = deepcopy(self._state)
         pending = self._jobs.get(self._pending)
-        if (state.get("mode", self._mode) != self._mode
+        if (state.get("season", "s0") != self._season
+                or state.get("mode", self._mode) != self._mode
                 or state.get("profileId", self._profile) != self._profile):
             # Desired author/mode can be pending without ending its actual
             # round. Keep lifecycle facts so guards cannot unlock mid-round;
@@ -123,6 +128,7 @@ class SessionService(QObject):
         available = self._available() if not self._closed else set()
         commands = set(COMMANDS) | available
         state.update(
+            season=self._season, contextKey=context_key(self._mode, self._season),
             mode=self._mode, profileId=self._profile,
             engineConnected=self._connected(), busy=self._pending is not None,
             pendingAction=pending[0].action if pending else "",
@@ -144,6 +150,8 @@ class SessionService(QObject):
     message = Property(str, lambda self: self._message, notify=changed)
     busy = Property(bool, lambda self: self._pending is not None, notify=changed)
     engineConnected = Property(bool, _connected, notify=changed)
+    currentSeason = Property(str, lambda self: self._season, notify=changed)
+    appliedSeason = Property(str, lambda self: str(self._state.get("season", "s0")), notify=changed)
     currentMode = Property(str, lambda self: self._mode, notify=changed)
     currentProfile = Property(str, lambda self: self._profile, notify=changed)
     # Desired context may change before its worker commits. Controls show the
@@ -152,7 +160,7 @@ class SessionService(QObject):
     appliedProfile = Property(str, lambda self: str(self._state.get("profileId", self._profile)), notify=changed)
 
     def _context(self):
-        return dict(generation=self._generation, mode=self._mode,
+        return dict(generation=self._generation, season=self._season, mode=self._mode,
                     profileId=self._profile, roundId=self._state.get("roundId", self._state.get("cycleId")),
                     frameId=self._state.get("frameId"))
 
@@ -166,27 +174,60 @@ class SessionService(QObject):
             job.cancelled.set()
         self._pending = None
 
+    def _unavailable_runtime_state(self):
+        # Retain observed context and round locks, never identity/display grants
+        # from a snapshot we can no longer validate (including nested render).
+        state = {key: self._state[key] for key in (
+            "season", "mode", "profileId", "roundActive", "roundPreparing",
+            "roundWorkActive", "roundId", "cycleId") if key in self._state}
+        state.update(engineConnected=False, liveEngineAvailable=False,
+                     liveAuthorization=False, availableCommands=[])
+        return state
+
+    def _restore_applied_context(self):
+        """Reconcile a terminal context attempt, without erasing its receipt/error."""
+        try:
+            self._state = dict(self._runtime.snapshot())
+        except Exception:
+            # The last observed applied context is safer than the failed intent.
+            # Do not grant authority when fresh runtime state is unavailable.
+            self._state = self._unavailable_runtime_state()
+        self._season = normalize_season(self._state.get("season", "s0"))
+        self._mode = str(self._state.get("mode", "nightmare"))
+        self._profile = str(self._state.get("profileId", ""))
+
+    def _context_finished(self, work, context):
+        if work.action == "set_context":
+            self.contextFinished.emit((context["mode"], context["profileId"], context["season"]))
+
     @Slot()
     def refreshRuntime(self):
         """Read a bounded runtime snapshot on the owning UI thread."""
         if self._closed or self._runtime is None:
             return
+        pending = self._jobs.get(self._pending)
         try:
             state = dict(self._runtime.snapshot())
             old = self._context()
+            season = normalize_season(state.get("season", "s0"))
             mode = str(state.get("mode", self._mode))
             profile = str(state.get("profileId", self._profile))
-            new_context = dict(old, mode=mode, profileId=profile,
+            new_context = dict(old, season=season, mode=mode, profileId=profile,
                                roundId=state.get("roundId", state.get("cycleId")),
                                frameId=state.get("frameId"))
             if old != new_context:
                 self._invalidate("runtime-context-changed")
-            self._state, self._mode, self._profile = state, mode, profile
+            self._state, self._season, self._mode, self._profile = state, season, mode, profile
             self._message = str(state.get("message", "Runtime ready."))
         except Exception as error:
-            self._state = {}
+            self._state = self._unavailable_runtime_state()
+            self._season = normalize_season(self._state.get("season", "s0"))
+            self._mode = str(self._state.get("mode", "nightmare"))
+            self._profile = str(self._state.get("profileId", ""))
             self._message = f"Runtime snapshot unavailable: {error}"
             self._invalidate("runtime-snapshot-failed")
+        if pending and pending[0].cancelled.is_set():
+            self._context_finished(pending[0], pending[0].context)
         self.changed.emit()
 
     @Slot(str)
@@ -218,6 +259,21 @@ class SessionService(QObject):
             self._message = "Resource operation is in progress."
             self.changed.emit()
             return
+        pending = self._jobs.get(self._pending)
+        if pending and pending[0].action == "set_context" and action != "set_context":
+            # A hotkey/terminal command can supersede a context worker without
+            # going through stop(). Its payload must use applied runtime state,
+            # and the coordinator must not retain the cancelled target forever.
+            self._invalidate("context-superseded")
+            self._restore_applied_context()
+            self._context_finished(pending[0], pending[0].context)
+            # Permission was checked before reconciliation. Never reuse that
+            # cached grant if the fresh runtime snapshot failed closed.
+            if (action not in self._available()
+                    and not (manual_pick and self._state.get("manualMapPickAvailable"))):
+                self._message = f"Unavailable command after context cancellation: {action}."
+                self.changed.emit()
+                return
         context = self._context()
         target = (context, deepcopy(dict(payload)))
         existing = self._actions.snapshot(action)
@@ -225,7 +281,10 @@ class SessionService(QObject):
                 and self._actions.accepts_background_result(existing.token)):
             self._actions.begin(action, target_state=target, visual_state="requested")
             return
+        pending = self._jobs.get(self._pending)
         self._invalidate("superseded")
+        if pending:
+            self._context_finished(pending[0], pending[0].context)
         context = self._context()
         decision = self._actions.begin(action, target_state=(context, dict(payload)), visual_state="requested")
         data = dict(payload)
@@ -264,6 +323,8 @@ class SessionService(QObject):
             self.changed.emit()
             return
         if error:
+            if work.action == "set_context":
+                self._restore_applied_context()
             self._actions.fail(token, fallback_state="failed", reason=error)
             self._message = error
             self._last_receipt = dict(action=work.action, success=False, reason=error,
@@ -273,41 +334,56 @@ class SessionService(QObject):
             receipt, state = value
             receipt = receipt if isinstance(receipt, dict) else {}
             state = dict(state)
-            context_fields = ("mode", "profileId", "roundId", "frameId")
+            state.setdefault("season", "s0")
+            context_fields = ("season", "mode", "profileId", "roundId", "frameId")
             request_context = receipt.get("requestContext", receipt)
             result_context = receipt.get("resultContext")
+            # Legacy receipts can only describe S0, never the selected season.
+            if isinstance(request_context, dict):
+                request_context = dict(request_context, season=request_context.get("season", "s0"))
+            if isinstance(result_context, dict):
+                result_context = dict(result_context, season=result_context.get("season", "s0"))
             if "requestContext" in receipt:
                 request_mismatch = (not isinstance(request_context, dict)
                                     or any(name not in request_context or request_context[name] != expected
                                            for name, expected in context.items()))
             else:
-                request_mismatch = any(name in receipt and receipt[name] != expected
-                                       for name, expected in context.items())
+                request_mismatch = (receipt.get("season", "s0") != context["season"]
+                                    or any(name in receipt and receipt[name] != expected
+                                           for name, expected in context.items()))
             # An intentional round/frame transition requires an explicit pair:
             # the original request and the committed output context. A fresh
             # snapshot must still match that output; late unrelated transitions
             # cannot smuggle an old receipt onto a new frame.
             if result_context is not None:
                 state_drifted = ("requestContext" not in receipt or not isinstance(result_context, dict)
+                                 or any(state.get(name, "s0" if name == "season" else None) != context[name]
+                                        for name in ("season", "mode", "profileId"))
                                  or any(name not in result_context or name not in state
                                         or result_context[name] != state[name] for name in context_fields))
             else:
                 state_drifted = any(name in state and state[name] != context[name]
                                     for name in context_fields)
-            if request_mismatch or state_drifted:
+            # A current explicit refusal intentionally retains the old applied
+            # context. Preserve its real reason instead of calling it stale.
+            rejected_context = (work.action == "set_context" and receipt.get("success") is False
+                                and not request_mismatch)
+            if request_mismatch or (state_drifted and not rejected_context):
                 if self._diagnostics is not None:
                     self._diagnostics.record("result-consumed", jobId=key, action=work.action,
                         accepted=False, reason="runtime-result-context-mismatch")
                 self.stale_results += 1
                 self._actions.cancel(token, reason="runtime-result-context-mismatch")
-                if state_drifted:
+                if state_drifted or work.action == "set_context":
                     self.refreshRuntime()
                 self._message = "Discarded a result from a superseded runtime context."
+                self._context_finished(work, context)
                 self.changed.emit()
                 return
             self._last_receipt = deepcopy(receipt)
             # Snapshot is runtime-owned, never inferred from a successful request.
             self._state = state
+            self._season = normalize_season(self._state.get("season", "s0"))
             self._mode = str(self._state.get("mode", self._mode))
             self._profile = str(self._state.get("profileId", self._profile))
             if receipt.get("success", True) is False:
@@ -318,6 +394,7 @@ class SessionService(QObject):
         if self._diagnostics is not None:
             self._diagnostics.record("result-consumed", jobId=key, action=work.action,
                 accepted=not bool(error), reason="worker-error" if error else "current-result")
+        self._context_finished(work, context)
         self.changed.emit()
 
     def dispatchMaintenance(self, action, payload):
@@ -347,7 +424,8 @@ class SessionService(QObject):
         # receipt or its error. The runtime retains its bounded diagnostics.
 
     @Slot(str, str, result=bool)
-    def reconfigure(self, mode, profile):
+    @Slot(str, str, str, result=bool)
+    def reconfigure(self, mode, profile, season="s0"):
         """Atomically enqueue one desired mode/profile context on the UI thread."""
         if self._closed:
             return False
@@ -355,38 +433,58 @@ class SessionService(QObject):
             self._message = "Resource operation is in progress."
             self.changed.emit()
             return False
-        if mode not in ("nightmare", "difficult"):
+        from season_context import modes_for_season
+        if mode not in modes_for_season(season):
             self._message = f"Unknown mode: {mode}"
+            self.changed.emit()
+            return False
+        try:
+            season = normalize_season(season)
+        except ValueError as error:
+            self._message = str(error)
             self.changed.emit()
             return False
         profile = str(profile)
         if self._runtime is not None:
             actual = self._runtime.snapshot()
-            if actual.get("roundActive") and mode != actual.get("mode", self._mode):
+            pending = self._jobs.get(self._pending)
+            starting = pending is not None and pending[0].action in {"start_round", "toggle_round"}
+            if ((starting or any(actual.get(key) for key in ("roundActive", "roundPreparing", "roundWorkActive")))
+                    and (mode, season) != (actual.get("mode", self._mode), actual.get("season", "s0"))):
                 self._message = "请先结束本局，再切换游戏模式"
                 self.changed.emit()
                 return False
-        if mode == self._mode and profile == self._profile:
-            return True
+        if (season, mode, profile) == (self._season, self._mode, self._profile):
+            pending = self._jobs.get(self._pending)
+            if (self._runtime is None
+                    or (actual.get("season", "s0"), actual.get("mode"), actual.get("profileId")) == (season, mode, profile)
+                    or (pending is not None and pending[0].action == "set_context"
+                        and not pending[0].cancelled.is_set())):
+                return True
         if self._runtime is None or "set_context" not in self._available():
             self._message = "Unavailable command: set_context. Attach a runtime that supports it."
             self.changed.emit()
             return False
+        pending = self._jobs.get(self._pending)
         self._invalidate("context-reconfigured")
-        self._mode, self._profile = mode, profile
+        if pending:
+            # Equal live targets returned above, so this is a different target.
+            # End the old attempt before dispatch seals the new generation.
+            self._context_finished(pending[0], pending[0].context)
+        self._season, self._mode, self._profile = season, mode, profile
         # dispatchWithPayload seals the context from these desired values, so
         # neither member can be replaced by the previous runtime snapshot.
-        self.dispatchWithPayload("set_context", {"mode": mode, "profileId": profile})
+        self.dispatchWithPayload("set_context", {"season": season, "mode": mode, "profileId": profile})
         pending = self._jobs.get(self._pending)
         return pending is not None and pending[0].action == "set_context"
 
     @Slot(str, result=bool)
     def setMode(self, mode):
-        return self.reconfigure(mode, self._profile)
+        return self.reconfigure(mode, self._profile, self._season)
 
     @Slot(str, result=bool)
     def setRouteProfile(self, profile):
-        return self.reconfigure(self._mode, profile)
+        return self.reconfigure(self._mode, profile, self._season)
 
     @Slot(result=str)
     def acquireResourceLease(self):
@@ -414,7 +512,11 @@ class SessionService(QObject):
         cancel = getattr(self._runtime, "cancel_map_open_recovery", None)
         if callable(cancel):
             cancel("session-stopped")
+        pending = self._jobs.get(self._pending)
         self._invalidate("cancelled")
+        if pending and pending[0].action == "set_context":
+            self._restore_applied_context()
+            self._context_finished(pending[0], pending[0].context)
         self._message = "Pending requests cancelled."
         self.changed.emit()
 
@@ -423,7 +525,11 @@ class SessionService(QObject):
         cancel = getattr(self._runtime, "cancel_map_open_recovery", None)
         if callable(cancel):
             cancel(str(reason))
+        pending = self._jobs.get(self._pending)
         self._invalidate(str(reason))
+        if pending and pending[0].action == "set_context":
+            self._restore_applied_context()
+            self._context_finished(pending[0], pending[0].context)
         self.changed.emit()
 
     @Slot()

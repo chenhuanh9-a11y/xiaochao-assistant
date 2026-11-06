@@ -30,10 +30,62 @@
 #ifndef InstallerExeName
   #define InstallerExeName "XingtuQtClientTest.exe"
 #endif
+; Compiler defines select only these source-owned identities, never arbitrary IDs.
 #ifdef ProductionInstaller
+  #if InstallerAppId != "{{D04394A0-DACE-4FF9-874D-3DCB43EE53D1}" || InstallerAppName != "星图" || InstallerFolder != "XiaochaoAssistant" || InstallerGroup != "星图" || InstallerExeName != "星图.exe"
+    #error Invalid production installer identity
+  #endif
   #define InstallerModelId "Xingtu.Assistant"
 #else
-  #define InstallerModelId "Xingtu.QtClientTest"
+  #if InstallerExeName != "XingtuQtClientTest.exe"
+    #error Invalid private executable identity
+  #endif
+  #if InstallerAppId == "{{AF19AFD9-3016-44C9-9D20-6F216C5D8C51}"
+    #if InstallerAppName != "Xingtu Qt Test Client" || InstallerFolder != "XingtuQtClientTest" || InstallerGroup != "Xingtu Qt Test Client"
+      #error Invalid client installer identity
+    #endif
+  #elif InstallerAppId == "{{D4B8E562-EA62-4A43-AF1D-043A5646971E}"
+    #if InstallerAppName != "Xingtu Qt Layout Preview" || InstallerFolder != "XingtuQtLayoutPreview" || InstallerGroup != "Xingtu Qt Layout Preview"
+      #error Invalid preview installer identity
+    #endif
+  #elif InstallerAppId == "{{907F912D-58FD-4F84-A7A4-0C816AA70E52}"
+    #if InstallerAppName != "Xingtu S0 S1 Private Test" || InstallerFolder != "XingtuS0S1PrivateTest" || InstallerGroup != "Xingtu S0 S1 Private Test"
+      #error Invalid S0 S1 installer identity
+    #endif
+    #define S0S1PrivateInstaller 1
+    #define PrivateS1Installer 1
+  #elif InstallerAppId == "{{3C271F5D-71FF-4EA8-9569-B8DAC30F3773}"
+    #if InstallerAppName != "Xingtu S1 Floor Private Test" || InstallerFolder != "XingtuS1FloorPrivateTest" || InstallerGroup != "Xingtu S1 Floor Private Test"
+      #error Invalid S1 floor installer identity
+    #endif
+    #define S1FloorPrivateInstaller 1
+    #define PrivateS1Installer 1
+  #elif InstallerAppId == "{{ED53B6E8-E9A0-4F21-AF75-7C8A62BE7347}"
+    #if InstallerAppName != "Xingtu S1 Auto Private Test" || InstallerFolder != "XingtuS1AutoPrivateTest" || InstallerGroup != "Xingtu S1 Auto Private Test"
+      #error Invalid S1 auto installer identity
+    #endif
+    #define S1AutoPrivateInstaller 1
+    #define PrivateS1Installer 1
+  #elif InstallerAppId == "{{D9FE6D76-C31A-47AF-9281-B4614C245E92}"
+    #if InstallerAppName != "Xingtu S1 Playtest" || InstallerFolder != "XingtuS1Playtest" || InstallerGroup != "Xingtu S1 Playtest"
+      #error Invalid S1 playtest installer identity
+    #endif
+    #define S1PlaytestInstaller 1
+    #define PrivateS1Installer 1
+  #else
+    #error Unknown private installer identity
+  #endif
+  #ifdef S0S1PrivateInstaller
+    #define InstallerModelId "Xingtu.S0S1PrivateTest"
+  #elif defined(S1PlaytestInstaller)
+    #define InstallerModelId "Xingtu.S1Playtest"
+  #elif defined(S1AutoPrivateInstaller)
+    #define InstallerModelId "Xingtu.S1AutoPrivateTest"
+  #elif defined(S1FloorPrivateInstaller)
+    #define InstallerModelId "Xingtu.S1FloorPrivateTest"
+  #else
+    #define InstallerModelId "Xingtu.QtClientTest"
+  #endif
 #endif
 
 [Setup]
@@ -585,7 +637,7 @@ begin
   Result := False;
   if RegQueryStringValue(RootKey, ProductionUninstallKey, 'InstallLocation', Previous) and
     (Previous <> '') then
-    Result := CompareText(NormalizedDirectory(Previous), Target) = 0;
+    Result := Pos(Lowercase(NormalizedDirectory(Previous) + '\'), Lowercase(Target + '\')) = 1;
 end;
 function RegisteredPrivateDirectory(Target: String): Boolean;
 var
@@ -600,6 +652,46 @@ begin
     (Previous <> '') then
     Result := CompareText(NormalizedDirectory(Previous), Target) = 0;
 end;
+#ifdef PrivateS1Installer
+function RegisteredOldPrivateDirectory(RootKey: Integer; Target: String): Boolean;
+var
+  Previous: String;
+begin
+  Result := False;
+  if RegQueryStringValue(RootKey,
+    'Software\Microsoft\Windows\CurrentVersion\Uninstall\{AF19AFD9-3016-44C9-9D20-6F216C5D8C51}_is1',
+    'InstallLocation', Previous) and (Previous <> '') then
+    Result := Pos(Lowercase(NormalizedDirectory(Previous) + '\'), Lowercase(Target + '\')) = 1;
+  if Result then Exit;
+  if RegQueryStringValue(RootKey,
+    'Software\Microsoft\Windows\CurrentVersion\Uninstall\{D4B8E562-EA62-4A43-AF1D-043A5646971E}_is1',
+    'InstallLocation', Previous) and (Previous <> '') then
+    Result := Pos(Lowercase(NormalizedDirectory(Previous) + '\'), Lowercase(Target + '\')) = 1;
+  #if defined(S1FloorPrivateInstaller) || defined(S1AutoPrivateInstaller) || defined(S1PlaytestInstaller)
+  { Protect the previous private channel's custom registration too. This block
+    must not compile into that older channel's own legitimate upgrade path. }
+  if Result then Exit;
+  if RegQueryStringValue(RootKey,
+    'Software\Microsoft\Windows\CurrentVersion\Uninstall\{907F912D-58FD-4F84-A7A4-0C816AA70E52}_is1',
+    'InstallLocation', Previous) and (Previous <> '') then
+    Result := Pos(Lowercase(NormalizedDirectory(Previous) + '\'), Lowercase(Target + '\')) = 1;
+  #endif
+  #if defined(S1AutoPrivateInstaller) || defined(S1PlaytestInstaller)
+  if Result then Exit;
+  if RegQueryStringValue(RootKey,
+    'Software\Microsoft\Windows\CurrentVersion\Uninstall\{3C271F5D-71FF-4EA8-9569-B8DAC30F3773}_is1',
+    'InstallLocation', Previous) and (Previous <> '') then
+    Result := Pos(Lowercase(NormalizedDirectory(Previous) + '\'), Lowercase(Target + '\')) = 1;
+  #endif
+  #ifdef S1PlaytestInstaller
+  if Result then Exit;
+  if RegQueryStringValue(RootKey,
+    'Software\Microsoft\Windows\CurrentVersion\Uninstall\{ED53B6E8-E9A0-4F21-AF75-7C8A62BE7347}_is1',
+    'InstallLocation', Previous) and (Previous <> '') then
+    Result := Pos(Lowercase(NormalizedDirectory(Previous) + '\'), Lowercase(Target + '\')) = 1;
+  #endif
+end;
+#endif
 function LastDirectoryError: LongWord;
   external 'GetLastError@kernel32.dll stdcall';
 function SafePrivateTree(Path: String; Depth: Integer; var Entries: Integer): Boolean;
@@ -643,6 +735,31 @@ var
 begin
   Result := '';
   Target := NormalizedDirectory(Target);
+  #ifdef PrivateS1Installer
+  { Even empty residual directories from the older private products are reserved. }
+  Path := NormalizedDirectory(ExpandConstant('{autopf}\XingtuQtClientTest'));
+  Parent := NormalizedDirectory(ExpandConstant('{autopf}\XingtuQtLayoutPreview'));
+  if (CompareText(Target, Path) = 0) or
+    (Pos(Lowercase(Path + '\'), Lowercase(Target + '\')) = 1) or
+    (CompareText(Target, Parent) = 0) or
+    (Pos(Lowercase(Parent + '\'), Lowercase(Target + '\')) = 1) or
+    #if defined(S1FloorPrivateInstaller) || defined(S1AutoPrivateInstaller) || defined(S1PlaytestInstaller)
+    (Pos(Lowercase(NormalizedDirectory(ExpandConstant('{autopf}\XingtuS0S1PrivateTest')) + '\'), Lowercase(Target + '\')) = 1) or
+    #endif
+    #if defined(S1AutoPrivateInstaller) || defined(S1PlaytestInstaller)
+    (Pos(Lowercase(NormalizedDirectory(ExpandConstant('{autopf}\XingtuS1FloorPrivateTest')) + '\'), Lowercase(Target + '\')) = 1) or
+    #endif
+    #ifdef S1PlaytestInstaller
+    (Pos(Lowercase(NormalizedDirectory(ExpandConstant('{autopf}\XingtuS1AutoPrivateTest')) + '\'), Lowercase(Target + '\')) = 1) or
+    #endif
+    RegisteredOldPrivateDirectory(HKCU64, Target) or
+    RegisteredOldPrivateDirectory(HKLM64, Target) or
+    RegisteredOldPrivateDirectory(HKCU32, Target) or
+    RegisteredOldPrivateDirectory(HKLM32, Target) then begin
+    Result := '旧私测目录保留，请选择本次独立的私测目录。';
+    Exit;
+  end;
+  #endif
   Path := Target;
   repeat
     Attributes := InstallerFileAttributes(Path);

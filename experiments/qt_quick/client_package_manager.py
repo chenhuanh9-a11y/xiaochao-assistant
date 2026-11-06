@@ -7,7 +7,7 @@ import threading
 
 from PySide6.QtCore import QObject, Property, QThreadPool, Qt, Signal, Slot
 from client_paths import validate_installation_root
-from client_resources import _Work, package_problem, package_cancelled
+from client_resources import _Work, package_problem, package_cancelled, package_title
 from client_resource_errors import error_fields
 import map_package_removal as removal
 
@@ -181,7 +181,7 @@ class PackageManagerService(QObject):
         elif kind == "inspect":
             self._pending = result
             self._message = "请确认删除范围。"
-            title = "清理全部已导入图包" if result["packageId"] is None else "删除图包"
+            title = "清理全部已导入图包" if result["packageId"] is None else "删除图包：" + package_title(result["packageId"])
             text = (f"将删除 {len(result['packageIds'])} 个图包的 {result['fileCount']} 个图包文件，"
                     f"共 {result['bytes']} 字节，包含已确认属于这些图包的旧副本。\n\n"
                     "成功后不保留这些图包的备份副本。软件必需的地图文件、其他图包仍需使用的文件、自定义路线，以及来源不明或改动过的文件会保留。点击取消可返回，不会开始删除。"

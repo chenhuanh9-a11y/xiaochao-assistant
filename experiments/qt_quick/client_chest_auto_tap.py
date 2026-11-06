@@ -132,8 +132,9 @@ class ChestAutoTapService(QObject):
 
     def _binding_identity(self):
         hwnd = str(self.coordinator.boundWindow or "")
-        row = next((r for r in self.coordinator.gameWindows if str(r.get("hwnd")) == hwnd), {})
-        return hwnd, row.get("pid"), row.get("processCreateTime"), row.get("executable")
+        row = next((r for r in self.coordinator.gameWindows if str(r.get("hwnd")) == hwnd), None)
+        return ((hwnd, row.get("pid"), row.get("processCreateTime"), row.get("executable"))
+                if row is not None else None)
 
     def _gate(self):
         owner, state = self.coordinator, self.input.snapshot
@@ -178,7 +179,15 @@ class ChestAutoTapService(QObject):
             self._stop()
             self._publish()
             return
-        if self._bound and self._binding_identity() != self._bound_identity:
+        bound = str(self.coordinator.boundWindow or "")
+        catalog_has_bound = any(str(row.get("hwnd")) == bound
+                                for row in self.coordinator.gameWindows)
+        # Discovery can temporarily omit a minimized/unreadable game while the
+        # coordinator retains its binding. Absence is not a replacement: the
+        # foreground gate below still blocks input until a verified row returns.
+        if self._bound and (bound != self._bound or
+                (catalog_has_bound and self._bound_identity is not None
+                 and self._binding_identity() != self._bound_identity)):
             self._armed = False
             self._timer.stop()
             self._stop()
@@ -187,6 +196,7 @@ class ChestAutoTapService(QObject):
             return
         if not self._bound and self.coordinator.boundWindow:
             self._bound = str(self.coordinator.boundWindow)
+        if self._bound and self._bound_identity is None and catalog_has_bound:
             self._bound_identity = self._binding_identity()
         handle, reason = self._gate()
         if not handle:

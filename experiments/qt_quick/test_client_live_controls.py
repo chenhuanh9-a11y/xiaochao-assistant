@@ -7,7 +7,7 @@ import tempfile
 import time
 import unittest
 from s0_test_fixtures import synthetic_read
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, call
 import numpy as np
 from PySide6.QtCore import QObject, Signal, QUrl
 from PySide6.QtGui import QGuiApplication
@@ -247,7 +247,10 @@ class CoordinatorLiveTests(unittest.TestCase):
         self.f.session.snapshot['roundActive']=True
         self.c.setMode('difficult');self.f.settings.setValue.assert_not_called()
         self.f.session.snapshot['roundActive']=False
-        self.c.setMode('difficult');self.f.settings.setValue.assert_called_once_with('gameMode','difficult')
+        self.c.setMode('difficult')
+        self.assertEqual(self.f.settings.setValue.call_args_list,
+                         [call('gameSeason', 's0'), call('gameMode', 'difficult')])
+        self.f.settings.saveFields.assert_called_once_with(['gameSeason', 'gameMode'])
     def test_manual_selection_navigates_and_raises_only_on_explicit_request(self):
         window=Mock();self.f.windows._windows['main']=window
         self.c.requestManualMapSelection()

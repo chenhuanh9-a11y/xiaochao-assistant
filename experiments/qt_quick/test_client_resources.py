@@ -664,6 +664,44 @@ class ResourceServiceTests(unittest.TestCase):
         self.assertEqual(len(self.changes), 1)
         self.assertFalse(self.lease.active)
 
+    def test_approved_legacy_import_directly_confirms_then_upgrades_without_manual_cleanup(self):
+        self.write(IMAGE, b"approved-old")
+        inventory = {"nightmare-suju": dict(archiveSha256="a" * 64, archiveName="old.zip",
+            files=[row(IMAGE, b"approved-old")])}
+        receipt = self.root / "work/map-packages/nightmare-suju.json"
+        with patch.object(manager, "LEGACY_AUTHOR_INVENTORY", inventory):
+            self.install(self.package("new.zip", b"new"))
+            self.assertEqual(self.service.pendingKind, "overwrite", self.service.message)
+            self.assertFalse(receipt.exists(), "inspection must not publish metadata")
+            self.assertIn("已识别到受支持的旧版图包", self.confirmations[-1][1])
+            self.service.confirmOperation(False)
+            self.assertFalse(receipt.exists())
+            self.assertEqual((self.root / IMAGE).read_bytes(), b"approved-old")
+            self.install(self.package("new.zip", b"new"))
+            self.service.confirmOperation(True)
+            self.settle()
+        self.assertEqual((self.root / IMAGE).read_bytes(), b"new")
+        self.assertEqual(len(self.completions), 1)
+        self.assertEqual(self.problems, [])
+        self.assertFalse(self.lease.active)
+        self.assert_no_upgrade_copies(json.loads(receipt.read_bytes())["upgradeTransactionId"])
+
+    def test_legacy_approval_binds_full_known_release_not_only_selected_changed_file(self):
+        self.write(IMAGE, b"approved-old")
+        inventory = {"nightmare-suju": dict(archiveSha256="a" * 64, archiveName="old.zip",
+            files=[row(IMAGE, b"approved-old")])}
+        with patch.object(manager, "LEGACY_AUTHOR_INVENTORY", inventory):
+            self.install(self.package("new.zip", b"new"))
+            self.assertEqual(self.service.pendingKind, "overwrite")
+            inventory["nightmare-suju"]["archiveSha256"] = "b" * 64
+            self.service.confirmOperation(True)
+            self.settle()
+        self.assertEqual((self.root / IMAGE).read_bytes(), b"approved-old")
+        self.assertFalse((self.root / "work/map-packages/nightmare-suju.json").exists())
+        self.assertIn("resource-plan-changed", self.problems[-1]["raw"])
+        self.assertEqual(self.completions, [])
+        self.assertFalse(self.lease.active)
+
     def test_unknown_file_conflict_never_overwrites(self):
         self.write(IMAGE, b"unknown")
         self.install()
@@ -746,6 +784,44 @@ class ResourceServiceTests(unittest.TestCase):
         self.settle()
         self.assertTrue(any(r["packageId"] == manifest["packageId"] and r["status"] == "not-installed"
                             for r in self.service.packageRows), self.service.message)
+
+    def test_same_files_changed_dependencies_report_rejection_not_duplicate_success(self):
+        self.install()
+        receipt = self.root / "work/map-packages/nightmare-suju.json"
+        before, inode = receipt.read_bytes(), receipt.stat().st_ino
+        self.completions.clear()
+        self.changes.clear()
+        dependency = "_internal/references/author-packs/wang-qingxin/catalog.json"
+        self.write(dependency, b"catalog")
+        self.dependencies.append(row(dependency, b"catalog"))
+        self.install(self.package("changed-dependencies.zip"))
+        self.assertIn("dependency-contract-changed", self.problems[-1]["raw"])
+        self.assertIn("当前不能仅更新依赖记录", self.problems[-1]["summary"])
+        self.assertIn("原图包和安装记录未改动", self.problems[-1]["summary"])
+        self.assertEqual(self.completions, [])
+        self.assertEqual(self.changes, [])
+        self.assertEqual(receipt.read_bytes(), before)
+        self.assertEqual(receipt.stat().st_ino, inode)
+        self.assertNotIn("无需重复导入", self.service.message)
+        self.assertFalse(self.lease.active)
+
+    def test_confirmation_rejects_receipt_with_erased_dependencies(self):
+        self.install()
+        self.completions.clear()
+        self.install(self.package("new-image.zip", b"new-image"))
+        self.assertEqual(self.service.pendingKind, "overwrite")
+        receipt = self.root / "work/map-packages/nightmare-suju.json"
+        changed = json.loads(receipt.read_bytes())
+        changed.pop("requiresFiles")
+        receipt.write_text(json.dumps(changed))
+        before = receipt.read_bytes()
+        self.service.confirmOperation(True)
+        self.settle()
+        self.assertIn("invalid-installed-package-dependencies", self.problems[-1]["raw"])
+        self.assertEqual(self.completions, [])
+        self.assertEqual(receipt.read_bytes(), before)
+        self.assertEqual((self.root / IMAGE).read_bytes(), b"route")
+        self.assertFalse(self.lease.active)
 
 
 if __name__ == "__main__":

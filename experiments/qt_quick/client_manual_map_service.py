@@ -121,7 +121,7 @@ class ManualMapPickerService(QObject):
 
     def _session_context(self):
         state = self.session.snapshot if self.session is not None else {}
-        return (self._applied_mode(), state.get("profileId"), state.get("roundId"))
+        return (state.get("season", "s0"), self._applied_mode(), state.get("profileId"), state.get("roundId"))
 
     def _title(self):
         mode = self._catalog_mode or self._applied_mode()
@@ -285,7 +285,8 @@ class ManualMapPickerService(QObject):
             QTimer.singleShot(0, self._place)
             return
         mode = str(result.get("mode") or self._applied_mode())
-        if (mode != self._applied_mode()
+        if (result.get("season", "s0") != self._session_context()[0]
+                or mode != self._applied_mode()
                 or self._opened_session_context != self._session_context()):
             # A mode switch landed while this job ran; do not show the old
             # map pack. Retry with a bound delay rather than spinning while

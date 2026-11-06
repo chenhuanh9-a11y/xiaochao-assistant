@@ -26,6 +26,7 @@ sys.path.insert(0, str(ROOT / "app"))
 from managed_base_resources import optional_author_sidecar
 from package_profiles import LIGHT_PROFILE, partition_resources
 from packaged_resource_contract import check_package
+from packaged_product_identity import PRIVATE_S1_INSTANCES
 from verify_admin_manifest import verify_administrator_manifest, verify_manifest_xml
 
 PRODUCT = "XingtuQtClientTest"
@@ -36,6 +37,18 @@ INSTANCES = {
     "layout-preview": dict(appId="D4B8E562-EA62-4A43-AF1D-043A5646971E", appName="Xingtu Qt Layout Preview",
                            installFolder="XingtuQtLayoutPreview", startMenuGroup="Xingtu Qt Layout Preview",
                            setupPrefix="XingtuQtLayout-Setup", versionSuffix="-qt-layout-test", product=PRODUCT),
+    "s0-s1-test": dict(appId="907F912D-58FD-4F84-A7A4-0C816AA70E52", appName="Xingtu S0 S1 Private Test",
+                       installFolder="XingtuS0S1PrivateTest", startMenuGroup="Xingtu S0 S1 Private Test",
+                       setupPrefix="XingtuS0S1Private-Setup", versionSuffix="-s0-s1-private", product=PRODUCT),
+    "s1-floor-test": dict(appId="3C271F5D-71FF-4EA8-9569-B8DAC30F3773", appName="Xingtu S1 Floor Private Test",
+                          installFolder="XingtuS1FloorPrivateTest", startMenuGroup="Xingtu S1 Floor Private Test",
+                          setupPrefix="XingtuS1FloorPrivate-Setup", versionSuffix="-s1-floor-private", product=PRODUCT),
+    "s1-auto-test": dict(appId="ED53B6E8-E9A0-4F21-AF75-7C8A62BE7347", appName="Xingtu S1 Auto Private Test",
+                         installFolder="XingtuS1AutoPrivateTest", startMenuGroup="Xingtu S1 Auto Private Test",
+                         setupPrefix="XingtuS1AutoPrivate-Setup", versionSuffix="-s1-auto-private", product=PRODUCT),
+    "s1-playtest": dict(appId="D9FE6D76-C31A-47AF-9281-B4614C245E92", appName="Xingtu S1 Playtest",
+                        installFolder="XingtuS1Playtest", startMenuGroup="Xingtu S1 Playtest",
+                        setupPrefix="XingtuS1Playtest-Setup", versionSuffix="-s1-playtest", product=PRODUCT),
     "production": dict(appId="D04394A0-DACE-4FF9-874D-3DCB43EE53D1", appName="星图",
                        installFolder="XiaochaoAssistant", startMenuGroup="星图",
                        setupPrefix="星图", versionSuffix="", product="星图"),
@@ -430,7 +443,179 @@ def _local_file(root, name):
     return path
 
 
-def validate_resources(root, inventory, *, bundled_packages=()):
+# This exact source-owned file is the only fingerprint exclusion. It contains
+# declarative release data, never executable code; all builder code and source
+# version bytes remain included. Exclusion avoids a self-referential hash.
+S1_PRODUCTION_LOCK = "tools/s1-production-release-lock.json"
+S0_RESOURCE_CONTEXTS = ("s0:nightmare", "s0:difficult")
+S1_RESOURCE_CONTEXTS = ("s1:difficulty2", "s1:difficult", "s1:nightmare")
+
+
+def source_payload_fingerprint(source):
+    """Read exact clean tracked bytes and modes, excluding only the release lock."""
+    if (not isinstance(source, dict) or source.get("clean") is not True
+            or source_identity(source.get("commit", "")) != source):
+        raise ValueError("Production S1 requires the exact clean source identity")
+    rows, names = [], set()
+    for record in _git("ls-files", "--stage", "-z").split("\0"):
+        if not record:
+            continue
+        metadata, name = record.split("\t", 1)
+        mode, _, stage = metadata.split()
+        if mode not in {"100644", "100755"} or stage != "0" or name in names:
+            raise ValueError("Production S1 source must contain only unique tracked regular files")
+        names.add(name)
+        path = _local_file(ROOT, name)
+        if name != S1_PRODUCTION_LOCK:
+            rows.append(dict(path=name, mode=mode, bytes=path.stat().st_size, sha256=sha256(path)))
+    if not {S1_PRODUCTION_LOCK, "version.json", "tools/build_qt_client.py"} <= names:
+        raise ValueError("Production S1 source lock, builder and version must be tracked")
+    if source_identity(source["commit"]) != source:
+        raise ValueError("Source changed while checking the production S1 release")
+    return hashlib.sha256(json.dumps(sorted(rows, key=lambda row: row["path"]),
+        sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _s0_closure_digest(rows):
+    return hashlib.sha256(json.dumps(rows, sort_keys=True, ensure_ascii=False,
+                                    separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def production_s0_predecessor_closure(resources, release, *, bundled_packages=()):
+    """Preserve reviewed published S0 bytes in the *actual* candidate plane.
+
+    Historical provenance must be verified on Windows before source-lock review.
+    A hash-shaped claim is not proof of publication. Never derive predecessors
+    from the new composite input, installed mutable bytes or incoming metadata.
+    """
+    from managed_base_resources import SCHEMA, manifest_for_rows
+    expected, predecessors = release.get("s0BaseFiles"), release.get("s0Predecessors")
+    if not isinstance(expected, dict) or not expected or not isinstance(predecessors, list) or not predecessors:
+        raise ValueError("Production S1 requires reviewed complete published S0 predecessor closure")
+    selected, _ = partition_resources(resources, bundled_packages=bundled_packages)
+    author_paths = selected_bundled_author_paths(selected, bundled_packages, "production")
+    selected.update(source_support_assets(selected))
+    current = {"_internal/" + name: row for name, row in selected.items()
+               if name not in author_paths and not name.casefold().startswith("seasons/")
+               and resource_file_family("_internal/" + name) == "base"}
+    for name, row in expected.items():
+        if (not isinstance(name, str) or not name.startswith("_internal/")
+                or name.casefold().startswith("_internal/seasons/")
+                or not isinstance(row, dict) or set(row) != {"bytes", "sha256"}
+                or type(row["bytes"]) is not int or row["bytes"] < 0
+                or type(row["sha256"]) is not str or not re.fullmatch(r"[a-f0-9]{64}", row["sha256"])):
+            raise ValueError("Invalid exact current S0 candidate inventory")
+    if current != expected:
+        raise ValueError("Current S0 candidate plane differs from reviewed exact closure")
+    evidence, seen = [], set()
+    for predecessor in predecessors:
+        if (not isinstance(predecessor, dict) or set(predecessor) != {
+                "sourceCommit", "setupSha256", "manifestSha256", "manifestUtf8"}
+                or type(predecessor["sourceCommit"]) is not str
+                or not re.fullmatch(r"[a-f0-9]{40}", predecessor["sourceCommit"])
+                or any(type(predecessor[field]) is not str or not re.fullmatch(r"[a-f0-9]{64}", predecessor[field])
+                       for field in ("setupSha256", "manifestSha256"))
+                or type(predecessor["manifestUtf8"]) is not str):
+            raise ValueError("Invalid published S0 predecessor evidence")
+        raw = predecessor["manifestUtf8"].encode("utf-8")
+        if (not raw or len(raw) > 16 * 1024 * 1024
+                or hashlib.sha256(raw).hexdigest() != predecessor["manifestSha256"]
+                or predecessor["setupSha256"] in seen):
+            raise ValueError("Invalid exact published S0 manifest bytes or duplicate predecessor")
+        seen.add(predecessor["setupSha256"])
+        manifest = json.loads(raw.decode("utf-8-sig"))
+        if (not isinstance(manifest, dict) or set(manifest) != {"schema", "resourceVersion", "bundleId", "files"}
+                or manifest["schema"] != SCHEMA or type(manifest["resourceVersion"]) is not str
+                or not manifest["resourceVersion"].strip()):
+            raise ValueError("Invalid published S0 managed manifest")
+        canonical = manifest_for_rows(manifest["files"], manifest["resourceVersion"])
+        if manifest["bundleId"] != canonical["bundleId"]:
+            raise ValueError("Published S0 manifest bundle identity mismatch")
+        rows = canonical["files"]
+        if any(row["path"].casefold().startswith("_internal/seasons/") for row in rows):
+            raise ValueError("S0 predecessor cannot be the S1 composite inventory")
+        # Preserve the existing narrowly registered legacy optional-author
+        # relinquishment. It must not turn into resurrection or base ownership.
+        owned = [row for row in rows if not optional_author_sidecar(row["path"])]
+        if not owned:
+            raise ValueError("Published S0 predecessor must contain base ownership")
+        for row in owned:
+            if current.get(row["path"]) != {key: row[key] for key in ("bytes", "sha256")}:
+                raise ValueError("Unreviewed S0 omission, relocation or byte change: " + row["path"])
+        evidence.append(dict(sourceCommit=predecessor["sourceCommit"], setupSha256=predecessor["setupSha256"],
+            manifestSha256=predecessor["manifestSha256"], resourceVersion=manifest["resourceVersion"],
+            retainedBaseFiles=len(owned), excludedLegacyOptionalAuthorFiles=len(rows) - len(owned)))
+    return dict(currentBaseFiles=len(current), candidateInventorySha256=_s0_closure_digest(current),
+                publishedPredecessors=evidence,
+                policy="exact-published-S0-bytes-preserved; no-new-retirement-authority")
+
+
+def production_s1_release(resources, resource_version="", *, source=None, bundled_packages=()):
+    """Current build eligibility, separate from historical managed-base recovery.
+
+    No caller/profile/environment field can enable this path. Both source-owned
+    policies, exact clean source/version and complete S1 byte inventory must
+    agree. Historical managed inventories alone never authorize new builds.
+    """
+    lock_path = _local_file(ROOT, S1_PRODUCTION_LOCK)
+    lock = _read(lock_path)
+    if (not isinstance(lock, dict) or set(lock) != {"schema", "enabled", "release"}
+            or lock["schema"] != "xingtu-s1-production-release-lock-v1"
+            or type(lock["enabled"]) is not bool):
+        raise ValueError("Invalid source-owned production S1 release lock")
+    selected = {name: row for name, row in resources.items() if name.casefold().startswith("seasons/")}
+    release = lock["release"]
+    if lock["enabled"] is not True:
+        if release is not None:
+            raise ValueError("Inactive production S1 release lock must be empty")
+        if selected:
+            raise ValueError("Production resource projection does not support season resources: production S1 disabled; only the exact S1 native roots in an allowlisted S1 private Setup are enabled")
+        return None
+    if (not isinstance(release, dict) or set(release) != {
+            "resourceVersion", "sourcePayloadSha256", "versionSha256", "files", "s0BaseFiles", "s0Predecessors"}
+            or type(release["resourceVersion"]) is not str or not release["resourceVersion"].strip()
+            or any(type(release[field]) is not str or not re.fullmatch(r"[a-f0-9]{64}", release[field])
+                   for field in ("sourcePayloadSha256", "versionSha256"))
+            or not isinstance(release["files"], dict) or not release["files"]):
+        raise ValueError("Invalid active production S1 release lock")
+    if not selected and resource_version != release["resourceVersion"]:
+        return None  # Existing S0 products do not inherit S1 build requirements.
+    expected = release["files"]
+    if not selected or resource_version != release["resourceVersion"] or selected != expected:
+        raise ValueError("Production S1 inventory/version differs from the current source-owned release")
+    rows = []
+    for name, row in expected.items():
+        if (not name.startswith("seasons/s1/") or not isinstance(row, dict)
+                or set(row) != {"bytes", "sha256"} or type(row["bytes"]) is not int
+                or row["bytes"] < 0 or type(row["sha256"]) is not str
+                or not re.fullmatch(r"[a-f0-9]{64}", row["sha256"])):
+            raise ValueError("Invalid exact production S1 release inventory")
+        rows.append(dict(path="_internal/" + name, **row))
+    # Independently checks normalized scope, all three mode manifests and the
+    # complete inventory against source-reviewed historical/runtime locks.
+    from managed_base_resources import manifest_for_rows
+    manifest_for_rows(rows, resource_version)
+    if (source_payload_fingerprint(source) != release["sourcePayloadSha256"]
+            or sha256(_local_file(ROOT, "version.json")) != release["versionSha256"]):
+        raise ValueError("Production S1 source/version differs from the current source-owned release")
+    s0_closure = production_s0_predecessor_closure(resources, release, bundled_packages=bundled_packages)
+    return dict(schema=lock["schema"], lockSha256=sha256(lock_path),
+        sourcePayloadSha256=release["sourcePayloadSha256"], versionSha256=release["versionSha256"],
+        resourceVersion=resource_version, resourceFiles=len(selected),
+        sourceCommit=source["commit"], s0Closure=s0_closure)
+
+
+def included_resource_contexts(instance, resources, resource_version="", *, source=None, bundled_packages=()):
+    """Declarations follow verified release identity; they are not authority."""
+    include_s1 = instance in PRIVATE_S1_INSTANCES
+    if instance == "production":
+        include_s1 = production_s1_release(resources, resource_version, source=source, bundled_packages=bundled_packages) is not None
+    return list(S0_RESOURCE_CONTEXTS + (S1_RESOURCE_CONTEXTS if include_s1 else ()))
+
+
+def validate_resources(root, inventory, *, bundled_packages=(), instance="client", source=None):
+    if instance not in INSTANCES:
+        raise ValueError("Unknown installer instance")
     root, inventory = Path(root).resolve(), Path(inventory).resolve()
     if not root.is_dir() or root == ROOT or root == ROOT / "work":
         raise ValueError("Pass the exact isolated resource root, not the source/work directory")
@@ -442,9 +627,14 @@ def validate_resources(root, inventory, *, bundled_packages=()):
     rows = declaration.get("files")
     if not isinstance(rows, dict) or not rows:
         raise ValueError("Resource inventory requires a nonempty path -> {bytes, sha256} files object")
+    production_release = (production_s1_release(rows, declaration["resourceVersion"], source=source, bundled_packages=bundled_packages)
+                          if instance == "production" else None)
     for name, row in rows.items():
         path = _local_file(root, name)
-        if name not in ("version.json", "difficult-native-manifest.json") and PurePosixPath(name).parts[0] not in {
+        is_s1 = name.startswith("seasons/s1/") and len(PurePosixPath(name).parts) > 3 and PurePosixPath(name).parts[2] in {"difficulty2", "difficult", "nightmare"}
+        if name.startswith("seasons/") and (not is_s1 or not (instance in PRIVATE_S1_INSTANCES or production_release)):
+            raise ValueError("Season resources support only the exact S1 native roots in an allowlisted S1 private Setup: " + name)
+        if not is_s1 and name not in ("version.json", "difficult-native-manifest.json") and PurePosixPath(name).parts[0] not in {
                 "assets", "references", "recognition"}:
             raise ValueError(f"Unexpected runtime-resource category: {name}")
         if path.suffix.lower() not in {".json", ".gz", ".npz", ".png", ".webp", ".jpg", ".jpeg", ".txt", ".md", ".ico", ".svg"}:
@@ -466,6 +656,14 @@ def validate_resources(root, inventory, *, bundled_packages=()):
     contract = check_package(root)
     if not contract["success"]:
         raise ValueError(f"Packaged runtime path contract rejected: {contract['errors']}")
+    if instance in PRIVATE_S1_INSTANCES or production_release:
+        sys.path.insert(0, str(ROOT / "experiments/qt_quick"))
+        from s1_private_resources import validated_s1_resources
+        contract["s1"] = validated_s1_resources(root, required=True)
+        if production_release:
+            if contract["s1"]["files"] != {name: row for name, row in rows.items() if name.startswith("seasons/")}:
+                raise ValueError("Native S1 validation differs from the production release inventory")
+            contract["productionS1Release"] = production_release
     return declaration, retained, omitted, replaced, contract
 
 
@@ -524,7 +722,7 @@ def resource_file_family(relative):
         return "editor"
     if optional_author_sidecar(relative):
         return "optional-author"
-    if (relative.startswith(("_internal/assets/", "_internal/references/", "_internal/recognition/"))
+    if (relative.startswith(("_internal/assets/", "_internal/references/", "_internal/recognition/", "_internal/seasons/"))
             or relative == "_internal/difficult-native-manifest.json"):
         return "base"
     return "program"
@@ -536,8 +734,8 @@ BUNDLED_AUTHOR_ROOT = "_internal/qt-author-base/"
 
 def selected_bundled_author_paths(resources, packages, instance):
     """Explicit build input, not permission inferred from resources on disk."""
-    if packages and instance not in {"client", "production"}:
-        raise ValueError("Bundled author defaults support only client or production Setup")
+    if packages and instance not in {"client", "production"} | PRIVATE_S1_INSTANCES:
+        raise ValueError("Bundled author defaults require client, production or an allowlisted S1 private Setup")
     if set(packages) - {"difficult-zhan10"}:
         raise ValueError("Unsupported bundled author package")
     names = sorted(name for name in resources if name.startswith(BUNDLED_AUTHOR_PREFIXES))
@@ -584,8 +782,10 @@ def verify_bundled_author_defaults(stage, resources, bundled_author_paths):
                 policy="program-owned-read-only-default; existing-user-object-wins; no-import-receipt")
 
 
-def production_file_projection(stage, resources, *, bundled_author_paths=()):
+def production_file_projection(stage, resources, *, bundled_author_paths=(), resource_version="", source=None):
     """Read a clean assembled stage; every resource belongs to exactly one plane."""
+    production_release = production_s1_release(resources, resource_version, source=source,
+        bundled_packages=("difficult-zhan10",) if bundled_author_paths else ())
     stage = Path(stage).resolve()
     families = dict(program=[], base=[], editor=[], **{"optional-author": []})
     seen = set()
@@ -595,6 +795,13 @@ def production_file_projection(stage, resources, *, bundled_author_paths=()):
         if not path.is_file():
             continue
         name = path.relative_to(stage).as_posix()
+        if name.casefold().startswith("_internal/seasons/"):
+            if not production_release:
+                raise ValueError("Production resource projection does not support season resources")
+            relative = name[len("_internal/"):]
+            row = resources.get(relative)
+            if not row or path.stat().st_size != row["bytes"] or sha256(path) != row["sha256"]:
+                raise ValueError("Staged S1 bytes differ from the exact production release inventory")
         if any(char in name for char in ('"', ';', '\r', '\n')) or name.lower().startswith("work/"):
             raise ValueError(f"Invalid staged program/resource path: {name}")
         if name.casefold() in seen:
@@ -607,6 +814,21 @@ def production_file_projection(stage, resources, *, bundled_author_paths=()):
     actual = set(families["base"]) | set(families["editor"]) | set(families["optional-author"])
     if actual != expected:
         raise ValueError(f"Resource projection differs from exact inventory: missing={sorted(expected-actual)}, extra={sorted(actual-expected)}")
+    if production_release:
+        # Input partitioning is not proof of the assembled candidate plane.
+        # Bind every actual staged S0 base byte, including unexpected author
+        # additions, partial relocation and source-owned support omissions.
+        staged_s0 = {name: dict(bytes=(stage / name).stat().st_size, sha256=sha256(stage / name))
+                     for name in families["base"] if not name.casefold().startswith("_internal/seasons/")}
+        if _s0_closure_digest(staged_s0) != production_release["s0Closure"]["candidateInventorySha256"]:
+            raise ValueError("Staged S0 candidate plane differs from reviewed exact closure")
+        # Re-run the native provider on the actual staged bytes, not input-root
+        # metadata or a serialized prior success report.
+        sys.path.insert(0, str(ROOT / "experiments/qt_quick"))
+        from s1_private_resources import validated_s1_resources
+        native = validated_s1_resources(stage / "_internal", required=True)
+        if native["files"] != {name: row for name, row in resources.items() if name.startswith("seasons/")}:
+            raise ValueError("Staged native S1 contract differs from the production release inventory")
     return families
 
 
@@ -647,8 +869,9 @@ def stage_editor_baseline(stage, resources):
     return dict(policy="program-owned-fallback; preserve-existing-legacy-families", files=copied)
 
 
-def write_production_files_include(stage, resources, output, *, resource_version="", bundled_author_paths=()):
-    families = production_file_projection(stage, resources, bundled_author_paths=bundled_author_paths)
+def write_production_files_include(stage, resources, output, *, resource_version="", bundled_author_paths=(), source=None):
+    families = production_file_projection(stage, resources, bundled_author_paths=bundled_author_paths,
+                                          resource_version=resource_version, source=source)
     author_defaults = verify_bundled_author_defaults(stage, resources, bundled_author_paths)
     # Keep active data untouched during Setup. The startup repair verifies this
     # complete candidate manifest under the same OS lock as author transactions.
@@ -750,7 +973,8 @@ def main(argv=None):
     if not (qt / "client.py").is_file() or not (qt / "Client.qml").is_file():
         raise ValueError("Integrated Qt entrypoint is not present")
     declaration, resources, omitted, replaced, contract = validate_resources(args.resource_root, args.resource_inventory,
-                                                                         bundled_packages=args.bundled_package)
+                                                                         bundled_packages=args.bundled_package,
+                                                                         instance=args.instance, source=source)
     author_paths = selected_bundled_author_paths(resources, args.bundled_package, args.instance)
     if BRAND_ICON not in resources or resources[BRAND_ICON]["sha256"].lower() != BRAND_ICON_SHA256:
         raise ValueError("The existing supplied Xingtu ICO must be present in the locked resource inventory")
@@ -821,6 +1045,8 @@ def main(argv=None):
                    recoveryHelper=dict(included=args.instance == "production", executable="star-map-recovery-helper.exe"),
                    importHelper=dict(included=args.instance == "production", executable="star-map-import-helper.exe"),
                    resourceVersion=declaration["resourceVersion"], authorDisplayPackagesIncluded=args.bundled_package,
+                   includedResourceContexts=included_resource_contexts(args.instance, resources,
+                       declaration["resourceVersion"], source=source, bundled_packages=args.bundled_package),
                    authorDisplayFilesIncluded=len(author_paths), omittedAuthorDisplayFiles=len(omitted),
                    omittedAuthorDisplayBytes=sum(row["bytes"] for row in omitted.values()),
                    publicDownloadConfigured=False, localMapImportPreserved=True)
@@ -874,7 +1100,7 @@ def main(argv=None):
         ownership = stage / "_installer-owned-files.txt"
         ownership.write_text("", encoding="utf-8-sig")
         include, projection = write_production_files_include(stage, resources, output,
-            resource_version=declaration["resourceVersion"], bundled_author_paths=author_paths)
+            resource_version=declaration["resourceVersion"], bundled_author_paths=author_paths, source=source)
         owned_files = sorted(name.replace("/", "\\") for name in projection["installedFiles"])
         if any(name.lower() == "work" or name.lower().startswith("work\\") for name in owned_files):
             raise ValueError("Production ownership must not contain user work/data")

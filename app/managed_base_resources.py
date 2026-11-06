@@ -7,6 +7,7 @@ exception or process loss; this is not a power-loss atomic filesystem claim.
 from __future__ import annotations
 
 import hashlib
+from functools import lru_cache
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,8 @@ import uuid
 
 import map_package_upgrade as transaction
 import star_map_import as files
+from s0_legacy_base_releases import REVIEWED_LEGACY_S0_BASE_RELEASES
+from s1_reviewed_base_releases import REVIEWED_S1_BASE_RELEASES
 
 SCHEMA = "xingtu-managed-base-v1"
 CANDIDATE = "_internal/managed-base-resources"
@@ -26,6 +29,82 @@ HISTORY = "work/map-packages/base-repairs"
 RETIRED_SCHEMA = "xingtu-base-repair-retired-v1"
 MAX_RETIRED_RECORDS = 16
 MAX_RETIRED_BYTES = 1024
+
+# Source-owned inventories verified against final Windows native bytes, never
+# installation profiles or incoming metadata. Each entry is
+# (resourceVersion, ((exact path, bytes, sha256), ...)).
+# Retain reviewed predecessor inventories while their state/journals may exist;
+# a candidate rollout toggle must never make recovery history unreadable.
+_REVIEWED_S1_BASE_RELEASES = REVIEWED_S1_BASE_RELEASES
+_UNSPECIFIED_RESOURCE_VERSION = object()
+
+
+@lru_cache(maxsize=1)
+def _s1_release_catalogue(releases):
+    """Immutable exact locks; parsing old/new inventory is not live authority."""
+    if type(releases) is not tuple or len(releases) > 16:
+        raise ManagedBaseResourceError("invalid-reviewed-s1-release-policy")
+    result, paths, versions = [], set(), set()
+    for release in releases:
+        if type(release) is not tuple or len(release) != 2:
+            raise ManagedBaseResourceError("invalid-reviewed-s1-release-policy")
+        version, values = release
+        if (type(version) is not str or not version.strip() or len(version) > 256
+                or version in versions or type(values) is not tuple or not 0 < len(values) <= 20000):
+            raise ManagedBaseResourceError("invalid-reviewed-s1-release-policy")
+        versions.add(version)
+        rows, seen, modes = set(), set(), set()
+        for value in values:
+            if type(value) is not tuple or len(value) != 3:
+                raise ManagedBaseResourceError("invalid-reviewed-s1-release-policy")
+            path, size, digest = value
+            row = next(iter(files._rows([dict(path=path, bytes=size, sha256=digest)]).values()))
+            parts = row["path"].split("/")
+            if (len(parts) < 5 or parts[:3] != ["_internal", "seasons", "s1"]
+                    or parts[3] not in {"difficulty2", "difficult", "nightmare"}
+                    or not ((len(parts) == 5 and parts[4] == "native-map-manifest.json")
+                            or (len(parts) > 5 and parts[4] in {"assets", "references", "recognition"}))
+                    or Path(path).suffix.lower() not in {".json", ".gz", ".npz", ".png", ".webp", ".jpg",
+                        ".jpeg", ".txt", ".md", ".ico", ".svg"}
+                    or row["path"].casefold() in seen):
+                raise ManagedBaseResourceError("invalid-reviewed-s1-release-path")
+            seen.add(row["path"].casefold())
+            if len(parts) == 5:
+                modes.add(parts[3])
+            rows.add((row["path"], row["bytes"], row["sha256"]))
+        if modes != {"difficulty2", "difficult", "nightmare"}:
+            raise ManagedBaseResourceError("incomplete-reviewed-s1-release-policy")
+        result.append((version, frozenset(rows)))
+        paths.update(row[0] for row in rows)
+    return tuple(result), frozenset(paths)
+
+
+def _reviewed_s1_catalogue():
+    try:
+        return _s1_release_catalogue(_REVIEWED_S1_BASE_RELEASES)
+    except (TypeError, ValueError) as error:
+        if isinstance(error, ManagedBaseResourceError):
+            raise
+        raise ManagedBaseResourceError("invalid-reviewed-s1-release-policy") from error
+
+
+def _verify_reviewed_s1_inventory(rows, resource_version=_UNSPECIFIED_RESOURCE_VERSION):
+    selected = frozenset((row["path"], row["bytes"], row["sha256"]) for row in rows
+                        if row["path"].casefold().startswith("_internal/seasons/"))
+    if not selected:
+        # S0 remains unchanged, but a known S1 release cannot drop its entire
+        # S1 inventory while retaining the reviewed resource-version label.
+        if resource_version is not _UNSPECIFIED_RESOURCE_VERSION:
+            releases, _ = _reviewed_s1_catalogue()
+            if any(resource_version == version for version, _ in releases):
+                raise ManagedBaseResourceError("unreviewed-s1-base-inventory-or-version")
+        return
+    releases, _ = _reviewed_s1_catalogue()
+    if not any(selected == inventory and (resource_version is _UNSPECIFIED_RESOURCE_VERSION
+                or type(resource_version) is str and resource_version == version)
+               for version, inventory in releases):
+        raise ManagedBaseResourceError("unreviewed-s1-base-inventory-or-version")
+
 OPTIONAL_AUTHOR_SIDECARS = frozenset(
     f"_internal/references/author-packs/{author}/{name}"
     for author in files.AUTHOR_PACKAGES.values() for name in files.AUTHOR_SIDECARS)
@@ -51,6 +130,9 @@ def _base_path(path):
     # mistaken optional-author entries. Planning separates ownership below;
     # historical rollback/retirement must still verify the original records.
     path = files._relative(path)
+    if path.startswith("_internal/seasons/"):
+        _, reviewed_paths = _reviewed_s1_catalogue()
+        return path in reviewed_paths
     return (path == "_internal/difficult-native-manifest.json" or
             path.startswith(("_internal/assets/", "_internal/references/", "_internal/recognition/"))) and not (
                 path.startswith("_internal/assets/custom-maps/") or
@@ -68,6 +150,9 @@ def _rows(values):
         if key in rows or not _base_path(row["path"]):
             raise ManagedBaseResourceError("invalid-base-path", [dict(path=row["path"], reason="not-base-or-duplicate")])
         rows[key] = row
+    # Complete exact S1 release, including historical journal loads. A union of
+    # approved paths, partial release or mixed resource bytes is insufficient.
+    _verify_reviewed_s1_inventory(rows.values())
     return rows
 
 
@@ -77,6 +162,7 @@ def _encoded(value):
 
 def manifest_for_rows(rows, resource_version=""):
     rows = sorted(_rows(rows).values(), key=lambda row: row["path"])
+    _verify_reviewed_s1_inventory(rows, resource_version)
     return dict(schema=SCHEMA, resourceVersion=resource_version,
                 bundleId=hashlib.sha256(_encoded(rows)).hexdigest(), files=rows)
 
@@ -146,17 +232,47 @@ def _package_constraints(root):
         package = path.stem
         if package not in files.PACKAGE_IDS:
             raise ManagedBaseResourceError("unrecognized-installed-package-receipt", [dict(path="work/map-packages/" + path.name, reason="unknown-package")])
-        inventory, _ = files._owned_inventory(root, package)
-        receipt = transaction._read_json(path)
+        inventory, package_dependencies, _ = files._installed_inventory(root, package)
         for key, row in inventory.items():
             owned.setdefault(key, []).append((package, row))
-        if "requiresFiles" not in receipt:
+        # The shared receipt parser validates the package's exact season scope.
+        # Only an approved legacy adoption can return no dependency contract.
+        if not package_dependencies:
             unrecorded.append(package)
         else:
-            deps = receipt["requiresFiles"]
-            if deps:
-                dependencies.extend((package, row) for row in files._rows(deps, dependencies=True).values())
+            dependencies.extend((package, row) for row in package_dependencies.values())
     return owned, dependencies, unrecorded
+
+
+def _legacy_s0_previous(root, candidate):
+    """Recognize only an entire source-reviewed predecessor, before any write."""
+    if type(REVIEWED_LEGACY_S0_BASE_RELEASES) is not tuple:
+        raise ManagedBaseResourceError("invalid-reviewed-legacy-s0-policy")
+    seen, catalogue = set(), []
+    for release in REVIEWED_LEGACY_S0_BASE_RELEASES:
+        if (type(release) is not tuple or len(release) != 3
+                or type(release[0]) is not str or not re.fullmatch("[0-9a-f]{40}", release[0])
+                or type(release[1]) is not str or not re.fullmatch("[0-9a-f]{64}", release[1])
+                or release[1] in seen or type(release[2]) is not tuple or not release[2]):
+            raise ManagedBaseResourceError("invalid-reviewed-legacy-s0-policy")
+        seen.add(release[1])
+        rows = []
+        for value in release[2]:
+            if type(value) is not tuple or len(value) != 3:
+                raise ManagedBaseResourceError("invalid-reviewed-legacy-s0-policy")
+            rows.append(dict(zip(("path", "bytes", "sha256"), value)))
+        previous = _rows(rows)
+        if any(key.startswith("_internal/seasons/") or optional_author_sidecar(row["path"])
+               for key, row in previous.items()):
+            raise ManagedBaseResourceError("invalid-reviewed-legacy-s0-policy")
+        catalogue.append(previous)
+    for previous in catalogue:
+        # This recognition adds no retirement authority or partial adoption.
+        if (set(previous) <= set(candidate) and all(
+                _same(_actual(files._target(root, row["path"])), row)
+                for row in previous.values())):
+            return previous
+    return {}
 
 
 def plan_managed_base_resources(install_root):
@@ -181,8 +297,16 @@ def plan_managed_base_resources(install_root):
     inventory = _rows(manifest["files"])
     state = files._target(root, STATE)
     previous = _rows(_manifest(state)["files"]) if state.exists() else {}
+    if not state.exists():
+        previous = _legacy_s0_previous(root, inventory)
     owned, dependencies, unrecorded = _package_constraints(root)
-    issues, changes = [], []
+    # Do not drop S1 ownership while leaving retired bytes active. Removal,
+    # rename or S1-to-S0 downgrade needs a separately reviewed retirement
+    # transaction; until then block the whole preflight without changing files.
+    issues = [_issue(row, _actual(files._target(root, row["path"])), "s1-base-retirement-unreviewed")
+              for key, row in previous.items()
+              if key.startswith("_internal/seasons/s1/") and key not in inventory]
+    changes = []
     for key, row in inventory.items():
         source = files._target(root, CANDIDATE + "/payload/" + row["path"])
         if not transaction._matches(source, row):
