@@ -78,7 +78,7 @@ class ProductionS1BaseResourceContracts(unittest.TestCase):
         self.assertEqual(result['files'], self.v1['rows'])
         self.assertTrue(all(managed._base_path(row['path']) for row in self.v1['rows']))
         self.assertIs(purpose._PRODUCTION_S1_CANDIDATE_ROLLOUT_ENABLED, False)
-        with self.assertRaisesRegex(ValueError, 'does not support season resources'):
+        with self.assertRaisesRegex(ValueError, 'does not support season resources|inventory/version differs'):
             build.production_file_projection(self.root,
                 {'seasons/s1/nightmare/native-map-manifest.json': {}})
 

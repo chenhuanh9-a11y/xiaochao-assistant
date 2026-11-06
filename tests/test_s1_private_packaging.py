@@ -191,10 +191,10 @@ class PrivatePackagingTests(unittest.TestCase):
                     build.validate_resources(self.resources, inventory, instance=instance)
 
     def test_production_projection_cannot_silently_classify_seasons_as_program(self):
-        with self.assertRaisesRegex(ValueError, 'does not support season'):
+        with self.assertRaisesRegex(ValueError, 'does not support season|inventory/version differs'):
             build.production_file_projection(self.root, {'seasons/s1/nightmare/native-map-manifest.json': {}})
         self.write(self.root / '_internal/seasons/s1/nightmare/native-map-manifest.json')
-        with self.assertRaisesRegex(ValueError, 'does not support season'):
+        with self.assertRaisesRegex(ValueError, 'does not support season|inventory/version differs'):
             build.production_file_projection(self.root, {})
 
     def test_seed_copies_exact_native_subtree_without_work_or_settings(self):

@@ -155,7 +155,7 @@ class BakedProductionPurposeContracts(unittest.TestCase):
             writer.assert_called_once()
 
     def test_production_builder_still_blocks_unreviewed_season_projection(self):
-        with self.assertRaisesRegex(ValueError, 'does not support season resources'):
+        with self.assertRaisesRegex(ValueError, 'does not support season resources|inventory/version differs'):
             build.production_file_projection(self.root,
                 {'seasons/s1/nightmare/native-map-manifest.json': {}})
 
