@@ -53,10 +53,13 @@ Item {
     ColumnLayout {
         anchors.fill: parent
         spacing: 12
-        RowLayout {
+        GridLayout {
+            id: resourceActions
             Layout.fillWidth: true
-            Label { text: "管理本地资源"; color: "#142b4b"; font.pixelSize: 18; font.bold: true }
-            Item { Layout.fillWidth: true }
+            columns: width < 600 ? 3 : 7
+            columnSpacing: 6; rowSpacing: 6
+            Label { Layout.columnSpan: resourceActions.columns === 3 ? 3 : 1; text: "管理本地资源"; color: "#142b4b"; font.pixelSize: 18; font.bold: true }
+            Item { Layout.fillWidth: true; visible: resourceActions.columns === 7 }
             AppButton { text: "恢复记录"; enabled: !panel.operationPending; onClicked: resourceService.inspectRecovery() }
             AppButton { text: "在线图包"; onClicked: clientCoordinator.navigate("downloads") }
             AppButton { text: "核对状态"; enabled: !panel.operationPending && !panel.recoveryPending; onClicked: panel.refreshPackages() }

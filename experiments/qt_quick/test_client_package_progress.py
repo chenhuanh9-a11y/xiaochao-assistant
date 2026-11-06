@@ -3,10 +3,11 @@ import os
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from pathlib import Path
 import unittest
-from PySide6.QtCore import QObject, Property, Signal, QUrl
+from PySide6.QtCore import QObject, Property, Signal, QUrl, QPointF
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQuick import QQuickWindow
 from PySide6.QtQml import QQmlEngine, QQmlComponent
+from PySide6.QtTest import QTest
 
 APP = QGuiApplication.instance() or QGuiApplication([])
 
@@ -93,6 +94,49 @@ class PackageProgressTests(unittest.TestCase):
         self.card.setProperty('onlineState', dict(busy=True, stage='checking'))
         self.assertEqual(self.card.property('phase'), '读取在线列表')
         self.assertTrue(self.bar.property('indeterminate'))
+
+
+class ResourceProgressLayoutTests(unittest.TestCase):
+    def test_progress_fits_supported_minimum_page_width_and_wide_page(self):
+        from test_client_resources import ResourceServiceTests
+        fixture = ResourceServiceTests('runTest')
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        class Backend(QObject):
+            season = Property(str, lambda self: 's1', constant=True)
+        backend = Backend()
+        engine = QQmlEngine()
+        warnings = []
+        engine.warnings.connect(lambda errors: warnings.extend(str(error) for error in errors))
+        engine.rootContext().setContextProperty('resourceService', fixture.service)
+        engine.rootContext().setContextProperty('backend', backend)
+        component = QQmlComponent(engine, QUrl.fromLocalFile(str(Path(__file__).with_name('ClientResources.qml'))))
+        page = component.create()
+        self.assertIsNotNone(page, str(component.errors()))
+        window = QQuickWindow()
+        page.setParentItem(window.contentItem())
+        window.show()
+        try:
+            fixture.service._busy, fixture.service._kind = True, 'inspect'
+            fixture.service.changed.emit()
+            card = page.findChild(QObject, 'packageProgressCard')
+            for width in (480, 514, 800):
+                window.resize(width, 680)
+                page.setWidth(width)
+                page.setHeight(680)
+                QTest.qWait(20)
+                self.assertTrue(card.isVisible())
+                point = card.mapToScene(QPointF())
+                self.assertGreaterEqual(point.x(), 0)
+                self.assertLessEqual(point.x() + card.width(), width + .5)
+                self.assertGreater(card.findChild(QObject, 'packageProgressBar').width(), 100)
+            self.assertEqual(warnings, [])
+        finally:
+            fixture.service._busy, fixture.service._kind = False, ''
+            page.deleteLater()
+            window.close()
+            window.deleteLater()
+            APP.processEvents()
 
 
 if __name__ == '__main__':
