@@ -232,16 +232,15 @@ def _package_constraints(root):
         package = path.stem
         if package not in files.PACKAGE_IDS:
             raise ManagedBaseResourceError("unrecognized-installed-package-receipt", [dict(path="work/map-packages/" + path.name, reason="unknown-package")])
-        inventory, _ = files._owned_inventory(root, package)
-        receipt = transaction._read_json(path)
+        inventory, package_dependencies, _ = files._installed_inventory(root, package)
         for key, row in inventory.items():
             owned.setdefault(key, []).append((package, row))
-        if "requiresFiles" not in receipt:
+        # The shared receipt parser validates the package's exact season scope.
+        # Only an approved legacy adoption can return no dependency contract.
+        if not package_dependencies:
             unrecorded.append(package)
         else:
-            deps = receipt["requiresFiles"]
-            if deps:
-                dependencies.extend((package, row) for row in files._rows(deps, dependencies=True).values())
+            dependencies.extend((package, row) for row in package_dependencies.values())
     return owned, dependencies, unrecorded
 
 

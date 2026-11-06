@@ -188,5 +188,49 @@ class S1AuthorPackageTests(unittest.TestCase):
         with self.assertRaisesRegex(imp.ImportRejected,'selected-archive-changed'):
             self.install(expected_archive_sha256='0'*64)
 
+    def stage_managed_base(self, data=b'base-v1', version='fixture-base-v1'):
+        import managed_base_resources as managed
+        name='_internal/references/managed-fixture.json'
+        self.write(managed.CANDIDATE+'/payload/'+name,data)
+        self.write(managed.CANDIDATE+'/manifest.json',encoded(
+            managed.manifest_for_rows([record(name,data)],version)))
+        return self.root/name
+
+    def test_installed_s1_author_allows_next_base_check_and_unrelated_owned_upgrade(self):
+        import managed_base_resources as managed
+        self.install();receipt=self.root/f'work/map-packages/{s1.PACKAGE_ID}.json'
+        before=receipt.read_bytes();base=self.stage_managed_base()
+        self.assertEqual(managed.repair_managed_base_resources(self.root)['changed'],1)
+        self.assertEqual(managed.repair_managed_base_resources(self.root)['status'],'healthy')
+        self.stage_managed_base(b'base-v2','fixture-base-v2')
+        self.assertEqual(managed.repair_managed_base_resources(self.root)['changed'],1)
+        self.assertEqual(base.read_bytes(),b'base-v2')
+        self.assertEqual(receipt.read_bytes(),before);self.assert_untouched()
+
+    def test_s1_dependency_change_blocks_entire_base_repair_without_mutation(self):
+        import managed_base_resources as managed
+        self.install();base=self.stage_managed_base()
+        dependency=self.root/self.dependencies[0]['path'];dependency.write_bytes(b'changed-native')
+        plan=managed.plan_managed_base_resources(self.root)
+        self.assertEqual(plan['status'],'blocked')
+        self.assertIn('installed-package-dependency-conflict',[row['reason'] for row in plan['issues']])
+        with self.assertRaisesRegex(managed.ManagedBaseResourceError,'preflight-blocked'):
+            managed.repair_managed_base_resources(self.root)
+        self.assertFalse(base.exists());self.assertFalse((self.root/managed.STATE).exists())
+        self.assertEqual(dependency.read_bytes(),b'changed-native')
+
+    def test_invalid_s1_receipt_scope_still_blocks_before_base_write(self):
+        import managed_base_resources as managed
+        self.install();base=self.stage_managed_base()
+        path=self.root/f'work/map-packages/{s1.PACKAGE_ID}.json';before=json.loads(path.read_bytes())
+        for dependencies in ([],self.dependencies[:-1],
+                [dict(row,path='_internal/references/foreign.json') if index==0 else row
+                 for index,row in enumerate(self.dependencies)]):
+            with self.subTest(dependencies=len(dependencies)):
+                doc=copy.deepcopy(before);doc['requiresFiles']=dependencies;path.write_bytes(encoded(doc))
+                malformed=path.read_bytes()
+                with self.assertRaises(imp.ImportRejected):managed.repair_managed_base_resources(self.root)
+                self.assertFalse(base.exists());self.assertEqual(path.read_bytes(),malformed)
+
 
 if __name__=='__main__':unittest.main()
