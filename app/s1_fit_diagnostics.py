@@ -9,10 +9,11 @@ import re
 from itertools import islice
 
 MAX_BYTES = 6144
+STAGE_MATRICES = frozenset(('proposalMatrix', 'pointMatrix', 'wallMatrix', 'regionalMatrix', 'residualMatrix'))
 
 
 def number(value, limit=1000000000):
-    return value if type(value) in (int, float) and math.isfinite(value) and abs(value) <= limit else None
+    return value if type(value) in (int, float) and abs(value) <= limit and math.isfinite(value) else None
 
 
 def vector(value, size, limit=1000000):
@@ -34,7 +35,7 @@ def matrix(value):
 
 def code(value):
     from diagnostic_schema import CODES
-    return value if type(value) is str and value in CODES else 'unknown-operation-failure'
+    return value if type(value) is str and len(value) <= 512 and value in CODES else 'unknown-operation-failure'
 
 
 def identity(value):
@@ -60,6 +61,9 @@ def metrics(value):
             result[key] = code(value[key])
     if 'matrix' in value:
         result['matrix'] = matrix(value['matrix'])
+    for key in STAGE_MATRICES:
+        if key in value:
+            result[key] = matrix(value[key])
     if 'cell' in value:
         result['cell'] = vector(value['cell'], 2, 2)
     return result
@@ -164,18 +168,49 @@ def safe_evidence(value):
     hashes = {'resourceKey', 'indexSha256', 'ownerScopeDigest', 'sourceCatalogSha256', 'rendererMetadataSha256', 'referenceMetadataSha256'}
     boxes = {'observationBounds': 4, 'frameShapeHW': 2, 'cropBounds': 4, 'cropOriginClientXY': 2,
              'cropShapeHW': 2, 'sampleScaleXY': 2, 'referenceShapeHW': 2, 'cell': 2}
-    containers = {'statistics', 'rejection', 'regions', 'residual', 'priorBinding', 'resourceBinding'}
     lists = {'observations': 2, 'priorAttempts': 3, 'fastAttempts': 3, 'candidates': 2, 'regionMetrics': 9, 'outcomes': 2}
-    omitted = [0]
+    # Container names have meaning only at their declared location. In
+    # particular a prior row cannot contain another prior list or binding.
+    scalar_metric = numeric | booleans | {'reason', 'pointGeometryReason', 'wallGeometryReason', 'matrix', 'cell'} | STAGE_MATRICES
+    bindings = hashes | {'mode', 'mapId', 'floor', 'sourceFloor', 'targetFloor', 'referenceShapeHW'}
+    fields = {
+        'root': {'schemaVersion', 'mode', 'resourceKey', 'floor', 'frameShapeHW', 'observations',
+            'omittedObservationCount', 'priorAttempts', 'omittedPriorCount', 'fastAttempts', 'omittedFastCount',
+            'outcomes', 'omittedOutcomeCount', 'priorBinding', 'priorReason', 'cropBounds',
+            'cropOriginClientXY', 'cropShapeHW', 'sampleScaleXY', 'omittedEvidenceCount', 'truncated'},
+        'observation': {'success', 'reason', 'statistics', 'residual', 'candidates', 'omittedCandidateCount',
+            'strategy', 'frameShapeHW', 'resourceBinding', 'observationBounds', 'queryPixelCount', 'nodeCount',
+            'lineCount', 'observedEdgePixels', 'mapId', 'floor'},
+        'candidate': {'matrix', 'accepted', 'regions', 'regionMetrics', 'omittedRegionCount', 'residual'},
+        'prior': {'mapId', 'floor', 'matrix', 'accepted', 'fallback', 'elapsedMs', 'rejection'},
+        'fast': scalar_metric | {'searchKind', 'regions', 'regionMetrics', 'omittedRegionCount', 'residual'},
+        'metric': scalar_metric,
+        'binding': bindings,
+        'outcome': {'mapId', 'reason', 'outcome'},
+    }
+    children = {
+        ('root', 'priorBinding'): 'binding', ('observation', 'resourceBinding'): 'binding',
+        ('observation', 'statistics'): 'metric', ('observation', 'residual'): 'metric',
+        ('candidate', 'regions'): 'metric', ('candidate', 'residual'): 'metric',
+        ('prior', 'rejection'): 'fast', ('fast', 'regions'): 'metric', ('fast', 'residual'): 'metric',
+    }
+    item_kinds = {('root', 'observations'): 'observation', ('root', 'priorAttempts'): 'prior',
+        ('root', 'fastAttempts'): 'fast', ('root', 'outcomes'): 'outcome',
+        ('observation', 'candidates'): 'candidate', ('candidate', 'regionMetrics'): 'metric',
+        ('fast', 'regionMetrics'): 'metric'}
+    previous_omitted = value.get('omittedEvidenceCount')
+    omitted = [max(0, min(1000000000, previous_omitted)) if type(previous_omitted) is int else 0]
     nodes = [256]
-    def copy(node, depth=0):
+    def copy(node, kind='root', depth=0):
         nodes[0] -= 1
         if type(node) is not dict or depth > 7 or nodes[0] < 0:
             omitted[0] += 1
             return {}
         out = {}
         for key, child in islice(node.items(), 48):
-            if key in numeric:
+            if key not in fields[kind]:
+                omitted[0] += 1
+            elif key in numeric:
                 out[key] = number(child)
             elif key in booleans and type(child) is bool:
                 out[key] = child
@@ -185,14 +220,14 @@ def safe_evidence(value):
                 out[key] = digest(child)
             elif key in ('mapId', 'floor', 'sourceFloor', 'targetFloor'):
                 out[key] = identity(child)
-            elif key == 'matrix':
+            elif key == 'matrix' or key in STAGE_MATRICES:
                 out[key] = matrix(child)
             elif key in boxes:
                 out[key] = vector(child, boxes[key])
-            elif key in containers:
-                out[key] = copy(child, depth+1)
-            elif key in lists and type(child) is list:
-                out[key] = [copy(row, depth+1) for row in child[:lists[key]]]
+            elif (kind, key) in children:
+                out[key] = copy(child, children[kind, key], depth+1)
+            elif (kind, key) in item_kinds and type(child) is list:
+                out[key] = [copy(row, item_kinds[kind, key], depth+1) for row in child[:lists[key]]]
                 omitted[0] += max(0, len(child)-lists[key])
             else:
                 omitted[0] += 1
@@ -202,6 +237,22 @@ def safe_evidence(value):
     def size():
         # The automatic journal uses JSON's default separators too.
         return len(json.dumps(result, allow_nan=False).encode('utf8'))
+    def compact_stage(stage):
+        # Keep the verdict/reason and stage matrices when detailed region rows
+        # would crowd out all useful local/global evidence.
+        if not isinstance(stage, dict) or stage.get('truncated'):
+            return False
+        keep = {'reason', 'accepted', 'fallback', 'elapsedMs', 'searchKind', 'scaleLocked',
+                'pointGeometryReason', 'wallGeometryReason', 'matrix'} | STAGE_MATRICES
+        compact = {key: child for key, child in stage.items() if key in keep}
+        for key, verdict in (('regions', 'regionalEdgeVerified'), ('residual', 'verified')):
+            if verdict in stage.get(key, {}):
+                compact[key] = {verdict: stage[key][verdict]}
+        compact['omittedRegionCount'] = (stage.get('omittedRegionCount') or 0)+len(stage.get('regionMetrics', []))
+        compact['truncated'] = True
+        stage.clear()
+        stage.update(compact)
+        return True
     # Preserve binding and actual prior matrices before optional candidate detail.
     while size() > MAX_BYTES-80:
         obs = result.get('observations', [])
@@ -216,22 +267,30 @@ def safe_evidence(value):
             # Also bound adversarial nesting of otherwise known field names.
             # Keep a compact, typed prior proposal even when optional detail is
             # pathological; do not let it consume journal ownership capacity.
-            priors = result.get('priorAttempts', [])
-            detailed = next((row for row in priors if row.get('rejection')), None)
-            if detailed is not None:
-                detailed.pop('rejection')
+            stages = [row.get('rejection') for row in result.get('priorAttempts', [])]
+            stages += result.get('fastAttempts', [])
+            if any(compact_stage(stage) for stage in stages):
+                pass
+            elif len(result.get('fastAttempts', [])) > 1:
+                result['fastAttempts'].pop(0)
+                result['omittedFastCount'] = (result.get('omittedFastCount') or 0)+1
             else:
                 choices = [(len(json.dumps(child)), key) for key, child in result.items()
-                           if isinstance(child, (dict, list)) and key != 'priorAttempts']
+                           if isinstance(child, (dict, list))]
                 if not choices:
                     break
                 removed_key = max(choices)[1]
                 removed = result.pop(removed_key)
-                counter = {'fastAttempts': 'omittedFastCount', 'outcomes': 'omittedOutcomeCount'}.get(removed_key)
+                counter = {'fastAttempts': 'omittedFastCount', 'outcomes': 'omittedOutcomeCount',
+                           'priorAttempts': 'omittedPriorCount'}.get(removed_key)
                 if counter:
                     result[counter] = (result.get(counter) or 0)+len(removed)
         omitted[0] += 1
     result['omittedEvidenceCount'] = omitted[0]
     if omitted[0]:
         result['truncated'] = True
+    # Fail closed even if a future schema extension defeats the normal pruning
+    # priorities. Encoding size, including omission metadata, is authoritative.
+    if size() > MAX_BYTES:
+        result = dict(schemaVersion=1, truncated=True, omittedEvidenceCount=omitted[0]+1)
     return result

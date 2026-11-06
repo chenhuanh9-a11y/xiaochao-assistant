@@ -475,7 +475,7 @@ def _try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_see
         score, scale, translation = rows[0]
         matrix = np.array([[scale,0,translation[0]],[0,scale,translation[1]],[0,0,1]], np.float64)
         if getattr(assistant, 'collect_fit_diagnostics', False):
-            proposal_details['matrix'] = matrix.copy()
+            proposal_details['proposalMatrix'] = matrix.copy()
         static_args = {}
         if reference.known_boundary is not None:
             static_args = dict(source_known_boundary=reference.known_boundary,
@@ -488,6 +488,9 @@ def _try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_see
         verified = bool(selected.get('success'))
         if selected.get('success'):
             matrix = np.asarray(selected['matrixSourceToClient'], np.float64)
+            if getattr(assistant, 'collect_fit_diagnostics', False):
+                proposal_details['pointMatrix'] = matrix.copy()
+                proposal_details['regionalMatrix'] = matrix.copy()
             projected = projected_geometry(frame, reference.clean_mask, matrix, context)['mask']
             regions = regional_validation(frame,context['query'],projected, _context=context)
             verified = bool(regions.get('regionalEdgeVerified'))
@@ -509,12 +512,16 @@ def _try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_see
             verified = bool(partial.get('success'))
         if partial.get('success'):
             matrix = np.asarray(partial['matrix'], np.float64)
+            if getattr(assistant, 'collect_fit_diagnostics', False):
+                proposal_details['wallMatrix'] = matrix.copy()
             verified = True
         if prior is not None and not np.allclose(matrix[:2,:2], prior[:2,:2], rtol=0, atol=1e-10):
             verified = False
         diagnostics.update(pointGeometryReason=geometry.get('reason'),
                            wallGeometryReason=partial.get('reason'))
         if verified:
+            if getattr(assistant, 'collect_fit_diagnostics', False):
+                proposal_details['residualMatrix'] = matrix.copy()
             residual = assistant._rendered_profile_current_frame_residual(
                 frame, reference.clean_mask, matrix, profile_id='shared-structure',
                 visible_override=context.get('visible'))

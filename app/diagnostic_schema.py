@@ -1532,6 +1532,7 @@ CODES = CODES | frozenset({"s1-floor-localization-budget",
 
 # Typed local fit evidence. No arbitrary diagnostics, exception text or pixels.
 FIELDS = FIELDS | frozenset({'fitEvidence', 'observations', 'priorAttempts', 'fastAttempts',
+    'proposalMatrix', 'pointMatrix', 'wallMatrix', 'regionalMatrix', 'residualMatrix',
     'statistics', 'rejection', 'regionMetrics', 'resourceBinding', 'priorBinding', 'priorReason',
     'searchKind', 'frameShapeHW', 'cropOriginClientXY', 'cropShapeHW', 'sampleScaleXY',
     'referenceShapeHW', 'referenceMetadataSha256', 'indexSha256', 'ownerScopeDigest',

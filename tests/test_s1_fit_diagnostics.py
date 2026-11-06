@@ -40,6 +40,22 @@ def evidence():
 
 
 class TypedEvidenceTests(unittest.TestCase):
+    def test_nested_prior_attempts_cannot_bypass_hard_json_limit(self):
+        payload = {key: 123456789.1234567 for key in ('queryChains', 'sourceChains', 'seedCount',
+            'seedBudget', 'candidateCount', 'validationBudget', 'acceptedPoseCount', 'points', 'coarsePoints',
+            'proposalMs', 'totalMs', 'elapsedMs', 'maskEdges', 'contrastSupportedEdges', 'withinThreePixels',
+            'withinSixPixels', 'medianDistance', 'medianErrorPixels', 'count', 'median', 'within3', 'within6')}
+        nested = dict(payload, matrix=np.eye(3).tolist(), reason='fast-existing-validation-rejected', accepted=False)
+        for _ in range(7):
+            nested = dict(payload, priorAttempts=[nested]*3, statistics=nested, regions=nested, priorBinding=nested)
+        value = dict(schemaVersion=1, priorAttempts=[dict(matrix=np.eye(3).tolist(), accepted=False,
+            priorAttempts=[nested]*3, regions=nested) for _ in range(3)])
+        result = diag.safe_evidence(value)
+        self.assertLessEqual(len(json.dumps(result).encode()), diag.MAX_BYTES)
+        self.assertEqual(result['priorAttempts'][0]['matrix'], np.eye(3).tolist())
+        self.assertNotIn('priorAttempts', result['priorAttempts'][0])
+        self.assertTrue(result['truncated'])
+
     def test_matrix_and_rejection_survive_privacy_export(self):
         row = dict(fitEvidence=evidence())
         exported = json.loads(sanitize_log_payload(json.dumps(row).encode()))['fitEvidence']
@@ -87,6 +103,31 @@ class TypedEvidenceTests(unittest.TestCase):
                       [[1, 0, 1e9], [0, 1, 0], [0, 0, 1]], [[1, 0, 0], [0, 1, 0], [0, .1, 1]]):
             self.assertIsNone(diag.matrix(value))
 
+    def test_huge_integers_and_recursive_lists_do_not_raise_or_escape_budget(self):
+        cyclic = []
+        cyclic.append(dict(priorAttempts=cyclic, matrix=np.eye(3).tolist(), accepted=False))
+        for bad in (10**1000, -(10**1000), float('nan'), float('inf')):
+            result = diag.safe_evidence(dict(schemaVersion=bad, priorAttempts=cyclic,
+                fastAttempts=[dict(elapsedMs=bad, residualMatrix=[[1, 0, bad], [0, 1, 0], [0, 0, 1]])]))
+            self.assertLessEqual(len(json.dumps(result, allow_nan=False).encode()), diag.MAX_BYTES)
+            self.assertIsNone(result['schemaVersion'])
+            self.assertIsNone(result['fastAttempts'][0]['residualMatrix'])
+
+    def test_large_valid_stage_detail_keeps_useful_local_global_summary(self):
+        value = evidence()
+        phase = dict(accepted=False, reason='fast-existing-validation-rejected',
+            proposalMatrix=np.eye(3).tolist(), residualMatrix=np.eye(3).tolist(),
+            regions=dict(regionalEdgeVerified=False), residual=dict(verified=False),
+            regionMetrics=[dict(median=12345678.12345, within3=.123456789, within6=.123456789, count=12345678) for _ in range(9)])
+        value['priorAttempts'] = [dict(matrix=np.eye(3).tolist(), accepted=False, fallback=True, rejection=phase) for _ in range(3)]
+        value['fastAttempts'] = [dict(phase, searchKind=kind) for kind in ('local-prior', 'global-search', 'global-search')]
+        result = diag.safe_evidence(value)
+        self.assertLessEqual(len(json.dumps(result).encode()), diag.MAX_BYTES)
+        self.assertEqual(result['priorAttempts'][0]['matrix'], np.eye(3).tolist())
+        self.assertEqual(result['fastAttempts'][-1]['searchKind'], 'global-search')
+        self.assertEqual(result['fastAttempts'][-1]['reason'], 'fast-existing-validation-rejected')
+        self.assertEqual(result['fastAttempts'][-1]['residualMatrix'], np.eye(3).tolist())
+
     def test_known_key_nesting_has_node_and_byte_budgets(self):
         nested = dict(count=1)
         for _ in range(8):
@@ -108,6 +149,44 @@ class TypedEvidenceTests(unittest.TestCase):
 
 
 class FitStageTests(unittest.TestCase):
+    def test_refined_point_and_wall_matrices_match_their_validation_stage(self):
+        for wall, residual_ok in ((False, False), (False, True), (True, False), (True, True)):
+            with self.subTest(wall=wall, residual_ok=residual_ok):
+                host = self.host()
+                reference = host.engine.qt_shared_provider(None, None, None)
+                reference.known_boundary = None
+                point = np.array([[1., 0., 17.], [0., 1., 23.], [0., 0., 1.]])
+                final = np.array([[1., 0., 31.], [0., 1., 41.], [0., 0., 1.]]) if wall else point
+                host.map_id, host.floor = '107009', '-3'
+                context = dict(query=np.ones((20, 20), np.uint8), nodes=[])
+                used = []
+                def residual(frame, ref, matrix, **kw):
+                    used.append(matrix.copy())
+                    return dict(verified=True)
+                with patch.object(fast, 'load_prepared', return_value=object()), \
+                        patch.object(fast, 'propose', return_value=([(1., 1., [0., 0.])], context, {})), \
+                        patch.object(fast, 'native_point_geometry', return_value=dict(structureModel='point', point=dict(success=True, matrixSourceToClient=point))), \
+                        patch('single_map_structure.projected_geometry', return_value=dict(mask=np.ones((20, 20)))), \
+                        patch('single_map_structure.regional_validation', return_value=dict(regionalEdgeVerified=not wall)), \
+                        patch('single_map_structure.partial_wall_geometry', return_value=dict(success=True, matrix=final)), \
+                        patch.object(host, '_rendered_profile_current_frame_residual', side_effect=residual), \
+                        patch('alignment_observation.rendered_profile_residual_is_verified', return_value=residual_ok):
+                    fit = fast._try_alignment(host, np.zeros((20, 20, 3), np.uint8), '107009', '-3')
+                self.assertEqual(bool(fit), residual_ok)
+                event = host.events[-1]
+                self.assertEqual(event['accepted'], residual_ok)
+                np.testing.assert_array_equal(event['proposalMatrix'], np.eye(3))
+                np.testing.assert_array_equal(event['pointMatrix'], point)
+                np.testing.assert_array_equal(event['regionalMatrix'], point)
+                np.testing.assert_array_equal(event['residualMatrix'], used[-1])
+                np.testing.assert_array_equal(event['residualMatrix'], final)
+                if wall:
+                    np.testing.assert_array_equal(event['wallMatrix'], final)
+                summary = diag.scan_summary(host.events, mode='nightmare', resource_key='a'*64,
+                    floor='-3', frame_shape=(20, 20))
+                exported = safe_record(dict(fitEvidence=summary))['fitEvidence']['fastAttempts'][-1]
+                self.assertEqual(exported['residualMatrix'], final.tolist())
+
     def host(self, collect=True):
         reference = SimpleNamespace(clean_mask=np.ones((20, 20), np.uint8),
             metadata=dict(binding=dict(mapId='107009', floor='-3'), sourceGeometry={}))
@@ -181,6 +260,29 @@ class FitStageTests(unittest.TestCase):
 
 
 class AutomaticEvidenceTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == 'nt', 'Windows handle storage')
+    def test_invalidation_during_image_write_keeps_intent_without_final_commit(self):
+        import failure_sampling
+        alive = [True]
+        with tempfile.TemporaryDirectory() as folder:
+            recorder = FailureSampleRecorder(); recorder.automatic_enabled = True
+            original = failure_sampling.create_automatic_image
+            def invalidate(*args, **kwargs):
+                result = original(*args, **kwargs)
+                alive[0] = False
+                return result
+            with patch.object(failure_sampling, 'create_automatic_image', side_effect=invalidate):
+                result = recorder.record_automatic(root=folder, reason='no-current-supported-candidates',
+                    frame=np.zeros((40, 60, 3), np.uint8), diagnostic=dict(evidenceKind='live-client-capture', fitEvidence=evidence()),
+                    current=lambda: alive[0], crop_bounds=(10, 12, 20, 16), crop_provenance='color-component-unvalidated')
+            self.assertFalse(result['saved'])
+            self.assertTrue(result['recoveryRequired'])
+            rows = [json.loads(line) for line in (Path(folder)/'failures/automatic-v2/automatic-failures.jsonl').read_bytes().splitlines()]
+            self.assertTrue(list(Path(folder).rglob('*.png')))
+            self.assertEqual(rows[-1]['event'], 'automatic-failure-image-intent')
+            self.assertFalse(any(row['event'] == 'automatic-failure-sample' for row in rows))
+            self.assertEqual(recorder.automatic_saved_count, 0)
+
     @unittest.skipUnless(os.name == 'nt', 'Windows handle storage')
     def test_saved_crop_mapping_is_distinct_from_solver_component(self):
         with tempfile.TemporaryDirectory() as folder:
