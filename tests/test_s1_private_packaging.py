@@ -187,7 +187,7 @@ class PrivatePackagingTests(unittest.TestCase):
                     result = build.validate_resources(self.resources, inventory, instance=instance)
                     self.assertTrue(result[4]['s1']['included'])
             for instance in ('client', 'layout-preview', 'production'):
-                with self.subTest(instance=instance), self.assertRaisesRegex(ValueError, 'only the exact S1'):
+                with self.subTest(instance=instance), self.assertRaisesRegex(ValueError, 'only the exact S1|inventory/version differs'):
                     build.validate_resources(self.resources, inventory, instance=instance)
 
     def test_production_projection_cannot_silently_classify_seasons_as_program(self):
