@@ -558,6 +558,13 @@ class ClientCoordinator(QObject):
             return ((season, mode, gaps), f"{season_label(season)} 生产结构资源可离线读取，楼层控件尚未完成验证，暂不能开始实机识别")
         return None
 
+    def _show_map_resource_problem(self, problem):
+        key, self._message = problem
+        if key not in self._map_resource_notified:
+            self._map_resource_notified.add(key)
+            self.notificationRequested.emit("地图资源未就绪", self._message, "warning")
+        self.changed.emit()
+
     @Slot()
     def _resource_readiness_changed(self):
         if self._closing or self._closed:
@@ -638,6 +645,33 @@ class ClientCoordinator(QObject):
         else:
             self.session.dispatch("close_map")  # Legacy injected fixture seam.
 
+    def _map_round_ready(self, *, opening=True):
+        state = self.session.snapshot
+        current = self.runtime.snapshot()
+        active = current.get("roundActive", state.get("roundActive", False))
+        preparing = current.get("roundPreparing", state.get("roundPreparing", False))
+        pending = state.get("pendingAction", "") if self.session.busy else ""
+        if pending in {"start_round", "prepare_manual_alignment"}:
+            message = "正在准备本局，完成后请重新打开游戏地图"
+        elif pending in {"end_round", "stop_round", "reset_round", "cancel", "toggle_round"}:
+            message = "正在切换本局状态，完成后请重新打开游戏地图"
+        elif active or preparing:
+            return True
+        else:
+            message = "地图键只控制游戏地图；请先在主页或游戏控件点击“开始本局”，也可使用独立的本局快捷键"
+        # Ignored game edges must not toggle the next authorized opening into
+        # a close. Do not cancel a pending explicit start/end or clear previews.
+        reset = getattr(self.input, "resetMapInput", None)
+        if callable(reset):
+            reset(False)
+        self._message = message
+        key = ("map-round-not-ready", current.get("roundId", state.get("roundId")), pending)
+        if opening and key not in self._notified:
+            self._notified.add(key)
+            self.notificationRequested.emit("本局尚未开始" if not pending else "请等待本局状态更新", message, "info")
+        self.changed.emit()
+        return False
+
     @Slot(object)
     def _map_input_requested(self, event):
         if self._closing or self._closed or not isinstance(event, dict):
@@ -666,6 +700,8 @@ class ClientCoordinator(QObject):
                     state=InputDiagnostics._state(input_state)))
         except Exception:
             pass  # Optional diagnostic delivery cannot swallow the accepted action.
+        if not self._map_round_ready(opening=opening):
+            return
         cancel_recovery = getattr(self.runtime, "cancel_map_open_recovery", None)
         if callable(cancel_recovery):
             cancel_recovery("new-map-input")
@@ -688,16 +724,12 @@ class ClientCoordinator(QObject):
                 # sequence identity. The next physical edge must retry opening,
                 # not close a map that was never accepted.
                 self._reset_map_input("map-input-resources-unready")
-                key, self._message = problem
-                if key not in self._map_resource_notified:
-                    self._map_resource_notified.add(key)
-                    self.notificationRequested.emit("地图资源未就绪", self._message, "warning")
-                self.changed.emit()
+                self._show_map_resource_problem(problem)
                 return
             self._map_resource_notified.clear()
             self._cancel_pointer_drag("map-key-open")
             self._revoke_runtime("map-key-open")
-            # Runtime owns atomic ensure-start + original map preparation.
+            # Runtime may activate only an explicitly prepared round here.
             # Distinct sequence payloads cannot be swallowed by Session dedup.
             self.session.dispatchWithPayload("fit_manual_frame" if manual_floor else "map",
                 dict(payload, s1OpenEdge=True) if manual_floor else payload)
@@ -1287,12 +1319,16 @@ class ClientCoordinator(QObject):
 
     @Slot()
     def startRound(self):
-        if (self.session.busy or self.resources.busy
-                or self.settings.busy or self._pending_context):
+        if self.session.busy or self.settings.busy or self._pending_context:
             self._message = "请等待当前操作和模式设置完成"
             self.changed.emit(); return
+        problem = self._map_resource_problem()
+        if problem is not None:
+            self._show_map_resource_problem(problem)
+            return
+        self._map_resource_notified.clear()
         # Preparation is permitted before a game exists and does not grant
-        # capture/input authority. A later G opens/starts atomically in runtime.
+        # capture/input authority. A later G activates this prepared round.
         if self._bound:
             self.setInputEnabled(True)
         self._apply_controls_visibility(self.settings.values.get("qtControlsVisible", True))
@@ -2159,6 +2195,8 @@ class ClientCoordinator(QObject):
                    "toggle-round": "toggle_round", "toggle-sheet-visibility": "toggle_sheet_visibility"}
         command = aliases.get(action)
         if command:
+            if command in {"map", "close_map"} and not self._map_round_ready(opening=command == "map"):
+                return
             if command == "close_map":
                 self._close_map_from_input(dict(inputSequence=self._map_input_sequence, inputSource="escape"))
                 return
