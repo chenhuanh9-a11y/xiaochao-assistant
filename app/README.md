@@ -1,5 +1,7 @@
-# 源码入口
+# 共享源码
 
-主要入口：`identityv_daily_assistant.py`。环境、启动方式、公开快照边界和资源前提统一见 [仓库 README](../README.md)。
+本目录保留识别、贴合、地图与资源索引、窗口捕获、诊断、地图包事务及工具包无关的状态协议。
 
-其余模块包括当前帧识别/配准、地图与资源索引加载、Tk 界面、窗口捕获、诊断、离线地图包导入，以及历史原型。模块存在不代表对应资源已公开或能力已完成验收。
+当前客户端入口为 [`tools/qt_client_entry.py`](../tools/qt_client_entry.py)，Qt 页面及客户端服务在 [`experiments/qt_quick/`](../experiments/qt_quick/)。运行与资源前提见 [仓库 README](../README.md)。旧 Tk 页面及入口已移除，不再要求 Tkinter。
+
+共享模块存在不代表对应资源已公开或能力已完成实机验收。

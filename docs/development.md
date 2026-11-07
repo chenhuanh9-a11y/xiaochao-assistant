@@ -17,15 +17,15 @@ GitHub 仓库是源码协作与交付的依据。本地完成的改动应及时�
 | 变更入口 | 必须跟到的消费者 | 现有代码与测试起点 |
 | --- | --- | --- |
 | 识别、正门/侧门、相似组 | 候选证据 → 组态/身份 → 当前帧验证 → 提交；暂定成员与唯一身份确认分清 | [map_identity_engine.py](../app/map_identity_engine.py)、[difficult_native_identity.py](../app/difficult_native_identity.py)、[test_native_similarity_runtime.py](../tests/test_native_similarity_runtime.py)、[test_front_gate_observation.py](../tests/test_front_gate_observation.py)、[test_side_entry_search.py](../tests/test_side_entry_search.py) |
-| 首次/后续贴合、楼层、关闭与重开 | 当前地图/层/帧 → worker → 验证 → round-pose/core → 正确可见像素 | [identityv_daily_assistant.py](../app/identityv_daily_assistant.py)、[fast_structure_alignment.py](../app/fast_structure_alignment.py)、[alignment_pose_transaction.py](../app/alignment_pose_transaction.py)、[test_queued_first_pose_delivery.py](../tests/test_queued_first_pose_delivery.py)、[test_queued_delivery_core_contract.py](../tests/test_queued_delivery_core_contract.py) |
-| 作者与自定义路线选择 | 偏好 → 实际来源与每层显示桥 → 渲染缓存 → 当前显示；身份/结构位姿不漂移 | [optional_author_displays.py](../app/optional_author_displays.py)、[test_route_selection_controller.py](../tests/test_route_selection_controller.py)、[test_route_selection_regressions.py](../tests/test_route_selection_regressions.py)、[test_custom_route_integration.py](../tests/test_custom_route_integration.py) |
-| 下载/导入资源 | 下载状态与校验 → 安装事务 → 资源工厂 → 作者选项/列表 → 缓存和旧任务失效 | [star_map_download.py](../app/star_map_download.py)、[star_map_import.py](../app/star_map_import.py)、[map_resource_browser.py](../app/map_resource_browser.py)、[test_live_author_import.py](../tests/test_live_author_import.py)、[test_live_author_import_controller.py](../tests/test_live_author_import_controller.py)、[test_map_package_upgrade.py](../tests/test_map_package_upgrade.py) |
+| 首次/后续贴合、楼层、关闭与重开 | 当前地图/层/帧 → worker → 验证 → round-pose/core → 正确可见像素 | [client_live_runtime.py](../experiments/qt_quick/client_live_runtime.py)、[fast_structure_alignment.py](../app/fast_structure_alignment.py)、[alignment_pose_transaction.py](../app/alignment_pose_transaction.py)、[test_client_group_queue.py](../experiments/qt_quick/test_client_group_queue.py)、[test_client_session.py](../experiments/qt_quick/test_client_session.py) |
+| 作者与自定义路线选择 | 偏好 → 实际来源与每层显示桥 → 渲染缓存 → 当前显示；身份/结构位姿不漂移 | [optional_author_displays.py](../app/optional_author_displays.py)、[test_client_route_preferences.py](../experiments/qt_quick/test_client_route_preferences.py)、[test_client_route_reprojection.py](../experiments/qt_quick/test_client_route_reprojection.py)、[test_client_custom_display.py](../experiments/qt_quick/test_client_custom_display.py) |
+| 下载/导入资源 | 下载状态与校验 → 安装事务 → 资源工厂 → 作者选项/列表 → 缓存和旧任务失效 | [star_map_download.py](../app/star_map_download.py)、[star_map_import.py](../app/star_map_import.py)、[client_resources.py](../experiments/qt_quick/client_resources.py)、[test_live_author_import.py](../tests/test_live_author_import.py)、[test_client_import_upgrade_parity.py](../experiments/qt_quick/test_client_import_upgrade_parity.py)、[test_map_package_upgrade.py](../tests/test_map_package_upgrade.py) |
 
 噩梦与困难应使用同一识别/贴合及生命周期实现，差异由资源、楼层元数据和必要参数提供。修改前核实际调用路径，修改后用两模式受影响的参数或代表资源验证。无法验证的资源契约要留明确缺口；不能删验证、复制模式专属算法或强套另一模式的门/坐标语义。既有测试名只是起点，例如排队首次任务测试不能代表后续每次开图延迟已经修复。
 
 涉及异步与状态的改动，按风险选择成功、失败、取消、重复触发、迟到回调及换图/换层/关图/结束本局反例。检查最后实际消费者，而不只检查日志、列表条目或中间返回值。可重复的少量代表回归优先；不为小修添加镜像实现的测试或无关全量测试。
 
-Tk 交互沿用持久页面和稳定卡片 ID：重复点击当前页/标签应幂等；普通状态变更只写发生变化的控件，不先隐藏整页/全列表再重新摆放。轮询可以读取最新状态，但状态相同就不重复写 Tk 属性、布局或图片。导入/删除等真正改变资源身份时才失效对应列表与预览缓存，保留其他区域的选择、焦点和滚动。核对卡顿时分别记录回调、布局/绘图调度和实际可见效果；仅缩短回调不能证明流畅。
+Qt 交互沿用持久页面和稳定卡片 ID：重复点击当前页/标签应幂等；普通状态变更只写发生变化的控件，不先隐藏整页/全列表再重新摆放。轮询可以读取最新状态，但状态相同就不重复写模型或控件属性、布局或图片。导入/删除等真正改变资源身份时才失效对应列表与预览缓存，保留其他区域的选择、焦点和滚动。核对卡顿时分别记录回调、布局/绘图调度和实际可见效果；仅缩短回调不能证明流畅。
 
 ## 贴合速度与可靠显示的验收口径
 
@@ -92,7 +92,7 @@ Qt 迁移的默认启动链单独验收：单实例占锁须早于引擎/监听/
 
 直接导入时可只读识别内置认可清单中的完整旧版作者图；完整路径、大小和哈希均匹配、没有现有安装收据，且新包覆盖该旧版完整文件集合时，进入普通更新确认。确认并完成全包校验后才登记旧资源，再复用原升级事务；不依赖用户先刷新列表或手动找文件。残缺、改动、未知来源及其他包占用的文件不扩大认领。 更新也须保持其他已安装包 `requiresFiles` 的精确依赖约束；依赖不等于文件所有权，保持依赖字节不变时仍可更新其他作者图。检查和提交前均重验收据，损坏收据失败关闭。 普通安装收据必须保留完整基础依赖声明，缺失、空或损坏声明在导入和删除时均失败关闭；只有字段、文件清单及来源哈希与认可库存完全一致的旧领养收据可没有依赖字段。相同文件但依赖合同改变的重复导入目前明确拒绝，原收据和数据不变，不报告已应用或无需更新；这也包括旧领养记录与完整同字节 ZIP 之间的仅依赖迁移，实际图像内容改变的合法升级仍受支持。若将来支持仅迁移收据，须单独设计确认、回滚与 helper 合同。
 
-Tk 和 Qt 客户端启动时都做同样的清理（`diagnostic_export.prune_diagnostic_logs` 与 `star_map_download.prune_installed_downloads`），Qt 的 `events-qt-*` 日志也在同一个上限内；Qt 有 `qt-import-pending.json` 或 `qt-recovery-pending.json` 时同样不删下载包。
+Qt 客户端启动时做有界清理（`diagnostic_export.prune_diagnostic_logs` 与 `star_map_download.prune_installed_downloads`），Qt 的 `events-qt-*` 日志也在同一个上限内；Qt 有 `qt-import-pending.json` 或 `qt-recovery-pending.json` 时同样不删下载包。
 
 
 ### 默认失败证据（Qt，新自动样本）

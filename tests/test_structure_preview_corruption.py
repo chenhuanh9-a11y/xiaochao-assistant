@@ -2,20 +2,16 @@
 
 No Tk or network. Root scheduler/widgets are spies; decompression is real.
 """
-import ast
-from concurrent.futures import Future
 from pathlib import Path
 import struct
 import subprocess
 import sys
 import tempfile
-from types import ModuleType, SimpleNamespace
+from types import ModuleType
 import unittest
-from unittest.mock import Mock
 import zlib
 
 import numpy as np
-from PIL import Image
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / 'app'))
@@ -54,30 +50,6 @@ class StructureCorruption(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '结构图文件损坏') as caught:
             load_structure_preview(self.asset, (20, 20))
         self.assertIsInstance(caught.exception.__cause__, EOFError)
-
-    def test_home_missing_tile_result_does_not_stop_refresh_scheduler(self):
-        tree = ast.parse((REPO / 'app/desktop_main_ui.py').read_text(encoding='utf-8'))
-        load = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_load_home_previews')
-        ns = dict(load_structure_preview=load_structure_preview, Image=Image)
-        exec(compile(ast.Module(body=[load], type_ignores=[]), 'desktop_main_ui.py', 'exec'), ns)
-        result = ns['_load_home_previews']([('structure', self.asset)], (20, 20), 3)
-        self.assertEqual(result, [None])
-        methods = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
-                   and n.name in {'_poll_home_previews', '_refresh_view'}]
-        cls = ast.ClassDef(name='Subject', bases=[], keywords=[], body=methods, decorator_list=[])
-        exec(compile(ast.fix_missing_locations(ast.Module(body=[cls], type_ignores=[])), 'desktop_main_ui.py', 'exec'), ns)
-        ui = ns['Subject']()
-        ui._closed = False
-        ui._poll_updates = Mock()
-        ui._home_preview_context = 'current'
-        ui._home_preview_active = ('current', [Mock()])
-        ui._home_preview_future = Future()
-        ui._home_preview_future.set_result(result)
-        ui.root = Mock()
-        ui.window = Mock(winfo_viewable=Mock(return_value=False))
-        ui._refresh_view()
-        ui.root.after.assert_called_once_with(350, ui._refresh_view)
-        self.assertIsNotNone(ui._refresh_job)
 
 
 if __name__ == '__main__':

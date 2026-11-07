@@ -126,42 +126,6 @@ class VisibilitySettingsTests(VisibilityHelpers, unittest.TestCase):
         self.assertFalse(service.values[KEY]); self.assertTrue(service.persistedValues[KEY])
         self.assertEqual(len(failures), 1); self.assertIn('保存失败', failures[0])
 
-    def test_tk_save_transparently_keeps_valid_qt_intent_without_changing_orb(self):
-        # Execute the repository's complete production Tk save method; replace
-        # only UI-owned state with a fixture, never construct Tk or native input.
-        from test_reopen_lifecycle import method
-        from client_settings import ACTION_ORDER
-        import threading
-        import ast
-        source=Path(__file__).parents[2]/'app/identityv_daily_assistant.py'
-        tree=ast.parse(source.read_text(encoding='utf-8-sig'))
-        node=next(n for n in ast.walk(tree) if isinstance(n,ast.FunctionDef) and n.name=='atomic_write_text')
-        namespace=dict(Path=Path, os=os, threading=threading)
-        exec(compile(ast.Module(body=[node],type_ignores=[]),str(source),'exec'),namespace)
-        atomic=namespace['atomic_write_text']
-        save=method('_save_settings')
-        save.__globals__.update(json=json, ACTION_ORDER=ACTION_ORDER,
-            WindowAnchor=type('UnusedAnchor',(),{}), normalize_drag_boundary=lambda value:None,
-            atomic_write_text=atomic)
-        for value in (True, False, None, "false", 0):
-            with self.subTest(value=value):
-                raw={} if value is None else {KEY:value}
-                owner=SimpleNamespace(settings_path=self.path, settings=raw, hotkey_name='G',
-                    action_hotkeys={name:('',0) for name in ACTION_ORDER}, compact_position=None,
-                    sheet_position=None, sheet_opacity=.55, reference_opacity=.55, sheet_scale=1.,
-                    orb_visibility_enabled=False, interface_opacity=.82, experimental_auto_overlay=False,
-                    preferred_route_profile_id='fixture', zhan10_coffin_variant_id='variant-01',
-                    onboarding_completed=True, round_end_hint_shown=False, active_confirmation=None,
-                    control_layout_snapshot=lambda:{})
-                self.assertTrue(save(owner))
-                disk=json.loads(self.path.read_text())
-                self.assertIs(disk['orbVisible'],False)
-                self.assertEqual(len(disk['actionHotkeys']),10)
-                if type(value) is bool:
-                    self.assertIs(disk[KEY],value)
-                    self.assertIs(self.service().values[KEY],value)
-                else:
-                    self.assertNotIn(KEY,disk)
 
     def test_shutdown_drains_one_queued_latest_choice(self):
         service=self.service()
