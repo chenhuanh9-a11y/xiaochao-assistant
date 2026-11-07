@@ -138,7 +138,17 @@ class FrozenBusinessProbeContracts(unittest.TestCase):
             tree = ast.parse((ROOT / ('tools/qt-' + kind + '-helper.spec')).read_text())
             analysis = next(n for n in ast.walk(tree) if isinstance(n, ast.Call)
                             and isinstance(n.func, ast.Name) and n.func.id == 'Analysis')
-            return set(ast.literal_eval(next(k.value for k in analysis.keywords if k.arg == 'excludes')))
+            from runtime_exclusions import PYTHON_MODULE_EXCLUSIONS
+            values = next(k.value for k in analysis.keywords if k.arg == 'excludes')
+            self.assertIsInstance(values, ast.List)
+            result = set()
+            for value in values.elts:
+                if isinstance(value, ast.Starred):
+                    self.assertEqual(ast.unparse(value.value), 'PYTHON_MODULE_EXCLUSIONS')
+                    result.update(PYTHON_MODULE_EXCLUSIONS)
+                else:
+                    result.add(ast.literal_eval(value))
+            return result
         excluded = exclusions('import')
         self.assertFalse({'numpy', 'PIL'} & excluded)
         self.assertTrue({'tkinter', '_tkinter', 'PySide6', 'PyQt5', 'PyQt6', 'PySide2', 'cv2'} <= excluded)

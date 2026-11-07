@@ -60,6 +60,49 @@ class RuntimeExclusionTests(unittest.TestCase):
                     })
                 yield root, calls, executable, exe, collect, verify, execute
 
+    @contextmanager
+    def import_spec(self):
+        """Execute the production import recipe with mocked freeze primitives."""
+        root = Path(__file__).resolve().parents[1]
+        calls = {}
+        binaries = [(name, "fixture/" + name, "BINARY") for name in (
+            "PIL/_avif.cp313-win_amd64.pyd", "PIL/_imaging.cp313-win_amd64.pyd",
+            "PIL/_webp.cp313-win_amd64.pyd", "numpy/libs/blas.dll", "VCRUNTIME140.dll")]
+        required = ("PIL.Image", "PIL.PngImagePlugin", "PIL.JpegImagePlugin", "numpy", "numpy.linalg")
+        def analysis(*args, **kwargs):
+            calls.update(kwargs)
+            return SimpleNamespace(binaries=list(binaries),
+                pure=[(name, "fixture.py", "PYMODULE") for name in required], scripts=[], datas=[])
+        executable = SimpleNamespace(name="fixture-build/star-map-import-helper.exe")
+        collect = Mock()
+        with tempfile.TemporaryDirectory() as folder:
+            inputs = Path(folder) / "inputs.json"
+            inputs.write_text(json.dumps(dict(sourceRoot=str(root), product="星图",
+                profilePath=str(Path(folder) / "installation-profile.json"))))
+            with patch.dict(os.environ, XINGTU_QT_BUILD_INPUTS=str(inputs)), \
+                    patch("build_qt_client.verify_invoker_manifest") as verify:
+                def execute():
+                    return runpy.run_path(str(root / "tools/qt-import-helper.spec"), init_globals={
+                        "SPECPATH": str(root / "tools"), "Analysis": analysis,
+                        "PYZ": Mock(), "EXE": Mock(return_value=executable), "COLLECT": collect,
+                    })
+                yield calls, binaries, collect, executable, verify, execute
+
+    def test_import_spec_excludes_only_shared_optional_image_codecs(self):
+        with self.import_spec() as (calls, _, _, _, _, execute):
+            execute()
+            self.assertTrue(set(PYTHON_MODULE_EXCLUSIONS) <= set(calls["excludes"]))
+            self.assertFalse(set(calls["excludes"]) & {
+                "PIL", "numpy", "numpy.linalg", "PIL.Image", "PIL.PngImagePlugin",
+                "PIL.JpegImagePlugin", "PIL.WebPImagePlugin"})
+
+    def test_import_spec_filters_optional_avif_but_keeps_required_native_libraries(self):
+        with self.import_spec() as (_, binaries, collect, executable, verify, execute):
+            execute()
+            self.assertEqual(collect.call_args.args[1], binaries[1:])
+            self.assertIs(collect.call_args.args[0], executable)
+            verify.assert_called_once_with(executable.name)
+
     def test_maintained_spec_collects_support_images_when_present(self):
         with self.qt_spec() as (root, calls, executable, exe, collect, verify, execute):
             execute()
