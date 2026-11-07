@@ -206,6 +206,7 @@ def managed_base_inventory(install_root):
 
 def _actual(path):
     files._no_links(path)
+    _validate_target_ancestors(path)
     if not path.exists():
         return dict(status="missing")
     if not path.is_file():
@@ -380,6 +381,7 @@ def plan_managed_base_resources(install_root):
                                   if not optional_author_sidecar(row["path"])], original["resourceVersion"])
     inventory = _rows(manifest["files"])
     state = files._target(root, STATE)
+    _validate_target_ancestors(state)
     previous_manifest = _manifest(state) if state.exists() else None
     previous = _rows(previous_manifest["files"]) if previous_manifest else {}
     if not state.exists():
@@ -651,11 +653,12 @@ def _finish_cleanup(root, directory, journal, *, prune=True):
         raise _cleanup_error(HISTORY + "/" + transaction_id, "cleanup-write-or-validation-failed") from error
 
 
-def _validate_rollback_ancestors(path):
+def _validate_target_ancestors(path, reason='base-target-parent-not-directory'):
     # On Windows a descendant under a regular file can look absent, and the
     # directory-sync adapter is a no-op. Neither is proof of a valid parent.
     # Check all lexical ancestors so a missing immediate parent cannot conceal
-    # an unknown file higher up. Missing directories remain valid rollback input.
+    # an unknown file higher up. Truly missing directories remain valid for
+    # planning, publication and rollback; existing non-directories never do.
     for parent in path.parents:
         try:
             info = parent.lstat()
@@ -663,7 +666,7 @@ def _validate_rollback_ancestors(path):
             continue
         if (not stat.S_ISDIR(info.st_mode)
                 or getattr(info, 'st_file_attributes', 0) & 0x400):
-            raise ManagedBaseResourceError('base-rollback-parent-not-directory')
+            raise ManagedBaseResourceError(reason)
 
 
 def _rollback(root, directory, journal):
@@ -673,7 +676,7 @@ def _rollback(root, directory, journal):
         new, old = entry["new"], entry["old"]
         row = new or old
         path = files._target(root, row["path"])
-        _validate_rollback_ancestors(path)
+        _validate_target_ancestors(path, 'base-rollback-parent-not-directory')
         if old is not None and transaction._matches(path, old, entry["oldIdentity"]):
             continue
         if old is not None and not transaction._matches(files._target(directory, "backup/" + row["path"]), old, entry["oldIdentity"]):
@@ -685,7 +688,7 @@ def _rollback(root, directory, journal):
             new, old = entry["new"], entry["old"]
             row = new or old
             path = files._target(root, row["path"])
-            _validate_rollback_ancestors(path)
+            _validate_target_ancestors(path, 'base-rollback-parent-not-directory')
             if old is not None and transaction._matches(path, old, entry["oldIdentity"]):
                 continue
             if old is None and not path.exists() and not path.parent.exists():
@@ -946,10 +949,18 @@ def repair_managed_base_resources(install_root):
                 raise _cleanup_error(HISTORY + "/" + transaction_id, "preparation-incomplete-retained-for-recovery") from recovery_error
             raise
         try:
+            # Preparation can take time. Recheck the complete destination set
+            # before changing even the first active object, not only as each
+            # target is published. A blocked late path must not cause a partial
+            # publication that the deliberately strict rollback cannot undo.
+            for entry in entries:
+                row = entry['new'] or entry['old']
+                _validate_target_ancestors(files._target(root, row['path']))
             for entry in entries:
                 row = entry["new"]
                 relative = (row or entry['old'])['path']
                 target = files._target(root, relative)
+                _validate_target_ancestors(target)
                 if relative == STATE:
                     for current in plan["files"]:
                         if not transaction._matches(files._target(root, current["path"]), current):

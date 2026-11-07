@@ -212,6 +212,80 @@ class AbsentBaseRollbackTests(unittest.TestCase):
             self.assertEqual(managed.recover_managed_base_resources(self.root)['status'], 'rolled-back')
         self.assert_rolled_back()
 
+    def test_existing_file_ancestor_blocks_plan_and_repair_before_any_publication(self):
+        ancestor = self.root / '_internal/references'
+        ancestor.write_bytes(b'unknown pre-existing ancestor')
+        with self.windows_lookup_and_sync():
+            with self.assertRaisesRegex(managed.ManagedBaseResourceError, 'base-target-parent-not-directory'):
+                managed.plan_managed_base_resources(self.root)
+            with self.assertRaisesRegex(managed.ManagedBaseResourceError, 'base-target-parent-not-directory'):
+                managed.repair_managed_base_resources(self.root)
+        self.assertEqual(ancestor.read_bytes(), b'unknown pre-existing ancestor')
+        self.assertFalse((self.root / self.first).exists())
+        self.assertFalse((self.root / managed.STATE).exists())
+        self.assertFalse((self.root / managed.PENDING).exists())
+        self.assertFalse((self.root / managed.HISTORY).exists())
+        self.f.unchanged(self.before)
+
+    def test_existing_file_parent_blocks_without_partial_publication(self):
+        parent = (self.root / self.unpublished).parent
+        parent.parent.mkdir(parents=True, exist_ok=True)
+        parent.write_bytes(b'unknown pre-existing parent')
+        with self.windows_lookup_and_sync(), self.assertRaises((OSError, ValueError)):
+            managed.repair_managed_base_resources(self.root)
+        self.assertEqual(parent.read_bytes(), b'unknown pre-existing parent')
+        self.assertFalse((self.root / self.first).exists())
+        self.assertFalse((self.root / self.fail_at).exists())
+        self.assertFalse((self.root / managed.STATE).exists())
+        self.assertFalse((self.root / managed.PENDING).exists())
+        self.assertFalse((self.root / managed.HISTORY).exists())
+        self.f.unchanged(self.before)
+
+    def test_ancestor_changed_during_preparation_blocks_before_first_publication(self):
+        ancestor = self.root / '_internal/references'
+        original_write = managed._write_journal
+        def write(directory, journal):
+            original_write(directory, journal)
+            if journal['status'] == 'prepared':
+                ancestor.write_bytes(b'unknown ancestor appeared during preparation')
+        with self.windows_lookup_and_sync(), patch.object(managed, '_write_journal', side_effect=write):
+            with self.assertRaisesRegex(managed.ManagedBaseResourceError, 'base-repair-failed-and-rollback-incomplete'):
+                managed.repair_managed_base_resources(self.root)
+        self.assertEqual(ancestor.read_bytes(), b'unknown ancestor appeared during preparation')
+        self.assertFalse((self.root / self.first).exists(), 'all targets must be rechecked before the first publication')
+        self.assertFalse((self.root / managed.STATE).exists())
+        self.assertTrue((self.root / managed.PENDING).exists(), 'unsafe rollback must retain its journal and objects')
+        directory, journal = managed._load_pending(self.root)
+        self.assertEqual(journal['status'], 'prepared')
+        for entry in journal['entries']:
+            self.assertTrue(managed.transaction._matches(
+                directory / 'new' / entry['new']['path'], entry['new'], entry['newIdentity']))
+        self.f.unchanged(self.before)
+        # Only the fixture removes the external blocker; recovery must not.
+        ancestor.unlink()
+        self.assertEqual(managed.recover_managed_base_resources(self.root)['status'], 'rolled-back')
+        self.assert_rolled_back()
+        self.assertEqual(managed.repair_managed_base_resources(self.root)['status'], 'repaired')
+
+    def test_bad_ancestor_during_upgrade_preserves_old_state_and_unaffected_resources(self):
+        case = base_fixtures.ManagedBaseResourcesTests('runTest')
+        case.setUp(); self.addCleanup(case.doCleanups)
+        case.project(); managed.repair_managed_base_resources(case.target)
+        case.upgrade_candidate()
+        ancestor = case.target / '_internal/references'
+        detached = case.folder / 'externally-moved-references'
+        ancestor.rename(detached)
+        ancestor.write_bytes(b'unknown replacement ancestor')
+        protected = [case.target / self.first, case.target / managed.STATE,
+                     case.target / '_internal/recognition/native/index.json', *detached.rglob('*')]
+        before = {p: (p.read_bytes(), p.stat().st_ino) for p in protected if p.is_file()}
+        with self.windows_lookup_and_sync(), self.assertRaises((OSError, ValueError)):
+            managed.repair_managed_base_resources(case.target)
+        self.assertEqual(ancestor.read_bytes(), b'unknown replacement ancestor')
+        self.assertFalse((case.target / managed.PENDING).exists())
+        for path, expected in before.items():
+            self.assertEqual((path.read_bytes(), path.stat().st_ino), expected)
+
     def test_missing_parent_with_owned_old_object_must_be_recreated_and_restored(self):
         case = base_fixtures.ManagedBaseResourcesTests('runTest')
         case.setUp(); self.addCleanup(case.doCleanups)
