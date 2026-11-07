@@ -148,6 +148,8 @@ class Coordinator:
         if a.action == 'prepare':
             if not a.confirmed:
                 raise ValueError('installer-reviewed-confirmation-required')
+            self.context = native_context(a, self.target)
+            self.observer.preflight_native_evidence(self.root, **self.context)
             self.journal.begin()
             with self._scope():
                 result = self.api.prepare_resource_upgrade(self.root, expected_plan_sha256=a.plan_sha256,
@@ -173,6 +175,8 @@ class Coordinator:
             resource = self.api.resource_upgrade_status(self.root, state['resourceTransactionId']) if state['resourceTransactionId'] else None
             return receipt(state, resource)
         if a.action == 'start-native':
+            self.context = native_context(a, self.target)
+            self.observer.preflight_native_evidence(self.root, **self.context)
             return receipt(self.journal.start_native(verify_resource=self._prepared))
         if a.action in {'native-complete', 'commit'}:
             self.context = native_context(a, self.target)

@@ -53,6 +53,9 @@ class Observer:
         self.context = dict(target_identity=target, target_report_sha256='d' * 64)
         self.match = True
 
+    def preflight_native_evidence(self, root, **context):
+        return dict(knownBytes=0, knownNodes=0)  # explicit orchestration-only stub
+
     def capture_native_completion(self, root, **context):
         return dict(test='native-evidence', target=context['target_identity'])
 
@@ -102,6 +105,25 @@ class CoordinatorTests(unittest.TestCase):
         self.assertFalse((self.root / PENDING).exists())
         self.assertEqual(self.execute('status')['status'], 'committed')
         self.assertEqual(self.execute('commit')['status'], 'committed')
+
+    def test_start_native_reloads_context_and_rejects_changed_inventory(self):
+        self.execute('prepare')
+        with patch('installer_upgrade_coordinator.native_context',
+                   side_effect=ValueError('installer-program-inventory-changed')) as fresh:
+            with self.assertRaisesRegex(ValueError, 'installer-program-inventory-changed'):
+                self.execute('start-native')
+        fresh.assert_called_once_with(self.args, self.target)
+        self.assertEqual(read_status(self.root, owner_sid=self.sid)['status'], 'prepared')
+        self.assertEqual(self.api.writes, ['prepare'])
+
+    def test_resume_never_applies_new_budget_to_old_completed_evidence(self):
+        self.complete_native()
+        with patch('installer_upgrade_journal._remove_owned_marker', side_effect=OSError('clear failed')):
+            with self.assertRaises(OSError):
+                self.execute('commit')
+        with patch.object(self.observer, 'preflight_native_evidence', side_effect=AssertionError('new budget')), \
+                patch('installer_upgrade_coordinator.native_context', side_effect=AssertionError('new package')):
+            self.assertEqual(self.execute('resume-native-complete', dict(self.target, sourceCommit='f'*40))['status'], 'committed')
 
     def test_prepare_lost_receipt_restores_same_plan(self):
         self.api.lost = True

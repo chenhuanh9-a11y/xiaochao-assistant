@@ -301,6 +301,8 @@ class ResourceResetSourceContracts(unittest.TestCase):
                       'ResourceResetNativeStarted or ResourceResetNativeCompleted'):
             self.assertIn(token, resource)
         self.assertIn('pending-installer-upgrade.json', resource)
+        self.assertIn('native-observation-evidence-budget-exceeded', resource)
+        self.assertIn('尚未进入 Windows 程序安装', resource)
 
     def test_pascal_character_constants_never_start_preprocessor_lines(self):
         # ISPP reads a leading # as a directive even inside a Pascal expression.

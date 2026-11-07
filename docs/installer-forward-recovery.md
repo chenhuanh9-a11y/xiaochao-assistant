@@ -147,3 +147,35 @@ Windows CPython 3.13 的 pathname stat ctime 和 handle fstat ctime 语义不同
 实际冻结 helper、唯一测试 AppId 的隔离安装/升级/卸载和故障点检查须分别记录
 精确提交；不能把较早版本的测试结论转用于本次新接线。已知 Inno 提取在很长
 临时目录路径下可能失败，失败发生在 helper 启动前；不修改系统长路径设置。
+
+
+## Native evidence admission budget
+
+Before `prepare` calls journal `begin` (and therefore before resource preparation),
+and again before `start-native`, the coordinator rereads and SHA-256 verifies the
+current Setup program inventory and admits its known native evidence shape using
+`preflight_native_evidence`. A failure does not create a journal or prepare resources
+on the first boundary. At the second boundary resources may already be prepared;
+native program installation has not started and the existing pre-native restoration
+path remains required. The stable capacity error is
+`native-observation-evidence-budget-exceeded`.
+
+The pure preflight reuses the observer contract validation, canonical UTF-8 JSON,
+and journal string/key/container/depth constraints. It charges the exact known
+schema, source, contract and digest representation, root ancestor records, every
+program record and its repeated drive/segment ancestors, and the report's base64
+length. Windows identity/time/attribute integers use their maximum field widths,
+physical paths use the volume GUID representation and case folding, and file hashes
+and sizes come from the current pinned inventory. Counting is incremental, so a
+large inventory cannot cause an enormous repeated-ancestor tree allocation.
+There is no new arbitrary file-count cutoff.
+
+Known evidence must fit within 16 MiB minus a 4 MiB native-object reserve and 64 KiB
+journal-wrapper reserve, and within 500,000 JSON nodes minus 100,000 native-object
+nodes and 4,096 wrapper nodes. The native reserve covers the initially empty users,
+uninstall, registry and shortcut observations. These are supported-budget margins,
+not a guarantee that arbitrary future registry or shortcut content will fit.
+Complete capture, journal bounds and replay verification remain unchanged. The
+preflight does not read the old registry or shortcuts. Resuming old native-complete
+or completed evidence continues to use its recorded bounded contract, never the
+current new package or its admission budget.

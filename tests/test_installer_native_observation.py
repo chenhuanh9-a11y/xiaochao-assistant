@@ -177,6 +177,16 @@ class ObservationFixtureTests(unittest.TestCase):
         self.assertEqual('absent', result['observation']['shortcuts'][0]['file']['state'])
         self.assertEqual(set(self.inventory), set(result['observation']['program']))
 
+    def test_known_fixture_capture_fits_conservative_preflight(self):
+        from test_native_evidence_budget import node_count
+        evidence = self.capture()
+        kw = {k: v for k, v in self.kw.items() if k != '_backend'}
+        budget = observe.preflight_native_evidence(ROOT, **kw)
+        known = copy.deepcopy(evidence)
+        known['observation'].update(users={}, uninstall={}, registry={}, shortcuts=[])
+        self.assertLessEqual(len(observe._encoded(known)), budget['knownBytes'])
+        self.assertLessEqual(node_count(known), budget['knownNodes'])
+
     def test_fixture_cannot_be_replayed_as_native(self):
         result = self.capture()
         args = dict(self.kw)

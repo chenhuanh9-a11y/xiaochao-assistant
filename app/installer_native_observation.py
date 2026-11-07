@@ -195,6 +195,117 @@ def _contract(root, target_identity, target_report_sha256, ownership_bytes,
     return result
 
 
+# Headroom for non-program native objects and the enclosing journal generation.
+# These are supported-budget margins, not a promise that arbitrary future
+# registry/shortcut content will fit. Complete capture/replay checks still apply.
+NATIVE_RESERVE_BYTES = 4 * 1024 * 1024
+NATIVE_RESERVE_NODES = 100000
+JOURNAL_RESERVE_BYTES = 64 * 1024
+JOURNAL_RESERVE_NODES = 4096
+
+
+def preflight_native_evidence(install_root, *, target_identity, target_report_sha256,
+                              ownership_bytes, ownership_sha256, program_inventory,
+                              uninstall_exe, shortcut_targets):
+    """Pure admission of the known Windows evidence shape; no native reads.
+
+    Use current digest-pinned Setup inputs, before journal/resource mutation and
+    again before starting native installation. Repeated ancestors are charged for
+    every file, without constructing the full (potentially enormous) evidence.
+    Returned counts include the contract, root and program records, with empty
+    users/uninstall/registry/shortcuts covered separately by the native reserve.
+    """
+    from installer_upgrade_journal import (MAX_EVIDENCE_BYTES, MAX_JSON_NODES,
+        MAX_JSON_DEPTH, MAX_JSON_ITEMS, MAX_JSON_STRING, MAX_JSON_KEY)
+    contract = _contract(install_root, target_identity, target_report_sha256,
+        ownership_bytes, ownership_sha256, program_inventory, uninstall_exe, shortcut_targets)
+    byte_limit = min(MAX_METADATA, MAX_EVIDENCE_BYTES) - NATIVE_RESERVE_BYTES - JOURNAL_RESERVE_BYTES
+    node_limit = MAX_JSON_NODES - NATIVE_RESERVE_NODES - JOURNAL_RESERVE_NODES
+    totals = [0, 0]
+
+    def charge(size, nodes):
+        totals[0] += size
+        totals[1] += nodes
+        if totals[0] > byte_limit or totals[1] > node_limit:
+            _fail('evidence-budget-exceeded')
+
+    def measure(value, depth):
+        # Mirror journal JSON constraints, including keys counting as nodes.
+        if depth > MAX_JSON_DEPTH:
+            _fail('evidence-budget-exceeded')
+        kind = type(value)
+        nodes = 1
+        if kind is dict:
+            if len(value) > MAX_JSON_ITEMS:
+                _fail('evidence-budget-exceeded')
+            for key, child in value.items():
+                if type(key) is not str or len(key) > MAX_JSON_KEY:
+                    _fail('evidence-budget-exceeded')
+                nodes += measure(key, depth + 1) + measure(child, depth + 1)
+        elif kind is list:
+            if len(value) > MAX_JSON_ITEMS:
+                _fail('evidence-budget-exceeded')
+            nodes += sum(measure(child, depth + 1) for child in value)
+        elif kind is str:
+            if len(value) > MAX_JSON_STRING:
+                _fail('evidence-budget-exceeded')
+        elif value is not None and kind is not bool and not (kind is int and -(2**256) < value < 2**256):
+            _fail('evidence-budget-exceeded')
+        return nodes
+
+    def add(value, depth, punctuation=0):
+        nodes = measure(value, depth)
+        charge(len(_encoded(value)) + punctuation, nodes)
+
+    def info(path):
+        return dict(physicalPath=('\\\\?\\Volume{ffffffff-ffff-ffff-ffff-ffffffffffff}\\' + path[3:]).rstrip('\\').casefold(),
+                    identity=dict(volumeSerial=2**64 - 1, fileId='f' * 32),
+                    created=2**64 - 1, attributes=2**32 - 1)
+
+    def ancestors(path, depth, include_leaf=False):
+        path = _path(path)
+        components = path[3:].split('\\') if len(path) > 3 else []
+        if not include_leaf and components:
+            components.pop()
+        if len(components) + 1 > MAX_JSON_ITEMS:
+            _fail('evidence-budget-exceeded')
+        cursor = path[:3]
+        for index, part in enumerate(['', *components]):
+            if part:
+                cursor = ntpath.join(cursor, part)
+            add(dict(path=cursor, state='directory', **info(cursor)), depth, int(index > 0))
+
+    skeleton = dict(schema=SCHEMA, source='win32-read-only', sha256='f' * 64,
+        contract=dict(contract, programInventory={}), observation=dict(users={},
+            root=dict(state='directory', ancestors=[]), program={}, uninstall={}, registry={}, shortcuts=[]))
+    add(skeleton, 0)
+    root = contract['installRoot']
+    ancestors(root, 4, include_leaf=True)
+    inventory = contract['programInventory']
+    if len(inventory) > MAX_JSON_ITEMS:
+        _fail('evidence-budget-exceeded')
+    for index, (name, expected) in enumerate(inventory.items()):
+        # Insert into two initially empty objects (key, colon, optional comma).
+        add(name, 3, 1 + int(index > 0))
+        add(expected, 3)
+        add(name, 3, 1 + int(index > 0))
+        path = _path(ntpath.join(root, name.replace('/', '\\')))
+        row = dict(state='file', ancestors=[], **info(path), written=2**64 - 1,
+                   links=1, **expected)
+        if name == 'release-report.json':
+            raw_size = 4 * ((expected['bytes'] + 2) // 3)
+            if raw_size > MAX_JSON_STRING or expected['bytes'] > MAX_METADATA:
+                _fail('evidence-budget-exceeded')
+            # Empty string carries the key, node and quotes. ASCII base64 adds
+            # exactly raw_size bytes; never allocate an oversized placeholder.
+            row['rawBase64'] = ''
+            charge(raw_size, 0)
+        add(row, 3)
+        ancestors(path, 5)
+    return dict(knownBytes=totals[0], knownNodes=totals[1],
+                byteLimit=byte_limit, nodeLimit=node_limit)
+
+
 def _raw(record, limit):
     if not isinstance(record, dict) or record.get('state') != 'file':
         _fail('required-file-missing')

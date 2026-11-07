@@ -143,6 +143,9 @@ begin
       ResourceResetExtractRoot, SW_HIDE, ewWaitUntilTerminated, Code) or (Code <> 0) then begin
       Reason := '资源升级步骤 ' + Action + ' 未完成（错误码 ' + IntToStr(Code) + '）。' + #13#10 +
         ResetReadText(ResultDir + '\error.txt');
+      if ((Action = 'prepare') or (Action = 'start-native')) and
+        (Pos('native-observation-evidence-budget-exceeded', Reason) > 0) then
+        Reason := '本包在当前安装路径下的完整恢复凭据超出支持容量，尚未进入 Windows 程序安装。将核对恢复准备步骤，暂不能继续。' + #13#10 + Reason;
       Log(Reason);
       Exit;
     end;
