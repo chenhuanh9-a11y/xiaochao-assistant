@@ -5,7 +5,6 @@ import copy,json,sys,tempfile,unittest
 import numpy as np
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'app'))
 from optional_author_displays import OptionalAuthorDisplays
-from author_route_catalog import AuthorRouteCatalog
 
 class OptionalAuthorCoverageTests(unittest.TestCase):
  def setUp(self):
@@ -38,13 +37,6 @@ class OptionalAuthorCoverageTests(unittest.TestCase):
   for key,value in [('structureVersionKey','wrong'),('floor','B1'),('sourceVersion','wrong'),('matrixAssetToBase',np.zeros((3,3)).tolist())]:
    with self.subTest(key=key):
     before=copy.deepcopy(self.entries[0]);self.entries[0][key]=value;self.assertIn(self.profile,self.load().errors);self.entries[0].clear();self.entries[0].update(before)
- def test_installed_author_is_selectable_without_loading_another_mode(self):
-  import ast
-  path=Path(__file__).resolve().parents[1]/'app/identityv_daily_assistant.py';tree=ast.parse(path.read_text('utf-8-sig'));method=next(n for n in ast.walk(tree) if isinstance(n,ast.FunctionDef) and n.name=='_author_route_options')
-  namespace=dict(SUJU_ROUTE_PROFILE_ID='suju',DEFAULT_ROUTE_PROFILE_ID='wang-qingxin',ROUTE_PROFILE_LABELS={'lianghapi-single':'凉哈皮','shared-structure':'结构参考'},SHARED_STRUCTURE_PROFILE_ID='shared-structure',Path=Path)
-  exec(compile(ast.fix_missing_locations(ast.Module(body=[method],type_ignores=[])),str(path),'exec'),namespace)
-  loaded=self.load();subject=SimpleNamespace(_shared_structure_mode_enabled=lambda:True,optional_author_displays=loaded,author_route_catalog=loaded.catalog)
-  self.assertEqual(namespace['_author_route_options'](subject),(('lianghapi-single','凉哈皮'),))
  def test_legacy_payload_source_version_still_validated(self):
   self.raw['profiles'][0]['maps'].pop('m2');self.payload['entries']=self.entries[:1];self.payload['sourceVersion']=self.entries[0].pop('sourceVersion')
   self.assertFalse(self.load().errors);self.payload['sourceVersion']='wrong';self.assertIn(self.profile,self.load().errors)

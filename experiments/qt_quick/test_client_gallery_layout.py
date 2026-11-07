@@ -3,11 +3,12 @@ from copy import deepcopy
 import os
 from pathlib import Path
 import tempfile
+import time
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_QUICK_BACKEND", "software")
-from PySide6.QtCore import QObject, Property, QPoint, QPointF, Qt, QUrl, Signal, Slot
+from PySide6.QtCore import QObject, Property, QPoint, QPointF, Qt, QUrl, Signal, Slot, QCoreApplication, QEvent
 from PySide6.QtGui import QGuiApplication, QImage
 from PySide6.QtQml import QQmlComponent, QQmlEngine
 from PySide6.QtQuick import QQuickWindow
@@ -30,15 +31,19 @@ class FakeBackend(QObject):
                           title=f"测试地图 {n}", mapId=f"map-{n}", floor=str(1+n%2),
                           variant="路线一", imageUrl=image, available=True) for n in range(40)]
         self.model.reconcile(deepcopy(self.rows))
+        self._season = "s0"
         self._mode, self._profile, self._floor, self._query = "nightmare", "author-a", "", ""
         self.selected = {}
         self.calls = []
 
+    season = Property(str, lambda self: self._season, notify=changed)
     mode = Property(str, lambda self: self._mode, notify=changed)
-    profiles = Property("QVariantList", lambda self: [dict(id="author-a", name="作者甲", available=40, availableMaps=40, mapCount=40, previewUrl=self.image),
-        dict(id="author-b", name="作者乙", available=12, availableMaps=12, mapCount=40, previewUrl=self.image)], notify=changed)
+    profiles = Property("QVariantList", lambda self: getattr(self, "_profiles_override", None) or [dict(id="author-a", name="作者甲", runtimeSelectable=True, available=40, availableMaps=40, mapCount=40, previewUrl=self.image),
+        dict(id="author-b", name="作者乙", runtimeSelectable=True, available=12, availableMaps=12, mapCount=40, previewUrl=self.image)], notify=changed)
     profileId = Property(str, lambda self: self._profile, notify=changed)
     floor = Property(str, lambda self: self._floor, notify=changed)
+    floorOptions = Property("QVariantList", lambda self: [dict(name=name, value=value) for name, value in
+        (("全部楼层", ""), ("1 楼", "1"), ("2 楼", "2"), ("B1 地下室", "B1"))], notify=changed)
     count = Property(int, lambda self: len(self.model.rows), notify=changed)
     mapCount = Property(int, lambda self: len({row['mapId'] for row in self.model.rows if row['available']}), notify=changed)
     selectedKey = Property(str, lambda self: self.selected.get("key", ""), notify=changed)
@@ -46,7 +51,8 @@ class FakeBackend(QObject):
     selectedTitle = Property(str, lambda self: self.selected.get("title", ""), notify=changed)
     selectedFloor = Property(str, lambda self: self.selected.get("floor", ""), notify=changed)
     selectedImage = Property(str, lambda self: self.selected.get("imageUrl", ""), notify=changed)
-    busy = Property(bool, lambda self: False, notify=changed)
+    _busy = False
+    busy = Property(bool, lambda self: self._busy, notify=changed)
     hasError = Property(bool, lambda self: False, notify=changed)
     message = Property(str, lambda self: "隔离测试资源", notify=changed)
     viewKey = Property(str, lambda self: f"{self._mode}/{self._profile}/{self._floor}/{self._query}", notify=changed)
@@ -68,11 +74,20 @@ class FakeBackend(QObject):
         self.model.reconcile(deepcopy(self.rows))
         self.changed.emit()
 
+    @Slot()
+    def showOverlay(self):
+        self.calls.append(("preview", None))
+
     def change(self, field, value):
         self.viewChanging.emit(self.viewKey)
         setattr(self, field, value)
         self.changed.emit()
         self.viewChanged.emit(self.viewKey)
+
+    @Slot(str, str)
+    def setContext(self, season, mode):
+        self.change("_season", season)
+        self.setMode(mode)
 
     @Slot(str)
     def setMode(self, value):
@@ -101,9 +116,16 @@ class FakeBackend(QObject):
 
 class FakeState(QObject):
     changed = Signal()
+    seasonOptions = Property("QVariantList", lambda self: [{"id":"s0","label":"S0"},{"id":"s1","label":"S1"}], constant=True)
+    _season = "s0"
+    currentSeason = Property(str, lambda self: self._season, notify=changed)
     currentMode = Property(str, lambda self: "nightmare", notify=changed)
-    currentProfile = Property(str, lambda self: "shared-structure", notify=changed)
-    busy = Property(bool, lambda self: False, notify=changed)
+    _profile = "shared-structure"
+    currentProfile = Property(str, lambda self: self._profile, notify=changed)
+    _busy = False
+    busy = Property(bool, lambda self: self._busy or getattr(self, "_resource_busy", False), notify=changed)
+    operationStage = Property(str, lambda self: getattr(self, "_resource_stage", ""), notify=changed)
+    message = Property(str, lambda self: "正在核对图包", notify=changed)
 
 
 class FakeCoordinator(QObject):
@@ -114,8 +136,8 @@ class FakeCoordinator(QObject):
     @Slot(str)
     def navigate(self, value): self.calls.append(("navigate", value))
 
-    @Slot(str)
-    def setRouteProfile(self, value): self.calls.append(("use", value))
+    @Slot(str, str, str)
+    def useGalleryAuthor(self, season, mode, value): self.calls.append(("use", value))
 
     @Slot()
     def showReference(self): self.calls.append(("reference", None))
@@ -152,6 +174,8 @@ class GalleryLayoutTests(unittest.TestCase):
         self.page.setParentItem(None)
         self.page.deleteLater()
         self.window.deleteLater()
+        self.engine.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
         APP.processEvents()
         self.temp.cleanup()
 
@@ -177,10 +201,85 @@ class GalleryLayoutTests(unittest.TestCase):
 
     def click(self, name):
         item = self.item(name)
+        self.assertTrue(item.isVisible() and item.isEnabled(), name)
+        # Layout changes from list/detail or resize can be queued one frame.
+        for _ in range(100):
+            APP.processEvents()
+            point = item.mapToScene(QPointF(item.width()/2, item.height()/2))
+            if 0 <= point.x() < self.window.width() and 0 <= point.y() < self.window.height():
+                break
+            time.sleep(.01)
         point = item.mapToScene(QPointF(item.width()/2, item.height()/2))
+        self.assertTrue(0 <= point.x() < self.window.width() and 0 <= point.y() < self.window.height(), (name, point))
         QTest.mouseClick(self.window, Qt.LeftButton, Qt.NoModifier, QPoint(round(point.x()), round(point.y())))
         APP.processEvents()
         QTest.qWait(10)
+
+    def test_author_capability_alias_and_busy_states_fail_closed(self):
+        row = dict(id="author-a", name="测试作者", available=1, availableMaps=1, mapCount=1)
+        self.backend._profiles_override = [row]
+        self.backend.changed.emit()
+        APP.processEvents()
+        self.assertFalse(self.item("galleryUseAuthor").isEnabled())
+        row["runtimeSelectable"] = False
+        self.backend.changed.emit()
+        self.assertFalse(self.item("galleryUseAuthor").isEnabled())
+        row.update(runtimeSelectable=True, runtimeProfileId="shared-structure")
+        self.backend.changed.emit()
+        self.assertEqual(self.item("galleryUseAuthor").property("text"), "正在使用此作者")
+        self.assertFalse(self.item("galleryUseAuthor").isEnabled())
+        self.state._profile = "another"
+        self.state.changed.emit()
+        self.assertTrue(self.item("galleryUseAuthor").isEnabled())
+        for owner in (self.backend, self.state):
+            owner._busy = True
+            owner.changed.emit()
+            self.assertFalse(self.item("galleryUseAuthor").isEnabled())
+            owner._busy = False
+            owner.changed.emit()
+        row["available"] = 0
+        self.backend.changed.emit()
+        self.assertFalse(self.item("galleryUseAuthor").isEnabled())
+
+    def test_s1_author_uses_explicit_action_and_context_guard(self):
+        self.backend.setContext("s1", "nightmare")
+        self.assertFalse(self.item("galleryUseAuthor").isEnabled())
+        self.state._season = "s1"
+        self.state.changed.emit()
+        APP.processEvents()
+        self.assertTrue(self.item("galleryUseAuthor").isEnabled())
+        self.click("galleryViewAuthor_author-b")
+        self.click("galleryShowReference")
+        self.assertEqual(self.coordinator.calls, [])
+        self.click("galleryUseAuthor")
+        self.assertEqual(self.coordinator.calls, [("use", "author-b")])
+        self.backend.setMode("difficult")
+        self.assertFalse(self.item("galleryUseAuthor").isEnabled())
+
+    def test_import_progress_stays_visible_across_browse_context_and_narrow_layout(self):
+        self.state._resource_busy, self.state._resource_stage = True, "install"
+        self.state.changed.emit()
+        self.resize(514, 440)
+        card = self.item("packageProgressCard")
+        self.assertTrue(card.isVisible())
+        self.assertEqual(card.property("phase"), "解压并导入")
+        self.assertGreater(card.height(), 60)
+        self.assertGreater(self.item("packageProgressBar").width(), 100)
+        self.backend.setContext("s1", "difficult")
+        QTest.qWait(20)
+        self.assertTrue(card.isVisible())
+        self.assertEqual(self.item("packageProgressCard"), card)
+        self.page.setVisible(False)
+        self.state._resource_stage = "refresh-after-write"
+        self.state.changed.emit()
+        self.page.setVisible(True)
+        QTest.qWait(20)
+        self.assertEqual(card.property("phase"), "核对安装结果")
+        self.state._resource_busy = False
+        self.state.changed.emit()
+        QTest.qWait(20)
+        self.assertFalse(card.isVisible())
+        self.assertEqual(self.warnings, [])
 
     def test_keyed_refresh_and_narrow_list_detail_keep_selection_and_actions(self):
         self.assertFalse(self.page.findChild(QObject, "clientGallerySearch"))
@@ -215,7 +314,7 @@ class GalleryLayoutTests(unittest.TestCase):
         self.click("galleryUseAuthor")
         self.assertEqual(self.coordinator.calls[-1], ("use", "author-a"))
         self.click("galleryShowReference")
-        self.assertEqual(self.coordinator.calls[-1], ("reference", None))
+        self.assertEqual(self.backend.calls[-1], ("preview", None))
         self.click("galleryManagePackages")
         self.assertEqual(self.coordinator.calls[-1], ("navigate", "resources"))
         self.click("galleryBackToList")
@@ -224,9 +323,31 @@ class GalleryLayoutTests(unittest.TestCase):
         self.resize(1000, 650)
         self.assertEqual(self.backend.selectedKey, key)
         self.assertTrue(self.item("galleryPreviewPane").isVisible())
-        self.click("galleryDifficultMode")
+        context_picker = self.item("galleryContextSeason")
+        self.assertEqual(context_picker.property("count"), 2)
+        self.click("galleryContextDifficult")
+        APP.processEvents()
         self.assertEqual(self.backend.calls[-1], ("mode", "difficult"))
         self.assertFalse(self.item("galleryUseAuthor").isEnabled())
+        self.assertFalse(self.warnings, "\n".join(self.warnings))
+
+    def test_wide_preview_reserves_actual_height_for_coverage_caption(self):
+        def coverage(item):
+            if str(item.property("text") or "").startswith("本地覆盖 "):
+                return item
+            for child in item.childItems():
+                found = coverage(child)
+                if found is not None:
+                    return found
+        for width, height in ((1000, 650), (1200, 900)):
+            with self.subTest(size=(width, height)):
+                self.resize(width, height)
+                scroll = self.item("galleryDetailScroll")
+                scroll.setProperty("contentY", 0)
+                caption = coverage(scroll)
+                self.assertIsNotNone(caption)
+                bottom = caption.mapToItem(scroll, QPointF()).y() + caption.height()
+                self.assertLessEqual(bottom, scroll.height() + .1)
         self.assertFalse(self.warnings, "\n".join(self.warnings))
 
 

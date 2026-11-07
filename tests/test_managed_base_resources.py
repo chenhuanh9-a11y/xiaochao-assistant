@@ -136,11 +136,55 @@ class ManagedBaseResourcesTests(unittest.TestCase):
             self.write(self.target / name, b"author image")
         value = dict(packageId=package, revision=1, archiveSha256="a" * 64, files=[row])
         if dependencies is not None:
-            value["requiresFiles"] = dependencies
+            # Ordinary installed receipts always declare the base closure, as
+            # real ZIP imports do. Additional rows exercise migration conflicts.
+            base = []
+            for name in sorted(managed.files.BASE_DEPENDENCIES):
+                data = b"fixture-base"
+                self.write(self.target / name, data)
+                base.append(self.row(name, data))
+            value["requiresFiles"] = base + dependencies
+        else:
+            # Only a complete approved legacy adoption may omit dependencies.
+            import author_package_management as author
+            release = dict(archiveName="fixture-approved.zip", archiveSha256="a" * 64, files=[row])
+            patcher = mock.patch.object(author, "LEGACY_AUTHOR_INVENTORY", {package: release})
+            patcher.start()
+            self.addCleanup(patcher.stop)
+            value["legacyAdoption"] = dict(schemaVersion=1, scope="author-display-only",
+                sourceArchive=release["archiveName"], completeDisplaySet=True)
         data = json.dumps(value).encode()
         path = self.target / f"work/map-packages/{package}.json"
         self.write(path, data)
         return path, data
+
+    def test_invalid_present_dependency_receipt_blocks_before_any_resource_write(self):
+        self.project()
+        path, _ = self.receipt(dependencies=[])
+        receipt = json.loads(path.read_bytes())
+        receipt["requiresFiles"] = receipt["requiresFiles"][:1]
+        self.write(path, json.dumps(receipt).encode())
+        protected = {item: item.read_bytes() for item in self.target.rglob("*") if item.is_file()}
+        with self.assertRaises(managed.ManagedBaseResourceError) as caught:
+            managed.repair_managed_base_resources(self.target)
+        self.assertEqual(caught.exception.code, "installed-package-receipt-rejected")
+        self.assertEqual(caught.exception.details["issues"], [dict(
+            path="work/map-packages/nightmare-suju.json", reason="invalid-installed-package-dependencies")])
+        self.assertIsInstance(caught.exception.__cause__, managed.files.ImportRejected)
+        for item, data in protected.items():
+            self.assertEqual(item.read_bytes(), data, item)
+        self.assertFalse((self.target / managed.STATE).exists())
+        self.assertFalse((self.target / managed.PENDING).exists())
+
+    def test_invalid_receipt_does_not_become_an_approved_legacy_receipt(self):
+        self.project()
+        path, _ = self.receipt(dependencies=[])
+        self.write(path, b'{"private-user-value":"never serialize"}')
+        with self.assertRaises(managed.ManagedBaseResourceError) as caught:
+            managed.plan_managed_base_resources(self.target)
+        self.assertEqual(caught.exception.details["issues"], [dict(
+            path="work/map-packages/nightmare-suju.json", reason="invalid-installed-package-receipt")])
+        self.assertEqual(path.read_bytes(), b'{"private-user-value":"never serialize"}')
 
     def test_registered_author_receipt_and_images_preserved_when_dependencies_match(self):
         row = dict(self.resources["references/catalog.json"], path="_internal/references/catalog.json")
@@ -307,7 +351,7 @@ class ManagedBaseResourcesTests(unittest.TestCase):
             managed.repair_managed_base_resources(self.target)
         self.assertEqual((self.target / row["path"]).read_bytes(), before)
 
-    def test_old_receipt_without_dependencies_allows_missing_repair_but_blocks_replacement(self):
+    def test_approved_legacy_receipt_allows_missing_repair_but_blocks_replacement(self):
         self.receipt()
         self.project()
         managed.repair_managed_base_resources(self.target)
@@ -704,10 +748,10 @@ class ManagedBaseResourcesTests(unittest.TestCase):
         for name, data in before.items():
             self.assertEqual((self.target / "work/map-packages" / name).read_bytes(), data)
 
-    def test_unknown_json_still_blocks_as_unrecognized_receipt(self):
+    def test_malformed_unknown_json_still_blocks_as_invalid_receipt(self):
         self.project()
         self.write(self.target / "work/map-packages/unknown-author.json", b"{}")
-        with self.assertRaisesRegex(managed.ManagedBaseResourceError, "unrecognized-installed-package-receipt"):
+        with self.assertRaisesRegex(managed.ManagedBaseResourceError, "installed-package-receipt-rejected"):
             managed.repair_managed_base_resources(self.target)
 
     def test_real_import_completion_acknowledgement_survives_next_base_repair(self):

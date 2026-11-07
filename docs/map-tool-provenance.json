@@ -91,7 +91,7 @@
       "sourceFile": "work/prepare_fast_structures.py",
       "sourceSnapshot": "source-snapshot-preview09-19",
       "originalSHA256": "C43191115726735325C1920D47C98685911D072707BAFE57F8E4A476F27C7097",
-      "publicationChange": "Only relocate app import root from work/ to tools/maps/; frozen generator logic preserved."
+      "publicationChange": "Relocate the import root and retire the Tk context dependency. The offline entry now constructs the existing shared typed stores, version context and SharedReferenceProvider directly, retaining difficult inventory checks and on-demand pixel loading without requiring a healthy ranking engine. Numerical preparation and readback logic are unchanged."
     }
   ]
 }

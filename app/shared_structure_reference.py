@@ -114,8 +114,8 @@ def _binary(value, shape: tuple[int, int] | None = None) -> np.ndarray | None:
     array = np.asarray(value)
     if array.ndim != 2 or array.dtype != np.uint8:
         return None
-    values = np.unique(array)
-    if not np.all(np.isin(values, (0, 1, 255))):
+    # uint8 membership is exact; sorting every pixel is unnecessary.
+    if np.any((array != 0) & (array != 1) & (array != 255)):
         return None
     result = (array > 0).astype(np.uint8)
     if shape is not None and tuple(result.shape) != tuple(shape):

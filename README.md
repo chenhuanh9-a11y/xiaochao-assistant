@@ -1,42 +1,37 @@
-# 星图 1.0 · 小抄助手
+# 星图 · 小抄助手
 
-星图是面向Windows的第五人格地图与路线辅助工具，使用Python、Tkinter、OpenCV和Pillow。它读取游戏窗口画面，识别地图与楼层，按当前帧几何验证显示路线，并提供资源浏览、离线地图包导入和可配置的下载入口。证据不足时应隐藏路线，保留人工确认与完整小抄等兜底。
+星图是面向Windows的第五人格地图与路线辅助工具，使用Python、Qt Quick、OpenCV和Pillow。它读取游戏窗口画面，识别地图与楼层，按当前帧几何验证显示路线，并提供资源浏览、离线地图包导入和可配置的下载入口。证据不足时应隐藏路线，保留人工确认与完整小抄等兜底。
 
 **这里发布源码和维护工具，不分发完整游戏资源或安装包。** 干净结构与配套预制通过独立素材Release提供，见 [结构资源取用](docs/resource-release.md)；作者路线图、四套地图包、游戏渲染纹理、截图与品牌Logo不在当前发布范围。仅克隆仓库不能完成完整地图识别或直接复现产品包。
 
 ## 当前代码
 
-| 分支/快照 | 内容与状态 |
-| --- | --- |
-| `main` 首次公开基线 | candidate15，73个应用Python文件，原候选指纹 `5E25C1A1`。 |
-| `dev/current-integration-20261027` | 完整preview09-19源码加后续开图提速增量，78个应用Python文件，功能来自已实测候选 `86E85F7F`，对外显示统一为“星图 1.0”；本分支用于草稿评审，未自动合并。 |
+当前客户端使用 PySide6 / Qt Quick，源码入口为 `tools/qt_client_entry.py`，界面及客户端服务位于 `experiments/qt_quick/`（目录名保留历史沿革）。旧 Tk 页面、主入口、独立预览与 Tk 构建配方已退役。共享识别、贴合、资源与数据协议仍位于 `app/`，本次清理不改算法或资源字节。
 
-本分支包含可选作者显示、地图下载与导入、困难原生适配、P0启动候选修复、两模式共享快路径sharedfast06，以及资源角色/版本预览、页内模式控制和诊断采样代际传输。132层干净结构和132份预制以独立资源附件提供，不放进Git历史。03/10身份歧义仍未解决，诊断采样改动不能表述为识别精度修复。
-
-后续开图提速增量让已锁地图先检查新完整帧，不合格时仍回原ROI有界等待；显示像素只在源内容和完整渲染条件相同时复用，当前帧几何与显示授权仍逐次检查。识别规则、求解器及阈值未改。实现和证据范围见 [后续开图提速](docs/reopen-speed.md)。
-
-显示版本为 `1.0`，产品名为“星图”，Windows数字版本为 `1.0.0.4`。此次对外标签调整只修改版本显示，功能代码与已实测版本一致，不代表扩大验收范围。主程序源码SHA-256为 `6634E889A40011D823FCA45DC97EB5E1AD63087515F53687622E651DB946346A`。逐文件哈希及公开整理差异见 [当前快照](docs/source-snapshot.json)，历史来源保留在 [candidate17记录](docs/source-snapshot-candidate17.json) 和 [candidate15记录](docs/source-snapshot-candidate15.json)。公共Git历史独立于原开发仓库，没有导入旧历史、内部协作记录或活动工作树；重新构建的指纹不保证与原测试包相同。
+版本以 `version.json` 为准。历史候选的功能及哈希记录仍保存在 `docs/source-snapshot*.json`，不代表当前源码的指纹或完整验收。清理范围、保留的共享测试及 Qt 契约对应见 [Tk 清理记录](docs/tk-cleanup.md)。
 
 ## 快速开始
 
-需要Windows 10/11 x64和带Tkinter的Python 3.13。在仓库根目录运行PowerShell：
+需要 Windows 10/11 x64 和 Python 3.13。在仓库根目录运行 PowerShell：
 
 ```powershell
 py -3.13 -m venv .venv
-& .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-& .\.venv\Scripts\python.exe app\identityv_daily_assistant.py --version
-& .\.venv\Scripts\python.exe app\identityv_daily_assistant.py --build-id
+& .\.venv\Scripts\python.exe -m pip install -r experiments/qt_quick/requirements-client.txt
+& .\.venv\Scripts\python.exe tools\qt_client_entry.py --help
+& .\.venv\Scripts\python.exe tools\qt_client_entry.py --self-check
 ```
 
-依赖锁定到冻结候选构建环境。`opencv-python-headless` 负责图像计算，窗口由Tkinter提供，请勿同时安装多个OpenCV分发包。
+`--self-check` 默认只检查导入/打包接口，不打开窗口、监听或捕获，不等于地图资源完整。依赖锁定到冻结候选构建环境；`opencv-python-headless` 负责图像计算，窗口由 Qt 提供，请勿同时安装多个 OpenCV 分发包。
 
-准备完整合法资源并按 [资源配置](docs/resources.md) 设置目录后启动：
+源码运行使用独立且带所有权标记的沙盒，不读取或覆盖已安装客户端的数据。先按 [资源配置](docs/resources.md) 准备有权使用的完整资源：
 
 ```powershell
-& .\.venv\Scripts\python.exe app\identityv_daily_assistant.py
+& .\.venv\Scripts\python.exe experiments\qt_quick\seed_sandbox.py '包含 _internal 的授权本地资源来源目录'
+& .\.venv\Scripts\python.exe tools\qt_client_entry.py --self-check --verify-resources
+& .\.venv\Scripts\python.exe tools\qt_client_entry.py
 ```
 
-正常启动需要生产索引、结构、坐标与显示资源匹配。空JSON示例只说明接口，不能用于识别。下载服务没有默认服务器，不承诺地图下载或素材授权。
+默认沙盒为 `work/qt-lab-installation`。种子工具拒绝覆盖已有目标；空 JSON 示例不能用于识别。资源自检通过也不代表真实游戏或视觉验收。
 
 ## 地图处理与技能
 
@@ -65,20 +60,22 @@ py -3.13 -m venv .venv
 ## 构建与安装范围
 
 ```powershell
-& .\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
-& .\.venv\Scripts\python.exe tools\build.py --dry-run
-& .\.venv\Scripts\python.exe tools\build.py
+& .\.venv\Scripts\python.exe -m pip install -r tools/requirements-qt-build.txt
+& .\.venv\Scripts\python.exe tools\build_qt_client.py --check-environment
+& .\.venv\Scripts\python.exe tools\build_qt_client.py --help
 ```
 
-输出 `dist/xiaochao-assistant/` 开发骨架，包含代码、版本、Windows manifest与第三方声明，不收集本地地图、设置、日志或缓存。沿用manifest要求管理员权限并声明Per-Monitor DPI，启动前应理解该权限。骨架仍需独立资源，不是原候选完整重建或二进制一致性证明。
+构建入口为 `tools/build_qt_client.py` / `tools/qt-client.spec`。实际构建须提供干净源码 commit、明确授权的资源根及带哈希的清单、Inno Setup 编译器和新的输出目录。先用 `--plan-only` 校验同一组参数，再按开发流程构建 Setup；不从本机猜测资源，不包含未提交源码，不自动安装或发布。
 
-仓库不提供Setup或Release，源码运行不需要安装器。已有本地产品的安装、覆盖和卸载应按其实际安装包说明操作；本仓库没有自动修改已安装程序的命令。
+旧 `tools/build.py` 和 `xiaochao-assistant.spec` 已移除，不再构建 Tk 开发骨架。软件只交付 Setup，地图导入 ZIP 不受此限制。
 
 ## 目录与协作
 
 ```text
-app/                         应用冻结源码与资源loader
-tools/build.py               可移植开发骨架构建
+app/                         共享算法、资源loader与数据服务
+experiments/qt_quick/        当前 Qt 页面与客户端服务
+tools/qt_client_entry.py     当前源码及打包启动边界
+tools/build_qt_client.py     Qt Setup 构建
 tools/maps/                  地图维护、历史配方与预制入口
 skills/update-helper-maps/   本项目维护技能、规范和测试
 docs/                        资源、流程及来源记录

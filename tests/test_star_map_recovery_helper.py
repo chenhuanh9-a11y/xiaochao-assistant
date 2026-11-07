@@ -1,6 +1,7 @@
 """Synthetic resources and mocked parent waiting; no native process is inspected."""
 import json
 from pathlib import Path
+from types import SimpleNamespace
 import sys
 import unittest
 from unittest.mock import Mock, patch
@@ -224,23 +225,57 @@ class RecoveryHelperTests(unittest.TestCase):
         self.assertFalse(helper.receipt_path(self.root).exists())
 
     def test_shared_launcher_passes_retained_handle_without_shell_or_native_calls(self):
-        executable = self.root / "第五人格小抄助手.exe"
-        helper_exe = self.root / "star-map-recovery-helper.exe"
+        # Installed launchers receive a canonical install root. TemporaryDirectory
+        # can return a Windows 8.3 alias, unlike the resolved process identity.
+        root = self.root.resolve()
+        executable = root / "第五人格小抄助手.exe"
+        helper_exe = root / "star-map-recovery-helper.exe"
         helper_exe.write_bytes(b"synthetic non-executable")
         api = Mock()
         api.OpenProcess.return_value = 123
         api.SetHandleInformation.return_value = True
         identity = dict(pid=42, creationTime="1234", executable=str(executable))
+        # Only the native process boundary is synthetic. Keep the real launcher
+        # validation, retained-handle wiring and finally/CloseHandle path on all
+        # platforms; Linux does not expose these Windows subprocess attributes.
+        spawn = Mock()
+        subprocess_boundary = SimpleNamespace(
+            STARTUPINFO=getattr(process.subprocess, "STARTUPINFO", SimpleNamespace),
+            CREATE_NO_WINDOW=getattr(process.subprocess, "CREATE_NO_WINDOW", 0x08000000),
+            Popen=spawn,
+        )
         with patch.object(process, "_kernel", return_value=api), \
                 patch.object(process, "_identity", return_value=identity), \
-                patch.object(process.subprocess, "Popen") as spawn:
-            process._launch_parent_bound_helper(helper_exe, self.root, "launch-fixture",
+                patch.object(process, "subprocess", subprocess_boundary):
+            process._launch_parent_bound_helper(helper_exe, root, "launch-fixture",
                                                ["--request-file", "fixture"])
         argv = spawn.call_args.args[0]
         self.assertEqual(argv[argv.index("--parent-handle") + 1], "123")
         self.assertEqual(spawn.call_args.kwargs["startupinfo"].lpAttributeList, {"handle_list": [123]})
         self.assertTrue(spawn.call_args.kwargs["close_fds"])
+        self.assertEqual(spawn.call_args.kwargs["creationflags"], subprocess_boundary.CREATE_NO_WINDOW)
+        api.SetHandleInformation.assert_called_once_with(123, 1, 1)
         self.assertNotIn("shell", spawn.call_args.kwargs)
+        api.CloseHandle.assert_called_once_with(123)
+
+    def test_shared_launcher_rejects_other_executable_without_spawning(self):
+        root = self.root.resolve()
+        helper_exe = root / "star-map-recovery-helper.exe"
+        helper_exe.write_bytes(b"synthetic non-executable")
+        other_exe = root / "other-application.exe"
+        other_exe.write_bytes(b"synthetic wrong executable")
+        api = Mock()
+        api.OpenProcess.return_value = 123
+        identity = dict(pid=42, creationTime="1234", executable=str(other_exe))
+        with patch.object(process, "_kernel", return_value=api), \
+                patch.object(process, "_identity", return_value=identity), \
+                patch.object(process.subprocess, "Popen") as spawn:
+            with self.assertRaisesRegex(importer.ImportRejected,
+                                        "launcher-is-not-installed-application"):
+                process._launch_parent_bound_helper(helper_exe, root, "wrong-exe",
+                                                   ["--request-file", "fixture"])
+        spawn.assert_not_called()
+        api.SetHandleInformation.assert_not_called()
         api.CloseHandle.assert_called_once_with(123)
 
 

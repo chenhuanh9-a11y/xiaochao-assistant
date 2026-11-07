@@ -76,7 +76,7 @@ Item {
             Label { text: "手动完整帧默认关闭，需单独开启后再复现；仅限量保存已有的失败采集画面，不额外截图，重启后关闭。"; color: "#526785"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
             Label { text: "新装或未配置时默认保存有界本地局部失败样本；已有关闭设置继续保留。诊断包默认包含文字日志、版本、运行状态及匹配的自动局部样本，不包含完整个人配置文件。可选择仅导出文字日志。图片可能含昵称或聊天，不保证匿名，请检查后再分享；不会自动上传。"; color: "#526785"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
             ProgressBar { Layout.fillWidth: true; visible: infoService.checking; indeterminate: true; Accessible.name: infoService.operation }
-            Label { text: infoService.operation || infoService.message; color: infoService.hasError ? "#b8364a" : "#526785"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+            Label { text: infoService.operation || infoService.message; color: infoService.hasError ? "#b8364a" : "#526785"; Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText }
             Label { visible: !!infoService.diagnosticsReceipt.path; text: "诊断文件：" + (infoService.diagnosticsReceipt.path || ""); textFormat: Text.PlainText; color: "#17775a"; wrapMode: Text.WrapAnywhere; Layout.fillWidth: true }
             ClientProblemsPanel { Layout.fillWidth: true }
             Rectangle {
@@ -84,12 +84,12 @@ Item {
                 Layout.fillWidth: true; implicitHeight: notes.implicitHeight+36; color: "white"; radius: 16; border.width: 1; border.color: "#e3e9f3"
                 ColumnLayout {
                     id: notes; anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 18; spacing: 12
-                    Label { text: "更新公告 · "+(infoService.release.version || "") + (infoService.hasUnread ? " · 未读" : ""); font.bold: true; color: "#183a73" }
-                    Label { text: (infoService.release.published_date || "") + (infoService.skippedVersion === infoService.release.version ? " · 已忽略提醒" : ""); color: "#526785" }
+                    Label { text: "更新公告 · "+(infoService.release.version || "") + (infoService.hasUnread ? " · 未读" : ""); font.bold: true; color: "#183a73"; textFormat: Text.PlainText }
+                    Label { text: (infoService.release.published_date || "") + (infoService.announcementSkipped ? " · 已忽略提醒" : ""); color: "#526785"; textFormat: Text.PlainText }
                     Label { text: infoService.release.notes || ""; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#354f75"; textFormat: Text.PlainText }
                     RowLayout {
                         AppButton { enabled: !infoService.checking && infoService.hasUnread; text: infoService.hasUnread ? "标记已读" : "已读"; onClicked: infoService.markRead() }
-                        AppButton { enabled: !infoService.checking && infoService.skippedVersion !== infoService.release.version; text: "忽略本次提醒"; onClicked: infoService.skipVersion() }
+                        AppButton { objectName: "helpSkipAnnouncement"; enabled: !infoService.checking && !infoService.announcementSkipped; text: "忽略本次提醒"; onClicked: infoService.skipVersion() }
                         AppButton { enabled: !infoService.checking; text: "夸克下载页"; visible: !!(infoService.release.pages && infoService.release.pages.quark); onClicked: infoService.openDownloadPage("quark") }
                         AppButton { enabled: !infoService.checking; text: "UC 下载页"; visible: !!(infoService.release.pages && infoService.release.pages.uc); onClicked: infoService.openDownloadPage("uc") }
                     }
@@ -105,7 +105,7 @@ Item {
                         required property var modelData
                         Layout.fillWidth: true; spacing: 8
                         Rectangle { Layout.fillWidth: true; height: 1; color: "#d6e0ef" }
-                        Label { text: "v" + modelData.version + " · " + modelData.published_date; color: "#183a73"; font.bold: true; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+                        Label { text: "v" + modelData.version + " · " + modelData.published_date; color: "#183a73"; font.bold: true; Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText }
                         Label { objectName: "helpHistoryNotes"; text: modelData.notes; textFormat: Text.PlainText; color: "#354f75"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
                     }
                 }

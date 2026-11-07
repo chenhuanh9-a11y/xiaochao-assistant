@@ -115,10 +115,17 @@ class ResourceReaderTests(unittest.TestCase):
                 authorName="suju", routeFamilyName="fixture", runtimeEnabled=False, settingsSelectable=False,
                 maps={"map-0": [dict(id="v1", displayName="Variant", identityStatus="display-only",
                 displayPolicy="preview-only", layers={"1": "assets/suju/fixture.png"})]})])), encoding="utf-8")
+            dependencies = []
+            for name in sorted(rs.importer.BASE_DEPENDENCIES):
+                dependency = root / name
+                if not dependency.exists():
+                    dependency.write_bytes(b"fixture-base")
+                data = dependency.read_bytes()
+                dependencies.append(dict(path=name, bytes=len(data), sha256=hashlib.sha256(data).hexdigest()))
             receipt = root / "work/map-packages/nightmare-suju.json"
             receipt.parent.mkdir(parents=True)
             receipt.write_text(json.dumps(dict(packageId="nightmare-suju", revision=1,
-                archiveSha256="a" * 64, requiresFiles=[], files=[dict(path=target.relative_to(root).as_posix(),
+                archiveSha256="a" * 64, requiresFiles=dependencies, files=[dict(path=target.relative_to(root).as_posix(),
                 bytes=target.stat().st_size, sha256=hashlib.sha256(target.read_bytes()).hexdigest())])), encoding="utf-8")
             paths = SimpleNamespace(installation_root=root, resource_root=internal, work_root=root / "work")
             with patch.object(b, "runtime_paths", return_value=paths), patch.object(pm,

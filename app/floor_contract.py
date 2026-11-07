@@ -1,6 +1,7 @@
 """Semantic floors and vertical control axes for declared season/mode contexts.
 
-Logical floor identities do not define the visual S0 column order.
+Logical floor identities do not define the visual S0 column order. S1 keeps
+its own negative floor identities and separately validated runtime capabilities.
 Unregistered contexts have no detector or resource authority.
 """
 from dataclasses import dataclass
@@ -48,6 +49,9 @@ _SECOND = FloorDefinition(2, "2")
 _CONTRACTS = MappingProxyType({
     ("s0", "nightmare"): FloorContract("s0", "nightmare", (_BASEMENT, _FIRST, _SECOND), "vertical"),
     ("s0", "difficult"): FloorContract("s0", "difficult", (_FIRST, _SECOND), "vertical"),
+    **{("s1", mode): FloorContract("s1", mode,
+        tuple(FloorDefinition(value, str(value)) for value in (-1, -2, -3, -4)), "vertical")
+        for mode in ("difficulty2", "difficult", "nightmare")},
 })
 
 

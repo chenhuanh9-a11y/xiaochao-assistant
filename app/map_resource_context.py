@@ -13,6 +13,7 @@ import stat
 from types import MappingProxyType, SimpleNamespace
 from typing import Mapping
 
+from season_context import SEASONS, season_label
 from author_route_catalog import AuthorRouteCatalog, AuthorRouteProfile, AuthorRouteVariant
 from map_resource_model import MapResourceModel, ResourceMap
 from star_map_import import AUTHOR_PACKAGES, author_profiles_for_mode
@@ -70,12 +71,14 @@ class BrowseContext:
     catalog: object | None
     model: MapResourceModel | None
     profiles: tuple[ProfileSummary, ...]
-    path_stamps: Mapping[Path, tuple[int, int] | None]
+    path_stamps: Mapping[Path, tuple[int, int] | tuple[int, int, str] | None]
     error: str = ""
     warnings: tuple[str, ...] = ()
+    season: str = "s0"
+    floor_metadata: Mapping | None = None
 
 
-def load_browse_context(resource_root: Path, mode: str, *, cancelled=lambda: False,
+def load_browse_context(resource_root: Path, mode: str, *, season="s0", cancelled=lambda: False,
                         display_fallback_root=None) -> BrowseContext:
     """Read installed declarations and stat preview files, on the caller's worker.
 
@@ -84,6 +87,14 @@ def load_browse_context(resource_root: Path, mode: str, *, cancelled=lambda: Fal
     paths are anchored to this exact resource root, including legacy source paths.
     """
     root = Path(resource_root).resolve()
+    if cancelled():
+        raise CancelledError()
+    if season != "s0":
+        if season == "s1":
+            from season_map_resources import load_season_browse_context
+            return load_season_browse_context(root, mode, season=season, cancelled=cancelled)
+        return BrowseContext(mode, root, None, None, None, (), MappingProxyType({}),
+            error=f"{season_label(season)} 资源待补齐" if season in SEASONS else "unknown browse season", season=season)
     stamps = {}
     warnings = []
     display_defaults = set()
@@ -349,8 +360,9 @@ def load_browse_context(resource_root: Path, mode: str, *, cancelled=lambda: Fal
         for asset in structure_previews(pack, limit=len(pack.maps)):
             stamp(asset.path)
         check()
-        return BrowseContext(mode, root, pack, catalog, model, tuple(summaries),
-            MappingProxyType(stamps), warnings=tuple(warnings))
+        from s1_author_displays import append_browse_profile
+        return append_browse_profile(BrowseContext(mode, root, pack, catalog, model, tuple(summaries),
+            MappingProxyType(stamps), warnings=tuple(warnings)), cancelled=cancelled)
     except CancelledError:
         raise
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:

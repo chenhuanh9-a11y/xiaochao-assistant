@@ -4,6 +4,36 @@ import math
 import re
 
 
+def s1_scan_failure(report, preferred_map_id=None):
+    """Code-only failure summary, bounded before both log/privacy boundaries.
+
+    Failed fits remain UNKNOWN. Counts cover the report; at most six example
+    outcomes/reasons are retained, with an explicit omitted count and preferred
+    candidate first. No pixels, matrices, paths or exception text are copied.
+    """
+    from collections import Counter
+    from diagnostic_schema import CODES
+    def code(value):
+        return value if isinstance(value, str) and value in CODES else 'unknown-operation-failure'
+    checked = report.get('checkedMapIds', [])
+    supported = report.get('supportedMapIds', [])
+    outcomes = report.get('outcomes', [])
+    reasons = Counter(code(row.get('reason') or 's1-pose-not-verified')
+        for row in outcomes if row.get('outcome') != 'supported')
+    examples = sorted(outcomes, key=lambda row: row.get('mapId') != preferred_map_id)
+    return dict(status=code(report.get('status')), scanComplete=report.get('scanComplete') is True,
+        checkedCount=len(checked), supportedCount=len(supported),
+        unscannedCount=len(report.get('unscannedMapIds', [])),
+        elapsedMs=report.get('elapsedSeconds', 0) * 1000,
+        preferred=dict(mapId=preferred_map_id),
+        outcomes=[dict(mapId=row.get('mapId'), outcome=code(row.get('outcome')),
+            reason=code(row.get('reason') or ('supported' if row.get('outcome') == 'supported'
+                else 's1-pose-not-verified'))) for row in examples[:6]],
+        omittedOutcomeCount=max(0, len(outcomes)-6),
+        reasonCounts=[dict(reason=reason, count=count) for reason, count in reasons.most_common(6)],
+        omittedReasonCount=max(0, len(reasons)-6))
+
+
 def bounded_recognition(value, limit=2048):
     truncated = [False]
     def visit(item, depth=0):

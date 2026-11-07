@@ -19,7 +19,8 @@ class PreviewService(QObject):
     def _selection(self):
         return dict(imageUrl=str(self.backend.selectedImage or ""),
                     title=str(self.backend.selectedTitle or ""),
-                    floor=str(self.backend.selectedFloor or ""))
+                    floor=str(self.backend.selectedFloor or ""),
+                    floorLabel=str(getattr(self.backend, "selectedFloorLabel", "") or ""))
 
     previewData = Property("QVariantMap", lambda self: dict(self._data), notify=changed)
     visible = Property(bool, lambda self: bool(self.windows.snapshot.get("preview", {}).get("visible")), notify=changed)

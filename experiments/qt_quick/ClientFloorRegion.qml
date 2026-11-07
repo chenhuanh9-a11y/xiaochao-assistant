@@ -32,7 +32,7 @@ ColumnLayout {
         text: {
             if (root.regionMode) return "框选：只在你框出的范围里读楼层；框里读不到时按自动方式识别。"
             if (root.preferences.floorControlMode === "fixed") return "固定：只按游戏默认位置找楼层按钮，和旧版一样，不做自动查找。"
-            return "自动：先按默认位置读；读不到时在画面右上角自动找楼层按钮。窗口大小、比例变了也不用重新设置。"
+            return "自动：先按默认位置读；读不到时在画面右侧扩大范围查找完整楼层控件。窗口大小、比例变化后仍按当前画面识别。"
         }
         color: "#526785"; wrapMode: Text.WordWrap; Layout.fillWidth: true
     }
@@ -48,7 +48,7 @@ ColumnLayout {
         spacing: 8
         Label { objectName: "floorRegionSummary"; text: root.service ? root.service.summary : ""; color: "#354f75"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
         Label {
-            text: "游戏里选中的楼层按钮会停在同一个位置，其他按钮左右滑动。请把整排按钮连同它们能滑到的位置一起框进去。"
+            text: "请把竖排楼层按钮和完整的数字、负号一起框进去；如果按钮位置会变化，也要把它们能移动到的位置框进去。"
             font.pixelSize: 12; color: "#526785"; wrapMode: Text.WordWrap; Layout.fillWidth: true
         }
         Flow {

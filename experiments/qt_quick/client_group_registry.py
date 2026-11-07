@@ -8,6 +8,8 @@ from __future__ import annotations
 import hashlib
 import json
 
+from season_context import SeasonContext
+
 
 CONFIRMED_FRONT_GROUPS = {
     "nightmare": (("04", "12", "19"), ("03", "09"), ("07", "08", "20")),
@@ -25,16 +27,20 @@ class ConfirmedFrontGroups:
     condition_index = None
     error = None
 
-    def __init__(self, pack):
+    def __init__(self, pack, *, season="s0"):
+        self.context = SeasonContext(season=season, mode=pack.mode)
         self.mode = pack.mode
         self.map_ids = frozenset(pack.by_id)
         prefix = "nightmare-" if self.mode == "nightmare" else "difficult-map-"
+        # The reviewed legacy membership is S0-only, even if new maps reuse IDs.
+        memberships = CONFIRMED_FRONT_GROUPS[self.mode] if season == "s0" else ()
         self.groups = tuple(dict(
             groupId=f"confirmed-front:{self.mode}:" + "-".join(numbers),
             mode=self.mode, entranceKind="front", floor="1",
             memberIds=tuple(prefix + number for number in numbers),
-        ) for numbers in CONFIRMED_FRONT_GROUPS[self.mode])
-        self.index_digest = hashlib.sha256(json.dumps(self.groups, sort_keys=True).encode()).hexdigest()
+        ) for numbers in memberships)
+        identity = self.groups if season == "s0" else (self.context.key, self.groups)
+        self.index_digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
 
     def group_for(self, map_id, *, floor, entrance_kind):
         if str(floor) != "1" or entrance_kind != "front":
