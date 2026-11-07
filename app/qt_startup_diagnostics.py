@@ -16,6 +16,8 @@ LOG_NAME = "qt-client-startup-error.txt"
 MAX_REPORT_BYTES = 16 * 1024
 _STAGES = {"validate-profile", "import-client", "run-client", "create-client"}
 _RESOURCE_ACTIONS = {
+    "installer-upgrade-recovery-required": "上次安装升级尚未完成核验，暂时无法启动。请保留现有安装目录和诊断记录，重新运行安装程序核验；记录缺失或文件状态变化时，不会自动回退。",
+    "resource-reset-recovery-required": "上次资源重置尚未完成核验，暂时无法启动。请保留现有安装目录和诊断记录，重新运行安装程序核验；记录缺失或文件状态变化时，不会自动回退。",
     "installed-package-receipt-rejected": "无法核对旧图包的安装记录，暂时无法启动。请保留现有图包和设置，附上诊断记录反馈，不要卸载或删除图包。",
     "upgrade-cleanup-incomplete": "图包更新已结束，但临时文件还没清理完。请按提示继续清理，已经更新的图包不会被还原。",
     "base-cleanup-incomplete": "上次修复留下的临时文件还没清理完。请关闭可能占用文件的程序后重开星图；仍出现此提示时，请附上诊断记录反馈。",

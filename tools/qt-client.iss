@@ -392,7 +392,7 @@ begin
       OldFiles.LoadFromFile(ExpandConstant('{app}\') + OwnershipName);
       for I := 0 to OldFiles.Count - 1 do begin
         if not SafeProgramPath(OldFiles[I]) then
-          RaiseException('旧安装文件清单无效；未开始替换。');
+          RaiseException('旧安装文件清单无效；未开始程序替换。');
         if RetirableProgramFile(OldFiles[I]) then AddUpgradePath(OldFiles[I]);
       end;
     end;
@@ -411,7 +411,7 @@ begin
     if not ForceDirectories(UpgradeBackup + '\files') then RaiseException('无法创建安装备份。');
     Source := ExpandConstant('{app}\work\nightmare-memory\ui-settings.json');
     if FileExists(Source) and not FileCopy(Source, UpgradeBackup + '\ui-settings.json', True) then
-      RaiseException('无法备份原设置，未开始替换。');
+      RaiseException('无法保留设置副本，尚未开始程序安装。');
     for I := 0 to UpgradeFiles.Count - 1 do begin
       Relative := UpgradeFiles[I];
       Source := ExpandConstant('{app}\') + Relative;
@@ -419,7 +419,7 @@ begin
         Destination := UpgradeBackup + '\files\' + IntToStr(UpgradeExisting.Count);
         if not ForceDirectories(ExtractFileDir(Destination)) or
           not FileCopy(Source, Destination, True) then
-          RaiseException('无法备份旧文件，未开始替换：' + Relative);
+          RaiseException('无法保留旧程序恢复副本，尚未替换程序；请按提示核对资源准备的恢复：' + Relative);
         UpgradeExisting.Add(Relative);
       end;
     end;

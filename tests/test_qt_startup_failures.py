@@ -241,7 +241,7 @@ class QtEntryFailureTests(StartupFixture):
         from unittest.mock import Mock
         import qt_startup_diagnostics as diagnostics
         user32 = types.SimpleNamespace(MessageBoxW=Mock())
-        with patch.object(sys, "platform", "win32"), patch.object(ctypes, "WinDLL", return_value=user32):
+        with patch.object(sys, "platform", "win32"), patch.object(ctypes, "WinDLL", return_value=user32, create=True):
             diagnostics._show_native_error("fixture only; no native dialog")
         user32.MessageBoxW.assert_called_once()
 

@@ -34,21 +34,25 @@ class ResourceStartupTests(unittest.TestCase):
         self.fixture.project()
         self.root = self.fixture.target
 
-    def run_main(self, constructor):
+    def run_main(self, constructor, *, real_recovery=False):
         guard = Mock()
         guard.start.return_value = True
         native_identity = (patch('ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID', return_value=0)
                            if os.name == 'nt' else nullcontext())
+        recovery = (nullcontext() if real_recovery else
+                    patch('client_resource_startup_recovery.offer_startup_recovery', return_value=None))
         with patch.object(sys, 'argv', ['client', '--sandbox', str(self.root)]), \
              patch.object(client, 'PRODUCTION', True), \
              patch.object(client, 'owned_sandbox', side_effect=lambda p: Path(p)), \
              patch.object(client, 'QGuiApplication', return_value=self.app), \
              patch.object(client, 'QtClient', side_effect=constructor), \
-             patch('client_resource_startup_recovery.offer_startup_recovery', return_value=None), \
+             recovery, \
              patch('client_single_instance.SingleInstanceGuard', return_value=guard), \
              native_identity:
-            result = client.main()
-        self.assertTrue(guard.close.called)
+            try:
+                result = client.main()
+            finally:
+                guard.close.assert_called_once()
         return result
 
     def test_main_repairs_before_first_reader_and_keeps_lease_through_shutdown(self):
@@ -91,6 +95,41 @@ class ResourceStartupTests(unittest.TestCase):
         self.assertTrue(pending.exists())
         with resource_runtime_lease(self.root):
             pass
+
+    def test_installer_and_reset_markers_block_real_main_without_map_helper(self):
+        cases = (
+            ('work/pending-installer-upgrade.json', 'installer-upgrade-recovery-required'),
+            ('work/map-packages/pending-resource-reset.json', 'resource-reset-recovery-required'),
+        )
+        for relative, code in cases:
+            with self.subTest(code=code):
+                pending = self.root / relative
+                self.fixture.write(pending, b'{"status":"unverified"}')
+                self.fixture.write(self.root / 'work/player-settings.json', b'keep settings')
+                self.fixture.write(self.root / '_internal/references/catalog.json', b'keep resources')
+                # Establish the persistent lock file before taking a byte snapshot.
+                with resource_runtime_lease(self.root):
+                    pass
+                def snapshot():
+                    return {p.relative_to(self.root).as_posix(): p.read_bytes()
+                            for p in self.root.rglob('*') if p.is_file()}
+                before = snapshot()
+                consumer = Mock()
+                with patch('client_resource_startup_recovery._inspect') as inspect, \
+                     patch('client_resource_startup_recovery._confirm') as confirm, \
+                     patch('client_resource_startup_recovery._launch') as launch, \
+                     patch('client_resource_startup_recovery._persist_pending') as persist:
+                    with self.assertRaisesRegex(ValueError, code) as caught:
+                        self.run_main(consumer, real_recovery=True)
+                self.assertEqual(caught.exception.code, code)
+                consumer.assert_not_called()
+                for boundary in (inspect, confirm, launch, persist):
+                    boundary.assert_not_called()
+                self.assertEqual(snapshot(), before)
+                with resource_runtime_lease(self.root):
+                    pass
+                self.assertEqual(snapshot(), before)
+                pending.unlink()
 
     def test_deferred_constructor_failure_is_persisted(self):
         error = ImportError('example module unavailable', name='owned_fixture_module')
