@@ -1570,3 +1570,5 @@ CODES = CODES | frozenset({'g-cycle-evidence', 'admission', 'completion', 'queue
 
 # Bounded exposure used for current-frame independent map color evidence.
 FIELDS = FIELDS | frozenset({"mapControlExposure"})
+
+CODES = CODES | frozenset({"locked-map-resource-unavailable"})

@@ -13,6 +13,7 @@ from pathlib import Path
 import sys
 
 _NATIVE_S1_PREVIEW = object()
+_NATIVE_S1_PLAYTEST = object()
 _NATIVE_S1_PRODUCTION_CANDIDATE = object()
 
 # Exact Windows native inventory, guarded repair, author-display dependencies
@@ -30,7 +31,8 @@ def private_native_candidate_purpose():
     profile = json.loads((Path(sys._MEIPASS) / "installation-profile.json").read_text("utf8"))
     if profile["installerInstance"]["id"] not in ("s1-auto-test", "s1-playtest"):
         return None
-    return _NATIVE_S1_PREVIEW
+    return (_NATIVE_S1_PLAYTEST if profile["installerInstance"]["id"] == "s1-playtest"
+            else _NATIVE_S1_PREVIEW)
 
 
 def production_native_candidate_purpose():
@@ -57,7 +59,18 @@ def packaged_native_candidate_purpose():
 
 def private_native_candidate_purpose_is_valid(value):
     """Narrow private experiment/implicit diagnostic permission; never formal."""
-    return value is _NATIVE_S1_PREVIEW
+    return value is _NATIVE_S1_PREVIEW or value is _NATIVE_S1_PLAYTEST
+
+
+def native_final_round_lock_purpose_is_valid(value):
+    """Playtest uses production round lifetime, independently of private tracing.
+
+    The older auto-test token remains an isolated evidence experiment. Neither
+    a profile feature field nor a setting may weaken a playtest round lock.
+    """
+    return (value is _NATIVE_S1_PLAYTEST or
+            _PRODUCTION_S1_CANDIDATE_ROLLOUT_ENABLED is True
+            and value is _NATIVE_S1_PRODUCTION_CANDIDATE)
 
 
 def native_candidate_purpose_is_valid(value):

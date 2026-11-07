@@ -1985,7 +1985,7 @@ class ClientCoordinator(QObject):
                     self._trace("publish-transform", payload=self._aligned, reason=trigger)
                     changed = True
                 metadata = {key: current.get(key) for key in
-                            ("identityPhase", "provisional", "groupId", "durableMapId")}
+                            ("identityPhase", "identityLocked", "provisional", "groupId", "durableMapId")}
                 if any(self._aligned.get(key) != value for key, value in metadata.items()):
                     self._aligned.update(metadata)
                     self._trace("publish-metadata", payload=self._aligned, reason=trigger)
@@ -2345,6 +2345,13 @@ class ClientCoordinator(QObject):
             return
         self._private_experiment_notice_state = key
         if locked and state.get("s1FormalRoundLock"):
+            # Lock may commit after the first current-frame material paint.
+            # Synchronize identity text without changing image/pose authority.
+            token = self._aligned.get("token")
+            material = self.runtime.render_payload(token) if token else None
+            if material is not None and material.get("mapId") == map_id:
+                self._aligned.update({key: material.get(key) for key in
+                    ("identityPhase", "identityLocked", "provisional", "durableMapId")})
             self._message = "地图已锁定 · " + map_id
             self.notificationRequested.emit("地图已锁定", "已确认地图 " + map_id + "，后续开图将只核对该图当前位置。", "info")
         elif locked:

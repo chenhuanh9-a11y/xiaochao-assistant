@@ -24,6 +24,29 @@ class FormalRoundLockContracts(LockedIdentityContracts):
         # Formal rollout deliberately retains positive historical exclusions.
         self.test_unconfirmed_singleton_unknown_preserves_accumulated_evidence()
 
+    def test_force_catalogue_clears_old_pool_and_really_scans_full_catalogue(self):
+        # The legacy auto-test allows this; a final round lock requires ending
+        # the round. Keep inherited coverage bound to the current policy.
+        pool, row = self.locked()
+        result = self.runtime.dispatch('capture_now', dict(forceCatalogue=True))
+        self.assertEqual(result['reason'], 'identity-locked')
+        self.assertIs(self.runtime._s1_private_pool, pool)
+        self.assertEqual(self.current_payload()['token'], row['token'])
+        self.assertEqual(self.plans, [])
+
+    def test_reselect_clears_pool_and_next_capture_reopens_competition(self):
+        pool, row = self.locked()
+        result = self.runtime.dispatch('reselect_map')
+        self.assertEqual(result['reason'], 'identity-locked')
+        self.assertIs(self.runtime._s1_private_pool, pool)
+        self.assertEqual(self.current_payload()['token'], row['token'])
+        self.runtime.dispatch('end_round')
+        self.assertIsNone(self.runtime._s1_private_pool)
+        self.bad = (); self.unknown.add('a')
+        self.show(); self.idle()
+        self.assertEqual(self.plans, [('a', 'b')])
+        self.assertEqual(self.current_payload()['mapId'], 'b')
+
     def test_public_identity_and_single_lock_transition(self):
         pool, row = self.locked()
         self.assertTrue(self.runtime.snapshot()['identityLocked'])

@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import numpy as np
 from client_live_runtime import LiveRuntime
-from s1_candidate_purpose import _NATIVE_S1_PREVIEW, private_native_candidate_purpose
+from s1_candidate_purpose import _NATIVE_S1_PREVIEW, _NATIVE_S1_PLAYTEST, private_native_candidate_purpose
 from s1_structure_selection import StructureCandidateScanner
 from test_s1_candidate_runtime import Registry
 from test_s1_manual_floor_runtime import CurrentFixtureCapture
@@ -179,7 +179,8 @@ class BakedPurposeContracts(unittest.TestCase):
                 for name in ('s0-s1-test', 's1-floor-test', 's1-auto-test', 's1-playtest'):
                     profile.write_text(json.dumps(dict(product=build.PRODUCT,
                         installerInstance=dict(id=name, **build.INSTANCES[name]))))
-                    self.assertIs(private_native_candidate_purpose(), _NATIVE_S1_PREVIEW if name in ('s1-auto-test', 's1-playtest') else None)
+                    self.assertIs(private_native_candidate_purpose(), {
+                        's1-auto-test': _NATIVE_S1_PREVIEW, 's1-playtest': _NATIVE_S1_PLAYTEST}.get(name))
 
 
 if __name__ == '__main__':
