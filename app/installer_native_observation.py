@@ -987,7 +987,7 @@ class WindowsReadOnlyBackend:
             users_files = (len(items) >= 4 and len(items[0]) == 58
                 and items[0][:3] == bytes.fromhex('3a001f')
                 and items[0][4:20] == uuid.UUID('59031a47-3f72-44a7-89c5-5595fe6b30ee').bytes_le
-                and items[0][20:28] == bytes.fromhex('260010002600efbe')
+                and items[0][20:28] == struct.pack('<HHI', 38, 1, 0xbeef0026)
                 and items[0][-2:] == b'\x14\x00'
                 and self._delegate_shape(items[1]) == _APPDATA_DELEGATE
                 and folders == [(uuid.UUID(_USERS_FILES).bytes_le, 58)])

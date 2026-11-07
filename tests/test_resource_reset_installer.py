@@ -63,14 +63,23 @@ class InstallerLeaseProtocolTests(unittest.TestCase):
                 times = [wt.FILETIME() for _ in range(4)]
                 self.assertTrue(api.GetProcessTimes(api.GetCurrentProcess(), *(ctypes.byref(t) for t in times)))
                 created = str((times[0].dwHighDateTime << 32) | times[0].dwLowDateTime)
+                # A Windows venv's sys.executable may be a redirector that adds
+                # another process. Use the actual image both for parent identity
+                # and for a direct child; keep the production ancestry guard intact.
+                image = ctypes.create_unicode_buffer(32768)
+                image_length = wt.DWORD(len(image))
+                self.assertTrue(api.QueryFullProcessImageNameW(
+                    api.GetCurrentProcess(), 0, image, ctypes.byref(image_length)))
+                self.assertTrue(0 < image_length.value < len(image))
+                executable = image.value
                 identity = dict(parent_pid=os.getpid(), parent_created=created,
-                    parent_executable=sys.executable, parent_sha256=hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest(),
+                    parent_executable=executable, parent_sha256=hashlib.sha256(Path(executable).read_bytes()).hexdigest(),
                     lock_handle=handle)
                 script = ('import json,sys; from installer_resource_lease import borrowed_installer_lease; '
                           'from resource_transaction import resource_write_lock; '
                           '\nwith borrowed_installer_lease(sys.argv[1], **json.loads(sys.argv[2])):'
                           '\n with resource_write_lock(sys.argv[1]): print("borrowed")')
-                run = subprocess.run([sys.executable, '-c', script, str(root), json.dumps(identity)],
+                run = subprocess.run([executable, '-c', script, str(root), json.dumps(identity)],
                     env=dict(os.environ, PYTHONPATH=str(ROOT / 'app')), text=True, capture_output=True, timeout=30)
                 self.assertEqual(run.returncode, 0, run.stderr)
                 self.assertIn('borrowed', run.stdout)

@@ -141,7 +141,8 @@ class UsersFilesFormatTests(AnsiFormatTests):
         local = profile + r'\AppData\Local'
         target = local + '\\TestApp\\' + basename
         root = (bytes.fromhex('3a001f49') + uuid.UUID('59031a47-3f72-44a7-89c5-5595fe6b30ee').bytes_le
-                + bytes.fromhex('260010002600efbe') + b'\0' * 28 + b'\x14\0')
+                + struct.pack('<HHII', 38, 1, 0xbeef0026, 0x10)
+                + b'\0' * 24 + struct.pack('<H', 20))
         delegate = bytes.fromhex(
             '820074001c004346534616003100000000000000000010004170704461746100'
             '0000741a595e96dfd3488d671733bcee28bac5cdfadf9f6756418947c5c76bc0'
@@ -223,6 +224,19 @@ class UsersFilesFormatTests(AnsiFormatTests):
         trusted[4] = b'\0'
         with self.assertRaisesRegex(observe.NativeObservationError, 'root-conflict'):
             backend.shortcut_target(raw)
+        self.assertEqual([], calls)
+
+    def test_root_extension_version_one_is_not_control_dword(self):
+        backend, raw, target, paths, calls, trusted = self.fixture()
+        self.assertEqual((38, 1, 0xbeef0026, 0x10), struct.unpack_from('<HHII', raw, 78 + 20))
+        self.assertEqual(target, backend.shortcut_target(raw))
+
+    def test_root_extension_version_sixteen_is_rejected_before_shell_conversion(self):
+        backend, raw, target, paths, calls, trusted = self.fixture()
+        changed = bytearray(raw)
+        struct.pack_into('<H', changed, 78 + 22, 0x10)
+        with self.assertRaisesRegex(observe.NativeObservationError, 'shortcut-idlist-unsupported'):
+            backend.shortcut_target(bytes(changed))
         self.assertEqual([], calls)
 
     def test_root_extension_control_dword_is_not_masked(self):
