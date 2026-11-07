@@ -31,7 +31,10 @@ class RecoveryLeaseTests(unittest.TestCase):
 
         self.session = SessionService(Runtime())
         self.service.setLeaseProvider(self.session)
-        self.owner = SimpleNamespace(_closed=False, coordinator=SimpleNamespace(closing=False),
+        # Match QtClient's explicit startup/resource-change preparation state.
+        # This is not a context-only refresh that may reuse a prepared snapshot.
+        self.owner = SimpleNamespace(_closed=False, _preparation_context_only=False,
+            coordinator=SimpleNamespace(closing=False),
             _initialize_timer=Mock(), resources=self.service, session=self.session)
         self.service.resourcesChanged.connect(lambda: QtClient._initialize_resources(self.owner))
 
@@ -65,8 +68,14 @@ class RecoveryLeaseTests(unittest.TestCase):
         if lease is not None:
             self.assertEqual(self.service._lease_id, lease)
         QtClient._initialize_resources(self.owner)
-        self.session.dispatch("start_round")
-        self.assertFalse(self.session.busy)
+        # Exercise the actual Session guard as well as QtClient's early return.
+        # Both commands are advertised by Runtime, so unavailability cannot
+        # accidentally stand in for the resource lease blocking consumption.
+        for action in ("inspect_engine_resources", "start_round"):
+            self.session.dispatch(action)
+            self.assertFalse(self.session.busy)
+        self.session._pool.waitForDone(5000)
+        fixtures.APP.processEvents()
         self.assertEqual(self.dispatches, [])
 
     def request_recovery(self):

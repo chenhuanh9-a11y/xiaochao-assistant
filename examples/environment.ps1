@@ -1,3 +1,4 @@
+# Legacy/offline helper example only. The current Qt client uses an owned --sandbox, not these environment overrides.
 # Example only. Replace this path with your own authorized, version-matched resource root.
 $resourceRoot = Join-Path $PSScriptRoot '..\resources-private'
 $env:IDENTITYV_NIGHTMARE_RESOURCE_ROOT = [IO.Path]::GetFullPath($resourceRoot)

@@ -3,6 +3,7 @@ Free text and sensitive keys are additionally removed at the disk boundary.
 """
 
 FIELDS = frozenset("""
+candidateReuse scanSkipped
 diagnosticRecordTruncated originalSanitizedBytes
 ALT Accent Accept AlternateBase B1 BACKSPACE BadZipFile Base
 BrightText Button ButtonText CAPS CAPSLOCK CONTROL CTRL ConnectionError
@@ -446,7 +447,7 @@ provisionalCoverage provisionalDisplayAuthorized provisionalFloors provisionalMa
 provisional_display_authorized provisional_member_id prune publishedAt published_at published_date pythonThreads qtFingerprintScheme
 qtInstallerInstance qtProcessIntegrity qtScreens qtSourceCommit qualified qualifiedAverageGroupMargin qualifiedCount qualifiedDistinctPositions
 qualifiedObservations quality qualityLevel qualityMargin quark query queryAnchor queryChainCount
-queryChains queryCoverage queryEdge queryEdgeCount queryEdgeGridCells3x3 queryFeatureElapsedMs queryInReferenceScore queryKeypointCount
+markerOccludedProposalChains markerOccludedWallProposal markerOccludedWallObservation measuredSeedCount queryChains queryCoverage queryEdge queryEdgeCount queryEdgeGridCells3x3 queryFeatureElapsedMs queryInReferenceScore queryKeypointCount
 queryKeypoints queryLengths queryLines queryNormal queryPair queryPairs queryPixelRatio queryPixels
 queryPixelsGrowth queryPixelsRequired queryPoint queryPoints queryPointsScaled queryScale querySegments querySpan
 queryTopology queryTurns query_pixels query_shape queued quick quickConnectionText quickDetailsAfterPending
@@ -668,6 +669,8 @@ zhan10CoffinVariantId zhanCanonicalConsensus zoomControl zoom_transform
 """.split())
 
 CODES = frozenset("""
+candidate-material-accepted preferred-current-frame preferred-material-committed
+preferred-material-id-first preferred-fit-unresolved s1-candidate-reselection
 legacy-text-redacted
 a a053cc53feb067edbbbdb510bb7587ccb9acbfc80bea461ceb039444e3e328c6 a30779908582099378b287112585f019534f2e4d1db681b85b52e062e746b715 a336f469e06a9b50d962ea3f9c0f5ebf16e229a4ee12f0a37a76f8b68dcfa7e3 a4e48b71dfa13d4309c77826bf2160785a35eeae99a198fe1ef5d9ba12d4f987 a5a5e67245c812d0229f01b97f999b80abd637483541ac61daa923819ac4756d a6c131ea1aa4a7f355077d8ba63a10db4aeb5434fab85a7fcba1cf645a67f748 a6dd1317a1326484183b7cd7fd1de0878d3d60c5e9479808371cafa2a3ca70db
 a70dc77c27def3eb557d0e1b8b9f46a667c1ec6cc4c248e3e1005794b873a566 a9092d28be69c4488ec0c57b7c7516ba1dcf298a9e72f69c55672b01b2b3cf1f a93a0d79136354b843e5689753f215809c9f6438640869ee88ed926ebea7bbe6 a93af26f3be44cbc7508633482899d9d24df8df842690033d454177742a25007 a9a7285688450154af1a0d6f9248f8c380a79f0203109384068f15736c5052cf aab2d37a131b75cca6113fb6d62883e701535a316107ca26d94ac9b2ef3a36f6 ab ab9ba33c17efc5cda314516780dad9eaaf75b930e78b99114fe963e5d43a10e5
@@ -1215,7 +1218,7 @@ round-layer-group-progressive-seed-rejected round-layer-group-provisional-reuse-
 round-layer-group-transient-floor-render-rejected round-layer-group-transient-floor-swapped round-layer-group-translation-blocked-transient-motion round-layer-group-v2-seed round-layer-group-wall-corrected round-layer-group-wide-search-blocked round-layer-group-window-cache-current-frame-rejected round-layer-group-window-cache-restored
 round-layer-group-zero-geometry-static-sheet-deferred round-layer-group: round-lock-background-fast-verified round-lock-fast-verification-pending round-lock-floor-evidence-pending round-lock-floor-stabilization-exhausted round-lock-frame-stale-hidden round-lock-overlay-fast-verified
 round-lock-overlay-verification-pending round-lock-sheet-fast-verified round-lock-sheet-immediate round-lock-unavailable round-locked-frame round-locked-opening-capture round-map-identity-locked-pose-pending round-map-locked-pose-pending
-round-not-active round-open-floor-auto round-prepared round-reset round-start-cancelled round-start-check round-start-intent-consumed round-start-prepared
+round-not-active round-not-started round-open-floor-auto round-prepared round-reset round-start-cancelled round-start-check round-start-intent-consumed round-start-prepared
 round-started round-verified-floor-transfer round_group_display_reprojection_active round_group_edge_correction_applied_at round_group_edge_correction_generation round_group_edge_correction_pending round_layer_group round_recovery_bar
 round_rejected_transforms round_start_intent round_work_active route route- route-display-reprojected route-display-reprojection-failed: route-family-conflict
 route-graph-unreviewed route-hidden route-image-missing route-mask-empty-or-excessive route-material-unavailable route-notification route-notification-close-failed route-notification-presentation-failed
@@ -1460,3 +1463,112 @@ EXCEPTIONS = EXCEPTIONS | frozenset({'CaptureFallbackUnsupported'})
 # Durable additive cleanup boundary, without arbitrary journal fields.
 CODES = CODES | frozenset({'addition-outcome.json', 'additions-outcome-witness-changed',
     'map-package-additions-outcome-v1'})
+
+# Current opening/attempt diagnostic correlation, never input or display authority.
+FIELDS = FIELDS | frozenset({'season', 'contextKey', 'mapAttempt', 'attemptId', 'openingId',
+    'inputSequence', 'requestGeneration', 'frameCapturedMonotonicAt', 'frameUnavailableReason'})
+CODES = CODES | frozenset({'s0', 's1', 's0:nightmare', 's1:nightmare', 's0:difficult',
+    's1:difficult', 'map-input-accepted'})
+
+CODES = CODES | frozenset({'map-capture', 'map-capture-diagnostic', 'current-frame-observed', 'runtime-memory',
+    'legal-captured-frame-unavailable', 'capture-attempt-unavailable', 'capture-attempt-mismatch',
+    'capture-scope-changed', 'capture-frame-invalid'})
+
+CODES = CODES | frozenset({'detector-control-band-unavailable'})
+
+# Fixed S1 private floor evidence; eligibility never implies real-image validation.
+FIELDS = FIELDS | frozenset({'automaticFloorEligible', 'observedFloorValidated',
+    'validationScope', 'rawSelectedFloor', 'sourceReplayFloors', 'syntheticOnlyFloors'})
+CODES = CODES | frozenset({'s1-floor-context-unsupported', 's1-floor-stale-frame',
+    's1-floor-frame-type', 's1-floor-frame-size', 's1-floor-map-not-open',
+    's1-floor-empty-roi', 's1-floor-signed-labels-incomplete', 's1-floor-column-ambiguous',
+    's1-floor-column-unverified', 's1-floor-observed', 'source-image-replay', 'synthetic-only',
+    'automatic-current-frame', 's1-signed-pixel-column', 'private-test-four-floor-contract', 'B2', 'B3', 'B4',
+    's1-floor-only-manual-map-use', 'manual-map-only'})
+
+# Bounded private experimental structure telemetry; no raw pixels or poses.
+FIELDS = FIELDS | frozenset(['privateCompareMs', 'privateContradictedMapIds', 'privateCoordinateBasis', 'privateCoordinateErrorPx', 'privateCoordinateReason', 'privateCoordinateVerified', 'privateEliminatedMapIds', 'privateExperimental', 'privateExperimentalLocked', 'privateGateMs', 'privateGateReason', 'privateGateStatus', 'privateHypothesisCount', 'privateLockMapId', 'privateObservationCount', 'privateObservationMs', 'privatePoolAfter', 'privatePoolBefore', 'privatePoolMapIds', 'privateResourceDigest', 'privateScaleRange', 'privateTotalMs', 'privateUnknownMapIds'])
+CODES = CODES | frozenset(['-1', '-2', '-3', '-4', '105001', '105002', '105003', '105004', '105005', '105006', '105007', '105008', '105009', '105010', '105011', '105012', '105013', '105014', '105015', '106001', '106002', '106003', '106004', '106005', '106007', '106008', '106009', '106010', '106011', '106012', '106013', '106014', '106015', '107001', '107002', '107003', '107004', '107005', '107006', '107007', '107008', '107009', '107010', '107011', '107012', '107013', '107014', '107015', 'This profile is validated only for 4-pixel coarse spacing', 'ambiguous_distinct_glyphs', 'best_candidate_for_diagnostics_only', 'center_px', 'coordinate-index-axes', 'coordinate-index-schema', 'coordinate-or-catalogue-conflict', 'coordinate-reference-binding-mismatch:', 'coordinate-reference-missing:', 'coordinate-resources-unavailable', 'coordinate-scope-invalid', 'coordinate-work-obsolete', 'current-common-coordinate-ambiguous', 'current-common-coordinate-unresolved', 'current-floor-common-chain-vertices', 'current-structure-insufficient', 'entrance-constrained-current-floor-common-chain-vertices', 'entrance-plus-', 'fine_scans', 'frame_too_small', 'full_frame_coarse_scans', 'glyph-raster', 'glyph_observed', 'gray_pixels_sha256', 'half-resolution-NCC-local-full-resolution-v1', 'insufficient_ambiguity_coverage', 'insufficient_glyph_evidence', 'located', 'native_glyph_template.png', 'near-peak pixel support, not a calibrated probability', 'no_valid_proposals', 'noninteger-native-origin', 'private-contradiction-recovery', 'private-coordinate-unavailable', 'private-coordinate-unknown', 'private-current-fit-unknown', 'private-experimental-locked', 'private-experimental-unlocked', 'private-pool-observed', 'private-pool-updated', 'private-shared-coordinate-fit', 'private-unique-pool-current-material', 'profile_validated_on_limited_static_samples', 'raster_px', 'raster_size_is_map_zoom', 's1-common-entrance-coordinate-index-v1', 'same-coordinate-positive-contradictions-only', 'spatial_proposals', 'subset-unresolved', 'template_manifest.json', 'template_raster_size_px', 'template_sha256', 'template_size_px', 'uncertainty_kind', 'unknown', 'utf-8', 'winner-map-fit'])
+
+FIELDS = FIELDS | frozenset({'privateFrameDigest', 'privateScanMs', 'privateMaterialMs'})
+
+CODES = CODES | frozenset(['-1', '-2', '-3', '-4', 'all-common-chain-seeds', 'coordinate-index-axes', 'coordinate-index-schema', 'coordinate-or-catalogue-conflict', 'coordinate-reference-binding-mismatch:', 'coordinate-reference-missing:', 'coordinate-resources-unavailable', 'coordinate-scope-invalid', 'coordinate-work-obsolete', 'current-common-coordinate-ambiguous', 'current-common-coordinate-budget-exhausted', 'current-common-coordinate-unresolved', 'current-floor-common-chain-vertices', 'current-observation-context-ambiguous', 'current-structure-insufficient', 'entrance-plus-', 'entrance-plus-all-pool-chain-scale-union', 'glyph-raster', 'noninteger-native-origin', 'private-common-pose-unavailable', 's1-common-entrance-coordinate-index-v1', 'same-coordinate-positive-contradictions-only', 'utf-8', 'winner-map-fit'])
+FIELDS = FIELDS | frozenset({"privatePoseDomainNarrow"})
+
+# First-paint/background private evidence stages, fixed origin attribution.
+FIELDS = FIELDS | frozenset({"privateStage", "privateStageState", "openingId", "snapshotPoolRevision", "currentPoolRevision", "privateResourceMs"})
+CODES = CODES | frozenset({"private-stage", "private-evidence-discarded", "private-owner-or-revision-changed", "first-material-committed", "first-current-frame", "gate-work-obsolete", "queue", "prepare", "gate", "extract", "resources", "compare", "prepare-error", "started", "finished", "cancelled", "failed"})
+
+# Fixed candidate-probe lifecycle vocabulary, no raw exception text.
+CODES = CODES | frozenset({"observe_candidate_floor", "candidate-probe-not-current",
+    "candidate-map-closed", "candidate-floor-current", "candidate-floor-unavailable",
+    "candidate-floor-changed", "candidate-floor-probe-failed",
+    "no-current-supported-candidates", "stream-final-rejected"})
+
+# Scoped private conflict transitions; IDs/revisions contain no image data.
+FIELDS = FIELDS | frozenset({"privatePoolId", "privatePoolRevision", "privateRecoveryRevision",
+    "privateRecoveryPending", "privatePreviousLockMapId"})
+
+# Bounded current-frame S1 scan failure, not identity-negative evidence.
+FIELDS = FIELDS | frozenset({"structureScanFailure", "scanComplete", "checkedCount",
+    "supportedCount", "unscannedCount", "outcomes", "reasonCounts",
+    "omittedOutcomeCount", "omittedReasonCount"})
+CODES = CODES | frozenset({"s1-scan-no-material", "s1-no-current-material",
+    "s1-pose-not-verified", "budget-unresolved", "candidate-pose-unavailable"})
+
+FIELDS = FIELDS | frozenset({"remainingCount", "contradictedCount", "unknownCount"})
+CODES = CODES | frozenset({"s1-round-evidence"})
+FIELDS = FIELDS | frozenset({"plannedCount", "plannedMapIds", "posePriorAvailable",
+    "sourceFloor", "targetFloor", "posePriorOutcomes", "candidateChecks",
+    "unavoidableMissCount", "unavoidableSpanPx", "explicitContradiction"})
+CODES = CODES | frozenset({"s1-scan-plan", "s1-scan-result", "pose-prior-source-unavailable",
+    "pose-prior-unavailable", "pose-prior-scope-rejected", "pose-prior-bound"})
+
+# Current-frame localization geometry and fixed failure vocabulary, no pixels.
+FIELDS = FIELDS | frozenset({"controlSearchBounds", "controlSearchRegion",
+    "controlLocalScale", "localization"})
+CODES = CODES | frozenset({"s1-floor-localization-budget",
+    "s1-floor-localization-ui-unverified", "signed-column-position-scale"})
+
+# Current-frame S0 bright-control and independent map-UI evidence, never pixels.
+FIELDS = FIELDS | frozenset({"controlExposure", "controlBackground",
+    "independentAnchorRatios", "independentBackdropRatio", "independentFloorExclusion",
+    "mapUiGeometry", "shapes", "close", "plus", "minus", "contrasts", "rail", "startY", "endY"})
+CODES = CODES | frozenset({"s0-signed-controls-ui-geometry", "s1-map-ui-shape-group"})
+
+# Typed local fit evidence. No arbitrary diagnostics, exception text or pixels.
+FIELDS = FIELDS | frozenset({'fitEvidence', 'observations', 'priorAttempts', 'fastAttempts',
+    'proposalMatrix', 'pointMatrix', 'wallMatrix', 'regionalMatrix', 'residualMatrix',
+    'statistics', 'rejection', 'regionMetrics', 'resourceBinding', 'priorBinding', 'priorReason',
+    'searchKind', 'frameShapeHW', 'cropOriginClientXY', 'cropShapeHW', 'sampleScaleXY',
+    'referenceShapeHW', 'referenceMetadataSha256', 'indexSha256', 'ownerScopeDigest',
+    'queryPixelCount', 'observedEdgePixels', 'nodeCount', 'lineCount', 'pointRejectionCount', 'omittedObservationCount',
+    'omittedPriorCount', 'omittedFastCount', 'omittedCandidateCount', 'omittedRegionCount',
+    'omittedEvidenceCount'})
+CODES = CODES | frozenset({'local-prior', 'global-search', 'fast-prepared-unavailable',
+    'preferred-fit-unresolved', 'fast-existing-validation-rejected', 'fast-attempt-unavailable',
+    'shared-fast-alignment', 'shared-established-group-recovery', 'shared-registered-floor-recovery',
+    'verified-entry-current-frame', 'shared-initial-structure'})
+
+# Own-process performance counters and bounded startup codes only.
+FIELDS = FIELDS | frozenset({'performance', 'workingSetBytes', 'threadCount', 'handleCount',
+    'sampleIntervalMs', 'retainedSampleLimit', 'maxima', 'startupMilestones', 'startupOrigin',
+    'frameEndpoint', 'gpuMeasured', 'childProcessesMeasured'})
+CODES = CODES | frozenset({'own-process-only', 'not-sampled', 'sample-unavailable',
+    'python-runtime-hook', 'python-module-import', 'frame-submitted-not-visible-pixels', 'runtime-entry',
+    'validate-profile', 'import-client', 'instance-check', 'resource-check', 'create-services',
+    'create-windows', 'main-constructed', 'main-frame-submitted', 'context-ready', 'context-unavailable'})
+
+# Explicit local G evidence test: bounded admission and final persistence results.
+FIELDS = FIELDS | frozenset({'gCycleEvidence', 'evidencePhase', 'caseId', 'diagnosticId', 'outcome'})
+CODES = CODES | frozenset({'g-cycle-evidence', 'admission', 'completion', 'queued',
+    'saved-missing-input', 'queue-full', 'queue-byte-limit', 'invalid-roi', 'invalid-metadata',
+    'roi-byte-limit', 'case-byte-limit', 'storage-unowned', 'storage-inventory-invalid',
+    'storage-ownership-changed', 'storage-byte-limit', 'retirement-unsupported',
+    'storage-error', 'observer-error', 'not-started', 'no-algorithm-roi',
+    'cancelled-or-no-current-capture', 'capture-unavailable'})
+
+# Bounded exposure used for current-frame independent map color evidence.
+FIELDS = FIELDS | frozenset({"mapControlExposure"})
+
+CODES = CODES | frozenset({"locked-map-resource-unavailable"})

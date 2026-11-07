@@ -113,6 +113,25 @@ class RecognitionTests(unittest.TestCase):
         QTest.mouseClick(self.window, Qt.LeftButton, Qt.NoModifier, QPoint(round(point.x()), round(point.y())))
         APP.processEvents()
 
+    def test_structure_candidate_click_carries_current_identity_context(self):
+        row = self.session.state["candidateRows"][1]
+        row.update(selectionSeason="s1", structureSupported=True, structureFrameId="round:frame", structureGeneration=17, structureRoundId=8)
+        self.session.changed.emit()
+        APP.processEvents()
+        self.click("recognitionCandidate_1")
+        self.assertEqual(self.session.calls[-1], ("select_candidate", dict(index=1, candidateMapId="map-b",
+            mapId="map-b", structureFrameId="round:frame", structureGeneration=17, structureRoundId=8)))
+        self.assertFalse(self.session.state["identityLocked"])
+        self.assertFalse(self.warnings)
+
+    def test_unsupported_s1_manual_row_keeps_map_identity_not_old_index_only(self):
+        row = self.session.state["candidateRows"][1]
+        row.update(selectionSeason="s1", structureSupported=False)
+        self.session.changed.emit()
+        APP.processEvents()
+        self.click("recognitionCandidate_1")
+        self.assertEqual(self.session.calls[-1], ("select_candidate", dict(index=1, candidateMapId="map-b")))
+
     def test_candidate_select_previous_next_confirm_reselect_and_floor_flow(self):
         self.assertEqual(self.item("recognitionCandidateList").property("count"), 2)
         self.click("recognitionCandidate_1")

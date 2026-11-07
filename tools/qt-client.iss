@@ -1,4 +1,4 @@
-; Allowlisted Qt installer profiles; build never installs or launches a product.
+﻿; Allowlisted Qt installer profiles; build never installs or launches a product.
 #ifndef StageDir
   #error StageDir is required
 #endif
@@ -30,10 +30,70 @@
 #ifndef InstallerExeName
   #define InstallerExeName "XingtuQtClientTest.exe"
 #endif
+; Compiler defines select only these source-owned identities, never arbitrary IDs.
 #ifdef ProductionInstaller
+  #if InstallerAppId != "{{D04394A0-DACE-4FF9-874D-3DCB43EE53D1}" || InstallerAppName != "星图" || InstallerFolder != "XiaochaoAssistant" || InstallerGroup != "星图" || InstallerExeName != "星图.exe"
+    #error Invalid production installer identity
+  #endif
   #define InstallerModelId "Xingtu.Assistant"
 #else
-  #define InstallerModelId "Xingtu.QtClientTest"
+  #if InstallerExeName != "XingtuQtClientTest.exe"
+    #error Invalid private executable identity
+  #endif
+  #if InstallerAppId == "{{AF19AFD9-3016-44C9-9D20-6F216C5D8C51}"
+    #if InstallerAppName != "Xingtu Qt Test Client" || InstallerFolder != "XingtuQtClientTest" || InstallerGroup != "Xingtu Qt Test Client"
+      #error Invalid client installer identity
+    #endif
+  #elif InstallerAppId == "{{D4B8E562-EA62-4A43-AF1D-043A5646971E}"
+    #if InstallerAppName != "Xingtu Qt Layout Preview" || InstallerFolder != "XingtuQtLayoutPreview" || InstallerGroup != "Xingtu Qt Layout Preview"
+      #error Invalid preview installer identity
+    #endif
+  #elif InstallerAppId == "{{907F912D-58FD-4F84-A7A4-0C816AA70E52}"
+    #if InstallerAppName != "Xingtu S0 S1 Private Test" || InstallerFolder != "XingtuS0S1PrivateTest" || InstallerGroup != "Xingtu S0 S1 Private Test"
+      #error Invalid S0 S1 installer identity
+    #endif
+    #define S0S1PrivateInstaller 1
+    #define PrivateS1Installer 1
+  #elif InstallerAppId == "{{3C271F5D-71FF-4EA8-9569-B8DAC30F3773}"
+    #if InstallerAppName != "Xingtu S1 Floor Private Test" || InstallerFolder != "XingtuS1FloorPrivateTest" || InstallerGroup != "Xingtu S1 Floor Private Test"
+      #error Invalid S1 floor installer identity
+    #endif
+    #define S1FloorPrivateInstaller 1
+    #define PrivateS1Installer 1
+  #elif InstallerAppId == "{{ED53B6E8-E9A0-4F21-AF75-7C8A62BE7347}"
+    #if InstallerAppName != "Xingtu S1 Auto Private Test" || InstallerFolder != "XingtuS1AutoPrivateTest" || InstallerGroup != "Xingtu S1 Auto Private Test"
+      #error Invalid S1 auto installer identity
+    #endif
+    #define S1AutoPrivateInstaller 1
+    #define PrivateS1Installer 1
+  #elif InstallerAppId == "{{D9FE6D76-C31A-47AF-9281-B4614C245E92}"
+    #if InstallerAppName != "Xingtu S1 Playtest" || InstallerFolder != "XingtuS1Playtest" || InstallerGroup != "Xingtu S1 Playtest"
+      #error Invalid S1 playtest installer identity
+    #endif
+    #define S1PlaytestInstaller 1
+    #define PrivateS1Installer 1
+  #elif InstallerAppId == "{{7A2F6C81-9B54-4DB6-A308-6E452D91F0BC}"
+    #if InstallerAppName != "Xingtu Feature Test" || InstallerFolder != "XingtuFeatureTest" || InstallerGroup != "Xingtu Feature Test"
+      #error Invalid feature test installer identity
+    #endif
+    #define FeatureTestInstaller 1
+    #define PrivateS1Installer 1
+  #else
+    #error Unknown private installer identity
+  #endif
+  #ifdef S0S1PrivateInstaller
+    #define InstallerModelId "Xingtu.S0S1PrivateTest"
+  #elif defined(FeatureTestInstaller)
+    #define InstallerModelId "Xingtu.FeatureTest"
+  #elif defined(S1PlaytestInstaller)
+    #define InstallerModelId "Xingtu.S1Playtest"
+  #elif defined(S1AutoPrivateInstaller)
+    #define InstallerModelId "Xingtu.S1AutoPrivateTest"
+  #elif defined(S1FloorPrivateInstaller)
+    #define InstallerModelId "Xingtu.S1FloorPrivateTest"
+  #else
+    #define InstallerModelId "Xingtu.QtClientTest"
+  #endif
 #endif
 
 [Setup]
@@ -92,6 +152,8 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 
 [Files]
 #ifdef ProductionInstaller
+Source: "{#ResetHelperInventory}"; DestName: "reset-helper-inventory.txt"; Flags: dontcopy
+Source: "{#ResetProgramInventory}"; DestName: "reset-program-inventory.json"; Flags: dontcopy
   #ifndef ProductionFilesInclude
     #error ProductionFilesInclude is required for the exact production projection
   #endif
@@ -104,7 +166,7 @@ Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs c
 Name: "{group}\{#InstallerAppName}"; Filename: "{app}\{#InstallerExeName}"; WorkingDir: "{app}"; AppUserModelID: "{#InstallerModelId}"
 
 #ifdef ProductionInstaller
-Name: "{group}\卸载星图（保留个人资料）"; Filename: "{uninstallexe}"
+Name: "{group}\卸载星图"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#InstallerAppName}"; Filename: "{app}\{#InstallerExeName}"; WorkingDir: "{app}"; AppUserModelID: "{#InstallerModelId}"; Check: CreateDesktopShortcut
 #endif
 
@@ -113,7 +175,7 @@ Name: "{autodesktop}\{#InstallerAppName}"; Filename: "{app}\{#InstallerExeName}"
 ; a busy installed EXE; test instances keep their separate runtime work trees.
 
 #ifdef ProductionInstaller
-; Original per-user installer upgrade/rollback and resource preservation contract.
+; Original per-user installer identity and resource preservation contract.
 ; Reused from 1.0.5 / 64710EF6 effective-installer.iss; no [Run] action copied.
 [Code]
 (* Program ownership is a relative filename list, never a recursive deletion rule.
@@ -122,7 +184,7 @@ const
   OwnershipName = '_installer-owned-files.txt';
   UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{D04394A0-DACE-4FF9-874D-3DCB43EE53D1}_is1';
 var
-  UpgradeFiles, UpgradeExisting: TStringList;
+  UpgradeFiles, UpgradeExisting, UpgradeRetired: TStringList;
   UpgradeBackup: String;
   UpgradeStarted, UpgradeCommitted: Boolean;
   ResourcePlanReady, InstallEditorBase: Boolean;
@@ -137,6 +199,7 @@ function CloseHandle(hObject: THandle): Boolean;
   external 'CloseHandle@kernel32.dll stdcall';
 function InstallerFileAttributes(lpFileName: String): LongWord;
   external 'GetFileAttributesW@kernel32.dll stdcall';
+#include "qt-game-watcher-lifecycle.iss"
 function OwnedAssistantShortcut(const Path: String): Boolean;
 var
   Shell, Link: Variant;
@@ -162,7 +225,8 @@ begin
 end;
 procedure RetireLegacyShortcuts;
 var
-  OldDesktop, OldMenu: String;
+  OldDesktop, OldMenu, OldUninstall: String;
+  Shell, Link: Variant;
 begin
   { New [Icons] entries belong to native Setup rollback/uninstall. Retire exact
     old links only after commit, and only if their targets name this install. }
@@ -174,6 +238,19 @@ begin
   if OwnedAssistantShortcut(ExpandConstant('{group}\{#InstallerAppName}.lnk')) and
     OwnedAssistantShortcut(OldMenu) then
     if not DeleteFile(OldMenu) then Log('LEGACY_SHORTCUT_RETAINED ' + OldMenu);
+  { The new wizard offers keep/clear, so retire only our old keep-only caption.
+    Do not delete a renamed user shortcut or one pointing at another product. }
+  OldUninstall := ExpandConstant('{group}\卸载星图（保留个人资料）.lnk');
+  if FileExists(ExpandConstant('{group}\卸载星图.lnk')) and FileExists(OldUninstall) then begin
+    try
+      Shell := CreateOleObject('WScript.Shell');
+      Link := Shell.CreateShortcut(OldUninstall);
+      if CompareText(String(Link.TargetPath), ExpandConstant('{uninstallexe}')) = 0 then
+        if not DeleteFile(OldUninstall) then Log('LEGACY_SHORTCUT_RETAINED ' + OldUninstall);
+    except
+      Log('LEGACY_SHORTCUT_NOT_VERIFIABLE ' + OldUninstall);
+    end;
+  end;
 end;
 function UpgradePathAllowed: Boolean;
 var
@@ -312,6 +389,7 @@ begin
   OldFiles := TStringList.Create;
   UpgradeFiles := TStringList.Create;
   UpgradeExisting := TStringList.Create;
+  UpgradeRetired := TStringList.Create;
   try
     ExtractTemporaryFile(OwnershipName);
     NewFiles.LoadFromFile(ExpandConstant('{tmp}\') + OwnershipName);
@@ -322,11 +400,13 @@ begin
       OldFiles.LoadFromFile(ExpandConstant('{app}\') + OwnershipName);
       for I := 0 to OldFiles.Count - 1 do begin
         if not SafeProgramPath(OldFiles[I]) then
-          RaiseException('旧安装文件清单无效；未开始替换。');
+          RaiseException('旧安装文件清单无效；未开始程序替换。');
         if RetirableProgramFile(OldFiles[I]) then AddUpgradePath(OldFiles[I]);
       end;
     end;
-    { Native rollback owns registry/shortcuts. Preserve the prior uninstall log too. }
+    { Legacy 000 copies are supplementary recovery evidence only. Native
+      completion verification records the actual selected uninstaller index;
+      no automatic native rollback is inferred from these copies. }
     AddUpgradePath('unins000.exe');
     AddUpgradePath('unins000.dat');
     AddUpgradePath('unins000.msg');
@@ -339,7 +419,7 @@ begin
     if not ForceDirectories(UpgradeBackup + '\files') then RaiseException('无法创建安装备份。');
     Source := ExpandConstant('{app}\work\nightmare-memory\ui-settings.json');
     if FileExists(Source) and not FileCopy(Source, UpgradeBackup + '\ui-settings.json', True) then
-      RaiseException('无法备份原设置，未开始替换。');
+      RaiseException('无法保留设置副本，尚未开始程序安装。');
     for I := 0 to UpgradeFiles.Count - 1 do begin
       Relative := UpgradeFiles[I];
       Source := ExpandConstant('{app}\') + Relative;
@@ -347,7 +427,7 @@ begin
         Destination := UpgradeBackup + '\files\' + IntToStr(UpgradeExisting.Count);
         if not ForceDirectories(ExtractFileDir(Destination)) or
           not FileCopy(Source, Destination, True) then
-          RaiseException('无法备份旧文件，未开始替换：' + Relative);
+          RaiseException('无法保留旧程序恢复副本，尚未替换程序；请按提示核对资源准备的恢复：' + Relative);
         UpgradeExisting.Add(Relative);
       end;
     end;
@@ -358,10 +438,9 @@ begin
     for I := 0 to OldFiles.Count - 1 do begin
       Relative := OldFiles[I];
       if RetirableProgramFile(Relative) and (NewFiles.IndexOf(Relative) < 0) then begin
-        Source := ExpandConstant('{app}\') + Relative;
-        if FileExists(Source) and not DeleteFile(Source) then
-          RaiseException('旧程序文件无法移除：' + Relative);
-        Log('UPGRADE_RETIRED ' + Relative);
+        { Preparation is copy-only. No program mutation before a durable
+          native-in-progress coordinator receipt exists. }
+        UpgradeRetired.Add(Relative);
       end;
     end;
   finally
@@ -369,162 +448,116 @@ begin
     OldFiles.Free;
   end;
 end;
+procedure RetireOldProgramFiles;
+var I: Integer; Relative, Source: String;
+begin
+  for I := 0 to UpgradeRetired.Count - 1 do begin
+    Relative := UpgradeRetired[I];
+    Source := ExpandConstant('{app}\') + Relative;
+    if FileExists(Source) and not DeleteFile(Source) then
+      RaiseException('旧程序文件无法移除：' + Relative);
+    Log('UPGRADE_RETIRED ' + Relative);
+  end;
+end;
+#include "qt-resource-reset.iss"
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  WatcherReason: String;
 begin
   if CurStep = ssInstall then begin
     if not AcquireResourceLock then
       RaiseException('地图资源正被助手、导入或恢复任务使用，请关闭任务后重试。');
+    { Recheck at the final mutation boundary; never replace a live watcher. }
+    if not DisableGameWatcher(WatcherReason) then RaiseException(WatcherReason);
     { Re-evaluate once at the installation boundary, before any actual copy. }
     ResourcePlanReady := False;
     DetermineResourcePlanes;
     Log('RESOURCE_BASE_CANDIDATE_STAGED_VERIFY_AND_REPAIR_BEFORE_RUNTIME');
     if InstallEditorBase then Log('RESOURCE_EDITOR_SEED_COMPLETE_FAMILY')
     else Log('RESOURCE_EDITOR_PRESERVE_EXISTING_FAMILY');
+    if not PrepareResourceReset(WatcherReason) then RaiseException(WatcherReason);
     BeginUpgrade;
+    { From this boundary Inno may replace registration/shortcuts before it
+      reaches ssPostInstall. Its rollback does not restore their old values.
+      Treat native recovery as unknown until the combined durable commit. }
+    if not StartNativeResourceReset(WatcherReason) then RaiseException(WatcherReason);
+    ResourceResetNativeMetadataNeedsRepair := ResourceResetStarted;
+    RetireOldProgramFiles;
   end;
   if CurStep = ssPostInstall then begin
-    UpgradeCommitted := True;
-    RetireLegacyShortcuts;
-    Log('UPGRADE_COMMITTED');
+    { Native file installation finished. Commit resources before claiming the
+      combined upgrade; exact installed EXE/report hashes are also checked. }
+    ResourceResetNativeCompleted := ResourceResetStarted;
+    if not CompleteNativeResourceReset(WatcherReason) or
+      not CommitResourceReset(WatcherReason) then begin
+      { Inno catches ssPostInstall exceptions and native metadata is already
+        committed. Do not use RaiseException as a fictitious rollback signal. }
+      ResourceResetFailureCode := 64;
+      ResourceResetNativeMetadataNeedsRepair := not ResourceResetFinalized;
+      Log('UPGRADE_RESOURCE_RECOVERY_REQUIRED ' + WatcherReason);
+    end;
+    UpgradeCommitted := not ResourceResetStarted or ResourceResetCommitted;
+    if not ResourceResetStarted or ResourceResetFinalized then begin
+      RetireLegacyShortcuts;
+      Log('UPGRADE_COMMITTED');
+    end;
+    { Restore only the exact opt-in captured from this installation. A failed
+      restore is retried/reported during deinitialization, not a false rollback. }
+    if not ResourceResetStarted or ResourceResetFinalized then
+      if not RestoreGameWatcher(WatcherReason) then Log(WatcherReason);
   end;
 end;
 procedure DeinitializeSetup;
 var
-  I: Integer;
-  Source, Destination: String;
-  Restored: Boolean;
+  WatcherReason: String;
+  SafeToRestore: Boolean;
 begin
-  if UpgradeStarted and not UpgradeCommitted then begin
-    Restored := True;
-    for I := 0 to UpgradeFiles.Count - 1 do begin
-      Destination := ExpandConstant('{app}\') + UpgradeFiles[I];
-      if UpgradeExisting.IndexOf(UpgradeFiles[I]) >= 0 then begin
-        Source := UpgradeBackup + '\files\' + IntToStr(UpgradeExisting.IndexOf(UpgradeFiles[I]));
-        if not FileExists(Destination) or
-          (GetSHA256OfFile(Source) <> GetSHA256OfFile(Destination)) then begin
-          if not ForceDirectories(ExtractFileDir(Destination)) or
-            not FileCopy(Source, Destination, False) then Restored := False;
-        end;
-      end else if FileExists(Destination) then
-        if not DeleteFile(Destination) then Restored := False;
+  SafeToRestore := not ResourceResetStarted;
+  if ResourceResetStarted then begin
+    { Never restore program files after native installation may have begun.
+      Windows metadata is not rolled back by copying old executable bytes. }
+    if ResolveResourceResetCommit(WatcherReason) then begin
+      if ResourceResetFinalized then begin
+        UpgradeCommitted := True;
+        SafeToRestore := True;
+      end else if not ResourceResetNativeStarted and not ResourceResetNativeCompleted then
+        SafeToRestore := RollbackResourceReset(WatcherReason);
     end;
-    if Restored then Log('UPGRADE_ROLLBACK_RESTORED')
-    else begin
-      Log('UPGRADE_ROLLBACK_INCOMPLETE ' + UpgradeBackup);
-      SuppressibleMsgBox('安装未完成，部分旧文件无法自动恢复。请保留并交回此备份目录：' +
-        UpgradeBackup, mbError, MB_OK, IDOK);
+    if not SafeToRestore then begin
+      ResourceResetFailureCode := 64;
+      SuppressibleMsgBox('升级尚未安全完成，程序不会自动启用。原生安装可能已修改 Windows 安装登记或快捷方式；本次不会把旧程序或旧资源单独覆盖回去。' + #13#10 +
+        '请保留 work/installer-upgrades、work/installer-backups 和 work/resource-upgrades。重新运行安装包可核验已完整保存的完成凭据；凭据缺失或状态变化时会停止并要求修复。' + #13#10 + WatcherReason,
+        mbError, MB_OK, IDOK);
     end;
   end;
-  { Backups intentionally remain under work for recovery/audit, including success. }
+  if SafeToRestore then begin
+    if not RestoreGameWatcher(WatcherReason) then
+      SuppressibleMsgBox(WatcherReason, mbError, MB_OK, IDOK);
+  end else if GameWatcherRestorePending then
+    SuppressibleMsgBox('安装状态尚未核实，游戏启动绑定保持关闭。请先完成安装恢复，再核对设置。',
+      mbError, MB_OK, IDOK);
+  { Backups and append-only recovery evidence intentionally survive exit. }
   if UpgradeFiles <> nil then UpgradeFiles.Free;
   if UpgradeExisting <> nil then UpgradeExisting.Free;
+  if UpgradeRetired <> nil then UpgradeRetired.Free;
   ReleaseResourceLock;
 end;
-{ Old uninstall logs own bundled maps too. Back them up before allowing uninstall,
-  then restore their original paths after native program removal. Never migrate schemas. }
-var
-  ResourceBackup: String;
-  ResourceFiles: TStringList;
-  ResourceBackupReady, ResourceRestored, ResourceUninstallStarted: Boolean;
-function PreserveResource(const Relative: String): Boolean;
-var
-  Ext, Path: String;
+procedure CurPageChanged(CurPageID: Integer);
 begin
-  Path := Lowercase(Relative);
-  Ext := Lowercase(ExtractFileExt(Relative));
-  Result := (Pos('_internal\assets\', Path) = 1) or
-    (Pos('_internal\references\', Path) = 1) or
-    (Ext = '.json') or (Ext = '.jsonl') or (Ext = '.png') or
-    (Ext = '.jpg') or (Ext = '.jpeg') or (Ext = '.webp') or
-    (Ext = '.bmp') or (Ext = '.npz') or (Ext = '.npy') or (Ext = '.idvm');
-end;
-function BackupResourceDirectory(const RelativeDirectory: String): Boolean;
-var
-  FindRec: TFindRec;
-  Relative, Source, Destination: String;
-begin
-  Result := True;
-  if FindFirst(ExpandConstant('{app}\') + RelativeDirectory + '\*', FindRec) then begin
-    try
-      repeat
-        if (FindRec.Name <> '.') and (FindRec.Name <> '..') then begin
-          Relative := RelativeDirectory + '\' + FindRec.Name;
-          if not SafeProgramPath(Relative) then begin
-            Log('UNINSTALL_RESOURCE_PATH_REJECTED ' + Relative);
-            Result := False; Exit;
-          end;
-          if (FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then begin
-            if not BackupResourceDirectory(Relative) then begin Result := False; Exit; end;
-          end else if PreserveResource(Relative) then begin
-            Source := ExpandConstant('{app}\') + Relative;
-            Destination := ResourceBackup + '\files\' + IntToStr(ResourceFiles.Count);
-            if not ForceDirectories(ExtractFileDir(Destination)) or
-              not FileCopy(Source, Destination, True) then begin
-              Log('UNINSTALL_RESOURCE_BACKUP_FAILED ' + Relative);
-              Result := False; Exit;
-            end;
-            ResourceFiles.Add(Relative);
-          end;
-        end;
-      until not FindNext(FindRec);
-    finally
-      FindClose(FindRec);
-    end;
+  if (CurPageID = wpFinished) and ResourceResetStarted and not ResourceResetFinalized then begin
+    if ResourceResetNativeCompleted then
+      WizardForm.FinishedLabel.Caption := 'Windows 安装步骤已完成，但整体升级尚未核验提交，暂不能启动星图。'
+    else
+      WizardForm.FinishedLabel.Caption := '升级中断，原生安装结果尚未核实，暂不能启动星图。';
+    WizardForm.FinishedLabel.Caption := WizardForm.FinishedLabel.Caption + #13#10 +
+      '不会自动回退旧程序或单独回退资源。请保留恢复记录；重新运行安装包只能在完成凭据完整且仍匹配时继续完成升级。';
   end;
 end;
-function BackupUninstallResources: Boolean;
+function GetCustomSetupExitCode: Integer;
 begin
-  Result := False;
-  ResourceFiles := TStringList.Create;
-  ResourceBackup := ExpandConstant('{app}\work\installer-backups\uninstall-') +
-    GetDateTimeString('yyyymmdd-hhnnss-zzz', '-', ':');
-  if not NoLinkedAncestors(ResourceBackup) then Exit;
-  if DirExists(ResourceBackup) then Exit;
-  if not ForceDirectories(ResourceBackup + '\files') then Exit;
-  if not BackupResourceDirectory('_internal') then begin
-    SuppressibleMsgBox('无法备份地图资源，卸载已停止；原资料未移除。请检查文件占用和目录权限。', mbError, MB_OK, IDOK);
-    Exit;
-  end;
-  ResourceFiles.SaveToFile(ResourceBackup + '\resources.txt');
-  ResourceBackupReady := True;
-  Log('UNINSTALL_RESOURCES_BACKED_UP ' + IntToStr(ResourceFiles.Count) + ' ' + ResourceBackup);
-  Result := True;
-end;
-procedure RestoreUninstallResources;
-var
-  I: Integer;
-  Source, Destination: String;
-  Success: Boolean;
-begin
-  if not ResourceBackupReady or not ResourceUninstallStarted or ResourceRestored then Exit;
-  Success := True;
-  for I := 0 to ResourceFiles.Count - 1 do begin
-    Source := ResourceBackup + '\files\' + IntToStr(I);
-    Destination := ExpandConstant('{app}\') + ResourceFiles[I];
-    if not FileExists(Destination) or
-      (GetSHA256OfFile(Source) <> GetSHA256OfFile(Destination)) then begin
-      if not ForceDirectories(ExtractFileDir(Destination)) or
-        not FileCopy(Source, Destination, False) then Success := False;
-    end;
-  end;
-  ResourceRestored := Success;
-  if Success then Log('UNINSTALL_RESOURCES_RESTORED ' + IntToStr(ResourceFiles.Count))
-  else begin
-    Log('UNINSTALL_RESOURCE_RESTORE_INCOMPLETE ' + ResourceBackup);
-    SuppressibleMsgBox('地图原始文件仍保存在以下目录，部分文件无法恢复原位：' +
-      ResourceBackup, mbError, MB_OK, IDOK);
-  end;
-end;
-procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
-begin
-  if CurUninstallStep = usUninstall then ResourceUninstallStarted := True;
-  if CurUninstallStep = usPostUninstall then RestoreUninstallResources;
-end;
-procedure DeinitializeUninstall;
-begin
-  RestoreUninstallResources;
-  if ResourceFiles <> nil then ResourceFiles.Free;
-  ReleaseResourceLock;
+  { Inno queries this BEFORE DeinitializeSetup. Keep a conservative nonzero
+    outcome even if the last deinitialization retry later finalizes safely. }
+  Result := ResourceResetFailureCode;
 end;
 function ExecutableAvailable(const FileName: String): Boolean;
 var
@@ -542,9 +575,16 @@ begin
   Result := ExecutableAvailable(ExpandConstant('{app}\第五人格小抄助手.exe'));
   if Result then Result := ExecutableAvailable(ExpandConstant('{app}\{#InstallerExeName}'));
 end;
+#include "qt-uninstall-data.iss"
 function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  WatcherReason, RestoreReason: String;
 begin
   Result := '';
+  if DirExists(UninstallHoldingDirectory) or FileExists(UninstallHoldingDirectory) then begin
+    Result := '上次卸载的资料尚未恢复，请先核对保留目录：' + UninstallHoldingDirectory;
+    Exit;
+  end;
   DetermineResourcePlanes;
   if not UpgradePathAllowed then begin
     Result := '已检测到安装版。覆盖安装必须使用原安装目录，以保留原设置和地图。';
@@ -554,16 +594,21 @@ begin
     Result := '星图正在运行，或安装目录不可写。请自行退出助手后重试；安装程序不会结束您的程序。';
     Exit;
   end;
-  if not AcquireResourceLock then
+  if not AcquireResourceLock then begin
     Result := '地图资源正被助手、导入或恢复任务使用，请关闭任务后重试。';
-end;
-function InitializeUninstall: Boolean;
-begin
-  Result := InstalledExecutableAvailable and AcquireResourceLock;
-  if not Result then
-    SuppressibleMsgBox('星图正在运行，或安装目录不可写。请自行退出助手后再卸载。个人设置、日志与截图将保留。', mbError, MB_OK, IDOK)
-  else
-    Result := BackupUninstallResources;
+    Exit;
+  end;
+  { The final app directory is now validated. A failed stop may already have
+    removed Run, so restore the prior explicit opt-in before offering retry. }
+  if FileExists(ExpandConstant('{app}\work\pending-installer-upgrade.json')) then begin
+    if not ReviewResourceReset(WatcherReason) then Result := WatcherReason;
+    if (Result = '') and not DisableGameWatcher(WatcherReason) then Result := WatcherReason;
+  end else if not DisableGameWatcher(WatcherReason) then Result := WatcherReason
+  else if not ReviewResourceReset(WatcherReason) then Result := WatcherReason;
+  if (Result <> '') and not FileExists(ExpandConstant('{app}\work\pending-installer-upgrade.json')) then begin
+    if not RestoreGameWatcher(RestoreReason) then
+      Result := Result + #13#10 + RestoreReason;
+  end;
 end;
 
 
@@ -585,7 +630,7 @@ begin
   Result := False;
   if RegQueryStringValue(RootKey, ProductionUninstallKey, 'InstallLocation', Previous) and
     (Previous <> '') then
-    Result := CompareText(NormalizedDirectory(Previous), Target) = 0;
+    Result := Pos(Lowercase(NormalizedDirectory(Previous) + '\'), Lowercase(Target + '\')) = 1;
 end;
 function RegisteredPrivateDirectory(Target: String): Boolean;
 var
@@ -600,6 +645,53 @@ begin
     (Previous <> '') then
     Result := CompareText(NormalizedDirectory(Previous), Target) = 0;
 end;
+#ifdef PrivateS1Installer
+function RegisteredOldPrivateDirectory(RootKey: Integer; Target: String): Boolean;
+var
+  Previous: String;
+begin
+  Result := False;
+  if RegQueryStringValue(RootKey,
+    'Software\Microsoft\Windows\CurrentVersion\Uninstall\{AF19AFD9-3016-44C9-9D20-6F216C5D8C51}_is1',
+    'InstallLocation', Previous) and (Previous <> '') then
+    Result := Pos(Lowercase(NormalizedDirectory(Previous) + '\'), Lowercase(Target + '\')) = 1;
+  if Result then Exit;
+  if RegQueryStringValue(RootKey,
+    'Software\Microsoft\Windows\CurrentVersion\Uninstall\{D4B8E562-EA62-4A43-AF1D-043A5646971E}_is1',
+    'InstallLocation', Previous) and (Previous <> '') then
+    Result := Pos(Lowercase(NormalizedDirectory(Previous) + '\'), Lowercase(Target + '\')) = 1;
+  #if defined(S1FloorPrivateInstaller) || defined(S1AutoPrivateInstaller) || defined(S1PlaytestInstaller) || defined(FeatureTestInstaller)
+  { Protect the previous private channel's custom registration too. This block
+    must not compile into that older channel's own legitimate upgrade path. }
+  if Result then Exit;
+  if RegQueryStringValue(RootKey,
+    'Software\Microsoft\Windows\CurrentVersion\Uninstall\{907F912D-58FD-4F84-A7A4-0C816AA70E52}_is1',
+    'InstallLocation', Previous) and (Previous <> '') then
+    Result := Pos(Lowercase(NormalizedDirectory(Previous) + '\'), Lowercase(Target + '\')) = 1;
+  #endif
+  #if defined(S1AutoPrivateInstaller) || defined(S1PlaytestInstaller) || defined(FeatureTestInstaller)
+  if Result then Exit;
+  if RegQueryStringValue(RootKey,
+    'Software\Microsoft\Windows\CurrentVersion\Uninstall\{3C271F5D-71FF-4EA8-9569-B8DAC30F3773}_is1',
+    'InstallLocation', Previous) and (Previous <> '') then
+    Result := Pos(Lowercase(NormalizedDirectory(Previous) + '\'), Lowercase(Target + '\')) = 1;
+  #endif
+  #if defined(S1PlaytestInstaller) || defined(FeatureTestInstaller)
+  if Result then Exit;
+  if RegQueryStringValue(RootKey,
+    'Software\Microsoft\Windows\CurrentVersion\Uninstall\{ED53B6E8-E9A0-4F21-AF75-7C8A62BE7347}_is1',
+    'InstallLocation', Previous) and (Previous <> '') then
+    Result := Pos(Lowercase(NormalizedDirectory(Previous) + '\'), Lowercase(Target + '\')) = 1;
+  #endif
+  #ifdef FeatureTestInstaller
+  if Result then Exit;
+  if RegQueryStringValue(RootKey,
+    'Software\Microsoft\Windows\CurrentVersion\Uninstall\{D9FE6D76-C31A-47AF-9281-B4614C245E92}_is1',
+    'InstallLocation', Previous) and (Previous <> '') then
+    Result := Pos(Lowercase(NormalizedDirectory(Previous) + '\'), Lowercase(Target + '\')) = 1;
+  #endif
+end;
+#endif
 function LastDirectoryError: LongWord;
   external 'GetLastError@kernel32.dll stdcall';
 function SafePrivateTree(Path: String; Depth: Integer; var Entries: Integer): Boolean;
@@ -643,6 +735,34 @@ var
 begin
   Result := '';
   Target := NormalizedDirectory(Target);
+  #ifdef PrivateS1Installer
+  { Even empty residual directories from the older private products are reserved. }
+  Path := NormalizedDirectory(ExpandConstant('{autopf}\XingtuQtClientTest'));
+  Parent := NormalizedDirectory(ExpandConstant('{autopf}\XingtuQtLayoutPreview'));
+  if (CompareText(Target, Path) = 0) or
+    (Pos(Lowercase(Path + '\'), Lowercase(Target + '\')) = 1) or
+    (CompareText(Target, Parent) = 0) or
+    (Pos(Lowercase(Parent + '\'), Lowercase(Target + '\')) = 1) or
+    #if defined(S1FloorPrivateInstaller) || defined(S1AutoPrivateInstaller) || defined(S1PlaytestInstaller) || defined(FeatureTestInstaller)
+    (Pos(Lowercase(NormalizedDirectory(ExpandConstant('{autopf}\XingtuS0S1PrivateTest')) + '\'), Lowercase(Target + '\')) = 1) or
+    #endif
+    #if defined(S1AutoPrivateInstaller) || defined(S1PlaytestInstaller) || defined(FeatureTestInstaller)
+    (Pos(Lowercase(NormalizedDirectory(ExpandConstant('{autopf}\XingtuS1FloorPrivateTest')) + '\'), Lowercase(Target + '\')) = 1) or
+    #endif
+    #if defined(S1PlaytestInstaller) || defined(FeatureTestInstaller)
+    (Pos(Lowercase(NormalizedDirectory(ExpandConstant('{autopf}\XingtuS1AutoPrivateTest')) + '\'), Lowercase(Target + '\')) = 1) or
+    #endif
+    #ifdef FeatureTestInstaller
+    (Pos(Lowercase(NormalizedDirectory(ExpandConstant('{autopf}\XingtuS1Playtest')) + '\'), Lowercase(Target + '\')) = 1) or
+    #endif
+    RegisteredOldPrivateDirectory(HKCU64, Target) or
+    RegisteredOldPrivateDirectory(HKLM64, Target) or
+    RegisteredOldPrivateDirectory(HKCU32, Target) or
+    RegisteredOldPrivateDirectory(HKLM32, Target) then begin
+    Result := '旧私测目录保留，请选择本次独立的私测目录。';
+    Exit;
+  end;
+  #endif
   Path := Target;
   repeat
     Attributes := InstallerFileAttributes(Path);

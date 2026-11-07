@@ -16,14 +16,12 @@ import test_client_floor_region as legacy
 class DetectionPixels(unittest.TestCase):
     def test_calibrated_column_participates_in_tinted_map_proof(self):
         from s0_vertical_controls import observe_s0_map
-        from map_interface_observation import MAP_REGIONS, region_pixels
+        from test_s0_map_geometry_proof import s0_tinted
         for mode, order in [('difficult', (2, 1)), ('nightmare', (2, 1, -1))]:
             with self.subTest(mode=mode):
-                frame = column(order, 1, center_x=1400)
-                for name in ('closeButton', 'zoomControl', 'bottomControls'):
-                    region_pixels(frame, MAP_REGIONS[name])[:] = (140, 65, 65)
+                frame = s0_tinted(mode, center_x=1400)
                 settings = dict(floorControlMode='region', floorControlRegion=dict(
-                    rect=[.69, .25, .055, .27], clientSize=[1920, 1080]))
+                    rect=[.69, .25, .055, .27], clientSize=[1920, 1200]))
                 observation, read = observe_s0_map(frame, mode, settings=settings)
                 self.assertTrue(observation['detected'], observation)
                 self.assertEqual(read['selectedFloor'], 1)

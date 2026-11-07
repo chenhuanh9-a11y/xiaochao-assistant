@@ -44,7 +44,7 @@ python tools/maps/native24/build_side_entry_search.py --resources STAGED_RESOURC
 
 生成需要同一完整基线中的地图表、shared index/NPZ、`side-entries.json`；源版本或轮廓不匹配会报错。索引写到上述正式位置后会经运行时 `load_index` 回读。此流程不重建作者图、不重新配准、不改变其他资源。实际游戏数据与 NPZ 不进入源码 Git。
 
-完整产品打包必须从这个新资源根收集两件文件到 `_internal/references/nightmare-entries/`，保留原完整基线；不能只携带源码，不能把两件增量当作整套资源根。它们属于程序识别资源，轻量包移除作者图片时仍须保留。打包后用实际产物的 `MapLocalEntryIdentity` 确认 `side_door_error`、`side_search_error` 均为空，`side_doors`、`side_search` 各覆盖 24 张 F2；没有覆盖就不能声称该包已启用侧门索引。旧资源缺失时运行时仍安全回到普通检索，这种兼容行为不代表打包完成。`tools/build.py` 仍只构建无私有资源的开发骨架，不代替完整产品打包。
+完整产品打包必须从这个新资源根收集两件文件到 `_internal/references/nightmare-entries/`，保留原完整基线；不能只携带源码，不能把两件增量当作整套资源根。它们属于程序识别资源，轻量包移除作者图片时仍须保留。打包后用实际产物的 `MapLocalEntryIdentity` 确认 `side_door_error`、`side_search_error` 均为空，`side_doors`、`side_search` 各覆盖 24 张 F2；没有覆盖就不能声称该包已启用侧门索引。旧资源缺失时运行时仍安全回到普通检索，这种兼容行为不代表打包完成。当前 `tools/build_qt_client.py` 须从显式哈希清单收集资源，不以仅有源码代替完整产品打包。
 
 索引只给门附近结构搜索排序，并用保守距离下界排除不可能种子。门外潜在竞争者仍展开，精修和原验证使用完整参考；没有二楼相似组，也未为困难模式新增侧门数据。
 

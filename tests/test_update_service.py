@@ -1,5 +1,7 @@
 """Offline update-state regressions; no desktop imports or real network access."""
 from pathlib import Path
+from dataclasses import replace
+import json
 import queue
 import sys
 import tempfile
@@ -147,6 +149,67 @@ class UpdateServiceStateTests(unittest.TestCase):
         self.assertIsNone(service.latest)
         self.drain(service, 100)
         self.assertEqual(service.phase, 'available')
+
+    def test_current_version_notice_and_same_version_revision_are_new(self):
+        service = self.service(release(), current='1.1')
+        service.check()
+        self.drain(service, 100)
+        self.assertEqual(service.phase, 'latest')
+        self.assertTrue(service.should_announce())
+        first = service.latest
+        service.mark_notes_seen()
+        self.assertFalse(service.should_announce())
+        self.assertFalse(service.has_unread)
+        service.latest = replace(first, pages={'quark': 'https://pan.quark.cn/s/changed'}, size=999)
+        self.assertFalse(service.should_announce(), 'Download metadata alone is not a new notice')
+        service.latest = replace(first, notes='Corrected announcement')
+        self.assertTrue(service.should_announce())
+        self.assertTrue(service.has_unread)
+        for changed in (replace(first, version_code=12), replace(first, published_at='2026-11-07')):
+            service.latest = changed
+            self.assertTrue(service.should_announce())
+
+    def test_notice_identity_persists_but_legacy_version_record_does_not_hide_revision(self):
+        service = self.service(release())
+        service.check()
+        self.drain(service, 100)
+        service._stored = dict(seenNotesVersion='1.1', skippedVersion='1.1', unrelated='keep')
+        self.assertTrue(service.should_announce())
+        service.skip_latest()
+        self.assertFalse(service.should_announce())
+        service.latest = replace(service.latest, notes='New content for the same version')
+        self.assertTrue(service.should_announce())
+        service.mark_notes_seen()
+        restarted = self.service()
+        restarted.latest, restarted.phase = service.latest, 'available'
+        self.assertFalse(restarted.should_announce())
+        stored = json.loads(service.state_path.read_text())
+        self.assertEqual(stored['unrelated'], 'keep')
+        self.assertNotIn('New content', json.dumps(stored))
+
+    def test_notice_records_are_validated_and_bounded(self):
+        service = self.service(release())
+        service.check()
+        self.drain(service, 100)
+        service._stored['seenAnnouncementIds'] = 'malformed'
+        self.assertTrue(service.should_announce())
+        service._stored['seenAnnouncementIds'] = ['invalid', None] + [f'{n:064x}' for n in range(70)]
+        service.mark_notes_seen()
+        self.assertEqual(len(service.seen_announcement_ids), 64)
+        self.assertEqual(service.seen_announcement_ids[-1], service.latest.announcement_id)
+        service.latest = replace(service.latest, notes='')
+        self.assertFalse(service.should_announce())
+
+    def test_failed_refresh_does_not_revoke_valid_unshown_notice(self):
+        service = self.service(release(), OSError('fixture offline'))
+        service.check()
+        self.drain(service, 100)
+        self.assertTrue(service.should_announce())
+        service.check(manual=True)
+        self.assertFalse(service.should_announce())
+        self.drain(service, 200)
+        self.assertEqual(service.phase, 'error')
+        self.assertTrue(service.should_announce())
 
 
 if __name__ == '__main__':

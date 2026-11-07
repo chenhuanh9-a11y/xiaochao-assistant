@@ -8,7 +8,7 @@ Window {
     palette: ClientPalette {}
     readonly property var previewData: previewService.previewData
     property real zoom: 1.0
-    title: (previewData.title || "地图预览") + (previewData.floor ? " · " + floorLabel(previewData.floor) : "")
+    title: (previewData.title || "地图预览") + (previewData.floor ? " · " + (previewData.floorLabel || floorLabel(previewData.floor)) : "")
     width: 900; height: 720; minimumWidth: 400; minimumHeight: 300
     visible: false
     color: "#edf4ff"

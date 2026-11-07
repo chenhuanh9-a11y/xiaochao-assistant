@@ -16,7 +16,7 @@ import test_client_live_runtime as runtime_fixture
 
 class MapIntentResetTests(unittest.TestCase):
     @contextmanager
-    def chain(self, mode):
+    def chain(self, mode, *, prepared=True):
         owner = coordinator_fixture.CoordinatorTests()
         owner.setUpClass()
         owner.setUp()
@@ -36,6 +36,9 @@ class MapIntentResetTests(unittest.TestCase):
         c.runtime = live.runtime
         c._applied_context = (mode, "profile-one")
         live.dispatch("set_context", mode=mode, profileId="profile-one")
+        if prepared:
+            live.dispatch("start_round")
+        owner.session.snapshot = live.runtime.snapshot()
         events, actions = [], []
         def notify(event):
             events.append(copy.deepcopy(event))

@@ -151,14 +151,47 @@ def resource_read_lock(root, *, wait=False, cancelled=None):
             yield root
 
 
+def assert_installer_upgrade_ready(root):
+    """Only the verified Setup coordinator may work through its own marker."""
+    root = _safe(Path(os.path.abspath(root)))
+    marker = _safe(root / 'work/pending-installer-upgrade.json')
+    if not marker.exists():
+        return
+    state = _state(root)[1]
+    permit = getattr(state['runtime'], '_installer_forward_permit', None)
+    from installer_resource_lease import _InstallerPendingPermit
+    if not isinstance(permit, _InstallerPendingPermit) or not permit.allows(root, marker):
+        raise ResourceTransactionError('installer-upgrade-recovery-required',
+                                       details={'pendingFile': 'work/pending-installer-upgrade.json'})
+
+
+def assert_installer_resource_action(root, action, transaction_id, plan_sha256):
+    """A coordinator's durable phase also limits the resource finish direction."""
+    root = _safe(Path(os.path.abspath(root)))
+    if not _safe(root / 'work/pending-installer-upgrade.json').exists():
+        return
+    assert_installer_upgrade_ready(root)
+    record = _state(root)[1]['runtime']._installer_forward_permit.record
+    bound = record.get('resourceTransactionId')
+    if (record.get('planSha256') != plan_sha256 or bound not in (None, transaction_id)
+            or (action == 'commit' and (record.get('status') not in {'native-complete', 'completed'}
+                                      or bound != transaction_id))
+            or (action == 'rollback' and record.get('status') != 'prepared')
+            or action not in {'commit', 'rollback'}):
+        raise ResourceTransactionError('installer-upgrade-direction-not-authorized')
+
+
 def assert_resources_ready(root):
     """Call under the runtime lease or a short lock, before reading any resource."""
     root = _safe(Path(os.path.abspath(root)))
+    assert_installer_upgrade_ready(root)
     for name, code in (
+        ('pending-resource-reset.json', 'resource-reset-recovery-required'),
         ('pending-upgrade.json', 'upgrade-recovery-required'),
         ('pending-base-repair.json', 'base-recovery-required'),
         ('pending-additions.json', 'additions-recovery-required'),
         ('pending-removal.json', 'removal-recovery-required'),
+        ('pending-author-snapshot.json', 'author-snapshot-recovery-required'),
     ):
         if _safe(root / 'work/map-packages' / name).exists():
             raise ResourceTransactionError(code, details={'pendingFile': 'work/map-packages/' + name})

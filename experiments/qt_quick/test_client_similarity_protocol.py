@@ -820,7 +820,7 @@ class SimilarityProtocolTests(unittest.TestCase):
                     self.assertIsInstance(memory, NightmareMemoryStore)
                     self.assertEqual(memory.portable_seed_path, root / "resources/references/nightmare-portable-layout-seeds.json")
                     self.assertTrue(memory.sample_validator(self.capture.frame))
-                    observe.assert_called_once_with(self.capture.frame, mode)
+                    observe.assert_called_once_with(self.capture.frame, mode, season="s0")
                     for observation in (dict(detected=False), dict(detected=None), dict(detected=1), {}):
                         observe.return_value = (observation, {})
                         self.assertFalse(memory.sample_validator(self.capture.frame))
@@ -829,6 +829,11 @@ class SimilarityProtocolTests(unittest.TestCase):
                     self.assertNotEqual(isolated.root, memory.root)
                     self.assertFalse(memory.log_path.exists())
                     self.assertFalse(isolated.log_path.exists())
+                    observe.reset_mock()
+                    s1 = _build_memory_store(pack, root / "s1" / mode, root / "resources", production=True, season="s1")
+                    self.assertFalse(s1.sample_validator(self.capture.frame))
+                    self.assertIsNone(s1.portable_seed_path)
+                    observe.assert_not_called()
 
     def test_initial_none_still_cannot_authorize_a_logical_group(self):
         self.prepare_group();self.engine.rank.return_value=[]

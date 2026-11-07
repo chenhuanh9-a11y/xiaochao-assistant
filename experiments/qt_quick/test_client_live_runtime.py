@@ -579,7 +579,7 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertEqual(result["requestContext"]["generation"], 22)
         self.assertEqual(result["requestContext"]["frameId"], "")
         state = self.runtime.snapshot()
-        self.assertEqual(result["resultContext"], {key: state[key] for key in ("mode", "profileId", "roundId", "frameId")})
+        self.assertEqual(result["resultContext"], {key: state[key] for key in ("season", "contextKey", "mode", "profileId", "roundId", "frameId")})
         render = self.runtime.render_payload(result["renderToken"])
         self.assertEqual(render["originX"], 100)
         self.assertEqual(render["originY"], 200)
@@ -709,7 +709,9 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
         self.assertIsNone(self.runtime.render_payload(first["renderToken"]))
 
-    def test_inactive_ordered_g_is_one_atomic_prepare_capture_and_close_preserves_round_reference(self):
+    def test_explicit_prepare_then_ordered_g_and_close_preserves_round_reference(self):
+        self.assertNotIn("map", self.runtime.snapshot()["availableCommands"])
+        self.dispatch("start_round")
         self.assertIn("map",self.runtime.snapshot()["availableCommands"])
         first=self.dispatch("map",inputSequence=1,openIntent=True,inputCreatedAt=1.)
         self.assertTrue(first["success"],first)
@@ -725,11 +727,14 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertEqual(self.runtime.snapshot()["roundId"],round_id)
         self.assertEqual(self.engine.rank_count,1)
         self.dispatch("end_round")
-        self.assertTrue(self.dispatch("map",inputSequence=4,openIntent=True)["success"])
+        self.assertEqual(self.dispatch("map",inputSequence=4,openIntent=True)["reason"], "round-not-started")
+        self.assertEqual(self.runtime.snapshot()["roundId"], round_id)
+        self.dispatch("start_round")
+        self.assertTrue(self.dispatch("map",inputSequence=5,openIntent=True)["success"])
         self.assertGreater(self.runtime.snapshot()["roundId"],round_id)
         self.assertEqual(self.engine.rank_count,2)
 
-    def test_prepare_without_binding_never_enables_capture_and_toggle_can_cancel_then_g_restarts(self):
+    def test_prepare_without_binding_never_enables_capture_and_cancel_requires_explicit_restart(self):
         self.capture.enable=Mock(return_value=False)
         prepared=self.dispatch("start_round")
         self.assertTrue(prepared["success"]);self.capture.enable.assert_not_called()
@@ -743,10 +748,14 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertTrue(self.dispatch("toggle_round")["success"])
         self.assertFalse(self.runtime.snapshot()["roundPreparing"])
         self.capture.enable=lambda:setattr(self.capture,"enabled",True) or True
-        self.assertTrue(self.dispatch("map",inputSequence=2,openIntent=True)["success"])
+        self.assertEqual(self.dispatch("map",inputSequence=2,openIntent=True)["reason"], "round-not-started")
+        self.assertFalse(self.runtime.snapshot()["roundActive"])
+        self.dispatch("start_round")
+        self.assertTrue(self.dispatch("map",inputSequence=3,openIntent=True)["success"])
         self.assertTrue(self.runtime.snapshot()["roundActive"])
 
     def test_explicit_open_intent_is_not_toggled_by_runtime_and_old_sequence_is_rejected(self):
+        self.dispatch("start_round")
         self.assertTrue(self.dispatch("map",inputSequence=1,openIntent=True)["success"])
         before=self.capture.count
         self.assertTrue(self.dispatch("map",inputSequence=2,openIntent=True)["success"])
@@ -756,6 +765,7 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertTrue(self.runtime.snapshot()["mapOpen"])
 
     def test_queued_g_before_end_cannot_restart_a_new_round_after_work_lock_releases(self):
+        self.dispatch("start_round")
         entered=threading.Event();output=[]
         with self.runtime._work:
             worker=threading.Thread(target=lambda:(entered.set(),output.append(self.dispatch("map",inputSequence=1,openIntent=True))))
@@ -781,7 +791,10 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.dispatch("close_map");release.set();worker.join(2)
         self.assertFalse(worker.is_alive());self.assertTrue(output[0]["stale"])
         self.runtime._factories["nightmare"]=lambda:self.engine
-        self.assertTrue(self.dispatch("map",inputSequence=1,openIntent=True)["success"])
+        self.assertEqual(self.dispatch("map",inputSequence=1,openIntent=True)["reason"], "round-not-started")
+        self.assertFalse(self.runtime.snapshot()["roundActive"])
+        self.dispatch("start_round")
+        self.assertTrue(self.dispatch("map",inputSequence=2,openIntent=True)["success"])
         self.assertTrue(self.runtime.snapshot()["roundActive"])
         self.assertIs(self.runtime._engine,self.engine)
 
@@ -963,7 +976,11 @@ class LiveRuntimeContracts(unittest.TestCase):
             self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
             self.dispatch("refresh_map")
         self.assertFalse(self.runtime.snapshot()["mapOpen"])
-        self.assertTrue(all(row["event"] == "render-revoked" for row in events))
+        evidence = [row for row in events if row["event"] == "automatic-failure-sample"]
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0]["failureSample"]["missingReason"], "automatic-sampling-disabled")
+        self.assertTrue(all(row["event"] == "render-revoked" for row in events
+            if row["event"] != "automatic-failure-sample"))
 
     def test_cancel_steady_verification_discards_old_authority_and_coalesces_duplicates(self):
         first = self.begin_and_capture()

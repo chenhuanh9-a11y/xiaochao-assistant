@@ -19,9 +19,13 @@ ApplicationWindow {
     function section(name) { return name === "resources" || name === "downloads" ? "gallery" : name === "recognition" ? "home" : name === "replay" ? "help" : name }
     function heading(name) { return ({home:"主页面",gallery:"地图资源",resources:"图包管理",downloads:"在线图包",settings:"设置",replay:"识别回放",help:"帮助与公告",recognition:"地图识别",custom:"自定义路线",plaza:"路线广场"})[name] || "星图" }
     readonly property var routeOptions: {
-        var options = routeChoices.profiles.slice()
+        if (routeChoices.busy || routeChoices.season !== (settingsService.values.gameSeason || "s0")
+                || routeChoices.mode !== settingsService.values.gameMode) return []
+        var options = routeChoices.profiles.filter(function(row) { return row.runtimeSelectable !== false }).map(function(row) {
+            return {id: row.runtimeProfileId || row.id, name: row.name}
+        })
         var custom = customGalleryService.snapshot
-        if (routeChoices.mode === "nightmare" && custom.available)
+        if (!routeChoices.busy && routeChoices.season === "s0" && routeChoices.mode === "nightmare" && custom.available)
             for (var i = 0; i < custom.galleries.length; i++)
                 options.push({id: "custom:" + custom.galleries[i].id, name: custom.galleries[i].name})
         return options
@@ -43,6 +47,10 @@ ApplicationWindow {
     ClientOnboarding {}
     ClientTutorial {}
     ClientAccount {}
+    ClientAnnouncement {
+        hostWindow: root
+        blocked: clientCoordinator.closing || closeChoice.visible || onboardingService.active
+    }
     onClosing: function(event) {
         if (clientCoordinator.closeReady) {
             closeChoice.close()
@@ -142,10 +150,25 @@ ApplicationWindow {
             Layout.leftMargin: root.workspaceMargin; Layout.rightMargin: root.workspaceMargin; Layout.bottomMargin: 24
             currentIndex: root.pages.indexOf(root.page)
             ClientHome {}
-            ClientGallery {}
-            ClientResources {}
-            ClientSettings { profileOptions: root.routeOptions; profilesMode: routeChoices.mode }
-            ColumnLayout {
+            ClientLazyPage {
+                objectName: "lazyGalleryPage"; selected: root.page === "gallery"
+                sourceComponent: Component { ClientGallery { packageActions: resourcePage } }
+            }
+            ClientResources {
+                id: resourcePage
+                active: root.page === "resources" && !clientCoordinator.closing
+                refreshAllowed: !session.busy && !session.snapshot.resourceLocked
+                    && !session.snapshot.contextPending && !session.snapshot.roundActive
+                    && !session.snapshot.roundWorkActive && !session.snapshot.roundPreparing
+                    && !session.snapshot.closed && !clientCoordinator.closing
+            }
+            ClientLazyPage {
+                objectName: "lazySettingsPage"; selected: root.page === "settings"
+                sourceComponent: Component { ClientSettings { profileOptions: root.routeOptions; profilesMode: routeChoices.mode; profilesSeason: routeChoices.season; profilesBusy: routeChoices.busy } }
+            }
+            ClientLazyPage {
+                objectName: "lazyReplayPage"; selected: root.page === "replay"
+                sourceComponent: Component { ColumnLayout {
                 spacing: 16
                 RowLayout {
                     Label { text: "识别结果回放"; color: "#142b4b"; font.pixelSize: 26; font.bold: true }
@@ -165,12 +188,13 @@ ApplicationWindow {
                     Item { Layout.fillWidth: true }
                     Label { text: "历史结果不授权当前游戏显示"; color: "#526785"; font.pixelSize: 12 }
                 }
+                } }
             }
-            ClientHelp {}
-            ClientRecognition {}
-            ClientCustomGallery {}
-            ClientOnlinePackages {}
-            ClientRoutePlaza {}
+            ClientLazyPage { objectName: "lazyHelpPage"; selected: root.page === "help"; sourceComponent: Component { ClientHelp {} } }
+            ClientLazyPage { objectName: "lazyRecognitionPage"; selected: root.page === "recognition"; sourceComponent: Component { ClientRecognition {} } }
+            ClientLazyPage { objectName: "lazyCustomPage"; selected: root.page === "custom"; sourceComponent: Component { ClientCustomGallery {} } }
+            ClientLazyPage { objectName: "lazyDownloadsPage"; selected: root.page === "downloads"; sourceComponent: Component { ClientOnlinePackages {} } }
+            ClientLazyPage { objectName: "lazyPlazaPage"; selected: root.page === "plaza"; sourceComponent: Component { ClientRoutePlaza {} } }
         }
         }
     }
@@ -191,7 +215,11 @@ ApplicationWindow {
                 onClicked: { closeChoice.close(); windows.hide("main") }
             }
             AppButton { objectName: "closeApplication"; Layout.fillWidth: true; text: "退出星图（结束程序）"; primary: true
-                onClicked: { closeChoice.close(); clientCoordinator.requestClose() }
+                onClicked: {
+                    closeChoice.close()
+                    if (typeof gameStartupService !== "undefined") gameStartupService.suppressCurrentGame()
+                    clientCoordinator.requestClose()
+                }
             }
             AppButton { objectName: "cancelClose"; Layout.fillWidth: true; text: "取消"; onClicked: closeChoice.close() }
         }

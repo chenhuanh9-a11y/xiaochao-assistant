@@ -70,7 +70,7 @@ Qt 私测 Setup 同样收集已锁定的编辑器基础包到程序拥有的 `_i
 不用启动游戏，macOS 和 Windows 都能用：
 
 ```
-python tools/draw_custom_routes.py
+python tools/qt_client_entry.py
 ```
 
 - 需要 Python 3.13（带 Tk）、Pillow、NumPy、OpenCV（版本见 `requirements.txt`），资源包已经安装到 `assets/custom-maps`。

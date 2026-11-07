@@ -46,6 +46,33 @@ python scripts/test_map_update.py
 
 ## 2026-10-29 增量接入约定
 
+### 新赛季与同赛季增量的边界
+
+用户已明确新赛季地图只与同赛季、同模式地图竞争。先从权威来源建立
+`seasonId + mode` 目标清单，不把 S0 运行根复制后追加成 S1，不因地图 ID
+相同或结构相似混入旧赛季候选。新赛季首次接入与同赛季旧清单的增量更新
+分开：只有后者使用同赛季、同模式旧 manifest 比较变化。共享算法可复用，
+资源 provider、候选、正门竞争条件、相似组和缓存上下文必须正确隔离。
+
+### 已有提取器到旧候选脚本的数据桥
+
+`tools/maps/extract/prepare-increment-inputs.cjs --run EXTRACTED_RUN --output NEW_BRIDGE --season S1 --mode nightmare`
+只做文件契约适配。它读取本轮 summary/modules/discovery/literal，验证模块
+哈希、大小和来源层，输出兼容 extraction-manifest、normalized-literals 与
+原始 literal 副本，不复制 `.bin`、不执行模块、不生成结构或开启运行态。
+输入 JSON/模块真实路径不能越出 run；必需 typed dictionary、核心目录非空、
+结构形状和规范化键唯一性失败时不创建输出。旧候选 normalizer 使用
+`--run NEW_BRIDGE --output NEW_BRIDGE/catalog-candidate`；其旧合法 manifest
+没有 scope 时仍可读取，但必须明确来源范围未知，不能隐式认定 S0 或 S1。
+
+`normalized-literals.json` 供要求 `levelLayouts.data` 的旧构建器；原始
+`literal-exports.json` 供要求 `exports.data` 的消费者，不能混用。
+桥接中的 season/mode 只是来源标签：`mapSelectionApplied:false`、
+`competitionScopeEnforced:false`、`runtimeIntegration:not_performed` 必须保留。
+后续须由实际 provider/目标选择实现隔离；不得凭合成数据桥成功宣称 S1 接通。
+normalizer 的旧 catalog 仅用于核验纹理复用，不是新赛季竞争地图基线。
+现有增量构建器仍仅支持新增噩梦三层图，困难/修订地图/额外楼层另行适配。
+
 以协调记录中的唯一 run ID 续跑；定时任务重复触发时读取已有状态，不重复解包或编译。先比较版本文件及 IDX/WPK 两次指纹，再运行只读配置提取器。不得执行游戏模块。
 
 - 保留既有稳定 map ID；新 layout 可使用显式 `nightmare-layout-<layout>` 身份，不猜旧编号或作者 GUID。worldFloor 1/2/3 映射 B1/1/2，必须与实际模式元数据核对。

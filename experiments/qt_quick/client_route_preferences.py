@@ -40,11 +40,13 @@ def _coffin_binding(engine, map_id, floor, profile, variant_id):
     return dict(path=path, matrix=matrix, usable=True, optionalPixels=False), ""
 
 
-def coffin_variant_metadata(engine, mode, profile, map_id, floor):
-    context = dict(mode=str(mode), profileId=str(profile), mapId=map_id,
+def coffin_variant_metadata(engine, mode, profile, map_id, floor, season="s0"):
+    from season_context import normalize_season
+    season = normalize_season(season)
+    context = dict(season=season, mode=str(mode), profileId=str(profile), mapId=map_id,
                    floor=str(floor), resourceIdentity=str(id(engine)))
     result = dict(context=context, options=[], message="全棺版本适用于噩梦 · 展十全棺 · 一号地图一楼")
-    if mode != "nightmare" or (profile, map_id, str(floor)) != COFFIN_CONTEXT:
+    if season != "s0" or mode != "nightmare" or (profile, map_id, str(floor)) != COFFIN_CONTEXT:
         return result
     catalog = getattr(engine, "qt_catalog", None)
     names = {row.id: row.display_name for row in catalog.variants(profile, map_id, include_inactive=True)} if catalog else {}
@@ -187,6 +189,13 @@ def prepare_display_layer(engine, map_id, floor, preferred, *, variant_id="varia
                 return metadata(layer, author_status=status, fallback_reason="selected-author-layer-missing")
     elif status == "available":
         status = "load-error" if available else "registration-failed"
+    native = getattr(engine, "qt_native_context", None)
+    rendered = getattr(native, "rendered_display_layer", None)
+    if getattr(engine, "qt_season", "s0") == "s1" and callable(rendered):
+        result = rendered(map_id, str(floor), reference)
+        if result.layer is not None:
+            return metadata(result.layer, author_status=status, fallback_reason=failure)
+        failure = result.reason or "s1-native-display-unavailable"
     pixels = np.zeros((*reference.shape, 4), np.uint8)
     pixels[reference.clean_mask != 0] = (218, 228, 238, 255)
     pixels.setflags(write=False)
