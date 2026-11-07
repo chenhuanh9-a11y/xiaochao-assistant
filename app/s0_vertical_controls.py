@@ -138,6 +138,7 @@ def _observe_s0_map_geometry(frame, mode, read, observation):
     primitive observer has an S1 name but no season/floor authority: reuse its
     X, distinct +/- and rail checks without changing S1 behavior.
     """
+    import cv2
     from client_space_geometry import centered_safe_viewport
     from map_interface_observation import MAP_REGIONS, backdrop_ratio, neutral_ratio
 
@@ -165,11 +166,17 @@ def _observe_s0_map_geometry(frame, mode, read, observation):
     independent = frame.copy()
     independent[:, left:right] = 0
     anchors = ("closeButton", "zoomControl", "bottomControls")
-    ratios = {name: neutral_ratio(independent, MAP_REGIONS[name], tinted=tinted)
-              for name in anchors}
-    backdrop = backdrop_ratio(independent)
-    if (not all(ratios[name] >= MAP_REGIONS[name][4] for name in anchors)
-            or backdrop < observation["requiredBackdropRatio"]):
+    # Color ranges are calibrated at a nominal gain. Try each bounded gain
+    # as a complete independent-anchor/backdrop proof, never mixing anchors
+    # between exposures. The geometric templates below still see raw pixels.
+    for map_exposure in (1., 2. / 3., 1.5):
+        probe = independent if map_exposure == 1. else cv2.convertScaleAbs(independent, alpha=map_exposure)
+        ratios = {name: neutral_ratio(probe, MAP_REGIONS[name], tinted=tinted) for name in anchors}
+        backdrop = backdrop_ratio(probe)
+        if (all(ratios[name] >= MAP_REGIONS[name][4] for name in anchors)
+                and backdrop >= observation["requiredBackdropRatio"]):
+            break
+    else:
         return observation
     viewport = centered_safe_viewport((width, height))
     # The shape observer isolates bytes before blurring. Keep its original
@@ -178,12 +185,13 @@ def _observe_s0_map_geometry(frame, mode, read, observation):
     if floor_right >= .99:
         return observation
     from s1_map_ui_geometry import observe_s1_map_ui_geometry
-    geometry = observe_s1_map_ui_geometry(frame, floor_search_right=floor_right)
+    geometry = observe_s1_map_ui_geometry(frame, floor_search_right=floor_right, minimum_height=540)
     if geometry.get("verified") is not True:
         return observation
     return dict(observation, detected=True, reason="map-interface-detected",
                 detectionMode="s0-signed-controls-ui-geometry",
                 independentAnchorRatios=ratios, independentBackdropRatio=backdrop,
+                mapControlExposure=map_exposure,
                 independentFloorExclusion=[left, 0, right, height],
                 mapUiGeometry=geometry)
 

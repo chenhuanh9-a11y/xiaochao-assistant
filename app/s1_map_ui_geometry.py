@@ -126,13 +126,17 @@ def _rail(gray, width, plus, minus, floor_right):
     return best if best is not None and best['support']>=.85 else None
 
 
-def observe_s1_map_ui_geometry(frame, *, floor_search_right=.92):
-    """Finite per-frame evidence only; no map/floor/runtime authority here."""
+def observe_s1_map_ui_geometry(frame, *, floor_search_right=.92, minimum_height=600):
+    """Finite per-frame evidence only; no map/floor/runtime authority here.
+
+    S1 retains its 600px default. S0 may pass its independently replayed
+    minimum; all size-relative shape, alignment and rail checks still apply.
+    """
     if (not isinstance(frame,np.ndarray) or frame.dtype!=np.uint8
             or frame.ndim!=3 or frame.shape[2]!=3):
         return dict(verified=False,reason='s1-map-ui-frame-invalid')
     height,width=frame.shape[:2]
-    if width<1000 or height<600:
+    if width<1000 or height<minimum_height:
         return dict(verified=False,reason='s1-map-ui-size-unsupported')
     viewport=centered_safe_viewport((width,height))
     scale_width=viewport.width

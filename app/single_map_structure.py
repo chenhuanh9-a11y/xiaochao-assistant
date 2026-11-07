@@ -369,7 +369,8 @@ def _wall_raster_samples(qlines):
     return dict(points=points,lower=lower,upper=upper,local=points-lower,
         fragmentCount=len(samples),starts=starts,directions=directions,
         pointFragments=np.repeat(np.arange(len(nonempty)),lengths[nonempty]),
-        pointDirections=np.repeat(directions,lengths[nonempty]),pointIndexes=np.arange(len(points)))
+        pointDirections=np.repeat(directions,lengths[nonempty]),pointIndexes=np.arange(len(points)),
+        fragmentWindows=[(xy-lower, direction) for xy,direction in samples if len(xy)])
 
 
 def _wall_distance_six_stencil():
@@ -405,13 +406,35 @@ def _wall_raster_negative_witness(supports, unknown, samples):
     return False
 
 
+def _wall_raster_local_verified(supports, unknown, samples):
+    """Check all measured pixels using local copies of the same <=6 gate.
+
+    A 3x3 DIST_L2 path leaving a seven-pixel halo costs more than six,
+    even using its cheapest steps. Cropping cannot alter the verdict, but
+    backend vectorization can round distances differently by one ULP. This
+    is only a proposal gate; retained candidates get full-field diagnostics.
+    """
+    any_measured=False
+    for points,direction in samples['fragmentWindows']:
+        measured=~unknown[points[:,1],points[:,0]]
+        if not measured.any():continue
+        any_measured=True
+        lo=points.min(axis=0)-7;hi=points.max(axis=0)+8
+        x0,y0=np.maximum(lo,0);x1,y1=np.minimum(hi,unknown.shape[::-1])
+        support=supports[direction][y0:y1,x0:x1] & ~unknown[y0:y1,x0:x1]
+        distances=cv2.distanceTransform((~support).astype(np.uint8),cv2.DIST_L2,3)
+        selected=points[measured]
+        if np.any(distances[selected[:,1]-y0,selected[:,0]-x0]>6):return False
+    return any_measured
+
+
 def initial_wall_raster_validation(qlines, reference, model, *, source_unknown=None, source_wall_mask=None, _samples=None):
     """Public callers always retain complete success and failure diagnostics."""
     return _wall_raster_validation(qlines,reference,model,source_unknown=source_unknown,
         source_wall_mask=source_wall_mask,_samples=_samples)
 
 
-def _wall_raster_validation(qlines, reference, model, *, source_unknown=None, source_wall_mask=None, _samples=None, _discard_rejected_details=False):
+def _wall_raster_validation(qlines, reference, model, *, source_unknown=None, source_wall_mask=None, _samples=None, _discard_rejected_details=False, _defer_verified_details=False):
     """Check every observed fragment against the unsimplified directed raster.
 
     Polygon segment filtering is useful for fitting but is not an exhaustive
@@ -441,6 +464,9 @@ def _wall_raster_validation(qlines, reference, model, *, source_unknown=None, so
         and all(edge.ndim==2 for edge in supports)
         and _wall_raster_negative_witness(supports,unknown,samples)):
         return dict(verified=False)
+    if (_defer_verified_details and _discard_rejected_details
+        and projected.ndim==2 and unknown.ndim==2 and all(edge.ndim==2 for edge in supports)):
+        return dict(verified=_wall_raster_local_verified(supports,unknown,samples))
     fields=[cv2.distanceTransform((~(edge & ~unknown)).astype(np.uint8),cv2.DIST_L2,3)
             for edge in supports]
     local=samples['local']
@@ -464,7 +490,7 @@ def _wall_raster_validation(qlines, reference, model, *, source_unknown=None, so
                 fragmentCount=samples['fragmentCount'],observedPixels=len(points),measuredPixels=measured_count,sourceUnknownPixels=unknown_count,worstPoints=worst)
 
 
-def initial_wall_geometry(qlines, slines, scale, translation, arrays, cache=None, *, reference=None, source_unknown=None, raster_samples=None):
+def initial_wall_geometry(qlines, slines, scale, translation, arrays, cache=None, *, reference=None, source_unknown=None, raster_samples=None, _defer_raster_details=False):
     """Validate unknown uniform scale with independent directed wall planes.
 
     A chain only proposes a pose. Partial walls supply normal constraints;
@@ -524,7 +550,7 @@ def initial_wall_geometry(qlines, slines, scale, translation, arrays, cache=None
     # the same unsupported candidate first avoids solving those fits in vain.
     raster_validation=None
     if reference is not None:
-        raster_validation=_wall_raster_validation(qlines,reference,full_model,source_unknown=source_unknown,_samples=raster_samples,_discard_rejected_details=True)
+        raster_validation=_wall_raster_validation(qlines,reference,full_model,source_unknown=source_unknown,_samples=raster_samples,_discard_rejected_details=True,_defer_verified_details=_defer_raster_details)
         if not raster_validation['verified']:return None
     elif np.any(reduce_rows(distances_at(full_model[0],full_model[1:]),np.minimum,np.inf)>6):return None
     errors=[]
@@ -770,6 +796,18 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
     wall_identities=set()
     wall_fit_cache={}
     raster_samples=_wall_raster_samples(qlines)
+    def complete_raster(candidate):
+        wall=candidate['geometry'].get('wallScale')
+        if wall is None:return True
+        raster=wall['rasterValidation']
+        if 'maxPixels' not in raster:
+            matrix=candidate['matrix']
+            # Keep shared diagnostic references (including pose-index records)
+            # intact while replacing the private gate with original evidence.
+            raster.update(initial_wall_raster_validation(qlines,reference,
+                np.array([matrix[0,0],matrix[0,2],matrix[1,2]]),
+                source_unknown=source_unknown,_samples=raster_samples))
+        return raster['verified']
     for index,seed in index_seed_rows:
         if cancelled and cancelled():return finish(False,'structure-work-obsolete')
         wall=initial_wall_geometry(qlines,slines,float(seed[0,0]),np.asarray(seed[:2,2]),arrays,
@@ -803,7 +841,7 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
         source_chain=source_chains[si]['points']
         query_chain=all_query_chains[qi]['points']
         if any(c['pairs'] and np.linalg.norm(source_chain@c['matrix'][:2,:2].T+c['matrix'][:2,2]-query_chain,axis=1).max()<=3 for c in candidates):continue
-        wall=initial_wall_geometry(qlines,slines,scale,translation,arrays,wall_fit_cache,reference=reference,source_unknown=source_unknown,raster_samples=raster_samples)
+        wall=initial_wall_geometry(qlines,slines,scale,translation,arrays,wall_fit_cache,reference=reference,source_unknown=source_unknown,raster_samples=raster_samples,_defer_raster_details=True)
         if wall is None:continue
         # Masked fragments of one directed contour edge can have different
         # median normals (slightly sloped raster walls). Those medians are
@@ -833,6 +871,10 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
         candidates.append(dict(matrix=matrix,geometry={'wallScale':{k:v for k,v in wall.items() if k!='matrix'}},pairs=[],sourcePoints=[],queryPoints=[],wallIdentity=identity,markerOccludedProposal=qi>=len(query_chains)))
         if len(candidates)>diagnostic['validationBudget']:
             diagnostic['candidateCount']=len(candidates)
+            for c in candidates:
+                if cancelled and cancelled():return finish(False,'structure-work-obsolete')
+                complete_raster(c)
+            if cancelled and cancelled():return finish(False,'structure-work-obsolete')
             diagnostic['wallCandidates']=[dict(matrix=c['matrix'].tolist(),geometry=c['geometry']) for c in candidates]
             return finish(False,'initial-structure-validation-budget-unresolved')
     diagnostic['candidateCount']=len(candidates)
@@ -841,6 +883,13 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
     for c in candidates:
         if cancelled and cancelled():return finish(False,'structure-work-obsolete')
         matrix=c['matrix']
+        # Correspondence deduplication may discard many wall proposals. Only
+        # retained hypotheses need full-field distances, without changing the
+        # public success/failure details or the original final validators.
+        if not complete_raster(c):
+            diagnostic['candidates'].append(dict(matrix=matrix.tolist(),pointGeometry=c['geometry'],
+                pairs=c['pairs'],sourcePoints=c['sourcePoints'],queryPoints=c['queryPoints'],accepted=False))
+            continue
         projected=cv2.warpAffine(reference,matrix[:2],(frame.shape[1],frame.shape[0]),flags=cv2.INTER_NEAREST)
         validation_context=_static_validation_context(frame,context,matrix,source_unknown)
         regions=regional_validation(frame,context['query'],projected,_context=validation_context)
