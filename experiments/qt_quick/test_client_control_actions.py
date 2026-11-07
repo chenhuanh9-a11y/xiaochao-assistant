@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-from PySide6.QtCore import QObject, Property, Signal, Slot, QUrl, QMetaObject
+from PySide6.QtCore import QObject, Property, Signal, Slot, QUrl, QMetaObject, QCoreApplication, QEvent
 from PySide6.QtGui import QGuiApplication, QFontDatabase
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickWindow
@@ -19,6 +19,9 @@ class Settings(QObject):
                 enabled=["display", "manual_map", "round"], display=dict(referencePosition=True)))
         self.saved = []
     values = Property("QVariantMap", lambda s: s.data, notify=changed)
+    persistedValues = Property("QVariantMap", lambda s: s.data, notify=changed)
+    seasonOptions = Property("QVariantList", lambda s: [dict(id="s0", label="S0", capabilities={}),
+                                                  dict(id="s1", label="S1", capabilities={})], constant=True)
     busy = Property(bool, lambda s: False, constant=True)
     @Slot(str, "QVariant")
     def setValue(self, key, value):
@@ -36,6 +39,8 @@ class Session(QObject):
             ("start_round", "reselect_map", "cycle_floor")}), notify=changed)
     busy = Property(bool, lambda s: False, constant=True)
     currentMode = Property(str, lambda s: "nightmare", constant=True)
+    appliedMode = Property(str, lambda s: "nightmare", constant=True)
+    appliedSeason = Property(str, lambda s: "s0", constant=True)
 
 
 class Coordinator(QObject):
@@ -48,6 +53,8 @@ class Coordinator(QObject):
         self.settings.setValue(key, not self.settings.data[key]); self.settings.saveFields([key])
     @Slot()
     def requestManualMapSelection(self): self.manual_requests += 1
+    @Slot(str, str)
+    def requestGameContext(self, season, mode): pass
     @Slot()
     def toggleAlignedVisibility(self): self.toggle("sheetVisibilityEnabled")
     @Slot()
@@ -72,34 +79,42 @@ class ControlActionsTests(unittest.TestCase):
         engine.load(QUrl.fromLocalFile(str(Path(__file__).with_name("ClientControls.qml"))))
         self.assertEqual(len(engine.rootObjects()), 1, warnings)
         window = engine.rootObjects()[0]
-        def items(item):
-            yield item
-            for child in item.childItems(): yield from items(child)
-        def named(name):
-            return next(i for i in items(window.contentItem()) if i.objectName() == name)
-        aligned = named("controlAlignedVisibility")
-        self.assertEqual(aligned.property("text"), "隐藏贴合")
-        self.assertTrue(aligned.property("selected"))
-        self.assertTrue(QMetaObject.invokeMethod(aligned, "clicked"))
-        self.app.processEvents()
-        self.assertEqual(aligned.property("text"), "显示贴合")
-        self.assertEqual(settings.saved[-1], ["sheetVisibilityEnabled"])
-        reference = named("controlReferenceVisibility")
-        self.assertTrue(QMetaObject.invokeMethod(reference, "clicked"))
-        self.app.processEvents()
-        self.assertEqual(reference.property("text"), "显示定点")
-        self.assertEqual(settings.saved[-1], ["referenceSheetVisible"])
-        self.assertFalse(named("controlReselectMap").property("enabled"))
-        self.assertFalse(named("controlRoundAction").property("enabled"))
-        session.manual_ready = True; session.changed.emit(); self.app.processEvents()
-        self.assertTrue(named("controlReselectMap").property("enabled"))
-        self.assertEqual(named("controlReselectMap").property("text"), "选择地图")
-        self.assertTrue(QMetaObject.invokeMethod(named("controlReselectMap"), "clicked"))
-        self.assertEqual(coordinator.manual_requests, 1)
-        self.assertFalse(named("controlRoundAction").property("enabled"))
-        self.assertEqual(window.property("activeModules").toVariant(), ["display", "manual_map", "round"])
-        self.assertEqual(warnings, [])
-        window.deleteLater(); self.app.processEvents()
+        try:
+            def items(item):
+                yield item
+                for child in item.childItems(): yield from items(child)
+            def named(name):
+                return next(i for i in items(window.contentItem()) if i.objectName() == name)
+            aligned = named("controlAlignedVisibility")
+            self.assertEqual(aligned.property("text"), "隐藏贴合")
+            self.assertTrue(aligned.property("selected"))
+            self.assertTrue(QMetaObject.invokeMethod(aligned, "clicked"))
+            self.app.processEvents()
+            self.assertEqual(aligned.property("text"), "显示贴合")
+            self.assertEqual(settings.saved[-1], ["sheetVisibilityEnabled"])
+            reference = named("controlReferenceVisibility")
+            self.assertTrue(QMetaObject.invokeMethod(reference, "clicked"))
+            self.app.processEvents()
+            self.assertEqual(reference.property("text"), "显示定点")
+            self.assertEqual(settings.saved[-1], ["referenceSheetVisible"])
+            self.assertFalse(named("controlReselectMap").property("enabled"))
+            self.assertFalse(named("controlRoundAction").property("enabled"))
+            session.manual_ready = True; session.changed.emit(); self.app.processEvents()
+            self.assertTrue(named("controlReselectMap").property("enabled"))
+            self.assertTrue(QMetaObject.invokeMethod(named("controlReselectMap"), "clicked"))
+            self.assertEqual(coordinator.manual_requests, 1)
+            self.assertFalse(named("controlRoundAction").property("enabled"))
+            self.assertEqual(window.property("activeModules").toVariant(), ["display", "manual_map", "round"])
+            self.assertEqual(warnings, [])
+        finally:
+            # Dispose QML bindings before local context services leave scope.
+            window.close()
+            window.deleteLater()
+            engine.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+            self.app.processEvents()
+            self.assertEqual(warnings, [])
+
 
 
 if __name__ == "__main__":

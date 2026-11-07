@@ -1,3 +1,5 @@
+> Tk pages and the legacy entrypoint have been retired. This migration record preserves historical evidence; current entry and cleanup scope are in [the repository README](../../README.md) and [cleanup record](../../docs/tk-cleanup.md).
+
 # Qt Quick migration map
 
 ## Reviewed group membership: current implementation contract
@@ -508,7 +510,7 @@ No new Setup or real installation is implied by this source update.
 4. Retain representative native-game/window/shortcut/DPI and timing acceptance as separate work requiring safe real inputs. Existing same-input core evidence is reused; do not ask the user to retest every map or run a second game/input owner during their session.
 5. Original-AppId installation/adoption/uninstall and formal release remain separate from the isolated preservation evidence. Do not install into the user's product directory to close this checklist.
 
-Inspection basis: [repository rules](../../AGENTS.md), [development contracts](../../docs/development.md), actual [`GameControlView`](../../app/game_control_view.py) controls and its command map, [`DesktopMainUI`](../../app/desktop_main_ui.py), [`DailyAssistant`](../../app/identityv_daily_assistant.py), [`MapResourcesPage`](../../app/map_resources_page.py), [`MapResourceBrowser`](../../app/map_resource_browser.py), core/resource/package modules named above, and the existing Qt Python/QML files. This document changes no executable behavior.
+Inspection basis: [repository rules](../../AGENTS.md), [development contracts](../../docs/development.md), actual [`GameControlView`](https://github.com/chenhuanh9-a11y/xiaochao-assistant/blob/1f3983bd0ac999671f31adc2f8df58cfe262a4d0/app/game_control_view.py) controls and its command map, [`DesktopMainUI`](https://github.com/chenhuanh9-a11y/xiaochao-assistant/blob/1f3983bd0ac999671f31adc2f8df58cfe262a4d0/app/desktop_main_ui.py), [`DailyAssistant`](https://github.com/chenhuanh9-a11y/xiaochao-assistant/blob/1f3983bd0ac999671f31adc2f8df58cfe262a4d0/app/identityv_daily_assistant.py), [`MapResourcesPage`](https://github.com/chenhuanh9-a11y/xiaochao-assistant/blob/1f3983bd0ac999671f31adc2f8df58cfe262a4d0/app/map_resources_page.py), [`MapResourceBrowser`](https://github.com/chenhuanh9-a11y/xiaochao-assistant/blob/1f3983bd0ac999671f31adc2f8df58cfe262a4d0/app/map_resource_browser.py), core/resource/package modules named above, and the existing Qt Python/QML files. This document changes no executable behavior.
 
 ## Manual map selection (手动选图)
 
@@ -588,10 +590,25 @@ owner's new `require_release` option defaults false for legacy Tk. It does not
 replace the existing release ledger or bounded failure retries.
 
 Saved preference, per-session arming and native running are distinct. Conflicts,
-OS/input errors, binding identity loss and end/stop/reset-round pause/disarm input
-without saving false. Binding loss/end-round still require explicit re-arming in
-that session; restarting may restore readiness, never a held-key gesture. The UI
-switch represents the saved preference even while paused (toggle off/on to re-arm).
+OS/input errors and binding identity loss disarm input without saving false and
+still require explicit re-arming in that session. The UI switch represents the
+saved preference; a separate safety-pause state and re-arm button explain stopped
+input without forcing an off/on toggle. Restarting may restore readiness, never
+a held-key gesture.
+
+Ordinary end/stop/reset-round (including an ending toggle) instead immediately
+suspends the native owner and retains arming. It waits for a post-end start/map/
+capture/manual-start request in the current SessionService generation and a
+validated, non-busy snapshot with a strictly newer committed roundId in active or
+prepared state. Queued starts, unchanged old active flags, failed preparation,
+cancelled/superseded starts, unavailable context and resource leases cannot resume
+input. Both the first manual-start and implicit map-key start use this same gate.
+Normal cross-round resume does not rewrite either settings file. Binding identity,
+foreground, trigger release and pending-release/native-fault gates still apply;
+late key-up failures during the between-round wait become safety pauses. Explicit
+off and safety faults cannot be undone merely by starting another round. This
+round wait is in-process lifecycle state, not a persisted record of the game.
+
 Explicit off stops before validation/I/O and saves false even when other entered
 fields are invalid. Shutdown stops without writing false. Save failures are reported
 and fail closed; a failed off-save cannot promise persistence across restart.

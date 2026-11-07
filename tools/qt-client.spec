@@ -20,6 +20,8 @@ resource_stage = Path(inputs["resourceStage"])
 bundled_author_paths = set(inputs.get("bundledAuthorPaths", []))
 datas = [(str(resource_stage / name), str(Path("qt-author-base" if name in bundled_author_paths else ".") / Path(name).parent))
          for name in inputs["resources"]]
+for name in ("native_glyph_template.png", "template_manifest.json", "s1_entrance_coordinate_index.json"):
+    datas.append((str(root / "s1-private-assets" / name), "s1-private-assets"))
 for path in qt_root.glob("*.qml"):
     datas.append((str(path), "."))
 for path in (qt_root / "icons").glob("*.png"):
@@ -48,8 +50,8 @@ a = Analysis(
                    "PySide6.QtQuick", "PySide6.QtQuickControls2", "numpy", "cv2",
                    "PIL.PngImagePlugin", "PIL.JpegImagePlugin", "PIL.WebPImagePlugin",
                    "client_providers", "map_identity_engine", "alignment_core_v2",
-                   "fast_structure_alignment", "shared_structure_context"],
-    hookspath=[], hooksconfig={}, runtime_hooks=[],
+                   "fast_structure_alignment", "shared_structure_context", "s0_floor_templates"],
+    hookspath=[], hooksconfig={}, runtime_hooks=[str(root / "tools" / "qt_startup_hint_hook.py")],
     excludes=[*PYTHON_MODULE_EXCLUSIONS, "tkinter", "_tkinter", "PIL.ImageTk",
               "turtle", "PyQt5", "PyQt6", "PySide2", "identityv_daily_assistant"],
     noarchive=False,

@@ -18,12 +18,13 @@ from uuid import uuid4
 
 from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, QTimer, QUrl, Qt, Signal, Slot
 
-from client_paths import RESOURCE_ROOT as ROOT, validate_installation_root, bundled_author_root
+from client_paths import RESOURCE_ROOT as ROOT, validate_installation_root, bundled_author_root, runtime_paths
 sys.path.insert(0, str(ROOT / "app"))
 import star_map_import as importer
 import author_package_management as manager
 import client_resource_recovery as recovery
 from client_resource_errors import error_text as _error_text, error_fields, error_category
+from resource_compatibility import compatibility_message
 
 
 def package_cancelled(error):
@@ -44,6 +45,8 @@ def package_problem(error, action, *, online=False, recovery_required=False):
         title, summary = "上次图包操作还没完成", "暂时不能继续导入或删除图包。请点击“恢复记录”，按提示完成上次操作。"
     elif action == "refresh-after-write":
         summary = "图包文件已经处理完，但还没确认是否可用。请点击“核对状态”再检查一次。"
+    elif compatibility_message(code, fields["details"]) is not None:
+        summary = compatibility_message(code, fields["details"])
     elif category == "network":
         summary = "暂时连接不上图包下载服务，这次下载没有完成。请检查网络，稍后重试。"
     elif category == "url":
@@ -54,6 +57,8 @@ def package_problem(error, action, *, online=False, recovery_required=False):
         summary = "图包中的文件与包内说明不一致，暂时不能导入。请重新获取图包提供者发布的完整文件。"
     elif category == "limit":
         summary = "这个图包或下载列表过大，当前软件无法处理。请向图包提供者获取适用于当前版本的文件。"
+    elif code == "dependency-contract-changed-reimport-unsupported":
+        summary = "图包文件相同，但依赖要求已改变，当前不能仅更新依赖记录。本次未导入，原图包和安装记录未改动。"
     elif category == "dependency":
         summary = "这个图包需要的地图文件有缺失，或版本与当前软件不匹配，暂时不能导入。请查看图包适用的版本，使用与当前软件配套的图包。"
     elif category == "conflict":
@@ -86,6 +91,7 @@ def recovery_status_label(status):
         "committed": "更新已完成，待清理临时文件", "rolling-back": "正在恢复更新前的图包",
         "rollback-incomplete": "恢复尚未完成", "rolled-back": "已恢复，待清理临时文件",
         "additions-pending": "上次导入未完成", "removal-pending": "上次删除未完成",
+        "author-snapshot-pending": "作者图版本切换未完成",
         "upgrade-cleanup-pending": "还需清理临时文件", "upgrade-cleanup-available": "有临时文件可清理",
     }.get(status, "需要重新核对")
 
@@ -115,11 +121,13 @@ class _Work(QRunnable):
 def _confirmation_fingerprint(result):
     return json.dumps({key: result.get(key) for key in (
         "packageId", "archiveSha256", "previousReceiptSha256", "files",
-        "replaceFiles", "missingFiles")}, sort_keys=True, separators=(",", ":"))
+        "replaceFiles", "missingFiles", "legacyReceiptSha256", "storageFormat", "snapshotPlanSha256")}, sort_keys=True, separators=(",", ":"))
 
 
 def _duplicate_import(result):
     """Only a committed import with no additions/replacements is a duplicate."""
+    if isinstance(result, dict) and result.get('storageFormat'):
+        return result.get('status') == 'author-already-installed'
     return (isinstance(result, dict) and type(result.get("added")) is int
             and result["added"] == 0 and type(result.get("alreadyPresent")) is int
             and result["alreadyPresent"] > 0 and not result.get("replaceFiles")
@@ -142,6 +150,8 @@ class ResourceService(QObject):
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(1)
         self._rows, self._busy, self._message = [], False, ""
+        self._inventory_verified = False
+        self.resourcesChanged.connect(self._invalidate_inventory_verification)
         self._pending, self._kind = None, ""
         self._token, self._jobs = 0, {}
         self._cancel = threading.Event()
@@ -163,10 +173,19 @@ class ResourceService(QObject):
         self._import_completion_message = ""
         self._import_package_id = ""
         self._helper_popup_request = ""
+        self._startup_compatibility_notice = ""
+
+    def setStartupCompatibilityReport(self, report):
+        """Display verified startup outcome, without rescanning or authorizing changes."""
+        self._startup_compatibility_notice = (
+            "S1 普通模式已停用。旧普通底模仍被历史图包引用，或有本地改动，本次已保留；困难与噩梦资源已核对。"
+            if isinstance(report, dict) and report.get('status') == 'retirement-deferred' else "")
+        self.changed.emit()
 
     packageRows = Property("QVariantList", lambda s: s._rows, notify=changed)
     busy = Property(bool, lambda s: s._busy, notify=changed)
-    message = Property(str, lambda s: "\n".join(filter(None, (s._import_notice, s._recovery_notice, s._message))), notify=changed)
+    message = Property(str, lambda s: "\n".join(filter(None, (s._startup_compatibility_notice, s._import_notice, s._recovery_notice, s._message))), notify=changed)
+    operationStage = Property(str, lambda s: ("cancelling" if s._cancel.is_set() else s._kind) if s._busy else "", notify=changed)
     pendingKind = Property(str, lambda s: s._kind if s._pending else "", notify=changed)
     canCancel = Property(bool, lambda s: s._can_cancel, notify=changed)
     recoveryRequired = Property(bool, lambda s: s._recovery, notify=changed)
@@ -354,7 +373,7 @@ class ResourceService(QObject):
         # A malformed, linked, or unreadable pointer still forbids consumers.
         # This bounded metadata probe does not inspect resource contents.
         for name in ("pending-upgrade.json", "pending-base-repair.json",
-                     "pending-additions.json", "pending-removal.json"):
+                     "pending-additions.json", "pending-removal.json", "pending-author-snapshot.json"):
             try:
                 (self.sandbox / "work/map-packages" / name).lstat()
             except FileNotFoundError:
@@ -393,6 +412,8 @@ class ResourceService(QObject):
                 self.changed.emit()
                 return
             self._lease_id = lease
+        if kind in {"list", "refresh", "refresh-after-write"}:
+            self._inventory_verified = False
         self._token += 1
         self._kind, self._busy, self._can_cancel = kind, True, cancellable
         self._message = message
@@ -409,10 +430,36 @@ class ResourceService(QObject):
 
     def _snapshot(self, cancel):
         importer._pending_upgrade(self.sandbox)
-        rows = manager.managed_author_packages_snapshot(self.sandbox, cancelled=cancel.is_set)
+        rows = manager.managed_author_packages_snapshot(self.sandbox, cancelled=cancel.is_set, inspect_removal=False)
         from bundled_author_resources import bundled_summary
         bundled = bundled_summary(bundled_author_root())
-        return rows + ([bundled] if bundled else [])
+        from season_map_resources import native_builtin_summaries
+        native = native_builtin_summaries(runtime_paths(self.sandbox).resource_root, cancelled=cancel.is_set)
+        return rows + ([bundled] if bundled else []) + native
+
+    inventoryVerified = Property(bool, lambda s: s._inventory_verified, notify=changed)
+
+    def _invalidate_inventory_verification(self):
+        self._inventory_verified = False
+        self.changed.emit()
+
+    def _declarations(self, cancel):
+        from map_package_summary import declared_builtins
+        from resource_transaction import resource_read_lock, assert_resources_ready
+        with resource_read_lock(self.sandbox, wait=True, cancelled=cancel.is_set):
+            assert_resources_ready(self.sandbox)
+            return declared_builtins(runtime_paths(self.sandbox).resource_root,
+                                     bundled_author_root(), cancelled=cancel.is_set)
+
+    @Slot()
+    def listPackages(self):
+        if self._available():
+            # A pending helper receipt retains its original full readback and
+            # completion notification. Plain page opening has no such claim.
+            if self._import_receipt_notification or self._receipt_needs_notification:
+                self.refresh()
+            else:
+                self._start("list", self._declarations, "正在读取图包清单…")
 
     @Slot()
     def refresh(self):
@@ -420,8 +467,13 @@ class ResourceService(QObject):
             self._start("refresh", self._snapshot, "正在核对本地资源…")
 
     @Slot(str)
-    def importArchive(self, file_url):
+    @Slot(str, str)
+    def importArchive(self, file_url, season="s0"):
         if not self._available() or self._recovery:
+            return
+        if season not in {"s0", "s1"}:
+            self._message = "这个赛季尚未支持作者图包导入"
+            self.changed.emit()
             return
         url = QUrl(file_url)
         path = Path(url.toLocalFile()) if url.isLocalFile() else Path(file_url)
@@ -429,7 +481,7 @@ class ResourceService(QObject):
             self._message = self._report_problem("non-local-archive", "inspect")
             self.changed.emit()
             return
-        self._start("inspect", lambda cancel: (str(path), importer.inspect_package(path, self.sandbox)),
+        self._start("inspect", lambda cancel: (str(path), importer.inspect_package(path, self.sandbox, season=season, versioned=True)),
                     "正在检查图包文件…")
 
     @Slot(str)
@@ -466,7 +518,7 @@ class ResourceService(QObject):
             importer._no_links(path)
             if path.stat().st_size != expected["bytes"]:
                 raise importer.ImportRejected("online-archive-size-mismatch")
-            result = importer.inspect_package(path, self.sandbox)
+            result = importer.inspect_package(path, self.sandbox, season="s0", versioned=True)
             if (result.get("packageId") != expected["packageId"]
                     or result.get("archiveSha256") != expected["sha256"]
                     or path.stat().st_size != expected["bytes"]):
@@ -476,12 +528,14 @@ class ResourceService(QObject):
         return self._busy
 
     def _install(self, path, result):
+        season = result.get("season", "s0")
         live = importer.supports_live_author_import(result)
+        versioned = bool(result.get('storageFormat'))
         if not live and self._import_launcher is not None:
             launcher = self._import_launcher
             def launch(_cancel):
                 with importer._writer_locked_installation(self.sandbox, require_closed=False) as (root, _state):
-                    current = importer.inspect_package(path, root)
+                    current = importer.inspect_package(path, root, season=season, versioned=versioned)
                     if _confirmation_fingerprint(current) != _confirmation_fingerprint(result):
                         raise importer.ImportRejected("resource-plan-changed-reinspect-required")
                     request_id = launcher(path, dict(result))
@@ -496,19 +550,19 @@ class ResourceService(QObject):
                 # consent under the same OS writer lock as the shared live
                 # transaction, including the previous receipt fingerprint.
                 with importer._writer_locked_installation(self.sandbox, require_closed=False) as (root, state):
-                    current = importer.inspect_package(path, root)
+                    current = importer.inspect_package(path, root, season=season, versioned=versioned)
                     if _confirmation_fingerprint(current) != _confirmation_fingerprint(result):
                         raise importer.ImportRejected("resource-plan-changed-reinspect-required")
-                    return importer._install_staged(path, root, state, live=True,
-                        expected_archive_sha256=result["archiveSha256"], cancelled=cancel.is_set)
+                    return importer._install_staged(path, root, state, season=season, live=True,
+                        expected_archive_sha256=result["archiveSha256"], cancelled=cancel.is_set, versioned=versioned)
             # Hold the same writer lock between confirmation recheck and the
             # existing staging/upgrade transaction; never expand an old consent.
             with importer._locked_installation(self.sandbox, True) as (root, state):
-                current = importer.inspect_package(path, root)
+                current = importer.inspect_package(path, root, season=season, versioned=versioned)
                 if _confirmation_fingerprint(current) != _confirmation_fingerprint(result):
                     raise importer.ImportRejected("resource-plan-changed-reinspect-required")
-                return importer._install_staged(path, root, state,
-                    expected_archive_sha256=result["archiveSha256"])
+                return importer._install_staged(path, root, state, season=season,
+                    expected_archive_sha256=result["archiveSha256"], versioned=versioned)
         self._start("install", install, "正在安装图包，请等待完成…",
                     cancellable=live)
 
@@ -589,7 +643,7 @@ class ResourceService(QObject):
             self._recovery = self._recovery or code in {
                 "upgrade-recovery-required", "pending-upgrade", "base-recovery-required",
                 "upgrade-cleanup-incomplete", "base-cleanup-incomplete",
-                "additions-recovery-required", "removal-recovery-required"} or recovery
+                "additions-recovery-required", "removal-recovery-required", "author-snapshot-recovery-required"} or recovery
             if self._recovery:
                 self._rows = [dict(row, canRemove=False, status="recovery-required") for row in self._rows]
                 self._message = self._report_problem(error, kind, recovery_required=True)
@@ -609,7 +663,7 @@ class ResourceService(QObject):
                 # the live package manager owns deletion invalidation.
                 self.resourcesChanged.emit()
             return
-        if kind in ("refresh", "inspect", "inspect-remove", "refresh-after-write", "recovery-history", "inspect-recovery") and self._cancel.is_set():
+        if kind in ("list", "refresh", "inspect", "inspect-remove", "refresh-after-write", "recovery-history", "inspect-recovery") and self._cancel.is_set():
             self._message, self._kind = "操作已取消。", ""
             if kind == "refresh-after-write":
                 self._import_completion_message = ""
@@ -654,6 +708,10 @@ class ResourceService(QObject):
             self.changed.emit()
             self.importCloseRequested.emit()
             return
+        elif kind == "list":
+            self._inventory_verified = False
+            self._rows, self._recovery, self._kind = result, False, ""
+            self._message = "清单已读取，内容尚未核对；使用“核对状态”检查文件。"
         elif kind == "refresh":
             self._rows, self._recovery, self._kind = result, False, ""
             if self._import_receipt_notification:
@@ -671,15 +729,24 @@ class ResourceService(QObject):
                 self._receipt_needs_notification = False
                 self._recovery_notice = self._recovery_verified_notice
                 self.resourcesChanged.emit()
+            self._inventory_verified = True
         elif kind == "inspect":
             path, inspection = result
             self._import_package_id = str(inspection.get("packageId", ""))
-            if (inspection.get("replaceFiles") or (self._import_launcher is not None
+            if (inspection.get("requiresConfirmation") or inspection.get("replaceFiles") or (self._import_launcher is not None
                     and not importer.supports_live_author_import(inspection))):
                 self._kind, self._pending = "overwrite", (path, inspection)
                 self._message = "请确认是否更新这个图包。"
                 self.changed.emit()
-                self.confirmationRequested.emit("更新图包", "将更新“%s”中的 %s 个文件，并新增 %s 个文件。\n\n只替换能确认属于这个图包、且没有被改动的文件。处理失败时会恢复尚未完成的更改；成功后会清理临时文件。\n点击取消可返回，不会开始更新。" % (
+                if inspection.get('storageFormat'):
+                    self.confirmationRequested.emit("切换作者图版本",
+                        f"{inspection.get('displayName', inspection['packageId'])}\n"
+                        f"新版将移除 {len(inspection['removedLayers'])} 层、改变 {len(inspection['formatChangedLayers'])} 层图片格式。\n"
+                        f"有 {len(inspection['inactiveLayers'])} 层暂不可用，仅启用核对通过的层。\n\n"
+                        "原版本、旧文件与改动内容均保留，不会覆盖；自定义路线和底模不变。新版不包含的层将不再显示。"
+                        "保留版本会继续占用磁盘空间，当前没有自动清理或一键回退。取消不会切换。")
+                    return
+                self.confirmationRequested.emit("更新图包", ("已识别到受支持的旧版图包，无需手动寻找或删除文件。\n\n" if inspection.get("legacyReceiptSha256") else "") + "将更新“%s”中的 %s 个文件，并新增 %s 个文件。\n\n只替换能确认属于这个图包、且没有被改动的文件。处理失败时会恢复尚未完成的更改；成功后会清理临时文件。\n点击取消可返回，不会开始更新。" % (
                     package_title(inspection["packageId"]), len(inspection["replaceFiles"]), len(inspection["missingFiles"]))
                     + ("\n\n确认后软件会正常退出再导入，完成后请重新打开查看结果。" if self._import_launcher is not None and not importer.supports_live_author_import(inspection) else ""))
                 return
@@ -689,6 +756,11 @@ class ResourceService(QObject):
             self._kind, self._pending = "remove", result
             self._message = "等待确认备份并移除。"
             self.changed.emit()
+            if result.get('storageFormat'):
+                self.confirmationRequested.emit("停用作者图包",
+                    result['title'] + "\n将停用当前作者图版本，全部图片、旧版本与修改内容仍保留，不释放磁盘空间。"
+                    "底模、自定义路线及设置不变。可以重新导入 ZIP 启用；当前没有一键回退。")
+                return
             self.confirmationRequested.emit("备份并移除图包", "%s\n将保留备份并移除 %s 个地图图片文件（%s 字节），其中 %s 个有改动、%s 个已缺失。保留 %s 个软件必需文件，以及来源不明的文件和自定义路线。\n\n此操作会保留备份，但不能在软件中一键恢复。" % (
                 result["title"], result["fileCount"], result["bytes"], len(result["modifiedFiles"]),
                 len(result["missingFiles"]), result["preservedCoreFiles"]))
@@ -701,6 +773,8 @@ class ResourceService(QObject):
             # Keep the final feedback pending until the actual-state scan succeeds.
             self._import_completion_message = (("这个图包已经安装，无需重复导入。" if duplicate else
                 "图包安装完成，可以使用了。") if kind == "install" else "")
+            if kind == 'install' and result.get('inactiveLayers'):
+                self._import_completion_message = "图包版本已保存，仅启用核对通过的层；其余层及文件保留。请在资源管理查看逐层兼容结果。"
             self._message = ("图包已移除，备份已保留。" if kind == "remove" else
                              "这个图包已经安装，正在核对当前状态…" if duplicate else
                              "图包文件已安装，正在核对是否可用…")
@@ -719,6 +793,7 @@ class ResourceService(QObject):
             return
         elif kind == "refresh-after-write":
             self._rows, self._recovery, self._kind = result, False, ""
+            self._inventory_verified = True
             if self._import_completion_message:
                 self._message = self._import_completion_message
                 title = next((str(row.get("title") or row.get("name") or package_title(self._import_package_id))

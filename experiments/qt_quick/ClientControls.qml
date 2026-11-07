@@ -25,7 +25,7 @@ Window {
     readonly property var snapshot: session.snapshot
     property var groupChoices: []
     property string groupChoicesKey: ""
-    readonly property bool groupVisible: !!snapshot.groupId && groupChoices.length > 1
+    readonly property bool groupVisible: snapshot.season !== "s1" && !!snapshot.groupId && groupChoices.length > 1
         && (snapshot.identityPhase === "GROUP_LOCKED" || snapshot.identityPhase === "MEMBER_VERIFIED"
             || snapshot.identityPhase === "MANUAL_MEMBER_CONFIRMED")
         && snapshot.candidateEditMode !== true
@@ -38,7 +38,20 @@ Window {
     readonly property bool groupHeld: snapshot.manualGroupMemberHeld === true
     readonly property bool groupPending: snapshot.groupMemberSelectionPending === true
     readonly property string appliedMode: session.appliedMode || session.currentMode
-    readonly property var activeModules: layout.order.filter(function(key) { return layout.enabled.indexOf(key) >= 0 })
+    readonly property bool compactAutomatic: false
+    property bool recoveryExpanded: false
+    readonly property var activeModules: layout.order.filter(function(key) {
+        return layout.enabled.indexOf(key) >= 0
+            && (snapshot.season !== "s1" || (key !== "manual_map" && key !== "recognition"))
+    })
+    readonly property var privateIdentity: snapshot.privateExperiment || ({})
+    readonly property string privateLockedMap: privateIdentity.privateLockMapId || ""
+    readonly property bool privateIdentityRetained: snapshot.season === "s1" && snapshot.roundActive === true
+        && privateIdentity.privateExperimentalLocked === true && privateLockedMap.length > 0
+    readonly property bool privatePoseCurrent: snapshot.displayAuthorized === true
+        && (snapshot.provisionalMapId || snapshot.mapId || "") === privateLockedMap
+    readonly property bool unconfirmedCandidate: snapshot.identityLocked !== true
+        && (snapshot.candidateDisplayOnly === true || snapshot.identityPhase === "CANDIDATE_DISPLAY")
     readonly property var actionOrder: ["toggle-panel", "candidate-prev", "candidate-next", "confirm-round", "cycle-floor", "end-round", "toggle-sheet-visibility", "start-round", "toggle-round", "manual-map-picker"]
     readonly property bool manualSelection: preferences.mapSelectionMode === "manual"
     Component.onCompleted: syncGroupChoices()
@@ -56,6 +69,18 @@ Window {
         }
         const key = JSON.stringify(rows)
         if (key !== groupChoicesKey) { groupChoicesKey = key; groupChoices = rows }
+    }
+    function chooseCandidate(index, row) {
+        let payload = {index: index}
+        if (row && row.selectionSeason === "s1")
+            payload.candidateMapId = row.mapId
+        if (row && row.structureSupported === true) {
+            payload.mapId = row.mapId
+            payload.structureFrameId = row.structureFrameId
+            payload.structureGeneration = row.structureGeneration
+            payload.structureRoundId = row.structureRoundId
+        }
+        session.dispatchWithPayload("select_candidate", payload)
     }
     function groupName(id) {
         const row = groupChoices.find(row => row.mapId === id)
@@ -96,6 +121,9 @@ Window {
             && snapshot.identityPhase !== "MEMBER_VERIFIED" && snapshot.identityPhase !== "MANUAL_MEMBER_CONFIRMED")
     }
     function mapText() {
+        if (privateIdentityRetained) return "本局 " + privateLockedMap
+        if (unconfirmedCandidate)
+            return "候选 " + (snapshot.provisionalMapId || snapshot.mapName || snapshot.mapId || "待核对")
         if (snapshot.identityPhase === "MANUAL_MEMBER_CONFIRMED") {
             var id = snapshot.currentGroupMemberId || snapshot.manualGroupMemberId || snapshot.mapId || ""
             var rows = snapshot.groupMemberRows || []
@@ -107,6 +135,13 @@ Window {
     }
     function statusText() {
         if (snapshot.contextPending) return "正在切换模式或路线"
+        if (snapshot.s1FormalRoundLock === true && snapshot.identityLocked === true)
+            return "地图已锁定 · " + (snapshot.displayAuthorized ? outputStatus() : "位置待核对")
+        if (snapshot.s1FormalRoundLock === true && snapshot.roundActive && snapshot.s1RemainingCandidateCount > 0)
+            return "正在核对 · 剩余 " + snapshot.s1RemainingCandidateCount + " 个候选"
+        if (privateIdentityRetained) return "实验锁定 · " + (privatePoseCurrent ? outputStatus() : "位置待核对")
+        if (unconfirmedCandidate) return (snapshot.evidenceKind === "recorded" ? "录制研究" : "自动候选")
+            + " · 地图未确认 · " + (snapshot.displayAuthorized ? outputStatus() : "位置待核对")
         if (snapshot.manualSelectionPending) return "手动选图 · 等待选择本局地图"
         if (session.busy && snapshot.pendingAction === "start_round") return "正在准备本局"
         if (snapshot.roundPreparing) return "已准备 · 打开游戏地图后开始"
@@ -136,6 +171,9 @@ Window {
     function floorText() {
         if (snapshot.controlFloorText) return snapshot.controlFloorText
         var floor = snapshot.observedFloor
+        if (snapshot.season === "s1")
+            return ["-1", "-2", "-3", "-4"].indexOf(String(floor)) >= 0
+                ? "观测楼层 B" + Math.abs(Number(floor)) : "楼层待核对"
         return floor === "B1" ? "观测楼层 B1" : floor === "1" || floor === "2" ? "观测楼层 F" + floor : "楼层待核对"
     }
     function visibilityText(value, yes, no, unknown) { return value === true ? yes : value === false ? no : unknown }
@@ -242,8 +280,10 @@ Window {
                         MenuItem { text: "自定义控件"; onTriggered: clientCoordinator.navigate("settings") }
                         MenuItem { objectName: "controlHideControls"; text: "隐藏控件"; onTriggered: clientCoordinator.hideControls() }
                         MenuSeparator {}
-                        MenuItem { text: panel.manualSelection ? "选择本局地图" : "选择地图"; enabled: panel.available("reselect_map"); onTriggered: clientCoordinator.requestManualMapSelection() }
-                        MenuItem { text: "重新识别"; enabled: panel.available("capture_now"); onTriggered: session.dispatch("capture_now") }
+                        MenuItem { text: "重新识别"; enabled: panel.available("capture_now"); onTriggered: {
+                            if (panel.snapshot.season === "s1") session.dispatchWithPayload("capture_now", {forceCatalogue: true})
+                            else session.dispatch("capture_now")
+                        } }
                         MenuItem { objectName: "controlsRecognitionMenu"; text: "打开候选列表（切到主界面）"; onTriggered: clientCoordinator.openRecognitionDetails() }
                     }
                 }
@@ -262,6 +302,7 @@ Window {
                 ColumnLayout {
                     objectName: "controlGroupMemberSection"
                     visible: panel.groupVisible
+                    enabled: panel.groupVisible
                     Layout.fillWidth: true; Layout.bottomMargin: visible ? 8 : 0; spacing: 4
                     Label { text: "选择本组地图"; color: "#142b4b"; font.family: "Microsoft YaHei UI"; font.pixelSize: 13; font.bold: true; Layout.fillWidth: true }
                     Label {
@@ -310,6 +351,18 @@ Window {
                         }
                     }
                 }
+                ControlButton {
+                    objectName: "controlRecoveryToggle"
+                    visible: panel.compactAutomatic
+                    text: panel.recoveryExpanded ? "收起恢复选项" : "手动恢复 / 更多"
+                    Layout.fillWidth: true
+                    onClicked: panel.recoveryExpanded = !panel.recoveryExpanded
+                }
+                Loader {
+                    active: panel.compactAutomatic && panel.recoveryExpanded
+                    visible: active; Layout.fillWidth: true
+                    sourceComponent: manualMapModule
+                }
             }
         }
         ColumnLayout {
@@ -348,6 +401,7 @@ Window {
                     KeyHint { text: panel.shortcut("toggle-sheet-visibility") }
                 }
                 ColumnLayout {
+                    visible: true
                     Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop; spacing: 2
                     ControlButton { objectName: "controlReferenceVisibility"; text: panel.preferences.referenceSheetVisible ? "隐藏定点" : "显示定点"; icon.source: "icons/map.png"; selected: panel.preferences.referenceSheetVisible === true; enabled: !settingsService.busy; Layout.fillWidth: true; hint: "切换定点地图显示，保留已选择的地图"; onClicked: clientCoordinator.toggleReferenceVisibility() }
                     ControlButton { visible: !!panel.layout.display.referencePosition && !panel.editing; objectName: "controlEditReferencePosition"; text: "编辑位置"; hint: "拖动定点地图，完成后保存位置"; implicitHeight: 30; Layout.fillWidth: true; onClicked: clientCoordinator.beginReferenceEdit() }
@@ -361,10 +415,18 @@ Window {
         id: modeModule
         ColumnLayout {
             spacing: 4
-            RowLayout {
-                Layout.fillWidth: true; Layout.topMargin: 8; spacing: 4
-                ControlButton { objectName: "controlModeNightmare"; text: panel.appliedMode === "nightmare" ? "噩梦 · 已选" : "噩梦"; primary: panel.appliedMode === "nightmare"; selected: panel.appliedMode === "nightmare"; enabled: panel.modeAvailable(); Layout.fillWidth: true; onClicked: clientCoordinator.setMode("nightmare") }
-                ControlButton { objectName: "controlModeDifficult"; text: panel.appliedMode === "difficult" ? "困难 · 已选" : "困难"; primary: panel.appliedMode === "difficult"; selected: panel.appliedMode === "difficult"; enabled: panel.modeAvailable(); Layout.fillWidth: true; onClicked: clientCoordinator.setMode("difficult") }
+            SeasonSelector {
+                objectName: "controlGameContext"
+                Layout.fillWidth: true; Layout.topMargin: 8
+                seasons: settingsService.seasonOptions
+                season: session.appliedSeason; mode: panel.appliedMode
+                                allowCurrentContextRequest: !!settingsService.persistedValues
+                                    && (settingsService.persistedValues.gameSeason !== session.appliedSeason
+                                        || settingsService.persistedValues.gameMode !== session.appliedMode)
+                nightmareObjectName: "controlModeNightmare"
+                difficultObjectName: "controlModeDifficult"
+                enabled: panel.modeAvailable()
+                onContextRequested: function(season, mode) { clientCoordinator.requestGameContext(season, mode) }
             }
         }
     }
@@ -372,13 +434,29 @@ Window {
         id: manualMapModule
         ColumnLayout {
             spacing: 4
+            ControlButton {
+                objectName: "controlPrepareManualAlignment"
+                visible: panel.snapshot.season === "s1" && !panel.snapshot.manualAlignmentSession
+                text: "准备手动贴合"; Layout.fillWidth: true
+                enabled: panel.available("prepare_manual_alignment")
+                hint: "人工选择地图；B1～B4 自动观察，B3/B4 为未实测的私测能力"
+                onClicked: session.dispatch("prepare_manual_alignment")
+            }
+            KeyHint {
+                visible: panel.snapshot.manualAlignmentSession === true
+                text: "手动选图；自动观察当前 B1～B4。B3/B4 已有静态截图核验，实时贴合待测，识别不确定时停止贴合；默认目标不代表已观察。"
+            }
             RowLayout {
                 Layout.fillWidth: true; spacing: 4
                 ControlButton {
                     objectName: "controlMapSelectionAuto"
                     text: "自动识别"; selected: !panel.manualSelection
                     enabled: !settingsService.busy; Layout.fillWidth: true
-                    hint: "打开地图后自动识别本局地图"
+                    hint: panel.snapshot.candidateProvisionalDisplayEnabled === true
+                        ? "每次开图重新筛选，可信位姿自动显示未锁定候选整图"
+                        : panel.snapshot.candidateStructureAvailable === true
+                        ? "读取当前楼层并列出结构候选，地图身份仍需确认"
+                        : "打开地图后自动识别本局地图"
                     onClicked: clientCoordinator.setMapSelectionMode("auto")
                 }
                 ControlButton {
@@ -399,20 +477,37 @@ Window {
             }
             KeyHint { visible: panel.manualSelection && panel.shortcut("manual-map-picker") !== ""; text: "手动选图快捷键 " + panel.shortcut("manual-map-picker") }
             KeyHint { visible: !panel.available("reselect_map"); text: panel.snapshot.resourceLocked ? "等待资源操作完成" : "正在准备地图资源" }
-            RowLayout {
+            GridLayout {
                 visible: (panel.snapshot.availableFloors || []).length > 0
-                Layout.fillWidth: true; spacing: 4
+                columns: panel.snapshot.season === "s1" ? 1 : 5
+                Layout.fillWidth: true; rowSpacing: 4; columnSpacing: 4
+                ControlButton {
+                    objectName: "controlManualFloor_auto"
+                    visible: panel.snapshot.season === "s1" && panel.snapshot.automaticFloorObservationAvailable === true
+                    text: "自动当前楼层（B1～B4）"; selected: !panel.snapshot.manualFloor
+                    enabled: panel.available("set_floor"); Layout.fillWidth: true
+                    onClicked: session.dispatchWithPayload("set_floor", {floor: "auto"})
+                }
                 Repeater {
                     model: panel.snapshot.availableFloors || []
                     delegate: ControlButton {
                         required property string modelData
-                        text: modelData === "B1" ? "B1" : "F" + modelData
-                        selected: String(panel.snapshot.manualFloor || panel.snapshot.floor) === modelData
+                        objectName: "controlManualFloor_" + modelData
+                        visible: !(panel.snapshot.season === "s1" && panel.snapshot.automaticFloorObservationAvailable === true)
+                        text: panel.snapshot.season === "s1" ? "人工回退 B" + Math.abs(Number(modelData)) + ((modelData === "-3" || modelData === "-4") ? "（实机待验）" : "") : modelData === "B1" ? "B1" : "F" + modelData
+                        selected: panel.snapshot.season === "s1" ? String(panel.snapshot.manualFloor || "") === modelData : String(panel.snapshot.manualFloor || panel.snapshot.floor) === modelData
                         enabled: panel.available("set_floor"); implicitWidth: 50; Layout.fillWidth: true
                         onClicked: session.dispatchWithPayload("set_floor", {floor: modelData})
                     }
                 }
-                ControlButton { text: "切换"; implicitWidth: 54; enabled: panel.available("cycle_floor"); onClicked: session.dispatch("cycle_floor") }
+                ControlButton { visible: !(panel.snapshot.season === "s1" && panel.snapshot.automaticFloorObservationAvailable === true); text: "切换"; implicitWidth: 54; enabled: panel.available("cycle_floor"); onClicked: session.dispatch("cycle_floor") }
+            }
+            ControlButton {
+                objectName: "controlFitManualFrame"
+                visible: panel.snapshot.manualAlignmentSession === true
+                text: "贴合当前画面"; Layout.fillWidth: true
+                enabled: panel.available("fit_manual_frame")
+                onClicked: session.dispatch("fit_manual_frame")
             }
         }
     }
@@ -429,16 +524,16 @@ Window {
                 displayText: count > 0 && currentIndex >= 0 ? "候选：" + currentText : "尚无候选"
                 font.family: "Microsoft YaHei UI"; font.pixelSize: 13
                 Accessible.name: "选择识别候选地图"
-                onActivated: function(index) { session.dispatchWithPayload("select_candidate", {index: index}) }
+                onActivated: function(index) { panel.chooseCandidate(index, model[index]) }
             }
-            ControlButton { text: "上一候选"; enabled: panel.available("previous_candidate"); Layout.fillWidth: true; onClicked: session.dispatch("previous_candidate") }
-            KeyHint { text: panel.shortcut("candidate-prev") }
-            ControlButton { text: "下一候选"; enabled: panel.available("next_candidate"); Layout.fillWidth: true; onClicked: session.dispatch("next_candidate") }
-            KeyHint { text: panel.shortcut("candidate-next") }
-            ControlButton { text: "确认地图"; enabled: panel.available("confirm_route"); Layout.fillWidth: true; onClicked: session.dispatch("confirm_route") }
-            KeyHint { text: panel.shortcut("confirm-round") }
-            ControlButton { text: "重新识别"; enabled: panel.available("capture_now"); Layout.fillWidth: true; onClicked: session.dispatch("capture_now") }
-            ControlButton { objectName: "controlsRecognitionDetails"; text: "打开候选列表（切到主界面）"; Layout.fillWidth: true; onClicked: clientCoordinator.openRecognitionDetails() }
+            ControlButton { visible: !panel.compactAutomatic || panel.recoveryExpanded; text: "上一候选"; enabled: panel.available("previous_candidate"); Layout.fillWidth: true; onClicked: session.dispatch("previous_candidate") }
+            KeyHint { text: !panel.compactAutomatic || panel.recoveryExpanded ? panel.shortcut("candidate-prev") : "" }
+            ControlButton { visible: !panel.compactAutomatic || panel.recoveryExpanded; text: "下一候选"; enabled: panel.available("next_candidate"); Layout.fillWidth: true; onClicked: session.dispatch("next_candidate") }
+            KeyHint { text: !panel.compactAutomatic || panel.recoveryExpanded ? panel.shortcut("candidate-next") : "" }
+            ControlButton { visible: !panel.compactAutomatic || panel.recoveryExpanded; text: panel.snapshot.candidateProvisionalDisplayEnabled === true ? "人工确认本局地图（可选）" : "确认地图"; enabled: panel.available("confirm_route"); Layout.fillWidth: true; onClicked: session.dispatch("confirm_route") }
+            KeyHint { text: !panel.compactAutomatic || panel.recoveryExpanded ? panel.shortcut("confirm-round") : "" }
+            ControlButton { objectName: "controlReidentify"; text: panel.snapshot.s1FormalRoundLock && panel.snapshot.identityLocked ? "重新贴合" : "重新识别"; enabled: panel.available("capture_now"); Layout.fillWidth: true; onClicked: session.dispatchWithPayload("capture_now", {forceCatalogue: !(panel.snapshot.s1FormalRoundLock && panel.snapshot.identityLocked)}) }
+            ControlButton { objectName: "controlsRecognitionDetails"; visible: !panel.compactAutomatic || panel.recoveryExpanded; text: "打开候选列表（切到主界面）"; Layout.fillWidth: true; onClicked: clientCoordinator.openRecognitionDetails() }
         }
     }
     Component {

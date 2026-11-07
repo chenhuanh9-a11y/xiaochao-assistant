@@ -1,0 +1,677 @@
+{
+  "scope": "synthetic provider publish/request followed by clear_aligned; no input/capture/solver/visible pixels",
+  "summary": {
+    "baseline": {
+      "p50": 3.6907755,
+      "p95": 5.538434,
+      "sampledPeakRssBytes": 118771712
+    },
+    "candidate": {
+      "p50": 0.3286055,
+      "p95": 0.568436,
+      "sampledPeakRssBytes": 102309888
+    }
+  },
+  "runs": [
+    {
+      "scope": "synthetic-provider-only-not-game-or-visible-render",
+      "scenario": "clear-reopen",
+      "cycles": 1000,
+      "width": 1920,
+      "height": 1080,
+      "intervalMs": 0,
+      "elapsedSeconds": 3.749901746006799,
+      "qt": "6.11.1",
+      "python": "3.12.14",
+      "platform": "linux",
+      "latencyMs": {
+        "n": 1000,
+        "p50": 3.6907755,
+        "p95": 5.538434,
+        "max": 26.806012,
+        "percentileMethod": "nearest-rank"
+      },
+      "initialRssBytes": 76828672,
+      "sampledPeakRssBytes": 118771712,
+      "processLifetimePeakRssBytes": 118517760,
+      "processLifetimePeakRssSource": "getrusage-ru-maxrss",
+      "finalRssBytes": 69132288,
+      "peakProviderOwnedBytes": 8294400,
+      "consumerBytesAfterProviderClear": 8294400,
+      "providerEntriesAfterClear": 0,
+      "pixelMismatchCount": 0,
+      "networkAttempts": 0,
+      "samples": [
+        {
+          "cycle": 0,
+          "elapsedSeconds": 0.020377089007524773,
+          "rssBytes": 110436352,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 100,
+          "elapsedSeconds": 0.37155103900295217,
+          "rssBytes": 110440448,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 200,
+          "elapsedSeconds": 0.7262667850009166,
+          "rssBytes": 110444544,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 300,
+          "elapsedSeconds": 1.0864831770013552,
+          "rssBytes": 110452736,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 400,
+          "elapsedSeconds": 1.496868906004238,
+          "rssBytes": 110456832,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 500,
+          "elapsedSeconds": 1.8659435129957274,
+          "rssBytes": 110460928,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 600,
+          "elapsedSeconds": 2.224244686003658,
+          "rssBytes": 110465024,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 700,
+          "elapsedSeconds": 2.597475073998794,
+          "rssBytes": 110465024,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 800,
+          "elapsedSeconds": 2.9454520779981976,
+          "rssBytes": 110469120,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 900,
+          "elapsedSeconds": 3.3479197080014274,
+          "rssBytes": 110473216,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 999,
+          "elapsedSeconds": 3.74986322800396,
+          "rssBytes": 118771712,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        }
+      ],
+      "variant": "baseline",
+      "pair": 0
+    },
+    {
+      "scope": "synthetic-provider-only-not-game-or-visible-render",
+      "scenario": "clear-reopen",
+      "cycles": 1000,
+      "width": 1920,
+      "height": 1080,
+      "intervalMs": 0,
+      "elapsedSeconds": 0.5449008290015627,
+      "qt": "6.11.1",
+      "python": "3.12.14",
+      "platform": "linux",
+      "latencyMs": {
+        "n": 1000,
+        "p50": 0.3286055,
+        "p95": 0.607716,
+        "max": 6.222946,
+        "percentileMethod": "nearest-rank"
+      },
+      "initialRssBytes": 76394496,
+      "sampledPeakRssBytes": 101752832,
+      "processLifetimePeakRssBytes": 101486592,
+      "processLifetimePeakRssSource": "getrusage-ru-maxrss",
+      "finalRssBytes": 68706304,
+      "peakProviderOwnedBytes": 8294400,
+      "consumerBytesAfterProviderClear": 8294400,
+      "providerEntriesAfterClear": 0,
+      "pixelMismatchCount": 0,
+      "networkAttempts": 0,
+      "samples": [
+        {
+          "cycle": 0,
+          "elapsedSeconds": 0.015080151002621278,
+          "rssBytes": 93429760,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 100,
+          "elapsedSeconds": 0.06295031600166112,
+          "rssBytes": 101728256,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 200,
+          "elapsedSeconds": 0.11138303900952451,
+          "rssBytes": 101728256,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 300,
+          "elapsedSeconds": 0.16274370400060434,
+          "rssBytes": 101732352,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 400,
+          "elapsedSeconds": 0.21272377800778486,
+          "rssBytes": 101736448,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 500,
+          "elapsedSeconds": 0.2671376729995245,
+          "rssBytes": 101740544,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 600,
+          "elapsedSeconds": 0.3377317560079973,
+          "rssBytes": 101744640,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 700,
+          "elapsedSeconds": 0.39865559300233144,
+          "rssBytes": 101744640,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 800,
+          "elapsedSeconds": 0.44839261200104374,
+          "rssBytes": 101748736,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 900,
+          "elapsedSeconds": 0.49700316300732084,
+          "rssBytes": 101752832,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 999,
+          "elapsedSeconds": 0.5448823510087095,
+          "rssBytes": 93462528,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        }
+      ],
+      "variant": "candidate",
+      "pair": 0
+    },
+    {
+      "scope": "synthetic-provider-only-not-game-or-visible-render",
+      "scenario": "clear-reopen",
+      "cycles": 1000,
+      "width": 1920,
+      "height": 1080,
+      "intervalMs": 0,
+      "elapsedSeconds": 3.5003315350040793,
+      "qt": "6.11.1",
+      "python": "3.12.14",
+      "platform": "linux",
+      "latencyMs": {
+        "n": 1000,
+        "p50": 3.6647265,
+        "p95": 5.281597,
+        "max": 10.060728,
+        "percentileMethod": "nearest-rank"
+      },
+      "initialRssBytes": 76779520,
+      "sampledPeakRssBytes": 118726656,
+      "processLifetimePeakRssBytes": 118472704,
+      "processLifetimePeakRssSource": "getrusage-ru-maxrss",
+      "finalRssBytes": 69087232,
+      "peakProviderOwnedBytes": 8294400,
+      "consumerBytesAfterProviderClear": 8294400,
+      "providerEntriesAfterClear": 0,
+      "pixelMismatchCount": 0,
+      "networkAttempts": 0,
+      "samples": [
+        {
+          "cycle": 0,
+          "elapsedSeconds": 0.021770060993731022,
+          "rssBytes": 110387200,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 100,
+          "elapsedSeconds": 0.37586636299965903,
+          "rssBytes": 110391296,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 200,
+          "elapsedSeconds": 0.7039652749954257,
+          "rssBytes": 110399488,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 300,
+          "elapsedSeconds": 1.0591590399999404,
+          "rssBytes": 110407680,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 400,
+          "elapsedSeconds": 1.3992365949961822,
+          "rssBytes": 110411776,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 500,
+          "elapsedSeconds": 1.7539998680003919,
+          "rssBytes": 110415872,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 600,
+          "elapsedSeconds": 2.1084884500014596,
+          "rssBytes": 110419968,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 700,
+          "elapsedSeconds": 2.4638150859973393,
+          "rssBytes": 110419968,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 800,
+          "elapsedSeconds": 2.821707968003466,
+          "rssBytes": 110424064,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 900,
+          "elapsedSeconds": 3.168664343000273,
+          "rssBytes": 110428160,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 999,
+          "elapsedSeconds": 3.500278145002085,
+          "rssBytes": 118726656,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        }
+      ],
+      "variant": "baseline",
+      "pair": 1
+    },
+    {
+      "scope": "synthetic-provider-only-not-game-or-visible-render",
+      "scenario": "clear-reopen",
+      "cycles": 1000,
+      "width": 1920,
+      "height": 1080,
+      "intervalMs": 0,
+      "elapsedSeconds": 0.5025316579994978,
+      "qt": "6.11.1",
+      "python": "3.12.14",
+      "platform": "linux",
+      "latencyMs": {
+        "n": 1000,
+        "p50": 0.32279599999999997,
+        "p95": 0.459752,
+        "max": 2.19728,
+        "percentileMethod": "nearest-rank"
+      },
+      "initialRssBytes": 76939264,
+      "sampledPeakRssBytes": 102309888,
+      "processLifetimePeakRssBytes": 102150144,
+      "processLifetimePeakRssSource": "getrusage-ru-maxrss",
+      "finalRssBytes": 69263360,
+      "peakProviderOwnedBytes": 8294400,
+      "consumerBytesAfterProviderClear": 8294400,
+      "providerEntriesAfterClear": 0,
+      "pixelMismatchCount": 0,
+      "networkAttempts": 0,
+      "samples": [
+        {
+          "cycle": 0,
+          "elapsedSeconds": 0.014852218999294564,
+          "rssBytes": 93982720,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 100,
+          "elapsedSeconds": 0.06282684100733604,
+          "rssBytes": 102281216,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 200,
+          "elapsedSeconds": 0.11164765899593476,
+          "rssBytes": 102285312,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 300,
+          "elapsedSeconds": 0.16039279200776946,
+          "rssBytes": 102289408,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 400,
+          "elapsedSeconds": 0.20996362999721896,
+          "rssBytes": 102293504,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 500,
+          "elapsedSeconds": 0.26031849900027737,
+          "rssBytes": 102297600,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 600,
+          "elapsedSeconds": 0.3117219880077755,
+          "rssBytes": 102301696,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 700,
+          "elapsedSeconds": 0.3592689860088285,
+          "rssBytes": 102301696,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 800,
+          "elapsedSeconds": 0.40838198400160763,
+          "rssBytes": 102305792,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 900,
+          "elapsedSeconds": 0.4566168790042866,
+          "rssBytes": 102309888,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 999,
+          "elapsedSeconds": 0.5025038760068128,
+          "rssBytes": 94019584,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        }
+      ],
+      "variant": "candidate",
+      "pair": 1
+    },
+    {
+      "scope": "synthetic-provider-only-not-game-or-visible-render",
+      "scenario": "clear-reopen",
+      "cycles": 1000,
+      "width": 1920,
+      "height": 1080,
+      "intervalMs": 0,
+      "elapsedSeconds": 3.6706977260037092,
+      "qt": "6.11.1",
+      "python": "3.12.14",
+      "platform": "linux",
+      "latencyMs": {
+        "n": 1000,
+        "p50": 3.9162245,
+        "p95": 5.62113,
+        "max": 13.716817,
+        "percentileMethod": "nearest-rank"
+      },
+      "initialRssBytes": 76984320,
+      "sampledPeakRssBytes": 118943744,
+      "processLifetimePeakRssBytes": 118788096,
+      "processLifetimePeakRssSource": "getrusage-ru-maxrss",
+      "finalRssBytes": 69304320,
+      "peakProviderOwnedBytes": 8294400,
+      "consumerBytesAfterProviderClear": 8294400,
+      "providerEntriesAfterClear": 0,
+      "pixelMismatchCount": 0,
+      "networkAttempts": 0,
+      "samples": [
+        {
+          "cycle": 0,
+          "elapsedSeconds": 0.0218661850085482,
+          "rssBytes": 110612480,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 100,
+          "elapsedSeconds": 0.3676046239997959,
+          "rssBytes": 110616576,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 200,
+          "elapsedSeconds": 0.7277428050001618,
+          "rssBytes": 110620672,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 300,
+          "elapsedSeconds": 1.0958253499993589,
+          "rssBytes": 110624768,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 400,
+          "elapsedSeconds": 1.4632615630107466,
+          "rssBytes": 110628864,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 500,
+          "elapsedSeconds": 1.8342707910051104,
+          "rssBytes": 110632960,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 600,
+          "elapsedSeconds": 2.1826033149991417,
+          "rssBytes": 110637056,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 700,
+          "elapsedSeconds": 2.536458793008933,
+          "rssBytes": 110637056,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 800,
+          "elapsedSeconds": 2.884367195001687,
+          "rssBytes": 110641152,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 900,
+          "elapsedSeconds": 3.3049986840051133,
+          "rssBytes": 110645248,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 999,
+          "elapsedSeconds": 3.6706603490019916,
+          "rssBytes": 118943744,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        }
+      ],
+      "variant": "baseline",
+      "pair": 2
+    },
+    {
+      "scope": "synthetic-provider-only-not-game-or-visible-render",
+      "scenario": "clear-reopen",
+      "cycles": 1000,
+      "width": 1920,
+      "height": 1080,
+      "intervalMs": 0,
+      "elapsedSeconds": 0.5432592300057877,
+      "qt": "6.11.1",
+      "python": "3.12.14",
+      "platform": "linux",
+      "latencyMs": {
+        "n": 1000,
+        "p50": 0.33972650000000004,
+        "p95": 0.568436,
+        "max": 2.816222,
+        "percentileMethod": "nearest-rank"
+      },
+      "initialRssBytes": 77000704,
+      "sampledPeakRssBytes": 102363136,
+      "processLifetimePeakRssBytes": 102203392,
+      "processLifetimePeakRssSource": "getrusage-ru-maxrss",
+      "finalRssBytes": 69320704,
+      "peakProviderOwnedBytes": 8294400,
+      "consumerBytesAfterProviderClear": 8294400,
+      "providerEntriesAfterClear": 0,
+      "pixelMismatchCount": 0,
+      "networkAttempts": 0,
+      "samples": [
+        {
+          "cycle": 0,
+          "elapsedSeconds": 0.016248646003077738,
+          "rssBytes": 94044160,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 100,
+          "elapsedSeconds": 0.07280800500302576,
+          "rssBytes": 102338560,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 200,
+          "elapsedSeconds": 0.12758180299715605,
+          "rssBytes": 102338560,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 300,
+          "elapsedSeconds": 0.1820488500088686,
+          "rssBytes": 102342656,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 400,
+          "elapsedSeconds": 0.23790205401019193,
+          "rssBytes": 102346752,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 500,
+          "elapsedSeconds": 0.28940798999974504,
+          "rssBytes": 102350848,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 600,
+          "elapsedSeconds": 0.3442614789964864,
+          "rssBytes": 102354944,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 700,
+          "elapsedSeconds": 0.39540835400111973,
+          "rssBytes": 102354944,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 800,
+          "elapsedSeconds": 0.44499596100649796,
+          "rssBytes": 102359040,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 900,
+          "elapsedSeconds": 0.4960311780014308,
+          "rssBytes": 102363136,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        },
+        {
+          "cycle": 999,
+          "elapsedSeconds": 0.5432253690087236,
+          "rssBytes": 94072832,
+          "providerOwnedBytes": 8294400,
+          "entries": 1
+        }
+      ],
+      "variant": "candidate",
+      "pair": 2
+    }
+  ]
+}

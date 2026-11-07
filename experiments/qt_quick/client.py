@@ -13,9 +13,12 @@ from PySide6.QtGui import QFont, QFontDatabase, QGuiApplication, QIcon, QWindow
 from PySide6.QtQml import QQmlApplicationEngine
 from client_paths import APP_ROOT, DEFAULT_SANDBOX, FROZEN, PRODUCTION, RESOURCE_ROOT, WORK_ROOT, owned_sandbox, runtime_paths
 from client_manual_map_service import ManualMapPickerService
+from qt_startup_splash import set_startup_stage
 
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
+
+from season_context import selected_profile, context_key, season_label
 
 HERE = Path(__file__).resolve().parent
 
@@ -49,7 +52,11 @@ def prepare_first_run(sandbox):
 
 
 class QtClient:
-    def __init__(self, app, sandbox, *, probe_output=None, info_fetch=None, on_created=None):
+    def __init__(self, app, sandbox, *, probe_output=None, info_fetch=None, on_created=None,
+                 g_cycle_evidence=False, g_cycle_full_input=False):
+        if g_cycle_full_input and not g_cycle_evidence:
+            raise ValueError("full solver evidence requires explicit test evidence")
+        set_startup_stage("create-services")
         self._closed = False
         self._shutdown_complete = False
         if on_created is not None:
@@ -91,11 +98,18 @@ class QtClient:
         except Exception:
             pass  # Housekeeping never blocks startup; the files simply remain.
         from client_lifecycle_trace import create_lifecycle_trace
-        self.lifecycle_trace = create_lifecycle_trace(self.paths)
+        from s1_candidate_purpose import packaged_native_candidate_purpose
+        candidate_purpose = packaged_native_candidate_purpose()
+        self.lifecycle_trace = create_lifecycle_trace(self.paths, candidate_purpose=candidate_purpose)
         from client_lifecycle import LifecycleJournal
         self.lifecycle = LifecycleJournal(self.paths.work_root)
         self.lifecycle.record_event(dict(stage="client-created"))
         self._closed = False
+        from client_performance import PerformanceService
+        self.performance = PerformanceService()
+        from client_game_startup import GameStartupService
+        self.game_startup = GameStartupService(self.paths.installation_root,
+            production=bool(self.paths.production and not probe_output))
         self.settings = SettingsService(self.sandbox)
         self.custom_galleries = CustomGalleryService(self.sandbox)
         self.route_plaza = RoutePlazaService(self.sandbox, self.custom_galleries)
@@ -112,19 +126,19 @@ class QtClient:
         self.providers.set_custom_display(self.custom_display.layer, base_provider=self.custom_display.base_layer)
         self.runtime = LiveRuntime(engine_factories=self.providers, capture_provider=self.capture,
                                    allowed_read_root=WORK_ROOT, evidence_kind="live-client-capture",
-                                   diagnostics=self.lifecycle_trace)
+                                    diagnostics=self.lifecycle_trace,
+                                    s1_candidate_purpose=candidate_purpose)
         values = self.settings.persistedValues
         self.runtime.configure_settings(values)
-        mode = values.get("gameMode", "nightmare")
-        profile = values.get("modeRouteProfiles", {}).get(mode) or values.get("routeProfileId", "shared-structure")
+        mode, profile, season = ClientCoordinator._settings_context(values)
         self._previous_author_profiles = {
-            key: value for key, value in values.get("modeRouteProfiles", {}).items()
+            key: value for key, value in values.get("contextRouteProfiles", {}).items()
             if value and not str(value).startswith("custom:")}
         if not str(profile).startswith("custom:"):
-            self._previous_author_profiles[mode] = profile
+            self._previous_author_profiles[context_key(mode, season)] = profile
         # Context initialization is a bounded state-only operation. Resource
         # preparation/recognition starts later on SessionService's worker.
-        self.runtime.dispatch("set_context", {"mode": mode, "profileId": profile})
+        self.runtime.dispatch("set_context", {"season": season, "mode": mode, "profileId": profile})
         self.session = SessionService(self.runtime)
         self.resources = ResourceService(self.sandbox)
         self.resources.setLeaseProvider(self.session)
@@ -139,8 +153,8 @@ class QtClient:
         self.resources.resourcesChanged.connect(self.route_choices.refresh)
         self.resources.resourcesChanged.connect(self._schedule_resource_preparation)
         self.resources.resourcesChanged.connect(self.custom_galleries.refresh)
-        self.settings.changed.connect(lambda: self.route_choices.setMode(self.settings.values.get("gameMode", "nightmare")))
-        self.route_choices.setMode(mode)
+        self.settings.changed.connect(lambda: self.route_choices.setContext(self.settings.values.get("gameSeason", "s0"), self.settings.values.get("gameMode", "nightmare")))
+        self.route_choices.setContext(season, mode)
         self.windows = WindowController()
         self.windows.setBeforeShow(self.capture_exclusion.protectWindow)
         self.preview = PreviewService(self.backend, self.windows)
@@ -189,6 +203,25 @@ class QtClient:
         self.tutorial = TutorialService(self.paths.tutorial_state_path, settings=self.settings, parent=self.coordinator)
         self.problems = ProblemsService(self.paths, build_fingerprint=self.info._build_fingerprint,
             source_commit=self.info._source_commit)
+        self.g_cycle_evidence = None
+        self.g_cycle_reporter = None
+        if g_cycle_evidence:
+            from g_cycle_evidence import GCycleEvidenceRecorder
+            from client_g_cycle_evidence import EvidenceReporter
+            self.g_cycle_reporter = EvidenceReporter(self.problems)
+            self.g_cycle_reporter.warning.connect(self.coordinator.notificationRequested)
+            self.runtime.g_cycle_reporter = self.g_cycle_reporter
+            self.g_cycle_evidence = GCycleEvidenceRecorder(
+                self.paths.work_root / "g-cycle-test-evidence", enabled=True,
+                result_callback=self.g_cycle_reporter.publish, full_input=g_cycle_full_input)
+            self.g_cycle_evidence.start()
+            self.runtime.g_cycle_evidence = self.g_cycle_evidence
+            QTimer.singleShot(0, lambda: self.coordinator.notificationRequested.emit(
+                "逐次开图留样测试已开启",
+                ("本次进程会在本地保存已采集的完整游戏客户区求解输入，可能含昵称、聊天或其他游戏内信息。"
+                 if g_cycle_full_input else "本次进程会在本地保存成功和失败的地图/楼层检测局部图，可能含昵称或聊天。") +
+                "不自动上传；最多 100 个样本、256 MiB；后续写入时清理超过 24 小时的样本。"
+                "退出后不会自动清理，需重新用测试参数开启。", "warning"))
         if self.lifecycle_trace is not None:
             self.lifecycle_trace.record("startup", buildFingerprint=self.info._build_fingerprint,
                 sourceCommit=self.problems._source_commit)
@@ -202,13 +235,20 @@ class QtClient:
         self.coordinator.traceReported.connect(self.problems.recordTrace)
         self.info.setProviders(session=self.session, resources=self.resources, input=self.input,
                                coordinator=self.coordinator, problems=self.problems,
-                               settings=self.settings, capture=self.capture)
+                               settings=self.settings, capture=self.capture, performance=self.performance)
         self.coordinator.close_writers = (self.custom_galleries, self.info, self.online_packages,
                                          self.route_plaza,
                                          self.backend, self.route_choices, self.problems, self.reference_preview,
-                                         self.capture_exclusion, self.manual_map_picker, self.package_manager)
+                                         self.capture_exclusion, self.manual_map_picker, self.package_manager,
+                                         self.performance)
         if self.lifecycle_trace is not None:
             self.coordinator.close_writers += (self.lifecycle_trace,)
+        if self.g_cycle_evidence is not None:
+            # Keep ProblemsService accepting until evidence completion reports
+            # have drained. Reporter includes its pending writes in close checks.
+            self.coordinator.close_writers = tuple(w for w in self.coordinator.close_writers
+                                                   if w is not self.problems)
+            self.coordinator.close_writers += (self.g_cycle_evidence, self.g_cycle_reporter)
         self.custom_galleries.setUseHandler(self._use_custom_gallery)
         self.coordinator.close_writers += (self.tutorial,)
         self.custom_galleries.galleriesChanged.connect(self._custom_gallery_changed)
@@ -231,16 +271,17 @@ class QtClient:
         from client_floor_region import FloorRegionImages, FloorRegionService
         self.floor_region_images = FloorRegionImages()
         self.floor_region = FloorRegionService(self.runtime, self.settings, self.floor_region_images)
+        self.session.changed.connect(self.floor_region.invalidateContext)
         self.engine = QQmlApplicationEngine()
         self.engine.addImageProvider("live", self.images)
         self.engine.addImageProvider("floorregion", self.floor_region_images)
         self.warnings = []
-        self.engine.warnings.connect(lambda rows: self.warnings.extend(str(row) for row in rows))
+        self.engine.warnings.connect(self._record_qml_warnings)
         context = self.engine.rootContext()
         context.setContextProperty("productionProduct", PRODUCTION)
         context.setContextProperty("tutorialService", self.tutorial)
         for key, value in dict(backend=self.backend, resourceModel=self.backend.model, routeChoices=self.route_choices,
-            settingsService=self.settings, resourceService=self.resources,
+            settingsService=self.settings, gameStartupService=self.game_startup, resourceService=self.resources,
             packageManagerService=self.package_manager, session=self.session,
             windows=self.windows, clientCoordinator=self.coordinator, infoService=self.info,
             customGalleryService=self.custom_galleries, onlinePackageService=self.online_packages,
@@ -250,6 +291,7 @@ class QtClient:
             floorRegionService=self.floor_region,
             pickerService=self.manual_map_picker).items():
             context.setContextProperty(key, value)
+        set_startup_stage("create-windows")
         for name, file in (("main", "Client.qml"), ("controls", "ClientControls.qml"),
                            ("reference", "ClientReference.qml"), ("aligned", "ClientAligned.qml"),
                            ("replay", "Overlay.qml"), ("preview", "ClientPreview.qml"),
@@ -261,6 +303,9 @@ class QtClient:
             window = self.engine.rootObjects()[-1]
             self.windows.bindWindow(name, window)
         self.main = self.windows._windows["main"]
+        self._main_frame_seen = False
+        self.main.frameSwapped.connect(self._main_frame_ready, Qt.QueuedConnection)
+        set_startup_stage("main-constructed")
         self.control_snap = ControlSnap()
         self.control_snap.bindWindow(self.windows._windows["controls"],
                                      self.settings.persistedValues.get("compactPosition"))
@@ -268,11 +313,28 @@ class QtClient:
         self._closed = False
         self._probe_output = probe_output
         self._initialized = False
+        self._preparation_context_only = False
         self._initialize_timer = QTimer(app)
         self._initialize_timer.setInterval(120)
         self._initialize_timer.timeout.connect(self._initialize_resources)
+        self.session.changed.connect(self._refresh_resource_preparation)
         self._initialize_timer.start()
         self.info.scheduleStartupCheck(bool(self.paths.production and not probe_output))
+
+    def _record_qml_warnings(self, rows):
+        self.warnings.extend(str(row) for row in rows)
+        del self.warnings[:-128]
+
+    def _main_frame_ready(self):
+        if self._closed or self._main_frame_seen:
+            return
+        self._main_frame_seen = True
+        # Submission is an observable rendering boundary, not proof of pixels
+        # visible on a real monitor; the diagnostics name preserves that limit.
+        set_startup_stage("main-frame-submitted")
+        from qt_startup_splash import close_startup_splash
+        close_startup_splash()
+        self.performance.sample()
 
     def _reference_screen_added(self, screen):
         if screen not in self._reference_screens:
@@ -296,11 +358,11 @@ class QtClient:
     def _refresh_home_context(self, *, force=False):
         if self._closed or self.coordinator.closing:
             return
-        mode, profile = self.session.appliedMode, self.session.appliedProfile
+        mode, profile, season = self.session.appliedMode, self.session.appliedProfile, self.session.appliedSeason
         request = self._home_preview_request
-        if request is not None and request[:2] != (mode, profile):
+        if request is not None and request[:3] != (mode, profile, season):
             self._home_preview_request = None
-        self.info.setHomeContext(mode, profile, force=force)
+        self.info.setHomeContext(mode, profile, season=season, force=force)
 
     def _cancel_home_preview(self, _view_key=None):
         if not self._applying_home_preview:
@@ -310,18 +372,18 @@ class QtClient:
         if page != "gallery":
             self._cancel_home_preview()
 
-    def _open_home_preview(self, mode, profile, key):
+    def _open_home_preview(self, mode, profile, season, key):
         if (self._closed or self.coordinator.closing
-                or (mode, profile) != (self.session.appliedMode, self.session.appliedProfile)
-                or not key.startswith(f"{mode}/{profile}/")):
+                or (mode, profile, season) != (self.session.appliedMode, self.session.appliedProfile, self.session.appliedSeason)
+                or not key.startswith(f"{season}/{mode}/{profile}/")):
             return
         # Explicit user navigation happens first; normal gallery initialization
         # cannot cancel the request that is installed immediately afterwards.
         self.coordinator.navigate("gallery")
-        self._home_preview_request = (mode, profile, key)
+        self._home_preview_request = (mode, profile, season, key)
         self._applying_home_preview = True
         try:
-            self.backend.setMode(mode)
+            self.backend.setContext(season, mode)
         finally:
             self._applying_home_preview = False
         self._finish_home_preview()
@@ -331,9 +393,9 @@ class QtClient:
         if (request is None or self._applying_home_preview or self._closed
                 or self.coordinator.closing or self.backend.busy):
             return
-        mode, profile, key = request
+        mode, profile, season, key = request
         context = self.backend.context
-        if context is None or context.mode != mode or self.backend.mode != mode:
+        if context is None or context.mode != mode or self.backend.mode != mode or context.season != season or self.backend.season != season:
             self._home_preview_request = None
             return
         # setMode loads asynchronously; profiles/rows belong to the new context
@@ -413,38 +475,90 @@ class QtClient:
             return
         self._initialize_timer.stop()
         self._initialized = True
+        if self._preparation_context_only:
+            # A timer scheduled for an unprepared context can outlive that
+            # context. Do not disable controls/close popups to inspect a cached
+            # context that is already prepared. Explicit resource changes and
+            # startup still require their inspection, even with an old snapshot.
+            state = self.session.snapshot
+            season, mode = self.session.appliedSeason, self.session.appliedMode
+            report = state.get("savedFrameCapabilities", {}).get(mode, {})
+            if (report.get("season") == season and report.get("mode") == mode
+                    and report.get("prepared") is True):
+                return
         self.session.dispatch("inspect_engine_resources")
 
-    def _schedule_resource_preparation(self):
+    def _schedule_resource_preparation(self, *, context_only=False):
         if self._closed or self.coordinator.closing:
             return
         self._initialized = False
+        self._preparation_context_only = bool(context_only)
         self._initialize_timer.start()
+
+    def _refresh_resource_preparation(self):
+        """Prepare an unvalidated applied context through the existing worker.
+
+        Startup can legitimately prepare only an unavailable future season.
+        Returning to S0 must then validate S0 instead of waiting for a resource
+        write. Observe committed Session state, never a settings draft or a
+        desired context whose asynchronous switch has not completed.
+        """
+        if self._closed or self.coordinator.closing or self.session.busy:
+            return
+        state = self.session.snapshot
+        if state.get("closed") or state.get("contextPending"):
+            return
+        season, mode = self.session.appliedSeason, self.session.appliedMode
+        report = state.get("savedFrameCapabilities", {}).get(mode, {})
+        if (report.get("season") == season and report.get("mode") == mode
+                and report.get("prepared") is True):
+            set_startup_stage("context-ready" if report.get("available") else "context-unavailable")
+        if (report.get("season") != season or report.get("mode") != mode
+                or report.get("prepared") is not False
+                or report.get("reason") != "resource-validation-pending"):
+            return
+        receipt = state.get("lastReceipt", {})
+        if receipt.get("action") == "inspect_engine_resources" and receipt.get("success") is False:
+            # An unexpected registry error may leave its report unprepared.
+            # Keep that failure visible rather than creating an endless retry
+            # loop. A new applied context or explicit resource change may retry.
+            return
+        # Resource failures are prepared-but-unavailable and never retried in a
+        # loop. A cancelled/stale preparation may remain unprepared; a later
+        # idle signal retries it only for the current applied context.
+        if not self._initialize_timer.isActive():
+            self._schedule_resource_preparation(context_only=True)
 
     def _use_custom_gallery(self, gallery_id):
         if (self._closed or self.coordinator.closing or self.settings.busy or self.resources.busy or self.session.busy
                 or getattr(self.resources, "pendingKind", "")):
             return dict(success=False, applied=False, message="请等待当前操作完成后再使用图集")
         values = self.settings.persistedValues
+        season = values.get("gameSeason", "s0")
         mode = values.get("gameMode", "nightmare")
-        previous = values.get("modeRouteProfiles", {}).get(mode) or values.get("routeProfileId", "")
+        if season != "s0":
+            return dict(success=False, applied=False, message=f"{season_label(season)} 资源待补齐，不能使用 S0 自定义路线")
+        previous = selected_profile(values, mode, season)
         remembered = getattr(self, "_previous_author_profiles", {})
         if previous and not str(previous).startswith("custom:"):
-            remembered[mode] = previous
+            remembered[context_key(mode, season)] = previous
         self._previous_author_profiles = remembered
         current_options = (self.route_choices.profiles
-                           if getattr(self.route_choices, "mode", mode) == mode else ())
-        fallback = remembered.get(mode) or next((row["id"] for row in current_options
+                           if (self.route_choices.season, self.route_choices.mode) == (season, mode) else ())
+        fallback = remembered.get(context_key(mode, season)) or next((row["id"] for row in current_options
                          if not row["id"].startswith("custom:")), "shared-structure")
         proposal = self.custom_display.use_request(gallery_id, mode, fallback_profile=fallback)
         if not proposal.get("success"):
             return proposal
         profile = proposal["profileId"]
-        profiles = dict(values.get("modeRouteProfiles", {}))
-        profiles[mode] = profile
+        profiles = dict(values.get("contextRouteProfiles", {}))
+        profiles[context_key(mode, season)] = profile
+        legacy_profiles = dict(values.get("modeRouteProfiles", {}))
+        legacy_profiles[mode] = profile
         if not (self.settings.setValue("routeProfileId", profile)
-                and self.settings.setValue("modeRouteProfiles", profiles)
-                and self.settings.saveFields(["routeProfileId", "modeRouteProfiles"])):
+                and self.settings.setValue("contextRouteProfiles", profiles)
+                and self.settings.setValue("modeRouteProfiles", legacy_profiles)
+                and self.settings.saveFields(["routeProfileId", "modeRouteProfiles", "contextRouteProfiles"])):
             return dict(success=False, applied=False, message=self.settings.message)
         return dict(success=True, applied=False, message="正在保存并应用图集，完成后更新使用状态")
 
@@ -453,10 +567,11 @@ class QtClient:
             return
         state = self.runtime.snapshot()
         values = self.settings.persistedValues
+        season = values.get("gameSeason", "s0")
         mode = values.get("gameMode", "nightmare")
-        profile = values.get("modeRouteProfiles", {}).get(mode) or values.get("routeProfileId", "")
+        profile = selected_profile(values, mode, season)
         applied = (state.get("mode"), state.get("profileId")) == (mode, profile)
-        active = self.custom_display.active_gallery(profile, mode) if applied else ""
+        active = self.custom_display.active_gallery(profile, mode) if applied and season == "s0" and state.get("season", "s0") == season else ""
         if self.custom_galleries.snapshot.get("inUse") != active:
             self.custom_galleries.setActiveGallery(active)
 
@@ -470,19 +585,35 @@ class QtClient:
         self._sync_custom_gallery_active()
 
     def shutdown(self):
+        performance = getattr(self, "performance", None)
+        if performance is not None:
+            performance.shutdown()
         from client_startup_cleanup import shutdown_client
         shutdown_client(self)
 
 
 def main():
+    from qt_startup_splash import close_startup_splash
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sandbox", type=Path, default=DEFAULT_SANDBOX)
     parser.add_argument("--probe-output", type=Path)
+    parser.add_argument("--g-cycle-evidence", action="store_true",
+                        help="this process only: bounded local G-attempt algorithm ROI evidence; may contain game text; no upload")
+    parser.add_argument("--g-cycle-full-input", action="store_true",
+                        help="with --g-cycle-evidence only: keep the existing full game-client solver input locally, including game text; no desktop capture or upload")
     parser.add_argument("--self-check", action="store_true", help="read-only packaged import/resource check, no windows or listeners")
-    parser.add_argument("--verify-resources", action="store_true", help="with self-check, construct both explicit-root providers without capture")
+    parser.add_argument("--verify-resources", action="store_true", help="with self-check, verify S0 and every included S1 provider without capture")
+    parser.add_argument("--offline-resource-root", type=Path,
+                        help="with self-check, verify the explicit S1 offline gallery root and decode its images")
     args = parser.parse_args()
+    if args.g_cycle_full_input and not args.g_cycle_evidence:
+        parser.error("--g-cycle-full-input requires --g-cycle-evidence")
+    if args.g_cycle_evidence and (args.self_check or args.probe_output):
+        parser.error("--g-cycle-evidence cannot be combined with self-check or UI probes")
     if args.verify_resources and not args.self_check:
         parser.error("--verify-resources requires --self-check")
+    if args.offline_resource_root is not None and not args.self_check:
+        parser.error("--offline-resource-root requires --self-check")
     if args.self_check:
         from client_engine import EngineAdapter
         from client_providers import build_engine_factories
@@ -493,7 +624,12 @@ def main():
                           "Client.qml", "ClientControls.qml", "ClientReference.qml", "ClientAligned.qml",
                           "ClientMapPicker.qml")),
                       tkLoaded="tkinter" in sys.modules,
-                      nativeInputStarted=False)
+                      nativeInputStarted=False, windowsCreated=False,
+                      listenersStarted=False, captureStarted=False)
+        if args.offline_resource_root is not None:
+            from season_map_resources import verify_offline_inventory
+            result["offlineGallery"] = verify_offline_inventory(args.offline_resource_root.resolve())
+            result["ready"] = result["offlineGallery"]["ready"]
         if args.verify_resources:
             root = RESOURCE_ROOT if FROZEN else args.sandbox.resolve() / "_internal"
             from client_resource_startup import readable_resources
@@ -502,8 +638,44 @@ def main():
                 registry = build_engine_factories(root)
                 registry.prepare()
                 result["providers"] = registry.capabilities()
+                from s1_private_resources import validated_s1_resources, S1_RUNTIME_MODES, private_profile_modes
+                from packaged_product_identity import PRIVATE_S1_INSTANCES
+                required_s1 = False
+                native_modes = S1_RUNTIME_MODES
+                formal_s1_contexts = None
+                if FROZEN:
+                    profile = json.loads((RESOURCE_ROOT / "installation-profile.json").read_text(encoding="utf-8"))
+                    required_s1 = profile["installerInstance"]["id"] in PRIVATE_S1_INSTANCES
+                    if required_s1:
+                        native_modes = private_profile_modes(profile)
+                    declared = profile.get("includedResourceContexts")
+                    if PRODUCTION and "includedResourceContexts" in profile:
+                        s0_contexts = {"s0:nightmare", "s0:difficult"}
+                        if (type(declared) is not list or any(type(key) is not str for key in declared)
+                                or len(declared) != len(set(declared))):
+                            raise ValueError("Invalid production resource context declaration")
+                        if set(declared) != s0_contexts:
+                            expected = s0_contexts | {"s1:" + mode for mode in S1_RUNTIME_MODES}
+                            if set(declared) != expected:
+                                raise ValueError("Incomplete production S1 resource context declaration")
+                            # A declaration requires validation; it never grants runtime capability.
+                            formal_s1_contexts = expected
+                            required_s1 = True
+                native = validated_s1_resources(root, required=required_s1, modes=native_modes)
+                result["resourceContexts"] = {"s0:" + mode: row for mode, row in result["providers"].items()}
+                result["resourceContexts"].update({"s1:" + mode: row for mode, row in native["providers"].items()})
+                result["s1Included"] = native["included"]
+                if formal_s1_contexts is not None:
+                    if native["included"] is not True or set(result["resourceContexts"]) != formal_s1_contexts:
+                        raise ValueError("Declared production S1 resource context missing or extra")
+                    for key, row in result["resourceContexts"].items():
+                        season, mode = key.split(":", 1)
+                        if (not isinstance(row, dict) or row.get("available") is not True
+                                or row.get("prepared") is not True or row.get("season") != season
+                                or row.get("mode") != mode):
+                            raise ValueError("Declared production resource context unavailable or misbound: " + key)
             result["tkLoaded"] = "tkinter" in sys.modules
-            result["ready"] = all(row.get("available") for row in result["providers"].values())
+            result["ready"] = result["ready"] and all(row.get("available") for row in result["resourceContexts"].values())
         if FROZEN:
             WORK_ROOT.mkdir(parents=True, exist_ok=True)
             (WORK_ROOT / "client-self-check.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
@@ -511,7 +683,8 @@ def main():
         return 0 if result["ready"] and result["qml"] and not result["tkLoaded"] else 1
     if os.name == "nt":
         import ctypes
-        model_id = "Xingtu.Assistant" if PRODUCTION else ("Xingtu.QtClientTest" if FROZEN else "Xingtu.QtClientSource")
+        from packaged_product_identity import qt_application_model_id
+        model_id = qt_application_model_id()
         set_model_id = ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID
         set_model_id.argtypes = [ctypes.c_wchar_p]
         set_model_id.restype = ctypes.c_long
@@ -522,11 +695,13 @@ def main():
     # listener. Production identity is stable across upgrades; probes are separate.
     from client_single_instance import SingleInstanceGuard, SingleInstanceError, instance_namespace, restore_main_window
     guard = None
+    set_startup_stage("instance-check")
     try:
         guard = SingleInstanceGuard(instance_namespace(production=PRODUCTION, frozen=FROZEN,
             sandbox=args.sandbox, probe_output=args.probe_output), app)
         primary = guard.start()
     except (SingleInstanceError, OSError) as error:
+        close_startup_splash()
         message = str(error) if isinstance(error, SingleInstanceError) else f"无法确认当前用户会话的启动锁，未启动第二个实例：{error}"
         print(message, file=sys.stderr)
         if os.name == "nt":
@@ -536,14 +711,20 @@ def main():
             guard.close()
         return 2
     if not primary:
+        close_startup_splash()
         guard.close()
         return 0
     from client_resource_startup import production_resources
     from client_resource_startup_recovery import offer_startup_recovery
+    def recover_startup(error):
+        close_startup_splash()
+        return offer_startup_recovery(resource_root, error)
     try:
         resource_root = owned_sandbox(args.sandbox.resolve()) if PRODUCTION else args.sandbox.resolve()
+        set_startup_stage("resource-check")
+        args.resource_startup_report = {}
         with production_resources(resource_root, production=PRODUCTION,
-                on_failure=lambda error: offer_startup_recovery(resource_root, error)) as recovery:
+                on_failure=recover_startup, startup_report=args.resource_startup_report) as recovery:
             if recovery is not None:
                 return recovery.exit_code
             return _run_primary_client(app, args, guard)
@@ -552,6 +733,7 @@ def main():
 
 
 def _run_primary_client(app, args, guard):
+    from qt_startup_splash import close_startup_splash
     from client_single_instance import restore_main_window
     app.setWindowIcon(QIcon(str(HERE / "icons" / "xingtu-round.png")))
     from client_theme import apply_light_theme
@@ -580,10 +762,14 @@ def _run_primary_client(app, args, guard):
     guard.setActivationHandler(restore_existing_main)
     def open_client(sandbox):
         try:
+            sandbox = owned_sandbox(sandbox)
             local_manifest = (lambda url: dict(schemaVersion=1, platform="windows", version="1.0.5",
                               versionCode=9, releaseNotes="Local probe", publishedAt="2026-10-30", releases=[])) if args.probe_output else None
             client = holder["client"] = QtClient(app, sandbox, probe_output=args.probe_output, info_fetch=local_manifest,
-                on_created=lambda partial: holder.update(client=partial))
+                on_created=lambda partial: holder.update(client=partial),
+                g_cycle_evidence=getattr(args, "g_cycle_evidence", False),
+                g_cycle_full_input=getattr(args, "g_cycle_full_input", False))
+            client.resources.setStartupCompatibilityReport(getattr(args, 'resource_startup_report', {}))
             if holder.pop("activationPending", False):
                 restore_main_window(client.main)
             holder["quit_journal"] = lambda: client.lifecycle.record_event(dict(stage="about-to-quit"))
@@ -597,12 +783,15 @@ def _run_primary_client(app, args, guard):
             holder["startup_error"] = error
             app.exit(1)
     if args.sandbox.exists():
-        QTimer.singleShot(0, lambda: open_client(owned_sandbox(args.sandbox)))
+        QTimer.singleShot(0, lambda: open_client(args.sandbox))
     else:
         from backend import Work
         boot = holder["boot"] = QQmlApplicationEngine()
         boot.rootContext().setContextProperty("productionProduct", PRODUCTION)
         boot.load(QUrl.fromLocalFile(str(HERE / "ClientBoot.qml")))
+        if not boot.rootObjects():
+            raise RuntimeError("Startup preparation window could not be loaded")
+        close_startup_splash()
         pool = holder["bootPool"] = QThreadPool(app)
         job = holder["bootJob"] = Work(lambda: prepare_first_run(args.sandbox))
         def prepared(path, error):
@@ -620,6 +809,7 @@ def _run_primary_client(app, args, guard):
         if lifecycle is not None:
             lifecycle.record_event(dict(stage="app-loop-return", exitCode=exit_code))
     finally:
+        close_startup_splash()
         # Qt swallows exceptions in slots. Run cleanup synchronously here so a
         # partial constructor, direct quit or app.exec error all retain the
         # outer runtime lease until owned resource consumers have really drained.

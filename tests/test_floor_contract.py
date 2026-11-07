@@ -26,7 +26,7 @@ class FloorContractTests(unittest.TestCase):
         self.assertIsNone(floor_contract("difficult").floor_id_for(-1))
 
     def test_unregistered_season_never_inherits_s0(self):
-        for season in ("s1", "s2", "", None, [], "S0"):
+        for season in ("s2", "", None, [], "S0"):
             for mode in ("nightmare", "difficult"):
                 self.assertIsNone(floor_contract(mode, season=season))
         for mode in ("", "other", None, []):
@@ -59,7 +59,7 @@ class FloorContractTests(unittest.TestCase):
                          lambda: locate_vertical_floor_controls(None, mode, season="s1")):
                 result = read()
                 self.assertIsNone(result["selectedFloor"])
-                self.assertEqual(result["reason"], "floor-contract-unavailable")
+                self.assertEqual(result["reason"], "vertical-floor-detector-unvalidated")
 
     def test_future_settings_discard_stale_positive_fixed_reading_in_all_modes(self):
         stale = dict(selectedFloor=2, centers=[10, 20], confidence=1., layout="difficult-two-buttons")

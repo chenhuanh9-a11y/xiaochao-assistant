@@ -60,7 +60,7 @@ class CustomDisplayTests(unittest.TestCase):
         reference=self.reference()
         engine.qt_shared_provider=lambda *a:reference
         factory=build_engine_factories(self.folder/"_internal")
-        factory._build=lambda mode:engine
+        factory._build=lambda mode, *, season="s0":engine
         factory.set_custom_display(display.layer,base_provider=display.base_layer)
         prepared=factory["nightmare"]()
         layer=LiveRuntime._display_layer(prepared,"synthetic-map","1","suju")

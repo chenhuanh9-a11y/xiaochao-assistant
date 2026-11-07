@@ -6,7 +6,7 @@ from resource_transaction import assert_resources_ready, resource_read_lock, res
 
 
 @contextmanager
-def production_resources(root, *, production, on_failure=None):
+def production_resources(root, *, production, on_failure=None, startup_report=None):
     if not production:
         yield
         return
@@ -15,7 +15,10 @@ def production_resources(root, *, production, on_failure=None):
         # The lifetime lease allows our short write lock while excluding helpers
         # and installers until all resource consumers have drained at shutdown.
         try:
-            repair_managed_base_resources(root)
+            result = repair_managed_base_resources(root)
+            if startup_report is not None:
+                startup_report.update(status=result.get('status'), reasons=sorted({
+                    row['reason'] for row in result.get('retirementDeferred', [])}))
             from map_package_upgrade import retire_completed_upgrades
             with resource_write_lock(root):
                 retire_completed_upgrades(root)

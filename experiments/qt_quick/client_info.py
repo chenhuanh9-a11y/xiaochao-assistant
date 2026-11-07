@@ -15,16 +15,18 @@ from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtCore import qVersion
 from backend import ROOT, Work
 from map_resource_context import load_browse_context
+from season_context import SEASONS
+from season_map_resources import browse_modes
 from client_paths import PRODUCTION, WORK_ROOT, runtime_paths, bundled_author_root
 from PySide6.QtCore import QThreadPool, Qt
-from update_service import UpdateService, DOWNLOAD_HOSTS
+from update_service import UpdateService, DOWNLOAD_HOSTS, is_newer
 from diagnostic_export import export_safe_diagnostic_bundle, diagnostic_package_metadata
 
 
 class ClientInfoService(QObject):
     changed = Signal()
     startupAnnouncement = Signal("QVariantMap")
-    homePreviewRequested = Signal(str, str, str)
+    homePreviewRequested = Signal(str, str, str, str)
 
     def __init__(self, sandbox, *, fetch=None, open_url=None):
         super().__init__()
@@ -86,6 +88,8 @@ class ClientInfoService(QObject):
         self._timer.timeout.connect(self._poll)
         self._startup_requested = False
         self._startup_checked = False
+        self._announcements = {}
+        self._pending_notice_reads = {}
         self._startup_timer = QTimer(self)
         self._startup_timer.setSingleShot(True)
         self._startup_timer.setInterval(2500)
@@ -100,6 +104,8 @@ class ClientInfoService(QObject):
     hasError = Property(bool, lambda s: s._action_error, notify=changed)
     hasUnread = Property(bool, lambda s: s._service.has_unread, notify=changed)
     skippedVersion = Property(str, lambda s: s._service.skipped_version, notify=changed)
+    announcementSkipped = Property(bool, lambda s: bool(s._service.latest and
+        s._service._stored.get("skippedAnnouncementId") == s._service.latest.announcement_id), notify=changed)
     historyMessage = Property(str, lambda s: s._history_message, notify=changed)
     includeFailureEvidence = Property(bool, lambda s: s._include_failure_evidence, notify=changed)
     textOnlyDiagnostics = Property(bool, lambda s: not (s._include_failure_evidence or s._include_automatic_failure_evidence), notify=changed)
@@ -110,9 +116,10 @@ class ClientInfoService(QObject):
     history = Property("QVariantList", lambda s: [s._release_row(r) for r in s._service.history
         if not s._service.latest or r.version != s._service.latest.version][:10], notify=changed)
 
-    @staticmethod
-    def _release_row(release):
-        return dict(asdict(release), published_date=release.published_date)
+    def _release_row(self, release):
+        return dict(asdict(release), published_date=release.published_date,
+                    announcementId=release.announcement_id,
+                    updateAvailable=is_newer(release.version, self._version))
     facts = Property("QVariantMap", lambda s: dict(version=s._version, entrypoint=str(Path(__file__).with_name("client.py")),
                     interpreter=sys.executable, platform=platform.platform(),
                     liveInput=bool(s._providers.get("input") and s._providers["input"].enabled),
@@ -164,11 +171,11 @@ class ClientInfoService(QObject):
         if coordinator is not None and page in {"preferences", "maps"}:
             coordinator.navigate("settings" if page == "preferences" else "gallery")
 
-    def setHomeContext(self, mode, profile_id, *, force=False):
+    def setHomeContext(self, mode, profile_id, *, season="s0", force=False):
         """Receive the actual applied runtime context, never the browsing selection."""
-        if self._closed or mode not in ("nightmare", "difficult"):
+        if self._closed or season not in SEASONS or mode not in browse_modes(season):
             return False
-        context = (str(mode), str(profile_id or ""))
+        context = (str(mode), str(profile_id or ""), str(season))
         if context == self._home_context and not force:
             return False
         self._home_context = context
@@ -179,36 +186,51 @@ class ClientInfoService(QObject):
         return True
 
     @staticmethod
-    def _home_rows(root, mode, profile_id):
+    def _home_rows(root, mode, profile_id, season="s0", *, cancelled=lambda: False):
         fallback = bundled_author_root()
-        context = load_browse_context(root, mode, **({"display_fallback_root": fallback} if fallback else {}))
-        if context.error or context.pack is None:
+        context = load_browse_context(root, mode, season=season, cancelled=cancelled, **({"display_fallback_root": fallback} if fallback else {}))
+        if context.error:
             return []
         profile = next((p for p in context.profiles if p.profile_id == profile_id), None)
+        if season == "s1":
+            # The applied solver profile remains shared-structure. A native
+            # display profile is presentation data, never a runtime selection.
+            profile = profile or next(iter(context.profiles), None)
+        elif context.pack is None:
+            return []
         rows = []
         if profile is not None:
             for item in profile.maps:
-                floors = tuple(dict.fromkeys((str(context.pack.default_entry_floor), *item.floors)))
+                if cancelled():
+                    from concurrent.futures import CancelledError
+                    raise CancelledError()
+                floors = (tuple(next(iter(item.variants)).layers) if season == "s1" else
+                    tuple(dict.fromkeys((str(context.pack.default_entry_floor), *item.floors))))
                 chosen = next(((variant, floor, Path(variant.layers[floor]))
                     for floor in floors for variant in item.variants
-                    if floor in variant.layers and context.path_stamps.get(Path(variant.layers[floor]))), None)
+                    if floor in variant.layers and context.path_stamps.get(Path(variant.layers[floor]))
+                    and Path(variant.layers[floor]).suffix.lower() in {".png", ".webp", ".jpg", ".jpeg", ".bmp"}), None)
                 if chosen is None:
                     continue
                 variant, floor, path = chosen
                 stamp = context.path_stamps[path]
-                url = QUrl.fromLocalFile(str(path)); url.setQuery(f"v={stamp[0]}-{stamp[1]}")
-                rows.append(dict(key=f"{mode}/{profile_id}/{item.id}/{variant.id}/{floor}",
-                    title=item.name, floor=floor, mode=mode, profileId=profile_id,
+                url = QUrl.fromLocalFile(str(path)); url.setQuery(f"v={'-'.join(map(str, stamp))}&season={season}")
+                metadata = (getattr(context, "floor_metadata", None) or {}).get(floor, {})
+                rows.append(dict(key=(f"{season}/{mode}/{profile_id}/{item.id}/{variant.id}/{floor}"
+                    if profile.profile_id == profile_id else ""),
+                    title=item.name, floor=floor, floorLabel=metadata.get("label", ""),
+                    mode=mode, season=season, profileId=profile_id,
+                    displayKind="原生底图" if profile.profile_id == "s1-native-structure" else "",
                     structure=False, imageUrl=url.toString()))
                 if len(rows) == 3:
                     break
-        if rows:
+        if rows or season == "s1":
             return rows
         from map_resource_overview import structure_previews, load_structure_preview
         for asset in structure_previews(context.pack):
             image = load_structure_preview(asset, (400, 250))
             stream = BytesIO(); image.save(stream, format="PNG")
-            rows.append(dict(key="", title=asset.name, floor=asset.floor, mode=mode,
+            rows.append(dict(key="", title=asset.name, floor=asset.floor, mode=mode, season=season,
                 profileId=profile_id, structure=True,
                 imageUrl="data:image/png;base64," + base64.b64encode(stream.getvalue()).decode("ascii")))
         return rows
@@ -226,7 +248,7 @@ class ClientInfoService(QObject):
             cancelled = lambda: self._closed or generation != self._home_preview_generation
             with resource_read_lock(self.sandbox, wait=True, cancelled=cancelled):
                 assert_resources_ready(self.sandbox)
-                return self._home_rows(self.paths.resource_root, *context)
+                return self._home_rows(self.paths.resource_root, *context, cancelled=cancelled)
         job = self._home_preview_job = Work(read_home)
         self._jobs.add(job)
         def done(value, error):
@@ -335,6 +357,9 @@ class ClientInfoService(QObject):
     def _startup_check(self):
         if self._closed or self._startup_checked:
             return
+        if self._writing or self._automatic_sampling_pending is not None:
+            self._startup_timer.start(100)
+            return
         self._startup_checked = True
         self._check_updates(manual=False)
 
@@ -353,7 +378,10 @@ class ClientInfoService(QObject):
             self.changed.emit()
 
     def _poll(self):
-        if self._closed:
+        if self._closed or self._writing:
+            return
+        self._flush_notice_reads()
+        if self._writing:
             return
         event = self._service.poll()
         if event is not None:
@@ -363,11 +391,19 @@ class ClientInfoService(QObject):
             if "error" not in event:
                 self._history_message = ("更新历史暂时无法读取，可重新检查更新" if event.get("history") is None
                                          else "暂无更早的更新公告" if not self.history else "")
-            self._timer.stop()
+            # Keep the service's bounded retry/recheck schedule alive. Network
+            # requests remain daemon workers and never block window startup.
             self.changed.emit()
-            if "error" not in event and not event.get("manual", False) and self._service.should_prompt():
-                self._service.mark_prompted()
-                self.startupAnnouncement.emit(self._release_row(self._service.latest))
+            if ("error" not in event and (self._startup_requested or not event.get("manual", False))
+                    and self._service.should_announce()):
+                release = self._service.latest
+                self._announcements[release.announcement_id] = release
+                while len(self._announcements) > 64:
+                    self._announcements.pop(next(iter(self._announcements)))
+                self.startupAnnouncement.emit(self._release_row(release))
+        elif self._service.phase == "checking" and not self._operation:
+            self._operation = "正在读取最新版本与更新历史…"
+            self.changed.emit()
 
     def _write(self, function, message, *, operation="正在保存…", complete=None):
         if self.checking or self._closed:
@@ -389,39 +425,77 @@ class ClientInfoService(QObject):
             if complete:
                 complete(value, error)
             self.changed.emit()
+            self._flush_notice_reads()
         job.signals.done.connect(done, Qt.QueuedConnection)
         self._pool.start(job)
         return True
 
-    def _notice_action(self, method, key, message):
-        if self._service.latest is None:
-            return
-        version = self._service.latest.version
+    def _notice_action(self, fields, message):
+        # Capture both content and preferences on the UI thread. Workers only
+        # write this snapshot; they must not read a newer self.latest or mutate
+        # the UI-owned preferences while a check is finishing.
+        stored = dict(self._service._stored, **fields)
         def save():
-            previous = dict(self._service._stored)
-            try:
-                method()
-                persisted = json.loads(self._service.state_path.read_text(encoding="utf-8"))
-                if persisted.get(key) != version:
-                    raise OSError("提醒偏好未写入")
-            except Exception:
-                self._service._stored = previous
-                raise
-        self._write(save, message)
+            self._service._save(stored)
+            persisted = json.loads(self._service.state_path.read_text(encoding="utf-8"))
+            if any(persisted.get(key) != value for key, value in fields.items()):
+                raise OSError("提醒偏好未写入")
+        def complete(value, error):
+            if not error:
+                self._service._stored.update(fields)
+        return self._write(save, message, complete=complete)
+
+    def _flush_notice_reads(self):
+        if self._closed or self.checking or not self._pending_notice_reads:
+            return
+        identity = next(iter(self._pending_notice_reads))
+        release = self._pending_notice_reads.pop(identity)
+        self._notice_action(self._service.notes_seen_fields(release), "已标记为已读")
+
+    @Slot(str, result=bool)
+    def shouldShowAnnouncement(self, identity):
+        return bool(not self._closed and self._service.latest
+                    and self._service.latest.announcement_id == identity
+                    and self._service.should_announce())
+
+    @Slot(str)
+    def announcementShown(self, identity):
+        release = self._announcements.get(identity)
+        if self._closed or release is None:
+            return
+        self._queue_notice_read(release)
+
+    def _queue_notice_read(self, release):
+        self._service.mark_announcement_prompted(release)
+        self._pending_notice_reads[release.announcement_id] = release
+        self._timer.start()
+        self._flush_notice_reads()
 
     @Slot()
     def markRead(self):
-        self._notice_action(self._service.mark_notes_seen, "seenNotesVersion", "已标记为已读")
+        if not self._closed and self._service.latest is not None:
+            self._queue_notice_read(self._service.latest)
 
     @Slot()
     def skipVersion(self):
-        self._notice_action(self._service.skip_latest, "skippedVersion", "已忽略此版本提醒")
+        if self._service.latest is not None:
+            self._skip_release(self._service.latest)
+
+    def _skip_release(self, release):
+        self._notice_action(dict(skippedVersion=release.version,
+                                 skippedAnnouncementId=release.announcement_id), "已忽略此公告提醒")
+
+    @Slot(str, str)
+    def openAnnouncementDownload(self, identity, provider):
+        self._open_release_download(self._announcements.get(identity), provider)
 
     @Slot(str)
     def openDownloadPage(self, provider):
+        self._open_release_download(self._service.latest, provider)
+
+    def _open_release_download(self, release, provider):
         if self._closed or self.checking:
             return
-        release = self._service.latest
         url = release.pages.get(provider) if release else None
         try:
             parts = urlsplit(url or "")
@@ -491,6 +565,9 @@ class ClientInfoService(QObject):
         export_id = uuid4().hex
         report = dict(exportId=export_id, schema="xingtu-qt-client-diagnostics-v1", exportedAt=datetime.now(timezone.utc).isoformat(),
                       environment=self.facts)
+        performance = self._providers.get("performance")
+        if performance is not None:
+            report["performance"] = deepcopy(performance.snapshot)
         session = self._providers.get("session")
         if session is not None:
             state = session.snapshot
@@ -587,6 +664,8 @@ class ClientInfoService(QObject):
         self._set_automatic_failure_sampling(False)
         self._startup_timer.stop()
         self._closed = True
+        self._pending_notice_reads.clear()
+        self._announcements.clear()
         self._home_preview_generation += 1
         self._timer.stop()
         self._pool.waitForDone()

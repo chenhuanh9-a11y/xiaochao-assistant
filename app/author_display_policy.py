@@ -24,6 +24,9 @@ class SharedAuthorDisplayPolicy:
                 binding = optional.binding(display_profile,map_id,floor)
                 if binding is not None and binding['usable']:
                     return display_profile
+                from generic_author_package import is_generic_profile
+                if is_generic_profile(display_profile):
+                    return SHARED_STRUCTURE_PROFILE_ID
                 return self._legacy_difficult_display_profile(map_id, floor) or SHARED_STRUCTURE_PROFILE_ID
             if (optional is not None and display_profile != SUJU_ROUTE_PROFILE_ID
                     and not (getattr(self, 'difficult_native_context', None) is not None

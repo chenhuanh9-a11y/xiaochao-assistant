@@ -19,6 +19,7 @@ _PENDING_KINDS = {
     "upgrade-cleanup-incomplete": "upgrade",
     "additions-recovery-required": "additions",
     "removal-recovery-required": "removal",
+    "author-snapshot-recovery-required": "author-snapshot",
 }
 _UPGRADE_STATES = {"preparing", "prepared", "committed", "rolling-back", "rollback-incomplete", "rolled-back", "upgrade-cleanup-pending"}
 _PLAN_FIELDS = {"transactionId", "packageId", "status", "pending", "fileCount", "blockedPaths", "planSha256"}
@@ -79,6 +80,7 @@ def _confirmation_message(plan, kind):
         "additions": ("只清理上次导入留下的临时副本，不会撤回、恢复或重写当前资源。"
                       if plan.get('cleanupOnly') is True else
                       "恢复中断的图包导入：未提交则撤回本次新增，已提交则完成记录清理。"),
+        "author-snapshot": "恢复中断的作者图版本切换：未提交则恢复旧激活记录，已提交则清理事务标记。图片版本均会保留。",
         "removal": "恢复中断的图包删除：未提交则还原本次删除，已提交则完成记录清理。",
     }
     return ("上次图包操作还没处理完，星图暂时无法启动。\n\n"

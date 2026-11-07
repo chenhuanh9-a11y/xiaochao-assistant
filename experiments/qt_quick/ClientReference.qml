@@ -63,7 +63,7 @@ Window {
             objectName: "referencePreviewBadge"
             anchors.left: mapImage.left; anchors.right: mapImage.right; anchors.top: mapImage.top
             visible: reference.previewOnly || reference.referenceData.provisional === true
-            text: reference.previewOnly ? "位置预览（不参与识别）" : "暂选地图｜组内确认中"
+            text: reference.previewOnly ? "位置预览（不参与识别）" : reference.referenceData.s1CandidateReference ? "暂用地图｜静态参考" : "暂选地图｜组内确认中"
             color: reference.previewOnly ? "#ffffff" : "#ffd773"; padding: 5; font.pixelSize: 14
             background: Rectangle { color: reference.previewOnly ? "#234b63" : "#2d230c" }
         }

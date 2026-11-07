@@ -89,6 +89,12 @@ class VerticalRuntimeContracts(unittest.TestCase):
         self.dispatch("end_round")
         self.assertFalse(self.click(2,context)["success"])
 
+    def test_s1_guard_precedes_any_vertical_sensor(self):
+        self.runtime._season="s1"
+        with patch("floor_control_region.locate_vertical_floor_controls",side_effect=AssertionError("S1 sensor called")):
+            o,f,r=self.runtime._observe(self.engine,self.capture.frame)
+        self.assertIsNone(f);self.assertIsNone(o["mapOpen"])
+        self.assertEqual(r["reason"],"s1-floor-control-detector-unvalidated")
 
     def test_horizontal_region_cannot_override_vertical_geometry(self):
         self.prepare()

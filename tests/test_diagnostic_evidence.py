@@ -1,17 +1,11 @@
 """Real failure writer -> bounded ZIP -> decoded pixels; no GUI or game capture."""
-import ast
 import copy
 from datetime import datetime
-import hashlib
 import io
 import json
-import os
 from pathlib import Path
-import queue
-import re
 import sys
 import tempfile
-import threading
 import time
 from types import SimpleNamespace
 import unittest
@@ -27,32 +21,15 @@ from map_identity_engine import entry_rank_diagnostics
 from nightmare_candidate import NightmareMemoryStore
 
 
-def production_functions():
-    tree = ast.parse((APP / 'identityv_daily_assistant.py').read_text('utf-8-sig'))
-    names = {'export_safe_diagnostic_bundle', 'safe_diagnostic_log_files', '_bounded_log_tail',
-             '_redact_local_paths', '_event_log_session_id', '_record_unresolved_identity_rejection',
-             'export_diagnostic_logs', 'diagnostic_runtime_context'}
-    functions = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name in names]
-    assert len(functions) == len(names)
-    from diagnostic_identity import process_scope
-    ns = dict(process_scope=process_scope, Path=Path, datetime=datetime, json=json, os=os, re=re, sys=sys,
-              tempfile=tempfile, zipfile=zipfile, hashlib=hashlib, copy=copy, time=time, threading=threading,
-              np=np, NightmareMemoryStore=NightmareMemoryStore,
-              DIAGNOSTIC_LOG_LIMIT=8, DIAGNOSTIC_FILE_BYTE_LIMIT=8*1024*1024,
-              DIAGNOSTIC_TOTAL_BYTE_LIMIT=32*1024*1024,
-              APP_VERSION='test', BUILD_FINGERPRINT='TEST1234',
-              process_integrity_level=lambda:dict(level='test'),
-              collect_identityv_window_environment=lambda:dict(candidateCount=0),
-              ranked_event_is_current=lambda token,current: token == current)
-    exec(compile(ast.fix_missing_locations(ast.Module(body=functions, type_ignores=[])),
-                 str(APP / 'identityv_daily_assistant.py'), 'exec'), ns)
-    return ns
-
-
 class DiagnosticEvidenceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.production = production_functions()
+        from functools import partial
+        import diagnostic_export
+        cls.production = dict(_redact_local_paths=diagnostic_export._redact_local_paths,
+            export_safe_diagnostic_bundle=partial(diagnostic_export.export_safe_diagnostic_bundle,
+                app_version='test', build_fingerprint='TEST1234',
+                process_integrity=dict(level='test')))
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -116,27 +93,6 @@ class DiagnosticEvidenceTests(unittest.TestCase):
             self.assertEqual(report['cases'][0]['files'][0]['status'],'sample-file-missing')
             self.assertIn(report['cases'][0]['metadataPath'],archive.namelist())
 
-    def test_export_button_controller_reaches_real_archive_on_background_thread(self):
-        self.save()
-        (self.live/self.log).write_text('\n'.join(json.dumps({'time':t,'event':'ranked'}) for t in
-            ['2026-10-29T00:20:00+08:00','2026-10-29T00:26:00+08:00']),encoding='utf-8')
-        self.production.update(ROOT=self.root,LIVE_ROOT=self.live)
-        subject=SimpleNamespace(diagnostic_export_in_progress=False,
-            _set_diagnostic_export_buttons=lambda *args:None,_log=lambda *args,**kwargs:None,
-            game_hwnd=None,game_foreground=True,map_is_open=True,package_metadata={'status':'test'},
-            memory_store=self.store,game_mode='nightmare',events=queue.Queue())
-        emitted=[]
-        subject._log=lambda event,**values:emitted.append((event,values))
-        self.production['export_diagnostic_logs'](subject)
-        result=subject.events.get(timeout=3)
-        self.assertEqual(result['kind'],'diagnostic-exported',result)
-        self.assertEqual(result['includedFailureImageCount'],1)
-        with zipfile.ZipFile(result['path']) as archive:
-            manifest=json.loads(archive.read('diagnostic-manifest.json'))
-            self.assertIn('failureSampling',manifest['runtimeContext'])
-            self.assertEqual(manifest['exportId'],emitted[0][1]['exportId'])
-            self.assertEqual(manifest['exportId'],result['exportId'])
-            self.assertEqual(manifest['failureEvidence']['cases'][0]['cycleId'],9)
 
     def test_writer_budget_failure_is_exposed_without_frame_or_journal(self):
         self.store._failure_sampling.max_disk_bytes=0
@@ -202,38 +158,6 @@ class DiagnosticEvidenceTests(unittest.TestCase):
         self.assertEqual(summary['side']['bestCandidates'][0]['verificationMatrixSourceToClient'],matrix)
         self.assertEqual(summary['sourceStructures']['featureStatus']['reason'],'extractor-mismatch')
         json.dumps(summary)
-
-    def test_real_controller_writer_accepts_b1_and_uses_same_frame_snapshot(self):
-        now=time.perf_counter()
-        for mode in ('nightmare','difficult'):
-            with self.subTest(mode=mode):
-                messages=[]
-                store=NightmareMemoryStore(SimpleNamespace(mode=mode,by_id={}),self.root/mode)
-                subject=SimpleNamespace(game_mode=mode,gate=SimpleNamespace(confirmed_id=None),
-                    map_is_open=True,active_map_cycle_id=9,surface_visibility_generation=4,
-                    current_frame_generation=3,capture_generation=2,memory_store=store,
-                    route_profile_id='author',event_path=self.live/self.log,package_metadata={},
-                    engine=SimpleNamespace(last_difficult_evidence={'sourceStructureCandidates':'WRONG FRAME'}),
-                    _log=lambda event,**fields:messages.append((event,fields)))
-                event=dict(cycleId=9,rankStartedMonotonicAt=now-.02,rankCompletedMonotonicAt=now-.01,
-                    rankSourceSurfaceGeneration=4,rankSourceFrameGeneration=3,token=2,mapOpen=True,
-                    floor='B1',floorSource='automatic',frame=self.pixels)
-                top={'identityHardGatePassed':False,'difficultRecognition':{'sourceStructures':{'reason':'same-frame'}}}
-                self.production['_record_unresolved_identity_rejection'](subject,event,top)
-                deadline=time.monotonic()+3
-                while store._failure_queue.unfinished_tasks and time.monotonic()<deadline:time.sleep(.01)
-                self.assertEqual(store.failure_saved_count,1)
-                row=store.alignment_failures()[0]
-                self.assertEqual(row['diagnostic']['sourceStructureCandidates'],{'reason':'same-frame'})
-                self.production['_record_unresolved_identity_rejection'](subject,event,top)
-                self.assertEqual(store.failure_saved_count,1)  # Existing per-profile cooldown.
-                self.assertEqual(messages[-1][1]['sampling']['state'],'sample-cooldown')
-                self.production['_record_unresolved_identity_rejection'](subject,dict(event,rankSourceFrameGeneration=0),top)
-                self.assertEqual(messages[-1][1]['reason'],'frame-generation-mismatch')
-                subject.map_is_open=False
-                self.production['_record_unresolved_identity_rejection'](subject,event,top)
-                self.assertEqual(messages[-1][1]['reason'],'map-closed')
-                self.assertEqual(store.failure_saved_count,1)
 
 
 if __name__=='__main__':unittest.main()

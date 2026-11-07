@@ -30,6 +30,22 @@ def scope(value):
         if key in value}
 
 
+def map_attempt(value):
+    """Fixed diagnostic identifiers only; never copy a request or capture frame."""
+    if not isinstance(value, dict):
+        return {}
+    result = {}
+    for key in ("attemptId", "openingId", "recoveryId"):
+        item = value.get(key)
+        if isinstance(item, str) and re.fullmatch(r"[0-9a-fA-F]{32}", item):
+            result[key] = item.lower()
+    for key in ("inputSequence", "requestGeneration", "inputCreatedAt"):
+        item = number(value.get(key))
+        if item is not None:
+            result[key] = item
+    return result
+
+
 def receipt_fields(receipt):
     receipt = receipt if isinstance(receipt, dict) else {}
     result = {key: receipt[key] for key in ("success", "stale", "error", "probeRequired", "persistentPoseUpdated")
@@ -128,7 +144,9 @@ class InputDiagnostics:
         action = code(receipt.get("action"), "unknown-action")
         request = scope(receipt.get("requestContext"))
         result = scope(receipt.get("resultContext"))
-        key = (action, tuple(fields.items()), tuple(request.items()), tuple(result.items()), state.get("generation"))
+        attempt = map_attempt(receipt.get("mapAttempt"))
+        key = (action, tuple(fields.items()), tuple(request.items()), tuple(result.items()),
+            state.get("generation"), tuple(attempt.items()))
         if not receipt or key == self.last_receipt:
             return
         self.last_receipt = key
@@ -139,5 +157,6 @@ class InputDiagnostics:
             status="exception" if fields.get("error") else "rejected" if fields.get("success") is False else
                 "accepted" if fields.get("success") is True else "unknown",
             reason=fields["reason"], decision=self.serial,
+            **({"mapAttempt": attempt} if attempt else {}),
             diag=dict(receipt=fields, requestScope=request, resultScope=result,
                 state=self._state(state), display=scope(display), rateSuppressed=suppressed)))

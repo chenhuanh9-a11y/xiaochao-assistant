@@ -160,10 +160,22 @@ class ModeSwitchTests(unittest.TestCase):
         out = apply_floor_region(dict(floorControlMode="region"), "nightmare", column((2, 1, -1), 1), self.fixed)
         self.assertEqual((out["selectedFloor"], out["floorSource"]), (1, "auto-located"))
 
+    def test_region_reading_cannot_grant_a_floor_to_another_season(self):
+        frame = column((2, 1, -1), 1)
+        for season in ("s1", "s2"):
+            for choice in ("fixed", "auto", "region"):
+                with self.subTest(season=season, choice=choice):
+                    settings = dict(gameSeason=season, floorControlMode=choice,
+                        floorControlRegion=dict(rect=REGION, clientSize=[1920, 1080]))
+                    reading = apply_floor_region(settings, "nightmare", frame,
+                        dict(self.fixed, selectedFloor=1))
+                    self.assertIsNone(reading["selectedFloor"])
+                    self.assertEqual(reading["floorSource"], "unavailable")
 
     def test_runtime_reads_raw_region_but_authorizes_it_only_with_map_proof(self):
         from test_client_live_runtime import FixtureCapture, fixture_engine
         runtime = LiveRuntime(engine_factories={}, capture_provider=FixtureCapture(), evidence_kind="synthetic")
+        runtime._season = "s0"
         runtime._settings = dict(floorControlMode="region",
             floorControlRegion=dict(rect=REGION, clientSize=[1920, 1080]))
         engine = fixture_engine("difficult")
@@ -192,6 +204,33 @@ class ModeSwitchTests(unittest.TestCase):
             self.assertNotIn("controlRects", floor_read)
             self.assertIsNone(runtime.latest_map_frame())
 
+    def test_runtime_observation_uses_applied_not_saved_season(self):
+        from test_client_live_runtime import FixtureCapture, fixture_engine
+        runtime = LiveRuntime(engine_factories={}, capture_provider=FixtureCapture(), evidence_kind="synthetic")
+        for mode, floors in ORDERS:
+            engine = fixture_engine(mode)
+            frame = column(floors, 1)
+            for choice in ("fixed", "auto", "region"):
+                for applied, saved, expected in (("s0", "s1", "1"), ("s1", "s0", None)):
+                    with self.subTest(mode=mode, choice=choice, applied=applied, saved=saved):
+                        runtime._season = applied
+                        runtime._settings = dict(gameSeason=saved, floorControlMode=choice,
+                            floorControlRegion=dict(rect=REGION, clientSize=[1920, 1080]))
+                        with patch("map_interface_observation.detect_selected_floor", side_effect=AssertionError("legacy floor sensor called")), \
+                             patch.object(engine.qt_map_ui, "observe", side_effect=AssertionError("legacy map sensor called")), \
+                             patch("map_interface_observation.detect_map_interface", return_value=dict(detected=True)) as map_sensor, \
+                             patch("floor_control_region.locate_vertical_floor_controls", wraps=locate_vertical_floor_controls) as floor_sensor:
+                            _, floor, reading = runtime._observe(engine, frame)
+                        self.assertEqual(floor, expected)
+                        self.assertEqual(runtime._settings["gameSeason"], saved)
+                        if applied != "s0":
+                            self.assertEqual(reading["floorSource"], "unavailable")
+                            self.assertNotIn("centers", reading)
+                            map_sensor.assert_not_called()
+                            floor_sensor.assert_not_called()
+                        else:
+                            self.assertEqual(map_sensor.call_count, 1)
+                            self.assertTrue(reading["controlGeometryVerified"])
 
 
 class FloorRegionServiceTests(unittest.TestCase):
@@ -206,7 +245,8 @@ class FloorRegionServiceTests(unittest.TestCase):
         (self.sandbox / ".qt-lab-owner").write_text("qt-quick-isolated-v1", encoding="utf-8")
         self.settings = SettingsService(self.sandbox)
         self.latest = None
-        runtime = SimpleNamespace(latest_map_frame=lambda: self.latest)
+        self.applied = dict(season="s0", mode="nightmare")
+        runtime = SimpleNamespace(latest_map_frame=lambda: self.latest, snapshot=lambda: dict(self.applied))
         self.images = FloorRegionImages()
         self.service = FloorRegionService(runtime, self.settings, self.images)
 
@@ -276,13 +316,58 @@ class FloorRegionServiceTests(unittest.TestCase):
         self.assertEqual(suggested_rect("nightmare", {}, SIZE), DEFAULT_RECT)
         self.assertEqual(suggested_rect("nightmare", dict(controlAxis="vertical"), SIZE), DEFAULT_RECT)
         self.assertEqual(suggested_rect("nightmare", dict(centers=[.75, .78, .81]), SIZE), DEFAULT_RECT)
-        self.assertEqual(VIEW, (.5, 0., .5, .65))
+        self.assertEqual(VIEW, (.5, 0., .5, 1.))
         self.assertGreater(DEFAULT_RECT[1], .1)
         self.assertGreater(DEFAULT_RECT[3], .2)
         for mode, order in ORDERS:
             frame = column(order, 1)
             self.assertEqual(read_floor_in_region(frame, DEFAULT_RECT, mode)["selectedFloor"], 1)
 
+    def test_editor_shows_complete_suggestion_after_expanded_automatic_read(self):
+        frame = column((2, 1, -1), -1, center_x=1200, top=820)
+        read = apply_floor_region({}, "nightmare", frame,
+            locate_vertical_floor_controls(frame, "nightmare"))
+        self.assertEqual(read["selectedFloor"], -1)
+        self.latest = (frame, "nightmare", read)
+        self.assertTrue(self.service.open())
+        self.assertEqual(self.service.preview, "框内读到：B1 层")
+        x, y, w, h = self.service.draftRect
+        vx, vy, vw, vh = self.service.viewRect
+        self.assertLessEqual(vx, x)
+        self.assertLessEqual(vy, y)
+        self.assertLessEqual(x + w, vx + vw)
+        self.assertLessEqual(y + h, vy + vh)
+        self.assertTrue(self.service.useDraft())
+        self.assertEqual(self.settings.values["floorControlRegion"]["rect"], [x, y, w, h])
+
+    def test_editor_uses_applied_context_and_invalidates_stale_drafts(self):
+        frame = column((2, 1, -1), 1)
+        self.latest = (frame, "nightmare", locate_vertical_floor_controls(frame, "nightmare"))
+        self.assertTrue(self.settings.setValue("gameSeason", "s1"))
+        self.assertTrue(self.service.open())
+        self.assertTrue(self.service.available)
+        before = self.settings.values["floorControlRegion"]
+        self.applied["season"] = "s1"
+        self.service.invalidateContext()
+        self.assertFalse(self.service.available)
+        self.assertEqual(self.service.imageUrl, "")
+        self.assertFalse(self.service.useDraft())
+        self.assertEqual(self.settings.values["floorControlRegion"], before)
+        self.assertFalse(self.service.open())
+        self.applied.update(season="s0", mode="difficult")
+        self.assertFalse(self.service.open())
+        self.applied["mode"] = "nightmare"
+        self.assertTrue(self.service.open())
+        self.applied["season"] = "s1"
+        self.assertFalse(self.service.setDraft(*REGION))
+        self.assertFalse(self.service.available)
+        self.assertEqual(self.settings.values["floorControlRegion"], before)
+        self.applied["season"] = "s0"
+        self.assertTrue(self.service.open())
+        self.applied["season"] = "s1"
+        self.assertFalse(self.service.useDraft())
+        self.assertFalse(self.service.available)
+        self.assertEqual(self.settings.values["floorControlRegion"], before)
 
     def test_settings_panel_loads_with_and_without_the_service(self):
         for with_service in (True, False):

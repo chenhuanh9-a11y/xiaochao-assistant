@@ -3,6 +3,7 @@ import copy
 import unittest
 from s0_vertical_controls import bind_control_geometry, validated_control_rects
 from floor_observation_policy import game_floor_control_hit
+
 from s0_test_fixtures import synthetic_read
 
 

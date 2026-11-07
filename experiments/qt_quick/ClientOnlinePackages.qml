@@ -9,18 +9,16 @@ Item {
         anchors.fill: parent; spacing: 12
         RowLayout {
             Layout.fillWidth: true
-            Label { text: "在线图包"; font.pixelSize: 20; font.bold: true; color: "#17365e" }
+            Label { text: "S0 在线图包"; font.pixelSize: 20; font.bold: true; color: "#17365e" }
             Item { Layout.fillWidth: true }
             AppButton { objectName: "onlineCheck"; text: "检查在线列表"; enabled: panel.state.canCheck; onClicked: onlinePackageService.checkPackages() }
             AppButton { text: "取消下载"; enabled: panel.state.canCancel; onClicked: onlinePackageService.cancel() }
         }
         Label { text: panel.state.message; wrapMode: Text.WordWrap; Layout.fillWidth: true; color: "#567096" }
-        ProgressBar {
-            visible: panel.state.busy; Layout.fillWidth: true
-            indeterminate: !panel.state.progress.totalBytes
-            from: 0; to: panel.state.progress.totalBytes || 1; value: panel.state.progress.receivedBytes
+        ClientPackageProgress {
+            Layout.fillWidth: true
+            onlineState: panel.state
         }
-        Label { visible: panel.state.busy && panel.state.progress.totalBytes > 0; text: Math.round(panel.state.progress.receivedBytes / 1024) + " / " + Math.round(panel.state.progress.totalBytes / 1024) + " KiB"; color: "#567096"; font.pixelSize: 12 }
         ListView {
             objectName: "onlinePackageList"; Layout.fillWidth: true; Layout.fillHeight: true
             clip: true; spacing: 8; model: panel.state.packages
