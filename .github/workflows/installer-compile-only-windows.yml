@@ -1,0 +1,105 @@
+name: Production Inno compile only and real helper freeze
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/installer-compile-only-windows.yml'
+      - 'tools/prepare_inno_compile_ci.ps1'
+      - 'tools/verify_installer_compile_only.py'
+      - 'tools/qt-*.iss'
+      - 'tools/qt-*.spec'
+      - 'tests/test_installer_compile_only.py'
+      - 'tests/test_owned_dialog_probe.py'
+      - 'tests/windows/owned_dialog_probe.*'
+
+permissions:
+  contents: read
+
+jobs:
+  owned-window-fixtures:
+    runs-on: windows-latest
+    timeout-minutes: 8
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13.3'
+          architecture: x64
+      - name: Only this process owned synthetic windows via UIAutomation
+        timeout-minutes: 2
+        env:
+          XINGTU_RUN_OWNED_DIALOG_PROBE: '1'
+        shell: pwsh
+        run: |
+          python -B -m unittest discover -s tests -p test_owned_dialog_probe.py -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # No Setup, real resource input, other process windows, or registration is
+      # touched here. Success is not cross-process/UAC or installer E2E proof.
+  compile-only:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13.3'
+          architecture: x64
+      - name: New helper-only venv with source-pinned build dependencies
+        shell: pwsh
+        run: |
+          $venv = Join-Path $env:RUNNER_TEMP 'xingtu-compile-only-venv'
+          if (Test-Path -LiteralPath $venv) { throw 'Expected new isolated venv' }
+          python -m venv $venv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $python = Join-Path $venv 'Scripts\python.exe'
+          $requirements = Join-Path $env:RUNNER_TEMP 'xingtu-helper-ci-requirements.txt'
+          python -B -X utf8 -c "import sys; sys.path.insert(0, 'tools'); import build_qt_client as b; p=b._requirements(b.TOOLS/'requirements-qt-build.txt'); print('\n'.join(k+'=='+p[k] for k in ('PyInstaller','pyinstaller-hooks-contrib','pefile','psutil')))" | Set-Content -LiteralPath $requirements -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $python -m pip install --disable-pip-version-check --index-url https://pypi.org/simple -r $requirements
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Focused compile-only orchestration contracts
+        shell: pwsh
+        run: |
+          & (Join-Path $env:RUNNER_TEMP 'xingtu-compile-only-venv\Scripts\python.exe') -B -m unittest discover -s tests -p test_installer_compile_only.py -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Provision pinned vendor compiler in portable mode only
+        shell: powershell
+        run: .\tools\prepare_inno_compile_ci.ps1 -OutputRoot (Join-Path $env:RUNNER_TEMP 'xingtu-compile-only-toolchain')
+      - name: Original production Inno compile only and helper PE PYZ CLI checks
+        shell: pwsh
+        run: |
+          $python = Join-Path $env:RUNNER_TEMP 'xingtu-compile-only-venv\Scripts\python.exe'
+          $commit = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $python -B -X utf8 tools/verify_installer_compile_only.py --source-commit $commit --work (Join-Path $env:RUNNER_TEMP 'xingtu-compile-only') --iscc (Join-Path $env:RUNNER_TEMP 'xingtu-compile-only-toolchain\compiler\ISCC.exe')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # No helper EXEs, compiler package, maps, user data or Setup are uploaded.
+      - name: Preserve only generated compile evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: installer-compile-only-evidence
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/xingtu-compile-only/compile-only-record.json
+            ${{ runner.temp }}/xingtu-compile-only/inno-compile-only.log
+            ${{ runner.temp }}/xingtu-compile-only/inno-compile-only.json
+            ${{ runner.temp }}/xingtu-compile-only/helper-*.log
+            ${{ runner.temp }}/xingtu-compile-only/helper-*.json
+            ${{ runner.temp }}/xingtu-compile-only-toolchain/compiler-provenance.json
+            ${{ runner.temp }}/xingtu-compile-only-toolchain/vendor-prepare.log

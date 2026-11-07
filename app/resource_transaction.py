@@ -274,6 +274,14 @@ def rename_no_replace(source, target):
         raise OSError(code, 'atomic-no-replace-failed')
 
 
+def hardlinks_unsupported(error):
+    """Only explicit missing-link capability permits an owned move fallback."""
+    return (isinstance(error, OSError) and
+            (getattr(error, 'winerror', None) in {1, 50} or
+             (getattr(error, 'winerror', None) is None and error.errno in
+              {errno.EINVAL, errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP})))
+
+
 def preflight_resource_publication(root, relatives):
     """Select only an actually tested protocol, before creating a transaction.
 
@@ -286,12 +294,7 @@ def preflight_resource_publication(root, relatives):
         preflight_hardlinks(root, relatives)
         return 'hardlink-v1'
     except ResourceTransactionError as error:
-        cause = error.__cause__
-        unsupported = (isinstance(cause, OSError) and
-            (getattr(cause, 'winerror', None) in {1, 50} or
-             (getattr(cause, 'winerror', None) is None and cause.errno in
-              {errno.EINVAL, errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP})))
-        if error.code != 'resource-hardlinks-unavailable' or not unsupported:
+        if error.code != 'resource-hardlinks-unavailable' or not hardlinks_unsupported(error.__cause__):
             raise
     state = _publication_targets(root, relatives)
     from map_package_upgrade import _write_new, _capture, _move_owned, _matches

@@ -534,14 +534,25 @@ class CustomGalleryService(QObject):
         self._run(lambda: self._write_export(path, gid), f"已导出到 {path}")
 
     def _write_export(self, path, gid, *, overwrite=False, expected=None):
+        import map_package_upgrade as files
+        from resource_transaction import hardlinks_unsupported
+        from star_map_import import _rollback_published
+
         path = self._validate_export_path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
+        data = json.dumps(self._store.export(gid), ensure_ascii=False, indent=1).encode("utf-8")
+        row = dict(path=path.name, bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
         temporary = None
+        identity = None
         try:
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n", dir=path.parent,
+            with tempfile.NamedTemporaryFile(mode="wb", dir=path.parent,
                                              prefix=".gallery-export-", suffix=".tmp", delete=False) as handle:
                 temporary = Path(handle.name)
-                json.dump(self._store.export(gid), handle, ensure_ascii=False, indent=1)
+                created = os.fstat(handle.fileno())
+                if not created.st_ino:
+                    raise ValueError("当前文件系统无法验证导出文件身份")
+                identity = (created.st_dev, created.st_ino)
+                handle.write(data)
                 handle.flush()
                 os.fsync(handle.fileno())
             self._validate_export_path(path)
@@ -551,11 +562,23 @@ class CustomGalleryService(QObject):
                 os.replace(temporary, path)
             else:
                 # Publish a complete file without replacing a destination that
-                # appeared after the chooser/inspection.
-                os.link(temporary, path)
+                # appeared after the chooser/inspection. Bind the original
+                # created object, never recapture a possibly replaced path.
+                if not files._matches(temporary, row, list(identity)):
+                    raise ValueError("导出临时文件已变化，请重试")
+                try:
+                    os.link(temporary, path)
+                except OSError as error:
+                    if not hardlinks_unsupported(error):
+                        raise
+                    files._move_owned(temporary, path, row, list(identity), linkless=True)
+                if not files._matches(path, row, list(identity)):
+                    raise ValueError("导出文件已变化，请检查目标文件后重试")
         finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+            if temporary is not None and identity is not None:
+                # A move consumes the name; another writer may already have
+                # reused it, even with identical bytes. Never unlink by name.
+                _rollback_published(temporary, identity, row["sha256"])
 
     @Slot(bool)
     def confirmOperation(self, accepted):
