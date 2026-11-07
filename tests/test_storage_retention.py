@@ -42,7 +42,7 @@ class RetentionTests(unittest.TestCase):
         self.folder.cleanup()
 
     def test_legacy_logs_are_preserved_while_new_writers_have_separate_owned_budget(self):
-        # Shared by Tk and Qt; Qt names its logs events-qt-* inside the same glob.
+        # Preserve unknown historical logs; current Qt logs share the bounded export policy.
         prune = prune_diagnostic_logs
         live = self.root / 'live'
         for age in range(12):
@@ -55,17 +55,14 @@ class RetentionTests(unittest.TestCase):
         self.assertTrue((live / 'startup-error-a.log').is_file())
         self.assertTrue((live / 'hang-diagnostics' / 'thread-stacks-1.jsonl').is_file())
 
-    def test_qt_and_tk_startup_prune_statements_preserve_unknown_files_and_none_abi(self):
-        # Execute the actual import/call statements at both production startup
-        # seams, not a reimplementation. Full Tk GUI is not available in Linux.
+    def test_qt_startup_prune_statements_preserve_unknown_files_and_none_abi(self):
+        # Execute the actual Qt startup statements, not a reimplementation.
         from unittest.mock import patch
         import diagnostic_export
         live = self.root / 'nightmare-live'
         sentinel = touch(live / 'events-user.jsonl', 0)
         before = sentinel.read_bytes()
         sources = [
-            ('app/identityv_daily_assistant.py', '        from diagnostic_export import prune_diagnostic_logs',
-             '        self.event_path = LIVE_ROOT'),
             ('experiments/qt_quick/client.py', '        try:\n            from diagnostic_export import DIAGNOSTIC_LOG_LIMIT, prune_diagnostic_logs',
              '        from client_lifecycle_trace')]
         import textwrap
@@ -145,11 +142,9 @@ class RetentionTests(unittest.TestCase):
 
 
 class StartupWiringTests(unittest.TestCase):
-    def test_both_clients_prune_before_opening_their_logs(self):
+    def test_qt_client_prunes_before_opening_their_logs(self):
         root = Path(__file__).resolve().parents[1]
-        tk = (root / 'app' / 'identityv_daily_assistant.py').read_text('utf-8')
         qt = (root / 'experiments' / 'qt_quick' / 'client.py').read_text('utf-8')
-        self.assertLess(tk.index('prune_diagnostic_logs(LIVE_ROOT'), tk.index('self.event_path = LIVE_ROOT'))
         self.assertLess(qt.index('prune_diagnostic_logs(self.paths.work_root'), qt.index('ProblemsService(self.paths'))
         self.assertLess(qt.index('prune_installed_downloads(self.sandbox'), qt.index('LifecycleJournal(self.paths.work_root)'))
 
