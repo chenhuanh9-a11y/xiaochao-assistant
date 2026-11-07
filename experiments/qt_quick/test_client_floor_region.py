@@ -316,12 +316,29 @@ class FloorRegionServiceTests(unittest.TestCase):
         self.assertEqual(suggested_rect("nightmare", {}, SIZE), DEFAULT_RECT)
         self.assertEqual(suggested_rect("nightmare", dict(controlAxis="vertical"), SIZE), DEFAULT_RECT)
         self.assertEqual(suggested_rect("nightmare", dict(centers=[.75, .78, .81]), SIZE), DEFAULT_RECT)
-        self.assertEqual(VIEW, (.5, 0., .5, .65))
+        self.assertEqual(VIEW, (.5, 0., .5, 1.))
         self.assertGreater(DEFAULT_RECT[1], .1)
         self.assertGreater(DEFAULT_RECT[3], .2)
         for mode, order in ORDERS:
             frame = column(order, 1)
             self.assertEqual(read_floor_in_region(frame, DEFAULT_RECT, mode)["selectedFloor"], 1)
+
+    def test_editor_shows_complete_suggestion_after_expanded_automatic_read(self):
+        frame = column((2, 1, -1), -1, center_x=1200, top=820)
+        read = apply_floor_region({}, "nightmare", frame,
+            locate_vertical_floor_controls(frame, "nightmare"))
+        self.assertEqual(read["selectedFloor"], -1)
+        self.latest = (frame, "nightmare", read)
+        self.assertTrue(self.service.open())
+        self.assertEqual(self.service.preview, "框内读到：B1 层")
+        x, y, w, h = self.service.draftRect
+        vx, vy, vw, vh = self.service.viewRect
+        self.assertLessEqual(vx, x)
+        self.assertLessEqual(vy, y)
+        self.assertLessEqual(x + w, vx + vw)
+        self.assertLessEqual(y + h, vy + vh)
+        self.assertTrue(self.service.useDraft())
+        self.assertEqual(self.settings.values["floorControlRegion"]["rect"], [x, y, w, h])
 
     def test_editor_uses_applied_context_and_invalidates_stale_drafts(self):
         frame = column((2, 1, -1), 1)
