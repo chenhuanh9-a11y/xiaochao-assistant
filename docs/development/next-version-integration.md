@@ -406,6 +406,19 @@ Windows joint 新增独立 author-snapshots 组，原全部组保留。精确最
 暂停的贴合次域补丁；重置与快照仅在不交付的独立组合树验证 pending/lease 并集。
 该预检发现 reset 重下载提示漏快照作者的 P2，已交实现方修复，必须在其后续接入前复验。
 
+### 88daff6 首次 Windows 与后续修复
+
+88daff6 的五套独立工作流和 joint 原 10 组成功，新 author-snapshots 组失败。
+根因和原日志已保留在[二阶段说明](../resource-compatibility-phase2.md#首次原生-windows-失败与分层修复)：
+CPython 3.13.3 的 handle/path ctime 语义不同；另有 Qt file URL 和两个旧根路径 fixture
+合同问题。产品修复 `72e4f999` 通过重新打开路径后 fstat 比较保留全部五字段，不删除
+identity、mtime 或 ctime 防线。fixture 独立修复 `e761f9c`、`098f5a7`，负例进一步加强。
+
+独立复核 73 次中 72 通过、1 原生诊断 skip。修后最终同树重新跑四组：author-snapshots
+18 模块168次，163通过5skip；原合同303次301通过2skip；packaging145次142通过3skip；
+season-ui94次全通过，无失败。Windows原生临时文件诊断已加入原作者模块，等待新精确SHA
+再验，不能把这份Linux结果当原生通过。source/version锁、未纳入的重置和暂停贴合边界不变。
+
 ## 最终验收门槛
 
 生产 source payload/version 锁仍刻意指向旧值，当前整合源码不得构建为正式交付物。

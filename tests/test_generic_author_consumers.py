@@ -18,7 +18,9 @@ class GenericAuthorConsumerTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name) / '_internal'
+        # Match native resource providers, which canonicalize their root. A
+        # Windows temporary path may otherwise retain an 8.3 spelling.
+        self.root = Path(self.temp.name).resolve() / '_internal'
         self.root.mkdir()
         self.profile = 'author-new-person'
         receipt = self.root.parent / 'work/map-packages' / (self.profile + '.json')
@@ -52,6 +54,13 @@ class GenericAuthorConsumerTests(unittest.TestCase):
         root = self.root if season == 's0' else self.root / 'seasons' / season / 'nightmare'
         return display.S1AuthorDisplays(self.root, SimpleNamespace(root=root, mode='nightmare',
             catalog=self.catalog, adapters=self.adapters), season=season, fallback=fallback)
+
+    def test_wrong_native_root_does_not_register_author_display(self):
+        native = SimpleNamespace(root=self.root / 'other-installation', mode='nightmare',
+            catalog=self.catalog, adapters=self.adapters)
+        runtime = display.S1AuthorDisplays(self.root, native, season='s1')
+        self.assertEqual(runtime.profiles, set())
+        self.assertEqual(runtime.errors[display.PROFILE_ID], 's1-author-resource-root-mismatch')
 
     def test_generic_difficulty2_cannot_create_runtime_display_adapter(self):
         self.row['mode'] = 'difficulty2'

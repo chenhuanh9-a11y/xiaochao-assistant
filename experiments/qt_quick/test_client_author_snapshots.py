@@ -2,7 +2,7 @@
 import time
 import unittest
 from unittest.mock import patch
-from PySide6.QtCore import QCoreApplication
+from PySide6.QtCore import QCoreApplication, QUrl
 import test_generic_author_package as fixtures
 from test_client_resources import Lease
 from client_resources import ResourceService, _duplicate_import
@@ -45,14 +45,14 @@ class ClientAuthorSnapshotsTests(unittest.TestCase):
         self.fail('service did not settle')
 
     def install(self, **kwargs):
-        self.resources.importArchive(str(self.fixture.package(**kwargs)),'s0');self.settle(self.resources)
+        self.resources.importArchive(QUrl.fromLocalFile(str(self.fixture.package(**kwargs))).toString(),'s0');self.settle(self.resources)
         if self.resources.pendingKind:
             self.resources.confirmOperation(True);self.settle(self.resources)
         self.assertEqual(self.errors,[])
 
     def test_ui_defaults_to_snapshots_and_update_asks_then_invalidates(self):
         self.install();first=snapshots.SnapshotPackage(self.root,self.profile)
-        self.resources.importArchive(str(self.fixture.package(fmt='jpeg')),'s0');self.settle(self.resources)
+        self.resources.importArchive(QUrl.fromLocalFile(str(self.fixture.package(fmt='jpeg'))).toString(),'s0');self.settle(self.resources)
         self.assertEqual(self.resources.pendingKind,'overwrite');first.assert_active()
         self.assertIn('改变 1 层图片格式',self.prompts[-1][1])
         self.resources.confirmOperation(True);self.settle(self.resources)
@@ -77,8 +77,20 @@ class ClientAuthorSnapshotsTests(unittest.TestCase):
 
     def test_cancel_update_retains_active_generation(self):
         self.install();view=snapshots.SnapshotPackage(self.root,self.profile)
-        self.resources.importArchive(str(self.fixture.package(fmt='jpeg')),'s0');self.settle(self.resources)
+        self.resources.importArchive(QUrl.fromLocalFile(str(self.fixture.package(fmt='jpeg'))).toString(),'s0');self.settle(self.resources)
         self.resources.confirmOperation(False);view.assert_active();self.assertFalse(self.lease.active)
+
+    def test_fixture_uses_local_file_url_and_remote_input_stays_rejected(self):
+        # QFileDialog emits a file URL on every platform. A bare Windows drive
+        # path is a QUrl scheme, not the UI contract; do not weaken that guard.
+        with patch.object(self.resources, 'importArchive', wraps=self.resources.importArchive) as entry:
+            self.install()
+        self.assertTrue(QUrl(entry.call_args.args[0]).isLocalFile())
+        current = snapshots.SnapshotPackage(self.root, self.profile)
+        self.resources.importArchive('https://example.invalid/author.zip', 's0')
+        self.assertFalse(self.resources.busy)
+        self.assertEqual(self.errors[-1]['errorCode'], 'non-local-archive')
+        current.assert_active()
 
     def test_replacement_version_not_mislabeled_duplicate(self):
         self.assertFalse(_duplicate_import(dict(storageFormat=snapshots.SNAPSHOT_SCHEMA,status='author-installed-live',

@@ -85,3 +85,25 @@ Linux 测试不等于原生 Windows Setup、打包产物或真实游戏验收。
 能盘点和隔离快照文件，却会漏列活跃快照作者的 `packagesToDownload`。升级重置接入前
 须读取已验证 activation/manifest 补提示，停用 tombstone 不列入；这不能新增删除所有权。
 该问题已交重置实现处理，不以当前作者快照的测试替代组合后的最终验证。
+
+### 首次原生 Windows 失败与分层修复
+
+集成 `88daff6a` 的 [Windows author-snapshots job](https://github.com/chenhuanh9-a11y/xiaochao-assistant/actions/runs/42359339283/job/128364164735)
+真实失败，其他原有 10 个 joint 组及五套独立工作流成功；不能以 Linux 全绿宣称此版本可用。
+
+产品根因已核对 CI 的 CPython 3.13.3：[`fileutils.c` 的 handle 信息转换](https://github.com/python/cpython/blob/v3.13.3/Python/fileutils.c#L1123)
+将 ChangeTime 放入 fstat 的 ctime，而 [`posixmodule.c` 的 pathname stat](https://github.com/python/cpython/blob/v3.13.3/Modules/posixmodule.c#L2206-L2207)
+为兼容旧行为把 ctime 改为 birthtime。原 `_metadata` 混比这两个域，正常文件也报 changed。
+现在末次 pathname 重新打开，再取 fstat；dev、ino、size、mtime、ctime 五字段全部保留，
+非阻塞/no-follow、类型/长度和链接检查也保留。不通过删除时间或身份检查来变绿。
+
+portable 语义模型在 88daff6 原模块精确旧红，新模块通过；前后/重开两个观察点逐项
+改变五字段共十个负例、同字节同 mtime 外来 inode、真实同长度读中修改、新 pin 同字节
+替换均继续拒绝。现有 marker/备份/提交结果见证不改。新增 Windows 自有临时文件诊断
+打印真实 stat/fstat 六字段；Linux 明确跳过该原生诊断，必须看最终新 SHA 的 Windows。
+
+其他失败分别只修 fixture：Qt 导入改用真实 QFileDialog 的 `file:` URL，保留非本地
+网址拒绝；恢复 launcher 和 generic consumer 的临时根 resolve，匹配生产 canonical
+根。旧 c77 与 88 的相关生产/root guard 一致，c77 在同目录 `..` 别名复现 consumer
+拒绝；没有冒称已在 c77 原生运行过 Windows 8.3 launcher。新增错误 exe 不 spawn、
+错误 native root 不注册作者、Qt 远程 URL 不触达导入的负例。生产身份门禁未放宽。

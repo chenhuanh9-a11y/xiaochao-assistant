@@ -24,6 +24,116 @@ class Crash(BaseException):
     pass
 
 
+class MetadataObservationTests(unittest.TestCase):
+    """Portable API-semantics models plus a native temp-file diagnostic.
+
+    Models do not claim Windows execution. Windows CI runs the same production
+    reader and prints the actual stat/fstat fields for its Python/filesystem.
+    """
+    def setUp(self):
+        import tempfile
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / 'metadata.json'
+        self.path.write_bytes(b'{"value":1}')
+
+    @staticmethod
+    def changed(info, **fields):
+        from types import SimpleNamespace
+        values = {key: getattr(info, key) for key in dir(info) if key.startswith('st_')}
+        return SimpleNamespace(**(values | fields))
+
+    def test_windows_ctime_domains_do_not_reject_unchanged_file(self):
+        # CPython 3.13 fileutils.c returns ChangeTime for fstat; posixmodule.c
+        # win32_xstat overwrites ctime with birthtime for pathname stat.
+        real_stat = Path.stat
+        def creation_time(path, *args, **kwargs):
+            info = real_stat(path, *args, **kwargs)
+            if path == self.path:
+                return self.changed(info, st_ctime_ns=1)
+            return info
+        with patch.object(Path, 'stat', creation_time):
+            data, row = snapshots._metadata(self.path)
+        self.assertEqual(data, b'{"value":1}')
+        self.assertEqual(row['identity'], snapshots.transaction._identity(real_stat(self.path)))
+
+    def test_each_handle_change_field_still_rejects_during_read(self):
+        real_fstat = os.fstat
+        for changed_call in (2, 3):  # read-end handle and reopened pathname handle
+            for field in ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns'):
+                with self.subTest(observation=changed_call, field=field):
+                    calls = 0
+                    def changed_observation(fd):
+                        nonlocal calls
+                        calls += 1
+                        info = real_fstat(fd)
+                        if calls == changed_call:
+                            return self.changed(info, **{field: getattr(info, field) + 1})
+                        return info
+                    with patch.object(os, 'fstat', changed_observation):
+                        with self.assertRaisesRegex(ValueError, 'metadata-changed'):
+                            snapshots._metadata(self.path)
+
+    def test_same_bytes_foreign_path_replacement_rejected(self):
+        foreign = self.path.with_name('foreign.json')
+        foreign.write_bytes(self.path.read_bytes())
+        original = self.path.stat()
+        os.utime(foreign, ns=(original.st_atime_ns, original.st_mtime_ns))
+        self.assertNotEqual(snapshots.transaction._identity(original),
+                            snapshots.transaction._identity(foreign.stat()))
+        real_no_links = snapshots.files._no_links
+        calls = 0
+        def replace_after_read(path):
+            nonlocal calls
+            if path == self.path:
+                calls += 1
+                if calls == 2:
+                    os.replace(foreign, path)
+            return real_no_links(path)
+        with patch.object(snapshots.files, '_no_links', replace_after_read):
+            with self.assertRaisesRegex(ValueError, 'metadata-changed'):
+                snapshots._metadata(self.path)
+        self.assertEqual(self.path.read_bytes(), b'{"value":1}')
+
+    def test_real_same_length_modification_during_read_rejected(self):
+        real_fstat = os.fstat
+        calls = 0
+        def modify_after_read(fd):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                original = self.path.stat()
+                self.path.write_bytes(b'{"value":2}')
+                os.utime(self.path, ns=(original.st_atime_ns, original.st_mtime_ns + 2_000_000_000))
+            return real_fstat(fd)
+        with patch.object(os, 'fstat', modify_after_read):
+            with self.assertRaisesRegex(ValueError, 'metadata-changed'):
+                snapshots._metadata(self.path)
+
+    @unittest.skipUnless(os.name == 'nt', 'native Windows stat/fstat diagnostic')
+    def test_native_windows_observation(self):
+        # Owned temporary bytes only; no installed data or OS settings touched.
+        def fields(info):
+            return {key: getattr(info, key, None) for key in
+                    ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns', 'st_birthtime_ns')}
+        import time
+        time.sleep(0.02)  # Separate NTFS creation and last-change timestamps.
+        self.path.write_bytes(b'{"value":2}')
+        with self.path.open('rb') as handle:
+            before = fields(os.fstat(handle.fileno()))
+            handle.read()
+            after = fields(os.fstat(handle.fileno()))
+        pathname = fields(self.path.stat())
+        with self.path.open('rb') as handle:
+            reopened = fields(os.fstat(handle.fileno()))
+        import sys
+        print('WINDOWS_METADATA_OBSERVATIONS ' + json.dumps(dict(
+            python=sys.version, before=before, after=after, pathname=pathname, reopened=reopened)), flush=True)
+        self.assertEqual(before, after)
+        self.assertEqual(after, reopened)
+        self.assertEqual(snapshots._metadata(self.path)[0], b'{"value":2}')
+
+
 class AuthorSnapshotTests(unittest.TestCase):
     def setUp(self):
         self.fixture = fixtures.GenericPackageTests()
@@ -221,6 +331,30 @@ class AuthorSnapshotTests(unittest.TestCase):
         with patch.object(imp,'_check_cancelled',side_effect=check):
             with self.assertRaisesRegex(ValueError,'staged-activation-changed'):self.install(self.package())
         self.assertFalse((self.root/snapshots.activation_path(self.profile)).exists());self.assertFalse(self.pending().exists())
+
+    def test_same_bytes_foreign_new_pin_witness_never_published(self):
+        real = imp._check_cancelled
+        replaced = False
+        def check(cancelled=None):
+            nonlocal replaced
+            parent = self.root/snapshots.STORE/'transactions'
+            for pin in parent.glob('*/new-activation.json') if parent.exists() else ():
+                if self.pending().exists() and not replaced:
+                    foreign = pin.with_name('foreign-pin.json')
+                    foreign.write_bytes(pin.read_bytes())
+                    original = pin.stat()
+                    os.utime(foreign, ns=(original.st_atime_ns, original.st_mtime_ns))
+                    self.assertNotEqual(snapshots.transaction._identity(original),
+                                        snapshots.transaction._identity(foreign.stat()))
+                    os.replace(foreign, pin)
+                    replaced = True
+            return real(cancelled)
+        with patch.object(imp, '_check_cancelled', side_effect=check):
+            with self.assertRaisesRegex(ValueError, 'staged-activation-changed'):
+                self.install(self.package())
+        self.assertTrue(replaced)
+        self.assertFalse((self.root/snapshots.activation_path(self.profile)).exists())
+        self.assertFalse(self.pending().exists())
 
     def test_unsafe_activation_ancestor_does_not_move_legacy_receipt(self):
         archive=self.package();imp.install_author_package_live(archive,self.root,application_idle=True)

@@ -77,8 +77,9 @@ def _version_path(package, snapshot_id):
 
 def _metadata(path):
     files._no_links(path)
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0)
-                         | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_BINARY', 0))
+    flags = (os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0)
+             | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_BINARY', 0))
+    descriptor = os.open(path, flags)
     with os.fdopen(descriptor, 'rb') as handle:
         before = os.fstat(handle.fileno())
         if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_METADATA:
@@ -87,7 +88,15 @@ def _metadata(path):
         after = os.fstat(handle.fileno())
     signature = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
     files._no_links(path)
-    current = path.stat()
+    # CPython 3.13 on Windows reports ChangeTime in fstat().st_ctime,
+    # but birthtime in stat().st_ctime. Reopen the pathname and use the same
+    # handle-based observation, preserving every identity and change guard.
+    current_descriptor = os.open(path, flags)
+    try:
+        current = os.fstat(current_descriptor)
+    finally:
+        os.close(current_descriptor)
+    files._no_links(path)
     if (len(raw) > MAX_METADATA or len(raw) != after.st_size or not stat.S_ISREG(current.st_mode)
             or signature(before) != signature(after) or signature(current) != signature(after)):
         _reject('metadata-changed')
