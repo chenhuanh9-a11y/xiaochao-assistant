@@ -1,4 +1,4 @@
-"""Real Session lease/scheduler -> Coordinator -> ordered input contracts.
+"""Real Session lease/scheduler -> explicit start and ordered map input contracts.
 
 Provider inventory/cache and missing-resource parsing are production; successful
 engines, capture, windows and fit are synthetic. No native IO or user assets.
@@ -71,13 +71,13 @@ class ResourceFeedbackTests(unittest.TestCase):
     def resource_notices(self, notices):
         return [n for n in notices if n[0] == "地图资源未就绪"]
 
-    def test_real_lease_rejects_open_once_and_next_edge_opens_after_ready(self):
+    def test_real_lease_rejects_start_once_and_explicit_round_opens_after_ready(self):
         for mode in ("nightmare", "difficult"):
             with self.subTest(mode=mode), self.chain(mode) as (o,c,s,r,f,k,n,a,root):
                 f._build = lambda mode, *, season="s0": runtime_fixture.fixture_engine(mode)
                 f.prepare(); s.refreshRuntime()
                 lease = s.acquireResourceLease(); self.assertTrue(lease)
-                self.press(k); self.press(k)
+                c.startRound(); c.startRound()
                 self.assertEqual(len(self.resource_notices(n)), 1)
                 self.assertIn("更新", self.resource_notices(n)[0][1])
                 self.assertIn("更新", c.runtimeStatus)
@@ -86,6 +86,8 @@ class ResourceFeedbackTests(unittest.TestCase):
                 self.assertFalse(a)
                 self.assertFalse(k._map_input.open_intent)
                 s.releaseResourceLease(lease)
+                self.assertTrue(r.dispatch("start_round", {})["success"])
+                s.refreshRuntime()
                 # Successful map-open crosses real Session worker and runtime;
                 # only visual detection/solver evidence is synthetic.
                 with patch("map_interface_observation.detect_map_interface", return_value=dict(detected=True)), \
@@ -99,19 +101,19 @@ class ResourceFeedbackTests(unittest.TestCase):
                 self.assertFalse(r.snapshot()["mapOpen"])
                 r.dispatch("end_round", {}); s.refreshRuntime()
                 lease = s.acquireResourceLease(); self.assertTrue(lease)
-                self.press(k)
+                c.startRound()
                 self.assertEqual(len(self.resource_notices(n)), 2)
                 s.releaseResourceLease(lease)
 
     def test_validation_missing_resources_recheck_and_ready_rearms_same_reason(self):
         for mode in ("nightmare", "difficult"):
             with self.subTest(mode=mode), self.chain(mode) as (o,c,s,r,f,k,n,a,root):
-                self.press(k); self.press(k)
+                c.startRound(); c.startRound()
                 self.assertIn("校验", c.runtimeStatus)
                 self.assertEqual(len(self.resource_notices(n)), 1)
                 s.dispatch("inspect_engine_resources"); self.drain(o,s)
                 self.assertIn("missing-resource", s.snapshot["liveUnavailableReason"])
-                self.press(k); self.press(k)
+                c.startRound(); c.startRound()
                 self.assertIn("缺少", c.runtimeStatus)
                 self.assertEqual(len(self.resource_notices(n)), 2)
                 self.assertEqual([x for x,_ in a], ["inspect_engine_resources"])
@@ -126,7 +128,7 @@ class ResourceFeedbackTests(unittest.TestCase):
                 f._build = build
                 c._resources_changed()
                 s.dispatch("inspect_engine_resources"); self.drain(o,s)
-                self.press(k); self.press(k)
+                c.startRound(); c.startRound()
                 self.assertEqual(len(self.resource_notices(n)), 3)
                 self.assertIn("缺少", self.resource_notices(n)[-1][1])
                 self.assertFalse(k._map_input.open_intent)
@@ -137,7 +139,7 @@ class ResourceFeedbackTests(unittest.TestCase):
             f._build = lambda mode, *, season="s0": (runtime_fixture.fixture_engine(mode)
                 if mode == "difficult" else original_build(mode, season=season))
             s.dispatch("inspect_engine_resources"); self.drain(o,s)
-            self.press(k)
+            c.startRound()
             self.assertEqual(len(self.resource_notices(n)), 1)
             self.assertFalse(s.snapshot["liveEngineAvailable"])
             o.settings.persistedValues["gameMode"] = "difficult"
@@ -159,7 +161,7 @@ class ResourceFeedbackTests(unittest.TestCase):
             self.assertEqual(s.snapshot["mode"], "nightmare")
             self.assertIsNone(c._pending_context)
             self.assertFalse(s.snapshot["liveEngineAvailable"])
-            self.press(k); self.press(k)
+            c.startRound(); c.startRound()
             self.assertEqual(len(self.resource_notices(n)), 2)
             self.assertEqual(self.resource_notices(n)[0], self.resource_notices(n)[1])
 
@@ -183,7 +185,7 @@ class ResourceFeedbackTests(unittest.TestCase):
                     reason = s.snapshot["liveUnavailableReason"]
                     self.assertTrue(reason.startswith(mode + ":ProviderUnavailable:"), reason)
                     self.assertIn("missing-resource:" + relative, reason)
-                    self.press(k); self.press(k)
+                    c.startRound(); c.startRound()
                     self.assertIn("困难模式" if mode == "difficult" else "噩梦模式", c.runtimeStatus)
                     self.assertIn("缺少", c.runtimeStatus)
                     self.assertEqual(len(self.resource_notices(n)), 1)
@@ -197,7 +199,7 @@ class ResourceFeedbackTests(unittest.TestCase):
                     f._build = build
                     c._resources_changed()
                     s.dispatch("inspect_engine_resources"); self.drain(o,s)
-                    self.press(k)
+                    c.startRound()
                     self.assertEqual(len(self.resource_notices(n)), 2)
                     self.assertEqual(self.resource_notices(n)[0], self.resource_notices(n)[1])
                     self.assertFalse(k._map_input.open_intent)
@@ -225,7 +227,7 @@ class ResourceFeedbackTests(unittest.TestCase):
                         if error_type is not ValueError:
                             self.assertIs(raised.exception.__cause__, error)
                         s.dispatch("inspect_engine_resources"); self.drain(o,s)
-                    self.press(k); self.press(k)
+                    c.startRound(); c.startRound()
                     reason = s.snapshot["liveUnavailableReason"]
                     self.assertTrue(reason.startswith(mode + ":"), reason)
                     self.assertIn(type(raised.exception.__cause__).__name__, reason)
@@ -242,12 +244,12 @@ class ResourceFeedbackTests(unittest.TestCase):
     def test_unready_does_not_block_close_or_management_shortcuts(self):
         with self.chain() as (o,c,s,r,f,k,n,a,root):
             lease = s.acquireResourceLease(); self.assertTrue(lease)
-            # A close remains a revoke/cancel/reset even though the Session
-            # refuses its worker command under the exclusive lease.
+            # Idle close stays harmless while a resource lease is held;
+            # the lease already revoked capture and no new round is implied.
             k.resetMapInput(True)
             with patch.object(c, "_revoke_runtime", wraps=c._revoke_runtime) as revoke:
                 self.press(k)
-                revoke.assert_called_with("map-closed")
+                revoke.assert_not_called()
             self.assertFalse(k._map_input.open_intent)
             self.assertFalse(self.resource_notices(n))
             with patch.object(c, "toggleControlsKeyboard") as panel:

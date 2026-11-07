@@ -555,7 +555,7 @@ class IntentTests(unittest.TestCase):
         self.assertFalse(self.adapter.snapshot['running'])
         # Every real next-round entry uses the same validated session transition.
         with mock.patch.object(self.service, '_save', side_effect=AssertionError('must not resave')):
-            for action in ('start_round', 'map', 'capture_now', 'prepare_manual_alignment', 'toggle_round'):
+            for action in ('start_round', 'capture_now', 'prepare_manual_alignment', 'toggle_round'):
                 with self.subTest(action=action):
                     session.dispatch(action)
                     until(lambda: not session._jobs)
