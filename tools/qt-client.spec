@@ -30,8 +30,10 @@ datas.append((str(qt_root / "tutorial-chapters.json"), "."))
 for path in (qt_root / "tutorial").glob("*.png"):
     datas.append((str(path), "tutorial"))
 # Helpers use __file__.parent and APP_ROOT in both source and frozen clients.
+# Test sources are not runtime data. Keep the explicit acceptance probe and
+# runtime helpers; do not turn this into a blanket Python-module exclusion.
 for path in qt_root.glob("*.py"):
-    if path.name != "client.py":
+    if path.name != "client.py" and not path.name.startswith("test_"):
         datas.append((str(path), "."))
 for name in ("version.json", "THIRD_PARTY_NOTICES.md", "THIRD_PARTY_LUCIDE_LICENSE.txt",
              "THIRD_PARTY_FLUENT_LICENSE.txt"):

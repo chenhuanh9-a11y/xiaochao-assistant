@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
-GridLayout {
+Item {
     id: root
     property var seasons: []
     property string season: ""
@@ -26,11 +26,14 @@ GridLayout {
     readonly property bool stacked: width < singleRowWidth
     // Parent layouts must be allowed to shrink below the single-row minimum;
     // otherwise they force that width before the responsive breakpoint can fire.
+    Layout.fillWidth: true
     Layout.minimumWidth: Math.max(seasonMinimumWidth, modeCount * 64 + (modeCount - 1) * columnSpacing)
     Layout.preferredWidth: singleRowWidth
-    columns: stacked ? modeCount : modeCount + 1
-    columnSpacing: 6; rowSpacing: 6
+    readonly property int columns: stacked ? modeCount : modeCount + 1
+    property real columnSpacing: 6
+    property real rowSpacing: 6
     implicitWidth: singleRowWidth
+    implicitHeight: selectorGrid.implicitHeight
     FontMetrics { id: seasonFontMetrics; font: seasonPicker.font }
 
     function seasonIndex(identity) {
@@ -73,52 +76,62 @@ GridLayout {
         }
     }
 
-    ComboBox {
-        id: seasonPicker
-        objectName: root.objectName + "Season"
-        Layout.fillWidth: true; Layout.minimumWidth: root.seasonMinimumWidth; Layout.preferredWidth: root.seasonMinimumWidth
-        Layout.columnSpan: root.stacked ? root.columns : 1
-        model: root.seasons; textRole: "label"; valueRole: "id"
-        currentIndex: root.seasonIndex(root.season)
-        displayText: currentIndex < 0 ? "选择赛季" : currentText
-        Accessible.name: "赛季"
-        delegate: ItemDelegate {
-            required property var modelData
-            required property int index
-            objectName: root.objectName + "SeasonOption_" + modelData.id
-            width: seasonPicker.width
-            text: modelData.label
-            highlighted: seasonPicker.highlightedIndex === index
+    // The outer item owns the width assigned by its parent. Changing a grid's
+    // own column/span bindings while its parent is arranging that same grid
+    // can synchronously re-enter Qt Quick Layouts (notably Windows font sizes).
+    // Keep stable outer width hints and arrange only this inner layout.
+    GridLayout {
+        id: selectorGrid
+        anchors.left: parent.left; anchors.right: parent.right
+        columns: root.columns
+        columnSpacing: root.columnSpacing; rowSpacing: root.rowSpacing
+        ComboBox {
+            id: seasonPicker
+            objectName: root.objectName + "Season"
+            Layout.fillWidth: true; Layout.minimumWidth: root.seasonMinimumWidth; Layout.preferredWidth: root.seasonMinimumWidth
+            Layout.columnSpan: root.stacked ? root.columns : 1
+            model: root.seasons; textRole: "label"; valueRole: "id"
+            currentIndex: root.seasonIndex(root.season)
+            displayText: currentIndex < 0 ? "选择赛季" : currentText
+            Accessible.name: "赛季"
+            delegate: ItemDelegate {
+                required property var modelData
+                required property int index
+                objectName: root.objectName + "SeasonOption_" + modelData.id
+                width: seasonPicker.width
+                text: modelData.label
+                highlighted: seasonPicker.highlightedIndex === index
+            }
+            onActivated: function(index) {
+                if (index >= 0 && index < root.seasons.length)
+                    root.requestContext(root.seasons[index].id, root.mode)
+                // Selection is a request. A rejected or asynchronous runtime change
+                // must not leave the combo claiming an unapplied season.
+                currentIndex = Qt.binding(function() { return root.seasonIndex(root.season) })
+            }
         }
-        onActivated: function(index) {
-            if (index >= 0 && index < root.seasons.length)
-                root.requestContext(root.seasons[index].id, root.mode)
-            // Selection is a request. A rejected or asynchronous runtime change
-            // must not leave the combo claiming an unapplied season.
-            currentIndex = Qt.binding(function() { return root.seasonIndex(root.season) })
+        AppButton {
+            objectName: root.nightmareObjectName
+            text: "噩梦"; implicitWidth: 64; implicitHeight: 34
+            selected: root.mode === "nightmare"
+            Accessible.name: text + (selected ? " · 已选" : "")
+            onClicked: root.requestContext(root.season, "nightmare")
         }
-    }
-    AppButton {
-        objectName: root.nightmareObjectName
-        text: "噩梦"; implicitWidth: 64; implicitHeight: 34
-        selected: root.mode === "nightmare"
-        Accessible.name: text + (selected ? " · 已选" : "")
-        onClicked: root.requestContext(root.season, "nightmare")
-    }
-    AppButton {
-        objectName: root.difficultObjectName
-        text: "困难"; implicitWidth: 64; implicitHeight: 34
-        selected: root.mode === "difficult"
-        Accessible.name: text + (selected ? " · 已选" : "")
-        onClicked: root.requestContext(root.season, "difficult")
-    }
-    AppButton {
-        id: ordinaryButton
-        objectName: root.objectName + "Difficulty2"
-        visible: root.ordinaryAvailable
-        text: "普通"; implicitWidth: 64; implicitHeight: 34
-        selected: root.mode === "difficulty2"
-        Accessible.name: text + (selected ? " · 已选" : "")
-        onClicked: root.requestContext(root.season, "difficulty2")
+        AppButton {
+            objectName: root.difficultObjectName
+            text: "困难"; implicitWidth: 64; implicitHeight: 34
+            selected: root.mode === "difficult"
+            Accessible.name: text + (selected ? " · 已选" : "")
+            onClicked: root.requestContext(root.season, "difficult")
+        }
+        AppButton {
+            id: ordinaryButton
+            objectName: root.objectName + "Difficulty2"
+            visible: root.ordinaryAvailable
+            text: "普通"; implicitWidth: 64; implicitHeight: 34
+            selected: root.mode === "difficulty2"
+            Accessible.name: text + (selected ? " · 已选" : "")
+            onClicked: root.requestContext(root.season, "difficulty2")
+        }
     }
 }

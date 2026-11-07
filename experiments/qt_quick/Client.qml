@@ -183,13 +183,14 @@ ApplicationWindow {
         contentItem: ColumnLayout {
             spacing: 12
             AppButton { objectName: "closeToBackground"; Layout.fillWidth: true; text: "后台运行"
-                onClicked: { closeChoice.close(); windows.hide("main") }
+                // Establish the visibility gate before releasing the dialog gate.
+                onClicked: { windows.hide("main"); closeChoice.close() }
             }
             AppButton { objectName: "closeApplication"; Layout.fillWidth: true; text: "退出星图"; primary: true
                 onClicked: {
-                    closeChoice.close()
                     if (typeof gameStartupService !== "undefined") gameStartupService.suppressCurrentGame()
                     clientCoordinator.requestClose()
+                    closeChoice.close()
                 }
             }
             AppButton { objectName: "cancelClose"; Layout.fillWidth: true; text: "取消"; onClicked: closeChoice.close() }

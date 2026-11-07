@@ -84,6 +84,19 @@ class RuntimeExclusionTests(unittest.TestCase):
             verify.assert_called_once_with(executable.name)
             collect.assert_not_called()
 
+    def test_maintained_spec_excludes_test_source_but_keeps_runtime_helpers(self):
+        with self.qt_spec() as (root, calls, _, _, _, _, execute):
+            execute()
+            qt_root = root / "experiments/qt_quick"
+            collected = {Path(source) for source, _ in calls["datas"]}
+            tests = set(qt_root.glob("test_*.py"))
+            self.assertTrue(tests, "exercise the actual recipe's test-source inputs")
+            self.assertFalse(collected & tests)
+            # The source-based helper and explicit acceptance probe remain
+            # available. This exclusion is not a blanket Python-file trim.
+            for name in ("client_info.py", "client_live_runtime.py", "probe_client.py"):
+                self.assertIn(qt_root / name, collected)
+
 
 if __name__ == "__main__":
     unittest.main()

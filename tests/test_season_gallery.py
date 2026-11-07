@@ -202,6 +202,11 @@ if QT:
         homePreviews = Property('QVariantList', lambda s: [], constant=True)
         gameWindows = Property('QVariantList', lambda s: [], constant=True)
         version = Property(str, lambda s: 'fixture', constant=True)
+        # Match the real info service's pre-fetch announcement contract.  This
+        # fixture exercises season layout; it does not fetch an update manifest.
+        release = Property('QVariantMap', lambda s: {}, constant=True)
+        updatePhase = Property(str, lambda s: 'idle', constant=True)
+        hasUnread = Property(bool, lambda s: False, constant=True)
         checking = Property(bool, lambda s: False, constant=True)
         active = Property(bool, lambda s: False, constant=True)
         inviteVisible = Property(bool, lambda s: False, constant=True)

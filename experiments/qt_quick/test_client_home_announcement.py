@@ -75,6 +75,22 @@ def fixture_client(*, probe):
 
 
 class HomeAnnouncementTests(unittest.TestCase):
+    def wait_for_announcement(self, client, dialog):
+        notes = client.main.findChild(QObject, 'startupAnnouncementNotes')
+        expected = 'Offline home announcement fixture'
+        def consumed_and_saved():
+            release = dialog.property('releaseData')
+            if hasattr(release, 'toVariant'):  # Initial QML object literal.
+                release = release.toVariant()
+            identity = release.get('announcementId')
+            return (dialog.property('opened') and dialog.property('presented')
+                    and bool(identity) and release.get('notes') == expected
+                    and notes.property('text') == expected
+                    and not client.info.checking and not client.info.hasUnread
+                    and identity in client.info._service.seen_announcement_ids)
+        # Fetch completion precedes the deferred QML consumer and its read write.
+        wait(consumed_and_saved)
+
     def test_probe_never_schedules_and_home_entry_click_and_keyboard_reread(self):
         with fixture_client(probe=True) as (client, calls):
             self.assertFalse(client.info._startup_requested)
@@ -94,7 +110,7 @@ class HomeAnnouncementTests(unittest.TestCase):
                 point = button.mapToScene(QPointF(button.width()/2, button.height()/2))
                 self.assertTrue(width - 220 < point.x() < width and 0 < point.y() < height)
                 QTest.mouseClick(client.main, Qt.LeftButton, Qt.NoModifier, point.toPoint())
-                wait(lambda: dialog.property('opened') and not client.info.checking)
+                self.wait_for_announcement(client, dialog)
                 self.assertEqual(dialog.property('releaseData')['notes'], 'Offline home announcement fixture')
                 self.assertFalse(client.info.hasUnread)
                 self.assertTrue(summary.property('visible'))
@@ -105,7 +121,24 @@ class HomeAnnouncementTests(unittest.TestCase):
             self.assertEqual(len(calls), 2)
             button.forceActiveFocus()
             QTest.keyClick(client.main, Qt.Key_Space)
-            wait(lambda: dialog.property('opened') and not client.info.checking)
+            self.wait_for_announcement(client, dialog)
+            self.assertEqual(dialog.property('releaseData')['notes'], 'Offline home announcement fixture')
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(client.warnings, [])
+
+    def test_fetch_completion_precedes_deferred_qml_consumer(self):
+        with fixture_client(probe=True) as (client, calls):
+            client.info.openAnnouncement()
+            client.info._timer.stop()
+            dialog = client.main.findChild(QObject, 'startupUpdateAnnouncement')
+            wait(lambda: dialog.property('opened') and not client.info._service._events.empty())
+            # Consume the producer result without yielding to Qt.callLater.
+            client.info._poll()
+            self.assertTrue(dialog.property('opened') and not client.info.checking)
+            self.assertNotIn('announcementId', dialog.property('releaseData'))
+            self.assertTrue(client.info.hasUnread)
+            self.wait_for_announcement(client, dialog)
+            self.assertEqual(dialog.property('releaseData')['notes'], 'Offline home announcement fixture')
             self.assertEqual(len(calls), 2)
             self.assertEqual(client.warnings, [])
 
@@ -115,7 +148,8 @@ class HomeAnnouncementTests(unittest.TestCase):
             self.assertTrue(client.info._startup_requested)
             client.info._startup_timer.setInterval(1)
             dialog = client.main.findChild(QObject, 'startupUpdateAnnouncement')
-            wait(lambda: dialog.property('opened') and not client.info.checking)
+            self.wait_for_announcement(client, dialog)
+            self.assertEqual(dialog.property('releaseData')['notes'], 'Offline home announcement fixture')
             self.assertEqual(len(calls), 2)
             client.info._startup_check()
             QTest.qWait(20)

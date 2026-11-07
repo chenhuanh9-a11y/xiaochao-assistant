@@ -58,7 +58,11 @@ def scenario(mode, destination):
     coordinator.quitRequested.connect(app.quit)
     qml = Path(__file__).with_name("Client.qml").read_text(encoding="utf-8")
     closing = "onClosing:" + qml.split("onClosing:", 1)[1].split("    RowLayout", 1)[0]
-    choice = qml[qml.index("    Dialog {\n        id: closeChoice"):qml.index("    FileDialog { id: replayPicker")]
+    # Extract the actual close-choice component, not an unrelated replay
+    # picker that may be retired. Do not import the resource-success dialog's
+    # service bindings into this worker-draining fixture.
+    choice_start = qml.index("    Dialog {\n        id: closeChoice")
+    choice = qml[choice_start:qml.index("    Dialog {\n        id: importSuccess", choice_start)]
     popup = qml[qml.rfind("    Popup {"):].rsplit("\n}", 1)[0]
     engine = QQmlApplicationEngine()
     engine.rootContext().setContextProperty("clientCoordinator", coordinator)

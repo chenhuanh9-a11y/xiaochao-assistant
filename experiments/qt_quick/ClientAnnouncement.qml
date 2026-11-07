@@ -47,19 +47,24 @@ Item {
             presentContent()
         }
     }
-    onCanPresentChanged: {
+    function reconcilePresentation() {
         if (!canPresent && dialog.visible) {
             // A notice hidden before opening has not been shown or read.
             if (!dialog.manualRequest && !dialog.presented && !pending.announcementId) pending = dialog.releaseData
             dialog.close()
         }
+        refreshRequested()
         showPending()
     }
+    // Popup focus changes can notify coordinator bindings again. Never mutate
+    // the popup inside a visibility/blocking binding evaluation; recheck the
+    // settled close/visibility state on the next event-loop turn instead.
+    onCanPresentChanged: Qt.callLater(notice.reconcilePresentation)
     Connections {
         target: infoService
-        function onStartupAnnouncement(release) { notice.pending = release; notice.showPending() }
+        function onStartupAnnouncement(release) { notice.pending = release; Qt.callLater(notice.reconcilePresentation) }
         function onAnnouncementRequested(release) { notice.openRequested(release) }
-        function onChanged() { notice.refreshRequested(); notice.showPending() }
+        function onChanged() { Qt.callLater(notice.reconcilePresentation) }
     }
     Dialog {
         id: dialog
@@ -96,7 +101,7 @@ Item {
         onClosed: {
             waitingForRelease = false
             manualRequest = false
-            Qt.callLater(notice.showPending)
+            Qt.callLater(notice.reconcilePresentation)
         }
         background: Rectangle { radius: 12; color: "white"; border.color: "#d5e2f5" }
         contentItem: ColumnLayout {
