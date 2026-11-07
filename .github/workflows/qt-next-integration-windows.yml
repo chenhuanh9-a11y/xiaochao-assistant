@@ -121,6 +121,72 @@ jobs:
                   stream.write("e2e_validated=false\n")
           '@ | python -B -X utf8 -
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # Inspect only. This does not validate a window driver, compile, install,
+      # start a service, alter a desktop/security setting, or authorize Setup.
+      - name: Read-only native installer desktop and compiler capabilities
+        if: matrix.group == 'installer-reset'
+        id: native-installer-capabilities
+        timeout-minutes: 2
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $r = [ordered]@{ schema='xingtu-native-installer-capability-preflight-v1'; inputDesktopReadable=$false; inputDesktopSameAsThread=$false; uiAutomationRootReadable=$false; compiler=$null; reasons=@(); interactionDriverValidated=$false; setupStarted=$false; e2eValidated=$false }
+          try {
+            Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          using System.Text;
+          public static class XingtuDesktopReadOnly {
+            [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
+            [DllImport("user32.dll", SetLastError=true)] public static extern bool CloseDesktop(IntPtr handle);
+            [DllImport("user32.dll")] public static extern IntPtr GetThreadDesktop(uint threadId);
+            [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+            [DllImport("user32.dll", EntryPoint="GetUserObjectInformationW", CharSet=CharSet.Unicode, SetLastError=true)]
+            private static extern bool GetUserObjectInformation(IntPtr handle, int index, StringBuilder buffer, uint length, out uint needed);
+            public static string Name(IntPtr handle) {
+              var text = new StringBuilder(512); uint needed;
+              if (handle == IntPtr.Zero || !GetUserObjectInformation(handle, 2, text, 1024, out needed)) throw new InvalidOperationException("desktop-name-unreadable");
+              return text.ToString();
+            }
+          }
+          '@
+            $desktop = [XingtuDesktopReadOnly]::OpenInputDesktop(0, $false, 1)
+            if ($desktop -eq [IntPtr]::Zero) { $r.reasons += 'input-desktop-unreadable' }
+            else {
+              try {
+                $r.inputDesktopReadable = $true
+                $thread = [XingtuDesktopReadOnly]::GetThreadDesktop([XingtuDesktopReadOnly]::GetCurrentThreadId())
+                $r.inputDesktopSameAsThread = [XingtuDesktopReadOnly]::Name($desktop) -ceq [XingtuDesktopReadOnly]::Name($thread)
+                if (-not $r.inputDesktopSameAsThread) { $r.reasons += 'input-thread-desktop-mismatch' }
+              } finally { [void][XingtuDesktopReadOnly]::CloseDesktop($desktop) }
+            }
+          } catch { $r.reasons += 'desktop-read-check-failed' }
+          try {
+            Add-Type -AssemblyName UIAutomationClient
+            $root = [System.Windows.Automation.AutomationElement]::RootElement
+            $id = $root.Current.ControlType.Id
+            $r.uiAutomationRootReadable = ($null -ne $root -and $id -gt 0)
+            if (-not $r.uiAutomationRootReadable) { $r.reasons += 'uia-root-unreadable' }
+          } catch { $r.reasons += 'uia-root-read-failed' }
+          try {
+            $paths = @()
+            $cmd = Get-Command ISCC.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($cmd) { $paths += $cmd.Source }
+            foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+              if ($base) { $paths += Join-Path $base 'Inno Setup 6\ISCC.exe' }
+            }
+            $path = $paths | Select-Object -Unique | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+            if (-not $path) { $r.reasons += 'compiler-not-found-in-known-locations' }
+            else {
+              $f = Get-Item -LiteralPath $path
+              if (($f.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'compiler-reparse' }
+              $sig = Get-AuthenticodeSignature -LiteralPath $path
+              $r.compiler = [ordered]@{ fileName=$f.Name; fileVersion=$f.VersionInfo.FileVersion; productVersion=$f.VersionInfo.ProductVersion; bytes=$f.Length; sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant(); signatureStatus=[string]$sig.Status; signerSubject=$(if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { $null }) }
+              if ($sig.Status -ne 'Valid') { $r.reasons += 'compiler-signature-not-valid' }
+            }
+          } catch { $r.reasons += 'compiler-inspection-failed' }
+          $r.status = if ($r.reasons.Count -eq 0) { 'read-only-capabilities-present-not-e2e' } else { 'blocked' }
+          $r | ConvertTo-Json -Depth 5
       - name: Independent modules retain every failure
         shell: pwsh
         run: |
