@@ -340,6 +340,42 @@ Windows features 矩阵补入 `test_s0_expanded_search`、`test_client_announcem
 features 现为 24 个模块，资源/留样新合同组仍为 27 个模块，不删失败或收窄集合。
 新提出的升级旧资源/图包重置仍在单独开发，本检查点没有此功能，更没有执行用户数据清理。
 
+## d3e741c 三功能原生 Windows 检查点
+
+`d3e741c75d5d34ccc07fbce0965724069d763efc`，tree
+`2602752fb7d27383bbba5e4d18b393e5769eed7b` 的六套工作流全成功，
+[joint 42352213272](https://github.com/chenhuanh9-a11y/xiaochao-assistant/actions/runs/42352213272)
+10/10组成功。features job128342576526 明确 checkout 精确head，24模块311项全过，
+新增S0/开箱跨局/公告用例均执行，Linux的两处原生环境问题在Windows通过。
+资源/留样合同 job128342576625 为303次，301通过2个明确POSIX专属skip，原部分发布
+反例仍通过。PR合成merge `13e80a4bec2061c95c647cc0365f5294f29163aa` 与head同tree。
+
+## 图片内存冗余复制专项集成
+
+独立源 `72e726b4a9fb05dc9cef970d809d3d9567b7f506`（基于d3e741c）无冲突纳入
+本地 `efda7b9`。产品仅LiveImages 18行变化：新像素仍复制入Qt自有存储，先比较相同
+scope及完整字节再决定复用；消费者取独立QImage值、用Qt写时分离共享像素。不改
+识别/贴合算法、缓存容量、授权token、暂存接受/拒绝或clear。原UI发布者及QueuedConnection
+仍在，未增加并发写者；并发渲染读取、持有快照遇到clear/淘汰及消费者修改均独立验证。
+
+本地 `5fff46e` 单独记录测试补充：旧Runtime→QML夹具缺season，错误二元组被生产
+三元组校验正确拒绝；只补实际snapshot的season后，基线和候选完整原用例均通过，
+没有放宽产品授权。新增mode/profile/season不匹配拒绝正反例、constBits/bits、非连续
+转换源所有权与并发staging/clear三例也独立复核通过。完整QML用例保留1002个pointer包、
+像素移动35/15、stable URL、不新ACK/loading和旧frame/floor拒绝。
+
+实际组合：147次聚焦执行全通过（8.704秒，含测试模块导入导致的重复）；473次生命周期
+中467通过6平台skip（63.765秒）；27模块资源/留样合同303次中301通过2平台skip。
+1080p clear-reopen与staging各1000轮像素错误/联网0，provider结束为0项而已有消费者
+快照仍有效。原始合成A/B、RSS清空后反升约8.4MiB的反例、上游46项既有旧资源预期失败
+均保留在 [专项分析](../runtime-memory-analysis.md)，不包装成全程内存下降或无泄漏。
+
+features增加完整image-memory/material-identity/aligned-transform，现27模块。最终本地
+逐模块复跑375项中374通过、1个已复现的原生绑定Linux基线失败，另floor observation
+模块仍因Linux无ctypes.windll导入失败；完整QML三元组修正及全部新增内存测试通过。
+原集合不删，等精确最终远端Windows结果。仍未包括用户暂停的贴合次域补丁、升级资源重置或
+作者兼容第二阶段；未进行用户Windows工作集/GPU/长期实机测量。
+
 ## 最终验收门槛
 
 生产 source payload/version 锁仍刻意指向旧值，当前整合源码不得构建为正式交付物。

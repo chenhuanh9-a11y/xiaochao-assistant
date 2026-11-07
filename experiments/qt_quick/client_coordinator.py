@@ -47,10 +47,12 @@ class LiveImages(QQuickImageProvider):
 
     def publish(self, key, pixels, *, material_scope=None):
         import numpy as np
-        pixels = np.ascontiguousarray(pixels, dtype=np.uint8)
+        # Check the pixel bound before making a contiguous/conversion copy.
+        pixels = np.asarray(pixels)
         if pixels.ndim != 3 or pixels.shape[2] != 4 or pixels.shape[0] * pixels.shape[1] > 20_000_000:
             raise ValueError("Invalid RGBA display payload")
-        image = QImage(pixels.data, pixels.shape[1], pixels.shape[0], pixels.strides[0], QImage.Format_RGBA8888).copy()
+        pixels = np.ascontiguousarray(pixels, dtype=np.uint8)
+        view = QImage(pixels.data, pixels.shape[1], pixels.shape[0], pixels.strides[0], QImage.Format_RGBA8888)
         with self._lock:
             # Frame grants expire independently of immutable display pixels.
             # Reusing a *material* URL never reuses its authorization token,
@@ -60,8 +62,12 @@ class LiveImages(QQuickImageProvider):
                     and self._material is not None):
                 scope, previous_key = self._material
                 if (scope == material_scope and previous_key in self._images
-                        and self._images[previous_key] == image):
+                        and self._images[previous_key] == view):
                     return "image://live/" + previous_key
+        # Keep the one necessary ownership copy: external NumPy memory may be
+        # modified/released after publish. Do not allocate it for equal material.
+        image = view.copy()
+        with self._lock:
             if str(key).startswith("reference:"):
                 self._images = {name:value for name,value in self._images.items()
                                 if not name.startswith("reference:")}
@@ -92,7 +98,11 @@ class LiveImages(QQuickImageProvider):
 
     def requestImage(self, identifier, size, requestedSize):
         with self._lock:
-            image = self._images.get(identifier, QImage()).copy()
+            # A distinct QImage value shares our immutable Qt-owned pixels.
+            # Qt detaches on writes; eviction/clear cannot invalidate the value
+            # held by a render consumer. Returning the same Python object would
+            # not provide this isolation, and .copy() needlessly duplicates it.
+            image = QImage(self._images.get(identifier, QImage()))
         if size is not None:
             size.setWidth(image.width()); size.setHeight(image.height())
         return image
