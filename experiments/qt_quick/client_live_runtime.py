@@ -3028,7 +3028,9 @@ class LiveRuntime:
                 if ready and guarded:
                     commands += ["start_round", "toggle_round"]
                 if ready and guarded:
-                    commands += ["capture_now", "map"]
+                    commands.append("capture_now")
+                    if self._active or self._round_preparing:
+                        commands.append("map")
                     if self._map_open:
                         commands.append("refresh_map")
                         if self._native_s1_candidate_preview and self._s1_candidate_available(report):
@@ -4158,6 +4160,25 @@ class LiveRuntime:
             if activation_request and arrival_serial <= self._dispatch_cutoff:
                 return self._receipt(action, payload, success=False,
                     reason="cancelled-or-stale", stale=True)
+            if action == "map" and not (self._active or self._round_preparing):
+                from season_context import is_retired_mode
+                if is_retired_mode(self._mode, self._season):
+                    return self._receipt(action, payload, success=False, reason="retired-mode")
+                # Observing the game's map key is not an instruction to begin
+                # a round. Admit its sequence without loading resources,
+                # enabling capture or changing the round/display lifetime.
+                if self._cancelled(cancelled):
+                    return self._receipt(action, payload, success=False,
+                        reason="cancelled-or-stale", stale=True)
+                sequence = payload.get("inputSequence")
+                if sequence is not None and (type(sequence) is not int or sequence <= self._last_map_input_sequence):
+                    return self._receipt(action, payload, success=False,
+                        reason="map-input-sequence-expired", stale=True)
+                if "openIntent" in payload and type(payload["openIntent"]) is not bool:
+                    return self._receipt(action, payload, success=False, reason="map-input-intent-invalid")
+                if sequence is not None:
+                    self._last_map_input_sequence = sequence
+                return self._receipt(action, payload, success=True, reason="round-not-started")
             birth_ticket = (self._epoch, self._request_lifetime_generation, self._settings_generation)
         return self._dispatch_owned(action, payload, cancelled,
             birth_ticket=birth_ticket, request_id=request_id)
@@ -4401,7 +4422,8 @@ class LiveRuntime:
                     self.cancel_map_open_recovery("new-capture-request")
                     # Carry the admission ticket across every blocking hand-off.
                     # Helpers must not adopt a later close/cancel/new-open epoch.
-                    activated = self._ensure_round_active(payload, cancelled, expected_epoch=capture_request_epoch)
+                    activated = self._ensure_round_active(payload, cancelled,
+                        expected_epoch=capture_request_epoch, allow_prepare=action != "map")
                     if not activated["success"]:
                         return self._receipt(action, payload, success=False, reason=activated["reason"],
                             stale=bool(activated.get("stale")))
@@ -4509,15 +4531,18 @@ class LiveRuntime:
                 self._candidate_edit = self._selection_pending = True
         return self._receipt("start_round", payload, success=True, reason="round-prepared")
 
-    def _ensure_round_active(self, payload, cancelled, *, expected_epoch=None):
+    def _ensure_round_active(self, payload, cancelled, *, expected_epoch=None, allow_prepare=True):
         with self._lock:
             if expected_epoch is not None and expected_epoch != self._epoch:
                 return dict(success=False, reason="cancelled-or-stale", stale=True)
             if self._active:
                 return dict(success=True, reason="round-already-active")
-        prepared = self._start(payload, cancelled, expected_epoch=expected_epoch)
-        if not prepared["success"]:
-            return prepared
+            if not allow_prepare and not (self._round_preparing and self._prepared_round_ready):
+                return dict(success=False, reason="round-not-started")
+        if allow_prepare:
+            prepared = self._start(payload, cancelled, expected_epoch=expected_epoch)
+            if not prepared["success"]:
+                return prepared
         with self._lock:
             if expected_epoch is not None and expected_epoch != self._epoch:
                 return dict(success=False, reason="cancelled-or-stale", stale=True)

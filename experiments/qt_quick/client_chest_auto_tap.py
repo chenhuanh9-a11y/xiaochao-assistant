@@ -143,7 +143,7 @@ class ChestAutoTapService(QObject):
                 self._message = "开箱连点保持开启；本局已结束，下一局开始后自动恢复"
             self._publish()
         elif self._waiting_for_round and action in {
-                "start_round", "toggle_round", "map", "capture_now", "prepare_manual_alignment"}:
+                "start_round", "toggle_round", "capture_now", "prepare_manual_alignment"}:
             # A late pre-end worker must not count as the user's next round.
             # This is only intent; the validated committed snapshot below is
             # still required. Cancellation/supersession changes this generation,
