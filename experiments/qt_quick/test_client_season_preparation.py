@@ -156,6 +156,26 @@ def scenario(name, root):
                 wait(ready, "initial S0 ready")
                 home = qml_item(client.main, "homeGameContext")
                 from PySide6.QtCore import QPoint, QPointF, Qt
+                from PySide6.QtQml import QQmlEngine, QQmlExpression
+                click_trace = []
+                def control_state(item):
+                    point = item.mapToScene(QPointF(item.width() / 2, item.height() / 2))
+                    popup = QQmlExpression(QQmlEngine.contextForObject(picker), picker,
+                        "JSON.stringify({visible: popup.visible, opened: popup.opened, "
+                        "type: popup.popupType, x: popup.x, y: popup.y, width: popup.width, "
+                        "height: popup.height, contentWidth: popup.contentItem.width, "
+                        "contentHeight: popup.contentItem.height})").evaluate()[0]
+                    ancestors = []
+                    parent = item.parentItem()
+                    while parent is not None:
+                        origin = parent.mapToScene(QPointF(0, 0))
+                        ancestors.append(dict(name=parent.objectName(), clip=parent.clip(),
+                            rect=[origin.x(), origin.y(), parent.width(), parent.height()],
+                            contentY=parent.property("contentY")))
+                        parent = parent.parentItem()
+                    return dict(center=[point.x(), point.y()], size=[item.width(), item.height()],
+                                visible=item.isVisible(), enabled=item.isEnabled(), popup=popup,
+                                window=[client.main.width(), client.main.height()], ancestors=ancestors)
                 def choose_home_season(season):
                     for object_name in ("homeGameContextSeason", "homeGameContextSeasonOption_" + season):
                         # Popup delegates are created/polished asynchronously.
@@ -165,12 +185,20 @@ def scenario(name, root):
                             item = qml_item(client.main, object_name)
                             return (item is not None and item.isVisible() and item.isEnabled()
                                     and item.width() > 0 and item.height() > 0)
-                        wait(clickable, "clickable QML control " + object_name)
+                        try:
+                            wait(clickable, "clickable QML control " + object_name)
+                        except AssertionError:
+                            print("SEASON_CLICK_TRACE " + json.dumps(click_trace), file=sys.stderr)
+                            raise
                         item = qml_item(client.main, object_name)
                         point = item.mapToScene(QPointF(item.width() / 2, item.height() / 2))
+                        trace = dict(target=object_name, before=control_state(item))
+                        click_trace.append(trace)
                         QTest.mouseClick(client.main, Qt.LeftButton, Qt.NoModifier,
                                          QPoint(round(point.x()), round(point.y())))
+                        trace["headerAfterClick"] = control_state(picker)
                         QTest.qWait(20)
+                        trace["afterEvents"] = control_state(picker)
                 picker = qml_item(client.main, "homeGameContextSeason")
                 original_dispatch = client.runtime.dispatch
                 attempts = []
