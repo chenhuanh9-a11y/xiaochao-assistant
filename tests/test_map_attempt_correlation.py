@@ -90,6 +90,7 @@ class MapInputEvidenceTests(unittest.TestCase):
                     owner = self.owner()
                     owner.session.snapshot.update(roundPreparing=bool(pending), pendingAction=pending)
                     owner.session.busy = bool(pending)
+                    owner._message = 'existing status or warning'
                     event = dict(sequence=1, openIntent=opening, createdAt=12., hwnd=42, source='hotkey')
                     method = map_input_method()
                     method(owner, event)
@@ -105,7 +106,20 @@ class MapInputEvidenceTests(unittest.TestCase):
                     owner._revoke_runtime.assert_not_called()
                     owner._close_map_from_input.assert_not_called()
                     owner._reset_map_input.assert_not_called()
-                    self.assertEqual(owner.notificationRequested.emit.call_count, int(opening))
+                    # Idle input still leaves diagnostic evidence, but must
+                    # not notify or overwrite an existing status/warning.
+                    # Pending lifecycle work retains its existing notice.
+                    if pending:
+                        self.assertEqual(owner.notificationRequested.emit.call_count, int(opening))
+                        owner.changed.emit.assert_called_once_with()
+                        if opening:
+                            self.assertEqual(owner.notificationRequested.emit.call_args.args[0],
+                                             '请等待本局状态更新')
+                    else:
+                        owner.notificationRequested.emit.assert_not_called()
+                        owner.changed.emit.assert_not_called()
+                        self.assertEqual(owner._message, 'existing status or warning')
+                        self.assertEqual(owner._notified, set())
 
     def test_failed_optional_trace_does_not_swallow_accepted_map_action(self):
         owner = self.owner()
