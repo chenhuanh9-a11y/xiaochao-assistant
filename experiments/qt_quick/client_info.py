@@ -508,6 +508,9 @@ class ClientInfoService(QObject):
         export_id = uuid4().hex
         report = dict(exportId=export_id, schema="xingtu-qt-client-diagnostics-v1", exportedAt=datetime.now(timezone.utc).isoformat(),
                       environment=self.facts)
+        performance = self._providers.get("performance")
+        if performance is not None:
+            report["performance"] = deepcopy(performance.snapshot)
         session = self._providers.get("session")
         if session is not None:
             state = session.snapshot

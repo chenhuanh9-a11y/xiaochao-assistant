@@ -9,16 +9,18 @@ if not getattr(sys, "frozen", False):
     sys.path[:0] = [str(_root / "app"), str(_root / "experiments/qt_quick")]
 
 from qt_startup_diagnostics import report_startup_failure
-from qt_startup_splash import show_startup_splash, close_startup_splash
+from qt_startup_splash import show_startup_splash, close_startup_splash, set_startup_stage
 
 
 def run():
     stage = "validate-profile"
     try:
         show_startup_splash(sys.argv[1:])
+        set_startup_stage(stage)
         from packaged_product_identity import baked_identity
         baked_identity(require_qt=True)
         stage = "import-client"
+        set_startup_stage(stage)
         from client import main
         stage = "run-client"
         return main()

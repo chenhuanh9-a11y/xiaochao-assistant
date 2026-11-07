@@ -6,6 +6,8 @@ settings, or single-instance ownership. Closing it never quits the application.
 """
 import os
 import threading
+import time
+from qt_startup_state import STATE
 
 
 def _window_dpi(user, hwnd):
@@ -86,6 +88,8 @@ class StartupSplash:
         user.DestroyWindow.restype = w.BOOL
         user.ShowWindow.argtypes = [w.HWND, ctypes.c_int]
         user.UpdateWindow.argtypes = [w.HWND]
+        user.SetWindowTextW.argtypes = [w.HWND, w.LPCWSTR]
+        user.SetWindowTextW.restype = w.BOOL
         user.PeekMessageW.argtypes = [ctypes.POINTER(w.MSG), w.HWND, w.UINT, w.UINT, w.UINT]
         user.PeekMessageW.restype = w.BOOL
         user.TranslateMessage.argtypes = [ctypes.POINTER(w.MSG)]
@@ -103,7 +107,7 @@ class StartupSplash:
         gdi.DeleteObject.restype = w.BOOL
         if self._stop.is_set():
             return
-        width, height = 440, 130
+        width, height = 440, 160
         screen_width, screen_height = user.GetSystemMetrics(0), user.GetSystemMetrics(1)
         x = max(0, (screen_width - width) // 2)
         y = max(0, (screen_height - height) // 2)
@@ -117,28 +121,47 @@ class StartupSplash:
         try:
             dpi = _window_dpi(user, hwnd)
             scale = lambda value: max(1, round(value * dpi / 96))
-            width, height = scale(440), scale(130)
+            width, height = scale(440), scale(160)
             user.SetWindowPos(hwnd, None, max(0, (screen_width - width) // 2),
                               max(0, (screen_height - height) // 2), width, height, 0x14)
             font = gdi.CreateFontW(-scale(16), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0,
                                    "Microsoft YaHei UI")
-            for text, top in (("星图正在启动…", 30), ("首次启动可能稍慢，请稍候，无需重复点击。", 65)):
+            labels = []
+            for text, top in ((STATE.label(), 22), ("当前阶段耗时无法预计，无需重复点击。", 58)):
                 label = user.CreateWindowExW(0, "STATIC", text, 0x50000001,
                                              scale(12), scale(top), width - scale(24), scale(28), hwnd, None, None, None)
                 if not label:
                     return
                 if font:
                     user.SendMessageW(label, 0x30, font, 1)  # WM_SETFONT
+                labels.append(label)
+            # A moving segment means unknown progress, never a fabricated
+            # percentage. Built-in STATIC classes work without ComCtl v6/Qt.
+            track_width, segment_width = scale(400), scale(80)
+            track = user.CreateWindowExW(0, "STATIC", "", 0x50000012,
+                scale(20), scale(106), track_width, scale(8), hwnd, None, None, None)
+            segment = user.CreateWindowExW(0, "STATIC", "", 0x50000004,
+                0, 0, segment_width, scale(8), track, None, None, None) if track else None
             if self._stop.is_set():
                 return
             user.ShowWindow(hwnd, 4)  # SW_SHOWNOACTIVATE
             user.UpdateWindow(hwnd)
             self._ready.set()
             message = w.MSG()
+            previous_label = STATE.label()
+            animation_start = time.monotonic()
             while not self._stop.is_set():
                 while user.PeekMessageW(ctypes.byref(message), None, 0, 0, 1):
                     user.TranslateMessage(ctypes.byref(message))
                     user.DispatchMessageW(ctypes.byref(message))
+                label = STATE.label()
+                if label != previous_label:
+                    user.SetWindowTextW(labels[0], label)
+                    previous_label = label
+                if segment:
+                    phase = ((time.monotonic()-animation_start) % 2.) / 2.
+                    position = round((1. - abs(2. * phase - 1.)) * (track_width-segment_width))
+                    user.SetWindowPos(segment, None, position, 0, segment_width, scale(8), 0x14)
                 self._stop.wait(0.03)
         finally:
             user.DestroyWindow(hwnd)
@@ -160,3 +183,7 @@ def show_startup_splash(argv):
 
 def close_startup_splash():
     _splash.close()
+
+
+def set_startup_stage(stage):
+    STATE.mark(stage)

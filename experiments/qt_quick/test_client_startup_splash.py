@@ -35,6 +35,28 @@ class ClientSplashTests(unittest.TestCase):
             close.assert_called_once()
             instance.shutdown.assert_called_once()
 
+    def test_first_submitted_main_frame_closes_once_and_records_real_boundary(self):
+        from types import SimpleNamespace
+        instance = client.QtClient.__new__(client.QtClient)
+        instance._closed, instance._main_frame_seen = False, False
+        instance.performance = SimpleNamespace(sample=Mock())
+        with patch('qt_startup_splash.close_startup_splash') as close, \
+             patch.object(client, 'set_startup_stage') as stage:
+            instance._main_frame_ready()
+            instance._main_frame_ready()
+        close.assert_called_once()
+        stage.assert_called_once_with('main-frame-submitted')
+        instance.performance.sample.assert_called_once()
+
+    def test_repeated_qml_warnings_keep_bounded_serializable_list(self):
+        instance = client.QtClient.__new__(client.QtClient)
+        instance.warnings = []
+        for _ in range(5):
+            instance._record_qml_warnings(range(100))
+        self.assertEqual(len(instance.warnings), 128)
+        self.assertIsInstance(instance.warnings, list)
+        self.assertEqual(instance.warnings[-1], '99')
+
     def test_constructor_failure_closes_before_reporting_and_drains_partial(self):
         with tempfile.TemporaryDirectory() as folder:
             args = SimpleNamespace(sandbox=Path(folder), probe_output=None)

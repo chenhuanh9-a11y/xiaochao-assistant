@@ -49,6 +49,15 @@ Item {
     }
     readonly property string roundAction: session.snapshot.roundActive ? "end_round"
         : session.snapshot.roundPreparing ? "toggle_round" : "start_round"
+    readonly property var resourcePreparation: (session.snapshot.savedFrameCapabilities || ({}))[session.appliedMode] || ({})
+    readonly property var preparationReceipt: session.snapshot.lastReceipt || ({})
+    readonly property bool preparationFailed: preparationReceipt.action === "inspect_engine_resources"
+        && preparationReceipt.success === false && !session.busy
+    readonly property bool preparingResources: session.snapshot.pendingAction === "inspect_engine_resources"
+        || (!preparationFailed && !session.snapshot.contextPending
+            && resourcePreparation.season === session.appliedSeason && resourcePreparation.mode === session.appliedMode
+            && resourcePreparation.prepared === false
+            && resourcePreparation.reason === "resource-validation-pending")
     ScrollView {
         id: scroll
         anchors.fill: parent; clip: true; contentWidth: availableWidth
@@ -168,6 +177,13 @@ Item {
                             }
                         }
                         Label { text: clientCoordinator.runtimeStatus; color: "#567096"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                        ProgressBar {
+                            objectName: "homeResourcePreparationProgress"
+                            Layout.fillWidth: true
+                            visible: page.preparingResources
+                            indeterminate: visible
+                            Accessible.name: "正在准备当前模式的识别资源"
+                        }
                         RowLayout {
                             Layout.fillWidth: true
                             AppButton { objectName: "clientStartRound"; text: session.snapshot.roundActionText || (session.snapshot.roundActive ? "结束本局" : session.snapshot.roundPreparing ? "取消准备" : "开始本局"); primary: true; enabled: page.canRun(page.roundAction); onClicked: page.roundAction === "start_round" ? clientCoordinator.startRound() : session.dispatch(page.roundAction) }

@@ -13,6 +13,7 @@ from PySide6.QtGui import QFont, QFontDatabase, QGuiApplication, QIcon, QWindow
 from PySide6.QtQml import QQmlApplicationEngine
 from client_paths import APP_ROOT, DEFAULT_SANDBOX, FROZEN, PRODUCTION, RESOURCE_ROOT, WORK_ROOT, owned_sandbox, runtime_paths
 from client_manual_map_service import ManualMapPickerService
+from qt_startup_splash import set_startup_stage
 
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
@@ -52,6 +53,7 @@ def prepare_first_run(sandbox):
 
 class QtClient:
     def __init__(self, app, sandbox, *, probe_output=None, info_fetch=None, on_created=None):
+        set_startup_stage("create-services")
         self._closed = False
         self._shutdown_complete = False
         if on_created is not None:
@@ -100,6 +102,11 @@ class QtClient:
         self.lifecycle = LifecycleJournal(self.paths.work_root)
         self.lifecycle.record_event(dict(stage="client-created"))
         self._closed = False
+        from client_performance import PerformanceService
+        self.performance = PerformanceService()
+        from client_game_startup import GameStartupService
+        self.game_startup = GameStartupService(self.paths.installation_root,
+            production=bool(self.paths.production and not probe_output))
         self.settings = SettingsService(self.sandbox)
         self.custom_galleries = CustomGalleryService(self.sandbox)
         self.route_plaza = RoutePlazaService(self.sandbox, self.custom_galleries)
@@ -206,11 +213,12 @@ class QtClient:
         self.coordinator.traceReported.connect(self.problems.recordTrace)
         self.info.setProviders(session=self.session, resources=self.resources, input=self.input,
                                coordinator=self.coordinator, problems=self.problems,
-                               settings=self.settings, capture=self.capture)
+                               settings=self.settings, capture=self.capture, performance=self.performance)
         self.coordinator.close_writers = (self.custom_galleries, self.info, self.online_packages,
                                          self.route_plaza,
                                          self.backend, self.route_choices, self.problems, self.reference_preview,
-                                         self.capture_exclusion, self.manual_map_picker, self.package_manager)
+                                         self.capture_exclusion, self.manual_map_picker, self.package_manager,
+                                         self.performance)
         if self.lifecycle_trace is not None:
             self.coordinator.close_writers += (self.lifecycle_trace,)
         self.custom_galleries.setUseHandler(self._use_custom_gallery)
@@ -240,12 +248,12 @@ class QtClient:
         self.engine.addImageProvider("live", self.images)
         self.engine.addImageProvider("floorregion", self.floor_region_images)
         self.warnings = []
-        self.engine.warnings.connect(lambda rows: self.warnings.extend(str(row) for row in rows))
+        self.engine.warnings.connect(self._record_qml_warnings)
         context = self.engine.rootContext()
         context.setContextProperty("productionProduct", PRODUCTION)
         context.setContextProperty("tutorialService", self.tutorial)
         for key, value in dict(backend=self.backend, resourceModel=self.backend.model, routeChoices=self.route_choices,
-            settingsService=self.settings, resourceService=self.resources,
+            settingsService=self.settings, gameStartupService=self.game_startup, resourceService=self.resources,
             packageManagerService=self.package_manager, session=self.session,
             windows=self.windows, clientCoordinator=self.coordinator, infoService=self.info,
             customGalleryService=self.custom_galleries, onlinePackageService=self.online_packages,
@@ -255,6 +263,7 @@ class QtClient:
             floorRegionService=self.floor_region,
             pickerService=self.manual_map_picker).items():
             context.setContextProperty(key, value)
+        set_startup_stage("create-windows")
         for name, file in (("main", "Client.qml"), ("controls", "ClientControls.qml"),
                            ("reference", "ClientReference.qml"), ("aligned", "ClientAligned.qml"),
                            ("replay", "Overlay.qml"), ("preview", "ClientPreview.qml"),
@@ -266,6 +275,9 @@ class QtClient:
             window = self.engine.rootObjects()[-1]
             self.windows.bindWindow(name, window)
         self.main = self.windows._windows["main"]
+        self._main_frame_seen = False
+        self.main.frameSwapped.connect(self._main_frame_ready, Qt.QueuedConnection)
+        set_startup_stage("main-constructed")
         self.control_snap = ControlSnap()
         self.control_snap.bindWindow(self.windows._windows["controls"],
                                      self.settings.persistedValues.get("compactPosition"))
@@ -279,6 +291,21 @@ class QtClient:
         self.session.changed.connect(self._refresh_resource_preparation)
         self._initialize_timer.start()
         self.info.scheduleStartupCheck(bool(self.paths.production and not probe_output))
+
+    def _record_qml_warnings(self, rows):
+        self.warnings.extend(str(row) for row in rows)
+        del self.warnings[:-128]
+
+    def _main_frame_ready(self):
+        if self._closed or self._main_frame_seen:
+            return
+        self._main_frame_seen = True
+        # Submission is an observable rendering boundary, not proof of pixels
+        # visible on a real monitor; the diagnostics name preserves that limit.
+        set_startup_stage("main-frame-submitted")
+        from qt_startup_splash import close_startup_splash
+        close_startup_splash()
+        self.performance.sample()
 
     def _reference_screen_added(self, screen):
         if screen not in self._reference_screens:
@@ -442,6 +469,9 @@ class QtClient:
             return
         season, mode = self.session.appliedSeason, self.session.appliedMode
         report = state.get("savedFrameCapabilities", {}).get(mode, {})
+        if (report.get("season") == season and report.get("mode") == mode
+                and report.get("prepared") is True):
+            set_startup_stage("context-ready" if report.get("available") else "context-unavailable")
         if (report.get("season") != season or report.get("mode") != mode
                 or report.get("prepared") is not False
                 or report.get("reason") != "resource-validation-pending"):
@@ -514,6 +544,9 @@ class QtClient:
         self._sync_custom_gallery_active()
 
     def shutdown(self):
+        performance = getattr(self, "performance", None)
+        if performance is not None:
+            performance.shutdown()
         from client_startup_cleanup import shutdown_client
         shutdown_client(self)
 
@@ -610,6 +643,7 @@ def main():
     # listener. Production identity is stable across upgrades; probes are separate.
     from client_single_instance import SingleInstanceGuard, SingleInstanceError, instance_namespace, restore_main_window
     guard = None
+    set_startup_stage("instance-check")
     try:
         guard = SingleInstanceGuard(instance_namespace(production=PRODUCTION, frozen=FROZEN,
             sandbox=args.sandbox, probe_output=args.probe_output), app)
@@ -635,6 +669,7 @@ def main():
         return offer_startup_recovery(resource_root, error)
     try:
         resource_root = owned_sandbox(args.sandbox.resolve()) if PRODUCTION else args.sandbox.resolve()
+        set_startup_stage("resource-check")
         with production_resources(resource_root, production=PRODUCTION,
                 on_failure=recover_startup) as recovery:
             if recovery is not None:
@@ -679,7 +714,6 @@ def _run_primary_client(app, args, guard):
                               versionCode=9, releaseNotes="Local probe", publishedAt="2026-10-30", releases=[])) if args.probe_output else None
             client = holder["client"] = QtClient(app, sandbox, probe_output=args.probe_output, info_fetch=local_manifest,
                 on_created=lambda partial: holder.update(client=partial))
-            close_startup_splash()
             if holder.pop("activationPending", False):
                 restore_main_window(client.main)
             holder["quit_journal"] = lambda: client.lifecycle.record_event(dict(stage="about-to-quit"))
@@ -690,7 +724,6 @@ def _run_primary_client(app, args, guard):
                 from probe_client import run_client_probe
                 run_client_probe(client, args.probe_output)
         except Exception as error:
-            close_startup_splash()
             holder["startup_error"] = error
             app.exit(1)
     if args.sandbox.exists():
@@ -720,6 +753,7 @@ def _run_primary_client(app, args, guard):
         if lifecycle is not None:
             lifecycle.record_event(dict(stage="app-loop-return", exitCode=exit_code))
     finally:
+        close_startup_splash()
         # Qt swallows exceptions in slots. Run cleanup synchronously here so a
         # partial constructor, direct quit or app.exec error all retain the
         # outer runtime lease until owned resource consumers have really drained.

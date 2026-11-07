@@ -95,6 +95,29 @@ class PackageProgressTests(unittest.TestCase):
         self.assertEqual(self.card.property('phase'), '读取在线列表')
         self.assertTrue(self.bar.property('indeterminate'))
 
+    def test_management_work_has_real_stage_and_unknown_progress(self):
+        manager = Local()
+        self.card.setProperty('managementService', manager)
+        try:
+            for stage, title in [('manage-refresh', '读取已安装图包'), ('manage-inspect', '核对删除范围'),
+                    ('manage-remove', '删除图包并清理临时文件'), ('manage-refresh-after-remove', '核对删除结果')]:
+                manager.update(True, stage)
+                self.assertTrue(self.card.property('visible'))
+                self.assertEqual(self.card.property('phase'), title)
+                self.assertTrue(self.bar.property('indeterminate'))
+            manager.update(True, 'cancelling')
+            self.assertEqual(self.card.property('phase'), '正在取消')
+            manager.update(False, '')
+            self.assertFalse(self.card.property('visible'))
+        finally:
+            self.card.setProperty('managementService', None)
+
+    def test_invalid_byte_total_does_not_create_a_percentage(self):
+        for total in (float('inf'), float('nan'), -1, 0):
+            self.online(25, total)
+            self.assertTrue(self.bar.property('indeterminate'))
+            self.assertNotIn('%', self.card.property('phase'))
+
 
 class ResourceProgressLayoutTests(unittest.TestCase):
     def test_progress_fits_supported_minimum_page_width_and_wide_page(self):

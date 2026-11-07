@@ -60,7 +60,7 @@ class SplashTests(unittest.TestCase):
         user = Mock()
         gdi = Mock()
         gdi.CreateFontW.return_value = 201
-        user.CreateWindowExW.side_effect = [101, 102, 103]
+        user.CreateWindowExW.side_effect = [101, 102, 103, 104, 105]
         user.GetSystemMetrics.side_effect = [1920, 1080]
         user.GetDpiForWindow.return_value = 96
         user.UpdateWindow.side_effect = lambda _: hint._stop.set()
@@ -86,18 +86,43 @@ class SplashTests(unittest.TestCase):
         user.DestroyWindow.assert_called_once_with(101)
         gdi.DeleteObject.assert_called_once_with(201)
 
+    def test_unknown_progress_segment_moves_without_percentage_or_gui_thread(self):
+        hint = splash.StartupSplash()
+        user, gdi = Mock(), Mock()
+        user.CreateWindowExW.side_effect = [101, 102, 103, 104, 105]
+        user.GetSystemMetrics.side_effect = [1920, 1080]
+        user.GetDpiForWindow.return_value = 96
+        user.PeekMessageW.return_value = 0
+        gdi.CreateFontW.return_value = 201
+        ticks = []
+        def tick(_):
+            ticks.append(True)
+            if len(ticks) == 2:
+                hint._stop.set()
+        hint._stop.wait = tick
+        with patch.object(ctypes, 'WinDLL', side_effect=[user, gdi], create=True), \
+                patch.object(splash.time, 'monotonic', side_effect=[0., .1, .5]), \
+                patch.object(splash.STATE, 'label', side_effect=['加载组件', '加载组件', '检查资源', '检查资源']):
+            hint._native_window()
+        moves = [call.args for call in user.SetWindowPos.call_args_list if call.args[0] == 105]
+        self.assertEqual(len(moves), 2)
+        self.assertLess(moves[0][2], moves[1][2])
+        user.SetWindowTextW.assert_called_once_with(102, '检查资源')
+        user.DestroyWindow.assert_called_once_with(101)
+
     def test_native_dpi_scales_bounds_text_and_owned_font_together(self):
         hint = splash.StartupSplash()
         user, gdi = Mock(), Mock()
-        user.CreateWindowExW.side_effect = [101, 102, 103]
+        user.CreateWindowExW.side_effect = [101, 102, 103, 104, 105]
         user.GetSystemMetrics.side_effect = [1920, 1080]
         user.GetDpiForWindow.return_value = 192
         gdi.CreateFontW.return_value = 201
         user.UpdateWindow.side_effect = lambda _: hint._stop.set()
         with patch.object(ctypes, 'WinDLL', side_effect=[user, gdi], create=True):
             hint._native_window()
-        self.assertEqual(user.SetWindowPos.call_args.args[4:6], (880, 260))
-        self.assertEqual(user.CreateWindowExW.call_args_list[1].args[4:8], (24, 60, 832, 56))
+        self.assertEqual(user.SetWindowPos.call_args.args[4:6], (880, 320))
+        self.assertEqual(user.CreateWindowExW.call_args_list[1].args[4:8], (24, 44, 832, 56))
+        self.assertEqual(user.CreateWindowExW.call_args_list[3].args[4:8], (40, 212, 800, 16))
         self.assertEqual(gdi.CreateFontW.call_args.args[0], -32)
         user.DestroyWindow.assert_called_once_with(101)
         gdi.DeleteObject.assert_called_once_with(201)

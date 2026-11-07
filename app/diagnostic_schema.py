@@ -1543,3 +1543,12 @@ CODES = CODES | frozenset({'local-prior', 'global-search', 'fast-prepared-unavai
     'preferred-fit-unresolved', 'fast-existing-validation-rejected', 'fast-attempt-unavailable',
     'shared-fast-alignment', 'shared-established-group-recovery', 'shared-registered-floor-recovery',
     'verified-entry-current-frame', 'shared-initial-structure'})
+
+# Own-process performance counters and bounded startup codes only.
+FIELDS = FIELDS | frozenset({'performance', 'workingSetBytes', 'threadCount', 'handleCount',
+    'sampleIntervalMs', 'retainedSampleLimit', 'maxima', 'startupMilestones', 'startupOrigin',
+    'frameEndpoint', 'gpuMeasured', 'childProcessesMeasured'})
+CODES = CODES | frozenset({'own-process-only', 'not-sampled', 'sample-unavailable',
+    'python-runtime-hook', 'python-module-import', 'frame-submitted-not-visible-pixels', 'runtime-entry',
+    'validate-profile', 'import-client', 'instance-check', 'resource-check', 'create-services',
+    'create-windows', 'main-constructed', 'main-frame-submitted', 'context-ready', 'context-unavailable'})

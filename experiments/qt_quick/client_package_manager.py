@@ -39,6 +39,7 @@ class PackageManagerService(QObject):
 
     packageRows = Property("QVariantList", lambda s: s._rows, notify=changed)
     busy = Property(bool, lambda s: s._busy, notify=changed)
+    operationStage = Property(str, lambda s: ("cancelling" if s._cancel.is_set() else "manage-" + s._kind) if s._busy else "", notify=changed)
     pendingKind = Property(str, lambda s: "remove" if s._pending is not None else "", notify=changed)
     canCancel = Property(bool, lambda s: s._busy and not s._cancel.is_set(), notify=changed)
     recoveryRequired = Property(bool, lambda s: s._recovery, notify=changed)

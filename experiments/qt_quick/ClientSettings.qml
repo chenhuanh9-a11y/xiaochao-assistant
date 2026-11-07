@@ -169,6 +169,27 @@ Item {
             Item { Layout.fillWidth: true }
             Label { text: settingsService.busy ? "正在保存…" : settingsService.dirty ? "未保存" : "已同步"; color: "#526785"; font.pixelSize: 12 }
         }
+        ColumnLayout {
+            visible: typeof gameStartupService !== "undefined"
+            Layout.fillWidth: true
+            spacing: 4
+            CheckBox {
+                objectName: "gameStartupToggle"
+                text: "游戏启动时启动星图"
+                checked: typeof gameStartupService !== "undefined" && gameStartupService.enabled
+                enabled: typeof gameStartupService !== "undefined" && (gameStartupService.available || gameStartupService.enabled)
+                onClicked: {
+                    gameStartupService.setEnabled(checked)
+                    checked = Qt.binding(function() { return gameStartupService.enabled })
+                }
+            }
+            Note {
+                text: typeof gameStartupService !== "undefined" ? gameStartupService.message : ""
+            }
+            Note {
+                text: "仅监听当前 Windows 会话中的第五人格窗口。星图仍需管理员确认；不会绕过 UAC。默认关闭，不随升级自动开启。"
+            }
+        }
         Rectangle {
             visible: settingsService.shortcutRecording
             z: 1  // Keep the recorder above scroll content before the next layout pass.

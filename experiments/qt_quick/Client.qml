@@ -146,7 +146,10 @@ ApplicationWindow {
             Layout.leftMargin: root.workspaceMargin; Layout.rightMargin: root.workspaceMargin; Layout.bottomMargin: 24
             currentIndex: root.pages.indexOf(root.page)
             ClientHome {}
-            ClientGallery { packageActions: resourcePage }
+            ClientLazyPage {
+                objectName: "lazyGalleryPage"; selected: root.page === "gallery"
+                sourceComponent: Component { ClientGallery { packageActions: resourcePage } }
+            }
             ClientResources {
                 id: resourcePage
                 active: root.page === "resources" && !clientCoordinator.closing
@@ -155,8 +158,13 @@ ApplicationWindow {
                     && !session.snapshot.roundWorkActive && !session.snapshot.roundPreparing
                     && !session.snapshot.closed && !clientCoordinator.closing
             }
-            ClientSettings { profileOptions: root.routeOptions; profilesMode: routeChoices.mode; profilesSeason: routeChoices.season; profilesBusy: routeChoices.busy }
-            ColumnLayout {
+            ClientLazyPage {
+                objectName: "lazySettingsPage"; selected: root.page === "settings"
+                sourceComponent: Component { ClientSettings { profileOptions: root.routeOptions; profilesMode: routeChoices.mode; profilesSeason: routeChoices.season; profilesBusy: routeChoices.busy } }
+            }
+            ClientLazyPage {
+                objectName: "lazyReplayPage"; selected: root.page === "replay"
+                sourceComponent: Component { ColumnLayout {
                 spacing: 16
                 RowLayout {
                     Label { text: "识别结果回放"; color: "#142b4b"; font.pixelSize: 26; font.bold: true }
@@ -176,12 +184,13 @@ ApplicationWindow {
                     Item { Layout.fillWidth: true }
                     Label { text: "历史结果不授权当前游戏显示"; color: "#526785"; font.pixelSize: 12 }
                 }
+                } }
             }
-            ClientHelp {}
-            ClientRecognition {}
-            ClientCustomGallery {}
-            ClientOnlinePackages {}
-            ClientRoutePlaza {}
+            ClientLazyPage { objectName: "lazyHelpPage"; selected: root.page === "help"; sourceComponent: Component { ClientHelp {} } }
+            ClientLazyPage { objectName: "lazyRecognitionPage"; selected: root.page === "recognition"; sourceComponent: Component { ClientRecognition {} } }
+            ClientLazyPage { objectName: "lazyCustomPage"; selected: root.page === "custom"; sourceComponent: Component { ClientCustomGallery {} } }
+            ClientLazyPage { objectName: "lazyDownloadsPage"; selected: root.page === "downloads"; sourceComponent: Component { ClientOnlinePackages {} } }
+            ClientLazyPage { objectName: "lazyPlazaPage"; selected: root.page === "plaza"; sourceComponent: Component { ClientRoutePlaza {} } }
         }
         }
     }
@@ -202,7 +211,11 @@ ApplicationWindow {
                 onClicked: { closeChoice.close(); windows.hide("main") }
             }
             AppButton { objectName: "closeApplication"; Layout.fillWidth: true; text: "退出星图（结束程序）"; primary: true
-                onClicked: { closeChoice.close(); clientCoordinator.requestClose() }
+                onClicked: {
+                    closeChoice.close()
+                    if (typeof gameStartupService !== "undefined") gameStartupService.suppressCurrentGame()
+                    clientCoordinator.requestClose()
+                }
             }
             AppButton { objectName: "cancelClose"; Layout.fillWidth: true; text: "取消"; onClicked: closeChoice.close() }
         }

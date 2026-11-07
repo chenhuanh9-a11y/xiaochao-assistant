@@ -13,6 +13,7 @@ ApplicationWindow {
         anchors.fill: parent; anchors.margins: 32; spacing: 16
         Label { text: "星图"; font.pixelSize: 28; font.bold: true; color: "#183a73" }
         Label { text: boot.statusText; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#354f75" }
+        ProgressBar { Layout.fillWidth: true; indeterminate: !boot.statusText.startsWith("准备失败"); visible: indeterminate; Accessible.name: boot.statusText }
         Item { Layout.fillHeight: true }
         Label { text: "首次启动准备本客户端的数据，不修改现有安装"; wrapMode: Text.WordWrap; Layout.fillWidth: true; color: "#526785" }
     }

@@ -135,6 +135,7 @@ Item {
         ClientPackageProgress {
             Layout.fillWidth: true
             localService: resourceService
+            managementService: panel.packageManager
         }
         // The package list sits on one white card like the other pages.
         Rectangle {
