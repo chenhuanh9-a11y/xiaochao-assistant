@@ -4,7 +4,7 @@ No game input, Windows window, real capture, or visual latency is measured.
 Unlike direct runtime reopen tests, this includes coordinator pre-invalidation.
 """
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import s1_candidate_purpose as purpose
 import test_client_recognition as qml
@@ -140,8 +140,27 @@ class DifficultLockedOpen(MapOpenReferenceContracts, unittest.TestCase):
     mode = 'difficult'
 
 
-class Difficulty2LockedOpen(MapOpenReferenceContracts, unittest.TestCase):
-    mode = 'difficulty2'
+class DifficultEvidenceLockedOpen(MapOpenReferenceContracts, unittest.TestCase):
+    # Preserve all three queued-open/close/end assertions on an active resource
+    # contract, now also exercising the optional evidence dispatch wrapper.
+    mode = 'difficult'
+
+    def setUp(self):
+        super().setUp()
+        self.recorder = Mock(accepting=True, full_input=False)
+        self.recorder.submit.return_value = dict(status='queued')
+        self.runtime.g_cycle_evidence = self.recorder
+        original = self.producer.registry.engine.qt_s1_structure_scan
+        def scan(frame, *, collect_fit_diagnostics=False, **kwargs):
+            # The fixture's direct scanner lacks the production engine adapter
+            # that consumes this telemetry-only option. Keep its fit unchanged.
+            self.assertTrue(collect_fit_diagnostics)
+            return original(frame, **kwargs)
+        self.producer.registry.engine.qt_s1_structure_scan = scan
+
+    def test_physical_reopen_preserves_sheet_before_worker_and_during_capture(self):
+        super().test_physical_reopen_preserves_sheet_before_worker_and_during_capture()
+        self.assertTrue(self.recorder.submit.called)
 
 
 if __name__ == '__main__':

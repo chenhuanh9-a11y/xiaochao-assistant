@@ -1552,3 +1552,12 @@ CODES = CODES | frozenset({'own-process-only', 'not-sampled', 'sample-unavailabl
     'python-runtime-hook', 'python-module-import', 'frame-submitted-not-visible-pixels', 'runtime-entry',
     'validate-profile', 'import-client', 'instance-check', 'resource-check', 'create-services',
     'create-windows', 'main-constructed', 'main-frame-submitted', 'context-ready', 'context-unavailable'})
+
+# Explicit local G evidence test: bounded admission and final persistence results.
+FIELDS = FIELDS | frozenset({'gCycleEvidence', 'evidencePhase', 'caseId', 'diagnosticId', 'outcome'})
+CODES = CODES | frozenset({'g-cycle-evidence', 'admission', 'completion', 'queued',
+    'saved-missing-input', 'queue-full', 'queue-byte-limit', 'invalid-roi', 'invalid-metadata',
+    'roi-byte-limit', 'case-byte-limit', 'storage-unowned', 'storage-inventory-invalid',
+    'storage-ownership-changed', 'storage-byte-limit', 'retirement-unsupported',
+    'storage-error', 'observer-error', 'not-started', 'no-algorithm-roi',
+    'cancelled-or-no-current-capture', 'capture-unavailable'})

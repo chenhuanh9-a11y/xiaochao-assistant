@@ -164,16 +164,61 @@ context superseded 场景第三次选择 S1 时，`qml_item` 返回 `None`，随
 上述是 Linux/offscreen 验证，不代替最终远端同一 SHA 的 Windows season-ui CI。
 旧提交的 workflow 重跑也不能验证当前补丁。仍需在最终集成提交运行 Windows 检查。
 
-## 尚未纳入与最终门槛
+## 后续综合检查点：季节根因、回滚与留样
 
-- 贴合证据与回放：本地固定修复已有，但源码同步权限仍待确认，未纳入或代推。
-  预期交叉为 `client.py`、
-  `diagnostic_schema.py`，以及资源分支的 `client_live_runtime.py`。
+上述 `61132f6e` 检查点之后，真实 Windows CI 没有替旧推测背书：
+
+- 草稿 PR #101 首轮固定 `61132f6e` 的五个工作流通过，joint 8/9 组通过、season-ui 失败。
+  [失败 job 128326024984](https://github.com/chenhuanh9-a11y/xiaochao-assistant/actions/runs/42346738760/job/128326024984)
+  确认第三次 S1 选择时选项持续不可用，单加等待没有修复根因。
+- 仅加观察的 `14a689fd` 六个工作流及 joint 9/9 组通过。这不是根因修复，读取 popup 或
+  增加观察耗时可能改变竞争时机。原失败保留。
+- 独立诊断分支 `356882a2` 的四组 Windows 对照中，baseline 和 popup 组失败，geometry
+  和 render 组通过。[baseline 两次自然失败日志](https://github.com/chenhuanh9-a11y/xiaochao-assistant/actions/runs/42348036786/job/128329946305)
+  确认真实 ComboBox 已收到第三次点击，随后旧上下文准备 timer 派发 inspect，busy 使
+  selector 禁用并关闭 popup。坐标稳定、无双击。诊断 workflow 留在独立分支，未纳入集成。
+
+季节生产修复来源 `3293273dccb1c2f218af47e48ab37a6e44267e96`：只给上下文触发的准备
+标记 context-only，timer 到期重新检查当前 applied season/mode 的 prepared 状态，丢弃
+不再需要的旧工作。启动和显式资源变化仍强制检查，显式请求不会被后续刷新降级。
+已删除临时 popup 预读诊断，没有延长等待、重试点击或绕过真实 UI。真实回归在 popup
+打开后让旧 timer 到期：旧产品红，新产品保持 popup 并不重复 inspect；显式资源失效、
+新/缺失/不匹配 context、失败不循环、关闭和迟到刷新均保留验证。独立复核通过。
+
+资源回滚修复独立来源 `2eb6131b459e605b07d31405e3626e863a8b742c`：只对无旧对象、
+目标不存在、父目录也不存在的无操作回滚跳过目录 fsync。路径/链接完整预检仍在前面，
+已有父目录仍同步，外来对象、备份变更及真实同步失败仍保留 pending。旧回执回滚问题在
+POSIX 基线复现，修复及负例经独立复核；它不与留样 P1 混记。
+
+贴合留样已纳入上游汇总 `0db531d3` 的最终树并修复审查拦下的 P1，未重复挑入上游三笔
+原提交。本地来源顺序为 `2f0c5d9` → `6259f9b9` → `99bca8d9`，最终上游集成树
+`6df2683413e7806c06e65e8205fdeef9ba0e3f5a`。原 P1 让诊断等锁先于 arrival 登记，可能使
+旧 map 越过 end_round 重新捕获及授权显示；追加修复先登记原 arrival，再选择/初始化
+诊断，原 cutoff、birth-ticket、退役 guard 和 ownership finally 保持。独立旧树红例、
+48 个子例、实际 active 起点和独立复核结果见 [留样集成记录](g-cycle-integration-20261107.md)。
+
+三项在当前实际组合代码检查点 `eaa6191` 上再次验证（组间有重复，不相加为独立用例数）：
+
+- 留样记录首组命令加 `test_client_g_cycle_admission test_s1_preferred_candidate
+  test_client_context_failure`：473 项，467 通过、6 平台 skip，64.448 秒。
+- 本文最初性能/启动/卸载联合命令：184 项全部通过，53.492 秒。
+- 资源/构建/卸载原 211 项命令再加 `test_managed_base_absent_rollback
+  test_legacy_receipt_startup_retention`：229 项，228 通过、1 原生 Windows sharing skip，14.390 秒。
+- 独立到达竞态脚本的未激活和真实 active 起点共 16 组合全部正确 stale、零新增捕获、无显示授权。
+- 27 个变更 Python 文件 compile、`git diff --check` 通过；源码 self-check ready，
+  Tk、原生输入、窗口、监听及捕获均未启动。
+
+历史扩大回归中的真实回滚失败已由本轮专项验证关闭；17 个 Linux ctypes 失败和缺
+PyInstaller 的限制仍不计通过。首帧组合测试含 Mock 构造器和手动回调，不冒称真实
+frameSwapped 信号、显示器像素或 GUI 验收。最终组合 SHA 的 Windows CI 需另行核对，
+不能沿用 `14a689fd` 的成功代替新生产修复及留样组合的结果。
+
+## 最终验收门槛
 
 生产 source payload/version 锁仍刻意指向旧值，当前整合源码不得构建为正式交付物。
 待功能范围与版本固定后再重算并验证锁，不移除或绕过门禁。资源源锁从 564 项减至
 372 项、普通底模减少 51,409,317 未压缩字节；这不是 Setup 最终体积或升级磁盘回收量。
 
-后续顺序：确认贴合源码同步权限并审最终固定提交，随后纳入并重跑
-受影响的联合检查。每次冲突后检查实际调用链而非仅接受文本合并。最终远端同一 commit
+后续先核对最终远端同一 commit 的 Windows CI。每次冲突后检查实际调用链而非仅接受文本合并。
+最终远端同一 commit
 仍需 Windows 编译、Setup 独立安装/升级/卸载、普通账号登录/UAC、真实 GUI 和游戏验收。

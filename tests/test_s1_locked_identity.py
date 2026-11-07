@@ -110,8 +110,10 @@ class LockedIdentityContracts(unittest.TestCase):
             self.assertEqual(self.current_payload()['floor'], floor)
             self.assertIs(self.runtime._s1_private_pool, pool)
 
-    def test_difficult_modes_use_same_locked_unknown_policy(self):
-        for mode in ('difficult', 'difficulty2'):
+    def test_active_modes_use_same_locked_unknown_policy(self):
+        # Both remaining runtime modes share this ledger. Historical ordinary
+        # resources are maintenance-only, never a successful runtime fixture.
+        for mode in ('nightmare', 'difficult'):
             with self.subTest(mode=mode):
                 fx = LockedIdentityContracts(); fx.setUp()
                 try:

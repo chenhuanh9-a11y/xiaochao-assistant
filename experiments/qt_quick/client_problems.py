@@ -31,6 +31,7 @@ def _feature_evidence(name, value):
         from client_input_diagnostics import map_attempt
         return map_attempt(value)
     fields = {
+        'gCycleEvidence': ('status', 'evidencePhase', 'caseId', 'diagnosticId', 'outcome', 'missingReason', 'dropped'),
         'fitReport': ('attemptCount', 'retryCount', 'firstReason', 'lastReason',
                       'firstAt', 'lastAt', 'firstDiagnostics', 'lastDiagnostics'),
         'failureSample': ('saved', 'savedCount', 'missingReason', 'sampling', 'limits',
@@ -253,7 +254,7 @@ class ProblemsService(QObject):
         diagnostics = _metadata(event.get('captureDiagnostics', {}))
         encoded = json.dumps(diagnostics, ensure_ascii=False)
         row['captureDiagnostics'] = diagnostics if len(encoded.encode('utf-8')) <= 1024 else dict(summary=_text(encoded, 900), truncated=True)
-        for name in ('fitReport', 'preparationObservation', 'failureSample', 'mapAttempt'):
+        for name in ('fitReport', 'preparationObservation', 'failureSample', 'mapAttempt', 'gCycleEvidence'):
             if name in event:
                 row[name] = _feature_evidence(name, event[name])
         signature = tuple(row[name] for name in ('reason', 'title', 'summary', 'raw', 'action', 'phase', 'kind', 'mode', 'mapId', 'floor'))
@@ -323,7 +324,7 @@ class ProblemsService(QObject):
             value = _metadata(event[name])
             encoded_value = json.dumps(value, ensure_ascii=False)
             row[name] = value if len(encoded_value.encode('utf-8')) <= 2048 else dict(summary=_text(encoded_value, 1900), truncated=True)
-        for name in ('fitReport', 'preparationObservation', 'failureSample', 'mapAttempt'):
+        for name in ('fitReport', 'preparationObservation', 'failureSample', 'mapAttempt', 'gCycleEvidence'):
             if name in event:
                 row[name] = _feature_evidence(name, event[name])
         if 'recognitionDiagnostics' in event:

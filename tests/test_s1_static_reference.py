@@ -123,8 +123,10 @@ class StaticReferenceContracts(unittest.TestCase):
                 self.runtime.dispatch("cancel")
                 self.assertIsNone(self.runtime.reference_payload())
 
-    def test_all_s1_modes_share_static_reference_lifecycle(self):
-        for mode in ("nightmare", "difficult", "difficulty2"):
+    def test_active_s1_modes_share_static_reference_lifecycle(self):
+        # S1 ordinary is retired; its negative runtime contract is tested in
+        # test_s1_mode_retirement, not by granting a synthetic active provider.
+        for mode in ("nightmare", "difficult"):
             with self.subTest(mode=mode):
                 self.runtime.dispatch("end_round")
                 self.registry.engine.pack.mode = mode

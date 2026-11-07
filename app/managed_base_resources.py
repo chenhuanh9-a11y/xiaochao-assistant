@@ -671,6 +671,13 @@ def _rollback(root, directory, journal):
             path = files._target(root, row["path"])
             if old is not None and transaction._matches(path, old, entry["oldIdentity"]):
                 continue
+            if old is None and not path.exists() and not path.parent.exists():
+                # No old object to restore and no existing parent to flush,
+                # e.g. publication never reached this directory. Do not make
+                # missing paths merely to sync a no-op. If the parent exists,
+                # still sync it: a prior rollback may have unlinked the target
+                # before being interrupted. Real sync errors remain blocking.
+                continue
             try:
                 if path.exists() and (new is None or not files._rollback_published(path, tuple(entry["newIdentity"]), new["sha256"])):
                     blocked.append(row["path"])

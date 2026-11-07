@@ -143,6 +143,9 @@ class ClientContextFailureTests(unittest.TestCase):
     def test_real_client_terminal_hotkey_supersedes_context_without_stuck_pending(self):
         self.run_scenario('context-superseded')
 
+    def test_real_client_cached_context_keeps_popup_when_old_preparation_expires(self):
+        self.run_scenario('context-superseded-queued-preparation')
+
     def test_real_client_home_failure_and_same_saved_target_retry(self):
         self.run_scenario('context-error')
 

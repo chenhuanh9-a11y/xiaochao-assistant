@@ -26,6 +26,8 @@ from client_engine import (EngineAdapter, clone_similarity_state, stage_similari
 from floor_observation_policy import (MANUAL_FLOOR_HOLD_SECONDS,
                                       read_floor_evidence, decide_floor_transition, game_floor_control_hit)
 from client_manual_map import manual_map_thumbnail_source
+from g_cycle_observation import (emit as _test_evidence, copy_input as _test_input_copy,
+                                 observing as _test_evidence_active)
 
 MAP_RECOVERY_PROBES = 8
 MAP_RECOVERY_INTERVAL = .2
@@ -293,6 +295,7 @@ class _AlignmentHost:
         fields. Projected masks, unknown filtering and verdicts remain private
         to that candidate. Geometry extraction stays lazy for budget/cancel.
         """
+        _test_evidence("solver-input", frame)
         from nightmare_candidate import visible_map_components
         from single_map_structure import current_geometry, current_part, observed_corner_chains
         from fast_structure_alignment import sample_edges
@@ -329,6 +332,7 @@ class _AlignmentHost:
         return fit_one
 
     def fit(self, frame, map_id, floor, cancelled, entry_candidate=None, *, observation_bounds=None, _scan_observation=None):
+        _test_evidence("solver-input", frame)
         if observation_bounds is None:
             return self._fit_observation(frame, map_id, floor, cancelled, entry_candidate)
         # Preserve the existing result whenever the largest island has usable
@@ -530,6 +534,7 @@ class LiveRuntime:
                  recorded_s1_scan_order="natural", recorded_s1_scan_budget=S1_STRUCTURE_CANDIDATE_BUDGET_SECONDS,
                  recorded_s1_priority_index=None, s1_candidate_purpose=None):
         self._diagnostics = diagnostics
+        self.g_cycle_evidence = None  # Explicit process-only test mode; no normal writer.
         from s1_candidate_purpose import native_candidate_purpose_is_valid, private_native_candidate_purpose_is_valid, native_round_lock_purpose_is_valid
         self._native_s1_candidate_preview = bool(
             evidence_kind == "live-client-capture"
@@ -1219,7 +1224,7 @@ class LiveRuntime:
                         if matrix is not None:
                             pose_priors[(prior_source.map_id, str(floor))] = matrix
                             prior_reason = "pose-prior-bound"
-                            if self._failure_samples.automatic_enabled:
+                            if self._failure_samples.automatic_enabled or _test_evidence_active():
                                 prior_binding = dict(mode=catalog.mode, resourceKey=catalog.resource_key,
                                     mapId=prior_source.map_id, sourceFloor=str(prior_source.floor), targetFloor=str(floor),
                                     indexSha256=getattr(hint, 'index_sha256', None),
@@ -1266,6 +1271,8 @@ class LiveRuntime:
                     if (private_enabled and pool.retain_locked_identity and pool.locked_id
                             and self._failure_samples.automatic_enabled):
                         options['collect_fit_diagnostics'] = True
+                    if _test_evidence_active():
+                        options['collect_fit_diagnostics'] = True
                     self._recognition_diagnostic("s1-scan-plan", prior_reason,
                         inputs=self._failure_diagnostic(payload),
                         plannedCount=len(scan_plan) if private_enabled else len(catalog.map_ids),
@@ -1277,10 +1284,14 @@ class LiveRuntime:
                         privatePoolRevision=pool.revision if private_enabled else None,
                         privateExperimentalLocked=bool(private_enabled and pool.locked_id),
                         privateRecoveryPending=recovery_scan)
-                return engine.qt_s1_structure_scan(frame, floor=str(floor), floor_source="current-frame-verified",
+                report = engine.qt_s1_structure_scan(frame, floor=str(floor), floor_source="current-frame-verified",
                     cancelled=obsolete, budget_seconds=self._recorded_s1_scan_budget,
                     on_progress=publish, candidate_order=order, preferred_map_id=preferred,
                     preferred_material_committed=preferred_material_committed, **options)
+                if _test_evidence_active() and type(report.get('fitEvidence')) is dict:
+                    _test_evidence('fit-evidence', frame, dict(report['fitEvidence'],
+                        priorBinding=prior_binding, priorReason=prior_reason))
+                return report
             report = scan_current()
             # A locked ID outlives an UNKNOWN current fit/material result, but
             # its old pixels do not. Leave it pending a fresh same-ID fit; only
@@ -2426,7 +2437,7 @@ class LiveRuntime:
         self._new_diagnostic_attempt(payload)
         capture_generation = self._capture_generation()
         captured = self._capture_frame(obsolete, attempt_id=payload.get("_diagnosticAttemptId"))
-        frame = self._full_frame(captured).copy()
+        frame = _test_input_copy(self._full_frame(captured))
         frame.setflags(write=False)
         observation, observed_floor, floor_read = self._observe(engine, frame)
         self._remember_control_observation(frame, engine.pack.mode, observation, floor_read, captured=captured)
@@ -3754,6 +3765,7 @@ class LiveRuntime:
         return result
 
     def _recognition_diagnostic(self, stage, reason, **values):
+        _test_evidence("diagnostic", stage, reason, values)
         try:
             from recognition_diagnostics import bounded_recognition, scale_observations
             if stage == 'floor-observation':
@@ -3767,6 +3779,7 @@ class LiveRuntime:
             pass  # Diagnostics cannot replace the algorithm's result/exception.
 
     def _remember_control_observation(self, frame, mode, observation, floor_read, *, captured=None):
+        _test_evidence("control-input", frame, mode, observation, floor_read)
         try:
             stamp = self._failure_capture_stamp
             if (self._failure_samples.automatic_enabled and stamp is not None
@@ -3834,6 +3847,7 @@ class LiveRuntime:
                         self._capture_pending_owner = None
 
     def _capture_frame(self, cancelled, *, attempt_id=None, preserve_candidate=False):
+        _test_evidence("capture-start")
         # Candidate freshness ends before entering a possibly blocked capture.
         with self._lock:
             if (not preserve_candidate and self._native_s1_candidate_preview
@@ -3855,6 +3869,7 @@ class LiveRuntime:
             sample_generation = self._capture_generation()
             sample_scope = self._failure_capture_scope()
             captured = self._capture.capture(cancelled)
+            _test_evidence("capture", captured, sample_generation, sample_scope, attempt_id)
             if self._failure_samples.enabled or self._failure_samples.automatic_enabled:
                 # Diagnostic validation cannot change the acquisition result or
                 # exception. The original consumer still validates full frames.
@@ -3969,6 +3984,7 @@ class LiveRuntime:
             attempt = self._map_attempt_metadata(payload)
             if attempt:
                 extra["mapAttempt"] = attempt
+            _test_evidence("receipt", action, payload, success, reason, extra)
             return dict(action=action, success=success, reason=reason, message=reason,
                         requestContext=request, resultContext=context,
                         liveAuthorization=bool(self._render and self._render.get("liveAuthorization")), **extra)
@@ -3977,6 +3993,9 @@ class LiveRuntime:
         return self.dispatch(action, context or {}, cancel_event)
 
     def dispatch(self, action, payload=None, cancelled=None):
+        return self._dispatch_with_ownership(action, payload, cancelled)
+
+    def _dispatch_with_ownership(self, action, payload=None, cancelled=None):
         # Capture the S1 operation kind before serial allocation/state waiting.
         # An intervening season change cannot turn an old switch into S0 work.
         s1_candidate_arrival = (self._season == "s1"
@@ -3991,24 +4010,18 @@ class LiveRuntime:
             owners = self._dispatch_owners.arrivals = []
         owners.append(arrival_serial)
         try:
-            with self._lock:
-                # Birth fences govern work that may activate or republish, not
-                # explicit termination/revocation or state-setting commands.
-                # In particular an external settings/resource invalidation must
-                # not eat a newer end/cancel already waiting for this lock.
-                activation_request = (action in ("capture_now", "refresh_map", "recover_map_open",
-                        "probe_map_after_drag", "fit_manual_frame", "observe_manual_floor",
-                        "prepare_manual_alignment", "start_round", "observe_candidate_floor")
-                    or s1_candidate_arrival or self._season == "s1"
-                        and action in ("next_candidate", "previous_candidate", "select_candidate")
-                    or action == "map" and payload.get("openIntent") is not False
-                    or action == "toggle_round" and not (self._active or self._round_preparing))
-                if activation_request and arrival_serial <= self._dispatch_cutoff:
-                    return self._receipt(action, payload, success=False,
-                        reason="cancelled-or-stale", stale=True)
-                birth_ticket = (self._epoch, self._request_lifetime_generation, self._settings_generation)
-            return self._dispatch_owned(action, payload, cancelled,
-                birth_ticket=birth_ticket, request_id=request_id)
+            def operation():
+                return self._dispatch_after_arrival(action, payload, cancelled,
+                    arrival_serial=arrival_serial, s1_candidate_arrival=s1_candidate_arrival,
+                    request_id=request_id)
+            # Even the recorder's accepting check can wait for a lock. Register
+            # arrival first so diagnostic setup cannot move an old command past
+            # a close/end/settings/resource cutoff while waiting for state.
+            recorder = self.g_cycle_evidence
+            if action not in ("map", "close_map", "recover_map_open") or recorder is None or not recorder.accepting:
+                return operation()
+            from client_g_cycle_evidence import dispatch_with_evidence
+            return dispatch_with_evidence(self, recorder, action, payload, operation)
         finally:
             # Covers capability/activation refusal, cancelled early returns and
             # exceptions, not just the capture call. Never clear a newer owner.
@@ -4020,6 +4033,27 @@ class LiveRuntime:
                         self._capture_pending_owner = None
             finally:
                 owners.pop()
+
+    def _dispatch_after_arrival(self, action, payload, cancelled, *, arrival_serial,
+                                s1_candidate_arrival, request_id):
+        with self._lock:
+            # Birth fences govern work that may activate or republish, not
+            # explicit termination/revocation or state-setting commands.
+            # In particular an external settings/resource invalidation must
+            # not eat a newer end/cancel already waiting for this lock.
+            activation_request = (action in ("capture_now", "refresh_map", "recover_map_open",
+                    "probe_map_after_drag", "fit_manual_frame", "observe_manual_floor",
+                    "prepare_manual_alignment", "start_round", "observe_candidate_floor")
+                or s1_candidate_arrival or self._season == "s1"
+                    and action in ("next_candidate", "previous_candidate", "select_candidate")
+                or action == "map" and payload.get("openIntent") is not False
+                or action == "toggle_round" and not (self._active or self._round_preparing))
+            if activation_request and arrival_serial <= self._dispatch_cutoff:
+                return self._receipt(action, payload, success=False,
+                    reason="cancelled-or-stale", stale=True)
+            birth_ticket = (self._epoch, self._request_lifetime_generation, self._settings_generation)
+        return self._dispatch_owned(action, payload, cancelled,
+            birth_ticket=birth_ticket, request_id=request_id)
 
     def _dispatch_owned(self, action, payload, cancelled, *, birth_ticket, request_id):
         capture_request_epoch, request_lifetime_generation, request_settings_generation = birth_ticket
@@ -4859,11 +4893,11 @@ class LiveRuntime:
                             return self._receipt(action, payload, success=False, reason="map-open-preparation-deadline", recoveryPending=True)
                     preparation.diagnostics.finish("prepared-current-frame")
                     captured, observation, observed, capture_generation, read = prepared
-                    frame = self._full_frame(captured).copy()
+                    frame = _test_input_copy(self._full_frame(captured))
                 else:
                     capture_generation = self._capture_generation()
                     captured = self._capture_frame(obsolete)
-                    frame = self._full_frame(captured).copy()
+                    frame = _test_input_copy(self._full_frame(captured))
                     with self._lock:
                         if obsolete() or not self._capture_is_current(captured.context, capture_generation):
                             return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
@@ -4987,7 +5021,7 @@ class LiveRuntime:
             try:
                 capture_generation = self._capture_generation()
                 captured = self._capture_frame(obsolete)
-                frame = self._full_frame(captured).copy()
+                frame = _test_input_copy(self._full_frame(captured))
                 frame.setflags(write=False)
                 digest = hashlib.sha256(frame.tobytes()).hexdigest()
                 with self._lock:
@@ -5150,13 +5184,17 @@ class LiveRuntime:
         if self._candidate_streaming_requested() and self._s1_provisional_enabled():
             from priority_admission import FrameSnapshot
             stream_snapshot = FrameSnapshot(frame)
-            frame = stream_snapshot.pixels
+            # pixels returns a new ndarray view each time. Observe the exact
+            # view actually consumed below, not an immediately discarded one.
+            stream_frame = stream_snapshot.pixels
+            _test_evidence("input-alias", frame, stream_frame)
+            frame = stream_frame
             # Recheck floor against the exact immutable frame consumed by scan,
             # not a mutable transport buffer observed during preparation.
             observation, floor, floor_read = self._observe(engine, frame)
             opened = observation.get("mapOpen")
         else:
-            frame = frame.copy()
+            frame = _test_input_copy(frame)
             frame.setflags(write=False)
         if obsolete():
             return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
@@ -5376,7 +5414,7 @@ class LiveRuntime:
             epoch=self._epoch
             if advance_frame:
                 if self._floor_read_conflicts(floor_read or {},floor):return None
-                immutable=np.ascontiguousarray(frame).copy();immutable.setflags(write=False);frame=immutable
+                immutable=np.ascontiguousarray(frame).copy();_test_evidence("input-alias", frame, immutable);immutable.setflags(write=False);frame=immutable
                 digest=hashlib.sha256(frame.tobytes()).hexdigest()
                 self._frame_generation+=1
                 self._frame_id=f"{self._round}:{self._frame_generation}:{digest[:16]}"
@@ -5822,6 +5860,7 @@ class LiveRuntime:
                 clientBounds=bounds(getattr(captured.context, "client_screen_bounds", None), 4),
                 dpi=dpi[0] if dpi else None)
             raise error
+        _test_evidence("full-input", captured, frame)
         return frame
 
     def _observe(self, engine, frame):

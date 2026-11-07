@@ -47,6 +47,9 @@ class SeasonPreparationTests(unittest.TestCase):
     def test_resource_change_during_s1_reprepares_s0_when_selected(self):
         self.run_scenario("resources-changed")
 
+    def test_resource_change_overrides_old_context_only_preparation(self):
+        self.run_scenario("resources-changed-cached")
+
     def test_rapid_season_switches_do_not_publish_s0_readiness_to_s1(self):
         self.run_scenario("rapid-switch")
 
@@ -60,7 +63,36 @@ class SeasonPreparationTests(unittest.TestCase):
         self.run_scenario("failed-close")
 
 
+class DeferredPreparationDispatchTests(unittest.TestCase):
+    def test_only_context_preparation_may_skip_a_matching_prepared_snapshot(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from client import QtClient
+        for context_only, report, dispatch_expected in (
+                (False, dict(season="s0", mode="nightmare", prepared=True), True),
+                (True, dict(season="s0", mode="nightmare", prepared=True), False),
+                (True, dict(season="s0", mode="nightmare", prepared=False), True),
+                (True, dict(season="s1", mode="nightmare", prepared=True), True),
+                (True, dict(season="s0", mode="difficult", prepared=True), True),
+                (True, {}, True)):
+            with self.subTest(context_only=context_only, report=report):
+                session = SimpleNamespace(busy=False, appliedSeason="s0", appliedMode="nightmare",
+                    snapshot=dict(savedFrameCapabilities=dict(nightmare=report)), dispatch=Mock())
+                client = SimpleNamespace(_closed=False, coordinator=SimpleNamespace(closing=False),
+                    resources=SimpleNamespace(busy=False, pendingKind=""), session=session,
+                    _initialize_timer=Mock(), _preparation_context_only=context_only)
+                QtClient._initialize_resources(client)
+                client._initialize_timer.stop.assert_called_once_with()
+                if dispatch_expected:
+                    session.dispatch.assert_called_once_with("inspect_engine_resources")
+                else:
+                    session.dispatch.assert_not_called()
+
+
 def scenario(name, root):
+    queued_preparation = name == "context-superseded-queued-preparation"
+    if queued_preparation:
+        name = "context-superseded"
     from PySide6.QtCore import QTimer
     from PySide6.QtGui import QGuiApplication
     from PySide6.QtTest import QTest
@@ -156,26 +188,6 @@ def scenario(name, root):
                 wait(ready, "initial S0 ready")
                 home = qml_item(client.main, "homeGameContext")
                 from PySide6.QtCore import QPoint, QPointF, Qt
-                from PySide6.QtQml import QQmlEngine, QQmlExpression
-                click_trace = []
-                def control_state(item):
-                    point = item.mapToScene(QPointF(item.width() / 2, item.height() / 2))
-                    popup = QQmlExpression(QQmlEngine.contextForObject(picker), picker,
-                        "JSON.stringify({visible: popup.visible, opened: popup.opened, "
-                        "type: popup.popupType, x: popup.x, y: popup.y, width: popup.width, "
-                        "height: popup.height, contentWidth: popup.contentItem.width, "
-                        "contentHeight: popup.contentItem.height})").evaluate()[0]
-                    ancestors = []
-                    parent = item.parentItem()
-                    while parent is not None:
-                        origin = parent.mapToScene(QPointF(0, 0))
-                        ancestors.append(dict(name=parent.objectName(), clip=parent.clip(),
-                            rect=[origin.x(), origin.y(), parent.width(), parent.height()],
-                            contentY=parent.property("contentY")))
-                        parent = parent.parentItem()
-                    return dict(center=[point.x(), point.y()], size=[item.width(), item.height()],
-                                visible=item.isVisible(), enabled=item.isEnabled(), popup=popup,
-                                window=[client.main.width(), client.main.height()], ancestors=ancestors)
                 def choose_home_season(season):
                     for object_name in ("homeGameContextSeason", "homeGameContextSeasonOption_" + season):
                         # Popup delegates are created/polished asynchronously.
@@ -185,20 +197,12 @@ def scenario(name, root):
                             item = qml_item(client.main, object_name)
                             return (item is not None and item.isVisible() and item.isEnabled()
                                     and item.width() > 0 and item.height() > 0)
-                        try:
-                            wait(clickable, "clickable QML control " + object_name)
-                        except AssertionError:
-                            print("SEASON_CLICK_TRACE " + json.dumps(click_trace), file=sys.stderr)
-                            raise
+                        wait(clickable, "clickable QML control " + object_name)
                         item = qml_item(client.main, object_name)
                         point = item.mapToScene(QPointF(item.width() / 2, item.height() / 2))
-                        trace = dict(target=object_name, before=control_state(item))
-                        click_trace.append(trace)
                         QTest.mouseClick(client.main, Qt.LeftButton, Qt.NoModifier,
                                          QPoint(round(point.x()), round(point.y())))
-                        trace["headerAfterClick"] = control_state(picker)
                         QTest.qWait(20)
-                        trace["afterEvents"] = control_state(picker)
                 picker = qml_item(client.main, "homeGameContextSeason")
                 original_dispatch = client.runtime.dispatch
                 attempts = []
@@ -293,15 +297,40 @@ def scenario(name, root):
                     assert client.main.grabWindow().save(str(Path(evidence_dir) / "context-failed.png"))
                 # Same persisted target must be explicitly retryable without
                 # rewriting unrelated draft settings or rolling defaults back.
+                if queued_preparation:
+                    # Keep the genuine S1 preparation queued across the return
+                    # to cached S0, then expire it during a real open popup.
+                    client._initialize_timer.setInterval(10000)
                 choose_home_season("s1")
                 wait(lambda: idle() and client.session.appliedSeason == "s1", "explicit retry")
                 assert len(attempts) == 2, attempts
                 assert home.property("season") == "s1"
                 select("s0")
                 wait(ready, "return to actual S0")
+                if queued_preparation:
+                    # Force the real queued-work interleaving that used to close
+                    # the third popup after its header click. No widget state or
+                    # runtime callback is replaced; the production timer and
+                    # dispatch decision run normally, without a fake worker.
+                    assert client._initialize_timer.isActive(), "S1 preparation must still be queued"
+                    preparation_count = len(calls)
+                    # Observe the already-created popup, without opening it by
+                    # API. The timer must expire while the real header click's
+                    # popup is open, and leave it open for the option click.
+                    from PySide6.QtCore import QObject
+                    popup = next(child for child in picker.findChildren(QObject)
+                        if "QQuickPopup" in child.metaObject().className()
+                        and child.metaObject().indexOfProperty("opened") >= 0)
+                    popup_at_timeout = []
+                    client._initialize_timer.timeout.connect(
+                        lambda: popup_at_timeout.append(popup.property("opened")))
+                    client._initialize_timer.start(0)
                 # A subsequent refusal also allows selecting the already
                 # running S0, correcting the saved default without a fake switch.
                 choose_home_season("s1")
+                if queued_preparation:
+                    assert len(calls) == preparation_count, (preparation_count, calls)
+                    assert popup_at_timeout == [True], popup_at_timeout
                 wait(lambda: idle() and len(attempts) == 4, "second failed S1 attempt")
                 assert client.session.appliedSeason == "s0"
                 choose_home_season("s0")
@@ -332,6 +361,20 @@ def scenario(name, root):
                 wait(lambda: not client.session.busy, "start round")
                 assert client.session.snapshot["lastReceipt"]["success"], client.session.snapshot
                 assert client.session.snapshot["roundPreparing"]
+            elif name == "resources-changed-cached":
+                wait(ready, "initial S0 ready")
+                client._initialize_timer.setInterval(10000)
+                select("s1")
+                select("s0")
+                wait(ready, "cached S0 ready before explicit resource change")
+                assert client._initialize_timer.isActive()
+                count = len(calls)
+                client.resources.resourcesChanged.emit()
+                client._initialize_timer.start(0)
+                wait(lambda: ready() and not client._initialize_timer.isActive()
+                     and len(calls) > count, "explicit invalidation still inspects cached context")
+                assert len(calls) == count + 1, (count, calls)
+                assert len(builds) == 2, builds
             elif name == "resources-changed":
                 wait(ready, "initial S0 ready")
                 select("s1")
@@ -352,8 +395,8 @@ def scenario(name, root):
                     select("s0")
                     wait(ready, "rapid S0 return")
                 # A preparation timer queued while S1 was selected may still
-                # inspect the now-cached S0 context once. Drain that bounded
-                # scheduled work before testing that idle does not retry.
+                # be pending. Drain it before checking that idle does not retry;
+                # it must not inspect an already-prepared cached S0 context.
                 wait(lambda: idle() and not client._initialize_timer.isActive(),
                      "queued preparation drained after rapid S0 return")
                 count = len(calls)
@@ -378,8 +421,8 @@ def scenario(name, root):
                 wait(lambda: idle() and client.providers.capabilities()[client.session.appliedMode]["prepared"], "failed preparation complete")
                 assert "start_round" not in client.session.snapshot["availableCommands"]
                 # A preparation timer queued while S1 was selected may still
-                # inspect the now-cached S0 context once. Drain that bounded
-                # scheduled work before testing that idle does not retry.
+                # be pending. Drain it before checking that idle does not retry;
+                # it must not inspect an already-prepared cached S0 context.
                 wait(lambda: idle() and not client._initialize_timer.isActive(),
                      "queued preparation drained after rapid S0 return")
                 count = len(calls)
