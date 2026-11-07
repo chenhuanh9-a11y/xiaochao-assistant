@@ -1,4 +1,4 @@
-{ Production uninstaller data choices. Included inside [Code], after the shared
+﻿{ Production uninstaller data choices. Included inside [Code], after the shared
   lock/path/executable helpers. Native Inno event order and CreateCustomForm:
   https://jrsoftware.org/ishelp/topic_scriptevents.htm
   https://jrsoftware.org/ishelp/topic_isxfunc_createcustomform.htm
@@ -500,7 +500,8 @@ begin
       RaiseException('星图或资源任务正在运行，尚未开始卸载。请退出后重试。');
     { A different installer may have left recovery state while this wizard
       waited for the user's choice. Only this locked recheck is authoritative. }
-    if FileExists(ExpandConstant('{app}\work\map-packages\pending-resource-reset.json')) then
+    if FileExists(ExpandConstant('{app}\work\pending-installer-upgrade.json')) or
+      FileExists(ExpandConstant('{app}\work\map-packages\pending-resource-reset.json')) then
       RaiseException('资源升级尚未恢复，不能卸载或移动其恢复证据。请先核对程序与资源。');
     if not DisableGameWatcher(WatcherReason) then RaiseException(WatcherReason);
     if not PrepareUninstallData then Abort;
@@ -553,7 +554,8 @@ end;
 function InitializeUninstall: Boolean;
 begin
   Result := False;
-  if FileExists(ExpandConstant('{app}\work\map-packages\pending-resource-reset.json')) then begin
+  if FileExists(ExpandConstant('{app}\work\pending-installer-upgrade.json')) or
+      FileExists(ExpandConstant('{app}\work\map-packages\pending-resource-reset.json')) then begin
     SuppressibleMsgBox('上次资源升级尚未完成，请先核对恢复程序与资源；卸载不会覆盖或清除待恢复资料。',
       mbError, MB_OK, IDOK);
     Exit;

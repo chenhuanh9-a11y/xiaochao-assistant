@@ -19,7 +19,8 @@ import uuid
 import managed_base_resources as base
 import map_package_upgrade as transaction
 import star_map_import as files
-from resource_transaction import assert_resources_ready, resource_read_lock, resource_write_lock
+from resource_transaction import (assert_resources_ready, assert_installer_resource_action,
+                                  resource_read_lock, resource_write_lock)
 
 SCHEMA = 'xingtu-resource-upgrade-reset-v1'
 PENDING = 'work/map-packages/pending-resource-reset.json'
@@ -592,6 +593,8 @@ def finish_resource_upgrade(install_root, transaction_id, *, setup_succeeded=Fal
     root = _root(install_root)
     with resource_write_lock(root):
         directory, journal = _load(root, transaction_id)
+        assert_installer_resource_action(root, 'commit' if setup_succeeded is True else 'rollback',
+                                         transaction_id, journal['plan']['planSha256'])
         if journal['status'] == 'committed':
             _clear_pending(root, transaction_id)
             return dict(status='committed', transactionId=transaction_id, retainedDirectory=str(directory))
@@ -623,6 +626,10 @@ def recover_resource_upgrade(install_root):
     """Interrupted, uncommitted reset restores; committed reset never rewinds."""
     root = _root(install_root)
     with resource_write_lock(root):
+        # Recovery outside the coordinator must never rewind just the resource
+        # half of a native installation, even if a caller owns the OS lease.
+        if files._target(root, 'work/pending-installer-upgrade.json').exists():
+            raise ResourceResetError('installer-upgrade-recovery-required')
         if not files._target(root, PENDING).exists():
             return dict(status='not-needed')
         directory, journal = _load(root)

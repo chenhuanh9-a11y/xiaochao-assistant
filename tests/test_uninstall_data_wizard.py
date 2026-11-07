@@ -110,8 +110,10 @@ class UninstallSourceContracts(unittest.TestCase):
         self.assertLess(events.index('DisableGameWatcher'), events.index('BeginUpgrade'))
         self.assertLess(events.index('UpgradeCommitted :='), events.index('RestoreGameWatcher'))
         cleanup = production.split('procedure DeinitializeSetup', 1)[1].split('function ExecutableAvailable', 1)[0]
-        self.assertLess(cleanup.index('UPGRADE_ROLLBACK_RESTORED'), cleanup.index('RestoreGameWatcher'))
-        self.assertIn('if Restored then begin', cleanup)
+        self.assertLess(cleanup.index('RollbackResourceReset'), cleanup.index('RestoreGameWatcher'))
+        self.assertIn('if SafeToRestore then', cleanup)
+        self.assertNotIn('FileCopy(', cleanup)
+        self.assertIn('if SafeToRestore then begin', cleanup)
         self.assertIn('else if GameWatcherRestorePending then', cleanup)
         prepare = production.split('function PrepareToInstall', 1)[1]
         self.assertLess(prepare.index('UpgradePathAllowed'), prepare.index('DisableGameWatcher'))

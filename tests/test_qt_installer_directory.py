@@ -54,7 +54,7 @@ class InstallerDirectoryTests(unittest.TestCase):
     def test_production_upgrade_contract_is_not_replaced(self):
         production = self.source.split("; Original per-user installer", 1)[1].split("; Private directory selection", 1)[0]
         for marker in ("UpgradePathAllowed", "InstalledExecutableAvailable", "BeginUpgrade",
-                       "UPGRADE_ROLLBACK_RESTORED", '#include "qt-uninstall-data.iss"',
+                       "StartNativeResourceReset", '#include "qt-uninstall-data.iss"',
                        "UninstallHoldingDirectory"):
             self.assertIn(marker, production)
 

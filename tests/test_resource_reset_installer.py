@@ -175,6 +175,7 @@ class ResourceResetHelperTests(unittest.TestCase):
     def test_run_publishes_ini_last_and_stale_results_are_not_overwritten(self):
         # This injected Python lease tests IPC only, not the Windows handle bridge.
         with patch.object(helper, '_target', return_value=self.target), \
+                patch('installer_native_observation.current_user_sid', return_value='S-1-5-21-1-2-3-1000'), \
                 patch.object(helper, 'borrowed_installer_lease', side_effect=lambda root, **_: lease.resource_runtime_lease(root)):
             self.assertEqual(helper.run(self.args), 0)
         receipt = configparser.ConfigParser()
@@ -236,34 +237,41 @@ class ResourceResetPackagingTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(('synthetic not executable: ' + name).encode())
             inventory[name] = dict(bytes=path.stat().st_size, sha256=build.sha256(path))
+        executable = stage / '星图.exe'; executable.write_bytes(b'synthetic main executable')
         report = stage / 'release-report.json'; report.write_text('{}')
-        candidate = stage / '_internal/managed-base-resources/manifest.json'
-        candidate.parent.mkdir(parents=True); candidate.write_text('{}')
+        (stage / '_installer-owned-files.txt').write_bytes(b'')
+        base = stage / '_internal/references/base.json'
+        base.parent.mkdir(parents=True); base.write_bytes(b'base')
+        _, projection = build.write_production_files_include(stage,
+            {'references/base.json': dict(bytes=4, sha256=build.sha256(base))}, output)
         record = dict(resetHelper=dict(included=True, executable='star-map-reset-helper.exe',
             runtimeDirectory='_star_map_reset_runtime', files=inventory),
-            releaseReport=dict(file=report.name, sha256=build.sha256(report)),
-            fileProjection=dict(managedBaseManifest=candidate.relative_to(stage).as_posix(),
-                                managedBaseManifestSha256=build.sha256(candidate)))
+            releaseReport=dict(file=report.name, sha256=build.sha256(report),
+                               executableSha256=build.sha256(executable)), fileProjection=projection)
+        build.write_program_ownership(stage, record)
         return stage, output, record
 
     def test_complete_runtime_and_target_digests_are_pinned_without_running_payload(self):
         with tempfile.TemporaryDirectory() as folder:
             stage, output, record = self.fixture(Path(folder))
             definitions = build.resource_reset_installer_defines(stage, record, output, dict(commit='a' * 40))
-            self.assertEqual(len(definitions), 5)
+            self.assertEqual(len(definitions), 7)
             self.assertIn('/DResetSourceCommit=' + 'a' * 40, definitions)
             lines = (output / 'reset-helper-inventory.txt').read_text('utf-8-sig').splitlines()
             self.assertEqual(len(lines), 3)
             self.assertFalse(record['resourceResetInstaller']['nativeTested'])
 
     def test_old_missing_changed_or_extra_helper_cannot_be_wrapped(self):
-        for kind in ('missing', 'changed', 'extra', 'target'):
+        for kind in ('missing', 'changed', 'extra', 'target', 'program', 'payload', 'projection'):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as folder:
                 stage, output, record = self.fixture(Path(folder))
                 if kind == 'missing': record.pop('resetHelper')
                 if kind == 'changed': (stage / 'star-map-reset-helper.exe').write_bytes(b'changed')
                 if kind == 'extra': (stage / '_star_map_reset_runtime/unknown.dll').write_bytes(b'unknown')
                 if kind == 'target': (stage / 'release-report.json').write_bytes(b'changed')
+                if kind == 'program': (stage / '星图.exe').write_bytes(b'changed')
+                if kind == 'payload': (stage / '_internal/references/base.json').write_bytes(b'evil')
+                if kind == 'projection': record['fileProjection']['installedFiles'].remove('星图.exe')
                 with self.assertRaises(ValueError):
                     build.resource_reset_installer_defines(stage, record, output, dict(commit='a' * 40))
 
@@ -272,27 +280,27 @@ class ResourceResetSourceContracts(unittest.TestCase):
     def test_installer_event_order_and_unresolved_commit_are_fail_closed(self):
         source = (ROOT / 'tools/qt-client.iss').read_text('utf-8-sig')
         events = source.split('procedure CurStepChanged', 1)[1].split('procedure DeinitializeSetup', 1)[0]
-        self.assertLess(events.index('PrepareResourceReset'), events.index('BeginUpgrade'))
-        self.assertLess(events.index('CommitResourceReset'), events.index('UpgradeCommitted :='))
+        order = ['PrepareResourceReset', 'BeginUpgrade;', 'StartNativeResourceReset', 'RetireOldProgramFiles;',
+                 'ResourceResetNativeCompleted :=', 'CompleteNativeResourceReset', 'CommitResourceReset', 'UpgradeCommitted :=']
+        self.assertEqual(sorted(events.index(item) for item in order), [events.index(item) for item in order])
+        preparation = source.split('procedure BeginUpgrade;', 1)[1].split('procedure RetireOldProgramFiles;', 1)[0]
+        self.assertNotIn('DeleteFile(', preparation)
         cleanup = source.split('procedure DeinitializeSetup', 1)[1].split('function ExecutableAvailable', 1)[0]
-        self.assertLess(cleanup.index('ResolveResourceResetCommit'), cleanup.index('FileCopy'))
-        self.assertIn('and not ResourceResetOutcomeUnknown', cleanup)
-        self.assertLess(cleanup.index('UPGRADE_ROLLBACK_RESTORED'), cleanup.index('RollbackResourceReset'))
+        self.assertNotIn('FileCopy(', cleanup)
+        self.assertNotIn('DeleteFile(', cleanup)
+        self.assertLess(cleanup.index('ResolveResourceResetCommit'), cleanup.index('RollbackResourceReset'))
         self.assertLess(cleanup.index('RollbackResourceReset'), cleanup.index('ReleaseResourceLock'))
-        resource = (ROOT / 'tools/qt-resource-reset.iss').read_text()
-        resolve = resource.split('function ResolveResourceResetCommit', 1)[1].split('function CommitResourceReset', 1)[0]
-        self.assertLess(resolve.index('ResourceResetCommitted := True'), resolve.index("CallResourceReset('commit'"))
-        self.assertIn('ResourceResetFinalized := Result', resolve)
+        self.assertIn('not ResourceResetNativeStarted and not ResourceResetNativeCompleted', cleanup)
+        self.assertIn('if SafeToRestore then', cleanup)
         self.assertNotIn('then RaiseException(WatcherReason)', events.split('if CurStep = ssPostInstall')[1])
         self.assertIn('ResourceResetFailureCode := 64', events)
         self.assertIn('GetCustomSetupExitCode', source)
-        self.assertIn('ResourceResetStarted and not ResourceResetFinalized', source)
-        self.assertIn('ResourceResetNativeMetadataNeedsRepair', cleanup)
-        self.assertIn('if not ResourceResetStarted or ResourceResetFinalized', events)
-        before_native = events.split('if CurStep = ssPostInstall', 1)[0]
-        self.assertLess(before_native.index('BeginUpgrade;'),
-                        before_native.index('ResourceResetNativeMetadataNeedsRepair := ResourceResetStarted'))
-        self.assertIn('无法确认 Windows 安装登记及快捷方式已完整恢复', cleanup)
+        resource = (ROOT / 'tools/qt-resource-reset.iss').read_text('utf-8-sig')
+        for token in ('installer-pending', 'resume-native-complete', 'installerFinalized',
+                      'ResetProgramInventorySha256', '--session-id ', '--restore-watcher',
+                      'ResourceResetNativeStarted or ResourceResetNativeCompleted'):
+            self.assertIn(token, resource)
+        self.assertIn('pending-installer-upgrade.json', resource)
 
     def test_pascal_character_constants_never_start_preprocessor_lines(self):
         # ISPP reads a leading # as a directive even inside a Pascal expression.
@@ -322,6 +330,7 @@ class ResourceResetSourceContracts(unittest.TestCase):
     def test_pending_reset_blocks_uninstall_and_compiled_reuse_requires_new_helper(self):
         uninstall = (ROOT / 'tools/qt-uninstall-data.iss').read_text()
         self.assertIn('pending-resource-reset.json', uninstall.split('function InitializeUninstall', 1)[1])
+        self.assertIn('pending-installer-upgrade.json', uninstall.split('function InitializeUninstall', 1)[1])
         event = uninstall.split('procedure CurUninstallStepChanged', 1)[1].split('procedure DeinitializeUninstall', 1)[0]
         self.assertLess(event.index('AcquireResourceLock'), event.index('pending-resource-reset.json'))
         self.assertLess(event.index('pending-resource-reset.json'), event.index('DisableGameWatcher'))

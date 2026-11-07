@@ -7,6 +7,7 @@ source commit plus an explicit hashed inventory of an authorized resource root.
 from __future__ import annotations
 
 import argparse
+import base64
 from datetime import datetime, timezone
 import hashlib
 import importlib.metadata
@@ -224,6 +225,79 @@ def assemble_game_watcher(output, stage, environment_vars):
                 invokerManifests=manifests, launched=False, startupRegistrationChanged=False)
 
 
+def write_program_ownership(stage, record):
+    """Finalize the ownership file after projection, before pinning its bytes."""
+    names = sorted(record['fileProjection']['installedFiles'])
+    if any(name.casefold() == 'work' or name.casefold().startswith('work/') for name in names):
+        raise ValueError('Production ownership must not contain user work/data')
+    path = Path(stage) / '_installer-owned-files.txt'
+    path.write_text('\n'.join(name.replace('/', '\\') for name in names) + '\n', encoding='utf-8-sig')
+    row = dict(bytes=path.stat().st_size, sha256=sha256(path))
+    record['fileProjection']['stagedFiles'][path.name] = row
+    record['programOwnership'] = dict(files=len(names), sha256=row['sha256'],
+        backup='{app}/work/installer-backups', userDataOwned=False)
+
+
+def write_installer_program_inventory(stage, record, output, source):
+    """Pin installed destinations, not the different candidate staging paths."""
+    from installer_native_observation import program_paths_from_ownership, MAX_FILE, MAX_METADATA
+    from managed_base_resources import CANDIDATE
+    stage, output = Path(stage), Path(output)
+    if not re.fullmatch('[0-9a-f]{40}', str(source.get('commit'))):
+        raise ValueError('Invalid installer source commit')
+    projection = record['fileProjection']
+    ownership = _local_file(stage, '_installer-owned-files.txt').read_bytes()
+    names = program_paths_from_ownership(ownership)
+    ownership_hash = hashlib.sha256(ownership).hexdigest()
+    if ownership_hash != record.get('programOwnership', {}).get('sha256'):
+        raise ValueError('Program ownership differs from build receipt')
+    installed = projection['installedFiles']
+    # Validate every path and duplicate with the same native ownership parser.
+    projected = program_paths_from_ownership(('\n'.join(installed) + '\n').encode('utf-8'))
+    if (set(names) != set(projected) or
+            {name.replace('\\', '/') for name in ownership.decode('utf-8-sig').splitlines()} != set(installed)):
+        raise ValueError('Program ownership differs from installed projection')
+    mappings = {}
+    for family, paths in projection['families'].items():
+        if family == 'optional-author':
+            continue
+        if family not in ('program', 'base', 'editor'):
+            raise ValueError('Unknown installer projection family')
+        for name in paths:
+            target = CANDIDATE + '/payload/' + name if family == 'base' else name
+            if target in mappings:
+                raise ValueError('Duplicate installed projection path')
+            mappings[target] = name
+    if set(mappings) != set(installed) or len(installed) != len(mappings):
+        raise ValueError('Installed projection differs from family mappings')
+    rows = {}
+    for name in names:
+        staged_name = mappings[name]
+        path = _local_file(stage, staged_name)
+        row = dict(bytes=path.stat().st_size, sha256=sha256(path))
+        if row['bytes'] > MAX_FILE or row != projection.get('stagedFiles', {}).get(staged_name):
+            raise ValueError('Program payload differs from projection receipt: ' + staged_name)
+        rows[name] = row
+    if rows['星图.exe']['sha256'] != record['releaseReport']['executableSha256']:
+        raise ValueError('Program executable differs from release receipt')
+    data = dict(schema='xingtu-installer-program-inventory-v1', sourceCommit=source['commit'],
+        ownershipSha256=ownership_hash, ownershipBase64=base64.b64encode(ownership).decode('ascii'), files=rows)
+    encoded = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    if len(encoded) > MAX_METADATA:
+        raise ValueError('Program inventory exceeds native metadata limit')
+    destination = output / 'reset-program-inventory.json'
+    if destination.resolve().is_relative_to(stage.resolve()):
+        raise ValueError('Program inventory must be outside installed stage')
+    # A repeated invocation may verify the same immutable bytes, never rebind it.
+    if destination.exists():
+        if destination.is_symlink() or destination.read_bytes() != encoded:
+            raise ValueError('Program inventory already exists with different bytes')
+    else:
+        with destination.open('xb') as stream:
+            stream.write(encoded)
+    return destination
+
+
 def resource_reset_installer_defines(stage, record, output, source):
     """Pin the complete new helper/runtime and target identities into Setup."""
     stage, output = Path(stage), Path(output)
@@ -252,13 +326,19 @@ def resource_reset_installer_defines(stage, record, output, source):
     if (sha256(report) != record['releaseReport']['sha256'] or
             sha256(candidate) != record['fileProjection']['managedBaseManifestSha256']):
         raise ValueError('Resource reset target report/candidate differs from build receipt')
+    program_inventory = write_installer_program_inventory(stage, record, output, source)
+    (output / 'production-file-projection.json').write_text(
+        json.dumps(record['fileProjection'], indent=2), encoding='utf-8')
     record['resourceResetInstaller'] = dict(sourceCommit=source['commit'],
+        programInventorySha256=sha256(program_inventory),
         helperInventorySha256=sha256(listing), targetReportSha256=sha256(report),
         targetManifestSha256=sha256(candidate), lease='verified-duplicate-of-setup-share-zero-handle',
         confirmation='exact-plan-sha256', nativeTested=False)
     return [f'/DResetHelperInventory={listing}', f'/DResetHelperInventorySHA256={sha256(listing)}',
             f'/DResetSourceCommit={source["commit"]}', f'/DResetTargetReportSHA256={sha256(report)}',
-            f'/DResetCandidateSHA256={sha256(candidate)}']
+            f'/DResetCandidateSHA256={sha256(candidate)}',
+            f'/DResetProgramInventory={program_inventory}',
+            f'/DResetProgramInventorySha256={sha256(program_inventory)}']
 
 
 def notice_inputs():
@@ -1001,6 +1081,9 @@ def write_production_files_include(stage, resources, output, *, resource_version
     include.write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
     report = dict(schema="xingtu-qt-installer-projection-v1", families=families,
                   policy=RESOURCE_INSTALLATION_POLICY, installedFiles=installed_files,
+                  stagedFiles={name: dict(bytes=(Path(stage) / name).stat().st_size,
+                                          sha256=sha256(Path(stage) / name))
+                               for names in families.values() for name in names},
                   bundledAuthorDefaults=author_defaults,
                   omittedOptionalAuthorFiles=families["optional-author"],
                   managedBaseManifest=manifest_name, managedBaseBundleId=manifest["bundleId"] if manifest else None,
@@ -1194,13 +1277,8 @@ def main(argv=None):
         ownership.write_text("", encoding="utf-8-sig")
         include, projection = write_production_files_include(stage, resources, output,
             resource_version=declaration["resourceVersion"], bundled_author_paths=author_paths, source=source)
-        owned_files = sorted(name.replace("/", "\\") for name in projection["installedFiles"])
-        if any(name.lower() == "work" or name.lower().startswith("work\\") for name in owned_files):
-            raise ValueError("Production ownership must not contain user work/data")
-        ownership.write_text("\n".join(owned_files) + "\n", encoding="utf-8-sig")
-        plan["programOwnership"] = dict(files=len(owned_files), sha256=sha256(ownership),
-                                        backup="{app}/work/installer-backups", userDataOwned=False)
-        plan["fileProjection"] = projection
+        plan['fileProjection'] = projection
+        write_program_ownership(stage, plan)
         production_defines = ["/DProductionInstaller", f"/DProductionFilesInclude={include}"]
         production_defines += resource_reset_installer_defines(stage, plan, output, source)
     setup_name = setup_basename(instance, display, source["commit"])

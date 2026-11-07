@@ -212,6 +212,7 @@ def main():
     build.verify_invoker_manifest(stage / 'XingtuGameWatcher.exe')
     include, record["fileProjection"] = build.write_production_files_include(stage, record["resources"], output,
         resource_version=record["resourceVersion"], bundled_author_paths=author_paths, source=source)
+    build.write_program_ownership(stage, record)
     reset_defines = build.resource_reset_installer_defines(stage, record, output, source)
     record_path = output / "build-record.json"
     record_path.write_text(json.dumps(record, indent=2), encoding="utf-8")

@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import uuid
 
 from installer_resource_lease import borrowed_installer_lease
 from resource_transaction import ResourceTransactionError, _safe
@@ -89,7 +90,7 @@ def _summary(plan, target):
         '旧资源、已下载/导入的图包及其记录将从活动目录移到可恢复隔离区，不永久删除。',
         '升级后需要重新下载或导入作者图包。设置、自建路线和自定义地图保留。',
         '隔离区：本安装目录下 work/resource-upgrades/<事务编号>。',
-        '取消或安装失败会尝试原位恢复；冲突或恢复失败保留两份并阻止继续。',
+        '原生安装开始前取消可恢复资源；开始后只允许验证完整后向前完成，否则安全阻止继续。',
         '确认的盘点摘要：' + plan['planSha256'],
         '是否按这份盘点执行升级？否将停止本次安装。'))
 
@@ -115,7 +116,7 @@ def _execute(args, api, target):
         _write_new(Path(args.result_directory) / 'plan.json',
                    json.dumps(plan, ensure_ascii=False, indent=2).encode('utf-8'))
         _write_new(Path(args.result_directory) / 'summary.txt', _summary(plan, target).encode('utf-16'))
-        return dict(status='inspected', planSha256=plan['planSha256'])
+        return dict(status='inspected', planSha256=plan['planSha256'], sessionId=str(uuid.uuid4()))
     if args.action == 'prepare':
         if not args.confirmed or not re.fullmatch(r'[0-9a-f]{64}', args.plan_sha256 or ''):
             raise ValueError('reset-reviewed-confirmation-required')
@@ -167,13 +168,23 @@ def run(args):
     result = dict(status='error', action=args.action)
     code = 2
     try:
-        target = _target(args)
+        target = None if args.action in {'installer-pending', 'resume-native-complete'} else _target(args)
         identity = {name: getattr(args, name) for name in (
             'parent_pid', 'parent_created', 'parent_executable', 'parent_sha256', 'lock_handle')}
-        with borrowed_installer_lease(args.install_root, **identity):
+        with borrowed_installer_lease(args.install_root, **identity) as lease:
             import resource_upgrade_reset as api
-            result.update(_execute(args, api, target))
-        result.update(sourceCommit=target['sourceCommit'], targetReportSha256=args.target_report_sha256)
+            from installer_upgrade_coordinator import Coordinator
+            from installer_upgrade_journal import read_status
+            from installer_native_observation import current_user_sid
+            owner_sid = current_user_sid()
+            if args.action in {'inspect', 'pending', 'resume-committed'}:
+                if read_status(args.install_root, owner_sid=owner_sid)['status'] != 'not-needed':
+                    raise ValueError('installer-coordinator-recovery-required')
+                result.update(_execute(args, api, target))
+            else:
+                result.update(Coordinator(args, api, target, lease, owner_sid).execute())
+        if target is not None:
+            result.update(sourceCommit=target['sourceCommit'], targetReportSha256=args.target_report_sha256)
         code = 0
     except Exception as error:
         result['errorCode'] = getattr(error, 'code', type(error).__name__)
@@ -194,7 +205,8 @@ def run(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--action', choices=('inspect', 'prepare', 'status', 'commit', 'rollback',
-                                           'pending', 'resume-committed'), required=True)
+                                           'pending', 'resume-committed', 'installer-pending',
+                                           'start-native', 'native-complete', 'resume-native-complete'), required=True)
     for name in ('install-root', 'result-directory', 'target-report', 'target-report-sha256',
                  'source-commit', 'display-version', 'numeric-version', 'parent-created',
                  'parent-executable', 'parent-sha256'):
@@ -205,6 +217,11 @@ def main(argv=None):
     parser.add_argument('--plan-sha256')
     parser.add_argument('--transaction-id')
     parser.add_argument('--confirmed', action='store_true')
+    for name in ('session-id', 'program-inventory', 'program-inventory-sha256',
+                 'uninstall-exe', 'group-shortcut', 'uninstall-shortcut', 'desktop-shortcut'):
+        parser.add_argument('--' + name)
+    for name in ('restore-watcher', 'group-enabled', 'desktop-enabled'):
+        parser.add_argument('--' + name, action='store_true')
     try:
         return run(parser.parse_args(argv))
     except Exception:

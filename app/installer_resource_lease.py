@@ -10,6 +10,7 @@ from contextlib import contextmanager
 import ctypes
 from ctypes import wintypes as wt
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -25,6 +26,67 @@ class _HandleOwner:
         if self.handle:
             self.api.CloseHandle(self.handle)
             self.handle = None
+
+
+def _coordinator_marker_stamp(marker):
+    # Reuse the bounded, nonblocking, handle-based metadata reader. In
+    # particular do not compare Windows pathname ctime with handle ctime.
+    from author_resource_snapshots import _metadata
+    _raw, row = _metadata(_safe(marker))
+    return tuple(row['identity']), row['bytes'], row['sha256']
+
+
+class _InstallerPendingPermit:
+    """Process-local permission for one already-validated coordinator marker.
+
+    This is never serialized or accepted through the CLI. The native borrowed
+    handle remains live, and every use rechecks the exact marker object/bytes.
+    """
+    def __init__(self, root, lease, marker, record, validate):
+        self.validate = validate
+        self.root, self.lease, self.marker = root, lease, marker
+        self.record = json.loads(json.dumps(record))
+        self.observation = self._observe()
+
+    def _observe(self):
+        return _coordinator_marker_stamp(self.marker)
+
+    def allows(self, root, marker):
+        try:
+            actual_root, state = _state(root)
+            return (actual_root == self.root and marker == self.marker
+                    and state['runtime'] is self.lease
+                    and isinstance(self.lease._stream, _HandleOwner)
+                    and bool(self.lease._stream.handle)
+                    and self._observe() == self.observation
+                    and self.validate() == self.record
+                    and self._observe() == self.observation)
+        except (OSError, ValueError):
+            return False
+
+
+@contextmanager
+def installer_coordinator_scope(root, lease, session_id, *, validate):
+    """Permit own coordinator only after a strict journal read under the lease."""
+    root, state = _state(root)
+    if (state['runtime'] is not lease or not isinstance(lease._stream, _HandleOwner)
+            or not lease._stream.handle or getattr(lease, '_installer_forward_permit', None) is not None):
+        raise _error('coordinator-requires-verified-borrowed-lease')
+    marker = _safe(root / 'work/pending-installer-upgrade.json')
+    before = _coordinator_marker_stamp(marker)
+    record = validate()
+    info = root.stat()
+    if (not isinstance(record, dict) or record.get('sessionId') != session_id
+            or record.get('rootIdentity') != [info.st_dev, info.st_ino]):
+        raise _error('coordinator-identity-mismatch')
+    permit = _InstallerPendingPermit(root, lease, marker, record, validate)
+    if permit.observation != before:
+        raise _error('coordinator-marker-changed')
+    lease._installer_forward_permit = permit
+    try:
+        yield record
+    finally:
+        lease._installer_forward_permit = None
 
 
 class _FileInfo(ctypes.Structure):

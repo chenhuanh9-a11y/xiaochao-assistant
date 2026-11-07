@@ -1,4 +1,4 @@
-; Allowlisted Qt installer profiles; build never installs or launches a product.
+﻿; Allowlisted Qt installer profiles; build never installs or launches a product.
 #ifndef StageDir
   #error StageDir is required
 #endif
@@ -145,6 +145,7 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 [Files]
 #ifdef ProductionInstaller
 Source: "{#ResetHelperInventory}"; DestName: "reset-helper-inventory.txt"; Flags: dontcopy
+Source: "{#ResetProgramInventory}"; DestName: "reset-program-inventory.json"; Flags: dontcopy
   #ifndef ProductionFilesInclude
     #error ProductionFilesInclude is required for the exact production projection
   #endif
@@ -166,7 +167,7 @@ Name: "{autodesktop}\{#InstallerAppName}"; Filename: "{app}\{#InstallerExeName}"
 ; a busy installed EXE; test instances keep their separate runtime work trees.
 
 #ifdef ProductionInstaller
-; Original per-user installer upgrade/rollback and resource preservation contract.
+; Original per-user installer identity and resource preservation contract.
 ; Reused from 1.0.5 / 64710EF6 effective-installer.iss; no [Run] action copied.
 [Code]
 (* Program ownership is a relative filename list, never a recursive deletion rule.
@@ -175,7 +176,7 @@ const
   OwnershipName = '_installer-owned-files.txt';
   UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{D04394A0-DACE-4FF9-874D-3DCB43EE53D1}_is1';
 var
-  UpgradeFiles, UpgradeExisting: TStringList;
+  UpgradeFiles, UpgradeExisting, UpgradeRetired: TStringList;
   UpgradeBackup: String;
   UpgradeStarted, UpgradeCommitted: Boolean;
   ResourcePlanReady, InstallEditorBase: Boolean;
@@ -380,6 +381,7 @@ begin
   OldFiles := TStringList.Create;
   UpgradeFiles := TStringList.Create;
   UpgradeExisting := TStringList.Create;
+  UpgradeRetired := TStringList.Create;
   try
     ExtractTemporaryFile(OwnershipName);
     NewFiles.LoadFromFile(ExpandConstant('{tmp}\') + OwnershipName);
@@ -394,9 +396,9 @@ begin
         if RetirableProgramFile(OldFiles[I]) then AddUpgradePath(OldFiles[I]);
       end;
     end;
-    { Native rollback removes this attempt's changes; it does not reconstruct
-      prior registration/shortcut state. Preserve the legacy 000 files for
-      exact-file recovery, without claiming complete native compensation. }
+    { Legacy 000 copies are supplementary recovery evidence only. Native
+      completion verification records the actual selected uninstaller index;
+      no automatic native rollback is inferred from these copies. }
     AddUpgradePath('unins000.exe');
     AddUpgradePath('unins000.dat');
     AddUpgradePath('unins000.msg');
@@ -428,15 +430,25 @@ begin
     for I := 0 to OldFiles.Count - 1 do begin
       Relative := OldFiles[I];
       if RetirableProgramFile(Relative) and (NewFiles.IndexOf(Relative) < 0) then begin
-        Source := ExpandConstant('{app}\') + Relative;
-        if FileExists(Source) and not DeleteFile(Source) then
-          RaiseException('旧程序文件无法移除：' + Relative);
-        Log('UPGRADE_RETIRED ' + Relative);
+        { Preparation is copy-only. No program mutation before a durable
+          native-in-progress coordinator receipt exists. }
+        UpgradeRetired.Add(Relative);
       end;
     end;
   finally
     NewFiles.Free;
     OldFiles.Free;
+  end;
+end;
+procedure RetireOldProgramFiles;
+var I: Integer; Relative, Source: String;
+begin
+  for I := 0 to UpgradeRetired.Count - 1 do begin
+    Relative := UpgradeRetired[I];
+    Source := ExpandConstant('{app}\') + Relative;
+    if FileExists(Source) and not DeleteFile(Source) then
+      RaiseException('旧程序文件无法移除：' + Relative);
+    Log('UPGRADE_RETIRED ' + Relative);
   end;
 end;
 #include "qt-resource-reset.iss"
@@ -460,16 +472,20 @@ begin
     { From this boundary Inno may replace registration/shortcuts before it
       reaches ssPostInstall. Its rollback does not restore their old values.
       Treat native recovery as unknown until the combined durable commit. }
+    if not StartNativeResourceReset(WatcherReason) then RaiseException(WatcherReason);
     ResourceResetNativeMetadataNeedsRepair := ResourceResetStarted;
+    RetireOldProgramFiles;
   end;
   if CurStep = ssPostInstall then begin
     { Native file installation finished. Commit resources before claiming the
       combined upgrade; exact installed EXE/report hashes are also checked. }
-    if not CommitResourceReset(WatcherReason) then begin
+    ResourceResetNativeCompleted := ResourceResetStarted;
+    if not CompleteNativeResourceReset(WatcherReason) or
+      not CommitResourceReset(WatcherReason) then begin
       { Inno catches ssPostInstall exceptions and native metadata is already
         committed. Do not use RaiseException as a fictitious rollback signal. }
       ResourceResetFailureCode := 64;
-      ResourceResetNativeMetadataNeedsRepair := not ResourceResetCommitted;
+      ResourceResetNativeMetadataNeedsRepair := not ResourceResetFinalized;
       Log('UPGRADE_RESOURCE_RECOVERY_REQUIRED ' + WatcherReason);
     end;
     UpgradeCommitted := not ResourceResetStarted or ResourceResetCommitted;
@@ -485,84 +501,48 @@ begin
 end;
 procedure DeinitializeSetup;
 var
-  I: Integer;
-  Source, Destination, WatcherReason: String;
-  Restored, ResetWasPending: Boolean;
+  WatcherReason: String;
+  SafeToRestore: Boolean;
 begin
-  Restored := True;
-  ResetWasPending := ResourceResetCommitAttempted and not ResourceResetFinalized;
-  { A lost commit receipt is not permission to rewind only the program half. }
-  if not ResolveResourceResetCommit(WatcherReason) then begin
-    Restored := False;
-    SuppressibleMsgBox(WatcherReason + #13#10 + '提交结果未确认；程序、资料和隔离证据均保留，请先核对恢复。',
-      mbError, MB_OK, IDOK);
-  end;
-  if ResourceResetCommitted then begin
-    UpgradeCommitted := True;
-    ResourceResetNativeMetadataNeedsRepair := False;
-  end;
-  if ResetWasPending and ResourceResetFinalized then
-    SuppressibleMsgBox('资源提交后的恢复标记已完成核对清理，现在可以正常启动。旧资源隔离区仍保留。',
-      mbInformation, MB_OK, IDOK);
-  if UpgradeStarted and not UpgradeCommitted and not ResourceResetOutcomeUnknown then begin
-    Restored := True;
-    for I := 0 to UpgradeFiles.Count - 1 do begin
-      Destination := ExpandConstant('{app}\') + UpgradeFiles[I];
-      if UpgradeExisting.IndexOf(UpgradeFiles[I]) >= 0 then begin
-        Source := UpgradeBackup + '\files\' + IntToStr(UpgradeExisting.IndexOf(UpgradeFiles[I]));
-        if not FileExists(Destination) or
-          (GetSHA256OfFile(Source) <> GetSHA256OfFile(Destination)) then begin
-          if not ForceDirectories(ExtractFileDir(Destination)) or
-            not FileCopy(Source, Destination, False) then Restored := False;
-        end;
-      end else if FileExists(Destination) then
-        if not DeleteFile(Destination) then Restored := False;
+  SafeToRestore := not ResourceResetStarted;
+  if ResourceResetStarted then begin
+    { Never restore program files after native installation may have begun.
+      Windows metadata is not rolled back by copying old executable bytes. }
+    if ResolveResourceResetCommit(WatcherReason) then begin
+      if ResourceResetFinalized then begin
+        UpgradeCommitted := True;
+        SafeToRestore := True;
+      end else if not ResourceResetNativeStarted and not ResourceResetNativeCompleted then
+        SafeToRestore := RollbackResourceReset(WatcherReason);
     end;
-    if Restored then Log('UPGRADE_ROLLBACK_RESTORED')
-    else begin
-      Log('UPGRADE_ROLLBACK_INCOMPLETE ' + UpgradeBackup);
-      SuppressibleMsgBox('安装未完成，部分旧文件无法自动恢复。请保留并交回此备份目录：' +
-        UpgradeBackup, mbError, MB_OK, IDOK);
+    if not SafeToRestore then begin
+      ResourceResetFailureCode := 64;
+      SuppressibleMsgBox('升级尚未安全完成，程序不会自动启用。原生安装可能已修改 Windows 安装登记或快捷方式；本次不会把旧程序或旧资源单独覆盖回去。' + #13#10 +
+        '请保留 work/installer-upgrades、work/installer-backups 和 work/resource-upgrades。重新运行安装包可核验已完整保存的完成凭据；凭据缺失或状态变化时会停止并要求修复。' + #13#10 + WatcherReason,
+        mbError, MB_OK, IDOK);
     end;
   end;
-  { Program rollback always precedes resource rollback under the same lock.
-    Incomplete program rollback leaves the pending marker and quarantine intact. }
-  if Restored and not UpgradeCommitted then
-    if not RollbackResourceReset(WatcherReason) then begin
-      Restored := False;
-      SuppressibleMsgBox(WatcherReason, mbError, MB_OK, IDOK);
-    end;
-  if ResourceResetNativeMetadataNeedsRepair then begin
-    { The old native uninstall registration/shortcut state is not captured by
-      this existing file rollback. Report that boundary rather than touching
-      unrelated user links/registry values or claiming complete restoration. }
-    Restored := False;
-    SuppressibleMsgBox('升级失败，已尝试恢复程序和资源文件。无法确认 Windows 安装登记及快捷方式已完整恢复，请先核对并使用原安装包修复。' + #13#10 +
-      '请保留 work/installer-backups 与 work/resource-upgrades；本次不自动恢复游戏启动绑定。',
-      mbError, MB_OK, IDOK);
-  end;
-  { Restore the old opt-in only after a complete file rollback, or after a
-    committed upgrade. Never enable a partially restored executable payload. }
-  if Restored then begin
+  if SafeToRestore then begin
     if not RestoreGameWatcher(WatcherReason) then
       SuppressibleMsgBox(WatcherReason, mbError, MB_OK, IDOK);
   end else if GameWatcherRestorePending then
-    SuppressibleMsgBox('程序或资源尚未完整恢复/提交，游戏启动绑定保持关闭。请先修复安装，再在设置中核对开启。',
+    SuppressibleMsgBox('安装状态尚未核实，游戏启动绑定保持关闭。请先完成安装恢复，再核对设置。',
       mbError, MB_OK, IDOK);
-  { Backups intentionally remain under work for recovery/audit, including success. }
+  { Backups and append-only recovery evidence intentionally survive exit. }
   if UpgradeFiles <> nil then UpgradeFiles.Free;
   if UpgradeExisting <> nil then UpgradeExisting.Free;
+  if UpgradeRetired <> nil then UpgradeRetired.Free;
   ReleaseResourceLock;
 end;
 procedure CurPageChanged(CurPageID: Integer);
 begin
   if (CurPageID = wpFinished) and ResourceResetStarted and not ResourceResetFinalized then begin
-    if ResourceResetCommitted then
-      WizardForm.FinishedLabel.Caption := '程序和资源已提交，但恢复标记尚未清理，暂不能启动星图。'
+    if ResourceResetNativeCompleted then
+      WizardForm.FinishedLabel.Caption := 'Windows 安装步骤已完成，但整体升级尚未核验提交，暂不能启动星图。'
     else
-      WizardForm.FinishedLabel.Caption := '升级未完成。退出安装时将按已确认状态尝试恢复程序与资源文件；Windows 安装登记和快捷方式可能仍需原包修复。';
+      WizardForm.FinishedLabel.Caption := '升级中断，原生安装结果尚未核实，暂不能启动星图。';
     WizardForm.FinishedLabel.Caption := WizardForm.FinishedLabel.Caption + #13#10 +
-      '请保留 work/installer-backups、work/resource-upgrades 和恢复记录，先核对恢复。';
+      '不会自动回退旧程序或单独回退资源。请保留恢复记录；重新运行安装包只能在完成凭据完整且仍匹配时继续完成升级。';
   end;
 end;
 function GetCustomSetupExitCode: Integer;
@@ -612,10 +592,12 @@ begin
   end;
   { The final app directory is now validated. A failed stop may already have
     removed Run, so restore the prior explicit opt-in before offering retry. }
-  if not DisableGameWatcher(WatcherReason) then begin
-    Result := WatcherReason;
-  end else if not ReviewResourceReset(WatcherReason) then Result := WatcherReason;
-  if Result <> '' then begin
+  if FileExists(ExpandConstant('{app}\work\pending-installer-upgrade.json')) then begin
+    if not ReviewResourceReset(WatcherReason) then Result := WatcherReason;
+    if (Result = '') and not DisableGameWatcher(WatcherReason) then Result := WatcherReason;
+  end else if not DisableGameWatcher(WatcherReason) then Result := WatcherReason
+  else if not ReviewResourceReset(WatcherReason) then Result := WatcherReason;
+  if (Result <> '') and not FileExists(ExpandConstant('{app}\work\pending-installer-upgrade.json')) then begin
     if not RestoreGameWatcher(RestoreReason) then
       Result := Result + #13#10 + RestoreReason;
   end;
