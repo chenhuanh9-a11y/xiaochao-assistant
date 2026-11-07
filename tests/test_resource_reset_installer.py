@@ -289,6 +289,10 @@ class ResourceResetSourceContracts(unittest.TestCase):
         self.assertIn('ResourceResetStarted and not ResourceResetFinalized', source)
         self.assertIn('ResourceResetNativeMetadataNeedsRepair', cleanup)
         self.assertIn('if not ResourceResetStarted or ResourceResetFinalized', events)
+        before_native = events.split('if CurStep = ssPostInstall', 1)[0]
+        self.assertLess(before_native.index('BeginUpgrade;'),
+                        before_native.index('ResourceResetNativeMetadataNeedsRepair := ResourceResetStarted'))
+        self.assertIn('无法确认 Windows 安装登记及快捷方式已完整恢复', cleanup)
 
     def test_pascal_character_constants_never_start_preprocessor_lines(self):
         # ISPP reads a leading # as a directive even inside a Pascal expression.
@@ -297,6 +301,12 @@ class ResourceResetSourceContracts(unittest.TestCase):
                      'qt-game-watcher-lifecycle.iss'):
             with self.subTest(name=name):
                 self.assertIsNone(re.search(r'^\s*#[0-9]', (ROOT / 'tools' / name).read_text(), re.MULTILINE))
+
+    def test_code_includes_use_pascal_comments_not_section_comments(self):
+        import re
+        for name in ('qt-resource-reset.iss', 'qt-uninstall-data.iss', 'qt-game-watcher-lifecycle.iss'):
+            with self.subTest(name=name):
+                self.assertIsNone(re.search(r'^\s*;', (ROOT / 'tools' / name).read_text(), re.MULTILINE))
 
     def test_packaged_helper_extraction_and_lease_are_not_an_unlock_bypass(self):
         source = (ROOT / 'tools/qt-resource-reset.iss').read_text()

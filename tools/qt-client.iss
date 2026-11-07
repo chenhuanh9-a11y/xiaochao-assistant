@@ -394,9 +394,9 @@ begin
         if RetirableProgramFile(OldFiles[I]) then AddUpgradePath(OldFiles[I]);
       end;
     end;
-    { Native rollback owns registry/shortcuts only while PerformInstall fails.
-      Post-install script failures need separate recovery, reported below.
-      Preserve the prior uninstall log for the existing exact-file rollback. }
+    { Native rollback removes this attempt's changes; it does not reconstruct
+      prior registration/shortcut state. Preserve the legacy 000 files for
+      exact-file recovery, without claiming complete native compensation. }
     AddUpgradePath('unins000.exe');
     AddUpgradePath('unins000.dat');
     AddUpgradePath('unins000.msg');
@@ -457,6 +457,10 @@ begin
     else Log('RESOURCE_EDITOR_PRESERVE_EXISTING_FAMILY');
     if not PrepareResourceReset(WatcherReason) then RaiseException(WatcherReason);
     BeginUpgrade;
+    { From this boundary Inno may replace registration/shortcuts before it
+      reaches ssPostInstall. Its rollback does not restore their old values.
+      Treat native recovery as unknown until the combined durable commit. }
+    ResourceResetNativeMetadataNeedsRepair := ResourceResetStarted;
   end;
   if CurStep = ssPostInstall then begin
     { Native file installation finished. Commit resources before claiming the
@@ -533,7 +537,7 @@ begin
       this existing file rollback. Report that boundary rather than touching
       unrelated user links/registry values or claiming complete restoration. }
     Restored := False;
-    SuppressibleMsgBox('升级失败，已尝试恢复程序和资源文件。Windows 安装登记及快捷方式没有完整回滚，仍需用原安装包修复。' + #13#10 +
+    SuppressibleMsgBox('升级失败，已尝试恢复程序和资源文件。无法确认 Windows 安装登记及快捷方式已完整恢复，请先核对并使用原安装包修复。' + #13#10 +
       '请保留 work/installer-backups 与 work/resource-upgrades；本次不自动恢复游戏启动绑定。',
       mbError, MB_OK, IDOK);
   end;

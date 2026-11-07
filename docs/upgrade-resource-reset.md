@@ -175,6 +175,12 @@ Inno 在 `ssPostInstall` 捕获脚本异常后仍可能进入普通完成流程�
 保留备份并关闭游戏启动绑定，**不宣称整个安装完整回滚**。没有快照/逐项核验的
 用户快捷方式和注册表不由这一步猜测覆盖。这仍是原生失败验收需要覆盖的恢复边界。
 
+该未知状态从 `ssInstall` 完成自有备份、交还 Inno 前就开始，而不是等到
+`ssPostInstall` 失败才设置。Inno 可能先删除并重建卸载登记，再保存卸载日志；
+中间失败的原生卸载回滚不能恢复旧登记。故即使没有到达 `ssPostInstall`，
+也不能只凭程序/资源文件恢复就自动恢复 Run。失败时明确说明登记/快捷方式恢复
+尚未确认，保留备份、保持绑定关闭；这项保守收紧不是完整登记补偿。
+
 提交结果不确定时先读取 durable journal。必须区分两个状态：
 
 - `committed` 代表程序/资源不能倒回旧版本，禁止只回滚程序。
@@ -217,6 +223,11 @@ tombstone/坏元数据与遗留回执、损坏图像、只读提示、确认后�
 统一将三个安装/卸载脚本共六处字符常量移回上一行，并增加源码回归。
 该次只使用合成 stage 和 `/O-`，没有生成或运行 Setup；修正后仍需同提交重编译，
 不能以这项源码检查代替 Pascal 编译或安装验收。
+
+后续 `c3b912e` 原文进入 Pascal 后，发现 `[Code]` 内引用的 watcher include
+前三行 `;` 注释非法。只在一次性副本把这三行改为 `//` 的原生 `/O-` 探针通过
+（Inno 6.7.3，exit 0）；云端同步修正该注释并增加 include 语法回归。这只证明
+该副本的 Pascal 可编译，不能写成 `c3b912e` 原文通过，也未执行任何安装。
 
 参考 [Inno 临时提取目录规则](https://jrsoftware.org/ishelp/topic_isxfunc_extracttemporaryfiles.htm)
 和 [Windows DuplicateHandle](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-duplicatehandle)。

@@ -1,6 +1,6 @@
-; Include inside [Code]. No Run entry is created for a fresh/off installation.
-; Installer event owner calls Capture -> Disable before mutation, Restore on
-; upgrade success or abort before uninstall; never Restore after uninstall begins.
+// Include inside [Code]. No Run entry is created for a fresh/off installation.
+// Installer event owner calls Capture -> Disable before mutation, Restore on
+// upgrade success or abort before uninstall; never Restore after uninstall begins.
 var
   GameWatcherCaptured: Boolean;
   GameWatcherWasEnabled: Boolean;
