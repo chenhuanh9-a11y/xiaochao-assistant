@@ -15,7 +15,8 @@ sys.path[:0] = [str(ROOT / "app"), str(ROOT / "experiments/qt_quick")]
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from map_resource_context import load_browse_context
 from s1_native_resources import MODE_LAYOUTS, S1_FLOORS, REQUIRED_INTERFACES
-from season_map_resources import INDEX, SOURCE_VERSION, native_builtin_summaries
+from season_context import modes_for_season
+from season_map_resources import INDEX, SOURCE_VERSION, browse_modes, native_builtin_summaries
 
 
 def fixture(root, mode):
@@ -116,7 +117,7 @@ class NativeBuiltinTests(unittest.TestCase):
 
     def test_builtin_status_uses_no_receipts_and_cannot_be_removed(self):
         rows = native_builtin_summaries(self.root)
-        self.assertEqual(len(rows), 3)
+        self.assertEqual({row["mode"] for row in rows}, set(modes_for_season("s1")))
         for row in rows:
             self.assertTrue(row["builtin"])
             self.assertFalse(row["canRemove"])
@@ -124,6 +125,78 @@ class NativeBuiltinTests(unittest.TestCase):
         ready = next(row for row in rows if row["mode"] == "difficult")
         self.assertEqual((ready["status"], ready["mapCount"], ready["layerCount"]), ("bundled", 14, 56))
         self.assertEqual({row["status"] for row in rows}, {"bundled", "incomplete"})
+
+    def test_active_only_installation_matches_declarations_without_retired_gap(self):
+        from map_package_summary import declared_builtins
+        fixture(self.root, "nightmare")
+        rows = native_builtin_summaries(self.root)
+        self.assertEqual({row["mode"] for row in rows}, {"nightmare", "difficult"})
+        self.assertTrue(all(row["status"] == "bundled" for row in rows))
+        self.assertEqual({row["packageId"] for row in rows},
+                         {row["packageId"] for row in declared_builtins(self.root)})
+        self.assertFalse((self.root / "seasons/s1/difficulty2").exists())
+        self.assertIn("difficulty2", browse_modes("s1"))
+
+    def test_missing_active_modes_still_report_incomplete(self):
+        for missing, installed in (("nightmare", "difficult"), ("difficult", "nightmare")):
+            with self.subTest(missing=missing):
+                root = self.root / missing
+                fixture(root, installed)
+                rows = {row["mode"]: row for row in native_builtin_summaries(root)}
+                self.assertEqual(set(rows), {"nightmare", "difficult"})
+                self.assertEqual(rows[installed]["status"], "bundled")
+                self.assertEqual(rows[missing]["status"], "incomplete")
+                self.assertIn("manifest not installed", rows[missing]["error"])
+
+    def test_bad_active_hashes_still_report_incomplete(self):
+        for mode in modes_for_season("s1"):
+            with self.subTest(mode=mode):
+                root = self.root / mode
+                manifest, raw = fixture(root, mode)
+                raw["files"][0]["sha256"] = "0" * 64
+                manifest.write_text(json.dumps(raw), encoding="utf-8")
+                rows = {row["mode"]: row for row in native_builtin_summaries(root)}
+                self.assertEqual(rows[mode]["status"], "incomplete")
+                self.assertIn("file hash mismatch", rows[mode]["error"])
+
+    def test_retained_retired_pack_is_still_browsable_and_verified(self):
+        fixture(self.root, "difficulty2")
+        context = self.context("difficulty2")
+        self.assertFalse(context.error, context.error)
+        self.assertEqual(context.profiles[0].available_maps, 15)
+        rows = {row["mode"]: row for row in native_builtin_summaries(self.root)}
+        retired = rows["difficulty2"]
+        self.assertEqual((retired["status"], retired["mapCount"], retired["layerCount"]),
+                         ("bundled", 15, 60))
+        self.assertFalse(retired["canRemove"])
+
+    def test_bad_retained_retired_pack_still_reports_incomplete(self):
+        manifest, raw = fixture(self.root, "difficulty2")
+        raw["files"][0]["sha256"] = "0" * 64
+        manifest.write_text(json.dumps(raw), encoding="utf-8")
+        rows = {row["mode"]: row for row in native_builtin_summaries(self.root)}
+        self.assertEqual(rows["difficulty2"]["status"], "incomplete")
+        self.assertIn("file hash mismatch", rows["difficulty2"]["error"])
+
+    def test_partial_retired_directory_still_reports_missing_manifest(self):
+        (self.root / "seasons/s1/difficulty2").mkdir()
+        rows = {row["mode"]: row for row in native_builtin_summaries(self.root)}
+        self.assertEqual(rows["difficulty2"]["status"], "incomplete")
+        self.assertIn("manifest not installed", rows["difficulty2"]["error"])
+
+    def test_dangling_retired_link_is_not_treated_as_absent(self):
+        path = self.root / "seasons/s1/difficulty2"
+        try:
+            path.symlink_to(self.root / "absent-retired-target", target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"Cannot create fixture symlink: {error}")
+        rows = {row["mode"]: row for row in native_builtin_summaries(self.root)}
+        self.assertEqual(rows["difficulty2"]["status"], "incomplete")
+        self.assertIn("cannot use links", rows["difficulty2"]["error"])
+
+    def test_builtin_summary_cancellation_propagates(self):
+        with self.assertRaises(CancelledError):
+            native_builtin_summaries(self.root, cancelled=lambda: True)
 
     def test_cancellation_propagates(self):
         with self.assertRaises(CancelledError):

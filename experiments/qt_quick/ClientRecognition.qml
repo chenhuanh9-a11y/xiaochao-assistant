@@ -19,6 +19,7 @@ Item {
     readonly property var privateExperiment: state.privateExperiment || ({})
     readonly property string privateLockedMap: privateExperiment.privateLockMapId || ""
     readonly property bool privateIdentityRetained: state.season === "s1" && state.roundActive === true
+        && state.s1FormalRoundLock !== true
         && privateExperiment.privateExperimental === true && privateExperiment.privateExperimentalLocked === true
         && privateLockedMap.length > 0
     readonly property bool privatePoseCurrent: state.displayAuthorized === true

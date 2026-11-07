@@ -29,6 +29,7 @@ _OPERATION_MESSAGES = {
     "resource-operation-requires-idle": ("暂不能修改地图资源", "本局或后台任务仍在运行，本次资源操作未开始。请先结束本局并等待后台任务完成。", "resource"),
     "entry-resource-unavailable": ("识别所需资源不可用", "当前地图的识别资源无法读取，本次未完成识别。请到“地图资源”核对资源，并查看技术详情。", "resource"),
     "registered-floor-resource-unavailable": ("当前楼层资源不可用", "当前楼层所需资源无法读取，本次未生成新的贴合。请到“地图资源”核对该地图楼层的资源。", "resource"),
+    "locked-map-resource-unavailable": ("本局锁定地图资源不可用", "当前资源无法提供本局已锁定的地图，已暂停贴合，不会改为其他候选。请结束本局后核对地图资源。", "resource"),
 }
 
 

@@ -642,7 +642,7 @@ class LiveRuntime:
                  recorded_s1_priority_index=None, s1_candidate_purpose=None):
         self._diagnostics = diagnostics
         self.g_cycle_evidence = None  # Explicit process-only test mode; no normal writer.
-        from s1_candidate_purpose import native_candidate_purpose_is_valid, private_native_candidate_purpose_is_valid, native_round_lock_purpose_is_valid
+        from s1_candidate_purpose import native_candidate_purpose_is_valid, private_native_candidate_purpose_is_valid, native_round_lock_purpose_is_valid, native_final_round_lock_purpose_is_valid
         self._native_s1_candidate_preview = bool(
             evidence_kind == "live-client-capture"
             and native_candidate_purpose_is_valid(s1_candidate_purpose)
@@ -652,6 +652,8 @@ class LiveRuntime:
             and native_round_lock_purpose_is_valid(s1_candidate_purpose))
         self._native_s1_private_experiment = bool(self._native_s1_candidate_preview
             and private_native_candidate_purpose_is_valid(s1_candidate_purpose))
+        self._native_s1_final_round_lock = bool(self._native_s1_round_lock
+            and native_final_round_lock_purpose_is_valid(s1_candidate_purpose))
         # Explicit research opt-in cannot grant live capture readiness.
         self._recorded_s1_provisional_display = bool(recorded_s1_provisional_display and evidence_kind == "recorded")
         import math
@@ -814,6 +816,7 @@ class LiveRuntime:
         self._reset_floor_policy()
 
     def _reset_identity(self):
+        self._s1_round_map_id = ""
         self._clear_s1_reference()
         self._s1_candidate_preference = None
         self._s1_candidate_pose_hint = None
@@ -1006,17 +1009,16 @@ class LiveRuntime:
                  else "GROUP_LOCKED" if grouped else "UNLOCKED")
         provisional_id = self._provisional_display_map_id
         pool = getattr(self, "_s1_private_pool", None)
-        formal_lock = (pool.locked_id if pool is not None and self._native_s1_round_lock
-            and not self._native_s1_private_experiment and self._private_pool_scope_current(pool) else "")
+        formal_lock = self._s1_round_locked_map()
         return dict(identityPhase="MEMBER_VERIFIED" if formal_lock else "CANDIDATE_DISPLAY" if provisional_id else phase, identitySource=self._identity_source,
             candidateFullImage=bool(provisional_id), candidateDisplayOnly=bool(provisional_id),
             identityLocked=bool(self._durable_map_id or formal_lock), durableMapId=self._durable_map_id or formal_lock,
             s1RoundLockEnabled=bool(self._native_s1_round_lock and self._season == "s1" and not self._manual_alignment),
-            s1FormalRoundLock=bool(self._native_s1_round_lock and not self._native_s1_private_experiment
+            s1FormalRoundLock=bool(self._native_s1_final_round_lock
                 and self._season == "s1" and not self._manual_alignment),
-            s1RemainingCandidateCount=len(pool.remaining) if pool is not None else 0,
+            s1RemainingCandidateCount=1 if formal_lock else len(pool.remaining) if pool is not None else 0,
             provisionalMapId=provisional_id or ((native.provisional_member_id or self._map_id) if grouped else ""),
-            provisional=bool(provisional_id) or (grouped and not bool(self._durable_map_id)), groupLocked=grouped,
+            provisional=not bool(formal_lock) and (bool(provisional_id) or (grouped and not bool(self._durable_map_id))), groupLocked=grouped,
             groupId=native.group_id if grouped else None,
             groupMemberIds=list(native.member_ids) if grouped else [],
             groupGeneration=native.generation if grouped else 0,
@@ -1029,6 +1031,13 @@ class LiveRuntime:
             groupMemberSelectionReason=self._group_choice_reason,
             desiredGroupMemberId=self._desired_group_member[3] if self._desired_group_member else "",
             groupMemberChoiceStatus=self._group_member_choice_status)
+
+    def _s1_round_locked_map(self):
+        # Logical identity belongs to the round, not a capture/settings scope.
+        # It never grants a current pose or pixels. Scoped pools and all their
+        # resource/capture/material checks can still be discarded independently.
+        return (self._s1_round_map_id if self._native_s1_final_round_lock
+            and self._season == "s1" and self._active and not self._manual_alignment else "")
 
     def _identity_context(self):
         return (self._mode, self._cycle, str(self._floor), self._frame_generation, self._epoch)
@@ -1093,12 +1102,16 @@ class LiveRuntime:
             self._s1_structure_ticket = ticket
             self._automatic_candidate_rows = []
             intent_generation = self._group_intent_generation
+            locked_map = self._s1_round_locked_map()
+            if locked_map and locked_map not in catalog.map_ids:
+                return None, None, "locked-map-resource-unavailable"
         obsolete = lambda: (self._cancelled(cancelled) or epoch != self._epoch
             or frame_id != self._frame_id or engine is not self._engine
             or intent_generation != self._group_intent_generation)
         report = engine.qt_s1_structure_scan(frame, floor=str(floor),
             floor_source="current-frame-verified", cancelled=obsolete,
-            budget_seconds=self._recorded_s1_scan_budget if self._s1_provisional_enabled() else S1_STRUCTURE_CANDIDATE_BUDGET_SECONDS)
+            budget_seconds=self._recorded_s1_scan_budget if self._s1_provisional_enabled() else S1_STRUCTURE_CANDIDATE_BUDGET_SECONDS,
+            **({"planned_map_ids": (locked_map,)} if locked_map else {}))
         rows = StructureCandidateScanner.rank_rows(report, engine.pack)
         with self._lock:
             if obsolete() or not self._identity_observation_current() or not session.commit(report, ticket):
@@ -1153,11 +1166,25 @@ class LiveRuntime:
                 and action not in ("reselect_map", "map_reselection")) else None
             private_prepare = getattr(engine, "qt_s1_private_coordinate_prepare", None)
             private_enabled = self._native_s1_round_lock and callable(private_prepare)
+            round_map_id = self._s1_round_locked_map()
+            if round_map_id and (not private_enabled or round_map_id not in catalog.map_ids):
+                # A changed/missing catalogue cannot silently substitute a map.
+                # Resource replacement still ends the unsafe runtime context.
+                self._clear_s1_reference()
+                self._clear_private_pool()
+                return self._receipt(action, payload, success=False,
+                    reason="locked-map-resource-unavailable", posePending=True)
             pool = getattr(self, "_s1_private_pool", None)
             if private_enabled and (pool is None or pool.scope != preference_scope):
                 from s1_private_experiment import PrivateRoundPool
                 pool = self._s1_private_pool = PrivateRoundPool(preference_scope, catalog.map_ids,
-                    retain_locked_identity=not self._native_s1_private_experiment)
+                    retain_locked_identity=self._native_s1_final_round_lock)
+                if round_map_id:
+                    # This is the same already-confirmed round identity, not a
+                    # fresh exclusion claim about a newly captured frame.
+                    pool.remaining = (round_map_id,)
+                    pool.locked_id = round_map_id
+                    pool.eliminated = set(catalog.map_ids) - {round_map_id}
                 self._notify("s1-candidate-pool-changed", reason="s1-pool-created",
                     **pool.snapshot(), privateResourceDigest=catalog.resource_key)
             recovery_revision = pool.recovery_revision if private_enabled else None
@@ -1295,6 +1322,12 @@ class LiveRuntime:
                         first_result = result
                         if (private_enabled and self._s1_private_pool is pool
                                 and pool.accept_material(mid, coordinate_current=True)):
+                            if self._native_s1_final_round_lock:
+                                self._s1_round_map_id = mid
+                                # Material was published just before the ledger
+                                # committed. Refresh identity metadata only; its
+                                # token, transform and display grant do not change.
+                                self._render.update(self._identity_fields())
                             self._notify("private-experimental-locked", reason="private-unique-pool-current-material",
                                 **pool.snapshot(), privateResourceDigest=catalog.resource_key)
             return True
@@ -1401,15 +1434,15 @@ class LiveRuntime:
                 return report
             report = scan_current()
             # A locked ID outlives an UNKNOWN current fit/material result, but
-            # its old pixels do not. Leave it pending a fresh same-ID fit; only
-            # positive contradiction or explicit reselection reopens identity.
+            # its old pixels do not. Final round locks never reopen identity;
+            # legacy auto-test evidence experiments retain their own policy.
             # An unconfirmed singleton may still restore competition once on
             # this immutable frame, without acquiring a new public owner.
             if private_enabled and len(scan_plan) == 1 and first_result is None:
                 retry_full = False
                 with self._lock:
                     if (current() and self._s1_private_pool is pool and pool.revision == scan_revision
-                            and not pool.locked_id and self._native_s1_private_experiment):
+                            and not pool.locked_id and not pool.retain_locked_identity):
                         pool.restore()
                         retry_full = True
                         preferred = None
@@ -1434,7 +1467,7 @@ class LiveRuntime:
                     candidateReuse=report.get("candidateReuse", "none"), scanSkipped=report.get("scanSkipped", False))
             else:
                 result = self._receipt(action, payload, success=False, reason=last_material_reason,
-                    posePending=True, identityUnresolved=True)
+                    posePending=True, identityUnresolved=not bool(self._s1_round_locked_map()))
                 # Reuse this ticket's guarded capture and the existing bounded
                 # recorder/settings. Diagnostic failure must not change the scan.
                 try:
@@ -2596,6 +2629,8 @@ class LiveRuntime:
     def _select_s1_provisional(self, action, payload, cancelled, *, birth_ticket=None, request_id=None):
         # Fail stale clicks immediately even while another capture owns work.
         with self._lock:
+            if self._s1_round_locked_map():
+                return self._receipt(action, payload, success=False, reason="identity-locked")
             if birth_ticket is None:
                 birth_ticket = (self._epoch, self._request_lifetime_generation, self._settings_generation)
             def owns_birth():
@@ -2607,6 +2642,8 @@ class LiveRuntime:
         with self._work:
             switch_from = None
             with self._lock:
+                if self._s1_round_locked_map():
+                    return self._receipt(action, payload, success=False, reason="identity-locked")
                 if (not owns_birth() or self._capture_pending or self._s1_structure_session is not original_session
                         or self._s1_structure_ticket != original_ticket or not self._identity_observation_current()):
                     return self._receipt(action, payload, success=False, reason="stale-structure-candidate", stale=True)
@@ -2683,6 +2720,8 @@ class LiveRuntime:
             return self._set_floor(action, payload, cancelled)
         if action in ("reselect_map", "map_reselection"):
             with self._lock:
+                if self._s1_round_locked_map():
+                    return self._receipt(action, payload, success=False, reason="identity-locked")
                 if self._s1_provisional_enabled():
                     # Clear before waiting for work, so an old scan/ACK cannot
                     # restore the preference after explicit re-identification.
@@ -2695,6 +2734,8 @@ class LiveRuntime:
                     engine = self._engine
                 engine = engine or self._get_engine(mode, season)
                 with self._lock:
+                    if self._s1_round_locked_map():
+                        return self._receipt(action, payload, success=False, reason="identity-locked")
                     if self._cancelled(cancelled) or epoch != self._epoch or mode != self._mode or season != self._season:
                         return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
                     if self._gate is None:
@@ -2718,6 +2759,8 @@ class LiveRuntime:
                     self._gate.selected_id = selected
                     return self._receipt(action, payload, success=True, reason="candidate-reselection-opened")
         with self._lock:
+            if self._s1_round_locked_map():
+                return self._receipt(action, payload, success=False, reason="identity-locked")
             if self._gate is None or (not self._active and not self._candidate_edit):
                 return self._receipt(action, payload, success=False, reason="candidate-control-unavailable")
             if action in ("previous_candidate", "next_candidate", "select_candidate"):
@@ -2988,7 +3031,8 @@ class LiveRuntime:
             manual_pick_available = bool(
                 self._active and (ready or self._manual_alignment) and self._engine is not None and self._gate is not None
                 and not self._round_preparing and not self._capture_pending
-                and self._group_choice_inflight is None and self._pending_sibling is None)
+                and self._group_choice_inflight is None and self._pending_sibling is None
+                and not self._s1_round_locked_map())
             commands = list(offline["availableCommands"])
             commands += ["end_round", "close_map", "toggle_sheet_visibility"]
             if ready:
@@ -3047,6 +3091,10 @@ class LiveRuntime:
             metadata = ({key: copy.deepcopy(value) for key, value in self._render.items()
                          if key not in ("pixels",)} if self._render is not None else {})
             identity_fields = self._identity_fields()
+            if self._s1_round_locked_map():
+                commands = [cmd for cmd in commands if cmd not in (
+                    "reselect_map", "map_reselection", "select_candidate", "previous_candidate",
+                    "next_candidate", "confirm_route", "select_group_member")]
             return dict(**self._context(), epoch=self._epoch, cycleId=self._cycle, mapId=identity_fields["durableMapId"], floor=self._floor,
                 generation=self._frame_generation, preferredProfileId=self._profile,
                 effectiveProfileId=metadata.get("effectiveProfileId", ""),
@@ -3141,7 +3189,7 @@ class LiveRuntime:
             # A static reference is explicitly historical, not a retained
             # pose. Normal reopen must not blank it while acquiring fresh
             # evidence; conflict/reselection/context boundaries still revoke.
-            keep_static_floor_intent = (self._native_s1_round_lock and not self._native_s1_private_experiment
+            keep_static_floor_intent = (self._native_s1_final_round_lock
                 and reason in ("game-floor-control-intent", "floor-changed", "floor-unknown"))
             if keep_static_floor_intent:
                 self._floor_required = True
@@ -3304,7 +3352,7 @@ class LiveRuntime:
         with self._lock:
             self._revoke_s1_current_candidates(
                 preserve_reference=(reason in ("new-capture", "new-provisional-capture")
-                    or self._native_s1_round_lock and not self._native_s1_private_experiment
+                    or self._native_s1_final_round_lock
                     and reason not in ("s1-candidate-excluded", "private-contradiction-recovery")))
             token = self._render.get("token", "") if self._render is not None else ""
             self._discard_sibling()
@@ -3672,7 +3720,7 @@ class LiveRuntime:
         candidate evidence and hard boundaries revoke it before blocking.
         """
         pool = self._s1_private_pool
-        historical_floor = bool(self._native_s1_round_lock and not self._native_s1_private_experiment
+        historical_floor = bool(self._native_s1_final_round_lock
             and (self._floor_required or not self._observed_floor))
         return bool(row.get("s1CandidateReference") and self._season == "s1"
             and self._candidate_preview_requested() and not self._manual_alignment
@@ -4188,6 +4236,12 @@ class LiveRuntime:
         capture_request_id = request_id
         payload = dict(payload or {})
         action = str(action)
+        with self._lock:
+            if self._s1_round_locked_map() and (action in (
+                    "reselect_map", "map_reselection", "select_candidate", "previous_candidate",
+                    "next_candidate", "confirm_route", "select_group_member")
+                    or action == "capture_now" and payload.get("forceCatalogue") is True):
+                return self._receipt(action, payload, success=False, reason="identity-locked")
         from season_context import is_retired_mode
         if is_retired_mode(self._mode, self._season) and action not in (
                 "set_game_mode", "set_season", "set_route_profile", "set_context",
@@ -4239,6 +4293,8 @@ class LiveRuntime:
             return self._receipt(action, payload, success=True, reason="visibility-toggled")
         if action == "capture_now" and payload.get("forceCatalogue") is True:
             with self._lock:
+                if self._s1_round_locked_map():
+                    return self._receipt(action, payload, success=False, reason="identity-locked")
                 if self._s1_provisional_enabled():
                     if (capture_request_epoch != self._epoch or self._cancelled(cancelled)
                             or request_settings_generation != self._settings_generation):

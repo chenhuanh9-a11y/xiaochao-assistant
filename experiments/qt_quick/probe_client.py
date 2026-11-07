@@ -6,12 +6,13 @@ import sys
 from PySide6.QtCore import QObject, QPointF, QTimer, Qt, QMetaObject
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtTest import QTest
+from season_context import modes_for_season
 
 
 class ResourceContextAcceptance:
     """Bounded real-client checks after opening the deferred management page."""
-    contexts = (("s0", "difficult"), ("s1", "nightmare"),
-                ("s1", "difficult"), ("s1", "difficulty2"), ("s0", "nightmare"))
+    contexts = tuple((season, mode) for season in ("s0", "s1")
+                     for mode in modes_for_season(season))
 
     def __init__(self, client, check, capture, original, clock=time.monotonic):
         self.client, self.check, self.capture, self.clock = client, check, capture, clock

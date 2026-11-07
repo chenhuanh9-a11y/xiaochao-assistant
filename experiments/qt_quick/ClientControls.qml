@@ -50,8 +50,8 @@ Window {
         && privateIdentity.privateExperimentalLocked === true && privateLockedMap.length > 0
     readonly property bool privatePoseCurrent: snapshot.displayAuthorized === true
         && (snapshot.provisionalMapId || snapshot.mapId || "") === privateLockedMap
-    readonly property bool unconfirmedCandidate: snapshot.candidateDisplayOnly === true
-        || snapshot.identityPhase === "CANDIDATE_DISPLAY"
+    readonly property bool unconfirmedCandidate: snapshot.identityLocked !== true
+        && (snapshot.candidateDisplayOnly === true || snapshot.identityPhase === "CANDIDATE_DISPLAY")
     readonly property var actionOrder: ["toggle-panel", "candidate-prev", "candidate-next", "confirm-round", "cycle-floor", "end-round", "toggle-sheet-visibility", "start-round", "toggle-round", "manual-map-picker"]
     readonly property bool manualSelection: preferences.mapSelectionMode === "manual"
     Component.onCompleted: syncGroupChoices()
@@ -532,7 +532,7 @@ Window {
             KeyHint { text: !panel.compactAutomatic || panel.recoveryExpanded ? panel.shortcut("candidate-next") : "" }
             ControlButton { visible: !panel.compactAutomatic || panel.recoveryExpanded; text: panel.snapshot.candidateProvisionalDisplayEnabled === true ? "人工确认本局地图（可选）" : "确认地图"; enabled: panel.available("confirm_route"); Layout.fillWidth: true; onClicked: session.dispatch("confirm_route") }
             KeyHint { text: !panel.compactAutomatic || panel.recoveryExpanded ? panel.shortcut("confirm-round") : "" }
-            ControlButton { objectName: "controlReidentify"; text: "重新识别"; enabled: panel.available("capture_now"); Layout.fillWidth: true; onClicked: session.dispatchWithPayload("capture_now", {forceCatalogue: true}) }
+            ControlButton { objectName: "controlReidentify"; text: panel.snapshot.s1FormalRoundLock && panel.snapshot.identityLocked ? "重新贴合" : "重新识别"; enabled: panel.available("capture_now"); Layout.fillWidth: true; onClicked: session.dispatchWithPayload("capture_now", {forceCatalogue: !(panel.snapshot.s1FormalRoundLock && panel.snapshot.identityLocked)}) }
             ControlButton { objectName: "controlsRecognitionDetails"; visible: !panel.compactAutomatic || panel.recoveryExpanded; text: "打开候选列表（切到主界面）"; Layout.fillWidth: true; onClicked: clientCoordinator.openRecognitionDetails() }
         }
     }

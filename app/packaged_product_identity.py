@@ -21,8 +21,9 @@ _ISOLATED = {
     "s1-floor-test": "3C271F5D-71FF-4EA8-9569-B8DAC30F3773",
     "s1-auto-test": "ED53B6E8-E9A0-4F21-AF75-7C8A62BE7347",
     "s1-playtest": "D9FE6D76-C31A-47AF-9281-B4614C245E92",
+    "feature-test": "7A2F6C81-9B54-4DB6-A308-6E452D91F0BC",
 }
-PRIVATE_S1_INSTANCES = frozenset(("s0-s1-test", "s1-floor-test", "s1-auto-test", "s1-playtest"))
+PRIVATE_S1_INSTANCES = frozenset(("s0-s1-test", "s1-floor-test", "s1-auto-test", "s1-playtest", "feature-test"))
 
 
 class InstallationProfileError(ValueError):
@@ -88,5 +89,6 @@ def qt_application_model_id():
     if instance not in _ISOLATED:
         raise InstallationProfileError("Unknown isolated Qt application identity")
     return {"s0-s1-test": "Xingtu.S0S1PrivateTest", "s1-floor-test": "Xingtu.S1FloorPrivateTest",
-            "s1-auto-test": "Xingtu.S1AutoPrivateTest", "s1-playtest": "Xingtu.S1Playtest"}.get(
+            "s1-auto-test": "Xingtu.S1AutoPrivateTest", "s1-playtest": "Xingtu.S1Playtest",
+            "feature-test": "Xingtu.FeatureTest"}.get(
         instance, "Xingtu.QtClientTest")

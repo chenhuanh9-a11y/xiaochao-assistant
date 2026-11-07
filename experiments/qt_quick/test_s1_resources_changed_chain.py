@@ -21,7 +21,7 @@ class S1ResourceRevocationChainTests(unittest.TestCase):
     def fixture(self, token):
         self.enterContext(patch.object(evidence_fixture.AsyncEvidenceContracts,
             'candidate_purpose', token, create=True))
-        if token is purpose._NATIVE_S1_PRODUCTION_CANDIDATE:
+        if purpose.native_final_round_lock_purpose_is_valid(token):
             # The historical private helper asserts identityLocked is always
             # false; use the formal helper when exercising the formal token.
             self.enterContext(patch.object(evidence_fixture.AsyncEvidenceContracts,
@@ -58,7 +58,7 @@ class S1ResourceRevocationChainTests(unittest.TestCase):
             self.assertFalse(fx.runtime.acknowledge_render_material(token)['success'])
 
     def test_resource_signal_clears_both_views_before_revoking_runtime_authority(self):
-        for token in (purpose._NATIVE_S1_PREVIEW, purpose._NATIVE_S1_PRODUCTION_CANDIDATE):
+        for token in (purpose._NATIVE_S1_PREVIEW, purpose._NATIVE_S1_PLAYTEST, purpose._NATIVE_S1_PRODUCTION_CANDIDATE):
             with self.subTest(formal=token is purpose._NATIVE_S1_PRODUCTION_CANDIDATE):
                 fx = self.fixture(token)
                 old = fx.runtime.reference_payload()['token']
@@ -68,7 +68,7 @@ class S1ResourceRevocationChainTests(unittest.TestCase):
                 self.assert_revoked(fx, [old])
 
     def test_blocked_background_evidence_cannot_restore_pool_or_closed_static_sheet(self):
-        for token in (purpose._NATIVE_S1_PREVIEW, purpose._NATIVE_S1_PRODUCTION_CANDIDATE):
+        for token in (purpose._NATIVE_S1_PREVIEW, purpose._NATIVE_S1_PLAYTEST, purpose._NATIVE_S1_PRODUCTION_CANDIDATE):
             with self.subTest(formal=token is purpose._NATIVE_S1_PRODUCTION_CANDIDATE):
                 fx = self.fixture(token)
                 # The fixture starts locked. Production correctly stops new
@@ -104,7 +104,7 @@ class S1ResourceRevocationChainTests(unittest.TestCase):
                 self.assert_revoked(fx, [shown['token']])
 
     def test_blocked_foreground_material_cannot_publish_after_resource_signal(self):
-        for token in (purpose._NATIVE_S1_PREVIEW, purpose._NATIVE_S1_PRODUCTION_CANDIDATE):
+        for token in (purpose._NATIVE_S1_PREVIEW, purpose._NATIVE_S1_PLAYTEST, purpose._NATIVE_S1_PRODUCTION_CANDIDATE):
             with self.subTest(formal=token is purpose._NATIVE_S1_PRODUCTION_CANDIDATE):
                 fx = self.fixture(token)
                 old = fx.runtime.reference_payload()['token']

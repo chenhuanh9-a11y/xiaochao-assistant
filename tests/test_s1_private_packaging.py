@@ -271,7 +271,8 @@ class PrivatePackagingTests(unittest.TestCase):
         self.assertEqual(len({row['appId'] for row in build.INSTANCES.values()}), len(build.INSTANCES))
         profile = self.root / 'installation-profile.json'
         models = {'s0-s1-test': 'Xingtu.S0S1PrivateTest', 's1-floor-test': 'Xingtu.S1FloorPrivateTest',
-                  's1-auto-test': 'Xingtu.S1AutoPrivateTest', 's1-playtest': 'Xingtu.S1Playtest'}
+                  's1-auto-test': 'Xingtu.S1AutoPrivateTest', 's1-playtest': 'Xingtu.S1Playtest',
+                  'feature-test': 'Xingtu.FeatureTest'}
         self.assertEqual(identity.PRIVATE_S1_INSTANCES, frozenset(models))
         self.assertIs(build.PRIVATE_S1_INSTANCES, identity.PRIVATE_S1_INSTANCES)
         for name, model in models.items():
@@ -303,6 +304,73 @@ class PrivatePackagingTests(unittest.TestCase):
         for key in ('appId', 'installFolder', 'startMenuGroup', 'setupPrefix', 'versionSuffix'):
             self.assertNotEqual(current[key], previous[key])
         self.assertEqual(current['product'], previous['product'])
+
+    def test_feature_identity_cannot_impersonate_other_channels(self):
+        instance = dict(id='feature-test', **build.INSTANCES['feature-test'])
+        profile = self.root / 'installation-profile.json'
+        for other in build.INSTANCES:
+            if other == 'feature-test':
+                continue
+            for key in ('appId', 'installFolder', 'startMenuGroup', 'setupPrefix', 'versionSuffix'):
+                self.assertNotEqual(instance[key], build.INSTANCES[other][key])
+            forged = dict(instance, appId=build.INSTANCES[other]['appId'])
+            profile.write_text(json.dumps(dict(product=build.PRODUCT, installerInstance=forged)))
+            with self.subTest(other=other), patch.object(sys, 'frozen', True, create=True), patch.object(sys, '_MEIPASS', str(self.root), create=True):
+                with self.assertRaises(identity.InstallationProfileError):
+                    identity.baked_identity(require_qt=True)
+        profile.write_text(json.dumps(dict(product=build.PRODUCT, installerInstance=dict(instance, id='unknown'))))
+        with patch.object(sys, 'frozen', True, create=True), patch.object(sys, '_MEIPASS', str(self.root), create=True):
+            with self.assertRaises(identity.InstallationProfileError):
+                identity.baked_identity(require_qt=True)
+
+    def test_feature_data_stays_beside_its_own_baked_executable(self):
+        import runpy
+        roots = {}
+        for name in ('s1-playtest', 'feature-test'):
+            install = self.root / build.INSTANCES[name]['installFolder']
+            runtime = install / '_internal'
+            runtime.mkdir(parents=True)
+            (runtime / 'installation-profile.json').write_text(json.dumps(dict(
+                product=build.PRODUCT, installerInstance=dict(id=name, **build.INSTANCES[name]))))
+            with patch.object(sys, 'frozen', True, create=True), patch.object(sys, '_MEIPASS', str(runtime), create=True), patch.object(sys, 'executable', str(install / 'XingtuQtClientTest.exe')):
+                paths = runpy.run_path(str(ROOT / 'experiments/qt_quick/client_paths.py'))
+                self.assertFalse(paths['PRODUCTION'])
+                roots[name] = paths['DEFAULT_SANDBOX']
+                self.assertEqual(roots[name], install / 'work/qt-client-runtime')
+                roots[name].mkdir(parents=True)
+                (roots[name] / '.qt-lab-owner').write_text('qt-quick-isolated-v1')
+                self.assertEqual(paths['validate_installation_root'](roots[name]), roots[name])
+                if name == 'feature-test':
+                    with self.assertRaisesRegex(ValueError, 'own marked work directory'):
+                        paths['validate_installation_root'](roots['s1-playtest'])
+        self.assertNotEqual(roots['feature-test'], roots['s1-playtest'])
+
+    def test_feature_installer_reserves_all_previous_private_directories(self):
+        source = (ROOT / 'tools/qt-client.iss').read_text(encoding='utf-8-sig')
+        block = source.split('#ifdef PrivateS1Installer\nfunction RegisteredOldPrivateDirectory', 1)[1]
+        block = '#ifdef PrivateS1Installer\nfunction RegisteredOldPrivateDirectory' + block.split('function LastDirectoryError', 1)[0]
+        symbols = {'PrivateS1Installer', 'FeatureTestInstaller'}
+        registry = self.selected_guard(block, symbols)
+        directory = self.selected_guard(source.split('function PrivateDirectoryError', 1)[1].split('function NextButtonClick', 1)[0], symbols)
+        for name in ('client', 'layout-preview', 's0-s1-test', 's1-floor-test', 's1-auto-test', 's1-playtest'):
+            instance = build.INSTANCES[name]
+            self.assertIn('{' + instance['appId'] + '}_is1', registry)
+            self.assertIn('{autopf}\\' + instance['installFolder'], directory)
+        self.assertNotIn(build.INSTANCES['feature-test']['appId'], registry)
+        self.assertNotIn('{autopf}\\XingtuFeatureTest', directory)
+        for hive in ('HKCU64', 'HKLM64', 'HKCU32', 'HKLM32'):
+            self.assertIn(f'RegisteredOldPrivateDirectory({hive}, Target)', directory)
+        self.assertIn('(Entries > 0) and not RegisteredPrivateDirectory(Target)', directory)
+        first_registry = self.selected_guard(block, {'PrivateS1Installer', 'S1PlaytestInstaller'})
+        self.assertNotIn(build.INSTANCES['s1-playtest']['appId'], first_registry)
+        self.assertEqual(registry.count("Lowercase(NormalizedDirectory(Previous) + '\\')"), 6)
+        self.assertEqual(first_registry.count("Lowercase(NormalizedDirectory(Previous) + '\\')"), 5)
+        strict = source.split('#elif InstallerAppId == "{{7A2F6C81-9B54-4DB6-A308-6E452D91F0BC}"', 1)[1].split('#else', 1)[0]
+        for field, value in (('InstallerAppName', 'Xingtu Feature Test'), ('InstallerFolder', 'XingtuFeatureTest'), ('InstallerGroup', 'Xingtu Feature Test')):
+            self.assertIn(f'{field} != "{value}"', strict)
+        self.assertIn('#error Invalid feature test installer identity', strict)
+        self.assertIn('#define PrivateS1Installer 1', strict)
+        self.assertIn('#define InstallerModelId "Xingtu.FeatureTest"', source)
 
     def test_each_s1_channel_requires_native_packs_before_seed_creates_target(self):
         source = self.root / 'program'

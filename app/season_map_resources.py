@@ -181,7 +181,9 @@ def _load_native_browse_context(root, mode, *, cancelled):
 
 
 def native_builtin_summaries(root, *, cancelled=lambda: False):
-    """Package-page status for native defaults, without author receipts/writes."""
+    """Report active defaults and any retained historical packs, without writes."""
+    from season_context import modes_for_season
+    active_modes = modes_for_season("s1")
     root = Path(root).resolve()
     if not (root / "seasons/s1").exists():
         return []
@@ -189,6 +191,13 @@ def native_builtin_summaries(root, *, cancelled=lambda: False):
     names = {"difficulty2": "难度二", "difficult": "困难", "nightmare": "噩梦"}
     for mode in browse_modes("s1"):
         try:
+            if mode not in active_modes:
+                # Absence is expected for retired modes. Existing history, even
+                # an empty directory or dangling link, must still be validated.
+                try:
+                    (root / "seasons/s1" / mode).lstat()
+                except FileNotFoundError:
+                    continue
             context = _load_native_browse_context(root, mode, cancelled=cancelled)
             profile = context.profiles[0]
             rows.append(dict(packageId=f"builtin-s1-{mode}", title=f"S1 · {names[mode]} · 内置原生底图",

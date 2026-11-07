@@ -2,6 +2,7 @@
 from types import SimpleNamespace as NS
 import unittest
 from probe_client import ResourceContextAcceptance as Probe
+from season_context import modes_for_season
 
 class ProbeResourceContracts(unittest.TestCase):
     def client(self):
@@ -15,6 +16,35 @@ class ProbeResourceContracts(unittest.TestCase):
     def probe(self, client=None, clock=lambda: 0):
         return Probe(client or self.client(), lambda *a: None, lambda *a: None,
                      dict(gameSeason="s1", gameMode="nightmare"), clock)
+
+    def test_context_targets_cover_active_modes_and_restore_original(self):
+        expected = {(season, mode) for season in ("s0", "s1")
+                    for mode in modes_for_season(season)}
+        self.assertEqual(set(Probe.contexts), expected)
+        self.assertNotIn(("s1", "difficulty2"), Probe.contexts)
+        for original in sorted(expected):
+            with self.subTest(original=original):
+                p = Probe(self.client(), lambda *a: None, lambda *a: None,
+                          dict(gameSeason=original[0], gameMode=original[1]))
+                self.assertEqual(set(p.targets), expected)
+                self.assertEqual(p.targets[-1], original)
+
+    def test_explicit_verification_still_rejects_missing_or_bad_builtins(self):
+        for rows in ([], [dict(packageId="native", builtin=True, status="incomplete")],
+                     [dict(packageId="other", builtin=True, status="bundled")]):
+            with self.subTest(rows=rows):
+                c = self.client()
+                checks = {}
+                p = Probe(c, lambda key, value: checks.update({key: value}), lambda *a: None,
+                          dict(gameSeason="s1", gameMode="nightmare"))
+                p.expected_ids = ["native"]
+                p.rows = lambda: rows
+                c.resources.inventoryVerified = True
+                c.resources.resourcesChanged = NS(emit=lambda: None)
+                c.coordinator.navigate = lambda *a: None
+                p.go("verified")
+                p.advance()
+                self.assertFalse(checks["resource_explicit_verification_complete"])
 
     def test_declarations_cannot_claim_counts_or_verified_state(self):
         good=dict(packageId="native", builtin=True, status="declared", canRemove=False)

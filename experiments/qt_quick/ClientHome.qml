@@ -10,6 +10,7 @@ Item {
     readonly property var privateExperiment: session.snapshot.privateExperiment || ({})
     readonly property string privateLockedMap: privateExperiment.privateLockMapId || ""
     readonly property bool privateIdentityRetained: session.snapshot.season === "s1" && session.snapshot.roundActive === true
+        && session.snapshot.s1FormalRoundLock !== true
         && privateExperiment.privateExperimental === true && privateExperiment.privateExperimentalLocked === true
         && privateLockedMap.length > 0
     readonly property bool privatePoseCurrent: session.snapshot.displayAuthorized === true
@@ -140,7 +141,9 @@ Item {
                             objectName: "homeRoundStats"
                             Layout.fillWidth: true; spacing: 10
                             Repeater {
-                                model: [{label: "状态", value: page.privateIdentityRetained ? page.privateStatus : session.snapshot.controlStatusText || (session.snapshot.roundActive ? "本局进行中" : session.snapshot.roundPreparing ? "已准备" : "等待开始")},
+                                model: [{label: "状态", value: session.snapshot.s1FormalRoundLock === true && session.snapshot.identityLocked === true
+                                            ? "地图已锁定 · " + (session.snapshot.displayAuthorized ? "当前画面已贴合" : "位置待核对")
+                                            : page.privateIdentityRetained ? page.privateStatus : session.snapshot.controlStatusText || (session.snapshot.roundActive ? "本局进行中" : session.snapshot.roundPreparing ? "已准备" : "等待开始")},
                                         {label: "地图", value: page.privateIdentityRetained ? "本局 " + page.privateLockedMap : session.snapshot.mapName || session.snapshot.mapId || "尚未确认"},
                                         {label: "楼层", value: session.snapshot.observedFloor ? page.floorLabel(session.snapshot.observedFloor, "") : "尚未确认"}]
                                 delegate: Rectangle {
