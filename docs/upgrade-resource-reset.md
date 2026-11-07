@@ -212,5 +212,11 @@ tombstone/坏元数据与遗留回执、损坏图像、只读提示、确认后�
 快照身份和个人路线保留。联合 13 组源码回归共 232 项，228 通过、4 项平台测试跳过。
 这不补齐前述原生安装登记/快捷方式回滚缺口，也不构成 Windows Setup 验收。
 
+2026-11-07 的原生 Inno 6.7.3 首次编译发现：Pascal 续行若以 `#13#10`
+开头，会被 ISPP 作为预处理指令，停止于 `qt-resource-reset.iss:185`（exit 2）。
+统一将三个安装/卸载脚本共六处字符常量移回上一行，并增加源码回归。
+该次只使用合成 stage 和 `/O-`，没有生成或运行 Setup；修正后仍需同提交重编译，
+不能以这项源码检查代替 Pascal 编译或安装验收。
+
 参考 [Inno 临时提取目录规则](https://jrsoftware.org/ishelp/topic_isxfunc_extracttemporaryfiles.htm)
 和 [Windows DuplicateHandle](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-duplicatehandle)。

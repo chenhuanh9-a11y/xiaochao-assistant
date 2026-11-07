@@ -533,8 +533,8 @@ begin
       this existing file rollback. Report that boundary rather than touching
       unrelated user links/registry values or claiming complete restoration. }
     Restored := False;
-    SuppressibleMsgBox('升级失败，已尝试恢复程序和资源文件。Windows 安装登记及快捷方式没有完整回滚，仍需用原安装包修复。' +
-      #13#10 + '请保留 work/installer-backups 与 work/resource-upgrades；本次不自动恢复游戏启动绑定。',
+    SuppressibleMsgBox('升级失败，已尝试恢复程序和资源文件。Windows 安装登记及快捷方式没有完整回滚，仍需用原安装包修复。' + #13#10 +
+      '请保留 work/installer-backups 与 work/resource-upgrades；本次不自动恢复游戏启动绑定。',
       mbError, MB_OK, IDOK);
   end;
   { Restore the old opt-in only after a complete file rollback, or after a

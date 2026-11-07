@@ -181,8 +181,8 @@ begin
       ResourceResetTransaction := GetIniString('result', 'transactionId', '', ResultDir + '\result.ini');
       if not ResetHex(ResourceResetPlanHash, 64) or (Length(ResourceResetTransaction) <> 36) then
         RaiseException('上次升级状态无法核实。');
-      if MsgBox('发现上次已提交升级遗留的恢复标记。是否核对原目标程序身份并完成标记清理？' +
-        #13#10 + '事务：' + ResourceResetTransaction + #13#10 + '不会恢复旧资源，也不会删除隔离区。',
+      if MsgBox('发现上次已提交升级遗留的恢复标记。是否核对原目标程序身份并完成标记清理？' + #13#10 +
+        '事务：' + ResourceResetTransaction + #13#10 + '不会恢复旧资源，也不会删除隔离区。',
         mbConfirmation, MB_YESNO or MB_DEFBUTTON2) <> IDYES then begin
         Reason := '已保留上次升级的恢复记录，本次安装停止。'; Exit;
       end;

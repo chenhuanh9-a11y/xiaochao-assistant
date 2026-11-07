@@ -349,8 +349,8 @@ begin
     end;
     if Success then Exit;
     Answer := SuppressibleMsgBox('备份未完成：' + Reason + #13#10 +
-      '原资料尚未移动或删除。不完整备份（如已创建）保留在：' + UninstallBackupPath +
-      #13#10#13#10 + '是：重试；否：不备份继续；取消：停止卸载。',
+      '原资料尚未移动或删除。不完整备份（如已创建）保留在：' + UninstallBackupPath + #13#10#13#10 +
+      '是：重试；否：不备份继续；取消：停止卸载。',
       mbError, MB_YESNOCANCEL or MB_DEFBUTTON3, IDCANCEL);
     if Answer = IDNO then begin
       if UninstallDeleteData then
@@ -515,9 +515,9 @@ begin
     { Inno invokes usPostUninstall AND usDone even when RemovedAll=False.
       usDone follows its native result/restart dialog. Never infer success. }
     if UninstallDeleteData then begin
-      if SuppressibleMsgBox('请结合刚才的 Windows 卸载结果：程序可能仍有未移除的文件。' +
-        #13#10 + '仍要永久清除此前选择的设置、图包、路线、日志、截图和历史备份吗？' +
-        #13#10 + '是：清除资料；否：保留原资料。清除不经过回收站。',
+      if SuppressibleMsgBox('请结合刚才的 Windows 卸载结果：程序可能仍有未移除的文件。' + #13#10 +
+        '仍要永久清除此前选择的设置、图包、路线、日志、截图和历史备份吗？' + #13#10 +
+        '是：清除资料；否：保留原资料。清除不经过回收站。',
         mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES then
         ClearSelectedUninstallData
       else begin
@@ -526,8 +526,8 @@ begin
       end;
     end;
     if UninstallBackupComplete then
-      SuppressibleMsgBox('另存的资料备份已完整核对，保存在：' + UninstallBackupPath +
-        #13#10 + '备份不会随本次卸载清除。', mbInformation, MB_OK, IDOK);
+      SuppressibleMsgBox('另存的资料备份已完整核对，保存在：' + UninstallBackupPath + #13#10 +
+        '备份不会随本次卸载清除。', mbInformation, MB_OK, IDOK);
   end;
 end;
 

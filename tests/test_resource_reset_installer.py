@@ -290,6 +290,14 @@ class ResourceResetSourceContracts(unittest.TestCase):
         self.assertIn('ResourceResetNativeMetadataNeedsRepair', cleanup)
         self.assertIn('if not ResourceResetStarted or ResourceResetFinalized', events)
 
+    def test_pascal_character_constants_never_start_preprocessor_lines(self):
+        # ISPP reads a leading # as a directive even inside a Pascal expression.
+        import re
+        for name in ('qt-client.iss', 'qt-resource-reset.iss', 'qt-uninstall-data.iss',
+                     'qt-game-watcher-lifecycle.iss'):
+            with self.subTest(name=name):
+                self.assertIsNone(re.search(r'^\s*#[0-9]', (ROOT / 'tools' / name).read_text(), re.MULTILINE))
+
     def test_packaged_helper_extraction_and_lease_are_not_an_unlock_bypass(self):
         source = (ROOT / 'tools/qt-resource-reset.iss').read_text()
         for token in ("ExtractTemporaryFiles('{app}\\star-map-reset-helper.exe')", 'VerifyResetInputs;',
