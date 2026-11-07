@@ -25,6 +25,7 @@ class ExplicitComponentAlignmentTests(unittest.TestCase):
         with patch('nightmare_candidate.visible_map_components', return_value=self.islands if islands is None else islands), \
              patch('single_map_structure.current_geometry', side_effect=geometry), \
              patch('single_map_structure.observed_corner_chains', return_value=[]), \
+             patch('single_map_structure.marker_occluded_corner_proposals', return_value=[]), \
              patch.object(self.host, '_fit_observation', side_effect=outcomes) as solver:
             result = self.host.fit(self.frame, 'map', '-1', cancelled, observation_bounds=self.bounds)
             return result, solver.call_count

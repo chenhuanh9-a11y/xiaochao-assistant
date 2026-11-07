@@ -75,6 +75,7 @@ class ScanObservationReuseTests(unittest.TestCase):
             with self.subTest(expected=expected), \
                  patch('single_map_structure.current_geometry', side_effect=geometry), \
                  patch('single_map_structure.observed_corner_chains', return_value=[object()]), \
+                 patch('single_map_structure.marker_occluded_corner_proposals', return_value=[]), \
                  patch('nightmare_candidate.visible_map_components', return_value=islands) as components, \
                  patch.object(self.host, '_shared_structure_reference', return_value=reference), \
                  patch.object(self.host, '_component_pose_consistent', return_value=consistent), \

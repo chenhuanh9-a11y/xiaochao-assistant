@@ -460,6 +460,34 @@ Windows joint 新增 installer-reset 专组，原11组不删、不替换模块�
 跨进程测试称为这些端到端步骤已通过。恢复能力是可信完成证据下的向前收尾，
 不是任意状态的完整 Windows 回滚。
 
+### 首次重置集成 Windows 结果与旧路径 fixture 修正
+
+精确 `36c71e2603217ddc0e1cf770096a6c287137c2e7` 的六套 Windows 检查中，五套成功；[joint42375749353](https://github.com/chenhuanh9-a11y/xiaochao-assistant/actions/runs/42375749353) 原11组全部成功，新增 installer-reset 398项394通过、2失败、2平台skip。新增目录历史14项、committed projection5项和旧协议4项均已原生通过。两处失败仅是原 `test_qt_startup_failures` 预期未展开的 `RUNNER~1` 与产品已展开的 `runneradmin` 临时路径直接比较；保留[原红日志](https://github.com/chenhuanh9-a11y/xiaochao-assistant/actions/runs/42375749353/job/128412844637)。
+
+测试修复来源 `a5aeb817b000e7d4da35b63955b11facc6bc4305`，只把 fixture 根规范化为 `Path(self.temp.name).resolve()`，不改原严格路径断言或任何产品文件。`client_paths.py` 与 `packaged_product_identity.py` 从e5defc7、18d1cc0至36c71e2字节完全一致。真实存在的 `alias-hop/..` 别名对三个未改历史版本都准确复现原两个断言失败；缺失/损坏profile控制仍通过。这是可移植路径别名模型，不冒称Linux原生复现Windows8.3行为。
+
+新增4项验证原断言/缺失损坏profile、生产错误根、隔离所有者及work边界、真实symlink/junction profile与root拒绝。独立实现与集成复跑8模块均62项全过、零skip；原生Windows新junction分支仍以新最终SHA的CI为准。未为红灯跳过测试或放宽链接、重解析点、profile及安装根检查。
+
+## 遮挡结构候选与隐式域修复集成
+
+固定来源为 `044015f240ca5cb70d0e27e638cecec28bd155a8`，经独立审查修正后再纳入，不把原候选直接当通过。修复来源 `f3fcb0df7fb260198bcf16226ec6c6784f9787a4`（tree `1bcbb725f79ec783024268550614c9aa108c6b44`），其本地父 `5d07abd` 与原远端044015f同树。它与重置独立检查点 `36c71e2603217ddc0e1cf770096a6c287137c2e7` 无冲突组合；目录历史、严格 committed projection、旧协议恢复和 Setup lease 未改。
+
+### 算法证据与风险
+
+- 新提案只连接被有色 marker 遮挡的真实墙端点，不把 marker 当测量点，不放宽原点/墙验收、残差、歧义、候选预算与当前帧所有权。
+- 44组合生成像素脚本已在最终修复组合树原样重跑：旧22成功、新32成功，新增10例最大真值误差0.542714px，原成功无丢失，修复前后候选成功姿态完全一致。这不是生产地图或真实游戏识别率。
+- 原044015f的共享 proposal 会进入 S0 implicit 入口，但 peer guard 仅接显式域。独立原脚本证实 no-index 路径新误贴；indexed 路径同类漏检在旧版已存在。f3fcb0d在 S0 原默认ROI及原 steady/prior/entry次序后增加同一守卫，不转为S1 full-frame。
+- 失败的最大 marker 岛不能再被成功的干净次岛隐藏。两份原复现脚本未改：四组冲突均拒绝、四组正例矩阵保持，clean/marker次岛负例也拒绝。弱三墙HUD、源unknown及域外墙仍作为未知。
+- 组件8px padding裁至真实观察域；独立四边ROI压力48组合通过。取消后不提交、超过组件预算失败关闭、反复结构与错误参考均保留拒绝。
+- 独立固定源码225项：221通过、4既有Windows存储skip。新增9方法覆盖两模式、显式/隐式域、索引/无索引和帧内缓存；生成像素运行真实几何算法，provider/index加载为测试替身。
+- 独立十候选合成扫描p50/p95/max为1738.822/1796.180/1810.608ms，仅计算耗时。此项是正确性恢复，不是速度达标；真实资源目录和输入到首次正确像素的300/500ms目标仍未验。
+
+### 组合回归与平台边界
+
+联合 Windows 增加独立 `fit-simulation` 14模块专组，原12组不删、不改列表。最终组合树按模块独立进程执行：贴合14模块225项221通过4平台skip，installer-reset26模块402项400通过2skip（含4项路径fixture回归），作者快照18模块168项163通过5skip，资源/留样合同27模块303项301通过2skip，失败列表为空。组间存在重复，不相加为独立用例。同SHA Windows结果记录在PR，不沿用原044015f或18d1cc0的结果。
+
+没有操作游戏、现用安装或原始用户画面，没有合并main或发布。S0高亮截图另项仍在独立开发，不包含在此检查点。真实地图、实时画面及端到端时延验收保持未完成。
+
 ## 最终验收门槛
 
 生产 source payload/version 锁仍刻意指向旧值，当前整合源码不得构建为正式交付物。
