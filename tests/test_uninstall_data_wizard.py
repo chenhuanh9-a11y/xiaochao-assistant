@@ -94,6 +94,38 @@ def sha(path):
 
 
 class UninstallSourceContracts(unittest.TestCase):
+    def test_watcher_stop_is_before_data_preparation_and_abort_restores_prior_choice(self):
+        events = routine('CurUninstallStepChanged')
+        self.assertLess(events.index('DisableGameWatcher'), events.index('PrepareUninstallData'))
+        self.assertLess(events.index('if not PrepareUninstallData then Abort'),
+                        events.index('CommitGameWatcherUninstall'))
+        self.assertIn('RestoreGameWatcher', routine('DeinitializeUninstall'))
+        self.assertNotIn('DisableGameWatcher', routine('InitializeUninstall'))
+        self.assertNotIn('CommitGameWatcherUninstall', routine('PrepareUninstallData'))
+
+    def test_upgrade_watcher_stop_restore_hooks_keep_shared_lifecycle_owner(self):
+        production = INSTALLER.split('; Original per-user installer', 1)[1].split('; Private directory selection', 1)[0]
+        self.assertIn('#include "qt-game-watcher-lifecycle.iss"', production)
+        events = production.split('procedure CurStepChanged', 1)[1].split('procedure DeinitializeSetup', 1)[0]
+        self.assertLess(events.index('DisableGameWatcher'), events.index('BeginUpgrade'))
+        self.assertLess(events.index('UpgradeCommitted := True'), events.index('RestoreGameWatcher'))
+        cleanup = production.split('procedure DeinitializeSetup', 1)[1].split('function ExecutableAvailable', 1)[0]
+        self.assertLess(cleanup.index('UPGRADE_ROLLBACK_RESTORED'), cleanup.index('RestoreGameWatcher'))
+        self.assertIn('if Restored then begin', cleanup)
+        self.assertIn('else if GameWatcherRestorePending then', cleanup)
+        prepare = production.split('function PrepareToInstall', 1)[1]
+        self.assertLess(prepare.index('UpgradePathAllowed'), prepare.index('DisableGameWatcher'))
+        self.assertIn('RestoreGameWatcher(RestoreReason)', prepare)
+        for definition in ('function CaptureGameWatcher', 'function DisableGameWatcher', 'function RestoreGameWatcher'):
+            self.assertNotIn(definition, production)
+
+    def test_all_installer_code_includes_are_tracked_in_build_recipes(self):
+        builder = (ROOT / 'tools/build_qt_client.py').read_text()
+        rebuild = (ROOT / 'tools/rebuild_qt_installer.py').read_text()
+        for filename in ('qt-uninstall-data.iss', 'qt-game-watcher-lifecycle.iss'):
+            self.assertIn('TOOLS / "' + filename + '"', builder)
+            self.assertIn('"tools/' + filename + '"', rebuild)
+
     def test_default_keep_and_no_backup_are_independent_and_silent_is_non_destructive(self):
         choose = routine('ChooseUninstallData')
         for text in ('UninstallDeleteData := False;', 'UninstallMakeBackup := False;',

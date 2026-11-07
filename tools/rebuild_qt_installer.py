@@ -16,7 +16,7 @@ import build_qt_client as build
 ROOT = Path(__file__).resolve().parents[1]
 CHINESE_SHA256 = "e0b0b350e2245f3c5e65586dfe43d574f6e7f06f2261149aba284954b3fc9a8d"
 INSTALLER_ONLY_FILES = {
-    "tools/qt-client.iss", "tools/qt-uninstall-data.iss", "tools/build_qt_client.py",
+    "tools/qt-client.iss", "tools/qt-uninstall-data.iss", "tools/qt-game-watcher-lifecycle.iss", "tools/build_qt_client.py",
     "tools/rebuild_qt_installer.py", "tools/INSTALLER_LANGUAGE.md",
 }
 

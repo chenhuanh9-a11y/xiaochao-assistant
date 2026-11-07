@@ -6,7 +6,8 @@
   An optional external COPY is a user backup. Temporary same-volume RENAMES
   preserve the one original object across historical native uninstall logs.
   They are not a backup and are removed after a successful keep/clear operation.
-  No recursive delete, main-EXE/helper execution, registry changes or network. }
+  No recursive delete or main-EXE execution. The shared watcher lifecycle owns
+  same-user startup registration cleanup; no network or journal deletion. }
 var
   UninstallFiles, UninstallHashes, UninstallDirectories: TStringList;
   UninstallHolding, UninstallBackupParent, UninstallBackupPath: String;
@@ -254,7 +255,7 @@ begin
     Text.SetBounds(ScaleX(20), ScaleY(207), ScaleX(500), ScaleY(91));
     Text.AutoSize := False;
     Text.WordWrap := True;
-    Text.Caption := '外部下载的原始 ZIP、安装目录外的文件及未识别的邻近文件不在清除范围。' + #13#10 +
+    Text.Caption := '外部 ZIP、安装目录外的文件及未识别的邻近文件不在清除范围。游戏启动绑定单独停用，外部防重复提示记录保留。' + #13#10 +
       '卸载期间会临时移动原文件，以避开旧安装记录的自动删除；不会因此多复制一份备份。' + #13#10 +
       '下一步可核对选择；取消或关闭此向导不会移动、备份或删除资料。';
     NextButton := TNewButton.Create(Form);
@@ -490,12 +491,18 @@ begin
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  WatcherReason: String;
 begin
   if CurUninstallStep = usUninstall then begin
     { Abort here is an Inno-supported pre-uninstall exit. No native removals yet. }
     if not InstalledExecutableAvailable or not AcquireResourceLock then
       RaiseException('星图或资源任务正在运行，尚未开始卸载。请退出后重试。');
+    if not DisableGameWatcher(WatcherReason) then RaiseException(WatcherReason);
     if not PrepareUninstallData then Abort;
+    { All cancellable preparation succeeded. Native removal starts after this
+      event returns; never re-enable Run against removed/partial program files. }
+    CommitGameWatcherUninstall;
   end;
   if CurUninstallStep = usPostUninstall then begin
     if not UninstallDeleteData then RestoreUninstallResources;
@@ -521,11 +528,17 @@ begin
 end;
 
 procedure DeinitializeUninstall;
+var
+  WatcherReason: String;
 begin
   try
     { Also restores partial staging after cancellation or a preparation error. }
     RestoreUninstallResources;
   finally
+    { Pending only when native removal never started. Backup cancellation and
+      preparation failure must not silently discard the user's previous opt-in. }
+    if not RestoreGameWatcher(WatcherReason) then
+      SuppressibleMsgBox(WatcherReason, mbError, MB_OK, IDOK);
     if UninstallFiles <> nil then UninstallFiles.Free;
     if UninstallHashes <> nil then UninstallHashes.Free;
     if UninstallDirectories <> nil then UninstallDirectories.Free;

@@ -189,6 +189,7 @@ function CloseHandle(hObject: THandle): Boolean;
   external 'CloseHandle@kernel32.dll stdcall';
 function InstallerFileAttributes(lpFileName: String): LongWord;
   external 'GetFileAttributesW@kernel32.dll stdcall';
+#include "qt-game-watcher-lifecycle.iss"
 function OwnedAssistantShortcut(const Path: String): Boolean;
 var
   Shell, Link: Variant;
@@ -436,10 +437,14 @@ begin
   end;
 end;
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  WatcherReason: String;
 begin
   if CurStep = ssInstall then begin
     if not AcquireResourceLock then
       RaiseException('地图资源正被助手、导入或恢复任务使用，请关闭任务后重试。');
+    { Recheck at the final mutation boundary; never replace a live watcher. }
+    if not DisableGameWatcher(WatcherReason) then RaiseException(WatcherReason);
     { Re-evaluate once at the installation boundary, before any actual copy. }
     ResourcePlanReady := False;
     DetermineResourcePlanes;
@@ -452,14 +457,18 @@ begin
     UpgradeCommitted := True;
     RetireLegacyShortcuts;
     Log('UPGRADE_COMMITTED');
+    { Restore only the exact opt-in captured from this installation. A failed
+      restore is retried/reported during deinitialization, not a false rollback. }
+    if not RestoreGameWatcher(WatcherReason) then Log(WatcherReason);
   end;
 end;
 procedure DeinitializeSetup;
 var
   I: Integer;
-  Source, Destination: String;
+  Source, Destination, WatcherReason: String;
   Restored: Boolean;
 begin
+  Restored := True;
   if UpgradeStarted and not UpgradeCommitted then begin
     Restored := True;
     for I := 0 to UpgradeFiles.Count - 1 do begin
@@ -481,6 +490,14 @@ begin
         UpgradeBackup, mbError, MB_OK, IDOK);
     end;
   end;
+  { Restore the old opt-in only after a complete file rollback, or after a
+    committed upgrade. Never enable a partially restored executable payload. }
+  if Restored then begin
+    if not RestoreGameWatcher(WatcherReason) then
+      SuppressibleMsgBox(WatcherReason, mbError, MB_OK, IDOK);
+  end else if GameWatcherRestorePending then
+    SuppressibleMsgBox('旧程序文件尚未完整恢复，游戏启动绑定保持关闭。请先修复安装，再在设置中核对开启。',
+      mbError, MB_OK, IDOK);
   { Backups intentionally remain under work for recovery/audit, including success. }
   if UpgradeFiles <> nil then UpgradeFiles.Free;
   if UpgradeExisting <> nil then UpgradeExisting.Free;
@@ -504,6 +521,8 @@ begin
 end;
 #include "qt-uninstall-data.iss"
 function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  WatcherReason, RestoreReason: String;
 begin
   Result := '';
   if DirExists(UninstallHoldingDirectory) or FileExists(UninstallHoldingDirectory) then begin
@@ -519,8 +538,17 @@ begin
     Result := '星图正在运行，或安装目录不可写。请自行退出助手后重试；安装程序不会结束您的程序。';
     Exit;
   end;
-  if not AcquireResourceLock then
+  if not AcquireResourceLock then begin
     Result := '地图资源正被助手、导入或恢复任务使用，请关闭任务后重试。';
+    Exit;
+  end;
+  { The final app directory is now validated. A failed stop may already have
+    removed Run, so restore the prior explicit opt-in before offering retry. }
+  if not DisableGameWatcher(WatcherReason) then begin
+    Result := WatcherReason;
+    if not RestoreGameWatcher(RestoreReason) then
+      Result := Result + #13#10 + RestoreReason;
+  end;
 end;
 
 
