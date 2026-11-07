@@ -1123,7 +1123,7 @@ def main(argv=None):
     if not setup.is_file():
         raise ValueError("Inno Setup completed without the expected Setup artifact")
     plan["installer"] = dict(fileName=setup.name, bytes=setup.stat().st_size, sha256=sha256(setup))
-    plan["recipes"] = {p.name: sha256(p) for p in (Path(__file__), TOOLS / "qt-client.spec", TOOLS / "qt-recovery-helper.spec", TOOLS / "qt-import-helper.spec", TOOLS / "qt-client.iss")}
+    plan["recipes"] = {p.name: sha256(p) for p in (Path(__file__), TOOLS / "qt-client.spec", TOOLS / "qt-recovery-helper.spec", TOOLS / "qt-import-helper.spec", TOOLS / "qt-client.iss", TOOLS / "qt-uninstall-data.iss", TOOLS / "qt-game-watcher-lifecycle.iss")}
     plan["source"] = source_identity(args.source_commit)
     plan["buildCompleted"] = True
     record_path.write_text(json.dumps(plan, indent=2), encoding="utf-8")

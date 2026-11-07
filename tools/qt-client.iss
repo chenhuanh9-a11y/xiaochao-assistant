@@ -156,7 +156,7 @@ Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs c
 Name: "{group}\{#InstallerAppName}"; Filename: "{app}\{#InstallerExeName}"; WorkingDir: "{app}"; AppUserModelID: "{#InstallerModelId}"
 
 #ifdef ProductionInstaller
-Name: "{group}\卸载星图（保留个人资料）"; Filename: "{uninstallexe}"
+Name: "{group}\卸载星图"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#InstallerAppName}"; Filename: "{app}\{#InstallerExeName}"; WorkingDir: "{app}"; AppUserModelID: "{#InstallerModelId}"; Check: CreateDesktopShortcut
 #endif
 
@@ -189,6 +189,7 @@ function CloseHandle(hObject: THandle): Boolean;
   external 'CloseHandle@kernel32.dll stdcall';
 function InstallerFileAttributes(lpFileName: String): LongWord;
   external 'GetFileAttributesW@kernel32.dll stdcall';
+#include "qt-game-watcher-lifecycle.iss"
 function OwnedAssistantShortcut(const Path: String): Boolean;
 var
   Shell, Link: Variant;
@@ -214,7 +215,8 @@ begin
 end;
 procedure RetireLegacyShortcuts;
 var
-  OldDesktop, OldMenu: String;
+  OldDesktop, OldMenu, OldUninstall: String;
+  Shell, Link: Variant;
 begin
   { New [Icons] entries belong to native Setup rollback/uninstall. Retire exact
     old links only after commit, and only if their targets name this install. }
@@ -226,6 +228,19 @@ begin
   if OwnedAssistantShortcut(ExpandConstant('{group}\{#InstallerAppName}.lnk')) and
     OwnedAssistantShortcut(OldMenu) then
     if not DeleteFile(OldMenu) then Log('LEGACY_SHORTCUT_RETAINED ' + OldMenu);
+  { The new wizard offers keep/clear, so retire only our old keep-only caption.
+    Do not delete a renamed user shortcut or one pointing at another product. }
+  OldUninstall := ExpandConstant('{group}\卸载星图（保留个人资料）.lnk');
+  if FileExists(ExpandConstant('{group}\卸载星图.lnk')) and FileExists(OldUninstall) then begin
+    try
+      Shell := CreateOleObject('WScript.Shell');
+      Link := Shell.CreateShortcut(OldUninstall);
+      if CompareText(String(Link.TargetPath), ExpandConstant('{uninstallexe}')) = 0 then
+        if not DeleteFile(OldUninstall) then Log('LEGACY_SHORTCUT_RETAINED ' + OldUninstall);
+    except
+      Log('LEGACY_SHORTCUT_NOT_VERIFIABLE ' + OldUninstall);
+    end;
+  end;
 end;
 function UpgradePathAllowed: Boolean;
 var
@@ -422,10 +437,14 @@ begin
   end;
 end;
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  WatcherReason: String;
 begin
   if CurStep = ssInstall then begin
     if not AcquireResourceLock then
       RaiseException('地图资源正被助手、导入或恢复任务使用，请关闭任务后重试。');
+    { Recheck at the final mutation boundary; never replace a live watcher. }
+    if not DisableGameWatcher(WatcherReason) then RaiseException(WatcherReason);
     { Re-evaluate once at the installation boundary, before any actual copy. }
     ResourcePlanReady := False;
     DetermineResourcePlanes;
@@ -438,14 +457,18 @@ begin
     UpgradeCommitted := True;
     RetireLegacyShortcuts;
     Log('UPGRADE_COMMITTED');
+    { Restore only the exact opt-in captured from this installation. A failed
+      restore is retried/reported during deinitialization, not a false rollback. }
+    if not RestoreGameWatcher(WatcherReason) then Log(WatcherReason);
   end;
 end;
 procedure DeinitializeSetup;
 var
   I: Integer;
-  Source, Destination: String;
+  Source, Destination, WatcherReason: String;
   Restored: Boolean;
 begin
+  Restored := True;
   if UpgradeStarted and not UpgradeCommitted then begin
     Restored := True;
     for I := 0 to UpgradeFiles.Count - 1 do begin
@@ -467,115 +490,17 @@ begin
         UpgradeBackup, mbError, MB_OK, IDOK);
     end;
   end;
+  { Restore the old opt-in only after a complete file rollback, or after a
+    committed upgrade. Never enable a partially restored executable payload. }
+  if Restored then begin
+    if not RestoreGameWatcher(WatcherReason) then
+      SuppressibleMsgBox(WatcherReason, mbError, MB_OK, IDOK);
+  end else if GameWatcherRestorePending then
+    SuppressibleMsgBox('旧程序文件尚未完整恢复，游戏启动绑定保持关闭。请先修复安装，再在设置中核对开启。',
+      mbError, MB_OK, IDOK);
   { Backups intentionally remain under work for recovery/audit, including success. }
   if UpgradeFiles <> nil then UpgradeFiles.Free;
   if UpgradeExisting <> nil then UpgradeExisting.Free;
-  ReleaseResourceLock;
-end;
-{ Old uninstall logs own bundled maps too. Back them up before allowing uninstall,
-  then restore their original paths after native program removal. Never migrate schemas. }
-var
-  ResourceBackup: String;
-  ResourceFiles: TStringList;
-  ResourceBackupReady, ResourceRestored, ResourceUninstallStarted: Boolean;
-function PreserveResource(const Relative: String): Boolean;
-var
-  Ext, Path: String;
-begin
-  Path := Lowercase(Relative);
-  Ext := Lowercase(ExtractFileExt(Relative));
-  Result := (Pos('_internal\assets\', Path) = 1) or
-    (Pos('_internal\references\', Path) = 1) or
-    (Ext = '.json') or (Ext = '.jsonl') or (Ext = '.png') or
-    (Ext = '.jpg') or (Ext = '.jpeg') or (Ext = '.webp') or
-    (Ext = '.bmp') or (Ext = '.npz') or (Ext = '.npy') or (Ext = '.idvm');
-end;
-function BackupResourceDirectory(const RelativeDirectory: String): Boolean;
-var
-  FindRec: TFindRec;
-  Relative, Source, Destination: String;
-begin
-  Result := True;
-  if FindFirst(ExpandConstant('{app}\') + RelativeDirectory + '\*', FindRec) then begin
-    try
-      repeat
-        if (FindRec.Name <> '.') and (FindRec.Name <> '..') then begin
-          Relative := RelativeDirectory + '\' + FindRec.Name;
-          if not SafeProgramPath(Relative) then begin
-            Log('UNINSTALL_RESOURCE_PATH_REJECTED ' + Relative);
-            Result := False; Exit;
-          end;
-          if (FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then begin
-            if not BackupResourceDirectory(Relative) then begin Result := False; Exit; end;
-          end else if PreserveResource(Relative) then begin
-            Source := ExpandConstant('{app}\') + Relative;
-            Destination := ResourceBackup + '\files\' + IntToStr(ResourceFiles.Count);
-            if not ForceDirectories(ExtractFileDir(Destination)) or
-              not FileCopy(Source, Destination, True) then begin
-              Log('UNINSTALL_RESOURCE_BACKUP_FAILED ' + Relative);
-              Result := False; Exit;
-            end;
-            ResourceFiles.Add(Relative);
-          end;
-        end;
-      until not FindNext(FindRec);
-    finally
-      FindClose(FindRec);
-    end;
-  end;
-end;
-function BackupUninstallResources: Boolean;
-begin
-  Result := False;
-  ResourceFiles := TStringList.Create;
-  ResourceBackup := ExpandConstant('{app}\work\installer-backups\uninstall-') +
-    GetDateTimeString('yyyymmdd-hhnnss-zzz', '-', ':');
-  if not NoLinkedAncestors(ResourceBackup) then Exit;
-  if DirExists(ResourceBackup) then Exit;
-  if not ForceDirectories(ResourceBackup + '\files') then Exit;
-  if not BackupResourceDirectory('_internal') then begin
-    SuppressibleMsgBox('无法备份地图资源，卸载已停止；原资料未移除。请检查文件占用和目录权限。', mbError, MB_OK, IDOK);
-    Exit;
-  end;
-  ResourceFiles.SaveToFile(ResourceBackup + '\resources.txt');
-  ResourceBackupReady := True;
-  Log('UNINSTALL_RESOURCES_BACKED_UP ' + IntToStr(ResourceFiles.Count) + ' ' + ResourceBackup);
-  Result := True;
-end;
-procedure RestoreUninstallResources;
-var
-  I: Integer;
-  Source, Destination: String;
-  Success: Boolean;
-begin
-  if not ResourceBackupReady or not ResourceUninstallStarted or ResourceRestored then Exit;
-  Success := True;
-  for I := 0 to ResourceFiles.Count - 1 do begin
-    Source := ResourceBackup + '\files\' + IntToStr(I);
-    Destination := ExpandConstant('{app}\') + ResourceFiles[I];
-    if not FileExists(Destination) or
-      (GetSHA256OfFile(Source) <> GetSHA256OfFile(Destination)) then begin
-      if not ForceDirectories(ExtractFileDir(Destination)) or
-        not FileCopy(Source, Destination, False) then Success := False;
-    end;
-  end;
-  ResourceRestored := Success;
-  if Success then Log('UNINSTALL_RESOURCES_RESTORED ' + IntToStr(ResourceFiles.Count))
-  else begin
-    Log('UNINSTALL_RESOURCE_RESTORE_INCOMPLETE ' + ResourceBackup);
-    SuppressibleMsgBox('地图原始文件仍保存在以下目录，部分文件无法恢复原位：' +
-      ResourceBackup, mbError, MB_OK, IDOK);
-  end;
-end;
-procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
-begin
-  if CurUninstallStep = usUninstall then ResourceUninstallStarted := True;
-  if CurUninstallStep = usPostUninstall then RestoreUninstallResources;
-end;
-procedure DeinitializeUninstall;
-begin
-  RestoreUninstallResources;
-  if ResourceFiles <> nil then ResourceFiles.Free;
   ReleaseResourceLock;
 end;
 function ExecutableAvailable(const FileName: String): Boolean;
@@ -594,9 +519,16 @@ begin
   Result := ExecutableAvailable(ExpandConstant('{app}\第五人格小抄助手.exe'));
   if Result then Result := ExecutableAvailable(ExpandConstant('{app}\{#InstallerExeName}'));
 end;
+#include "qt-uninstall-data.iss"
 function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  WatcherReason, RestoreReason: String;
 begin
   Result := '';
+  if DirExists(UninstallHoldingDirectory) or FileExists(UninstallHoldingDirectory) then begin
+    Result := '上次卸载的资料尚未恢复，请先核对保留目录：' + UninstallHoldingDirectory;
+    Exit;
+  end;
   DetermineResourcePlanes;
   if not UpgradePathAllowed then begin
     Result := '已检测到安装版。覆盖安装必须使用原安装目录，以保留原设置和地图。';
@@ -606,16 +538,17 @@ begin
     Result := '星图正在运行，或安装目录不可写。请自行退出助手后重试；安装程序不会结束您的程序。';
     Exit;
   end;
-  if not AcquireResourceLock then
+  if not AcquireResourceLock then begin
     Result := '地图资源正被助手、导入或恢复任务使用，请关闭任务后重试。';
-end;
-function InitializeUninstall: Boolean;
-begin
-  Result := InstalledExecutableAvailable and AcquireResourceLock;
-  if not Result then
-    SuppressibleMsgBox('星图正在运行，或安装目录不可写。请自行退出助手后再卸载。个人设置、日志与截图将保留。', mbError, MB_OK, IDOK)
-  else
-    Result := BackupUninstallResources;
+    Exit;
+  end;
+  { The final app directory is now validated. A failed stop may already have
+    removed Run, so restore the prior explicit opt-in before offering retry. }
+  if not DisableGameWatcher(WatcherReason) then begin
+    Result := WatcherReason;
+    if not RestoreGameWatcher(RestoreReason) then
+      Result := Result + #13#10 + RestoreReason;
+  end;
 end;
 
 
