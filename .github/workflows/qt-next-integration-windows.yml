@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [features, core, diagnostics, packaging, tutorials, map-defaults, season-ui, main-baseline, released-baseline]
+        group: [features, core, diagnostics, packaging, tutorials, map-defaults, season-ui, next-version-contracts, main-baseline, released-baseline]
     env:
       PYTHONPATH: 'app;tests;tools;experiments/qt_quick'
       QT_QPA_PLATFORM: offscreen
@@ -59,6 +59,7 @@ jobs:
             'diagnostics' { $modules = @('test_diagnostic_log_budget', 'test_client_problems', 'test_client_problem_history', 'test_client_info', 'test_client_diagnostic_integration', 'test_client_joint_diagnostic_schema', 'test_field_failure_samples', 'test_async_event_log', 'test_automatic_failure_samples', 'test_storage_retention', 'test_memory_retention_links', 'test_runtime_environment_diagnostics'); $modules += @(Get-ChildItem tests/test_diagnostic*.py | ForEach-Object { $_.BaseName }) }
             'packaging' { $modules = @('test_preview_windows_notice', 'test_qt_installer_directory', 'test_live_author_import', 'test_legacy_import_recovery', 'test_package_dependency_upgrade', 'test_receipt_dependency_contract', 'test_map_package_removal', 'test_client_resources') }
             'season-ui' { $modules = @('test_season_settings', 'test_season_catalog', 'test_season_selector', 'test_season_gallery', 'test_season_resources', 'test_season_session', 'test_client_season_preparation', 'test_client_context_failure', 'test_settings_accessibility', 'test_client_gallery_actions', 'test_client_gallery_layout', 'test_client_gallery_resource_refresh') }
+            'next-version-contracts' { $modules = @('test_g_cycle_evidence', 'test_g_cycle_replay', 'test_client_g_cycle_evidence', 'test_client_g_cycle_solver_input', 'test_client_g_cycle_reporter', 'test_client_g_cycle_recovery', 'test_client_g_cycle_admission', 'test_client_g_cycle_composition', 'test_managed_base_absent_rollback', 'test_legacy_receipt_startup_retention', 'test_managed_base_resources', 'test_s1_normal_resource_retirement.NormalRetirementTests', 'test_resource_compatibility', 'test_game_startup', 'test_game_startup_service', 'test_game_startup_control', 'test_qt_startup_state', 'test_qt_startup_splash', 'test_client_startup_splash', 'test_client_lazy_pages', 'test_client_performance', 'test_client_package_progress', 'test_qt_game_watcher_packaging', 'test_qt_installer_reuse_guard', 'test_qt_installer_projection', 'test_uninstall_data_wizard', 'test_mixed_retired_author_package') }
             # Synthetic contracts only; unittest -v preserves each genuine skip reason.
             'map-defaults' { $modules = @('test_bundled_author_resources', 'test_package_profiles', 'test_client_paths', 'test_client_editor_upgrade', 'test_map_resource_context', 'test_qt_installer_projection') }
           }

@@ -213,6 +213,12 @@ PyInstaller 的限制仍不计通过。首帧组合测试含 Mock 构造器和�
 frameSwapped 信号、显示器像素或 GUI 验收。最终组合 SHA 的 Windows CI 需另行核对，
 不能沿用 `14a689fd` 的成功代替新生产修复及留样组合的结果。
 
+原 joint 九组没有选择新增留样、arrival 和回滚测试，因此另加
+`next-version-contracts` 组，原九组和固定旧基线不变。新组只执行源码测试，不构建或发布；
+仍 checkout 精确 PR head、使用只读权限，逐模块保留每个失败。27 个测试选择器经独立
+loader 检查有效、组内不重复；本地按同样的逐模块独立进程运行共 288 次执行，286 通过、
+2 平台 skip。与其他组存在交叠，不能相加为独立用例数。其 Windows 结果须绑定新增组后的 SHA。
+
 ## 最终验收门槛
 
 生产 source payload/version 锁仍刻意指向旧值，当前整合源码不得构建为正式交付物。
