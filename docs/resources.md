@@ -23,19 +23,9 @@ resource-root/
 
 ## 配置入口
 
-| 环境变量 | 用途 |
-| --- | --- |
-| `IDENTITYV_NIGHTMARE_RESOURCE_ROOT` | 运行时噩梦资源根目录；相关资源校验 CLI 也支持此入口。 |
-| `IDENTITYV_SHARED_STRUCTURE_INDEX` | 共享结构索引的文件路径。 |
-| `IDENTITYV_SHARED_STRUCTURE_ROOT` | 共享结构产品的根目录。 |
-| `IDENTITYV_NIGHTMARE_MAPS` | 旧地图包模式的地图图片根目录。 |
-| `IDENTITYV_AUTHOR_ROUTE_ASSET_ROOT` | 作者路线目录；不代替完整资源索引。 |
-| `IDENTITYV_AUTHOR_STRUCTURE_INDEX` / `IDENTITYV_AUTHOR_STRUCTURE_ROOT` | 旧作者结构索引与产物根目录。 |
-| `IDENTITYV_DIFFICULT_MAPS` | 已有困难模式的图片路径覆盖，不会补齐其他缺失资源。 |
-| `IDENTITYV_LEGACY_ASSETS_ROOT` | 本次整理新增，供三个旧原型模块取代个人绝对路径；默认 `assets/legacy`。 |
-| `IDENTITYV_NIGHTMARE_LIVE_ROOT` | 诊断输出目录，可选择私有本地目录。 |
+当前 Qt 源码客户端只使用显式 `--sandbox` 或默认 `work/qt-lab-installation`，资源在该沙盒的 `_internal/` 下，要求 `.qt-lab-owner` 所有权标记。使用 `experiments/qt_quick/seed_sandbox.py` 从授权来源建立新的隔离副本；目标存在时不覆盖。正式包使用打包时绑定的资源，不接受环境变量切换到外部开发资源。
 
-可参考 `examples/environment.ps1` 设置路径，再启动主程序。环境变量不是资源授权，也不保证任意资源包都兼容。
+旧 Tk 入口的 `IDENTITYV_*_RESOURCE_ROOT` 启动方式已退役；不得把历史环境变量配置视为 Qt 资源选择合同。
 
 ## 示例与校验
 
@@ -44,16 +34,13 @@ resource-root/
 获得有权使用的完整同版本资源后，可以检查：
 
 ```powershell
-& .\.venv\Scripts\python.exe app\identityv_daily_assistant.py --validate-pack
-& .\.venv\Scripts\python.exe app\identityv_daily_assistant.py --validate-author-routes
-& .\.venv\Scripts\python.exe app\identityv_daily_assistant.py --validate-author-structures
-& .\.venv\Scripts\python.exe app\identityv_daily_assistant.py --validate-coordinate-pack
+& .\.venv\Scripts\python.exe tools\qt_client_entry.py --self-check --verify-resources
 ```
 
 这些命令检查资源结构，不代表真实游戏或视觉验收。此源码发布只做源码语法、CLI、构建脚本和公开内容检查，没有重新运行全套地图识别或 GUI 验收。
 
 ## 品牌与打包
 
-`star_brand.py` 会尝试加载 `assets/brand/xingtu-round.png` 与 `xingtu-square.png`；缺失时返回空图像。品牌原图版权未确认，暂不随源码公开。帮助配图同样未上传。
+Qt 图标和教程位于 `experiments/qt_quick/icons`、`experiments/qt_quick/tutorial`；赞赏图片仍保留在 `assets/support`。清理旧 Tk 代码不删除这些当前资源或第三方许可。
 
-`tools/build.py` 是新的源码骨架开发构建入口，独立于原产品完整候选构建流程。它不打包地图和 Logo，不自动复制任何资源根目录。完整产品重建还需要合法资源、资源版本绑定和对应验收流程；克隆公开仓库不能复现原候选的安装包或识别效果。
+`tools/build_qt_client.py` 是当前 Setup 构建入口。构建需要干净源码 commit、合法资源、资源哈希清单和对应验收；克隆公开仓库不能单独复现完整产品资源。旧 Tk `tools/build.py` 已退役。

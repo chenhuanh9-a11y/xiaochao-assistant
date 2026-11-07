@@ -1,8 +1,7 @@
 """Toolkit-free rules for 手动选图 (manual map selection).
 
-Shared by the Tk picker (``manual_map_picker``) and the Qt client
-(``experiments/qt_quick/client_manual_map.py``): grouping, option titles and
-the two-stage page state. No tkinter/Qt imports so either UI can use it.
+Consumed by ``experiments/qt_quick/client_manual_map.py``: grouping, option
+titles and the two-stage page state. Kept independent of the UI toolkit.
 """
 from __future__ import annotations
 

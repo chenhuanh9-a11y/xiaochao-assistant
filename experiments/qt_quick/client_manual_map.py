@@ -1,7 +1,7 @@
 """Qt-side glue for 手动选图 (manual map selection).
 
 Grouping, option titles and the two-stage page state come from
-``app/manual_map_picker_core.py``, shared with the Tk picker (#70), so there is
+``app/manual_map_picker_core.py``, retained from the original picker (#70), so there is
 one copy of those rules. This module adds only Qt-client specifics: the
 configurable hotkey action, the native picker keys and thumbnail lookup. It
 never imports tkinter or the Tk entrypoint.

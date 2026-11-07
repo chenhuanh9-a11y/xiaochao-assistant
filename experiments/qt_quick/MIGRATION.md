@@ -1,3 +1,5 @@
+> Tk pages and the legacy entrypoint have been retired. This migration record preserves historical evidence; current entry and cleanup scope are in [the repository README](../../README.md) and [cleanup record](../../docs/tk-cleanup.md).
+
 # Qt Quick migration map
 
 ## Reviewed group membership: current implementation contract
@@ -508,7 +510,7 @@ No new Setup or real installation is implied by this source update.
 4. Retain representative native-game/window/shortcut/DPI and timing acceptance as separate work requiring safe real inputs. Existing same-input core evidence is reused; do not ask the user to retest every map or run a second game/input owner during their session.
 5. Original-AppId installation/adoption/uninstall and formal release remain separate from the isolated preservation evidence. Do not install into the user's product directory to close this checklist.
 
-Inspection basis: [repository rules](../../AGENTS.md), [development contracts](../../docs/development.md), actual [`GameControlView`](../../app/game_control_view.py) controls and its command map, [`DesktopMainUI`](../../app/desktop_main_ui.py), [`DailyAssistant`](../../app/identityv_daily_assistant.py), [`MapResourcesPage`](../../app/map_resources_page.py), [`MapResourceBrowser`](../../app/map_resource_browser.py), core/resource/package modules named above, and the existing Qt Python/QML files. This document changes no executable behavior.
+Inspection basis: [repository rules](../../AGENTS.md), [development contracts](../../docs/development.md), actual [`GameControlView`](https://github.com/chenhuanh9-a11y/xiaochao-assistant/blob/1f3983bd0ac999671f31adc2f8df58cfe262a4d0/app/game_control_view.py) controls and its command map, [`DesktopMainUI`](https://github.com/chenhuanh9-a11y/xiaochao-assistant/blob/1f3983bd0ac999671f31adc2f8df58cfe262a4d0/app/desktop_main_ui.py), [`DailyAssistant`](https://github.com/chenhuanh9-a11y/xiaochao-assistant/blob/1f3983bd0ac999671f31adc2f8df58cfe262a4d0/app/identityv_daily_assistant.py), [`MapResourcesPage`](https://github.com/chenhuanh9-a11y/xiaochao-assistant/blob/1f3983bd0ac999671f31adc2f8df58cfe262a4d0/app/map_resources_page.py), [`MapResourceBrowser`](https://github.com/chenhuanh9-a11y/xiaochao-assistant/blob/1f3983bd0ac999671f31adc2f8df58cfe262a4d0/app/map_resource_browser.py), core/resource/package modules named above, and the existing Qt Python/QML files. This document changes no executable behavior.
 
 ## Manual map selection (手动选图)
 

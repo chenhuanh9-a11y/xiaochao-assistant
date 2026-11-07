@@ -1,4 +1,3 @@
-import ast
 import json
 from pathlib import Path
 import sys
@@ -6,12 +5,10 @@ import tempfile
 import threading
 import time
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1] / 'app'))
 from async_event_log import AsyncEventLog, snapshot
-from runtime_timeline import context as runtime_log_context
 
 
 class WriterTests(unittest.TestCase):
@@ -94,29 +91,6 @@ class WriterTests(unittest.TestCase):
         writer.emit('startup', {})
         self.assertEqual(writer.status()['startError'], 'RuntimeError')
         self.assertEqual(writer.status()['dropped'], 1)
-
-    def test_production_log_ignores_legacy_lock_and_poll_reschedules(self):
-        tree = ast.parse((Path(__file__).parents[1] / 'app/identityv_daily_assistant.py').read_text('utf-8-sig'))
-        methods = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name in ('_log', '_poll_events')]
-        namespace = dict(time=time, runtime_log_context=runtime_log_context)
-        exec(compile(ast.fix_missing_locations(ast.Module(body=methods, type_ignores=[])), '<production>', 'exec'), namespace)
-        with tempfile.TemporaryDirectory() as folder:
-            writer = AsyncEventLog(Path(folder) / 'events.jsonl')
-            subject = SimpleNamespace(_event_log=writer, log_lock=threading.Lock(), closed=False, EVENT_POLL_MS=16)
-            subject.log_lock.acquire()
-            subject._log = lambda *a, **kw: namespace['_log'](subject, *a, **kw)
-            subject._log('test', value=1)
-            scheduled = []
-            subject.root = SimpleNamespace(after=lambda *a: scheduled.append(a))
-            subject._poll_events = lambda: None
-            subject._poll_events_once = lambda: (_ for _ in ()).throw(RuntimeError('thread start failed'))
-            namespace['_poll_events'](subject)
-            self.assertEqual(len(scheduled), 1)
-            subject.closed = True
-            namespace['_poll_events'](subject)
-            self.assertEqual(len(scheduled), 1)
-            self.assertTrue(writer.flush(2))
-            writer.close()
 
 
 if __name__ == '__main__':
