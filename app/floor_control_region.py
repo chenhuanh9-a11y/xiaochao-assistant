@@ -214,6 +214,59 @@ def _read_vertical(gray, floors, origin, size, reason):
                 labelEvidence=evidence, controlGeometryVerified=False)
 
 
+def _column_background(gray, read, origin, size):
+    """Measure only this proved column's unselected panels and gaps."""
+    ox, oy = origin
+    fw, fh = size
+    x, y, w, h = read["tileBounds"]
+    left, right = max(0, int(x * fw - ox)), min(gray.shape[1], math.ceil((x + w) * fw - ox))
+    centers = [point[1] * fh - oy for point in read["centerPoints"]]
+    top = max(0, int(min(centers) - h * fh / 2))
+    bottom = min(gray.shape[0], math.ceil(max(centers) + h * fh / 2))
+    rows = np.arange(top, bottom)
+    rows = rows[(rows < y * fh - oy) | (rows >= (y + h) * fh - oy)]
+    pixels = gray[rows, left:right]
+    return float(np.median(pixels)) if pixels.size else None
+
+
+def _read_vertical_contrast(gray, floors, origin, size, reason):
+    """Compare two complete proofs at fixed exposures, never combine rows.
+
+    A raised map panel can merge with its highlight at the original threshold.
+    Always inspect one bounded lower exposure, including on original success:
+    using the whole ROI's brightness to skip it hides small bright columns and
+    makes enlarging the search region erase observed contradictions.
+    """
+    original = _read_vertical(gray, floors, origin, size, reason)
+    if original.get("reason") == "columns-ambiguous":
+        return original
+    exposure = 2. / 3.
+    normalized = cv2.convertScaleAbs(gray, alpha=exposure)
+    read = _read_vertical(normalized, floors, origin, size, reason)
+    if read.get("reason") == "columns-ambiguous":
+        return _unread("columns-ambiguous", controlExposure=exposure)
+    if original.get("selectedFloor") is not None:
+        # Never replace an original success or let it hide a second complete
+        # column/selected row proved at another exposure.
+        conflict = False
+        if read.get("selectedFloor") is not None:
+            tolerance_x = max(original["tileBounds"][2], read["tileBounds"][2]) * .25
+            tolerance_y = max(original["tileBounds"][3], read["tileBounds"][3]) * .25
+            conflict = (read["selectedFloor"] != original["selectedFloor"]
+                or any(abs(a[0] - b[0]) > tolerance_x or abs(a[1] - b[1]) > tolerance_y
+                       for a, b in zip(original["centerPoints"], read["centerPoints"])))
+        return (_unread("columns-ambiguous", controlExposure=exposure)
+                if conflict else original)
+    if read.get("selectedFloor") is not None:
+        # Qualify the actual new column, not unrelated pixels elsewhere in the
+        # search ROI. Keep the original bounded raised-panel policy; bright
+        # app UI and low-contrast labels are not relaxed into a positive.
+        background = _column_background(gray, read, origin, size)
+        if background is not None and FILL_LEVEL < background <= 90:
+            return dict(read, controlExposure=exposure, controlBackground=background)
+    return original
+
+
 def _merge_region_read(fixed, read, source, **extra):
     """A calibrated reading replaces the current vertical observation completely."""
     out = dict(read, **extra, floorSource=source)
@@ -241,7 +294,7 @@ def read_floor_in_region(frame: np.ndarray, region, mode: str, *, season="s0") -
     gray, origin = _crop(frame, box)
     if gray is None:
         return _unread("region-too-small")
-    read = _read_vertical(gray, contract.observed_values, origin, frame.shape[1::-1], "region-highlight-read")
+    read = _read_vertical_contrast(gray, contract.observed_values, origin, frame.shape[1::-1], "region-highlight-read")
     return dict(read, controlSearchRegion=list(box))
 
 
@@ -254,7 +307,7 @@ def locate_vertical_floor_controls(frame: np.ndarray, mode: str, *, season="s0",
         return _unread("region-invalid")
     area = AUTO_VERTICAL_SEARCH_AREA if expanded else VERTICAL_SEARCH_AREA
     column, origin = _crop(frame, area)
-    result = (_read_vertical(column, contract.observed_values, origin, frame.shape[1::-1], "auto-located")
+    result = (_read_vertical_contrast(column, contract.observed_values, origin, frame.shape[1::-1], "auto-located")
               if column is not None else _unread("region-too-small"))
     if not expanded:
         return dict(result, controlSearchRegion=list(area))
@@ -297,8 +350,9 @@ def region_for_client(setting, size) -> tuple[float, float, float, float] | None
 
 
 def _auto(mode, frame, floor_read: dict, source: str, **extra) -> dict:
-    """Keep a current default read, otherwise expand only its search domain."""
-    if floor_read.get("selectedFloor") is not None:
+    """Keep a current read or contradiction; expand only genuine no-reads."""
+    if (floor_read.get("selectedFloor") is not None
+            or floor_read.get("reason") == "columns-ambiguous"):
         return dict(floor_read, floorSource=source, **extra)
     located = locate_vertical_floor_controls(frame, mode, expanded=True)
     if located["selectedFloor"] is None:
@@ -328,6 +382,8 @@ def apply_floor_region(settings, mode, frame, floor_read: dict) -> dict:
     if rect is None:
         return _auto(mode, frame, floor_read, "fixed-region-unavailable")
     read = read_floor_in_region(frame, rect, mode)
+    if read.get("reason") == "columns-ambiguous":
+        return _merge_region_read(floor_read, read, "region", regionRead=read)
     if read["selectedFloor"] is None:
         return _auto(mode, frame, floor_read, "fixed-region-unread", regionRead=read)
     return _merge_region_read(floor_read, read, "region", regionRead=read)

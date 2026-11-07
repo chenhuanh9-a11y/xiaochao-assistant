@@ -1530,6 +1530,12 @@ FIELDS = FIELDS | frozenset({"controlSearchBounds", "controlSearchRegion",
 CODES = CODES | frozenset({"s1-floor-localization-budget",
     "s1-floor-localization-ui-unverified", "signed-column-position-scale"})
 
+# Current-frame S0 bright-control and independent map-UI evidence, never pixels.
+FIELDS = FIELDS | frozenset({"controlExposure", "controlBackground",
+    "independentAnchorRatios", "independentBackdropRatio", "independentFloorExclusion",
+    "mapUiGeometry", "shapes", "close", "plus", "minus", "contrasts", "rail", "startY", "endY"})
+CODES = CODES | frozenset({"s0-signed-controls-ui-geometry", "s1-map-ui-shape-group"})
+
 # Typed local fit evidence. No arbitrary diagnostics, exception text or pixels.
 FIELDS = FIELDS | frozenset({'fitEvidence', 'observations', 'priorAttempts', 'fastAttempts',
     'proposalMatrix', 'pointMatrix', 'wallMatrix', 'regionalMatrix', 'residualMatrix',
