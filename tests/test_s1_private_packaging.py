@@ -25,7 +25,8 @@ class PrivatePackagingTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        self.root = Path(temp.name)
+        # Match runtime canonical paths, including Windows short-name temp roots.
+        self.root = Path(temp.name).resolve()
         self.resources = self.root / 'resources'
         self.resources.mkdir()
 
@@ -452,6 +453,67 @@ class PrivatePackagingTests(unittest.TestCase):
         self.assertFalse(result['nativeInputStarted'])
         self.assertTrue(result['ready'])
         self.assertFalse(result['resourceContexts']['s1:difficulty2']['liveReady'])
+
+
+class PrivatePackagingPathTests(unittest.TestCase):
+    def test_temporary_directory_alias_preserves_packaging_contracts(self):
+        real_temporary_directory = tempfile.TemporaryDirectory
+
+        def aliased_directory(*args, **kwargs):
+            temp = real_temporary_directory(*args, **kwargs)
+            path = Path(temp.name).absolute()
+            # A real directory with two spellings, without a symlink or a mock
+            # of resolve/_no_links. Models Windows short/long temporary paths.
+            temp.name = str(path / '..' / path.name)
+            return temp
+
+        names = ('test_feature_data_stays_beside_its_own_baked_executable',
+                 'test_seed_copies_exact_native_subtree_without_work_or_settings',
+                 'test_each_s1_channel_requires_native_packs_before_seed_creates_target')
+        with patch.object(tempfile, 'TemporaryDirectory', side_effect=aliased_directory):
+            result = unittest.TestResult()
+            unittest.TestSuite(PrivatePackagingTests(name) for name in names).run(result)
+        self.assertEqual(result.testsRun, len(names))
+        self.assertEqual(result.skipped, [])
+        self.assertEqual(result.errors, [])
+        self.assertEqual(result.failures, [])
+
+    def test_canonical_fixture_does_not_allow_outside_existing_or_link_targets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source = root / 'program'
+            (source / '_internal/references').mkdir(parents=True)
+            work = root / 'work'
+            existing = work / 'existing'
+            existing.mkdir(parents=True)
+            sentinel = existing / 'keep.txt'
+            sentinel.write_text('unchanged')
+            outside = root / 'outside'
+            with patch('client_paths.WORK_ROOT', work):
+                for target in (outside, existing):
+                    with self.subTest(target=target.name), self.assertRaisesRegex(ValueError, 'NEW directory'):
+                        seed_sandbox.seed(source, target)
+                # Windows link creation may require privileges absent on CI.
+                # Use a mocked reparse attribute only there; real _no_links and
+                # seed dispatch still run and must reject before any copy.
+                linked = work / 'linked'
+                try:
+                    linked.symlink_to(existing, target_is_directory=True)
+                except OSError:
+                    original_lstat = Path.lstat
+                    def reparse_lstat(path, *args, **kwargs):
+                        if path == linked:
+                            return SimpleNamespace(st_file_attributes=0x400, st_mode=0)
+                        return original_lstat(path, *args, **kwargs)
+                    with patch.object(Path, 'lstat', reparse_lstat):
+                        with self.assertRaisesRegex(ValueError, 'links or reparse'):
+                            seed_sandbox.seed(source, linked)
+                else:
+                    with self.assertRaisesRegex(ValueError, 'links or reparse'):
+                        seed_sandbox.seed(source, linked)
+            self.assertFalse(outside.exists())
+            self.assertEqual(sentinel.read_text(), 'unchanged')
+            self.assertEqual(list(existing.iterdir()), [sentinel])
 
 
 if __name__ == '__main__':
