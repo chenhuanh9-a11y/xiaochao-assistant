@@ -103,6 +103,30 @@ class CompileOnlyContractTests(unittest.TestCase):
         self.assertNotIn('winget install', text)
         self.assertNotIn('Set-ExecutionPolicy', text)
 
+    def test_chinese_catalog_is_pinned_raw_bytes_with_separate_provenance(self):
+        text = (ROOT / 'tools/prepare_inno_compile_ci.ps1').read_text('utf-8')
+        for value in ('4adf37ed7f3fd2bd11c6836ba056e3de170fbabf',
+                      'Files/Languages/Unofficial/ChineseSimplified.isl',
+                      'd6a11c4490de07dad443ade668289fc954dfa1ed', '20905',
+                      '7d544b9bb1d142cfa11f2e5d3cc8abe2e55f8e066c5124e3772675aa236e1278',
+                      'unofficial-community-translation', 'supplementaryLanguage=$languageProvenance',
+                      'Invoke-WebRequest -Uri $languageUrl -OutFile $languageDownload',
+                      'Test-Path -LiteralPath $languageTarget'):
+            self.assertIn(value, text)
+        download = text.index('Invoke-WebRequest -Uri $languageUrl')
+        check = text.index("throw 'Pinned Chinese language catalog bytes differ'")
+        publish = text.index('Move-Item -LiteralPath $languageDownload')
+        verify = text.index("throw 'Prepared Chinese language catalog bytes differ'")
+        inventory = text.index('$rows = @(')
+        self.assertLess(download, check)
+        self.assertLess(check, publish)
+        self.assertLess(publish, verify)
+        self.assertLess(verify, inventory)
+        self.assertNotIn('Set-Content', text[download:inventory])
+        self.assertNotIn(' -Force', text[download:inventory])
+        inno = (ROOT / 'tools/qt-client.iss').read_text('utf-8-sig')
+        self.assertIn('compiler:Languages\\ChineseSimplified.isl', inno)
+
     def test_evidence_never_uploads_synthetic_executables(self):
         workflow = (ROOT / '.github/workflows/installer-compile-only-windows.yml').read_text('utf-8')
         self.assertIn('compile-only-record.json', workflow)
