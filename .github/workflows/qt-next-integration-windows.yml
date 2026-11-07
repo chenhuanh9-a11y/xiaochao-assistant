@@ -171,10 +171,12 @@ jobs:
           try {
             $paths = @()
             $cmd = Get-Command ISCC.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($cmd) { $paths += $cmd.Source }
+            # Chocolatey can expose a launcher shim on PATH, not the compiler.
+            # Inspect a standard installation first; never execute the shim.
             foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
               if ($base) { $paths += Join-Path $base 'Inno Setup 6\ISCC.exe' }
             }
+            if ($cmd) { $paths += $cmd.Source }
             $path = $paths | Select-Object -Unique | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
             if (-not $path) { $r.reasons += 'compiler-not-found-in-known-locations' }
             else {
@@ -182,6 +184,8 @@ jobs:
               if (($f.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'compiler-reparse' }
               $sig = Get-AuthenticodeSignature -LiteralPath $path
               $r.compiler = [ordered]@{ fileName=$f.Name; fileVersion=$f.VersionInfo.FileVersion; productVersion=$f.VersionInfo.ProductVersion; bytes=$f.Length; sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant(); signatureStatus=[string]$sig.Status; signerSubject=$(if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { $null }) }
+              $r.compiler.usedKnownInstallationInsteadOfPath = [bool]($cmd -and $path -cne $cmd.Source)
+              if ($f.VersionInfo.ProductVersion -like '*Chocolatey Shim*') { $r.reasons += 'compiler-path-is-launcher-not-compiler' }
               if ($sig.Status -ne 'Valid') { $r.reasons += 'compiler-signature-not-valid' }
             }
           } catch { $r.reasons += 'compiler-inspection-failed' }
