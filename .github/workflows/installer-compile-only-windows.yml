@@ -67,7 +67,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $python = Join-Path $venv 'Scripts\python.exe'
           $requirements = Join-Path $env:RUNNER_TEMP 'xingtu-helper-ci-requirements.txt'
-          python -B -X utf8 -c "import sys; sys.path.insert(0, 'tools'); import build_qt_client as b; p=b._requirements(b.TOOLS/'requirements-qt-build.txt'); print('\n'.join(k+'=='+p[k] for k in ('PyInstaller','pyinstaller-hooks-contrib','pefile','psutil')))" | Set-Content -LiteralPath $requirements -Encoding utf8
+          python -B -X utf8 -c "import sys; sys.path.insert(0, 'tools'); import build_qt_client as b; p=b._requirements(b.TOOLS/'requirements-qt-build.txt'); print('\n'.join(k+'=='+p[k] for k in ('PyInstaller','pyinstaller-hooks-contrib','pefile','psutil','numpy','Pillow')))" | Set-Content -LiteralPath $requirements -Encoding utf8
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $python -m pip install --disable-pip-version-check --index-url https://pypi.org/simple -r $requirements
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

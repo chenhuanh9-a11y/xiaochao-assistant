@@ -18,6 +18,10 @@ jobs:
   synthetic-import:
     runs-on: windows-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        expectation: [success, invalid-image-rejected]
     env:
       PYTHONDONTWRITEBYTECODE: '1'
       PYTHONUTF8: '1'
@@ -47,20 +51,21 @@ jobs:
         run: |
           & (Join-Path $env:RUNNER_TEMP 'xingtu-helper-business-venv\Scripts\python.exe') -B -m unittest discover -s tests -p test_frozen_import_business_probe.py -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Prove old frozen-helper defect with real parent and lease gates
+      - name: Verify frozen import success or rejection with real parent and lease gates
         shell: pwsh
         run: |
           $commit = git rev-parse HEAD
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & (Join-Path $env:RUNNER_TEMP 'xingtu-helper-business-venv\Scripts\python.exe') -B -X utf8 tools/verify_frozen_import_business.py --source-commit $commit --work (Join-Path $env:RUNNER_TEMP 'xingtu-helper-business') --expect missing-image-dependencies
+          & (Join-Path $env:RUNNER_TEMP 'xingtu-helper-business-venv\Scripts\python.exe') -B -X utf8 tools/verify_frozen_import_business.py --source-commit $commit --work (Join-Path $env:RUNNER_TEMP 'xingtu-helper-business') --expect ${{ matrix.expectation }}
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      # Old-red reproduction success is NOT successful resource import.
+      # Exact old-red evidence is retained for source 34ea53e, artifact 13590168663.
+      # Rejection passes do not claim successful import or actual client/game QA.
       # No helper EXEs, user assets, real maps, or Setup are uploaded.
       - name: Preserve synthetic failure data and exact process receipts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: frozen-helper-synthetic-business-evidence
+          name: frozen-helper-synthetic-business-${{ matrix.expectation }}
           retention-days: 7
           if-no-files-found: warn
           path: |

@@ -21,7 +21,7 @@ sys.path[:0] = [str(ROOT / 'tools'), str(ROOT / 'app')]
 import build_qt_client as build
 
 ISCC_SHA256 = '0a8757031b33777e4c9cbffee40f11a5062b36d25cbe144c1db73b6102b80ad7'
-HELPER_PACKAGES = ('PyInstaller', 'pyinstaller-hooks-contrib', 'pefile', 'psutil')
+HELPER_PACKAGES = ('PyInstaller', 'pyinstaller-hooks-contrib', 'pefile', 'psutil', 'numpy', 'Pillow')
 HELPER_MODULES = {
     'import': ('star_map_import', 'generic_author_package', 'packaged_product_identity', 'resource_transaction'),
     'recovery': ('star_map_import', 'star_map_import_helper', 'map_package_recovery_plan', 'map_package_upgrade', 'resource_transaction', 'packaged_product_identity'),
@@ -69,7 +69,10 @@ def verify_archive(executable, kind):
         hashes[name] = verify_code(pyz.extract(name), ROOT / 'app' / (name + '.py'))
     if any(name.split('.')[0] in {'PySide6', 'PyQt5', 'PyQt6', 'PySide2', 'tkinter', '_tkinter'} for name in pyz.toc):
         raise ValueError('GUI runtime unexpectedly bundled into helper')
-    return dict(entry=entry, sourceModuleSha256=hashes, moduleCount=len(pyz.toc), sourceCodeMatched=True)
+    image_modules = {name: name in pyz.toc for name in ('PIL', 'numpy')}
+    if kind == 'import' and not all(image_modules.values()):
+        raise ValueError('Import helper missing required image/array dependencies')
+    return dict(entry=entry, sourceModuleSha256=hashes, moduleCount=len(pyz.toc), sourceCodeMatched=True, imageModulesFrozen=image_modules)
 
 
 def write_json(path, value):

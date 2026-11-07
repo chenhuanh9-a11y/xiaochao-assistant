@@ -1,4 +1,5 @@
 """Probe orchestration/real fixture validity only, no frozen or native execution."""
+import ast
 import hashlib
 import importlib.util
 import json
@@ -49,6 +50,16 @@ class FrozenBusinessProbeContracts(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'published author'):
             probe.validate_business(self.root, self.fixture, self.receipt, 2, 'missing-image-dependencies')
 
+    def test_unknown_and_user_sentinels_must_survive_both_result_modes(self):
+        self.assertEqual(len(self.fixture['preservedFiles']), 2)
+        for row in self.fixture['preservedFiles']:
+            path = self.root / row['path']; original = path.read_bytes()
+            path.write_bytes(b'changed unknown synthetic object')
+            for mode in ('missing-image-dependencies', 'success', 'invalid-image-rejected'):
+                with self.subTest(path=row['path'], mode=mode), self.assertRaisesRegex(ValueError, 'unknown/user object changed'):
+                    probe.validate_business(self.root, self.fixture, self.receipt, 2, mode)
+            path.write_bytes(original)
+
     def test_success_requires_receipt_and_exact_installed_payload(self):
         good = dict(self.receipt, success=True)
         with self.assertRaises((ValueError, FileNotFoundError)):
@@ -63,6 +74,38 @@ class FrozenBusinessProbeContracts(unittest.TestCase):
         (self.root / self.fixture['payload'][0]['path']).write_bytes(b'changed')
         with self.assertRaisesRegex(ValueError, 'author bytes differ'):
             probe.validate_business(self.root, self.fixture, good, 0, 'success')
+
+    def test_invalid_image_passes_hashes_but_real_source_rejects_without_publication(self):
+        import star_map_import
+        root = self.root.parent / 'invalid-install'; root.mkdir()
+        fixture = probe.prepare_fixture(root, invalid_image=True)
+        fixture.update(requestId='bad-image', probeId='b' * 32)
+        with self.assertRaises(star_map_import.ImportRejected) as caught:
+            star_map_import.install_package(root / 'fixture-author.zip', root,
+                application_stopped=True, expected_archive_sha256=fixture['archiveSha256'])
+        self.assertEqual(caught.exception.code, 'author-v2-invalid-image')
+        receipt = dict(requestId=fixture['requestId'], archiveSha256=fixture['archiveSha256'],
+            parentExit='exited-matching-process-handle', completedAtUTC='unit-test-only',
+            success=False, errorCode=caught.exception.code, reason=str(caught.exception))
+        result = probe.validate_business(root, fixture, receipt, 2, 'invalid-image-rejected')
+        self.assertTrue(result['rejectionValidated']); self.assertFalse(result['businessValidated'])
+        self.assertTrue((root / 'fixture-valid-author.zip').is_file())
+        for change in ({'errorCode':'ModuleNotFoundError'}, {'parentExit':'unknown'}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                probe.validate_business(root, fixture, dict(receipt, **change), 2, 'invalid-image-rejected')
+        extra = root / 'work/map-packages/unexpected-receipt.json'
+        extra.parent.mkdir(parents=True, exist_ok=True); extra.write_text('{}')
+        with self.assertRaisesRegex(ValueError, 'transaction/publication'):
+            probe.validate_business(root, fixture, receipt, 2, 'invalid-image-rejected')
+
+    def test_same_valid_fixture_actually_installs_through_source_transaction(self):
+        import star_map_import
+        result = star_map_import.install_package(self.root / 'fixture-author.zip', self.root,
+            application_stopped=True, expected_archive_sha256=self.fixture['archiveSha256'])
+        self.assertEqual(result['packageId'], self.fixture['packageId'])
+        receipt = dict(self.receipt, success=True)
+        checked = probe.validate_business(self.root, self.fixture, receipt, 0, 'success')
+        self.assertTrue(checked['businessValidated'])
 
     def test_evidence_preserves_data_but_not_partial_software(self):
         (self.root / 'fake-helper.exe').write_bytes(b'not a PE')
@@ -90,9 +133,22 @@ class FrozenBusinessProbeContracts(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'already exists'):
             probe.publish_ack(target, value)
 
-    def test_original_helper_spec_still_has_old_red_exclusions(self):
+    def test_only_import_helper_keeps_required_image_dependencies_without_gui(self):
+        def exclusions(kind):
+            tree = ast.parse((ROOT / ('tools/qt-' + kind + '-helper.spec')).read_text())
+            analysis = next(n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                            and isinstance(n.func, ast.Name) and n.func.id == 'Analysis')
+            return set(ast.literal_eval(next(k.value for k in analysis.keywords if k.arg == 'excludes')))
+        excluded = exclusions('import')
+        self.assertFalse({'numpy', 'PIL'} & excluded)
+        self.assertTrue({'tkinter', '_tkinter', 'PySide6', 'PyQt5', 'PyQt6', 'PySide2', 'cv2'} <= excluded)
+        for kind in ('recovery', 'reset'):
+            self.assertTrue({'numpy', 'PIL'} <= exclusions(kind))
         spec = (ROOT / 'tools/qt-import-helper.spec').read_text()
-        self.assertIn('"numpy"', spec); self.assertIn('"PIL"', spec)
+        for name in ('PIL.Image', 'PIL.PngImagePlugin', 'PIL.JpegImagePlugin', 'numpy.linalg'):
+            self.assertIn(name, spec)
+        self.assertEqual(len(probe.PACKAGES), len(set(probe.PACKAGES)))
+        self.assertTrue({'numpy', 'Pillow'} <= set(probe.PACKAGES))
         parent = (ROOT / 'tests/fixtures/synthetic_import_parent.py').read_text()
         self.assertIn('launch_import_helper(', parent)
         self.assertIn('with resource_runtime_lease(root)', parent)

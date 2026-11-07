@@ -27,8 +27,12 @@ sys.path[:0] = [str(ROOT / 'tools'), str(ROOT / 'app'), str(ROOT / 'tests')]
 import build_qt_client as build
 import verify_installer_compile_only as compile_probe
 
-PACKAGES = (*compile_probe.HELPER_PACKAGES, 'numpy', 'Pillow')
+PACKAGES = compile_probe.HELPER_PACKAGES
 ACTIVE = None
+# Observed original spec, not an estimate or Setup-size comparison.
+OLD_IMPORT_PAYLOAD = dict(sourceCommit='34ea53ea002ffd07c4bbcbf514503448e078b828',
+    artifactSha256='3597efb04b70f18c4d2c770508157ae06bcea0bc0e030be756ec86f4aa8bbee9',
+    fileCount=66, rawBytes=21326255)
 
 
 def snapshot(root):
@@ -36,47 +40,106 @@ def snapshot(root):
             for p in sorted(root.rglob('*')) if p.is_file()}
 
 
-def prepare_fixture(root):
+def invalid_image_archive(source, destination):
+    """Corrupt only synthetic image bytes, updating all hashes to reach decoding.
+
+    Keep the valid source ZIP too. This is not an integrity-corruption test: the
+    invalid compressed image must pass archive inventory and fail PIL decoding.
+    """
+    from test_generic_author_package import encoded, record
+    import generic_author_package as generic
+    with zipfile.ZipFile(source) as archive:
+        entries = {name: archive.read(name) for name in archive.namelist()}
+    metadata = json.loads(entries['map-package.json'])
+    binding_path = generic.bindings_path(metadata['packageId'])
+    document = json.loads(entries['data/' + binding_path])
+    image_path = document['layers'][0]['displayPath']
+    bad_image = b'CI synthetic invalid image, deliberately not PNG bytes.\n'
+    entries['data/' + image_path] = bad_image
+    document['layers'][0].update(displayBytes=len(bad_image),
+                                displaySha256=hashlib.sha256(bad_image).hexdigest())
+    entries['data/' + binding_path] = encoded(document)
+    metadata['files'] = [record(row['path'], entries['data/' + row['path']]) for row in metadata['files']]
+    entries['map-package.json'] = encoded(metadata)
+    with zipfile.ZipFile(destination, 'x', compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, value in entries.items():
+            archive.writestr(name, value)
+
+
+def prepare_fixture(root, *, invalid_image=False):
     # Use existing production-contract producers without setUp/tearDown or any
     # TemporaryDirectory cleanup. Every failed object remains in this job root.
     from test_generic_author_package import make_base, GenericPackageTests, record
     import generic_author_base as base
     make_base(root)
+    preserved = []
+    for relative, data in (
+            ('_internal/ci-unknown-preserved.txt', b'SYNTHETIC unknown resource object; retain bytes.\n'),
+            ('work/ci-user-preserved.txt', b'SYNTHETIC personal-data sentinel; not actual user data.\n')):
+        target = root / relative; target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open('xb') as stream: stream.write(data)
+        preserved.append(record(relative, data))
     holder = SimpleNamespace(root=root, profile='author-ci-synthetic', sequence=0)
     holder.contract = base.resolve_layer(root, 's0', 'nightmare', 'map', 'B1')
     holder.deps = [record(p, (root / p).read_bytes()) for p in holder.contract['dependencies']]
     archive = GenericPackageTests.package(holder)
     destination = root / 'fixture-author.zip'
-    shutil.move(str(archive), destination)
+    if invalid_image:
+        original = root / 'fixture-valid-author.zip'
+        shutil.move(str(archive), original)
+        invalid_image_archive(original, destination)
+    else:
+        shutil.move(str(archive), destination)
     with zipfile.ZipFile(destination) as package:
         metadata = json.loads(package.read('map-package.json'))
     return dict(archiveSha256=build.sha256(destination), dependencies=holder.deps,
+                case='invalid-image' if invalid_image else 'valid-image',
+                initialResourceFiles=snapshot(root / '_internal'), preservedFiles=preserved,
                 payload=metadata['files'], packageId=holder.profile,
-                pixels='constant synthetic RGBA 9x8 and ones NPZ 8x9, not game input',
+                pixels=('invalid PNG bytes with retained valid synthetic RGBA 9x8 ZIP and ones NPZ 8x9'
+                        if invalid_image else 'constant synthetic RGBA 9x8 and ones NPZ 8x9') + ', not game input',
                 schemaSourceKind='fixture protocol label only, no game provenance')
 
 
 def validate_business(root, fixture, receipt, helper_exit, expectation):
-    if expectation not in {'missing-image-dependencies', 'success'}:
+    if expectation not in {'missing-image-dependencies', 'success', 'invalid-image-rejected'}:
         raise ValueError('Unknown business expectation')
     if receipt.get('requestId') != fixture['requestId'] or receipt.get('archiveSha256') != fixture['archiveSha256']:
         raise ValueError('Wrong request/ZIP receipt')
     if receipt.get('parentExit') != 'exited-matching-process-handle' or not receipt.get('completedAtUTC'):
         raise ValueError('Actual parent identity and normal exit were not proved')
+    for row in fixture['preservedFiles']:
+        path = root / row['path']
+        if not path.is_file() or path.stat().st_size != row['bytes'] or build.sha256(path) != row['sha256']:
+            raise ValueError('Synthetic unknown/user object changed')
     for row in fixture['dependencies']:
         path = root / row['path']
         if not path.is_file() or path.stat().st_size != row['bytes'] or build.sha256(path) != row['sha256']:
             raise ValueError('Synthetic base dependency changed')
     author_receipt = root / 'work/map-packages' / (fixture['packageId'] + '.json')
-    if expectation == 'missing-image-dependencies':
-        if (helper_exit != 2 or receipt.get('success') is not False or
-                receipt.get('errorCode') != 'ModuleNotFoundError' or "'PIL'" not in receipt.get('reason', '')):
-            raise ValueError('Not the expected missing-PIL old-red; retain actual outcome')
-        if author_receipt.exists() or any((root / row['path']).exists() for row in fixture['payload']):
-            raise ValueError('Failed import published author files or a receipt')
-        return dict(outcome='old-red-confirmed', businessValidated=False,
-                    validImportExpectedExitCode=0, actualHelperExitCode=helper_exit,
-                    dynamicMissingDependency='PIL', numpyMissingEvidence='original-spec-exclusion-only')
+    if expectation in {'missing-image-dependencies', 'invalid-image-rejected'}:
+        if helper_exit != 2 or receipt.get('success') is not False:
+            raise ValueError('Expected failure was not a real failed import')
+        if expectation == 'missing-image-dependencies':
+            if receipt.get('errorCode') != 'ModuleNotFoundError' or "'PIL'" not in receipt.get('reason', ''):
+                raise ValueError('Not the expected missing-PIL old-red; retain actual outcome')
+        elif (receipt.get('errorCode') != 'author-v2-invalid-image' or
+                receipt.get('reason') != 'author-v2-invalid-image'):
+            raise ValueError('Invalid-image case failed for a different reason')
+        if (author_receipt.exists() or any((root / row['path']).exists() for row in fixture['payload'])
+                or snapshot(root / '_internal') != fixture['initialResourceFiles']):
+            raise ValueError('Failed import published author files or changed resource bytes')
+        state = root / 'work/map-packages'
+        unexpected = [p for p in state.rglob('*') if p.is_file() and
+                      p.relative_to(state).as_posix() not in {'import.lock', 'last-import-result.json'}]
+        if unexpected:
+            raise ValueError('Failed validation left a transaction/publication object')
+        if expectation == 'missing-image-dependencies':
+            return dict(outcome='old-red-confirmed', businessValidated=False,
+                        validImportExpectedExitCode=0, actualHelperExitCode=helper_exit,
+                        dynamicMissingDependency='PIL', numpyMissingEvidence='original-spec-exclusion-only')
+        return dict(outcome='invalid-image-rejected-without-publication', businessValidated=False,
+                    rejectionValidated=True, resourceBytesUnchanged=True, actualHelperExitCode=helper_exit)
     if helper_exit != 0 or receipt.get('success') is not True:
         raise ValueError('Valid synthetic import did not succeed')
     installed = json.loads(author_receipt.read_text('utf-8'))
@@ -170,7 +233,7 @@ def preserve_data_evidence(root, evidence):
         source = root / name
         if source.exists():
             shutil.copytree(source, evidence / name)
-    for name in ('fixture-author.zip', 'synthetic-probe.json', 'handoff.json', 'handoff.tmp', 'observer-ready.json', 'observer-ready.json.tmp'):
+    for name in ('fixture-author.zip', 'fixture-valid-author.zip', 'synthetic-probe.json', 'handoff.json', 'handoff.tmp', 'observer-ready.json', 'observer-ready.json.tmp'):
         source = root / name
         if source.exists():
             shutil.copy2(source, evidence / name)
@@ -181,7 +244,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--source-commit', required=True)
-    parser.add_argument('--expect', choices=('missing-image-dependencies', 'success'), required=True)
+    parser.add_argument('--expect', choices=('missing-image-dependencies', 'success', 'invalid-image-rejected'), required=True)
     args = parser.parse_args(argv)
     if os.name != 'nt' or os.environ.get('GITHUB_ACTIONS') != 'true' or os.environ.get('RUNNER_ENVIRONMENT') != 'github-hosted':
         raise ValueError('Hosted Windows only')
@@ -204,7 +267,7 @@ def main(argv=None):
         sourceSpecSha256=build.sha256(ROOT / 'tools/qt-import-helper.spec'))
     ACTIVE = (evidence / 'business-record.json', report)
     try:
-        fixture = prepare_fixture(root)
+        fixture = prepare_fixture(root, invalid_image=args.expect == 'invalid-image-rejected')
         fixture.update(probeId=uuid.uuid4().hex, requestId=uuid.uuid4().hex)
         compile_probe.write_json(root / 'synthetic-probe.json', fixture)
         report['fixture'] = fixture
@@ -219,6 +282,12 @@ def main(argv=None):
         report['phase'] = 'freeze-original-helper'; compile_probe.write_json(*ACTIVE)
         helper = build.assemble_recovery_helper(work, root, env, kind='import')
         report['helper'] = helper
+        files = helper['files']
+        current_payload = dict(fileCount=len(files), rawBytes=sum(row['bytes'] for row in files.values()))
+        report['helperPayloadComparison'] = dict(old=OLD_IMPORT_PAYLOAD, current=current_payload,
+            fileCountDelta=current_payload['fileCount'] - OLD_IMPORT_PAYLOAD['fileCount'],
+            rawBytesDelta=current_payload['rawBytes'] - OLD_IMPORT_PAYLOAD['rawBytes'],
+            scope='import helper uncompressed files only; not Setup size or installed upgrade cost')
         helper['frozenSource'] = compile_probe.verify_archive(root / helper['executable'], 'import')
         from PyInstaller.archive.readers import CArchiveReader
         archive = CArchiveReader(str(root / helper['executable']))
