@@ -1,7 +1,6 @@
 """Headless native-group transport and consumers; no private frames or UI."""
 import copy
 from concurrent.futures import ThreadPoolExecutor
-import dis
 import hashlib
 import gzip
 import itertools
@@ -313,51 +312,56 @@ class NativeSimilarityRuntimeTests(unittest.TestCase):
             self.assertEqual(overlapping['status'], 'group-candidate')
 
     def test_digest_cache_is_published_once_after_local_insertion(self):
-        """Schedule actual propose/SHA bytecodes; replace no cache or result."""
-        code = NativeSimilarityGroups._sha.__code__
-        instructions = {i.offset:i.opname for i in dis.get_instructions(code)}
-        b_ready, a_iterating, b_finished = (threading.Event() for _ in range(3))
+        """Observe real cache publications while another proposal consumes them."""
+        b_published, a_finished = threading.Event(), threading.Event()
         target = self.f.refs[(IDS[0], '1')].path
-        results = {}
-        def trace(frame, event, arg):
-            if frame.f_code is code:
-                frame.f_trace_opcodes = True
-                if event != 'opcode' or frame.f_locals.get('path') != target:
-                    return trace
-                operation = instructions.get(frame.f_lasti)
-                role = threading.current_thread().name
-                if role == 'digest-B' and operation == 'STORE_SUBSCR' and not b_ready.is_set():
-                    b_ready.set()
-                    if not a_iterating.wait(3):
-                        raise AssertionError('A iterator not reached')
-                elif role == 'digest-A' and operation == 'FOR_ITER' and not a_iterating.is_set():
-                    a_iterating.set()
-                    if not b_finished.wait(3):
-                        raise AssertionError('B insertion not completed')
-            return trace
+        stat = target.stat()
+        key = (target, stat.st_size, stat.st_mtime_ns, stat.st_ino)
+        expected = self.f.sha(target)
+        results, snapshots = {}, []
+        original_setattr = NativeSimilarityGroups.__setattr__
+
+        def publish(owner, name, value):
+            # Observe, then perform the original assignment unchanged. Published
+            # objects must already contain the hashed member and remain immutable
+            # while either worker builds and publishes a later snapshot.
+            observed = owner is self.f.index and name == '_digests'
+            if observed:
+                snapshots.append((value, dict(value)))
+            original_setattr(owner, name, value)
+            if observed and threading.current_thread().name == 'digest-B' and not b_published.is_set():
+                b_published.set()
+                if not a_finished.wait(5):
+                    raise AssertionError('Concurrent proposal did not finish')
+
         def run(role):
-            sys.settrace(trace)
             try:
                 results[role] = self.f.propose()['status']
             except Exception as error:
                 results[role] = error
             finally:
-                sys.settrace(None)
-                if role == 'digest-B':b_finished.set()
+                if role == 'digest-A':
+                    a_finished.set()
+
         b = threading.Thread(target=run, args=('digest-B',), name='digest-B')
         a = threading.Thread(target=run, args=('digest-A',), name='digest-A')
-        b.start()
-        try:
-            self.assertTrue(b_ready.wait(3))
-            a.start()
-            a.join(6); b.join(6)
-            self.assertFalse(a.is_alive() or b.is_alive())
-            self.assertEqual(results['digest-A'], 'group-candidate')
-            self.assertEqual(results['digest-B'], 'group-candidate')
-        finally:
-            a_iterating.set(); b_finished.set()
-            if a.ident is not None:a.join(3)
-            b.join(3)
+        with patch.object(NativeSimilarityGroups, '__setattr__', publish):
+            b.start()
+            try:
+                self.assertTrue(b_published.wait(5), results)
+                a.start()
+                a.join(6); b.join(6)
+                self.assertFalse(a.is_alive() or b.is_alive())
+                self.assertEqual(results, {'digest-A': 'group-candidate', 'digest-B': 'group-candidate'})
+                self.assertGreaterEqual(len(snapshots), 2)
+                self.assertEqual(snapshots[0][1].get(key), expected)
+                for published, captured in snapshots:
+                    self.assertEqual(published, captured, 'Published digest snapshot was mutated')
+            finally:
+                a_finished.set()
+                if a.ident is not None:
+                    a.join(6)
+                b.join(6)
 
 
 class NativeFrontConditionTests(unittest.TestCase):

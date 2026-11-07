@@ -158,6 +158,14 @@ def scenario(name, root):
                 from PySide6.QtCore import QPoint, QPointF, Qt
                 def choose_home_season(season):
                     for object_name in ("homeGameContextSeason", "homeGameContextSeasonOption_" + season):
+                        # Popup delegates are created/polished asynchronously.
+                        # Runtime idle does not imply that a QML item is ready
+                        # for another mouse click (notably after a context retry).
+                        def clickable():
+                            item = qml_item(client.main, object_name)
+                            return (item is not None and item.isVisible() and item.isEnabled()
+                                    and item.width() > 0 and item.height() > 0)
+                        wait(clickable, "clickable QML control " + object_name)
                         item = qml_item(client.main, object_name)
                         point = item.mapToScene(QPointF(item.width() / 2, item.height() / 2))
                         QTest.mouseClick(client.main, Qt.LeftButton, Qt.NoModifier,
