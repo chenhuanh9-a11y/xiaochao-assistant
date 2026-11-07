@@ -94,6 +94,10 @@ def _stamp(path):
 
 
 def _scan(root):
+    return _scan_tree(root)
+
+
+def _scan_tree(root, directories=None):
     result, seen, total, count = [], set(), 0, 0
     pending = [(relative, 0) for relative in reversed(RESOURCE_ROOTS)]
     while pending:
@@ -115,6 +119,8 @@ def _scan(root):
             raise ResourceResetError('resource-reset-case-collision', paths=[relative])
         seen.add(key)
         if stat.S_ISDIR(info.st_mode):
+            if directories is not None:
+                directories.append(dict(path=relative, identity=transaction._identity(info)))
             # Enumeration failures are not an empty directory. No followlinks.
             pending.extend((child.relative_to(root).as_posix(), depth + 1)
                            for child in sorted(path.iterdir(), reverse=True))
@@ -130,6 +136,176 @@ def _scan(root):
     if generation.exists():
         result.append(dict(path=GENERATION, **_stamp(generation)))
     return sorted(result, key=lambda row: row['path'])
+
+
+def _directory_roots(plan):
+    """Only whole inventoried subtrees that cannot contain a retained/new path.
+
+    Files have their own quarantine pins. Moving the remaining empty skeleton
+    preserves directory identity too, without rmdir/rmtree or implicit ownership.
+    """
+    protected = list(PRESERVED) + list(PRESERVED_USER_ROOTS)
+    protected += [row['path'] for row in plan['targetManifest']['files']]
+    protected += [base.STATE, GENERATION]
+    roots = []
+    for row in sorted(plan.get('oldDirectories', []), key=lambda row: (row['path'].count('/'), row['path'])):
+        path = row['path'].casefold()
+        if (any(_inside(item.casefold(), path) for item in protected)
+                or any(_inside(path, parent['path'].casefold()) for parent in roots)):
+            continue
+        roots.append(row)
+    return roots
+
+
+def _check_directory_tree(path, relative, expected, *, empty):
+    observed = []
+    pending = [(path, relative)]
+    while pending:
+        current, name = pending.pop()
+        files._no_links(current)
+        base._validate_target_ancestors(current)
+        info = current.lstat()
+        if not stat.S_ISDIR(info.st_mode):
+            raise ResourceResetError('resource-reset-directory-changed', paths=[name])
+        observed.append(dict(path=name, identity=transaction._identity(info)))
+        if len(observed) > MAX_FILES or len(name.split('/')) > 40:
+            raise ResourceResetError('resource-reset-tree-limit')
+        for child in current.iterdir():
+            child_name = name + '/' + child.name
+            files._no_links(child)
+            if stat.S_ISDIR(child.lstat().st_mode):
+                pending.append((child, child_name))
+            elif empty:
+                raise ResourceResetError('resource-reset-directory-not-empty', paths=[child_name])
+    wanted = [row for row in expected if _inside(row['path'], relative)]
+    if sorted(observed, key=lambda row: row['path']) != wanted:
+        raise ResourceResetError('resource-reset-directory-changed', paths=[relative])
+
+
+def _rename_directory_no_replace(source, target):
+    """Never replace a destination, even if an empty directory races preflight.
+
+    Windows rename already has no-replace semantics. On Linux use renameat2;
+    unsupported platforms fail closed rather than fall back to replacing rename.
+    Source/tree checks bracket this operation under the cooperative resource
+    lease; hostile out-of-process source mutation is detected after the move
+    and retained, never deleted.
+    """
+    if os.name == 'nt':
+        os.rename(source, target)
+        return
+    import ctypes
+    import errno
+    api = ctypes.CDLL(None, use_errno=True)
+    rename = getattr(api, 'renameat2', None)
+    if rename is None:
+        raise ResourceResetError('resource-reset-directory-no-replace-unavailable')
+    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    if rename(-100, os.fsencode(source), -100, os.fsencode(target), 1):
+        code = ctypes.get_errno()
+        if code in (errno.ENOSYS, errno.EINVAL, errno.ENOTSUP):
+            raise ResourceResetError('resource-reset-directory-no-replace-unavailable')
+        raise OSError(code, os.strerror(code), str(target))
+
+
+def _move_directory_skeletons(root, directory, plan, *, restore=False):
+    moves = []
+    for index, row in enumerate(_directory_roots(plan)):
+        active = files._target(root, row['path'])
+        retained = files._target(directory, 'old-directories/' + str(index))
+        source, target = (retained, active) if restore else (active, retained)
+        if restore and not source.exists():
+            # Preparation may have stopped before this subtree was moved.
+            _check_directory_tree(active, row['path'], plan['oldDirectories'], empty=False)
+            continue
+        _check_directory_tree(source, row['path'], plan['oldDirectories'], empty=True)
+        files._no_links(target)
+        base._validate_target_ancestors(target)
+        if target.exists():
+            raise ResourceResetError('resource-reset-directory-target-appeared', paths=[row['path']])
+        moves.append((source, target, row))
+    for source, target, row in moves:
+        _check_directory_tree(source, row['path'], plan['oldDirectories'], empty=True)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        files._no_links(target.parent)
+        if target.exists():
+            raise ResourceResetError('resource-reset-directory-target-appeared', paths=[row['path']])
+        _rename_directory_no_replace(source, target)
+        transaction._directory_sync(source.parent)
+        transaction._directory_sync(target.parent)
+        _check_directory_tree(target, row['path'], plan['oldDirectories'], empty=True)
+
+
+def _create_publication_parents(root, target, directory, journal):
+    missing = []
+    parent = target.parent
+    while not parent.exists():
+        files._no_links(parent)
+        missing.append(parent)
+        parent = parent.parent
+    for parent in reversed(missing):
+        files._no_links(parent)
+        # Persist identity/intention before making a directory visible in the
+        # active tree. A crash before the journal write leaves only quarantine.
+        index = len(journal['createdDirectories'])
+        staged = files._target(directory, 'staged-directories/' + str(index))
+        staged.mkdir(parents=True, exist_ok=False)
+        row = dict(path=parent.relative_to(root).as_posix(),
+                   identity=transaction._identity(staged.stat()))
+        journal['createdDirectories'].append(row)
+        _write_journal(directory, journal)
+        _rename_directory_no_replace(staged, parent)
+        _check_directory_tree(parent, row['path'], [row], empty=True)
+        transaction._directory_sync(staged.parent)
+        transaction._directory_sync(parent.parent)
+
+
+def _retain_created_directories(root, directory, journal):
+    # After unpublishing new files, preserve even newly created empty directory
+    # objects in quarantine. A replacement or extra child is never removed.
+    rows = journal.get('createdDirectories', [])
+    for index in reversed(range(len(rows))):
+        row = rows[index]
+        active = files._target(root, row['path'])
+        retained = files._target(directory, 'new-directories/' + str(index))
+        staged = files._target(directory, 'staged-directories/' + str(index))
+        source = active if active.exists() else retained if retained.exists() else staged
+        _check_directory_tree(source, row['path'], [row], empty=True)
+        if source == retained:
+            continue
+        files._no_links(retained)
+        if retained.exists():
+            raise ResourceResetError('resource-reset-directory-target-appeared', paths=[row['path']])
+        retained.parent.mkdir(parents=True, exist_ok=True)
+        _rename_directory_no_replace(source, retained)
+        transaction._directory_sync(source.parent)
+        transaction._directory_sync(retained.parent)
+
+
+def _verify_directory_planes(root, directory, journal):
+    plan = journal['plan']
+    if 'oldDirectories' not in plan:
+        return  # Recover journals written by the previous file-only protocol.
+    roots = _directory_roots(plan)
+    for index, row in enumerate(roots):
+        _check_directory_tree(files._target(directory, 'old-directories/' + str(index)),
+                              row['path'], plan['oldDirectories'], empty=True)
+    retained = {row['path'].casefold(): row['identity'] for row in plan['oldDirectories']
+                if not any(_inside(row['path'].casefold(), item['path'].casefold()) for item in roots)}
+    retained.update({row['path'].casefold(): row['identity']
+                     for row in journal.get('createdDirectories', []) if _selected(row['path'])})
+    expected = set(retained)
+    for row in journal['newFiles']:
+        for parent in Path(row['path']).parents:
+            relative = parent.as_posix()
+            if relative != '.' and _selected(relative):
+                expected.add(relative.casefold())
+    directories = []
+    _scan_tree(root, directories)
+    actual = {row['path'].casefold(): row['identity'] for row in directories}
+    if (set(actual) != expected or any(actual.get(path) != identity for path, identity in retained.items())):
+        raise ResourceResetError('resource-reset-active-directories-changed')
 
 
 def _identity_observations(root):
@@ -296,7 +472,8 @@ def _plan_locked(root, candidate_directory=None, target_identity=None):
     if blocked:
         raise ResourceResetError('resource-reset-handoff-pending', paths=blocked)
     _directory, manifest = _candidate(root, candidate_directory)
-    rows, packages = _classify(root, _scan(root))
+    directories = []
+    rows, packages = _classify(root, _scan_tree(root, directories))
     # Structural collisions need a separate directory migration contract. Do
     # not partially move files and only discover them while publishing later.
     blocked = []
@@ -309,7 +486,8 @@ def _plan_locked(root, candidate_directory=None, target_identity=None):
         raise ResourceResetError('resource-reset-target-not-file', paths=blocked)
     plan = dict(schema=SCHEMA, rootIdentity=transaction._identity(root.stat()),
                 targetIdentity=_target_identity(target_identity),
-                targetManifest=manifest, oldFiles=rows, packagesToDownload=packages,
+                targetManifest=manifest, oldFiles=rows, oldDirectories=sorted(directories, key=lambda row: row['path']),
+                packagesToDownload=packages,
                 observedIdentity=_identity_observations(root),
                 preservedUserRoots=list(PRESERVED_USER_ROOTS),
                 fileCount=len(rows), bytes=sum(row['bytes'] for row in rows),
@@ -396,6 +574,18 @@ def _validate_plan(plan):
         seen.add(row['path'].casefold()); total += row['bytes']
     if total > MAX_BYTES:
         raise ResourceResetError('resource-reset-total-size-limit')
+    directories = plan.get('oldDirectories', [])
+    if not isinstance(directories, list) or len(directories) > MAX_FILES:
+        raise ResourceResetError('resource-reset-invalid-directory-inventory')
+    seen = set()
+    for row in directories:
+        if (not isinstance(row, dict) or set(row) != {'path', 'identity'}
+                or not _selected(row['path']) or row['path'].casefold() in seen):
+            raise ResourceResetError('resource-reset-invalid-directory-inventory')
+        transaction._valid_identity(row['identity'])
+        seen.add(row['path'].casefold())
+    if directories != sorted(directories, key=lambda row: row['path']):
+        raise ResourceResetError('resource-reset-invalid-directory-inventory')
 
 
 def _load(root, transaction_id=None):
@@ -409,10 +599,24 @@ def _load(root, transaction_id=None):
         raise ResourceResetError('resource-reset-invalid-pending')
     directory = files._target(root, HISTORY + '/' + pointer['transactionId'])
     journal = _read_json(files._target(directory, 'journal.json'))
-    if (set(journal) != {'schema', 'transactionId', 'status', 'plan', 'newFiles'}
+    if (set(journal) not in ({'schema', 'transactionId', 'status', 'plan', 'newFiles'},
+                             {'schema', 'transactionId', 'status', 'plan', 'newFiles', 'createdDirectories'})
             or journal['schema'] != SCHEMA or journal['transactionId'] != pointer['transactionId']
             or journal['status'] not in {'preparing', 'moving', 'prepared-resources', 'committed', 'rolled-back'}):
         raise ResourceResetError('resource-reset-invalid-journal')
+    created = journal.get('createdDirectories', [])
+    if not isinstance(created, list) or len(created) > MAX_FILES:
+        raise ResourceResetError('resource-reset-invalid-created-directories')
+    seen = set()
+    for row in created:
+        if not isinstance(row, dict) or set(row) != {'path', 'identity'}:
+            raise ResourceResetError('resource-reset-invalid-created-directories')
+        relative = files._relative(row['path'])
+        if (relative.casefold() in seen or not any(
+                item['path'].startswith(relative + '/') for item in journal['newFiles'])):
+            raise ResourceResetError('resource-reset-invalid-created-directories')
+        transaction._valid_identity(row['identity'])
+        seen.add(relative.casefold())
     _validate_plan(journal['plan'])
     if journal['plan']['rootIdentity'] != transaction._identity(root.stat()):
         raise ResourceResetError('resource-reset-root-identity-changed')
@@ -450,13 +654,18 @@ def _clear_pending(root, transaction_id):
 
 def _verify_unchanged_plan(root, plan, candidate_directory):
     observed = [{key: row[key] for key in ('path', 'bytes', 'sha256', 'identity')} for row in plan['oldFiles']]
-    if (_scan(root) != observed or _identity_observations(root) != plan['observedIdentity']
+    directories = []
+    scanned = _scan_tree(root, directories)
+    if (scanned != observed
+            or sorted(directories, key=lambda row: row['path']) != plan.get('oldDirectories', [])
+            or _identity_observations(root) != plan['observedIdentity']
             or transaction._identity(root.stat()) != plan['rootIdentity']
             or _candidate(root, candidate_directory)[1] != plan['targetManifest']):
         raise ResourceResetError('resource-reset-plan-changed-reinspect-required')
 
 
 def _rollback_locked(root, directory, journal):
+    _move_directory_skeletons(root, directory, journal['plan'], restore=True)
     old_by_path = {row['path'].casefold(): (index, row) for index, row in enumerate(journal['plan']['oldFiles'])}
     new_by_path = {row['path'].casefold(): row for row in journal['newFiles']}
     blocked = []
@@ -495,6 +704,7 @@ def _rollback_locked(root, directory, journal):
             base._validate_target_ancestors(target)
             transaction._move_owned(files._target(directory, 'old/' + str(old[0])), target,
                                     old[1], old[1]['identity'])
+    _retain_created_directories(root, directory, journal)
     journal['status'] = 'rolled-back'
     _write_journal(directory, journal)
     _clear_pending(root, journal['transactionId'])
@@ -530,7 +740,7 @@ def prepare_resource_upgrade(install_root, *, expected_plan_sha256, confirmed=Fa
         directory = files._target(root, HISTORY + '/' + transaction_id)
         directory.mkdir(parents=True, exist_ok=False)
         journal = dict(schema=SCHEMA, transactionId=transaction_id, status='preparing', plan=plan,
-                       newFiles=[dict(row, identity=None) for row in new_rows])
+                       newFiles=[dict(row, identity=None) for row in new_rows], createdDirectories=[])
         _write_journal(directory, journal)
         pointer = files._target(directory, 'pending-pointer.json')
         transaction._write_new(pointer, _encoded(dict(schema=SCHEMA, transactionId=transaction_id)))
@@ -553,6 +763,7 @@ def prepare_resource_upgrade(install_root, *, expected_plan_sha256, confirmed=Fa
             for index, row in enumerate(plan['oldFiles']):
                 transaction._move_owned(files._target(root, row['path']),
                                         files._target(directory, 'old/' + str(index)), row, row['identity'])
+            _move_directory_skeletons(root, directory, plan)
             # No old object can reappear under a path about to be published.
             for row in journal['newFiles']:
                 target = files._target(root, row['path'])
@@ -562,7 +773,7 @@ def prepare_resource_upgrade(install_root, *, expected_plan_sha256, confirmed=Fa
             for index, row in enumerate(journal['newFiles']):
                 target = files._target(root, row['path'])
                 base._validate_target_ancestors(target)
-                target.parent.mkdir(parents=True, exist_ok=True)
+                _create_publication_parents(root, target, directory, journal)
                 files._no_links(target.parent)
                 os.link(files._target(directory, 'new/' + str(index)), target)
                 if not transaction._matches(target, row, row['identity']):
@@ -584,6 +795,22 @@ def prepare_resource_upgrade(install_root, *, expected_plan_sha256, confirmed=Fa
                     retainedDirectory=str(directory), packagesToDownload=plan['packagesToDownload'])
 
 
+def _verify_resource_projection(root, directory, journal):
+    if 'oldDirectories' not in journal['plan'] or 'createdDirectories' not in journal:
+        raise ResourceResetError('resource-reset-directory-evidence-required')
+    _verify_directory_planes(root, directory, journal)
+    for row in journal['newFiles']:
+        if not transaction._matches(files._target(root, row['path']), row, row['identity']):
+            raise ResourceResetError('resource-reset-new-plane-changed', paths=[row['path']])
+    for index, row in enumerate(journal['plan']['oldFiles']):
+        if not transaction._matches(files._target(directory, 'old/' + str(index)), row, row['identity']):
+            raise ResourceResetError('resource-reset-quarantine-changed', paths=[row['path']])
+    expected_active = [{key: row[key] for key in ('path', 'bytes', 'sha256', 'identity')}
+                       for row in journal['newFiles']]
+    if _active_inventory(_scan(root)) != _active_inventory(expected_active):
+        raise ResourceResetError('resource-reset-active-plane-changed')
+
+
 def finish_resource_upgrade(install_root, transaction_id, *, setup_succeeded=False):
     """Installer event boundary: success commits; cancellation/failure restores.
 
@@ -596,6 +823,8 @@ def finish_resource_upgrade(install_root, transaction_id, *, setup_succeeded=Fal
         assert_installer_resource_action(root, 'commit' if setup_succeeded is True else 'rollback',
                                          transaction_id, journal['plan']['planSha256'])
         if journal['status'] == 'committed':
+            if files._target(root, 'work/pending-installer-upgrade.json').exists():
+                _verify_resource_projection(root, directory, journal)
             _clear_pending(root, transaction_id)
             return dict(status='committed', transactionId=transaction_id, retainedDirectory=str(directory))
         if journal['status'] == 'rolled-back' and setup_succeeded is not True:
@@ -605,16 +834,7 @@ def finish_resource_upgrade(install_root, transaction_id, *, setup_succeeded=Fal
             return _rollback_locked(root, directory, journal)
         if journal['status'] != 'prepared-resources':
             raise ResourceResetError('resource-reset-not-prepared')
-        for row in journal['newFiles']:
-            if not transaction._matches(files._target(root, row['path']), row, row['identity']):
-                raise ResourceResetError('resource-reset-new-plane-changed', paths=[row['path']])
-        for index, row in enumerate(journal['plan']['oldFiles']):
-            if not transaction._matches(files._target(directory, 'old/' + str(index)), row, row['identity']):
-                raise ResourceResetError('resource-reset-quarantine-changed', paths=[row['path']])
-        expected_active = [{key: row[key] for key in ('path', 'bytes', 'sha256', 'identity')}
-                           for row in journal['newFiles']]
-        if _active_inventory(_scan(root)) != _active_inventory(expected_active):
-            raise ResourceResetError('resource-reset-active-plane-changed')
+        _verify_resource_projection(root, directory, journal)
         journal['status'] = 'committed'
         _write_journal(directory, journal)
         _clear_pending(root, transaction_id)
@@ -639,7 +859,7 @@ def recover_resource_upgrade(install_root):
         return _rollback_locked(root, directory, journal)
 
 
-def resource_upgrade_status(install_root, transaction_id=None):
+def resource_upgrade_status(install_root, transaction_id=None, *, verify_projection=False):
     """Read durable commit state after an uncertain helper result, without I/O writes.
 
     The caller must not roll back program files while the commit state is
@@ -651,6 +871,12 @@ def resource_upgrade_status(install_root, transaction_id=None):
         if transaction_id is None and not files._target(root, PENDING).exists():
             return dict(status='not-needed')
         directory, journal = _load(root, transaction_id)
+        if verify_projection:
+            assert_installer_resource_action(root, 'commit', journal['transactionId'],
+                                             journal['plan']['planSha256'])
+            if journal['status'] != 'committed':
+                raise ResourceResetError('resource-reset-not-committed')
+            _verify_resource_projection(root, directory, journal)
         return dict(status=journal['status'], transactionId=journal['transactionId'],
                     planSha256=journal['plan']['planSha256'], retainedDirectory=str(directory),
                     targetIdentity=journal['plan']['targetIdentity'])

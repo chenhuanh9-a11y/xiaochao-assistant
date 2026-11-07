@@ -84,11 +84,14 @@ class Coordinator:
     def _scope(self):
         return self.scope(self.root, self.lease, self.journal.bindings['sessionId'], validate=self.journal.status)
 
-    def _resource(self, state, allowed):
+    def _resource(self, state, allowed, *, verify_projection=False):
         tx = state['resourceTransactionId']
         if not tx:
             return False
-        result = self.api.resource_upgrade_status(self.root, tx)
+        if verify_projection:
+            result = self.api.resource_upgrade_status(self.root, tx, verify_projection=True)
+        else:
+            result = self.api.resource_upgrade_status(self.root, tx)
         return (result.get('transactionId') == tx and result.get('planSha256') == state['planSha256']
                 and result.get('targetIdentity') == state['targetIdentity'] and result['status'] in allowed)
 
@@ -115,8 +118,12 @@ class Coordinator:
         return plan['planSha256'] == state['planSha256']
 
     def _committed(self, state):
-        return (self._resource(state, {'committed'})
-                and self.api.resource_upgrade_status(self.root)['status'] == 'not-needed')
+        # The last pre-finalization callback needs a fresh bound permit and a
+        # full resource witness, including resume after a lost commit receipt.
+        # Historical completed sessions must not freeze later legitimate imports.
+        with self._scope() if state['pending'] else nullcontext():
+            return (self._resource(state, {'committed'}, verify_projection=state['pending'])
+                    and self.api.resource_upgrade_status(self.root)['status'] == 'not-needed')
 
     def _finish(self):
         state = self.journal.assert_can_forward(verify_native=self._native)

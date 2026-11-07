@@ -21,7 +21,7 @@ class Resources:
         self.restored = True
         self.writes = []
 
-    def resource_upgrade_status(self, root, transaction_id=None):
+    def resource_upgrade_status(self, root, transaction_id=None, *, verify_projection=False):
         if transaction_id is None and not self.pending:
             return dict(status='not-needed')
         assert transaction_id is None or transaction_id == self.tx
