@@ -131,6 +131,63 @@ def control_hit(cursor, client_bounds, read):
         return None
 
 
+def _observe_s0_map_geometry(frame, mode, read, observation):
+    """Alternate proof for a revealed/bright map, never a texture relaxation.
+
+    Only the caller's current detector output is eligible. The shared geometric
+    primitive observer has an S1 name but no season/floor authority: reuse its
+    X, distinct +/- and rail checks without changing S1 behavior.
+    """
+    from client_space_geometry import centered_safe_viewport
+    from map_interface_observation import MAP_REGIONS, backdrop_ratio, neutral_ratio
+
+    tinted = observation.get("detectionMode") == "damage-tint"
+    if "controlExposure" in read or tinted:
+        # The old damage-tint color bands can also match a uniform blue field.
+        # Neither normalized nor ordinary floor evidence may activate that
+        # tolerant path alone: require independent complete UI proof even when
+        # the legacy observer reported a color-based positive.
+        observation = dict(observation, detected=False, reason="map-evidence-insufficient")
+    if observation.get("detected") is True or observation.get("shapeAccepted") is not True:
+        return observation
+    height, width = frame.shape[:2]
+    candidate = bind_control_geometry(read, mode, (width, height), map_open=True)
+    if validated_control_rects(candidate) is None:
+        return observation
+
+    # Remove the complete measured column, including unselected signed labels,
+    # before any independent color sampling. The extra margin is outside the
+    # conservative click interiors; exclude the strip for the entire height so
+    # no floor glyph can become an anchor even with an expanded/saved ROI.
+    x, _, tile_width, _ = read["tileBounds"]
+    left = max(0, math.floor((x - tile_width * .25) * width))
+    right = min(width, math.ceil((x + tile_width * 1.25) * width))
+    independent = frame.copy()
+    independent[:, left:right] = 0
+    anchors = ("closeButton", "zoomControl", "bottomControls")
+    ratios = {name: neutral_ratio(independent, MAP_REGIONS[name], tinted=tinted)
+              for name in anchors}
+    backdrop = backdrop_ratio(independent)
+    if (not all(ratios[name] >= MAP_REGIONS[name][4] for name in anchors)
+            or backdrop < observation["requiredBackdropRatio"]):
+        return observation
+    viewport = centered_safe_viewport((width, height))
+    # The shape observer isolates bytes before blurring. Keep its original
+    # exclusion domain and extend it when a measured column is further right.
+    floor_right = max(.92, (right - viewport.left) / viewport.width)
+    if floor_right >= .99:
+        return observation
+    from s1_map_ui_geometry import observe_s1_map_ui_geometry
+    geometry = observe_s1_map_ui_geometry(frame, floor_search_right=floor_right)
+    if geometry.get("verified") is not True:
+        return observation
+    return dict(observation, detected=True, reason="map-interface-detected",
+                detectionMode="s0-signed-controls-ui-geometry",
+                independentAnchorRatios=ratios, independentBackdropRatio=backdrop,
+                independentFloorExclusion=[left, 0, right, height],
+                mapUiGeometry=geometry)
+
+
 def observe_s0_map(frame, mode, *, settings=None, season="s0"):
     """Compose same-frame signed controls, canvas proof and calibrated geometry."""
     from floor_control_region import apply_floor_region, locate_vertical_floor_controls
@@ -146,6 +203,7 @@ def observe_s0_map(frame, mode, *, settings=None, season="s0"):
                 layout="vertical-floor-read-only", controlGeometryVerified=False)
     read = apply_floor_region(dict(settings or {}, gameSeason=season), mode, frame, read)
     observation = detect_map_interface(frame, floor_read=read)
+    observation = _observe_s0_map_geometry(frame, mode, read, observation)
     opened = observation.get("detected") is True
     read = bind_control_geometry(read, mode, frame.shape[1::-1], map_open=opened)
     return dict(observation, mapOpen=opened, floor=contract.floor_id_for(read.get("selectedFloor")),

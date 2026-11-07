@@ -40,7 +40,7 @@ class CompositionTests(unittest.TestCase):
         self.client.session = SimpleNamespace(busy=False, refreshRuntime=Mock())
         self.state = dict(mode="nightmare", profileId="author-one")
         self.client.runtime = SimpleNamespace(snapshot=lambda: dict(self.state))
-        self.client.route_choices = SimpleNamespace(profiles=[dict(id="author-one", name="Author")])
+        self.client.route_choices = SimpleNamespace(season="s0", mode="nightmare", profiles=[dict(id="author-one", name="Author")])
         self.active = dict(inUse="")
         self.client.custom_galleries = SimpleNamespace(snapshot=self.active,
             setActiveGallery=lambda gallery: self.active.update(inUse=gallery))
@@ -111,7 +111,7 @@ class CompositionTests(unittest.TestCase):
         self.state["profileId"] = "custom:mine"
         self.client._sync_custom_gallery_active()
         self.assertEqual(self.active["inUse"], "mine")
-        self.assertEqual(self.client.settings.saved_keys, ["routeProfileId", "modeRouteProfiles"])
+        self.assertEqual(self.client.settings.saved_keys, ["routeProfileId", "modeRouteProfiles", "contextRouteProfiles"])
         self.assertEqual(self.client.settings.persistedValues["modeRouteProfiles"]["difficult"], "other")
 
     def test_failed_save_or_unsupported_mode_never_claims_applied(self):
@@ -146,7 +146,7 @@ class CompositionTests(unittest.TestCase):
         factories = EngineFactories(Path("work/not-a-resource-root"))
         sentinel = object()
         engines = {mode: SimpleNamespace(identity=sentinel) for mode in factories.MODES}
-        factories._engines.update(engines)
+        factories._engines.update({"s0:" + mode: engine for mode, engine in engines.items()})
         provider = Mock(side_effect=lambda profile, map_id, floor, reference, mode: mode)
         reports = factories.capabilities()
         factories.set_custom_display(provider)

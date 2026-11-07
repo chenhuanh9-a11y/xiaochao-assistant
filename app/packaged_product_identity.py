@@ -17,7 +17,12 @@ CLOSED_EXE_NAMES = (LEGACY_EXE, QT_EXE)
 _ISOLATED = {
     "client": "AF19AFD9-3016-44C9-9D20-6F216C5D8C51",
     "layout-preview": "D4B8E562-EA62-4A43-AF1D-043A5646971E",
+    "s0-s1-test": "907F912D-58FD-4F84-A7A4-0C816AA70E52",
+    "s1-floor-test": "3C271F5D-71FF-4EA8-9569-B8DAC30F3773",
+    "s1-auto-test": "ED53B6E8-E9A0-4F21-AF75-7C8A62BE7347",
+    "s1-playtest": "D9FE6D76-C31A-47AF-9281-B4614C245E92",
 }
+PRIVATE_S1_INSTANCES = frozenset(("s0-s1-test", "s1-floor-test", "s1-auto-test", "s1-playtest"))
 
 
 class InstallationProfileError(ValueError):
@@ -69,3 +74,19 @@ def expected_application_executable():
     if identity == "legacy-tk":
         return LEGACY_EXE
     raise ValueError("Isolated Qt clients cannot use production resource helpers")
+
+
+def qt_application_model_id():
+    """Taskbar identity follows the validated baked product, never caller input."""
+    identity = baked_identity(require_qt=True)
+    if identity == "qt-production":
+        return "Xingtu.Assistant"
+    if identity == "legacy-tk":
+        return "Xingtu.QtClientSource"
+    profile = json.loads((Path(sys._MEIPASS) / "installation-profile.json").read_text(encoding="utf-8"))
+    instance = profile["installerInstance"]["id"]
+    if instance not in _ISOLATED:
+        raise InstallationProfileError("Unknown isolated Qt application identity")
+    return {"s0-s1-test": "Xingtu.S0S1PrivateTest", "s1-floor-test": "Xingtu.S1FloorPrivateTest",
+            "s1-auto-test": "Xingtu.S1AutoPrivateTest", "s1-playtest": "Xingtu.S1Playtest"}.get(
+        instance, "Xingtu.QtClientTest")

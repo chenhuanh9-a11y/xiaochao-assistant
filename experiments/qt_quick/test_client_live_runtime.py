@@ -579,7 +579,7 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertEqual(result["requestContext"]["generation"], 22)
         self.assertEqual(result["requestContext"]["frameId"], "")
         state = self.runtime.snapshot()
-        self.assertEqual(result["resultContext"], {key: state[key] for key in ("mode", "profileId", "roundId", "frameId")})
+        self.assertEqual(result["resultContext"], {key: state[key] for key in ("season", "contextKey", "mode", "profileId", "roundId", "frameId")})
         render = self.runtime.render_payload(result["renderToken"])
         self.assertEqual(render["originX"], 100)
         self.assertEqual(render["originY"], 200)
@@ -963,7 +963,11 @@ class LiveRuntimeContracts(unittest.TestCase):
             self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
             self.dispatch("refresh_map")
         self.assertFalse(self.runtime.snapshot()["mapOpen"])
-        self.assertTrue(all(row["event"] == "render-revoked" for row in events))
+        evidence = [row for row in events if row["event"] == "automatic-failure-sample"]
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0]["failureSample"]["missingReason"], "automatic-sampling-disabled")
+        self.assertTrue(all(row["event"] == "render-revoked" for row in events
+            if row["event"] != "automatic-failure-sample"))
 
     def test_cancel_steady_verification_discards_old_authority_and_coalesces_duplicates(self):
         first = self.begin_and_capture()

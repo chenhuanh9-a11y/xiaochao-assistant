@@ -73,8 +73,9 @@ class OnlinePackagesService(QObject):
             activePackageId=self._active, progress=dict(self._progress),
             canCheck=ready, canDownload=ready and bool(self._entries),
             canCancel=self._busy and not self._cancel.is_set(),
+            cancelling=self._busy and self._cancel.is_set(),
             localMessage=self.resources.message, localBusy=self.resources.busy,
-            localPendingKind=self.resources.pendingKind)
+            localPendingKind=self.resources.pendingKind, localStage=self.resources.operationStage)
 
     snapshot = Property("QVariantMap", _snapshot, notify=changed)
     busy = Property(bool, lambda s: s._busy, notify=changed)

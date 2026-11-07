@@ -38,7 +38,7 @@ jobs:
         shell: pwsh
         run: |
           git rev-parse HEAD
-          $modules = @('test_custom_maps', 'test_custom_map_editor', 'test_client_custom_gallery', 'test_client_composition', 'test_client_custom_display', 'test_client_gallery_export_dialog', 'test_client_downloads', 'test_client_shutdown', 'test_client_coordinator', 'test_client_resources', 'test_client_import_upgrade_parity', 'test_client_recapture_composition')
+          $modules = @('test_custom_maps', 'test_client_custom_gallery', 'test_client_composition', 'test_client_custom_display', 'test_client_gallery_export_dialog', 'test_client_downloads', 'test_client_shutdown', 'test_client_coordinator', 'test_client_resources', 'test_client_import_upgrade_parity', 'test_client_recapture_composition')
           if ('${{ matrix.source }}' -ne 'main-baseline') {
             $modules += @('test_client_route_plaza', 'test_route_plaza')
           }

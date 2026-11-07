@@ -113,6 +113,44 @@ class CustomGalleryTests(unittest.TestCase):
         self.call("confirmOperation", True)
         self.assertEqual(len(self.service.snapshot["galleries"]), 1)
 
+    def test_duplicate_gallery_labels_select_and_use_exact_ids(self):
+        first = self.call("createGallery", "同名路线")["selectedGallery"]
+        second = self.call("createGallery", "同名路线")["selectedGallery"]
+        self.assertNotEqual(first, second)
+        self.assertEqual([row["id"] for row in self.service.snapshot["galleries"]
+                          if row["name"] == "同名路线"], [first, second])
+        used = []
+        self.service.setUseHandler(lambda gid: used.append(gid) or dict(success=True, applied=True))
+        self.call("selectGallery", first)
+        self.service.useGallery()
+        self.call("selectGallery", second)
+        self.service.useGallery()
+        self.assertEqual(used, [first, second])
+        self.assertEqual(self.service.snapshot["inUse"], second)
+
+    def test_downloaded_gallery_stays_readonly_but_can_be_deleted(self):
+        store = GalleryStore(self.service.path, self.default)
+        gid = store.install_plaza("下载路线", {"synthetic-map": dict(
+            points=[dict(floor="1", x=30, y=30, kind="via")])},
+            dict(workId="fixture", versionId="v1", author="fixture"))
+        self.call("refresh")
+        state = self.call("selectGallery", gid)
+        self.assertTrue(state["readonly"])
+        self.assertTrue(state["canDelete"])
+        self.call("renameGallery", "不应重命名")
+        self.assertEqual(GalleryStore(self.service.path, self.default).name(gid), "下载路线")
+        self.service.requestDeleteGallery()
+        self.assertEqual(len(self.confirmations), 1)
+        self.call("confirmOperation", True)
+        self.assertNotIn(gid, [row["id"] for row in self.service.snapshot["galleries"]])
+
+    def test_default_gallery_cannot_request_deletion(self):
+        self.assertEqual(self.service.snapshot["selectedGallery"], "default")
+        self.assertFalse(self.service.snapshot["canDelete"])
+        self.service.requestDeleteGallery()
+        self.assertEqual(self.confirmations, [])
+        self.assertFalse(self.service.path.exists())
+
     def test_production_legacy_routes_migrate_once_beside_settings_and_preserve_source(self):
         # Actual production path layout under this test's private root only.
         paths = RuntimePaths(self.sandbox, True)

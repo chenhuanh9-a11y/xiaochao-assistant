@@ -65,6 +65,11 @@ class TutorialService(QObject):
         if settings is not None:
             settings.changed.connect(self._settings_changed)
         self._binding_values = self._bindings()
+        self._selection_mode = self._saved_selection_mode()
+
+    def _saved_selection_mode(self):
+        values = self.settings.persistedValues if self.settings is not None else {}
+        return values.get('mapSelectionMode')
 
     def _bindings(self):
         values = self.settings.persistedValues if self.settings is not None else {}
@@ -74,8 +79,10 @@ class TutorialService(QObject):
 
     def _settings_changed(self):
         values = self._bindings()
-        if values != self._binding_values:
+        mode = self._saved_selection_mode()
+        if values != self._binding_values or mode != self._selection_mode:
             self._binding_values = values
+            self._selection_mode = mode
             self.changed.emit()
 
     def _rows(self):
@@ -85,8 +92,14 @@ class TutorialService(QObject):
             chapter["pageAction"] = PAGES.get(chapter.get("page") or "", "")
             for step in chapter["steps"]:
                 step["imageUrl"] = QUrl.fromLocalFile(str(self.image_root / step["image"])).toString()
+                show_mode = step.get('showSelectionMode', False)
+                step['selectionModeText'] = ('当前选图方式：' + {
+                    'auto': '自动识别', 'manual': '手动选图'
+                }.get(self._selection_mode, '未知，请到设置页核对')) if show_mode else ''
                 step["bindings"] = "；".join(
-                    f"{ACTION_NAMES.get(key, key)} {self._binding_values.get(key) or '未设置'}" for key in step.get("keys", []))
+                    f"{ACTION_NAMES.get(key, key)} {self._binding_values.get(key) or '未设置'}"
+                    for key in step.get("keys", [])
+                    if not (show_mode and key == 'manual-map-picker' and self._selection_mode != 'manual'))
         return rows
 
     chapters = Property("QVariantList", _rows, notify=changed)

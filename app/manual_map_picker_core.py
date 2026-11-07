@@ -1,8 +1,7 @@
 """Toolkit-free rules for 手动选图 (manual map selection).
 
-Shared by the Tk picker (``manual_map_picker``) and the Qt client
-(``experiments/qt_quick/client_manual_map.py``): grouping, option titles and
-the two-stage page state. No tkinter/Qt imports so either UI can use it.
+Consumed by ``experiments/qt_quick/client_manual_map.py``: grouping, option
+titles and the two-stage page state. Kept independent of the UI toolkit.
 """
 from __future__ import annotations
 
@@ -19,7 +18,7 @@ PAGE_SIZE = len(OPTION_KEYS)
 PICKER_KEY_CODES = {"F1": 0x70, "F2": 0x71, "F3": 0x72, "F4": 0x73,
                     "PageUp": 0x21, "PageDown": 0x22, "Backspace": 0x08}
 THUMBNAIL_SIZE = (200, 116)
-MODE_TITLES = {"nightmare": "噩梦", "difficult": "困难"}
+MODE_TITLES = {"nightmare": "噩梦", "difficult": "困难", "difficulty2": "普通"}
 
 
 def normalize_selection_mode(value) -> str:

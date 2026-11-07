@@ -1,10 +1,7 @@
 """Mode-scoped author import, persistence and missing-floor display fallback."""
-import ast
-import copy
 import json
 from pathlib import Path
 import sys
-from types import SimpleNamespace
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'app'))
@@ -17,21 +14,6 @@ from map_resource_context import load_browse_context
 
 PROFILE = 'aichicu-difficult'
 PACKAGE = 'difficult-aichicu'
-
-
-def runtime_methods():
-    path = Path(__file__).resolve().parents[1] / 'app/identityv_daily_assistant.py'
-    names = {'_shared_display_profile_id', '_effective_route_profile',
-             '_author_route_options', '_restore_route_profile_preference', '_legacy_difficult_display_profile'}
-    tree = ast.parse(path.read_text('utf-8-sig'))
-    methods = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name in names]
-    ns = dict(Path=Path, SHARED_STRUCTURE_PROFILE_ID='shared-structure',
-              DEFAULT_ROUTE_PROFILE_ID='wang-qingxin', SUJU_ROUTE_PROFILE_ID='suju',
-              ROUTE_PROFILE_LABELS={PROFILE:'爱吃醋 · 困难','zhan10-speed':'展十',
-                                    'shared-structure':'结构底图'},
-              normalize_route_profile_id=lambda x:x, gallery_of=lambda x:None)
-    exec(compile(ast.fix_missing_locations(ast.Module(body=methods,type_ignores=[])), str(path), 'exec'),ns)
-    return ns
 
 
 class DifficultAuthorTests(unittest.TestCase):
@@ -89,21 +71,6 @@ class DifficultAuthorTests(unittest.TestCase):
         f.entries[0]['sourceVersion']='wrong'
         self.assertIn(PROFILE,self.load(f,'difficult').errors)
 
-    def test_selected_author_survives_restore_and_missing_floor_uses_shared(self):
-        f=self.display_fixture(); loaded=self.load(f,'difficult'); ns=runtime_methods()
-        s=SimpleNamespace(optional_author_displays=loaded,author_route_catalog=loaded.catalog,
-            difficult_native_context=object(),game_mode='difficult',settings={'routeProfileId':PROFILE},
-            preferred_route_profile_id=PROFILE,pack=SimpleNamespace(),_shared_structure_mode_enabled=lambda:True,
-            _custom_route_active=lambda *a:False,_custom_gallery_selected=lambda:False)
-        s._shared_display_profile_id=lambda:ns['_shared_display_profile_id'](s)
-        s._legacy_difficult_display_profile=lambda m,f:ns['_legacy_difficult_display_profile'](s,m,f)
-        self.assertEqual(s._shared_display_profile_id(),PROFILE)
-        self.assertEqual(ns['_effective_route_profile'](s,'m1','1'),PROFILE)
-        self.assertEqual(ns['_effective_route_profile'](s,'m1','2'),'shared-structure')
-        self.assertEqual(ns['_author_route_options'](s),((PROFILE,'爱吃醋 · 困难'),))
-        ns['_restore_route_profile_preference'](s); self.assertEqual(s.route_profile_id,PROFILE)
-        s.optional_author_displays=None
-        ns['_restore_route_profile_preference'](s); self.assertEqual(s.route_profile_id,'zhan10-speed')
 
     def test_browse_loads_only_its_mode_sidecar(self):
         # Resolve the existing temporary declaration fixture without network/runtime construction.

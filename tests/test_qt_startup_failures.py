@@ -22,7 +22,8 @@ class StartupFixture(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        # Match product paths after Windows expands short temporary-directory names.
+        self.root = Path(self.temp.name).resolve()
         self.install = self.root / "installation"
         self.runtime = self.install / "_internal"
         self.runtime.mkdir(parents=True)
@@ -86,6 +87,72 @@ class QtProfileBoundaryTests(StartupFixture):
     def test_legacy_helpers_still_require_only_their_existing_profile_contract(self):
         self.assertEqual(identity.baked_identity(), "legacy-tk")
         self.assertEqual(identity.expected_application_executable(), identity.LEGACY_EXE)
+
+    def test_production_rejects_a_different_installation_root(self):
+        self.bake()
+        paths = self.load_paths()
+        self.assertEqual(paths.runtime_paths().installation_root, self.install)
+        with self.assertRaisesRegex(ValueError, "Production data must stay beside"):
+            paths.runtime_paths(self.root / "other-installation")
+
+    def test_isolated_root_requires_both_owner_marker_and_work_boundary(self):
+        self.bake(dict(product="XingtuQtClientTest", installerInstance=dict(id="client",
+            product="XingtuQtClientTest", appId="AF19AFD9-3016-44C9-9D20-6F216C5D8C51")))
+        paths = self.load_paths()
+        sandbox = paths.DEFAULT_SANDBOX
+        with self.assertRaisesRegex(ValueError, "own marked work directory"):
+            paths.runtime_paths()
+        sandbox.mkdir(parents=True)
+        (sandbox / ".qt-lab-owner").write_text("qt-quick-isolated-v1", encoding="utf-8")
+        self.assertEqual(paths.runtime_paths().installation_root, sandbox)
+        outside = self.root / "other-installation"
+        outside.mkdir()
+        (outside / ".qt-lab-owner").write_text("qt-quick-isolated-v1", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "own marked work directory"):
+            paths.runtime_paths(outside)
+
+    def test_linked_profile_and_explicit_runtime_root_stay_rejected(self):
+        self.bake()
+        paths = self.load_paths()
+        alias = self.root / "linked-installation"
+        if sys.platform == "win32":
+            import _winapi
+            _winapi.CreateJunction(str(self.install), str(alias))
+        else:
+            alias.symlink_to(self.install, target_is_directory=True)
+        self.assertEqual(alias.resolve(), self.install)
+        with patch.object(sys, "_MEIPASS", str(alias / "_internal")):
+            with self.assertRaisesRegex(identity.InstallationProfileError, "cannot use links"):
+                self.load_paths()
+        with self.assertRaisesRegex(ValueError, "links or reparse points"):
+            paths.runtime_paths(alias)
+
+
+class StartupAliasFixtureTests(unittest.TestCase):
+    def test_equivalent_temp_roots_keep_original_path_and_profile_assertions(self):
+        # A real, existing hop/.. alias reproduces the fixture mismatch without
+        # mocking Path.resolve or weakening the product's link checks. This is
+        # portable path-alias coverage, not a native Windows 8.3-path claim.
+        cases = (
+            "test_valid_production_stays_beside_executable",
+            "test_explicit_isolated_and_source_keep_existing_paths",
+            "test_missing_internal_profile_cannot_seed_a_new_runtime_even_with_root_profile",
+            "test_corrupt_internal_profile_cannot_be_replaced_by_root_metadata",
+        )
+        for name in cases:
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as folder:
+                hop = Path(folder) / "alias-hop"
+                hop.mkdir()
+                alias = hop / ".."
+                self.assertNotEqual(alias, alias.resolve())
+                temporary = types.SimpleNamespace(name=str(alias), cleanup=lambda: None)
+                case = QtProfileBoundaryTests(name)
+                try:
+                    with patch.object(tempfile, "TemporaryDirectory", return_value=temporary):
+                        case.setUp()
+                    getattr(case, name)()
+                finally:
+                    case.doCleanups()
 
 
 class QtEntryFailureTests(StartupFixture):
@@ -241,7 +308,7 @@ class QtEntryFailureTests(StartupFixture):
         from unittest.mock import Mock
         import qt_startup_diagnostics as diagnostics
         user32 = types.SimpleNamespace(MessageBoxW=Mock())
-        with patch.object(sys, "platform", "win32"), patch.object(ctypes, "WinDLL", return_value=user32):
+        with patch.object(sys, "platform", "win32"), patch.object(ctypes, "WinDLL", return_value=user32, create=True):
             diagnostics._show_native_error("fixture only; no native dialog")
         user32.MessageBoxW.assert_called_once()
 

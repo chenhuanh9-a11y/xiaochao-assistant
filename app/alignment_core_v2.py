@@ -64,18 +64,19 @@ class RoundPose:
     generation: int = 0
     reliable: bool = False
     source: str = "unknown"
+    floors: tuple[str, ...] = FLOORS
 
     def __post_init__(self) -> None:
         root = _finite_matrix(self.root_matrix)
         if root is None:
             raise ValueError("RoundPose requires a finite 3x3 matrix")
-        if self.anchor_floor not in FLOORS:
+        if self.anchor_floor not in self.floors:
             raise ValueError(f"unsupported anchor floor: {self.anchor_floor}")
         self.root_matrix = root
         normalized = {self.anchor_floor: np.eye(3, dtype=np.float64)}
         for floor, relation in (self.floor_relations or {}).items():
             parsed = _finite_matrix(relation)
-            if str(floor) in FLOORS and parsed is not None:
+            if str(floor) in self.floors and parsed is not None:
                 normalized[str(floor)] = parsed
         self.floor_relations = normalized
         self.map_id = str(self.map_id)
@@ -103,6 +104,7 @@ class RoundPose:
             generation=self.generation + 1,
             reliable=self.reliable,
             source=source,
+            floors=self.floors,
         )
 
     def adopt_floor_pose(
@@ -130,6 +132,7 @@ class RoundPose:
             generation=self.generation + 1,
             reliable=bool(reliable),
             source=source,
+            floors=self.floors,
         )
 
     def snapshot(self) -> dict[str, Any]:
@@ -263,10 +266,12 @@ class AlignmentCoreV2:
         *,
         clock: Callable[[], float] | None = None,
         event_sink: Callable[[str, dict[str, Any]], None] | None = None,
+        floors: tuple[str, ...] = FLOORS,
     ) -> None:
         import time
 
         self._clock = clock or time.perf_counter
+        self.floors = tuple(floors)
         self._event_sink = event_sink
         self._next_observation_id = 0
         self._next_authorization_id = 0
@@ -305,7 +310,7 @@ class AlignmentCoreV2:
         reason: str = "open",
         now: float | None = None,
     ) -> Observation:
-        if str(floor) not in FLOORS:
+        if str(floor) not in self.floors:
             raise ValueError(f"unsupported floor: {floor}")
         previous = self.active_observation
         previous_token = self.display_authorization
@@ -380,7 +385,7 @@ class AlignmentCoreV2:
             return False
         observation.frame_generation = int(frame_generation)
         if floor is not None:
-            if str(floor) not in FLOORS:
+            if str(floor) not in self.floors:
                 return False
             observation.floor = str(floor)
         if frame_signature:
@@ -550,6 +555,7 @@ class AlignmentCoreV2:
                 {candidate.floor: np.eye(3, dtype=np.float64)},
                 reliable=True,
                 source=candidate.source,
+                floors=self.floors,
             )
             if independent_floor:
                 pose.generation = previous_pose.generation + 1

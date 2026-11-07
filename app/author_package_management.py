@@ -15,11 +15,14 @@ from star_map_import import (
     ImportRejected, LIVE_AUTHOR_IMAGE_ROOTS, PACKAGE_IDS,
     _allowed, _check_cancelled, _live_author_path, _no_links, _owned_inventory, _rows,
     _pending_upgrade, _sha, _target, _writer_locked_installation,
-    verified_installed_package,
+    verified_installed_package, package_ids,
 )
 from legacy_author_inventory import LEGACY_AUTHOR_INVENTORY
+from generic_author_package import is_generic_profile, profile_ids
 
 PACKAGE_NAMES = {
+    's1-jiaye-handnotes': '爱吃醋 · S1 原图（旧包）',
+    's1-aichicu-routes': '爱吃醋 · S1 透明路线',
     'nightmare-zhan10': '展十 · 噩梦',
     'nightmare-suju-speed': '酥居速刷 · 噩梦',
     'difficult-suju-speed': '酥居速刷 · 困难',
@@ -40,6 +43,9 @@ def package_inspection_message(error) -> str:
         return ('本地已有不同版本、改动过或未登记的资源，不能直接覆盖。'
                 '若是已管理资源，请先在“管理已安装资源”备份并移除，再重新导入；'
                 f'未登记文件会保留。冲突文件：{path}')
+    if 'dependency-contract-changed-reimport-unsupported' in text:
+        return ('这个图包的地图文件相同，但依赖要求已改变，当前不支持仅更新依赖记录。'
+                '本次未导入，原收据和资源保持不变。')
     if 'missing-or-incompatible-dependency:' in text:
         return '资源包与当前基础地图数据不匹配，请选择适用于本版本的资源包。原资源未改动。'
     if 'upgrade-recovery-required' in text or 'pending-upgrade' in text:
@@ -48,24 +54,23 @@ def package_inspection_message(error) -> str:
 
 
 def _package_id(package_id):
-    if package_id not in PACKAGE_NAMES:
+    if package_id not in PACKAGE_NAMES and not is_generic_profile(package_id):
         raise ImportRejected('unsupported-author-package')
     return package_id
 
 
-def adopt_legacy_author_package(install_root, package_id, *, cancelled=None) -> dict:
-    """Register an entire approved legacy display set, without changing assets.
+def _legacy_receipt_bytes(receipt):
+    return json.dumps(receipt, ensure_ascii=False, indent=2).encode('utf-8')
 
-    This runs in the existing local-state worker. A release ZIP hash and its
-    independently generated inventory authorize ownership, never folder presence.
-    Publication is exclusive under the same lock as import/removal. Existing
-    receipts, unknown files and core dependencies are never overwritten/claimed.
+
+def _legacy_author_plan_locked(root, package_id, cancelled=None):
+    """Read-only exact legacy proof; caller holds the shared resource lock.
+
+    The approved release, never the incoming ZIP or directory contents, supplies
+    ownership. A partial set, changed byte, or existing receipt cannot acquire
+    replacement authority through this fallback.
     """
-    package_id = _package_id(package_id)
-    root = Path(os.path.abspath(install_root))
-    _no_links(root)
-    _pending_upgrade(root)
-    owned, digest = _owned_inventory(root, package_id)
+    _, digest = _owned_inventory(root, package_id)
     if digest is not None:
         return dict(status='already-managed')
     release = LEGACY_AUTHOR_INVENTORY.get(package_id)
@@ -78,53 +83,73 @@ def adopt_legacy_author_package(install_root, package_id, *, cancelled=None) -> 
         raise ImportRejected('invalid-legacy-author-inventory')
     if not any(_target(root, row['path']).exists() for row in rows.values()):
         return dict(status='not-installed')
-    with _writer_locked_installation(root, require_closed=False) as (root, state):
-        _pending_upgrade(root)
-        _, digest = _owned_inventory(root, package_id)
-        if digest is not None:
-            return dict(status='already-managed')
-        for other in PACKAGE_IDS - {package_id}:
-            other_rows, _ = _owned_inventory(root, other)
-            if rows.keys() & other_rows.keys():
-                raise ImportRejected('shared-author-file-ownership')
-        witnesses = {}
-        for row in rows.values():
+    for other in package_ids(root) - {package_id}:
+        other_rows, _ = _owned_inventory(root, other)
+        if rows.keys() & other_rows.keys():
+            raise ImportRejected('shared-author-file-ownership')
+    witnesses = {}
+    for row in rows.values():
+        _check_cancelled(cancelled)
+        path = _target(root, row['path'])
+        before = path.stat() if path.is_file() else None
+        if (before is None or before.st_size != row['bytes'] or _sha(path) != row['sha256']):
+            return dict(status='legacy-unverified', reason='legacy-display-set-not-exact',
+                        path=row['path'])
+        info = path.stat()
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns):
+            raise ImportRejected('legacy-author-file-changed')
+        witnesses[row['path']] = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    receipt = dict(packageId=package_id, revision=1, files=list(rows.values()),
+                   archiveSha256=release['archiveSha256'],
+                   legacyAdoption=dict(schemaVersion=1, scope='author-display-only',
+                                       sourceArchive=release['archiveName'],
+                                       completeDisplaySet=True))
+    return dict(status='legacy-verified', receipt=receipt, witnesses=witnesses,
+                receiptSha256=hashlib.sha256(_legacy_receipt_bytes(receipt)).hexdigest())
+
+
+def _adopt_legacy_author_package_locked(root, state, package_id, *, cancelled=None,
+                                       expected_receipt_sha256=None):
+    """Publish metadata only, after rechecking the exact read-only legacy plan."""
+    plan = _legacy_author_plan_locked(root, package_id, cancelled)
+    if expected_receipt_sha256 is not None and plan.get('receiptSha256') != expected_receipt_sha256:
+        raise ImportRejected('legacy-author-plan-changed-reinspect-required')
+    if plan['status'] != 'legacy-verified':
+        return plan
+    target = _target(root, f'work/map-packages/{package_id}.json')
+    fd, temporary_name = tempfile.mkstemp(prefix='legacy-receipt-', suffix='.tmp', dir=state)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(_legacy_receipt_bytes(plan['receipt']))
+            stream.flush()
+            os.fsync(stream.fileno())
+        for relative, before in plan['witnesses'].items():
             _check_cancelled(cancelled)
-            path = _target(root, row['path'])
-            before = path.stat() if path.is_file() else None
-            if (before is None or before.st_size != row['bytes'] or _sha(path) != row['sha256']):
-                return dict(status='legacy-unverified', reason='legacy-display-set-not-exact',
-                            path=row['path'])
-            stat = path.stat()
-            if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
-                    stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns):
+            info = _target(root, relative).stat()
+            if before != (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns):
                 raise ImportRejected('legacy-author-file-changed')
-            witnesses[row['path']] = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
-        receipt = dict(packageId=package_id, revision=1, files=list(rows.values()),
-                       archiveSha256=release['archiveSha256'],
-                       legacyAdoption=dict(schemaVersion=1, scope='author-display-only',
-                                           sourceArchive=release['archiveName'],
-                                           completeDisplaySet=True))
-        target = _target(root, f'work/map-packages/{package_id}.json')
-        fd, temporary_name = tempfile.mkstemp(prefix='legacy-receipt-', suffix='.tmp', dir=state)
-        temporary = Path(temporary_name)
-        try:
-            with os.fdopen(fd, 'w', encoding='utf-8') as stream:
-                json.dump(receipt, stream, ensure_ascii=False, indent=2)
-                stream.flush()
-                os.fsync(stream.fileno())
-            for relative, before in witnesses.items():
-                _check_cancelled(cancelled)
-                stat = _target(root, relative).stat()
-                if before != (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns):
-                    raise ImportRejected('legacy-author-file-changed')
-            _check_cancelled(cancelled)
-            _no_links(target)
-            # Complete same-volume publication; never replace a raced receipt.
-            os.link(temporary, target)
-        finally:
-            temporary.unlink(missing_ok=True)
-        return dict(status='legacy-adopted', fileCount=len(rows), restartRequired=False)
+        _check_cancelled(cancelled)
+        _no_links(target)
+        # Complete same-volume publication; never replace a raced receipt.
+        os.link(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return dict(status='legacy-adopted', fileCount=len(plan['receipt']['files']), restartRequired=False)
+
+
+def adopt_legacy_author_package(install_root, package_id, *, cancelled=None) -> dict:
+    """Register an entire approved legacy display set, without changing assets.
+
+    Existing receipts, unknown files and core dependencies are never claimed.
+    Import uses the same read-only proof before offering its normal upgrade;
+    registration then waits until all incoming bytes have passed validation.
+    """
+    package_id = _package_id(package_id)
+    with _writer_locked_installation(install_root, require_closed=False) as (root, state):
+        _pending_upgrade(root)
+        return _adopt_legacy_author_package_locked(root, state, package_id, cancelled=cancelled)
 
 
 def inspect_author_package_removal(install_root, package_id) -> dict:
@@ -133,13 +158,17 @@ def inspect_author_package_removal(install_root, package_id) -> dict:
     root = Path(os.path.abspath(install_root))
     _no_links(root)
     _pending_upgrade(root)
+    if is_generic_profile(package_id):
+        import author_resource_snapshots as snapshots
+        if snapshots.managed(root, package_id):
+            return snapshots.inspect_deactivation(root, package_id)
     rows, receipt_sha = _owned_inventory(root, package_id)
     if not rows:
         raise ImportRejected('author-package-not-managed')
     removable = [r for r in rows.values() if _live_author_path(package_id, r['path'])]
     if not removable:
         raise ImportRejected('no-managed-author-files')
-    for other in PACKAGE_IDS - {package_id}:
+    for other in package_ids(root) - {package_id}:
         other_rows, _ = _owned_inventory(root, other)
         if any(r['path'].casefold() in other_rows for r in removable):
             raise ImportRejected('shared-author-file-ownership')
@@ -163,7 +192,7 @@ def inspect_author_package_removal(install_root, package_id) -> dict:
             if before.st_size != row['bytes'] or digest != row['sha256']:
                 modified.append(row['path'])
             present.append(dict(path=row['path'], bytes=before.st_size, sha256=digest))
-    plan = dict(packageId=package_id, title=PACKAGE_NAMES[package_id],
+    plan = dict(packageId=package_id, title=PACKAGE_NAMES.get(package_id, package_id),
                 receiptSha256=receipt_sha, files=present, missingFiles=missing,
                 preservedCoreFiles=len(rows)-len(removable), fileCount=len(present),
                 bytes=sum(r['bytes'] for r in present), modifiedFiles=modified, restartRequired=False)
@@ -173,15 +202,31 @@ def inspect_author_package_removal(install_root, package_id) -> dict:
     return plan
 
 
-def managed_author_packages_snapshot(install_root, *, cancelled=None) -> list[dict]:
+def managed_author_packages_snapshot(install_root, *, cancelled=None, inspect_removal=True) -> list[dict]:
     """Local state remains available even when there is no online catalog."""
     root = Path(os.path.abspath(install_root))
     result = []
-    for package_id, title in PACKAGE_NAMES.items():
+    names = dict(PACKAGE_NAMES)
+    names.update({pid: pid for pid in profile_ids(root / "_internal")})
+    for package_id, title in names.items():
         _check_cancelled(cancelled)
         item = dict(packageId=package_id, title=title,
-                    mode='difficult' if package_id.startswith('difficult-') else 'nightmare',
+                    mode='both' if package_id in ('s1-jiaye-handnotes', 's1-aichicu-routes') else ('difficult' if package_id.startswith('difficult-') else 'nightmare'),
+                    season='s1' if package_id in ('s1-jiaye-handnotes', 's1-aichicu-routes') else 's0',
                     canRemove=False)
+        if is_generic_profile(package_id):
+            item.update(mode="unknown", season="unknown")
+            try:
+                from s1_author_displays import InstalledAuthorPackage
+                package = InstalledAuthorPackage(root / '_internal', package_id)
+                modes = {row['mode'] for row in package.document['layers']}
+                item.update(title=package.display_name, season=package.document['season'],
+                            mode=next(iter(modes)) if len(modes) == 1 else 'both' if modes else 'retired',
+                            inactiveLayerCount=len(package.document.get('inactiveLayers', [])),
+                            compatibilityNotice=('部分作者层已停用并保留；仅启用与当前底模核对通过的层。'
+                                if package.document.get('inactiveLayers') else ''))
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
         adoption = None
         try:
             adoption = adopt_legacy_author_package(root, package_id, cancelled=cancelled)
@@ -190,6 +235,17 @@ def managed_author_packages_snapshot(install_root, *, cancelled=None) -> list[di
         _check_cancelled(cancelled)
         state = verified_installed_package(root, package_id, cancelled=cancelled)
         item.update(state)
+        if state.get('layerStates'):
+            labels = {'available': '可用', 'retired-mode': '模式已停用', 'display-missing': '图片缺失',
+                      'display-damaged': '图片损坏或被改动', 'base-unavailable': '底模不可用',
+                      'base-missing': '底模文件缺失', 'base-incompatible': '底模版本不符',
+                      'binding-incompatible': '坐标绑定不符'}
+            item['compatibilityNotice'] = '\n'.join(
+                f"{row['season'].upper()} {row['mode']} {row['mapId']} {row['floor']}：{labels.get(row['reason'], row['reason'])}"
+                for row in state['layerStates']) + '\n历史版本保留，不自动清理。'
+        if not inspect_removal:
+            result.append(item)
+            continue
         try:
             plan = inspect_author_package_removal(root, package_id)
         except (ImportRejected, OSError) as error:
@@ -198,7 +254,7 @@ def managed_author_packages_snapshot(install_root, *, cancelled=None) -> list[di
                 # Existence is only a warning, never ownership or deletion authority.
                 unowned = False
                 try:
-                    for prefix in LIVE_AUTHOR_IMAGE_ROOTS[package_id]:
+                    for prefix in LIVE_AUTHOR_IMAGE_ROOTS.get(package_id, ()):
                         folder = _target(root, prefix.rstrip('/'))
                         if folder.is_dir():
                             for path in folder.rglob('*'):
@@ -242,6 +298,9 @@ def remove_author_package_live(install_root, package_id, *, application_idle=Fal
         if plan['planSha256'] != expected_plan_sha256:
             raise ImportRejected('author-files-changed-reinspect-required')
         _check_cancelled(cancelled)
+        if plan.get('storageFormat'):
+            import author_resource_snapshots as snapshots
+            return snapshots.deactivate_locked(root, plan, cancelled=cancelled)
         parent = _target(root, 'work/map-package-removals')
         parent.mkdir(parents=True, exist_ok=True)
         _no_links(parent)
