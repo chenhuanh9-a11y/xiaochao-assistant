@@ -41,6 +41,18 @@ _EXCLUDED = ('work', 'assets', 'references', 'recognition', 'seasons',
              '_internal/seasons', '_internal/qt-author-base',
              '_internal/difficult-native-manifest.json')
 _HASH = re.compile(r'[0-9a-f]{64}\Z')
+_USERS_FILES = 'f3ce0f7c-4901-4acc-8648-d5d44b04ef8f'
+_PROFILE = '5e6c858f-0e22-4760-9afe-ea3317b67173'
+_LOCAL_APP_DATA = 'f1b32785-6fba-4fcf-9d55-7b8e7f157091'
+# Narrow CFSF AppData delegate shape emitted by the supported Windows shell.
+# Dates/file references are masked below; provider GUIDs, names and bounds are not.
+_APPDATA_DELEGATE = bytes.fromhex(
+    '820074001c004346534616003100000000000000000010004170704461746100'
+    '0000741a595e96dfd3488d671733bcee28bac5cdfadf9f6756418947c5c76bc0'
+    'b67f400009000400efbe00000000000000002e00000000000000000000000000'
+    '0000000000000000000000000000000041007000700044006100740061000000'
+    '4200'
+)
 _SID = re.compile(r'S-1-\d+(?:-\d+){1,15}\Z')
 
 
@@ -330,13 +342,13 @@ def _unicode_z(data, offset, end):
     _fail('shortcut-string-unterminated')
 
 
-def _shortcut_target(data):
+def _shortcut_target(data, *, ansi_decoder=None, known_folder=None):
     """Conservative MS-SHLLINK reader; never execute/resolve a link or invoke COM.
 
     Inno links containing a local LinkInfo path and no arguments are supported.
     ID-list-only, remote, environment-based and unknown links fail closed.
     """
-    if (len(data) < 80 or data[:4] != struct.pack('<I', 0x4c)
+    if (not 80 <= len(data) <= MAX_LINK or data[:4] != struct.pack('<I', 0x4c)
             or data[4:20] != uuid.UUID('00021401-0000-0000-c000-000000000046').bytes_le):
         _fail('shortcut-invalid-header')
     flags = struct.unpack_from('<I', data, 20)[0]
@@ -353,7 +365,7 @@ def _shortcut_target(data):
         _fail('shortcut-linkinfo-missing')
     size, header, info_flags, volume, local, network, suffix = struct.unpack_from('<7I', data, offset)
     end = offset + size
-    if not 28 <= header <= size or end > len(data) or info_flags != 1 or network != 0:
+    if (header != 28 and header < 36) or header > size or end > len(data) or info_flags != 1 or network != 0:
         _fail('shortcut-unsupported-linkinfo')
     if not header <= volume < size or not header <= local < size or not header <= suffix < size:
         _fail('shortcut-linkinfo-bounds')
@@ -371,7 +383,8 @@ def _shortcut_target(data):
             try:
                 # Non-ASCII ANSI paths depend on the producer's codepage. Unknown
                 # codepage must not be guessed on a different machine.
-                return data[offset + position:stop].decode('ascii')
+                raw = data[offset + position:stop]
+                return ansi_decoder(raw) if ansi_decoder is not None else raw.decode('ascii')
             except UnicodeError:
                 _fail('shortcut-ansi-codepage-unknown')
         base, tail = ansi(local), ansi(suffix)
@@ -390,7 +403,9 @@ def _shortcut_target(data):
             if offset + length > len(data):
                 _fail('shortcut-stringdata-bounds')
             try:
-                value = data[offset:offset + length].decode('utf-16-le' if flags & 128 else 'ascii')
+                raw = data[offset:offset + length]
+                value = (raw.decode('utf-16-le') if flags & 128 else
+                         ansi_decoder(raw) if ansi_decoder is not None else raw.decode('ascii'))
             except UnicodeError:
                 _fail('shortcut-stringdata-invalid')
             if '\0' in value or (bit == 32 and value):
@@ -398,6 +413,7 @@ def _shortcut_target(data):
             offset += length
     # Extra data may contain tracking/property blocks, not alternative executable
     # paths, environment expansion or installer/Darwin indirection.
+    seen_extra = set()
     while offset + 4 <= len(data):
         length = struct.unpack_from('<I', data, offset)[0]
         if length == 0:
@@ -407,7 +423,18 @@ def _shortcut_target(data):
         if length < 8 or offset + length > len(data):
             _fail('shortcut-extra-bounds')
         signature = struct.unpack_from('<I', data, offset + 4)[0]
-        if signature not in (0xa0000003, 0xa0000009):  # Tracker / PropertyStore
+        if signature in seen_extra:
+            _fail('shortcut-extra-duplicate')
+        seen_extra.add(signature)
+        if signature == 0xa000000b:
+            if length != 28 or not flags & 1 or known_folder is None:
+                _fail('shortcut-known-folder-unsupported')
+            known_folder(data[offset + 8:offset + 24],
+                         struct.unpack_from('<I', data, offset + 24)[0])
+        elif signature == 0xa0000003:
+            if length != 96 or struct.unpack_from('<2I', data, offset + 8) != (88, 0):
+                _fail('shortcut-tracker-invalid')
+        elif signature != 0xa0000009:
             _fail('shortcut-extra-unsupported')
         offset += length
     _fail('shortcut-terminal-missing')
@@ -495,6 +522,8 @@ def _capture_once(backend, contract):
             if (selected['enabled'] and row['state'] == 'file'
                     and not _same_path(backend.shortcut_target(_raw(row, MAX_LINK)), selected['target'])):
                 _fail('shortcut-target-mismatch')
+            if selected['enabled'] and isinstance(backend, WindowsReadOnlyBackend):
+                row = dict(row, interpretation=backend.shortcut_context)
             shortcuts.append(dict(selection=selected, file=row, collisions=collisions))
         if users != backend.users() or root_record != backend.directory(root):
             _fail('identity-changed-during-read')
@@ -653,6 +682,8 @@ class WindowsReadOnlyBackend:
         self.nt = ctypes.WinDLL('ntdll', use_last_error=True)
         declarations = {
             self.kernel: {
+                'GetACP': ([], W.UINT),
+                'MultiByteToWideChar': ([W.UINT, W.DWORD, W.LPCSTR, ctypes.c_int, W.LPWSTR, ctypes.c_int], ctypes.c_int),
                 'CreateFileW': ([W.LPCWSTR, W.DWORD, W.DWORD, W.LPVOID, W.DWORD, W.DWORD, W.HANDLE], W.HANDLE),
                 'CloseHandle': ([W.HANDLE], W.BOOL), 'GetFileType': ([W.HANDLE], W.DWORD),
                 'GetFileInformationByHandle': ([W.HANDLE, ctypes.POINTER(_FileInfo)], W.BOOL),
@@ -688,10 +719,15 @@ class WindowsReadOnlyBackend:
                                   ctypes.POINTER(W.DWORD), W.LPVOID, ctypes.POINTER(W.DWORD)], W.LONG),
             },
             self.shell: {
+                'SHGetKnownFolderIDList': ([W.LPVOID, W.DWORD, W.HANDLE, ctypes.POINTER(W.LPVOID)], W.LONG),
+                'SHParseDisplayName': ([W.LPCWSTR, W.LPVOID, ctypes.POINTER(W.LPVOID), W.DWORD, ctypes.POINTER(W.DWORD)], W.LONG),
+                'ILGetSize': ([W.LPVOID], W.UINT),
                 'SHGetKnownFolderPath': ([W.LPVOID, W.DWORD, W.HANDLE, ctypes.POINTER(W.LPWSTR)], W.LONG),
                 'SHGetPathFromIDListEx': ([W.LPVOID, W.LPWSTR, W.DWORD, W.DWORD], W.BOOL),
             },
-            self.ole: {'CoTaskMemFree': ([W.LPVOID], None)},
+            self.ole: {'CoTaskMemFree': ([W.LPVOID], None),
+                       'CoInitializeEx': ([W.LPVOID, W.DWORD], W.LONG),
+                       'CoUninitialize': ([], None)},
             self.nt: {'NtQueryKey': ([W.HANDLE, ctypes.c_int, W.LPVOID, W.DWORD, ctypes.POINTER(W.DWORD)], W.LONG)},
         }
         for dll, specs in declarations.items():
@@ -900,12 +936,35 @@ class WindowsReadOnlyBackend:
         return result
 
     def shortcut_target(self, data):
-        target = _shortcut_target(data)
+        codepage, folders = [], []
+        self.shortcut_context = dict(ansiCodePage=None, knownFolders=[])
+
+        def decode_ansi(raw):
+            cp = int(self.kernel.GetACP())
+            if not 0 < cp <= 65535 or (codepage and codepage[0] != cp):
+                _fail('shortcut-codepage-changed-or-unknown')
+            if not codepage:
+                codepage.append(cp)
+            if not raw:
+                return ''
+            count = self.kernel.MultiByteToWideChar(cp, 8, raw, len(raw), None, 0)
+            if not 0 < count <= 32768:
+                _fail('shortcut-ansi-invalid')
+            buffer = ctypes.create_unicode_buffer(count)
+            if self.kernel.MultiByteToWideChar(cp, 8, raw, len(raw), buffer, count) != count:
+                _fail('shortcut-ansi-invalid')
+            result = buffer[:count]
+            if '\0' in result:
+                _fail('shortcut-ansi-invalid')
+            return result
+
+        target = _shortcut_target(data, ansi_decoder=decode_ansi,
+                                  known_folder=lambda guid, offset: folders.append((guid, offset)))
         flags = struct.unpack_from('<I', data, 20)[0]
         if flags & 1:
             size = struct.unpack_from('<H', data, 76)[0]
             pidl = data[78:78 + size]
-            offset, items = 0, []
+            offset, items, boundaries = 0, [], []
             while offset + 2 <= len(pidl):
                 count = struct.unpack_from('<H', pidl, offset)[0]
                 if count == 0:
@@ -914,18 +973,35 @@ class WindowsReadOnlyBackend:
                     break
                 if count < 3 or offset + count > len(pidl):
                     _fail('shortcut-idlist-invalid')
+                boundaries.append(offset)
                 items.append(pidl[offset:offset + count])
                 offset += count
             else:
                 _fail('shortcut-idlist-unterminated')
-            # Only local MyComputer -> drive -> filesystem items are accepted.
-            # Do not invoke arbitrary shell namespaces or network providers.
-            if (len(items) < 3 or len(items[0]) != 20 or items[0][2] != 0x1f
-                    or items[0][4:20] != uuid.UUID('20d04fe0-3aea-1069-a2d8-08002b30309d').bytes_le
-                    or items[1][2] != 0x2f or len(items[1]) < 7
-                    or not re.fullmatch(rb'[A-Za-z]:\\\x00', items[1][3:7])
-                    or any(item[2] not in (0x31, 0x32, 0x35, 0x36) for item in items[2:])):
+            # Recognize before invoking the shell: either the existing local
+            # Computer/drive chain, or this bounded current-user CFSF chain.
+            computer = (len(items) >= 3 and len(items[0]) == 20 and items[0][2] == 0x1f
+                and items[0][4:20] == uuid.UUID('20d04fe0-3aea-1069-a2d8-08002b30309d').bytes_le
+                and items[1][2] == 0x2f and len(items[1]) >= 7
+                and re.fullmatch(rb'[A-Za-z]:\\\x00', items[1][3:7]))
+            users_files = (len(items) >= 4 and len(items[0]) == 58
+                and items[0][:3] == bytes.fromhex('3a001f')
+                and items[0][4:20] == uuid.UUID('59031a47-3f72-44a7-89c5-5595fe6b30ee').bytes_le
+                and items[0][20:28] == bytes.fromhex('260010002600efbe')
+                and items[0][-2:] == b'\x14\x00'
+                and self._delegate_shape(items[1]) == _APPDATA_DELEGATE
+                and folders == [(uuid.UUID(_USERS_FILES).bytes_le, 58)])
+            if (not (computer or users_files)
+                    or any(item[2] not in (0x31, 0x32, 0x35, 0x36) for item in items[2:])
+                    or (computer and folders)):
                 _fail('shortcut-idlist-unsupported')
+            if users_files:
+                trusted = self._users_files_idlist()
+                if self._normalized_users_root(items[0] + b'\0\0') != trusted:
+                    _fail('shortcut-known-folder-root-conflict')
+                trusted_delegate = self._appdata_delegate(trusted)
+                if self._normalized_delegate(items[1]) != trusted_delegate:
+                    _fail('shortcut-known-folder-delegate-conflict')
             buffer = ctypes.create_string_buffer(pidl)
             path = ctypes.create_unicode_buffer(32768)
             # Converts this already-bounded IDLIST only. Never Resolve,
@@ -934,7 +1010,115 @@ class WindowsReadOnlyBackend:
                 _fail('shortcut-idlist-path-unavailable')
             if not _same_path(path.value, target):
                 _fail('shortcut-idlist-target-conflict')
+            if users_files:
+                # The KnownFolder Offset names the first child of UsersFiles.
+                # UsersFiles is virtual: its supported root maps to Profile, not
+                # SHGetKnownFolderPath(UsersFiles), which has no filesystem path.
+                profile = self._known_folder_path(_PROFILE)
+                local = self._known_folder_path(_LOCAL_APP_DATA)
+                for prefix_end, expected in ((58, profile),
+                        (boundaries[2], ntpath.join(profile, 'AppData')),
+                        (boundaries[3], local)):
+                    prefix = ctypes.create_string_buffer(pidl[:prefix_end] + b'\0\0')
+                    parent = ctypes.create_unicode_buffer(32768)
+                    if not self.shell.SHGetPathFromIDListEx(prefix, parent, len(parent), 0):
+                        _fail('shortcut-known-folder-path-unavailable')
+                    if not _same_path(parent.value, expected):
+                        _fail('shortcut-known-folder-target-conflict')
+                if not target.casefold().startswith(local.casefold().rstrip('\\') + '\\'):
+                    _fail('shortcut-known-folder-target-conflict')
+                self.shortcut_context['knownFolders'].append(dict(
+                    id=_USERS_FILES, childOffset=58, profile=profile, localAppData=local,
+                    rootSha256=_hash(trusted), delegateSha256=_hash(trusted_delegate)))
+                if (self._users_files_idlist() != trusted
+                        or self._appdata_delegate(trusted) != trusted_delegate
+                        or not _same_path(self._known_folder_path(_PROFILE), profile)
+                        or not _same_path(self._known_folder_path(_LOCAL_APP_DATA), local)):
+                    _fail('shortcut-known-folder-changed')
+        if codepage:
+            if int(self.kernel.GetACP()) != codepage[0]:
+                _fail('shortcut-codepage-changed-or-unknown')
+            self.shortcut_context['ansiCodePage'] = codepage[0]
         return target
+
+    @staticmethod
+    def _normalized_delegate(data):
+        if len(data) != 130:
+            return b''
+        result = bytearray(data)
+        for start, end in ((18, 22), (74, 82), (86, 94)):
+            result[start:end] = b'\0' * (end - start)
+        return bytes(result)
+
+    @classmethod
+    def _delegate_shape(cls, data):
+        result = cls._normalized_delegate(data)
+        if not result:
+            return b''
+        # v8's unknown DWORD is not a verified timestamp or routing field.
+        # Admit its shape here only; exact bytes MUST agree with the trusted
+        # current AppData delegate before converting any untrusted PIDL.
+        return result[:108] + b'\0' * 4 + result[112:]
+
+    def _appdata_delegate(self, trusted_root):
+        # Shell parsing requires COM on this thread. Respect an existing MTA;
+        # balance only our own successful initialization, including S_FALSE.
+        status = self.ole.CoInitializeEx(None, 2)
+        if status not in (0, 1) and status & 0xffffffff != 0x80010106:
+            _fail('shortcut-shell-initialization-unavailable')
+        try:
+            return self._read_appdata_delegate(trusted_root)
+        finally:
+            if status in (0, 1):
+                self.ole.CoUninitialize()
+
+    def _read_appdata_delegate(self, trusted_root):
+        value, attributes = W.LPVOID(), W.DWORD()
+        # Constant, supported local namespace + fixed child, not a display name
+        # from the link. No bind context, CREATE flag, Resolve, or target launch.
+        name = '::{59031a47-3f72-44a7-89c5-5595fe6b30ee}\\AppData'
+        if self.shell.SHParseDisplayName(name, None, ctypes.byref(value), 0, ctypes.byref(attributes)) != 0:
+            _fail('shortcut-known-folder-delegate-unavailable')
+        try:
+            if not value or self.shell.ILGetSize(value) != 190:
+                _fail('shortcut-known-folder-delegate-unsupported')
+            data = ctypes.string_at(value, 190)
+            if (data[-2:] != b'\0\0'
+                    or self._normalized_users_root(data[:58] + b'\0\0') != trusted_root
+                    or self._delegate_shape(data[58:188]) != _APPDATA_DELEGATE):
+                _fail('shortcut-known-folder-delegate-unsupported')
+            return self._normalized_delegate(data[58:188])
+        finally:
+            self.ole.CoTaskMemFree(value)
+
+    @staticmethod
+    def _normalized_users_root(data):
+        if len(data) != 60 or data[-2:] != b'\0\0':
+            _fail('shortcut-known-folder-root-unsupported')
+        # BEEF0026's three FILETIMEs are mutable metadata, not namespace IDs.
+        return data[:32] + b'\0' * 24 + data[56:]
+
+    def _users_files_idlist(self):
+        identifier = ctypes.create_string_buffer(uuid.UUID(_USERS_FILES).bytes_le)
+        value = W.LPVOID()
+        if self.shell.SHGetKnownFolderIDList(identifier, 0x4000, None, ctypes.byref(value)) != 0:
+            _fail('shortcut-known-folder-root-unavailable')
+        try:
+            if not value or self.shell.ILGetSize(value) != 60:
+                _fail('shortcut-known-folder-root-unsupported')
+            return self._normalized_users_root(ctypes.string_at(value, 60))
+        finally:
+            self.ole.CoTaskMemFree(value)
+
+    def _known_folder_path(self, identifier):
+        guid = ctypes.create_string_buffer(uuid.UUID(identifier).bytes_le)
+        value = W.LPWSTR()
+        if self.shell.SHGetKnownFolderPath(guid, 0x4000, None, ctypes.byref(value)) != 0:
+            _fail('shortcut-known-folder-path-unavailable')
+        try:
+            return _path(value.value)
+        finally:
+            self.ole.CoTaskMemFree(value)
 
     def _key_name(self, key):
         needed = W.DWORD()
@@ -962,10 +1146,13 @@ class WindowsReadOnlyBackend:
 
     def _key_info(self, key):
         subkeys, values, max_data, stamp = W.DWORD(), W.DWORD(), W.DWORD(), W.FILETIME()
-        klass, size = ctypes.create_unicode_buffer(32768), W.DWORD(32768)
+        # Bounded supported class size: the observed Windows/Inno key returned
+        # status 122 at capacity 32768 but succeeded at 256. Never treat
+        # ERROR_INSUFFICIENT_BUFFER or MORE_DATA as a successful empty class.
+        klass, size = ctypes.create_unicode_buffer(256), W.DWORD(256)
         status = self.advapi.RegQueryInfoKeyW(key, klass, ctypes.byref(size), None,
             ctypes.byref(subkeys), None, None, ctypes.byref(values), None, ctypes.byref(max_data), None, ctypes.byref(stamp))
-        if status != 0 or size.value >= len(klass):
+        if status != 0 or size.value >= len(klass) or len(klass.value) != size.value:
             _fail('registry-info-unavailable')
         if subkeys.value > MAX_REG_KEYS or values.value > MAX_REG_VALUES or max_data.value > MAX_METADATA // 2:
             _fail('registry-limit')
