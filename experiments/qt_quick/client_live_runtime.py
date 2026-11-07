@@ -297,7 +297,7 @@ class _AlignmentHost:
         """
         _test_evidence("solver-input", frame)
         from nightmare_candidate import visible_map_components
-        from single_map_structure import current_geometry, current_part, observed_corner_chains
+        from single_map_structure import current_geometry, current_part, observed_corner_chains, marker_occluded_corner_proposals
         from fast_structure_alignment import sample_edges
         bounds = tuple(observation_bounds)
         observations, components = {}, None
@@ -312,6 +312,7 @@ class _AlignmentHost:
                         current_part(frame, context, part)
                     context["_observed_corner_chains"] = (context["nodes"], context["observed"],
                                                           observed_corner_chains(frame, context))
+                    marker_occluded_corner_proposals(frame, context, context["_observed_corner_chains"][2])
                     edge = context["observed"]
                     context["_sampled_observation_edges"] = (edge, sample_edges(edge, 300), sample_edges(edge, 96))
                 observations[key] = context
@@ -349,6 +350,11 @@ class _AlignmentHost:
         initial_reason = str(initial.get("reason", ""))
         if initial.get("success") and cancelled and cancelled():
             return dict(success=False, reason="structure-work-obsolete")
+        if initial.get("success") and (initial.get("markerOccludedWallProposal") or initial.get("markerOccludedWallObservation")):
+            rejected = self._marker_recovery_peer_rejection(frame, map_id, floor, initial,
+                cancelled, observation_bounds, _scan_observation)
+            if rejected is not None:
+                return rejected
         if (initial.get("success") or any(word in initial_reason for word in
                 ("obsolete", "ambiguous", "budget-unresolved"))
                 or original is not None and observed_corner_chains(frame, original)):
@@ -413,9 +419,66 @@ class _AlignmentHost:
                                 componentFits=diagnostics, conflictingBounds=list(context["observationBounds"]))
             if cancelled and cancelled():
                 return dict(success=False, reason="structure-work-obsolete")
+            if fit.get("markerOccludedWallProposal") or fit.get("markerOccludedWallObservation"):
+                rejected = self._marker_recovery_peer_rejection(frame, map_id, floor, fit,
+                    cancelled, observation_bounds, _scan_observation)
+                if rejected is not None:
+                    return rejected
             return dict(fit, componentFits=diagnostics, acceptedPoseCount=1, manualComponentFallback=True)
         return dict(success=False, reason="manual-components-current-geometry-rejected" if diagnostics
                     else "manual-current-geometry-unavailable", componentFits=diagnostics)
+
+    def _marker_recovery_peer_rejection(self, frame, map_id, floor, fit, cancelled, bounds, scan):
+        """New marker-derived poses must explain independent peer structure.
+
+        A few HUD fragments or unknown fog have no independent geometry and
+        cannot veto a pose. Reuse the wall fitter's two separated planes on
+        each axis as the evidence floor, then retain the strict validators.
+        This checks the original primary too when a secondary was recovered.
+        """
+        from nightmare_candidate import visible_map_components
+        from single_map_structure import (current_geometry, current_part,
+            visible_wall_segments, _static_validation_context)
+        import numpy as np
+        islands = scan[1]() if scan is not None else visible_map_components(frame, observation_bounds=bounds)
+        if len(islands) > 32:
+            return dict(success=False, reason="manual-component-budget-unresolved",
+                        componentCount=len(islands), componentBudget=32)
+        reference = self._shared_structure_reference("shared-structure", map_id, floor)
+        for island in islands:
+            if cancelled and cancelled():
+                return dict(success=False, reason="structure-work-obsolete")
+            if tuple(island[1]) == tuple(fit.get("observationBounds") or ()):
+                continue
+            context = (scan[0](island) if scan is not None else
+                       current_geometry(frame, observation_bounds=bounds, visible_override=island))
+            if context is None:
+                continue
+            measured = _static_validation_context(frame, context, np.asarray(fit["matrixSourceToClient"]),
+                getattr(reference, "unknown_mask", None))
+            lines = (current_part(frame, context, "lines") if measured is context else
+                     visible_wall_segments(context["query"], current_part(frame, measured, "observed"),
+                                           nodes=current_part(frame, context, "nodes")))
+            independent = True
+            for axis in (0, 1):
+                planes = []
+                for line in lines:
+                    if line["axis"] == axis and not any(abs(line["normal"]-old) <= 3 for old in planes):
+                        planes.append(line["normal"])
+                if len(planes) < 2 or max(planes)-min(planes) < 24:
+                    independent = False
+                    break
+            if not independent:
+                continue
+            consistent = self._component_pose_consistent(frame, reference, fit["matrixSourceToClient"], context)
+            if cancelled and cancelled():
+                return dict(success=False, reason="structure-work-obsolete")
+            if not consistent:
+                return dict(success=False, reason="manual-components-inconsistent",
+                            conflictingBounds=list(context["observationBounds"]))
+        if cancelled and cancelled():
+            return dict(success=False, reason="structure-work-obsolete")
+        return None
 
     def _component_pose_consistent(self, frame, reference, matrix, context):
         from single_map_structure import projected_geometry, regional_validation, _static_validation_context
@@ -514,7 +577,17 @@ class _AlignmentHost:
             visible_override=context.get("visible") if explicit_domain else None)
         if not rendered_profile_residual_is_verified(residual):
             return record_fit(dict(success=False, reason="canonical-current-frame-residual-unverified", residual=residual))
+        from single_map_structure import observed_corner_chains, marker_occluded_corner_proposals
+        marker_wall_observation = False
+        if explicit_domain and context is not None:
+            if fit.get("markerOccludedWallProposal"):
+                marker_wall_observation = not (fit.get("diagnostics") or {}).get("queryChains")
+            elif (fit.get("diagnostics") or {}).get("queryChains") is None:
+                measured = observed_corner_chains(frame, context)
+                marker_wall_observation = bool(not measured
+                    and marker_occluded_corner_proposals(frame, context, measured))
         return record_fit(dict(fit, selectedRouteCurrentFrameResidual=residual,
+                    markerOccludedWallObservation=marker_wall_observation,
                     observationBounds=context["observationBounds"] if explicit_domain else None,
                     observationComponent=dict(context["visible"][2], bounds=context["visible"][1]) if explicit_domain else None,
                     coordinateSpace="shared-structure-to-client", routeProfileId="shared-structure",

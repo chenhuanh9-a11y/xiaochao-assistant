@@ -49,7 +49,7 @@ def digest(value):
 def metrics(value):
     value = value if type(value) is dict else {}
     result = {key: number(value[key]) for key in (
-        'queryChains', 'sourceChains', 'seedCount', 'seedBudget', 'candidateCount', 'validationBudget',
+        'queryChains', 'sourceChains', 'markerOccludedProposalChains', 'measuredSeedCount', 'seedCount', 'seedBudget', 'candidateCount', 'validationBudget',
         'candidateCount', 'acceptedPoseCount', 'points', 'coarsePoints', 'proposalMs', 'totalMs',
         'elapsedMs', 'maskEdges', 'contrastSupportedEdges', 'withinThreePixels', 'withinSixPixels',
         'medianDistance', 'medianErrorPixels', 'count') if key in value}
@@ -75,6 +75,8 @@ def fit_summary(fit):
     result = dict(success=fit.get('success') is True, reason=code(fit.get('reason')), statistics=metrics(diag))
     if type(diag.get('pointRejections')) is list:
         result['statistics']['pointRejectionCount'] = len(diag['pointRejections'])
+    result['statistics']['markerOccludedWallProposal'] = fit.get('markerOccludedWallProposal') is True
+    result['statistics']['markerOccludedWallObservation'] = fit.get('markerOccludedWallObservation') is True
     result['residual'] = metrics(fit.get('residual', fit.get('selectedRouteCurrentFrameResidual')))
     candidates = diag.get('candidates') if type(diag.get('candidates')) is list else []
     result['candidates'] = []
@@ -159,11 +161,11 @@ def safe_evidence(value):
     numeric = {'schemaVersion', 'omittedObservationCount', 'omittedPriorCount', 'omittedFastCount',
         'queryPixelCount', 'nodeCount', 'lineCount', 'observedEdgePixels', 'elapsedMs',
         'omittedCandidateCount', 'omittedRegionCount', 'omittedEvidenceCount', 'queryChains', 'sourceChains',
-        'seedCount', 'seedBudget', 'candidateCount', 'validationBudget', 'acceptedPoseCount', 'points',
+        'markerOccludedProposalChains', 'measuredSeedCount', 'seedCount', 'seedBudget', 'candidateCount', 'validationBudget', 'acceptedPoseCount', 'points',
         'coarsePoints', 'proposalMs', 'totalMs', 'maskEdges', 'contrastSupportedEdges',
         'withinThreePixels', 'withinSixPixels', 'medianDistance', 'medianErrorPixels', 'count', 'omittedOutcomeCount',
         'median', 'within3', 'within6', 'pointRejectionCount'}
-    booleans = {'success', 'accepted', 'fallback', 'verified', 'regionalEdgeVerified', 'scaleLocked', 'truncated'}
+    booleans = {'success', 'accepted', 'fallback', 'verified', 'regionalEdgeVerified', 'scaleLocked', 'truncated', 'markerOccludedWallProposal', 'markerOccludedWallObservation'}
     codes = {'mode', 'reason', 'strategy', 'pointGeometryReason', 'wallGeometryReason', 'priorReason', 'searchKind', 'outcome'}
     hashes = {'resourceKey', 'indexSha256', 'ownerScopeDigest', 'sourceCatalogSha256', 'rendererMetadataSha256', 'referenceMetadataSha256'}
     boxes = {'observationBounds': 4, 'frameShapeHW': 2, 'cropBounds': 4, 'cropOriginClientXY': 2,

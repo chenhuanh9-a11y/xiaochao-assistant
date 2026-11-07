@@ -279,6 +279,77 @@ def _observed_corner_chains(frame,context):
     return chains
 
 
+def marker_occluded_corner_proposals(frame, context, measured):
+    """Infer only search seeds across independently excluded marker pixels.
+
+    These are never measured corners. Each arm must retain a contiguous wall
+    fragment of the same minimum length as visible_wall_segments; every other
+    missing sample must be explained by the existing marker exclusion mask.
+    Fog, crop boundaries and unexplained sharpness gaps remain unsupported.
+    The ordinary all-wall, held-out and ambiguity gates decide every seed.
+    """
+    nodes = current_part(frame, context, 'nodes')
+    observed = current_part(frame, context, 'observed')
+    measured_indexes = tuple(chain['index'] for chain in measured)
+    cached = context.get('_marker_occluded_corner_proposals')
+    if (cached is not None and cached[0] is nodes and cached[1] is observed
+            and cached[2] == measured_indexes):
+        return cached[3]
+    result = _marker_occluded_corner_proposals(frame, context, nodes, observed, set(measured_indexes))
+    context['_marker_occluded_corner_proposals'] = (nodes, observed, measured_indexes, result)
+    return result
+
+
+def _marker_occluded_corner_proposals(frame, context, nodes, observed, measured_indexes):
+    if all(i in measured_indexes or not node['valid'] for i, node in enumerate(nodes)):
+        return []
+    h, w = observed.shape
+    x0, y0, x1, y1 = context.get('observationBounds') or (0, 0, w, h)
+    mx0, my0, mx1, my1 = max(0, x0-2), max(0, y0-2), min(w, x1+2), min(h, y1+2)
+    hsv = cv2.cvtColor(frame[my0:my1, mx0:mx1, :3], cv2.COLOR_BGR2HSV)
+    marker = ((hsv[:, :, 1] >= 88) & (hsv[:, :, 2] >= 80)).astype(np.uint8)
+    if not marker.any():
+        return []
+    marker = cv2.dilate(marker, np.ones((5, 5), np.uint8)) > 0
+    bounds = context.get('observationBounds')
+    if bounds is not None:
+        x0, y0, x1, y1 = bounds
+        interior = np.zeros_like(marker)
+        interior[y0+3-my0:y1-3-my0, x0+3-mx0:x1-3-mx0] = True
+        marker &= interior  # A marker cannot turn a crop edge into a wall.
+    proposals = []
+    for i, node in enumerate(nodes):
+        if i in measured_indexes:
+            continue
+        ids = (node['previous'], i, node['next'])
+        if not all(nodes[j]['valid'] for j in ids):
+            continue
+        points = np.array([nodes[j]['point'] for j in ids])
+        if np.any(points < [mx0, my0]) or np.any(points >= [mx1, my1]):
+            continue
+        if np.any(points < 5) or np.any(points > np.array([w-6, h-6])):
+            continue
+        supported = True
+        for endpoint in (points[0], points[2]):
+            delta = endpoint - points[1]
+            # The downstream wall fitter only measures axis-aligned fragments.
+            if np.min(np.abs(delta)) > 3:
+                supported = False
+                break
+            samples = np.rint(points[1] + np.linspace(0, 1,
+                int(np.ceil(np.linalg.norm(delta)))+1)[:, None]*delta).astype(int)
+            evidence = observed[samples[:, 1], samples[:, 0]]
+            occluded = marker[samples[:, 1]-my0, samples[:, 0]-mx0]
+            indexes = np.flatnonzero(evidence)
+            runs = np.split(indexes, np.flatnonzero(np.diff(indexes) > 1)+1)
+            if not (evidence | occluded).all() or max(map(len, runs)) < 12:
+                supported = False
+                break
+        if supported:
+            proposals.append(dict(index=i, points=points, rays=node['rays']))
+    return proposals
+
+
 def _wall_raster_samples(qlines):
     """Prepare immutable observation samples for one solver invocation."""
     samples=[]
@@ -530,6 +601,8 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
     # frame. Do not launch the quadratic descriptor search in parallel; the
     # shared graph/refinement/author gates below will decide those seeds.
     query_chains=[] if pose_index_candidates else observed_corner_chains(frame,context)
+    wall_proposals=[] if pose_index_candidates else marker_occluded_corner_proposals(frame,context,query_chains)
+    all_query_chains=query_chains+wall_proposals
     source_nodes=contour_graph(reference)
     source_chains=[]
     for i,n in enumerate(source_nodes):
@@ -543,17 +616,17 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
                     if not source_known_boundary[samples[:,1],samples[:,0]].all():
                         supported=False;break
             source_chains.append(dict(index=i,points=points,rays=n['rays'],measured=supported))
-    diagnostic=dict(queryChains=len(query_chains),sourceChains=len(source_chains),candidates=[],pointRejections=[],stages=[],seedBudget=1024,validationBudget=8)
+    diagnostic=dict(queryChains=len(query_chains),markerOccludedProposalChains=len(wall_proposals),sourceChains=len(source_chains),candidates=[],pointRejections=[],stages=[],seedBudget=1024,validationBudget=8)
     def finish(success,reason,**kw):
         diagnostic['elapsedMs']=(time.perf_counter()-started)*1000
         return dict(success=success,reason=reason,diagnostics=diagnostic,**kw)
-    if not query_chains and not pose_index_candidates:
+    if not all_query_chains and not pose_index_candidates:
         return finish(False,'initial-structure-supported-chains-insufficient')
     seeds=[]
     source_rays=np.array([s['rays'] for s in source_chains]).reshape(-1,2,2)
     source_delta=np.array([s['points'][[0,2]]-s['points'][1] for s in source_chains]).reshape(-1,2,2)
     denominators=np.sum(source_delta*source_delta,axis=(1,2))
-    for qi,q in enumerate(query_chains):
+    for qi,q in enumerate(all_query_chains):
         if cancelled and cancelled(): return finish(False,'structure-work-obsolete')
         qdelta=q['points'][[0,2]]-q['points'][1]
         orientations=np.min(np.sum(q['rays']*source_rays,axis=2),axis=1)>=.95
@@ -572,16 +645,19 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
     diagnostic['seedCount']=len(seeds)
     diagnostic['stages'].append(dict(stage='chain-descriptors',elapsedMs=(time.perf_counter()-started)*1000))
     if not seeds and not pose_index_candidates:return finish(False,'initial-structure-no-chain-ratios')
-    qtriples=np.array([query_chains[q]['points'] for q,s,scale,t in seeds])
-    striples=np.array([source_chains[s]['points'] for q,s,scale,t in seeds])
+    # Marker-covered coordinates can propose wall poses, never enter point fits.
+    point_seeds=[seed for seed in seeds if seed[0]<len(query_chains)]
+    diagnostic['measuredSeedCount']=len(point_seeds)
+    qtriples=np.array([query_chains[q]['points'] for q,s,scale,t in point_seeds])
+    striples=np.array([source_chains[s]['points'] for q,s,scale,t in point_seeds])
     seen=set(); maximal=[]; candidates=[]
     h,w=reference.shape
     extent=np.array([[0,0,1],[w,0,1],[0,h,1],[w,h,1]])
     consensus_started=time.perf_counter()
-    for qi,si,scale,translation in seeds:
+    for qi,si,scale,translation in point_seeds:
         if cancelled and cancelled(): return finish(False,'structure-work-obsolete')
         compatible=np.flatnonzero(np.linalg.norm(striples*scale+translation-qtriples,axis=2).max(axis=1)<=3)
-        pairs=set((seeds[j][0],seeds[j][1]) for j in compatible)
+        pairs=set((point_seeds[j][0],point_seeds[j][1]) for j in compatible)
         unique=tuple(sorted((q,s) for q,s in pairs if sum(qj==q for qj,sj in pairs)==1 and sum(sj==s for qj,sj in pairs)==1))
         if len(unique)<6 or unique in seen: continue
         seen.add(unique)
@@ -725,7 +801,7 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
         # solution; rerunning its weaker normal hypothesis adds no identity.
         if cancelled and cancelled():return finish(False,'structure-work-obsolete')
         source_chain=source_chains[si]['points']
-        query_chain=query_chains[qi]['points']
+        query_chain=all_query_chains[qi]['points']
         if any(c['pairs'] and np.linalg.norm(source_chain@c['matrix'][:2,:2].T+c['matrix'][:2,2]-query_chain,axis=1).max()<=3 for c in candidates):continue
         wall=initial_wall_geometry(qlines,slines,scale,translation,arrays,wall_fit_cache,reference=reference,source_unknown=source_unknown,raster_samples=raster_samples)
         if wall is None:continue
@@ -754,7 +830,7 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
         # Never average it with a less constrained wall-only estimate.
         if any(c['pairs'] and all(abs(c['matrix'][g['axis'],g['axis']]*g['sourceNormal']+c['matrix'][g['axis'],2]-g['queryNormal'])<=6 for g in wall['planes']) for c in candidates):continue
         if any(np.linalg.norm((extent@(matrix-c['matrix']).T)[:,:2],axis=1).max()<=3 for c in candidates):continue
-        candidates.append(dict(matrix=matrix,geometry={'wallScale':{k:v for k,v in wall.items() if k!='matrix'}},pairs=[],sourcePoints=[],queryPoints=[],wallIdentity=identity))
+        candidates.append(dict(matrix=matrix,geometry={'wallScale':{k:v for k,v in wall.items() if k!='matrix'}},pairs=[],sourcePoints=[],queryPoints=[],wallIdentity=identity,markerOccludedProposal=qi>=len(query_chains)))
         if len(candidates)>diagnostic['validationBudget']:
             diagnostic['candidateCount']=len(candidates)
             diagnostic['wallCandidates']=[dict(matrix=c['matrix'].tolist(),geometry=c['geometry']) for c in candidates]
@@ -783,6 +859,7 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
     # No coordinate conversion occurs after this exact author/frame check.
     # Return its evidence with the selected pose instead of recalculating it.
     return finish(True,'initial-structure-candidate',matrixSourceToClient=matrix,coordinateSpace='author-render-to-client',routeProfileId=profile,
+        markerOccludedWallProposal=bool(selected_candidate.get('markerOccludedProposal')),
         currentFrameScaleObservation=selected_scale_observation(selected_candidate['geometry'],matrix,matrix,residual,profile),
         selectedRouteCurrentFrameResidual=dict(residual,validationBasis='actual-rendered-profile-structural-mask',poseVerifiedAgainstRenderedProfile=True))
 
