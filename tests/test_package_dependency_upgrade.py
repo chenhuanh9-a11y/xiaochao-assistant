@@ -89,13 +89,14 @@ class PackageDependencyUpgradeTests(unittest.TestCase):
         self.assert_rejected_unchanged(self.archive(b'old-catalog'))
 
     def test_other_dependency_changed_after_validation_is_rechecked_before_adoption(self):
-        real = importer.preflight_hardlinks
+        real = importer.preflight_resource_publication
         def changed(*args, **kwargs):
-            real(*args, **kwargs)
+            mode = real(*args, **kwargs)
             value = json.loads(self.f.receipt().read_bytes())
             value['requiresFiles'][-1] = fixture.row(self.sidecar, b'wrong-catalog')
             self.f.receipt().write_text(json.dumps(value))
-        with patch.object(importer, 'preflight_hardlinks', side_effect=changed):
+            return mode
+        with patch.object(importer, 'preflight_resource_publication', side_effect=changed):
             with self.assertRaises(importer.ImportRejected):
                 self.f.live(self.archive(b'old-catalog'))
         self.assertFalse(self.f.receipt(self.package).exists())

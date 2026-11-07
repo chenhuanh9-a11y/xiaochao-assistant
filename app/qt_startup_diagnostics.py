@@ -36,6 +36,7 @@ _RESOURCE_ACTIONS = {
     "resource-linked-target": "部分地图文件的位置无法安全核对，星图暂时无法处理。请保留现有文件，附上诊断记录反馈。",
     "installation-root-missing": "找不到星图的安装目录。请确认程序没有被移动，并附上诊断记录反馈。",
     "resource-hardlinks-unavailable": "当前安装位置不支持图包更新所需的文件操作。请附上诊断记录反馈，先不要反复导入或删除图包。",
+    "resource-atomic-move-unavailable": "当前安装位置无法安全提交地图文件，暂时无法完成启动。请保留现有文件并附上诊断记录反馈。",
     "resource-cross-volume-target": "地图文件分布在不同磁盘，暂时无法完成更新。请保留现有文件，附上诊断记录反馈。",
     "resource-unsafe-target": "星图无法安全访问部分地图文件，暂时停止启动。请保留现有文件，附上诊断记录反馈。",
     "base-candidate-manifest-missing": "安装文件缺少地图资源清单，暂时无法启动。请附上诊断记录反馈，不要手动删除图包。",
@@ -144,6 +145,29 @@ def _registered_receipt_path(path):
     return path[len("work/map-packages/"):-len(".json")] in packages
 
 
+def _safe_resource_capabilities(error):
+    """Source-owned, fixed enums only, including when details are untrusted."""
+    for cause in _causes(error):
+        details = getattr(cause, 'details', None)
+        if not isinstance(details, dict):
+            continue
+        rows = []
+        if details.get('resourceLocation') == 'work/map-packages':
+            rows.append('resourceLocation=work/map-packages')
+        stage = details.get('resourceSubstage')
+        if isinstance(stage, str) and stage in {'hardlink-probe', 'atomic-move-probe', 'atomic-no-replace-probe'}:
+            rows.append('resourceSubstage=' + stage)
+        capabilities = details.get('filesystemCapabilities')
+        if isinstance(capabilities, dict):
+            for name in ('hardlinks', 'atomicNoReplace'):
+                value = capabilities.get(name)
+                if isinstance(value, str) and value in {'unknown', 'unavailable', 'unsupported', 'verified'}:
+                    rows.append('filesystem.' + name + '=' + value)
+        if rows:
+            return rows
+    return []
+
+
 def _token(value, limit=100):
     # Never serialize an exception message, repr, locals, source lines or paths.
     return re.sub(r"[^A-Za-z0-9_.<>-]", "?", str(value))[:limit]
@@ -165,6 +189,7 @@ def _details(error, stage):
             "exception=" + _token(type(error).__name__)]
     if resource_code:
         rows.append("resourceCode=" + resource_code)
+        rows.extend(_safe_resource_capabilities(error))
         issues, count = _safe_issues(error)
         rows.append("issueCount=" + str(count))
         for index, issue in enumerate(issues):

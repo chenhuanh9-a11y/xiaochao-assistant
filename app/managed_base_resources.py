@@ -464,12 +464,38 @@ def _write_journal(directory, journal):
     transaction._write_journal(directory, journal)
 
 
+def _pending_stamp(journal):
+    """The move protocol binds its marker before publication, including retirement."""
+    if journal.get('publication') != 'move-v1':
+        if 'pendingStamp' in journal:
+            raise ManagedBaseResourceError('invalid-base-pending-stamp')
+        return None
+    stamp = journal.get('pendingStamp')
+    expected = _encoded(dict(schema=JOURNAL_SCHEMA, transactionId=journal['transactionId']))
+    if (not isinstance(stamp, dict) or set(stamp) != {'bytes', 'sha256', 'identity'}
+            or type(stamp['bytes']) is not int or stamp['bytes'] != len(expected)
+            or stamp['sha256'] != hashlib.sha256(expected).hexdigest()):
+        raise ManagedBaseResourceError('invalid-base-pending-stamp')
+    try:
+        transaction._valid_identity(stamp['identity'])
+    except ValueError as error:
+        raise ManagedBaseResourceError('invalid-base-pending-stamp') from error
+    return stamp
+
+
 def _clear_pending(root, transaction_id):
     pointer = files._target(root, PENDING)
     if transaction._read_json(pointer) != dict(schema=JOURNAL_SCHEMA, transactionId=transaction_id):
         raise ManagedBaseResourceError("base-pending-pointer-changed")
-    row = dict(path=PENDING, bytes=pointer.stat().st_size, sha256=files._sha(pointer))
-    identity = transaction._capture(pointer, row)
+    journal = transaction._read_json(files._target(root, HISTORY + '/' + transaction_id + '/journal.json'))
+    stamp = _pending_stamp(journal)
+    if stamp is not None:
+        if not transaction._matches(pointer, stamp, stamp['identity']):
+            raise ManagedBaseResourceError('base-pending-pointer-changed')
+        row, identity = stamp, stamp['identity']
+    else:
+        row = dict(path=PENDING, bytes=pointer.stat().st_size, sha256=files._sha(pointer))
+        identity = transaction._capture(pointer, row)
     if not files._rollback_published(pointer, tuple(identity), row["sha256"]):
         raise ManagedBaseResourceError("base-pending-pointer-changed")
     transaction._directory_sync(pointer.parent)
@@ -488,10 +514,44 @@ def _cleanup_error(path, reason):
     return error
 
 
-def _ensure_pending(root, transaction_id):
+def _ensure_pending(root, transaction_id, *, journal=None):
     try:
         pointer = files._target(root, PENDING)
         value = dict(schema=JOURNAL_SCHEMA, transactionId=transaction_id)
+        directory = files._target(root, HISTORY + '/' + transaction_id)
+        if journal is None:
+            source = files._target(directory, 'journal.json')
+            # Preserve the legacy error/rearm path for malformed old journals.
+            # A recognizable move journal must never downgrade to that path.
+            try:
+                header = transaction._read_json(source)
+            except (OSError, ValueError):
+                header = {}
+            if header.get('publication') == 'move-v1':
+                _, journal = _load_history(root, transaction_id)
+        if journal is not None and journal.get('publication') == 'move-v1':
+            stamp = _pending_stamp(journal) if 'pendingStamp' in journal else None
+            if pointer.exists():
+                if stamp is None or not transaction._matches(pointer, stamp, stamp['identity']):
+                    raise _cleanup_error(PENDING, 'pending-marker-object-changed')
+                return
+            staged = files._target(directory, 'pending-pointer.json')
+            if staged.exists():
+                if stamp is None or not transaction._matches(staged, stamp, stamp['identity']):
+                    raise _cleanup_error(PENDING, 'pending-marker-source-unwitnessed-or-changed')
+            else:
+                data = _encoded(value)
+                transaction._write_new(staged, data)
+                row = dict(path='pending-pointer.json', bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
+                stamp = dict(bytes=row['bytes'], sha256=row['sha256'], identity=transaction._capture(staged, row))
+                journal['pendingStamp'] = stamp
+                # This durable identity precedes making the complete marker
+                # visible. A torn preparation remains private and fails closed.
+                _write_journal(directory, journal)
+            transaction._move_owned(staged, pointer, stamp, stamp['identity'], linkless=True)
+            if not transaction._matches(pointer, stamp, stamp['identity']):
+                raise _cleanup_error(PENDING, 'pending-marker-object-changed')
+            return
         if pointer.exists():
             if transaction._read_json(pointer) != value:
                 raise _cleanup_error(PENDING, "different-pending-transaction")
@@ -533,6 +593,9 @@ def _cleanup_inventory(directory, journal):
     bytes remain blocked instead of guessing ownership after process loss.
     """
     expected = {}
+    if journal.get('publication') == 'move-v1':
+        stamp = _pending_stamp(journal)
+        expected['pending-pointer.json'] = (stamp, stamp['identity'])
     if journal["schema"] in ACTIVE_JOURNAL_SCHEMAS:
         for entry in journal["entries"]:
             if entry['new'] is not None:
@@ -608,6 +671,14 @@ def _prune_retired(root, protected):
     candidates = [record for record in sorted(records) if record[1] != protected]
     for _, transaction_id, directory in candidates[:max(0, len(records) - MAX_RETIRED_RECORDS)]:
         path = files._target(directory, "journal.json")
+        _, journal = _load_history(root, transaction_id)
+        payloads, _ = _cleanup_inventory(directory, journal)
+        # A rearm can stop after recording a complete private marker but before
+        # moving it to PENDING. Retire that known object before its last stamp.
+        for retained, retained_row, retained_identity in payloads:
+            if not files._rollback_published(retained, tuple(retained_identity), retained_row['sha256']):
+                raise _cleanup_error(HISTORY + '/' + transaction_id, 'audit-marker-changed')
+            transaction._directory_sync(directory)
         row = dict(path="journal.json", bytes=path.stat().st_size, sha256=files._sha(path))
         identity = transaction._capture(path, row)
         directory_identity = transaction._identity(directory.stat())
@@ -620,7 +691,7 @@ def _prune_retired(root, protected):
 def _finish_cleanup(root, directory, journal, *, prune=True):
     """Irreversible terminal phase. No branch here restores an active resource."""
     transaction_id = journal["transactionId"]
-    _ensure_pending(root, transaction_id)
+    _ensure_pending(root, transaction_id, journal=journal)
     try:
         payloads, directories = _cleanup_inventory(directory, journal)
         if journal["schema"] in ACTIVE_JOURNAL_SCHEMAS:
@@ -640,7 +711,9 @@ def _finish_cleanup(root, directory, journal, *, prune=True):
                 raise _cleanup_error(HISTORY + "/" + transaction_id + "/journal.json", "journal-changed")
             compact = dict(schema=RETIRED_SCHEMA, transactionId=transaction_id,
                            rootIdentity=journal["rootIdentity"], outcome=journal["status"],
-                           fileCount=len(journal["files"]))
+                           fileCount=len(journal["files"]),
+                           **({'publication': 'move-v1', 'pendingStamp': journal['pendingStamp']}
+                              if journal.get('publication') == 'move-v1' else {}))
             if len(_encoded(compact)) > MAX_RETIRED_BYTES:
                 raise _cleanup_error(HISTORY + "/" + transaction_id, "audit-record-too-large")
             _write_journal(directory, compact)
@@ -705,7 +778,11 @@ def _rollback(root, directory, journal):
                 if old is not None:
                     path.parent.mkdir(parents=True, exist_ok=True)
                     files._no_links(path.parent)
-                    os.link(files._target(directory, "backup/" + row["path"]), path)
+                    backup = files._target(directory, "backup/" + row["path"])
+                    if journal.get('publication') == 'move-v1':
+                        transaction._move_owned(backup, path, old, entry['oldIdentity'], linkless=True)
+                    else:
+                        os.link(backup, path)
                 transaction._directory_sync(path.parent)
             except OSError:
                 blocked.append(row["path"])
@@ -725,17 +802,23 @@ def _load_history(root, transaction_id):
     journal = transaction._read_json(path)
     if (journal.get("transactionId") != transaction_id
             or journal.get("rootIdentity") != transaction._identity(root.stat())
+            or journal.get('publication') not in (None, 'move-v1')
             or journal.get("schema") not in ACTIVE_JOURNAL_SCHEMAS | {RETIRED_SCHEMA}):
         raise ManagedBaseResourceError("invalid-base-repair-journal")
+    _pending_stamp(journal)
     if journal["schema"] == RETIRED_SCHEMA:
-        if (set(journal) != {"schema", "transactionId", "rootIdentity", "outcome", "fileCount"}
+        expected = {'schema', 'transactionId', 'rootIdentity', 'outcome', 'fileCount'}
+        if journal.get('publication') == 'move-v1':
+            expected |= {'publication', 'pendingStamp'}
+        if (set(journal) != expected
                 or journal["outcome"] not in {"committed", "rolled-back"}
                 or type(journal["fileCount"]) is not int or not 0 < journal["fileCount"] <= 20000
                 or path.stat().st_size > MAX_RETIRED_BYTES):
             raise ManagedBaseResourceError("invalid-base-retired-record")
         return directory, journal
     if (journal.get("status") not in {"preparing", "prepared", "committed", "rolled-back", "rollback-incomplete"}
-            or set(journal) - {"schema", "transactionId", "rootIdentity", "status", "files", "entries", "blockedPaths", "cleanupStatus", "retirement"}
+            or set(journal) - {"schema", "transactionId", "rootIdentity", "status", "files", "entries", "blockedPaths", "cleanupStatus", "retirement", "publication", "pendingStamp"}
+            or journal.get('publication') not in (None, 'move-v1')
             or not isinstance(journal.get("blockedPaths"), list)
             or journal.get("cleanupStatus") not in {None, "retiring"}
             or (journal.get("cleanupStatus") == "retiring" and journal["status"] not in {"committed", "rolled-back"})):
@@ -794,7 +877,11 @@ def _load_pending(root):
     transaction_id = pointer.get("transactionId")
     if pointer != dict(schema=JOURNAL_SCHEMA, transactionId=transaction_id) or not _is_transaction_id(transaction_id):
         raise ManagedBaseResourceError("invalid-base-pending-pointer")
-    return _load_history(root, transaction_id)
+    directory, journal = _load_history(root, transaction_id)
+    stamp = _pending_stamp(journal)
+    if stamp is not None and not transaction._matches(files._target(root, PENDING), stamp, stamp['identity']):
+        raise ManagedBaseResourceError('base-pending-pointer-changed')
+    return directory, journal
 
 
 def _recover(root):
@@ -817,7 +904,14 @@ def _recover(root):
         row = entry["new"]
         if row is None:
             continue
-        if not transaction._matches(files._target(directory, "new/" + row["path"]), row, entry["newIdentity"]):
+        retained = files._target(directory, "new/" + row["path"])
+        # Move publication transfers the original staged object to its target.
+        # An absent pin is expected, not permission to adopt replacement data.
+        # _rollback validates every active object and old backup before mutation;
+        # it also handles a second crash after removal/restoration on rollback.
+        if journal.get('publication') == 'move-v1' and not retained.exists():
+            continue
+        if not transaction._matches(retained, row, entry["newIdentity"]):
             raise ManagedBaseResourceError("base-repair-retained-object-changed")
     _rollback(root, directory, journal)
     return dict(status="rolled-back", cleanupComplete=True)
@@ -839,7 +933,7 @@ def _retire_completed(root):
                 # a healthy launch rewrite every audit's pending marker.
                 _cleanup_inventory(directory, journal)
                 continue
-            _ensure_pending(root, directory.name)
+            _ensure_pending(root, directory.name, journal=journal)
             if journal["schema"] != RETIRED_SCHEMA and journal["status"] not in {"committed", "rolled-back"}:
                 raise _cleanup_error(HISTORY + "/" + directory.name, "historical-transaction-not-terminal")
             _finish_cleanup(root, directory, journal, prune=False)
@@ -886,7 +980,7 @@ def recover_managed_base_resources(install_root):
 
 def repair_managed_base_resources(install_root):
     """Repair once before creating providers/caches, while the runtime owns its lease."""
-    from resource_transaction import resource_write_lock, preflight_hardlinks
+    from resource_transaction import resource_write_lock, preflight_resource_publication
     with resource_write_lock(install_root) as root:
         root = Path(root)
         if files._target(root, 'work/pending-installer-upgrade.json').exists():
@@ -915,7 +1009,7 @@ def repair_managed_base_resources(install_root):
         state_row = dict(path=STATE, bytes=len(encoded), sha256=hashlib.sha256(encoded).hexdigest())
         old_state = dict(path=STATE, bytes=state.stat().st_size, sha256=files._sha(state)) if state.exists() else None
         changes = [*plan["changes"], dict(new=state_row, old=old_state)]
-        preflight_hardlinks(root, [(entry['new'] or entry['old'])["path"] for entry in changes])
+        publication = preflight_resource_publication(root, [(entry['new'] or entry['old'])["path"] for entry in changes])
         transaction_id = str(uuid.uuid4())
         directory = files._target(root, HISTORY + "/" + transaction_id)
         directory.mkdir(parents=True, exist_ok=False)
@@ -930,9 +1024,13 @@ def repair_managed_base_resources(install_root):
         journal = dict(schema=RETIREMENT_JOURNAL_SCHEMA if plan.get('retirement') else JOURNAL_SCHEMA,
                        transactionId=transaction_id, rootIdentity=transaction._identity(root.stat()),
                        status="preparing", files=plan["files"], entries=entries, blockedPaths=[],
+                       **({'publication': publication} if publication == 'move-v1' else {}),
                        **({'retirement': plan['retirement']} if plan.get('retirement') else {}))
-        _write_journal(directory, journal)
-        _ensure_pending(root, transaction_id)
+        if publication == 'move-v1':
+            _ensure_pending(root, transaction_id, journal=journal)
+        else:
+            _write_journal(directory, journal)
+            _ensure_pending(root, transaction_id)
         try:
             for entry in entries:
                 row = entry["new"]
@@ -975,13 +1073,18 @@ def repair_managed_base_resources(install_root):
                             raise ManagedBaseResourceError('retired-base-reappeared-before-state')
                 if entry["old"]:
                     transaction._move_owned(target, files._target(directory, "backup/" + relative),
-                                            entry["old"], entry["oldIdentity"])
+                                            entry["old"], entry["oldIdentity"],
+                                            **({'linkless': True} if publication == 'move-v1' else {}))
                 if row is None:
                     transaction._directory_sync(target.parent)
                     continue
                 target.parent.mkdir(parents=True, exist_ok=True)
                 files._no_links(target.parent)
-                os.link(files._target(directory, "new/" + row["path"]), target)
+                retained = files._target(directory, "new/" + row["path"])
+                if publication == 'move-v1':
+                    transaction._move_owned(retained, target, row, entry['newIdentity'], linkless=True)
+                else:
+                    os.link(retained, target)
                 if not transaction._matches(target, row, entry["newIdentity"]):
                     raise ManagedBaseResourceError("base-published-object-changed")
                 transaction._directory_sync(target.parent)
@@ -1007,4 +1110,5 @@ def repair_managed_base_resources(install_root):
         _finish_cleanup(root, directory, journal)
         return dict(status="repaired" if plan["changes"] else "healthy", bundleId=plan["manifest"]["bundleId"],
                     checked=len(plan["files"]), changed=len(plan["changes"]), transactionId=transaction_id,
+                    publication=publication,
                     retainedLegacyPackages=plan["retainedLegacyPackages"])

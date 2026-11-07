@@ -166,7 +166,7 @@ def _receipt_row(package_id, data):
             "sha256": hashlib.sha256(data).hexdigest()}
 
 
-def _move_owned(source, destination, row, identity):
+def _move_owned(source, destination, row, identity, *, linkless=False):
     """Move only the verified old object, exclusively, retaining no-overwrite."""
     adapter = _adapter()
     adapter._no_links(source)
@@ -176,12 +176,17 @@ def _move_owned(source, destination, row, identity):
     if os.name != "nt":
         if not _matches(source, row, identity):
             _reject("upgrade-owned-target-changed-before-backup")
-        # link() never overwrites. The adapter's POSIX guarded unlink still has
-        # its documented final path race; fail closed on every detectable race.
-        os.link(source, destination)
+        # The move-only protocol keeps this object's identity in a durable
+        # journal instead of requiring a second hard link. POSIX still has its
+        # documented final pathname race; verify the moved object afterward.
+        if linkless:
+            from resource_transaction import rename_no_replace
+            rename_no_replace(source, destination)
+        else:
+            os.link(source, destination)
         if not _matches(destination, row, identity):
             _reject("upgrade-backup-object-changed")
-        if not adapter._rollback_published(source, tuple(identity), row["sha256"]):
+        if not linkless and not adapter._rollback_published(source, tuple(identity), row["sha256"]):
             _reject("upgrade-owned-target-could-not-be-moved")
     else:
         from ctypes import wintypes
@@ -230,10 +235,152 @@ def _move_owned(source, destination, row, identity):
     _directory_sync(destination.parent)
 
 
+
+PUBLICATION_WITNESS_SCHEMA = "resource-metadata-publication-v1"
+
+
+def _publication_mode(journal):
+    mode = journal.get("publicationMode", "hardlink-v1")
+    if mode not in {"hardlink-v1", "move-v1"}:
+        _reject("invalid-resource-publication-mode")
+    return mode
+
+
+def _publication_paths(retained):
+    return (retained.with_name(retained.name + ".publication.json"),
+            retained.with_name(retained.name + ".publishing"))
+
+
+def _publication_proof(retained):
+    """Durable identity proof for a metadata copy; payload ownership is separate."""
+    proof, source = _publication_paths(retained)
+    value = _read_json(proof)
+    _validate_publication_proof(value)
+    if not _matches(retained, value, value["retainedIdentity"]):
+        _reject("metadata-publication-retained-changed")
+    if source.exists() and not _matches(source, value, value["identity"]):
+        _reject("metadata-publication-source-changed")
+    return value
+
+
+def _validate_publication_proof(value):
+    if (not isinstance(value, dict) or set(value) != {"schema", "retainedIdentity", "identity", "bytes", "sha256"}
+            or value["schema"] != PUBLICATION_WITNESS_SCHEMA
+            or type(value["bytes"]) is not int or not 0 <= value["bytes"] <= MAX_JOURNAL_BYTES):
+        _reject("invalid-metadata-publication-witness")
+    _valid_identity(value["identity"])
+    _valid_identity(value["retainedIdentity"])
+    _digest(value["sha256"])
+    return value
+
+
+def _publish_metadata(retained, target, mode, *, expected_data=None, before_publish=None):
+    """Resume only canonical control declarations; never infer payload ownership.
+
+    Before the proof exists, an unpublished source is only a metadata encoding.
+    Its complete bytes must equal this caller's canonical transaction statement.
+    Once a complete proof exists, its recorded source identity is mandatory.
+    """
+    if mode == "hardlink-v1":
+        os.link(retained, target)
+        _directory_sync(target.parent)
+        return
+    if mode != "move-v1":
+        _reject("invalid-resource-publication-mode")
+    if not isinstance(expected_data, bytes) or _read_bytes(retained) != expected_data:
+        _reject("metadata-publication-expected-bytes-changed")
+    row = dict(bytes=len(expected_data), sha256=hashlib.sha256(expected_data).hexdigest())
+    proof, source = _publication_paths(retained)
+    temporary = proof.with_name(proof.name + ".tmp")
+
+    def statement(value):
+        _validate_publication_proof(value)
+        if (value['bytes'] != row['bytes'] or value['sha256'] != row['sha256']
+                or not _matches(retained, row, value['retainedIdentity'])):
+            _reject("metadata-publication-retained-changed")
+        return value
+
+    if target.exists():
+        if source.exists() or temporary.exists():
+            _reject("metadata-publication-already-pending")
+        _metadata_publication_identity(retained, target, mode)
+        return
+
+    # A completely persisted temporary proof is already an identity declaration,
+    # even if its final rename was interrupted. Do not recapture its source.
+    if temporary.exists():
+        value = statement(_read_json(temporary))
+        if not _matches(source, row, value['identity']):
+            _reject("metadata-publication-source-changed")
+        temporary_row, temporary_identity = _metadata_row(temporary, value)
+        if proof.exists():
+            previous = statement(_read_json(proof))
+            previous_row, previous_identity = _metadata_row(proof, previous)
+            if not _adapter()._rollback_published(proof, tuple(previous_identity), previous_row['sha256']):
+                _reject("metadata-publication-witness-changed")
+    elif proof.exists():
+        value = statement(_publication_proof(retained))
+        if source.exists():
+            # Resume the original prepared marker using its original identity.
+            if before_publish is not None:
+                before_publish(value, _identity(proof.stat()))
+            _move_owned(source, target, row, value['identity'], linkless=True)
+            return
+        # A terminal transaction may rearm after marker removal. Retire only
+        # this verified old declaration before creating the next source, so an
+        # interruption cannot leave a new source paired with the old identity.
+        previous_row, previous_identity = _metadata_row(proof, value)
+        if not _adapter()._rollback_published(proof, tuple(previous_identity), previous_row['sha256']):
+            _reject("metadata-publication-witness-changed")
+        _directory_sync(proof.parent)
+
+    if not temporary.exists():
+        if source.exists():
+            # This is restricted to the exact complete canonical control JSON.
+            # Partial, edited, unknown or payload bytes never gain authority here.
+            if _read_bytes(source) != expected_data:
+                _reject("metadata-publication-unrecorded-source-changed")
+        else:
+            _write_new(source, expected_data)
+        value = dict(schema=PUBLICATION_WITNESS_SCHEMA, retainedIdentity=_capture(retained, row),
+                     identity=_capture(source, row), **row)
+        _write_new(temporary, _encoded(value))
+        temporary_row, temporary_identity = _metadata_row(temporary, value)
+    _move_owned(temporary, proof, temporary_row, temporary_identity, linkless=True)
+    if not _matches(proof, temporary_row, temporary_identity):
+        _reject("metadata-publication-witness-changed")
+    _directory_sync(proof.parent)
+    if before_publish is not None:
+        before_publish(value, temporary_identity)
+    _move_owned(source, target, row, value["identity"], linkless=True)
+
+
+def _metadata_publication_identity(retained, target, mode):
+    if mode == "hardlink-v1":
+        identity = _identity(retained.stat())
+        row = dict(bytes=retained.stat().st_size, sha256=_adapter()._sha(retained))
+    else:
+        row = _publication_proof(retained)
+        identity = row["identity"]
+    if not _matches(target, row, identity):
+        _reject("metadata-publication-target-changed")
+    return identity
+
+
+def _publication_cleanup_records(retained, mode):
+    if mode != "move-v1":
+        return {}
+    value = _publication_proof(retained)
+    proof, source = _publication_paths(retained)
+    return {proof.name: _metadata_row(proof, value), source.name: (value, value["identity"])}
+
 def _pointer(root, transaction_id, directory):
     adapter = _adapter()
     # Explicit rollback also creates a pointer, independently of installation.
-    adapter.preflight_hardlinks(root, [PENDING])
+    journal = _read_json(adapter._target(directory, "journal.json"))
+    mode = _publication_mode(journal)
+    if mode == "hardlink-v1":
+        adapter.preflight_hardlinks(root, [PENDING])
     value = {"schema": POINTER_SCHEMA, "transactionId": transaction_id}
     retained = adapter._target(directory, "pending-pointer.json")
     if not retained.exists():
@@ -241,7 +388,11 @@ def _pointer(root, transaction_id, directory):
     elif _read_json(retained) != value:
         _reject("upgrade-pointer-source-changed")
     pending = adapter._target(root, PENDING)
-    os.link(retained, pending)  # Exclusive: never replace another transaction.
+    def persist_retired_witness(value, identity):
+        if journal.get('schema') == RETIRED_SCHEMA:
+            journal['publicationWitness'] = dict(value=value, identity=identity)
+            _write_journal(directory, journal)
+    _publish_metadata(retained, pending, mode, expected_data=_encoded(value), before_publish=persist_retired_witness)
     _directory_sync(pending.parent)
 
 
@@ -264,7 +415,9 @@ def _clear_pointer(root, transaction_id, directory):
     if _read_json(retained) != expected:
         _reject("upgrade-pointer-source-changed")
     path = adapter._target(root, PENDING)
-    if not adapter._rollback_published(path, tuple(_identity(retained.stat())), adapter._sha(retained)):
+    mode = _publication_mode(_read_json(directory / "journal.json"))
+    identity = _metadata_publication_identity(retained, path, mode)
+    if not adapter._rollback_published(path, tuple(identity), adapter._sha(retained)):
         _reject("pending-upgrade-pointer-could-not-be-cleared")
     _directory_sync(path.parent)
 
@@ -274,19 +427,35 @@ def _load_journal(root, transaction_id):
     transaction_id = _transaction_id(transaction_id)
     directory = adapter._target(root, f"{STATE}/upgrades/{transaction_id}")
     journal = _read_json(adapter._target(directory, "journal.json"))
+    if _pending_id(root) == transaction_id:
+        _metadata_publication_identity(adapter._target(directory, "pending-pointer.json"),
+            adapter._target(root, PENDING), _publication_mode(journal))
     if journal.get("schema") == RETIRED_SCHEMA:
-        if (set(journal) != {"schema", "transactionId", "packageId", "rootIdentity", "status"}
+        expected_keys = {"schema", "transactionId", "packageId", "rootIdentity", "status"}
+        if "publicationMode" in journal:
+            expected_keys.add("publicationMode")
+        if _publication_mode(journal) == "move-v1":
+            expected_keys.add("publicationWitness")
+            witness = journal.get("publicationWitness")
+            if not isinstance(witness, dict) or set(witness) != {"value", "identity"}:
+                _reject("invalid-upgrade-retired-publication-witness")
+            _validate_publication_proof(witness["value"])
+            _valid_identity(witness["identity"])
+        if (set(journal) != expected_keys
                 or journal["transactionId"] != transaction_id
                 or not adapter.known_package_id(journal["packageId"])
                 or journal["status"] not in RETIRED_STATES
                 or _valid_identity(journal["rootIdentity"]) != _identity(root.stat())
                 or len(_encoded(journal)) > 1024):
             _reject("invalid-upgrade-retired-journal")
+        _publication_mode(journal)
         return directory, journal
     legacy_keys = {"schema", "transactionId", "packageId", "rootIdentity", "status", "files",
                    "entries", "oldReceipt", "newReceipt", "blockedPaths"}
-    extended = set(journal) == legacy_keys | {"receiptData", "stage", "stagedIdentities", "cachedArchives"}
-    if ((set(journal) != legacy_keys and not extended)
+    mode = _publication_mode(journal)
+    keys = set(journal) - {"publicationMode"}
+    extended = keys == legacy_keys | {"receiptData", "stage", "stagedIdentities", "cachedArchives"}
+    if ((keys != legacy_keys and not extended) or (mode == "move-v1" and not extended)
             or journal["schema"] != SCHEMA or journal["transactionId"] != transaction_id
             or not isinstance(journal["packageId"], str) or not adapter.known_package_id(journal["packageId"])
             or not isinstance(journal["status"], str) or journal["status"] not in STATES
@@ -332,7 +501,7 @@ def _load_journal(root, transaction_id):
         elif entry["oldIdentity"] is not None:
             _reject("upgrade-missing-entry-has-old-identity")
         retained = adapter._target(directory, "new/" + path)
-        may_be_missing = extended and journal["status"] in TERMINAL | {"preparing"}
+        may_be_missing = (mode == "move-v1" or extended and journal["status"] in TERMINAL | {"preparing"})
         if (retained.exists() or not may_be_missing) and not _matches(retained, row, entry["newIdentity"]):
             _reject("upgrade-retained-new-object-changed")
     if receipt_path.casefold() not in found:
@@ -500,7 +669,18 @@ def _history_directories(root):
 def _retired_plan(directory, journal):
     expected = {"journal.json": _metadata_row(directory / "journal.json", journal)}
     pointer = directory / "pending-pointer.json"
-    if pointer.exists():
+    if _publication_mode(journal) == "move-v1":
+        witness = journal["publicationWitness"]
+        value = _validate_publication_proof(witness["value"])
+        data = _encoded(dict(schema=POINTER_SCHEMA, transactionId=journal["transactionId"]))
+        if value['bytes'] != len(data) or value['sha256'] != hashlib.sha256(data).hexdigest():
+            _reject("invalid-upgrade-retired-publication-witness")
+        expected["pending-pointer.json"] = (value, value["retainedIdentity"])
+        proof, source = _publication_paths(pointer)
+        encoded = _encoded(value)
+        expected[proof.name] = (dict(bytes=len(encoded), sha256=hashlib.sha256(encoded).hexdigest()), witness["identity"])
+        expected[source.name] = (value, value["identity"])
+    elif pointer.exists():
         expected["pending-pointer.json"] = _metadata_row(pointer,
             dict(schema=POINTER_SCHEMA, transactionId=journal["transactionId"]))
     return _private_tree_plan(directory, expected)
@@ -554,6 +734,7 @@ def _cleanup_upgrade(root, directory, journal):
     expected = {"journal.json": _metadata_row(directory / "journal.json", journal),
         "pending-pointer.json": _metadata_row(directory / "pending-pointer.json",
             dict(schema=POINTER_SCHEMA, transactionId=journal["transactionId"]))}
+    expected.update(_publication_cleanup_records(directory / "pending-pointer.json", _publication_mode(journal)))
     for entry in journal["entries"]:
         for side in ("new", "old"):
             row = entry[side]
@@ -574,7 +755,8 @@ def _cleanup_upgrade(root, directory, journal):
             if not _matches(path, row, row["identity"]):
                 _reject("upgrade-cleanup-cache-changed")
             paths.append((path, row, row["identity"]))
-    metadata = {directory / "journal.json", directory / "pending-pointer.json"}
+    metadata = {directory / "journal.json", directory / "pending-pointer.json",
+                *_publication_paths(directory / "pending-pointer.json")}
     for path, row, identity in paths:
         if path not in metadata:
             if not adapter._rollback_published(path, tuple(identity), row["sha256"]):
@@ -589,6 +771,13 @@ def _cleanup_upgrade(root, directory, journal):
     retired = dict(schema=RETIRED_SCHEMA, transactionId=journal["transactionId"],
                    packageId=journal["packageId"], rootIdentity=journal["rootIdentity"],
                    status=journal["status"] + "-retired")
+    if "publicationMode" in journal:
+        retired["publicationMode"] = journal["publicationMode"]
+    if _publication_mode(journal) == "move-v1":
+        pointer = directory / "pending-pointer.json"
+        value = _publication_proof(pointer)
+        proof, _ = _publication_paths(pointer)
+        retired["publicationWitness"] = dict(value=value, identity=_identity(proof.stat()))
     _metadata_row(directory / "journal.json", journal)
     _write_journal(directory, retired)
     return _finish_retirement(root, directory, retired)
@@ -649,7 +838,7 @@ def _rollback(root, directory, journal):
                     continue
             if path.exists():
                 retained = adapter._target(directory, "new/" + new["path"])
-                if (not _matches(retained, new, entry["newIdentity"])
+                if ((_publication_mode(journal) != "move-v1" and not _matches(retained, new, entry["newIdentity"]))
                         or not _matches(path, new, entry["newIdentity"])):
                     blocked.append(new["path"])
         except (OSError, adapter.ImportRejected):
@@ -674,15 +863,20 @@ def _rollback(root, directory, journal):
                 continue
             if path.exists():
                 retained = adapter._target(directory, "new/" + new["path"])
-                if (not _matches(retained, new, entry["newIdentity"])
-                        or not adapter._rollback_published(path, tuple(entry["newIdentity"]), new["sha256"])):
+                if _publication_mode(journal) == "move-v1":
+                    _move_owned(path, retained, new, entry["newIdentity"], linkless=True)
+                elif (not _matches(retained, new, entry["newIdentity"])
+                      or not adapter._rollback_published(path, tuple(entry["newIdentity"]), new["sha256"])):
                     blocked.append(new["path"])
                     continue
                 _directory_sync(path.parent)
             if old is not None:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 adapter._no_links(path.parent)
-                os.link(backup, path)  # Exclusive restoration; retain the backup.
+                if _publication_mode(journal) == "move-v1":
+                    _move_owned(backup, path, old, entry["oldIdentity"], linkless=True)
+                else:
+                    os.link(backup, path)  # Legacy restoration retains its linked witness.
                 if not _matches(path, old, entry["oldIdentity"]):
                     blocked.append(new["path"])
                 _directory_sync(path.parent)
@@ -696,7 +890,7 @@ def _rollback(root, directory, journal):
     return dict(_retire_or_reject(root, directory, journal), cleanupOnly=False)
 
 
-def commit_upgrade(root: Path, result: dict, stage: Path, *, live=False, cancelled=None) -> dict:
+def commit_upgrade(root: Path, result: dict, stage: Path, *, live=False, cancelled=None, publication_mode=None) -> dict:
     """Commit same-pack replacements under the caller's writer/idle-or-closed lease."""
     adapter = _adapter()
     if live and not adapter.supports_live_author_import(result):
@@ -707,6 +901,9 @@ def commit_upgrade(root: Path, result: dict, stage: Path, *, live=False, cancell
     adapter._no_links(stage)
     if _pending_id(root) is not None:
         _reject("pending-upgrade-recovery-required")
+    if publication_mode is None:
+        from resource_transaction import preflight_resource_publication
+        publication_mode = preflight_resource_publication(root, [r["path"] for r in result["files"]] + [PENDING])
     package_id = result.get("packageId")
     if not isinstance(package_id, str) or not adapter.known_package_id(package_id):
         _reject("invalid-upgrade-package-id")
@@ -767,7 +964,9 @@ def commit_upgrade(root: Path, result: dict, stage: Path, *, live=False, cancell
     entries.append({"new": new_receipt_row, "old": old_receipt_row,
                     "newIdentity": _capture(new_receipt, new_receipt_row),
                     "oldIdentity": old_receipt_identity})
-    journal = {"schema": SCHEMA, "transactionId": transaction_id, "packageId": package_id,
+    final_identities = dict(identities)
+    final_identities.update({entry['new']['path'].casefold(): entry['newIdentity'] for entry in entries})
+    journal = {"schema": SCHEMA, "publicationMode": publication_mode, "transactionId": transaction_id, "packageId": package_id,
                "rootIdentity": _identity(root.stat()), "status": "rolled-back", "files": list(inventory.values()),
                "entries": entries, "oldReceipt": old_receipt_row, "newReceipt": new_receipt_row,
                "blockedPaths": [], "receiptData": {"old": previous_data.decode("utf-8"),
@@ -794,7 +993,10 @@ def commit_upgrade(root: Path, result: dict, stage: Path, *, live=False, cancell
             adapter._no_links(retained.parent)
             if not _matches(source, row, entry["newIdentity"]):
                 _reject("upgrade-staged-data-changed")
-            os.link(source, retained)
+            if publication_mode == "move-v1":
+                _move_owned(source, retained, row, entry["newIdentity"], linkless=True)
+            else:
+                os.link(source, retained)
             with retained.open("r+b") as handle:
                 os.fsync(handle.fileno())
             _directory_sync(retained.parent)
@@ -809,19 +1011,23 @@ def commit_upgrade(root: Path, result: dict, stage: Path, *, live=False, cancell
             if row["path"] == new_receipt_row["path"]:
                 for current in inventory.values():
                     adapter._check_cancelled(cancelled)
-                    if not _matches(adapter._target(root, current["path"]), current):
+                    if not _matches(adapter._target(root, current["path"]), current,
+                                    final_identities[current['path'].casefold()]):
                         _reject("upgrade-data-changed-before-receipt-publication")
             adapter._check_cancelled(cancelled)
             if entry["old"] is not None:
                 backup = adapter._target(directory, "backup/" + row["path"])
-                _move_owned(target, backup, entry["old"], entry["oldIdentity"])
+                _move_owned(target, backup, entry["old"], entry["oldIdentity"], linkless=publication_mode == "move-v1")
             target.parent.mkdir(parents=True, exist_ok=True)
             adapter._no_links(target.parent)
             retained = adapter._target(directory, "new/" + row["path"])
             if not _matches(retained, row, entry["newIdentity"]):
                 _reject("upgrade-retained-new-object-changed")
             adapter._check_cancelled(cancelled)
-            os.link(retained, target)
+            if publication_mode == "move-v1":
+                _move_owned(retained, target, row, entry["newIdentity"], linkless=True)
+            else:
+                os.link(retained, target)
             if not _matches(target, row, entry["newIdentity"]):
                 _reject("upgrade-published-object-changed")
             _directory_sync(target.parent)
@@ -903,6 +1109,9 @@ def retire_upgrade(root, transaction_id):
         journal = _embed_legacy_proof(root, directory, journal)
     if pending is None:
         _pointer(root, transaction_id, directory)
+        # Rearming a compact move-v1 terminal journal persists a fresh marker
+        # witness. Use that durable generation rather than our previous copy.
+        directory, journal = _load_journal(root, transaction_id)
     return _retire_or_reject(root, directory, journal)
 
 
@@ -912,7 +1121,7 @@ ADDITIONS_OUTCOME = 'addition-outcome.json'
 ADDITIONS_OUTCOME_SCHEMA = 'map-package-additions-outcome-v1'
 
 
-def prepare_additions(root, result, stage, *, live=False):
+def prepare_additions(root, result, stage, *, live=False, publication_mode="hardlink-v1"):
     """Persist witnesses before the first additive publication (including crashes)."""
     adapter = _adapter()
     entries = []
@@ -931,15 +1140,23 @@ def prepare_additions(root, result, stage, *, live=False):
     expected_result = dict(result)
     adapter._set_addition_outcome(expected_result, len(entries), live=live)
     receipt_data = _encoded(expected_result)
-    journal = dict(schema=ADDITIONS_SCHEMA, packageId=result['packageId'], transactionId=transaction_id,
+    journal = dict(schema=ADDITIONS_SCHEMA, publicationMode=publication_mode, packageId=result['packageId'], transactionId=transaction_id,
         stage=stage.relative_to(root).as_posix(), rootIdentity=_identity(root.stat()),
         files=result['files'], entries=entries,
         stagedIdentities={row['path']: _capture(adapter._target(stage, row['path']), row) for row in result['files']},
         newReceipt=dict(path='receipt.json', bytes=len(receipt_data), sha256=hashlib.sha256(receipt_data).hexdigest()),
         oldReceiptSha256=adapter._sha(receipt) if receipt.exists() else None)
+    if publication_mode == 'move-v1':
+        staged_receipt = adapter._target(stage, 'receipt.json')
+        _write_new(staged_receipt, receipt_data)
+        journal['newReceiptIdentity'] = _capture(staged_receipt, journal['newReceipt'])
+        journal['oldReceipt'] = None
+        if receipt.exists():
+            old = dict(path='old-receipt.json', bytes=receipt.stat().st_size, sha256=adapter._sha(receipt))
+            journal['oldReceipt'] = dict(old, identity=_capture(receipt, old))
     retained = adapter._target(stage, 'addition-journal.json')
     _write_new(retained, _encoded(journal))
-    os.link(retained, adapter._target(root, ADDITIONS_PENDING))
+    _publish_metadata(retained, adapter._target(root, ADDITIONS_PENDING), publication_mode, expected_data=_encoded(journal))
     _directory_sync(retained.parent)
     _directory_sync(adapter._target(root, STATE))
     return True
@@ -961,14 +1178,21 @@ def _addition_outcome(stage, retained, journal):
     return value
 
 
-def _addition_journal(root):
+def _addition_journal(root, *, retained=None, verify_files=True):
     adapter = _adapter()
-    path = adapter._target(root, ADDITIONS_PENDING)
+    unpublished = retained is not None
+    path = Path(retained) if unpublished else adapter._target(root, ADDITIONS_PENDING)
     if not path.exists():
         return None
     journal = _read_json(path)
-    if (set(journal) != {'schema', 'packageId', 'transactionId', 'stage', 'rootIdentity',
-                         'files', 'entries', 'oldReceiptSha256', 'stagedIdentities', 'newReceipt'}
+    mode = _publication_mode(journal)
+    expected_keys = {'schema', 'packageId', 'transactionId', 'stage', 'rootIdentity',
+                     'files', 'entries', 'oldReceiptSha256', 'stagedIdentities', 'newReceipt'}
+    if 'publicationMode' in journal:
+        expected_keys.add('publicationMode')
+    if mode == 'move-v1':
+        expected_keys.update({'newReceiptIdentity', 'oldReceipt'})
+    if (set(journal) != expected_keys
             or journal['schema'] != ADDITIONS_SCHEMA
             or not isinstance(journal['packageId'], str) or not adapter.known_package_id(journal['packageId'])
             or _valid_identity(journal['rootIdentity']) != _identity(root.stat())):
@@ -979,8 +1203,12 @@ def _addition_journal(root):
         _reject('invalid-additions-stage')
     stage = adapter._target(root, stage_name)
     retained = adapter._target(stage, 'addition-journal.json')
-    if _read_json(retained) != journal or _identity(retained.stat()) != _identity(path.stat()):
+    if unpublished and path != retained:
+        _reject('invalid-additions-stage')
+    if _read_json(retained) != journal:
         _reject('additions-journal-witness-changed')
+    if not unpublished:
+        _metadata_publication_identity(retained, path, mode)
     outcome = _addition_outcome(stage, retained, journal)
     inventory = _rows(journal['files'], journal['packageId'])
     identities = journal['stagedIdentities']
@@ -988,9 +1216,10 @@ def _addition_journal(root):
         _reject('invalid-additions-staged-identities')
     for row in inventory.values():
         _valid_identity(identities[row['path']])
-        staged = adapter._target(stage, row['path'])
-        if (outcome is None or staged.exists()) and not _matches(staged, row, identities[row['path']]):
-            _reject('additions-retained-object-changed')
+        if verify_files:
+            staged = adapter._target(stage, row['path'])
+            if (staged.exists() or outcome is None and mode != 'move-v1') and not _matches(staged, row, identities[row['path']]):
+                _reject('additions-retained-object-changed')
     receipt_row = journal['newReceipt']
     if (not isinstance(receipt_row, dict) or set(receipt_row) != {'path', 'bytes', 'sha256'}
             or receipt_row['path'] != 'receipt.json' or type(receipt_row['bytes']) is not int
@@ -1010,20 +1239,179 @@ def _addition_journal(root):
             _reject('invalid-additions-entry')
         found.add(key)
         _valid_identity(entry['newIdentity'])
-        staged = adapter._target(stage, row['path'])
-        if (entry['newIdentity'] != identities[row['path']]
-                or (outcome is None or staged.exists()) and not _matches(staged, row, entry['newIdentity'])):
+        if entry['newIdentity'] != identities[row['path']]:
             _reject('additions-retained-object-changed')
+        if verify_files:
+            staged = adapter._target(stage, row['path'])
+            if (staged.exists() or outcome is None and mode != 'move-v1') and not _matches(staged, row, entry['newIdentity']):
+                _reject('additions-retained-object-changed')
     if journal['oldReceiptSha256'] is not None:
         _digest(journal['oldReceiptSha256'])
+    if mode == 'move-v1':
+        _valid_identity(journal['newReceiptIdentity'])
+        old = journal['oldReceipt']
+        if old is not None:
+            if (not isinstance(old, dict) or set(old) != {'path', 'identity', 'bytes', 'sha256'}
+                    or old['path'] != 'old-receipt.json' or type(old['bytes']) is not int
+                    or not 0 <= old['bytes'] <= MAX_JOURNAL_BYTES
+                    or old['sha256'] != journal['oldReceiptSha256']):
+                _reject('invalid-additions-old-receipt')
+            _valid_identity(old['identity'])
+        elif journal['oldReceiptSha256'] is not None:
+            _reject('invalid-additions-old-receipt')
     return stage, retained, journal
 
+
+
+
+def _legacy_addition_declaration(root, stage, retained, journal):
+    """Validate only the two pre-mode history shapes already read by removal.
+
+    Those producers/compatibility records have no terminal-outcome requirement:
+    the old producer cleared its pending link before private cleanup. Absence
+    of the link does not distinguish a prepared record from retained history.
+    This read-only compatibility check grants no new recovery or deletion power.
+    """
+    adapter = _adapter()
+    required = {'schema', 'packageId', 'transactionId', 'stage', 'rootIdentity',
+                'files', 'entries', 'oldReceiptSha256'}
+    extended = required | {'stagedIdentities', 'newReceipt'}
+    if (not isinstance(journal, dict) or set(journal) not in (required, extended)
+            or journal['schema'] != ADDITIONS_SCHEMA
+            or not isinstance(journal['packageId'], str) or not adapter.known_package_id(journal['packageId'])
+            or _valid_identity(journal['rootIdentity']) != _identity(root.stat())
+            or journal['stage'] != stage.relative_to(root).as_posix()
+            or not re.fullmatch(r'work/map-packages/staging-[a-zA-Z0-9_-]+', journal['stage'])):
+        _reject('invalid-legacy-additions-history')
+    _transaction_id(journal['transactionId'])
+    inventory = _rows(journal['files'], journal['packageId'])
+    entries = journal['entries']
+    if not isinstance(entries, list) or not 1 <= len(entries) <= len(inventory):
+        _reject('invalid-legacy-additions-history')
+    seen = set()
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != {'new', 'newIdentity'}:
+            _reject('invalid-legacy-additions-history')
+        rows = _rows([entry['new']], journal['packageId'])
+        key, row = next(iter(rows.items()))
+        if key in seen or inventory.get(key) != row:
+            _reject('invalid-legacy-additions-history')
+        seen.add(key)
+        _valid_identity(entry['newIdentity'])
+    if journal['oldReceiptSha256'] is not None:
+        _digest(journal['oldReceiptSha256'])
+    if set(journal) == extended:
+        # The ten-field producer form has stronger complete-stage declarations;
+        # use the shared parser without inspecting or adopting current payloads.
+        _addition_journal(root, retained=retained, verify_files=False)
+    else:
+        _addition_outcome(stage, retained, journal)  # If present, it must be valid.
+
+def prepared_additions(root):
+    """Read only bounded staging control records, never image/payload bytes.
+
+    A journal without its terminal outcome is unfinished even before the global
+    marker exists. Discovery grants no deletion or live-resource authority.
+    """
+    adapter = _adapter()
+    state = adapter._target(root, STATE)
+    if not state.exists():
+        return []
+    pending = adapter._target(root, ADDITIONS_PENDING)
+    active = _read_json(pending).get('transactionId') if pending.exists() else None
+    result = []
+    for count, stage in enumerate(state.iterdir()):
+        if count >= MAX_HISTORY:
+            _reject('additions-history-limit')
+        if not re.fullmatch(r'staging-[a-zA-Z0-9_-]+', stage.name):
+            continue
+        adapter._no_links(stage)
+        if not stage.is_dir():
+            _reject('invalid-additions-stage')
+        retained = adapter._target(stage, 'addition-journal.json')
+        if not retained.exists():
+            continue
+        journal = _read_json(retained)
+        if 'publicationMode' not in journal:
+            _legacy_addition_declaration(root, stage, retained, journal)
+            continue  # Preserve historical no-pointer semantics; never synthesize an outcome.
+        loaded = _addition_journal(root, retained=retained, verify_files=False)
+        if journal['transactionId'] == active:
+            continue
+        if _addition_outcome(stage, retained, journal) is None:
+            result.append(loaded)
+    return sorted(result, key=lambda item: item[2]['transactionId'])
+
+
+def _preflight_prepared_addition(root, stage, retained, journal):
+    """Prove the full original private stage before rearming its marker.
+
+    All payloads must still be the pre-journaled objects and no selected live
+    addition may exist. Unknown/partial controls or changed payloads stay put.
+    """
+    adapter = _adapter()
+    mode = _publication_mode(journal)
+    data = _encoded(journal)
+    if _read_bytes(retained) != data or _addition_outcome(stage, retained, journal) is not None:
+        _reject('additions-preparation-journal-changed')
+    expected = {'addition-journal.json': _metadata_row(retained, journal)}
+    for row in journal['files']:
+        identity = journal['stagedIdentities'][row['path']]
+        if not _matches(adapter._target(stage, row['path']), row, identity):
+            _reject('additions-preparation-payload-changed')
+        expected[row['path']] = (row, identity)
+    for entry in journal['entries']:
+        if adapter._target(root, entry['new']['path']).exists():
+            _reject('additions-preparation-live-target-present; 当前已有图包文件，已保留当前安装和准备记录；请导出诊断信息核查，不要直接删除准备目录')
+    receipt = adapter._target(root, f"{STATE}/{journal['packageId']}.json")
+    if mode == 'move-v1':
+        old = journal['oldReceipt']
+        if ((old is None and receipt.exists()) or
+                (old is not None and not _matches(receipt, old, old['identity']))):
+            _reject('additions-preparation-receipt-changed')
+    elif (adapter._sha(receipt) if receipt.exists() else None) != journal['oldReceiptSha256']:
+        _reject('additions-preparation-receipt-changed')
+    new_receipt = adapter._target(stage, 'receipt.json')
+    if mode == 'move-v1' or new_receipt.exists():
+        identity = journal.get('newReceiptIdentity')
+        if not _matches(new_receipt, journal['newReceipt'], identity):
+            _reject('additions-preparation-receipt-changed')
+        expected['receipt.json'] = (journal['newReceipt'], identity)
+    if mode == 'move-v1':
+        proof, source = _publication_paths(retained)
+        temporary = proof.with_name(proof.name + '.tmp')
+        statement = None
+        row = dict(bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
+        for control in (proof, temporary):
+            if control.exists():
+                value = _validate_publication_proof(_read_json(control))
+                if (value['bytes'] != row['bytes'] or value['sha256'] != row['sha256']
+                        or not _matches(retained, row, value['retainedIdentity'])):
+                    _reject('additions-preparation-publication-changed')
+                expected[control.name] = _metadata_row(control, value)
+                statement = value  # A complete newer temporary proof takes priority.
+        if source.exists():
+            if statement is None:
+                if _read_bytes(source) != data:
+                    _reject('additions-preparation-publication-changed')
+                identity = _capture(source, row)  # Exact unpublished control JSON only.
+            else:
+                identity = statement['identity']
+                if not _matches(source, row, identity):
+                    _reject('additions-preparation-publication-changed')
+            expected[source.name] = (row, identity)
+        elif statement is not None:
+            _reject('additions-preparation-publication-source-missing')
+    _private_tree_plan(stage, expected)  # Reject every unknown object before writes.
 
 def _addition_cleanup_plan(stage, retained, journal):
     """Validate the whole private stage before deleting any of its objects."""
     adapter = _adapter()
     expected = {row['path']: (row, journal['stagedIdentities'][row['path']]) for row in journal['files']}
-    expected['receipt.json'] = (journal['newReceipt'], None)
+    expected['receipt.json'] = (journal['newReceipt'], journal.get('newReceiptIdentity'))
+    if journal.get('oldReceipt') is not None:
+        expected['old-receipt.json'] = (journal['oldReceipt'], journal['oldReceipt']['identity'])
+    expected.update(_publication_cleanup_records(retained, _publication_mode(journal)))
     outcome = _addition_outcome(stage, retained, journal)
     if outcome is not None:
         path = adapter._target(stage, ADDITIONS_OUTCOME)
@@ -1051,12 +1439,23 @@ def _addition_cleanup_plan(stage, retained, journal):
     return files, sorted(directories, key=lambda p: len(p.parts), reverse=True)
 
 
-def recover_pending_additions(root):
+def recover_pending_additions(root, transaction_id=None):
     """Caller owns writer/closed lease; preserve unknown replacements on recovery."""
     adapter = _adapter()
     loaded = _addition_journal(root)
     if loaded is None:
-        return {'status': 'no-pending-additions'}
+        candidates = prepared_additions(root)
+        if transaction_id is not None:
+            candidates = [item for item in candidates if item[2]['transactionId'] == transaction_id]
+        if not candidates:
+            return {'status': 'no-pending-additions'}
+        stage, retained, journal = candidates[0]
+        _preflight_prepared_addition(root, stage, retained, journal)
+        _publish_metadata(retained, adapter._target(root, ADDITIONS_PENDING),
+            _publication_mode(journal), expected_data=_encoded(journal))
+        loaded = _addition_journal(root)
+    if transaction_id is not None and loaded[2]['transactionId'] != transaction_id:
+        _reject('another-pending-additions-recovery-required')
     stage, retained, journal = loaded
     outcome = _addition_outcome(stage, retained, journal)
     if outcome is None:
@@ -1065,11 +1464,25 @@ def recover_pending_additions(root):
         committed = (current is not None and current.get('additionTransactionId') == journal['transactionId']
                      and current.get('packageId') == journal['packageId']
                      and current.get('files') == journal['files'])
+        if _publication_mode(journal) == 'move-v1':
+            committed = committed and _matches(receipt, journal['newReceipt'], journal['newReceiptIdentity'])
         if committed:
-            if any(not _matches(adapter._target(root, row['path']), row) for row in journal['files']):
+            if any(not _matches(adapter._target(root, row['path']), row,
+                    journal['stagedIdentities'][row['path']] if _publication_mode(journal) == 'move-v1'
+                    and row in [entry['new'] for entry in journal['entries']] else None) for row in journal['files']):
                 _reject('additions-committed-data-changed')
         else:
-            if (adapter._sha(receipt) if receipt.exists() else None) != journal['oldReceiptSha256']:
+            if _publication_mode(journal) == 'move-v1':
+                old = journal['oldReceipt']
+                backup = adapter._target(stage, 'old-receipt.json')
+                if receipt.exists():
+                    if old is None or not _matches(receipt, old, old['identity']):
+                        _reject('additions-receipt-changed')
+                elif old is not None and not _matches(backup, old, old['identity']):
+                    _reject('additions-receipt-changed')
+                if backup.exists() and (old is None or not _matches(backup, old, old['identity'])):
+                    _reject('additions-old-receipt-changed')
+            elif (adapter._sha(receipt) if receipt.exists() else None) != journal['oldReceiptSha256']:
                 _reject('additions-receipt-changed')
             # Inspect the entire set first; leave all objects untouched on conflicts.
             for entry in journal['entries']:
@@ -1079,8 +1492,14 @@ def recover_pending_additions(root):
             for entry in reversed(journal['entries']):
                 row = entry['new']
                 path = adapter._target(root, row['path'])
-                if path.exists() and not adapter._rollback_published(path, tuple(entry['newIdentity']), row['sha256']):
-                    _reject('additions-rollback-incomplete')
+                if path.exists():
+                    if _publication_mode(journal) == 'move-v1':
+                        _move_owned(path, adapter._target(stage, row['path']), row, entry['newIdentity'], linkless=True)
+                    elif not adapter._rollback_published(path, tuple(entry['newIdentity']), row['sha256']):
+                        _reject('additions-rollback-incomplete')
+            if _publication_mode(journal) == 'move-v1' and journal['oldReceipt'] is not None and not receipt.exists():
+                old = journal['oldReceipt']
+                _move_owned(adapter._target(stage, 'old-receipt.json'), receipt, old, old['identity'], linkless=True)
         # Publication/rollback is now complete. Persist this before deleting
         # any witnesses, so a retry never replays business mutations or requires
         # already cleaned staging files/current user objects to remain unchanged.
@@ -1093,6 +1512,8 @@ def recover_pending_additions(root):
     # payload/receipt copies and their subdirectories have been cleaned.
     outcome_path = adapter._target(stage, ADDITIONS_OUTCOME)
     metadata = {retained, outcome_path}
+    if _publication_mode(journal) == 'move-v1':
+        metadata.add(_publication_paths(retained)[0])
     incomplete = False
     for path, identity, digest in files:
         if path in metadata:
@@ -1113,18 +1534,24 @@ def recover_pending_additions(root):
     if remaining_directories or {row[0] for row in remaining} != metadata:
         _reject('additions-stage-cleanup-incomplete')
     pending = adapter._target(root, ADDITIONS_PENDING)
-    if not adapter._rollback_published(pending, tuple(_identity(retained.stat())), adapter._sha(retained)):
+    identity = _metadata_publication_identity(retained, pending, _publication_mode(journal))
+    if not adapter._rollback_published(pending, tuple(identity), adapter._sha(retained)):
         _reject('additions-pointer-could-not-be-cleared')
     # No payload copies remain when the gate is cleared. Only redundant terminal
     # text/empty directories may remain after a best-effort metadata retirement.
     try:
         _directory_sync(pending.parent)
         by_path = {path: (identity, digest) for path, identity, digest in remaining}
-        for path in (outcome_path, retained):
-            if not adapter._rollback_published(path, *by_path[path]):
-                break
-        else:
-            stage.rmdir()
+        if _publication_mode(journal) != 'move-v1':
+            for path in sorted(metadata, key=lambda path: path == retained):
+                if not adapter._rollback_published(path, *by_path[path]):
+                    break
+            else:
+                stage.rmdir()
+        # move-v1 keeps these three tiny terminal ownership records together.
+        # They contain no payload copies. The receipt-owned removal transaction
+        # can retire them with its own durable inventory; untracked partial
+        # deletion here would destroy the surviving history's authority.
     except (OSError, adapter.ImportRejected):
         pass
     return {'status': 'additions-committed' if committed else 'additions-rolled-back',

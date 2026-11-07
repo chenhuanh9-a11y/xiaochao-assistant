@@ -18,7 +18,7 @@ from packaged_product_identity import CLOSED_EXE_NAMES
 from generic_author_package import is_generic_profile
 from resource_transaction import (ResourceTransactionError, resource_read_lock,
                                   resource_write_lock, assert_resources_ready,
-                                  preflight_hardlinks)
+                                  preflight_hardlinks, preflight_resource_publication)
 
 
 MAX_FILES = 2000
@@ -931,9 +931,12 @@ def _set_addition_outcome(result, added, *, live):
         result['status'] = 'installed-restart-required' if added else 'already-installed'
 
 
-def _commit_additions(root, result, stage, *, live=False, cancelled=None):
+def _commit_additions(root, result, stage, *, live=False, cancelled=None, publication_mode="hardlink-v1"):
     """The shared additive transaction; staged hard links remain rollback witnesses."""
     created = []
+    import map_package_upgrade as transaction
+    journal = (transaction._addition_journal(root)[2]
+               if publication_mode == "move-v1" and result['missingFiles'] else None)
     try:
         _check_cancelled(cancelled)
         for row in result["files"]:
@@ -957,8 +960,15 @@ def _commit_additions(root, result, stage, *, live=False, cancelled=None):
             staged = stage.joinpath(*row["path"].split("/"))
             published = staged.stat()  # Capture the source BEFORE link/target races.
             identity = (published.st_dev, published.st_ino)
+            if publication_mode == "move-v1":
+                # Use the identity persisted before pending publication, never
+                # re-adopt a same-byte replacement from the current pathname.
+                identity = tuple(journal['stagedIdentities'][row['path']])
             _check_cancelled(cancelled)
-            os.link(staged, target)
+            if publication_mode == "move-v1":
+                transaction._move_owned(staged, target, row, list(identity), linkless=True)
+            else:
+                os.link(staged, target)
             created.append((target, identity, row["sha256"]))
         _check_cancelled(cancelled)
         if len(created) != len(result['missingFiles']):
@@ -980,18 +990,35 @@ def _commit_additions(root, result, stage, *, live=False, cancelled=None):
                 result['receiptPreserved'] = True
                 return result
         temporary = stage / "receipt.json"
-        temporary.write_bytes(json.dumps(result, ensure_ascii=False, indent=2).encode('utf-8'))
+        if journal is None:
+            temporary.write_bytes(json.dumps(result, ensure_ascii=False, indent=2).encode('utf-8'))
+        elif (transaction._read_json(temporary) != result
+              or not transaction._matches(temporary, journal['newReceipt'], journal['newReceiptIdentity'])):
+            raise ImportRejected('additions-staged-receipt-changed')
         _check_cancelled(cancelled)
         # Receipt replacement is the commit point. Cancellation before it
         # rolls back additions; cancellation observed by the caller afterward
         # cannot turn a committed import into a reported transaction failure.
-        os.replace(temporary, receipt)
+        if journal is not None:
+            for entry in journal['entries']:
+                _check_cancelled(cancelled)
+                if not transaction._matches(_target(root, entry['new']['path']), entry['new'], entry['newIdentity']):
+                    raise ImportRejected('additions-data-changed-before-receipt-publication')
+            old = journal['oldReceipt']
+            if old is not None:
+                transaction._move_owned(receipt, stage / 'old-receipt.json', old, old['identity'], linkless=True)
+            transaction._move_owned(temporary, receipt, journal['newReceipt'], journal['newReceiptIdentity'], linkless=True)
+        else:
+            os.replace(temporary, receipt)
         return result
     except Exception:
         # Retain staged hard links through rollback: their file IDs cannot
         # be recycled after another writer replaces a destination.
-        for path, identity, digest in reversed(created):
-            _rollback_published(path, identity, digest)
+        if publication_mode != "move-v1":
+            for path, identity, digest in reversed(created):
+                _rollback_published(path, identity, digest)
+        # move-v1 recovery returns original new objects to the private stage,
+        # retaining their identities until the durable rollback witness.
         raise
 
 
@@ -1012,7 +1039,7 @@ def _install_staged(zip_path, root, state, *, expected_archive_sha256=None, live
         if live and not supports_live_author_import(result):
             raise ImportRejected("live-import-requires-restart")
         _check_cancelled(cancelled)
-        preflight_hardlinks(root, [r['path'] for r in result['files']]
+        publication_mode = preflight_resource_publication(root, [r['path'] for r in result['files']]
                             + [f"work/map-packages/{result['packageId']}.json"])
         _check_other_package_constraints(root, result['packageId'],
                                          _rows(result['files']), result['replaceFiles'])
@@ -1026,11 +1053,11 @@ def _install_staged(zip_path, root, state, *, expected_archive_sha256=None, live
             result['previousReceiptSha256'] = result['legacyReceiptSha256']
         if result["replaceFiles"]:
             from map_package_upgrade import commit_upgrade
-            return commit_upgrade(root, result, stage, live=live, cancelled=cancelled)
+            return commit_upgrade(root, result, stage, live=live, cancelled=cancelled, publication_mode=publication_mode)
         from map_package_upgrade import prepare_additions, recover_pending_additions
-        prepared = prepare_additions(root, result, stage, live=live)
+        prepared = prepare_additions(root, result, stage, live=live, publication_mode=publication_mode)
         try:
-            output = _commit_additions(root, result, stage, live=live, cancelled=cancelled)
+            output = _commit_additions(root, result, stage, live=live, cancelled=cancelled, publication_mode=publication_mode)
         except Exception:
             if prepared:
                 recover_pending_additions(root)
@@ -1043,7 +1070,8 @@ def _install_staged(zip_path, root, state, *, expected_archive_sha256=None, live
         # recovery; startup refuses resources while that marker is present.
         if (not prepared and stage.exists()
                 and not _target(root, 'work/map-packages/pending-additions.json').exists()
-                and not _target(root, 'work/map-packages/pending-upgrade.json').exists()):
+                and not _target(root, 'work/map-packages/pending-upgrade.json').exists()
+                and not _target(stage, 'addition-journal.json').exists()):
             shutil.rmtree(stage)
 
 

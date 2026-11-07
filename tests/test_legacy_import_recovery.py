@@ -82,11 +82,12 @@ class LegacyImportRecoveryTests(unittest.TestCase):
         self.f.assert_base_preserved()
 
     def test_raced_receipt_after_validation_is_preserved(self):
-        real = importer.preflight_hardlinks
+        real = importer.preflight_resource_publication
         def raced(*args, **kwargs):
-            real(*args, **kwargs)
+            mode = real(*args, **kwargs)
             self.f.write("work/map-packages/nightmare-suju.json", b"unknown-raced-receipt")
-        with patch.object(importer, "preflight_hardlinks", side_effect=raced):
+            return mode
+        with patch.object(importer, "preflight_resource_publication", side_effect=raced):
             with self.assertRaises(importer.ImportRejected):
                 self.f.live(self.archive)
         self.assertEqual(self.f.receipt().read_bytes(), b"unknown-raced-receipt")
@@ -121,8 +122,8 @@ class LegacyImportRecoveryTests(unittest.TestCase):
             self.f.live(self.archive, cancelled=lambda: True)
         self.assertFalse(self.f.receipt().exists())
 
-    def test_no_hardlink_support_does_not_register_before_preflight(self):
-        with patch.object(importer, "preflight_hardlinks", side_effect=OSError("fixture-preflight-denied")):
+    def test_preflight_failure_does_not_register_before_mutation(self):
+        with patch.object(importer, "preflight_resource_publication", side_effect=OSError("fixture-preflight-denied")):
             with self.assertRaisesRegex(OSError, "preflight-denied"):
                 self.f.live(self.archive)
         self.assertFalse(self.f.receipt().exists())
@@ -135,11 +136,12 @@ class LegacyImportRecoveryTests(unittest.TestCase):
         self.assertNotIn(unknown, [r["path"] for r in json.loads(self.f.receipt().read_bytes())["files"]])
 
     def test_legacy_bytes_changed_after_validation_are_not_registered_or_overwritten(self):
-        real = importer.preflight_hardlinks
+        real = importer.preflight_resource_publication
         def changed(*args, **kwargs):
-            real(*args, **kwargs)
+            mode = real(*args, **kwargs)
             self.f.write(self.path, b"changed-after-validation")
-        with patch.object(importer, "preflight_hardlinks", side_effect=changed):
+            return mode
+        with patch.object(importer, "preflight_resource_publication", side_effect=changed):
             with self.assertRaisesRegex(importer.ImportRejected, "legacy.*changed"):
                 self.f.live(self.archive)
         self.assertFalse(self.f.receipt().exists())

@@ -16,8 +16,13 @@ Item {
     property bool activationRefreshPending: false
     property bool pageReady: false
     property bool recoveryHistoryVisible: false
+    property bool historyOpenRequested: false
     onActiveChanged: {
         activationRefreshPending = active
+        if (!active) {
+            dismissHistoryView()
+            historyDialog.close()
+        }
     }
     Timer {
         interval: 120
@@ -26,6 +31,12 @@ Item {
         onTriggered: panel.listPackages()
     }
     signal importSelectionCancelled()
+    function dismissHistoryView() {
+        historyOpenRequested = false
+        if (packageManager && confirmationOwner === packageManager
+                && packageManager.pendingKind === "restore-author-version") confirmation.reject()
+        if (packageManager) packageManager.dismissHistory()
+    }
     readonly property bool operationPending: archiveDialog.visible || resourceService.busy || resourceService.pendingKind !== "" || (packageManager && (packageManager.busy || packageManager.pendingKind !== ""))
     readonly property bool recoveryPending: resourceService.recoveryRequired || (packageManager && packageManager.recoveryRequired)
     readonly property var visibleResourceRows: resourceService.packageRows.map(function(row) {
@@ -181,6 +192,16 @@ Item {
                         }
                     }
                     AppButton {
+                        objectName: "packageHistoryButton-" + modelData.packageId
+                        text: "历史版本"; visible: !!modelData.storageFormat
+                        enabled: !!panel.packageManager && !panel.operationPending && !panel.recoveryPending
+                        Accessible.name: "查看作者历史版本 " + modelData.title
+                        onClicked: {
+                            panel.historyOpenRequested = true
+                            panel.packageManager.requestHistory(modelData.packageId)
+                        }
+                    }
+                    AppButton {
                         objectName: "removePackageButton-" + modelData.packageId
                         text: modelData.canInspectRemoval ? "检查并删除" : "删除图包"; enabled: !!panel.packageManager && (!!modelData.canRemove || !!modelData.canInspectRemoval) && !panel.operationPending && !panel.recoveryPending
                         Accessible.name: "删除图包 " + modelData.title
@@ -205,7 +226,7 @@ Item {
                 Accessible.role: Accessible.StaticText
             }
             AppButton { text: "取消操作"; visible: resourceService.canCancel; onClicked: resourceService.cancel() }
-            AppButton { text: "取消删除"; visible: !!panel.packageManager && panel.packageManager.canCancel; onClicked: panel.packageManager.cancel() }
+            AppButton { text: "取消操作"; visible: !!panel.packageManager && panel.packageManager.canCancel; onClicked: panel.packageManager.cancel() }
         }
     }
 
@@ -217,6 +238,64 @@ Item {
         nameFilters: ["地图资源包 (*.zip)"]
         onAccepted: resourceService.importArchive(selectedFile.toString(), targetSeason)
         onRejected: panel.importSelectionCancelled()
+    }
+    Dialog {
+        id: historyDialog
+        objectName: "resourceHistoryDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(600, parent ? parent.width - 48 : 600)
+        height: Math.min(460, parent ? parent.height - 48 : 460)
+        title: "作者历史版本"
+        modal: true; focus: true
+        closePolicy: Popup.CloseOnEscape
+        onClosed: {
+            panel.dismissHistoryView()
+        }
+        contentItem: ColumnLayout {
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap
+                text: "历史列表只核对来源记录；点击回退后会核对完整图片和当前底模。回退只切换作者显示，不回退程序或识别底模。"
+            }
+            ListView {
+                id: historyList
+                objectName: "authorHistoryList"
+                Layout.fillWidth: true; Layout.fillHeight: true
+                clip: true; spacing: 8
+                ScrollBar.vertical: ScrollBar {}
+                model: panel.packageManager ? panel.packageManager.historyRows : []
+                delegate: RowLayout {
+                    required property var modelData
+                    width: historyList.width
+                    Label {
+                        Layout.fillWidth: true; wrapMode: Text.Wrap
+                        text: modelData.snapshotId.slice(0, 12) + " · " + (modelData.current ? "当前版本" : modelData.status === "unverified-history" ? "来源或记录不完整，不可回退" : "保留版本，内容待核对")
+                              + (modelData.archiveSha256 ? "\n图包 SHA256：" + modelData.archiveSha256.slice(0, 12) : "")
+                    }
+                    AppButton {
+                        objectName: "restoreAuthorVersion-" + modelData.snapshotId
+                        text: "核对并回退"
+                        enabled: modelData.canInspectRestore && !panel.operationPending && !panel.recoveryPending
+                        Accessible.name: "核对并回退作者版本 " + modelData.snapshotId.slice(0, 12)
+                        onClicked: panel.packageManager.requestRestoreVersion(modelData.packageId, modelData.sourceTransactionId)
+                    }
+                }
+            }
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap
+                visible: !panel.packageManager || panel.packageManager.historyRows.length === 0
+                text: "当前没有已核对的历史记录，或资源已改变。可点击重新核对。"
+            }
+        }
+        footer: DialogButtonBox {
+            AppButton {
+                objectName: "refreshAuthorHistoryButton"; text: "重新核对"
+                enabled: !!panel.packageManager && !panel.operationPending && !panel.recoveryPending
+                onClicked: panel.packageManager.requestHistory(panel.packageManager.historyPackageId)
+            }
+            AppButton { objectName: "closeAuthorHistoryButton"; text: "关闭"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
+            onRejected: historyDialog.close()
+        }
     }
     Dialog {
         id: confirmation
@@ -254,6 +333,9 @@ Item {
     }
     Connections {
         target: panel.packageManager
+        function onHistoryReady(packageId) {
+            if (panel.active && panel.historyOpenRequested) historyDialog.open()
+        }
         function onConfirmationRequested(title, message) {
             panel.confirmationOwner = panel.packageManager
             confirmation.title = title

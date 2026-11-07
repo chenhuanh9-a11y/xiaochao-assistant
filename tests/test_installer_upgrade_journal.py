@@ -523,6 +523,8 @@ class InstallerUpgradeJournalTests(unittest.TestCase):
                 def interrupt(source, destination, *a, **kw):
                     nonlocal calls
                     result = original_link(source, destination, *a, **kw)
+                    if Path(source).parent.name.startswith('link-probe-'):
+                        return result
                     calls += 1
                     if calls == count:
                         raise KeyboardInterrupt('process loss')

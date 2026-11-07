@@ -6,6 +6,7 @@ inside the process. Other processes fail before reading resources or caches.
 The lock filename is intentionally compatible with the existing import helper.
 """
 from contextlib import contextmanager
+import errno
 import os
 from pathlib import Path, PurePosixPath
 import stat
@@ -195,14 +196,21 @@ def assert_resources_ready(root):
     ):
         if _safe(root / 'work/map-packages' / name).exists():
             raise ResourceTransactionError(code, details={'pendingFile': 'work/map-packages/' + name})
+    # A fully written additive journal precedes marker publication. Discover
+    # only bounded small control records here; payload verification belongs to
+    # explicit recovery, not every runtime resource read.
+    from map_package_upgrade import prepared_additions
+    try:
+        unfinished = prepared_additions(root)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise ResourceTransactionError('additions-recovery-required') from error
+    if unfinished:
+        raise ResourceTransactionError('additions-recovery-required', details={
+            'pendingFile': unfinished[0][1].relative_to(root).as_posix()})
 
 
-def preflight_hardlinks(root, relatives):
-    """Probe actual target volume before publishing any data; no copy fallback.
-
-All lexical ancestors must be free of junctions/reparse points and have the same
-device as the staging state. Probe files are private and removed on every path.
-"""
+def _publication_targets(root, relatives):
+    """Validate the staging plane and every destination before capability probes."""
     root = _safe(Path(os.path.abspath(root)))
     state = _safe(root / 'work/map-packages')
     state.mkdir(parents=True, exist_ok=True)
@@ -218,6 +226,19 @@ device as the staging state. Probe files are private and removed on every path.
             existing = existing.parent
         if existing.stat().st_dev != device:
             raise ResourceTransactionError('resource-cross-volume-target', details={'path': relative})
+    return state
+
+
+def _capability_details(stage, *, hardlinks='unknown', atomic_move='unknown'):
+    # Fixed source-owned names only. Never serialize an installation path,
+    # exception text or a filesystem volume/username into the startup report.
+    return dict(resourceLocation='work/map-packages', resourceSubstage=stage,
+                filesystemCapabilities=dict(hardlinks=hardlinks, atomicNoReplace=atomic_move))
+
+
+def preflight_hardlinks(root, relatives):
+    """Strict legacy protocol. Its retained same-object pins require links."""
+    state = _publication_targets(root, relatives)
     try:
         with tempfile.TemporaryDirectory(prefix='link-probe-', dir=state) as directory:
             source, target = Path(directory) / 'source', Path(directory) / 'linked'
@@ -226,4 +247,80 @@ device as the staging state. Probe files are private and removed on every path.
             if not os.path.samefile(source, target) or target.read_bytes() != source.read_bytes():
                 raise OSError('link identity mismatch')
     except OSError as error:
-        raise ResourceTransactionError('resource-hardlinks-unavailable') from error
+        raise ResourceTransactionError('resource-hardlinks-unavailable', details=
+            _capability_details('hardlink-probe', hardlinks='unavailable')) from error
+
+
+def rename_no_replace(source, target):
+    """Atomically move an object without replacing any existing destination.
+
+    Windows rename is no-replace. Linux requires renameat2(RENAME_NOREPLACE),
+    never an exists check followed by the replacing POSIX rename operation.
+    Callers must bind source bytes/identity and validate lexical ancestors.
+    """
+    source, target = _safe(Path(source)), _safe(Path(target))
+    if os.name == 'nt':
+        os.rename(source, target)
+        return
+    import ctypes
+    api = ctypes.CDLL(None, use_errno=True)
+    rename = getattr(api, 'renameat2', None)
+    if rename is None:
+        raise OSError(errno.ENOSYS, 'atomic-no-replace-unavailable')
+    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    if rename(-100, os.fsencode(source), -100, os.fsencode(target), 1):
+        code = ctypes.get_errno()
+        raise OSError(code, 'atomic-no-replace-failed')
+
+
+def preflight_resource_publication(root, relatives):
+    """Select only an actually tested protocol, before creating a transaction.
+
+    Permission, quota, disk and unknown failures are not a signal to downgrade.
+    Move mode needs independent durable identities in its caller's journal;
+    legacy same-object witness users must keep calling preflight_hardlinks.
+    """
+    relatives = tuple(relatives)
+    try:
+        preflight_hardlinks(root, relatives)
+        return 'hardlink-v1'
+    except ResourceTransactionError as error:
+        cause = error.__cause__
+        unsupported = (isinstance(cause, OSError) and
+            (getattr(cause, 'winerror', None) in {1, 50} or
+             (getattr(cause, 'winerror', None) is None and cause.errno in
+              {errno.EINVAL, errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP})))
+        if error.code != 'resource-hardlinks-unavailable' or not unsupported:
+            raise
+    state = _publication_targets(root, relatives)
+    from map_package_upgrade import _write_new, _capture, _move_owned, _matches
+    import hashlib
+    stage = 'atomic-move-probe'
+    try:
+        with tempfile.TemporaryDirectory(prefix='move-probe-', dir=state) as directory:
+            source, target = Path(directory) / 'source', Path(directory) / 'target'
+            data, other = b'resource-atomic-move-v1', b'do-not-replace'
+            row = dict(path='source', bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
+            _write_new(source, data)
+            _write_new(target, other)
+            identity = _capture(source, row)
+            if not identity[1] or identity == [target.stat().st_dev, target.stat().st_ino]:
+                raise OSError(errno.ENOTSUP, 'distinct-file-identity-unavailable')
+            stage = 'atomic-no-replace-probe'
+            try:
+                _move_owned(source, target, row, identity, linkless=True)
+            except OSError:
+                if not _matches(source, row, identity) or target.read_bytes() != other:
+                    raise OSError(errno.EIO, 'atomic-no-replace-probe-changed-objects')
+            else:
+                raise OSError(errno.EIO, 'atomic-no-replace-overwrote-target')
+            target.unlink()  # Private capability probe only; not a resource.
+            stage = 'atomic-move-probe'
+            _move_owned(source, target, row, identity, linkless=True)
+            if source.exists() or not _matches(target, row, identity):
+                raise OSError(errno.EIO, 'atomic-move-identity-mismatch')
+    except (OSError, ValueError) as error:
+        raise ResourceTransactionError('resource-atomic-move-unavailable', details=
+            _capability_details(stage, hardlinks='unsupported', atomic_move='unavailable')) from error
+    return 'move-v1'

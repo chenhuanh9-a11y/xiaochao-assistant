@@ -6,8 +6,11 @@ obtains owner_sid from the current Windows token, and supplies read-only native
 and resource verifiers. A callback must return the literal True after verifying
 current objects, not merely a cached receipt or an installer exit code.
 
-All generations are immutable, exclusive hardlink publications of fsynced,
-retained objects. The marker also has a retained identity pin. Unknown objects
+All generations are immutable, exclusive publications of fsynced objects.
+The legacy protocol retains hardlink identity pins. On a probed linkless volume,
+move-v1 persists each object's identity/length/hash before an exclusive atomic
+move; the anchor explicitly selects this evidence format. The marker is bound
+the same way, without copying payloads or adopting equal bytes as the same object. Unknown objects
 are never overwritten or adopted, including equal bytes in a different inode.
 Only the owned pending marker is removed; all evidence and all old program and
 resource bytes are retained. Directory fsync is used where Python supports it;
@@ -24,6 +27,8 @@ from pathlib import Path
 import re
 import stat
 import uuid
+
+from resource_transaction import preflight_resource_publication, rename_no_replace
 
 SCHEMA = 'xingtu-installer-upgrade-v1'
 PENDING = 'work/pending-installer-upgrade.json'
@@ -270,7 +275,7 @@ def _write_new(path, data):
     _directory_sync(path.parent)
 
 
-def _publish(directory, name, value):
+def _publish(directory, name, value, *, publication='hardlink-v1'):
     """Complete private object before exclusive publication, retaining its pin."""
     value = dict(value, pinId=str(uuid.uuid4()))
     data = _bounded(value)
@@ -280,12 +285,20 @@ def _publish(directory, name, value):
     # objects left by an interruption before the visible publication.
     retained = directory / 'pins' / (value['pinId'] + '.json')
     _safe(retained)
-    os.link(pin, retained)
-    _directory_sync(retained.parent)
+    if publication == 'move-v1':
+        _write_new(retained, _bounded(_read(pin)[1]))
+    else:
+        os.link(pin, retained)
+        _directory_sync(retained.parent)
     name = name.removesuffix('.json') + '-' + _digest(data) + '.json'
     path = directory / 'generations' / name
     _safe(path)
-    os.link(retained, path)
+    if publication == 'move-v1':
+        rename_no_replace(pin, path)
+        if _read(path)[1] != _parse(_read(retained)[0]):
+            _fail('generation-identity-changed')
+    else:
+        os.link(retained, path)
     _directory_sync(path.parent)
     stamp = _read(path)[1]
     # A second immutable publication proves that this generation was exposed
@@ -299,13 +312,22 @@ def _publish(directory, name, value):
     _write_new(proof_pin, proof)
     proof_path = directory / 'published' / (f"{value['generation']:06d}-" + _digest(proof) + '.json')
     _safe(proof_path)
-    os.link(proof_pin, proof_path)
+    if publication == 'move-v1':
+        proof_witness = directory / 'pins' / (proof_id + '.json')
+        _write_new(proof_witness, _bounded(_read(proof_pin)[1]))
+        rename_no_replace(proof_pin, proof_path)
+        if _read(proof_path)[1] != _parse(_read(proof_witness)[0]):
+            _fail('publication-proof-changed')
+    else:
+        os.link(proof_pin, proof_path)
     _directory_sync(proof_path.parent)
     return stamp
 
 
 def _check_anchor(root, directory, anchor):
-    if type(anchor) is not dict or set(anchor) != _ANCHOR or anchor['schema'] != SCHEMA:
+    if (type(anchor) is not dict or set(anchor) not in (_ANCHOR, _ANCHOR | {'publication'})
+            or anchor['schema'] != SCHEMA
+            or 'publication' in anchor and anchor['publication'] != 'move-v1'):
         _fail('invalid-anchor')
     if _uuid(anchor['upgradeId']) != _uuid(anchor['sessionId']):
         _fail('session-mismatch')
@@ -392,6 +414,16 @@ def _load(root, *, owner_sid, session_id=None):
         upgrade_id = _uuid(session_id)
     directory = _safe(root / HISTORY / upgrade_id)
     retained, retained_stamp = _read(directory / 'pending-pointer.json')
+    retained_value = _parse(retained)
+    linkless = type(retained_value) is dict and retained_value.get('publication') == 'move-v1'
+    if linkless:
+        if set(retained_value) != {'publication', 'pointer', 'stamp'}:
+            _fail('invalid-pending')
+        _stamp(retained_value['stamp'])
+        retained_stamp = retained_value['stamp']
+        retained = _bounded(retained_value['pointer'])
+        if len(retained) != retained_stamp['bytes'] or _digest(retained) != retained_stamp['sha256']:
+            _fail('invalid-pending')
     if present:
         if retained != pointer_bytes or retained_stamp != marker_stamp:
             _fail('pending-identity-changed')
@@ -406,6 +438,8 @@ def _load(root, *, owner_sid, session_id=None):
         _fail('anchor-changed')
     anchor = _parse(anchor_bytes)
     _check_anchor(root, directory, anchor)
+    if linkless != (anchor.get('publication') == 'move-v1'):
+        _fail('publication-mode-changed')
     if anchor['ownerSid'] != owner_sid:
         _fail('owner-sid-mismatch')
     if anchor['sessionId'] != upgrade_id:
@@ -425,7 +459,12 @@ def _load(root, *, owner_sid, session_id=None):
             _fail('invalid-generation')
         pin_id = _uuid(record.get('pinId'))
         pin_data, pin_stamp = _read(directory / 'pins' / (pin_id + '.json'))
-        if stamp != pin_stamp or data != pin_data:
+        if linkless:
+            pin_stamp = _parse(pin_data)
+            _stamp(pin_stamp)
+            if stamp != pin_stamp:
+                _fail('generation-identity-changed')
+        elif stamp != pin_stamp or data != pin_data:
             _fail('generation-identity-changed')
         if index == 0 and stamp != pointer['firstGeneration']:
             _fail('first-generation-changed')
@@ -443,9 +482,12 @@ def _load(root, *, owner_sid, session_id=None):
                 or proof['generation'] in seen_proofs):
             _fail('invalid-publication-proof')
         _uuid(proof['pinId']); _stamp(proof['stamp'])
+        witness = (_parse(_read(directory / 'pins' / (proof['pinId'] + '.json'))[0]) if linkless
+                   else _read(directory / 'objects' / (proof['pinId'] + '.json'))[1])
+        _stamp(witness)
         if (path.name != f"{proof['generation']:06d}-{proof_stamp['sha256']}.json"
                 or proof['stamp'] != stamps[proof['generation']]
-                or _read(directory / 'objects' / (proof['pinId'] + '.json'))[1] != proof_stamp):
+                or witness != proof_stamp):
             _fail('publication-proof-changed')
         seen_proofs.add(proof['generation'])
     record, stamp = previous
@@ -534,6 +576,7 @@ class InstallerUpgradeJournal:
             return result
         if _directory_identity(self.root) != self.root_identity:
             _fail('root-identity-changed')
+        publication = preflight_resource_publication(self.root, [PENDING, HISTORY])
         _mkdir(self.root / 'work')
         _mkdir(self.root / HISTORY)
         directory = self.root / HISTORY / self.bindings['sessionId']
@@ -545,18 +588,29 @@ class InstallerUpgradeJournal:
         anchor = dict(schema=SCHEMA, upgradeId=self.bindings['sessionId'], **self.bindings,
                       rootIdentity=self.root_identity,
                       directoryIdentities={name: _directory_identity(path) for name, path in paths.items()})
+        if publication == 'move-v1':
+            anchor['publication'] = 'move-v1'
         _check_anchor(self.root, directory, anchor)
         _write_new(directory / 'anchor.json', _bounded(anchor))
         anchor_stamp = _read(directory / 'anchor.json')[1]
         record = dict(schema=SCHEMA, upgradeId=anchor['upgradeId'], generation=0, previous=None,
                       anchorSha256=anchor_stamp['sha256'], status='prepared', pinId=str(uuid.uuid4()), resourceTransactionId=None,
                       nativeEvidence=None, nativeEvidenceSha256=None)
-        first = _publish(directory, '000000.json', record)
+        first = _publish(directory, '000000.json', record, publication=publication)
         pointer = dict(schema=SCHEMA, upgradeId=anchor['upgradeId'], anchor=anchor_stamp, firstGeneration=first)
         pin = directory / 'pending-pointer.json'
-        _write_new(pin, _bounded(pointer))
         _safe(self.root / PENDING)
-        os.link(pin, self.root / PENDING)  # No replace and no copy fallback.
+        if publication == 'move-v1':
+            staged = directory / 'pending-pointer.stage.json'
+            _write_new(staged, _bounded(pointer))
+            stamp = _read(staged)[1]
+            _write_new(pin, _bounded(dict(publication='move-v1', pointer=pointer, stamp=stamp)))
+            rename_no_replace(staged, self.root / PENDING)
+            if _read(self.root / PENDING)[1] != stamp:
+                _fail('pending-identity-changed')
+        else:
+            _write_new(pin, _bounded(pointer))
+            os.link(pin, self.root / PENDING)
         _directory_sync(self.root / 'work')
         return self.status()
 
@@ -578,7 +632,8 @@ class InstallerUpgradeJournal:
         record = dict(current[1], generation=current[1]['generation'] + 1,
                       previous=current[2], **changes)
         _check_record(record, record['generation'], (current[1], current[2]), record['anchorSha256'])
-        _publish(current[3], f"{record['generation']:06d}.json", record)
+        _publish(current[3], f"{record['generation']:06d}.json", record,
+                 publication=current[0].get('publication', 'hardlink-v1'))
         return self.status()
 
     def bind_resource(self, transaction_id, *, verify_resource):
@@ -641,7 +696,9 @@ class InstallerUpgradeJournal:
             _fail('generation-changed')
         if current[0]['pending']:
             _directory_sync(current[3] / 'generations')
-            pin_stamp = _read(current[3] / 'pending-pointer.json')[1]
+            data, pin_stamp = _read(current[3] / 'pending-pointer.json')
+            if current[0].get('publication') == 'move-v1':
+                pin_stamp = _parse(data)['stamp']
             _remove_owned_marker(self.root / PENDING, pin_stamp)
         return self.status()
 

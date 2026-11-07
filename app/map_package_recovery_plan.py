@@ -22,6 +22,29 @@ def _stamp(path):
     return dict(identity=list(identity(after)), sha256=digest)
 
 
+def _addition_plan(root, additions):
+    stage, retained, journal = additions
+    outcome = upgrade._addition_outcome(stage, retained, journal)
+    paths = {upgrade.ADDITIONS_PENDING, retained.relative_to(root).as_posix(),
+             (stage / upgrade.ADDITIONS_OUTCOME).relative_to(root).as_posix(),
+             (stage / 'receipt.json').relative_to(root).as_posix()}
+    if upgrade._publication_mode(journal) == 'move-v1':
+        paths.update(path.relative_to(root).as_posix() for path in upgrade._publication_paths(retained))
+        paths.add((stage / 'old-receipt.json').relative_to(root).as_posix())
+        proof, _ = upgrade._publication_paths(retained)
+        paths.add(proof.with_name(proof.name + '.tmp').relative_to(root).as_posix())
+    if outcome is None:
+        paths.add(f"{upgrade.STATE}/{journal['packageId']}.json")
+        paths.update(row['path'] for row in journal['files'])
+    paths.update((stage / row['path']).relative_to(root).as_posix() for row in journal['files'])
+    fingerprints = {name: _stamp(importer._target(root, name)) for name in sorted(paths)}
+    encoded = json.dumps(fingerprints, sort_keys=True, separators=(',', ':')).encode()
+    return dict(transactionId=journal['transactionId'], packageId=journal['packageId'],
+                status='additions-pending', pending=True, fileCount=len(journal['files']),
+                blockedPaths=[], planSha256=hashlib.sha256(encoded).hexdigest(),
+                **({'cleanupOnly': True} if outcome is not None else {}))
+
+
 def inspect_locked(root, transaction_id=None):
     """Caller holds the OS resource writer lock; no files are changed."""
     import author_resource_snapshots as snapshots
@@ -36,21 +59,10 @@ def inspect_locked(root, transaction_id=None):
             return removal
     additions = upgrade._addition_journal(root)
     if additions is not None and (transaction_id is None or additions[2]['transactionId'] == transaction_id):
-        stage, retained, journal = additions
-        outcome = upgrade._addition_outcome(stage, retained, journal)
-        paths = {upgrade.ADDITIONS_PENDING, retained.relative_to(root).as_posix(),
-                 (stage / upgrade.ADDITIONS_OUTCOME).relative_to(root).as_posix(),
-                 (stage / 'receipt.json').relative_to(root).as_posix()}
-        if outcome is None:
-            paths.add(f"{upgrade.STATE}/{journal['packageId']}.json")
-            paths.update(row['path'] for row in journal['files'])
-        paths.update((stage / row['path']).relative_to(root).as_posix() for row in journal['files'])
-        fingerprints = {name: _stamp(importer._target(root, name)) for name in sorted(paths)}
-        encoded = json.dumps(fingerprints, sort_keys=True, separators=(',', ':')).encode()
-        return dict(transactionId=journal['transactionId'], packageId=journal['packageId'],
-                    status='additions-pending', pending=True, fileCount=len(journal['files']),
-                    blockedPaths=[], planSha256=hashlib.sha256(encoded).hexdigest(),
-                    **({'cleanupOnly': True} if outcome is not None else {}))
+        return _addition_plan(root, additions)
+    for prepared in upgrade.prepared_additions(root):
+        if transaction_id is None or prepared[2]['transactionId'] == transaction_id:
+            return _addition_plan(root, prepared)
     pending = upgrade._pending_id(root)
     if transaction_id is None:
         transaction_id = pending
@@ -63,6 +75,9 @@ def inspect_locked(root, transaction_id=None):
         raise importer.ImportRejected("upgrade-transaction-retired")
     paths = {upgrade.PENDING, (directory / "journal.json").relative_to(root).as_posix(),
              (directory / "pending-pointer.json").relative_to(root).as_posix()}
+    if upgrade._publication_mode(journal) == "move-v1":
+        paths.update(path.relative_to(root).as_posix() for path in
+                     upgrade._publication_paths(directory / "pending-pointer.json"))
     for entry in journal.get("entries", []):
         relative = entry["new"]["path"]
         if not terminal:
@@ -93,7 +108,8 @@ def history_locked(root):
         result.append(inspect_pending_removal_locked(root))
     additions = upgrade._addition_journal(root)
     if additions is not None:
-        result.append(inspect_locked(root, additions[2]['transactionId']))
+        result.append(_addition_plan(root, additions))
+    result.extend(_addition_plan(root, prepared) for prepared in upgrade.prepared_additions(root))
     parent = importer._target(root, upgrade.STATE + "/upgrades")
     if not parent.exists():
         if pending is not None:
@@ -133,7 +149,7 @@ def execute_locked(root, plan, action):
     if current['status'] == 'additions-pending':
         if action != 'recover':
             raise importer.ImportRejected('recovery-operation-no-longer-valid')
-        return upgrade.recover_pending_additions(root)
+        return upgrade.recover_pending_additions(root, current["transactionId"])
     if current['status'] in {'upgrade-cleanup-pending', 'upgrade-cleanup-available'}:
         if action != 'recover':
             raise importer.ImportRejected('upgrade-transaction-no-longer-rollbackable')

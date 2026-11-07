@@ -20,7 +20,8 @@ import managed_base_resources as base
 import map_package_upgrade as transaction
 import star_map_import as files
 from resource_transaction import (assert_resources_ready, assert_installer_resource_action,
-                                  resource_read_lock, resource_write_lock)
+                                  resource_read_lock, resource_write_lock,
+                                  preflight_resource_publication, rename_no_replace)
 
 SCHEMA = 'xingtu-resource-upgrade-reset-v1'
 PENDING = 'work/map-packages/pending-resource-reset.json'
@@ -599,11 +600,23 @@ def _load(root, transaction_id=None):
         raise ResourceResetError('resource-reset-invalid-pending')
     directory = files._target(root, HISTORY + '/' + pointer['transactionId'])
     journal = _read_json(files._target(directory, 'journal.json'))
-    if (set(journal) not in ({'schema', 'transactionId', 'status', 'plan', 'newFiles'},
-                             {'schema', 'transactionId', 'status', 'plan', 'newFiles', 'createdDirectories'})
+    keys = set(journal) - {'publication', 'pendingStamp'}
+    if (keys not in ({'schema', 'transactionId', 'status', 'plan', 'newFiles'},
+                     {'schema', 'transactionId', 'status', 'plan', 'newFiles', 'createdDirectories'})
             or journal['schema'] != SCHEMA or journal['transactionId'] != pointer['transactionId']
             or journal['status'] not in {'preparing', 'moving', 'prepared-resources', 'committed', 'rolled-back'}):
         raise ResourceResetError('resource-reset-invalid-journal')
+    if ('publication' in journal or 'pendingStamp' in journal):
+        if journal.get('publication') != 'move-v1':
+            raise ResourceResetError('resource-reset-invalid-publication')
+        stamp = journal.get('pendingStamp')
+        if (not isinstance(stamp, dict) or set(stamp) != {'identity', 'bytes', 'sha256'}
+                or stamp['bytes'] != len(_encoded(pointer))
+                or stamp['sha256'] != hashlib.sha256(_encoded(pointer)).hexdigest()):
+            raise ResourceResetError('resource-reset-invalid-pending-stamp')
+        transaction._valid_identity(stamp['identity'])
+        if pointer_path.exists() and _stamp(pointer_path) != stamp:
+            raise ResourceResetError('resource-reset-pending-changed')
     created = journal.get('createdDirectories', [])
     if not isinstance(created, list) or len(created) > MAX_FILES:
         raise ResourceResetError('resource-reset-invalid-created-directories')
@@ -640,7 +653,8 @@ def _clear_pending(root, transaction_id):
     expected = _encoded(dict(schema=SCHEMA, transactionId=transaction_id))
     digest = hashlib.sha256(expected).hexdigest()
     retained = files._target(root, HISTORY + '/' + transaction_id + '/pending-pointer.json')
-    witness = _stamp(retained)
+    _directory, journal = _load(root, transaction_id)
+    witness = journal['pendingStamp'] if journal.get('publication') == 'move-v1' else _stamp(retained)
     stamp = _stamp(path)
     # Semantic inspection followed by an unrelated second stamp could adopt a
     # foreign replacement marker. Bind bytes and identity to our retained pin.
@@ -668,6 +682,7 @@ def _rollback_locked(root, directory, journal):
     _move_directory_skeletons(root, directory, journal['plan'], restore=True)
     old_by_path = {row['path'].casefold(): (index, row) for index, row in enumerate(journal['plan']['oldFiles'])}
     new_by_path = {row['path'].casefold(): row for row in journal['newFiles']}
+    new_indices = {row['path'].casefold(): index for index, row in enumerate(journal['newFiles'])}
     blocked = []
     groups = sorted(old_by_path.keys() | new_by_path.keys())
     for key in groups:
@@ -696,14 +711,20 @@ def _rollback_locked(root, directory, journal):
             base._validate_target_ancestors(target)
             if not target.exists() or old and transaction._matches(target, old[1], old[1]['identity']):
                 continue
-            if new is None or new['identity'] is None or not files._rollback_published(target, tuple(new['identity']), new['sha256']):
+            if new is None or new['identity'] is None:
+                raise ResourceResetError('resource-reset-rollback-blocked', paths=[relative])
+            if journal.get('publication') == 'move-v1':
+                retained = files._target(directory, 'new/' + str(new_indices[key]))
+                transaction._move_owned(target, retained, new, new['identity'], linkless=True)
+            elif not files._rollback_published(target, tuple(new['identity']), new['sha256']):
                 raise ResourceResetError('resource-reset-rollback-blocked', paths=[relative])
             transaction._directory_sync(target.parent)
         if old and not transaction._matches(files._target(root, old[1]['path']), old[1], old[1]['identity']):
             target = files._target(root, old[1]['path'])
             base._validate_target_ancestors(target)
             transaction._move_owned(files._target(directory, 'old/' + str(old[0])), target,
-                                    old[1], old[1]['identity'])
+                                    old[1], old[1]['identity'],
+                                    **({'linkless': True} if journal.get('publication') == 'move-v1' else {}))
     _retain_created_directories(root, directory, journal)
     journal['status'] = 'rolled-back'
     _write_journal(directory, journal)
@@ -735,8 +756,8 @@ def prepare_resource_upgrade(install_root, *, expected_plan_sha256, confirmed=Fa
         new_rows, generated = _new_payloads(plan, transaction_id)
         if shutil.disk_usage(root).free < sum(row['bytes'] for row in new_rows) + MAX_METADATA_BYTES:
             raise ResourceResetError('resource-reset-insufficient-free-space')
-        from resource_transaction import preflight_hardlinks
-        preflight_hardlinks(root, [row['path'] for row in plan['oldFiles']] + [row['path'] for row in new_rows])
+        publication = preflight_resource_publication(
+            root, [row['path'] for row in plan['oldFiles']] + [row['path'] for row in new_rows])
         directory = files._target(root, HISTORY + '/' + transaction_id)
         directory.mkdir(parents=True, exist_ok=False)
         journal = dict(schema=SCHEMA, transactionId=transaction_id, status='preparing', plan=plan,
@@ -746,7 +767,14 @@ def prepare_resource_upgrade(install_root, *, expected_plan_sha256, confirmed=Fa
         transaction._write_new(pointer, _encoded(dict(schema=SCHEMA, transactionId=transaction_id)))
         # Publish only a complete fsynced pointer. A torn exclusive write at the
         # public path would otherwise block both recovery and all later resets.
-        os.link(pointer, files._target(root, PENDING))
+        if publication == 'move-v1':
+            journal.update(publication='move-v1', pendingStamp=_stamp(pointer))
+            _write_journal(directory, journal)
+            rename_no_replace(pointer, files._target(root, PENDING))
+            if _stamp(files._target(root, PENDING)) != journal['pendingStamp']:
+                raise ResourceResetError('resource-reset-pending-changed')
+        else:
+            os.link(pointer, files._target(root, PENDING))
         transaction._directory_sync(files._target(root, PENDING).parent)
         try:
             for index, row in enumerate(journal['newFiles']):
@@ -762,7 +790,8 @@ def prepare_resource_upgrade(install_root, *, expected_plan_sha256, confirmed=Fa
             _write_journal(directory, journal)
             for index, row in enumerate(plan['oldFiles']):
                 transaction._move_owned(files._target(root, row['path']),
-                                        files._target(directory, 'old/' + str(index)), row, row['identity'])
+                                        files._target(directory, 'old/' + str(index)), row, row['identity'],
+                                        **({'linkless': True} if publication == 'move-v1' else {}))
             _move_directory_skeletons(root, directory, plan)
             # No old object can reappear under a path about to be published.
             for row in journal['newFiles']:
@@ -775,7 +804,11 @@ def prepare_resource_upgrade(install_root, *, expected_plan_sha256, confirmed=Fa
                 base._validate_target_ancestors(target)
                 _create_publication_parents(root, target, directory, journal)
                 files._no_links(target.parent)
-                os.link(files._target(directory, 'new/' + str(index)), target)
+                retained = files._target(directory, 'new/' + str(index))
+                if publication == 'move-v1':
+                    transaction._move_owned(retained, target, row, row['identity'], linkless=True)
+                else:
+                    os.link(retained, target)
                 if not transaction._matches(target, row, row['identity']):
                     raise ResourceResetError('resource-reset-published-file-changed', paths=[row['path']])
                 transaction._directory_sync(target.parent)

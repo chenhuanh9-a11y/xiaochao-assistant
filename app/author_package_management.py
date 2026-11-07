@@ -118,8 +118,13 @@ def _adopt_legacy_author_package_locked(root, state, package_id, *, cancelled=No
     if plan['status'] != 'legacy-verified':
         return plan
     target = _target(root, f'work/map-packages/{package_id}.json')
+    from resource_transaction import preflight_resource_publication
+    publication = preflight_resource_publication(root, [target.relative_to(root).as_posix()])
     fd, temporary_name = tempfile.mkstemp(prefix='legacy-receipt-', suffix='.tmp', dir=state)
     temporary = Path(temporary_name)
+    created = os.fstat(fd)
+    temporary_identity = (created.st_dev, created.st_ino)
+    temporary_digest = plan['receiptSha256']
     try:
         with os.fdopen(fd, 'wb') as stream:
             stream.write(_legacy_receipt_bytes(plan['receipt']))
@@ -133,9 +138,18 @@ def _adopt_legacy_author_package_locked(root, state, package_id, *, cancelled=No
         _check_cancelled(cancelled)
         _no_links(target)
         # Complete same-volume publication; never replace a raced receipt.
-        os.link(temporary, target)
+        if publication == 'move-v1':
+            import map_package_upgrade as transaction
+            data = _legacy_receipt_bytes(plan['receipt'])
+            row = dict(path=target.relative_to(root).as_posix(), bytes=len(data),
+                       sha256=hashlib.sha256(data).hexdigest())
+            identity = transaction._capture(temporary, row)
+            transaction._move_owned(temporary, target, row, identity, linkless=True)
+        else:
+            os.link(temporary, target)
     finally:
-        temporary.unlink(missing_ok=True)
+        from star_map_import import _rollback_published
+        _rollback_published(temporary, temporary_identity, temporary_digest)
     return dict(status='legacy-adopted', fileCount=len(plan['receipt']['files']), restartRequired=False)
 
 

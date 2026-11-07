@@ -82,6 +82,7 @@ def _rename_locked_file(stream, destination):
     class RenameInfo(ctypes.Structure):
         _fields_ = [('ReplaceIfExists', ctypes.c_ubyte), ('RootDirectory', wintypes.HANDLE),
                     ('FileNameLength', wintypes.DWORD), ('FileName', wintypes.WCHAR * 1)]
+    _no_links(destination)
     name = str(destination).encode('utf-16-le')
     buffer = ctypes.create_string_buffer(max(ctypes.sizeof(RenameInfo), RenameInfo.FileName.offset + len(name) + 2))
     info = RenameInfo.from_buffer(buffer)
@@ -370,7 +371,7 @@ class MapPackageDownloadService:
             digest, received = hashlib.sha256(), 0
             published = False
             try:
-                with _locked_file(temporary, writable=True, expected_identity=identity) as sink:
+                with _locked_file(temporary, writable=True, movable=True, expected_identity=identity) as sink:
                     with self._open(item["url"], operation, deadline) as response:
                         self._length(response, item["bytes"], exact=item["bytes"])
                         while True:
@@ -388,6 +389,7 @@ class MapPackageDownloadService:
                                 self._check(operation, deadline)
                                 progress(received, item["bytes"])
                     sink.flush()
+                    os.fsync(sink.fileno())
                     sink.seek(0)
                     self._check(operation, deadline)
                     if (received != item["bytes"] or os.fstat(sink.fileno()).st_size != item["bytes"]
@@ -395,18 +397,31 @@ class MapPackageDownloadService:
                             or hashlib.file_digest(sink, "sha256").hexdigest() != item["sha256"]):
                         raise DownloadError("package-size-or-sha-mismatch")
                     self._check(operation, deadline)
-                    # The same verified file object remains open with no WRITE
-                    # or DELETE sharing through link publication, closing the
-                    # hash-close-replace-link gap. The native OS rejects a swap.
-                    os.link(temporary, final)
+                    # Publish the verified object through its still-open DELETE
+                    # handle. FileRenameInfo never replaces an existing name and
+                    # works on volumes without hardlinks; bytes/identity stay on
+                    # this object, rather than a copied file or a reopened path.
+                    _rename_locked_file(sink, final)
                     published = True
-                    self._check(operation, deadline)
+                    try:
+                        self._check(operation, deadline)
+                    except Exception:
+                        # Cancellation after publication restores the private
+                        # name while the SAME locked handle still prevents a swap.
+                        # If a foreign name blocks rollback, retain both objects.
+                        try:
+                            _rename_locked_file(sink, temporary)
+                        except Exception as recovery_error:
+                            published = False
+                            raise DownloadError('cache-publication-rollback-required') from recovery_error
+                        published = False
+                        raise
                     with self._state:
                         self._attempts[package_id] = 0
                     return final
             except Exception:
-                # The guarded stream has closed before cleanup. Its original
-                # temporary hard link remains alive for ownership-safe rollback.
+                # After an exceptional outcome, remove only this request's
+                # verified identity. Unknown replacements are preserved.
                 if published:
                     _rollback_published(final, identity, digest.hexdigest())
                 raise

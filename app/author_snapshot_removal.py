@@ -30,7 +30,8 @@ def valid_target(package, relative):
             except ValueError:
                 return False
             return parts[1] in {'journal.json', 'pending-pointer.json', 'new-activation.json',
-                               'committed.json', 'commit-pointer.json', 'old-0', 'old-1'}
+                               'committed.json', 'commit-pointer.json', 'old-0', 'old-1',
+                               'pending-pointer.json.publication.json', 'commit-pointer.json.publication.json'}
     return False
 
 
@@ -49,10 +50,18 @@ def _transaction(root, directory, package):
                 files._target(directory, 'commit-pointer.json')]
     pin = files._target(directory, 'new-activation.json')
     entry = next(row for row in journal['changes'] if row['path'] == snapshots.activation_path(package))
-    if not snapshots.transaction._matches(pin, entry['new'], entry['new']['identity']):
+    history = journal.get('activationHistory', entry['new'])
+    if not snapshots.transaction._matches(pin, history, history['identity']):
         raise ValueError('snapshot-removal-history-pin-changed')
     activation = snapshots._validate_activation(snapshots._read_json(pin), package)
     metadata.append(pin)
+    if snapshots.transaction._publication_mode(journal) == 'move-v1':
+        for retained in (pointer, directory / 'commit-pointer.json'):
+            snapshots.transaction._publication_proof(retained)
+            proof, source = snapshots.transaction._publication_paths(retained)
+            if source.exists():
+                raise ValueError('snapshot-removal-history-unpublished-marker')
+            metadata.append(proof)
     legacy = []
     for index, row in enumerate(journal['changes']):
         if row['old'] is None:

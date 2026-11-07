@@ -99,10 +99,11 @@ class DownloadCacheRecovery(unittest.TestCase):
         replacement.write_bytes(b'new-external-content')
         real = download._rename_locked_file
         def race(stream, target):
-            with self.assertRaises(PermissionError):
-                self.cached.write_bytes(b'new-external-content')
-            with self.assertRaises(PermissionError):
-                replacement.replace(self.cached)
+            if target.parent.name.startswith('invalid-cache-'):
+                with self.assertRaises(PermissionError):
+                    self.cached.write_bytes(b'new-external-content')
+                with self.assertRaises(PermissionError):
+                    replacement.replace(self.cached)
             return real(stream, target)
         with patch.object(download, '_rename_locked_file', side_effect=race), \
                 patch.object(self.service, '_open', return_value=Response(self.good)):

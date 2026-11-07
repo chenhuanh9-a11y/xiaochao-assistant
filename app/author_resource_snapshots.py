@@ -338,9 +338,14 @@ def _validate_pointer(root, directory, transaction_id, journal=None):
     if journal is None:
         journal = _read_json(files._target(directory, 'journal.json'))
     expected = _encoded(dict(schema=JOURNAL_SCHEMA, transactionId=transaction_id, planSha256=_journal_digest(journal)))
-    witness = _stamp(files._target(directory, 'pending-pointer.json'))
+    pin = files._target(directory, 'pending-pointer.json')
+    witness = _stamp(pin)
+    try:
+        identity = transaction._metadata_publication_identity(pin, path, transaction._publication_mode(journal))
+    except (OSError, ValueError):
+        _reject('pending-changed')
     actual = _stamp(path)
-    if (actual['identity'] != witness['identity'] or actual['sha256'] != hashlib.sha256(expected).hexdigest()
+    if (actual['identity'] != identity or actual['sha256'] != hashlib.sha256(expected).hexdigest()
             or witness['sha256'] != actual['sha256'] or actual['bytes'] != len(expected)):
         _reject('pending-changed')
     return actual
@@ -367,7 +372,13 @@ def _load_pending(root):
 
 def _validated_journal(root, directory, transaction_id, journal):
     """Shared strict envelope/outcome check for recovery and retained history."""
-    if (set(journal) != {'schema', 'transactionId', 'rootIdentity', 'packageId', 'status', 'changes'}
+    mode = transaction._publication_mode(journal)
+    expected_keys = {'schema', 'transactionId', 'rootIdentity', 'packageId', 'status', 'changes'}
+    if 'publicationMode' in journal:
+        expected_keys.add('publicationMode')
+    if mode == 'move-v1':
+        expected_keys.add('activationHistory')
+    if (set(journal) != expected_keys
             or journal['schema'] != JOURNAL_SCHEMA or journal['transactionId'] != transaction_id
             or journal['rootIdentity'] != transaction._identity(Path(root).stat())
             or journal['status'] not in {'prepared', 'committed', 'rolled-back'}
@@ -391,13 +402,29 @@ def _validated_journal(root, directory, transaction_id, journal):
                 transaction._valid_identity(row['identity'])
     if active not in seen:
         _reject('invalid-journal-target')
+    if mode == 'move-v1':
+        history = journal['activationHistory']
+        active_entry = next(entry for entry in journal['changes'] if entry['path'] == active)
+        if (not isinstance(history, dict) or set(history) != {'path', 'bytes', 'sha256', 'identity'}
+                or history['path'] != 'new-activation.json'
+                or history['bytes'] != active_entry['new']['bytes']
+                or history['sha256'] != active_entry['new']['sha256']):
+            _reject('invalid-activation-history')
+        transaction._valid_identity(history['identity'])
+        if not transaction._matches(files._target(directory, 'new-activation.json'), history, history['identity']):
+            _reject('activation-history-changed')
     committed = files._target(directory, 'committed.json')
     if committed.exists():
         expected = _encoded(dict(schema=JOURNAL_SCHEMA, transactionId=journal['transactionId'],
                                  planSha256=_journal_digest(journal), outcome='committed'))
-        witness = _stamp(files._target(directory, 'commit-pointer.json'))
+        pin = files._target(directory, 'commit-pointer.json')
+        witness = _stamp(pin)
+        try:
+            identity = transaction._metadata_publication_identity(pin, committed, mode)
+        except (OSError, ValueError):
+            _reject('commit-outcome-changed')
         actual = _stamp(committed)
-        if (actual['identity'] != witness['identity'] or actual['sha256'] != hashlib.sha256(expected).hexdigest()
+        if (actual['identity'] != identity or actual['sha256'] != hashlib.sha256(expected).hexdigest()
                 or actual['sha256'] != witness['sha256'] or actual['bytes'] != len(expected)):
             _reject('commit-outcome-changed')
         # A damaged mutable status cannot downgrade the independent durable outcome.
@@ -418,7 +445,8 @@ def _rollback_preflight(root, directory, journal):
         if backup.exists() and (old is None or not transaction._matches(backup, old, old['identity'])):
             _reject('rollback-backup-changed')
         already_old = old is not None and transaction._matches(target, old, old['identity'])
-        if (not already_old and new is not None and transaction._matches(target, new, new['identity'])
+        if (transaction._publication_mode(journal) != 'move-v1'
+                and not already_old and new is not None and transaction._matches(target, new, new['identity'])
                 and not transaction._matches(files._target(directory, 'new-activation.json'), new, new['identity'])):
             _reject('rollback-new-pin-changed')
         if old is not None and not already_old and not transaction._matches(directory / ('old-' + str(index)), old, old['identity']):
@@ -437,11 +465,16 @@ def _rollback(root, directory, journal):
         if old is not None and transaction._matches(target, old, old['identity']):
             continue
         if target.exists():
-            if new is None or not files._rollback_published(target, tuple(new['identity']), new['sha256']):
+            if new is None:
+                _reject('rollback-blocked')
+            if transaction._publication_mode(journal) == 'move-v1':
+                transaction._move_owned(target, files._target(directory, 'new-activation.publishing'), new, new['identity'], linkless=True)
+            elif not files._rollback_published(target, tuple(new['identity']), new['sha256']):
                 _reject('rollback-blocked')
             transaction._directory_sync(target.parent)
         if old is not None:
-            transaction._move_owned(directory / ('old-' + str(index)), target, old, old['identity'])
+            transaction._move_owned(directory / ('old-' + str(index)), target, old, old['identity'],
+                                    linkless=transaction._publication_mode(journal) == 'move-v1')
     journal['status'] = 'rolled-back'
     _write_journal(directory, journal)
     _clear_pointer(root, directory, journal['transactionId'])
@@ -479,11 +512,13 @@ def _commit_outcome(directory, journal):
     stamp = _stamp(pin)
     if stamp['sha256'] != hashlib.sha256(data).hexdigest() or stamp['bytes'] != len(data):
         _reject('commit-outcome-changed')
-    os.link(pin, files._target(directory, 'committed.json'))
+    transaction._publish_metadata(pin, files._target(directory, 'committed.json'), transaction._publication_mode(journal), expected_data=data)
     transaction._directory_sync(directory)
 
 
-def _activate_locked(root, package, value, *, expected_activation_sha, expected_legacy_sha, expected_activation_identity, expected_legacy_identity, cancelled=None):
+def _activate_locked(root, package, value, *, expected_activation_sha, expected_legacy_sha, expected_activation_identity, expected_legacy_identity, cancelled=None, before_commit=None):
+    from resource_transaction import preflight_resource_publication
+    mode = preflight_resource_publication(root, [activation_path(package), f'work/map-packages/{package}.json', PENDING])
     current, current_sha = _read_activation(root, package)
     legacy = files._target(Path(root), f'work/map-packages/{package}.json')
     legacy_sha = files._sha(legacy) if legacy.exists() else None
@@ -510,19 +545,30 @@ def _activate_locked(root, package, value, *, expected_activation_sha, expected_
     new_stamp = _stamp(new_pin)
     if new_stamp['sha256'] != hashlib.sha256(expected).hexdigest() or new_stamp['bytes'] != len(expected):
         _reject('staged-activation-changed')
+    history = None
+    if mode == 'move-v1':
+        history = new_stamp
+        new_pin = files._target(directory, 'new-activation.publishing')
+        transaction._write_new(new_pin, expected)
+        new_stamp = _stamp(new_pin)
+        if new_stamp['sha256'] != history['sha256'] or new_stamp['bytes'] != history['bytes']:
+            _reject('staged-activation-changed')
     changes = []
     if old_legacy is not None:
         changes.append(dict(path=f'work/map-packages/{package}.json', old=old_legacy, new=None))
     changes.append(dict(path=activation_path(package), old=old_active,
                         new=dict(new_stamp, path=activation.name)))
-    journal = dict(schema=JOURNAL_SCHEMA, transactionId=transaction_id,
+    journal = dict(schema=JOURNAL_SCHEMA, publicationMode=mode, transactionId=transaction_id,
                    rootIdentity=transaction._identity(Path(root).stat()), packageId=package,
                    status='prepared', changes=changes)
+    if mode == 'move-v1':
+        journal['activationHistory'] = history
     _write_journal(directory, journal)
     pointer = files._target(directory, 'pending-pointer.json')
     transaction._write_new(pointer, _encoded(dict(schema=JOURNAL_SCHEMA, transactionId=transaction_id,
                                                    planSha256=_journal_digest(journal))))
-    os.link(pointer, files._target(Path(root), PENDING))
+    transaction._publish_metadata(pointer, files._target(Path(root), PENDING), mode,
+        expected_data=_encoded(dict(schema=JOURNAL_SCHEMA, transactionId=transaction_id, planSha256=_journal_digest(journal))))
     transaction._directory_sync(files._target(Path(root), PENDING).parent)
     try:
         files._check_cancelled(cancelled)
@@ -536,17 +582,42 @@ def _activate_locked(root, package, value, *, expected_activation_sha, expected_
         for index, entry in enumerate(changes):
             target = files._target(Path(root), entry['path'])
             if entry['old'] is not None:
-                transaction._move_owned(target, directory / ('old-' + str(index)), entry['old'], entry['old']['identity'])
+                transaction._move_owned(target, directory / ('old-' + str(index)), entry['old'], entry['old']['identity'], linkless=mode == 'move-v1')
             if entry['new'] is not None:
                 if not transaction._matches(new_pin, entry['new'], entry['new']['identity']):
                     _reject('staged-activation-changed')
                 target.parent.mkdir(parents=True, exist_ok=True)
                 files._no_links(target.parent)
                 files._check_cancelled(cancelled)
-                os.link(new_pin, target)
+                if mode == 'move-v1':
+                    transaction._move_owned(new_pin, target, entry['new'], entry['new']['identity'], linkless=True)
+                else:
+                    os.link(new_pin, target)
                 transaction._directory_sync(target.parent)
                 if not transaction._matches(target, entry['new'], entry['new']['identity']):
                     _reject('activation-changed-during-publish')
+        files._check_cancelled(cancelled)
+        if before_commit is not None:
+            before_commit()
+        # A restore's final content validation can take time. Revalidate the
+        # same activation/backup objects after it, without requiring a second
+        # hard link to a move-v1 publication that has already moved into place.
+        for index, entry in enumerate(changes):
+            target = files._target(Path(root), entry['path'])
+            _validate_target_ancestors(target)
+            if entry['old'] is not None and not transaction._matches(
+                    directory / ('old-' + str(index)), entry['old'], entry['old']['identity']):
+                _reject('backup-changed-before-commit')
+            if entry['new'] is None:
+                if target.exists():
+                    _reject('activation-changed-before-commit')
+            else:
+                pin = files._target(directory, 'new-activation.json')
+                recorded = journal.get('activationHistory', entry['new'])
+                if (not transaction._matches(target, entry['new'], entry['new']['identity'])
+                        or not transaction._matches(pin, recorded, recorded['identity'])
+                        or mode == 'move-v1' and new_pin.exists()):
+                    _reject('activation-changed-before-commit')
         files._check_cancelled(cancelled)
         _commit_outcome(directory, journal)
         journal['status'] = 'committed'
@@ -583,8 +654,8 @@ def install_archive_locked(archive, digest, root, result, *, cancelled=None):
     snapshot_id = uuid.uuid4().hex
     directory = files._target(Path(root), _version_path(package, snapshot_id))
     directory.mkdir(parents=True, exist_ok=False)
-    from resource_transaction import preflight_hardlinks
-    preflight_hardlinks(root, [activation_path(package), PENDING])
+    from resource_transaction import preflight_resource_publication
+    preflight_resource_publication(root, [activation_path(package), PENDING])
     for index, row in enumerate(sorted(result['files'], key=lambda row: row['path'])):
         files._check_cancelled(cancelled)
         data = archive.read('data/' + row['path'])
@@ -674,6 +745,10 @@ def recovery_plan_locked(root):
         (directory/'new-activation.json').relative_to(root).as_posix(),
         (directory/'committed.json').relative_to(root).as_posix(),
         (directory/'commit-pointer.json').relative_to(root).as_posix()]
+    if transaction._publication_mode(journal) == 'move-v1':
+        relatives.extend((directory / name).relative_to(root).as_posix() for name in (
+            'new-activation.publishing', 'pending-pointer.json.publication.json',
+            'pending-pointer.json.publishing', 'commit-pointer.json.publication.json', 'commit-pointer.json.publishing'))
     for index, entry in enumerate(journal['changes']):
         relatives.extend([entry['path'], (directory/('old-'+str(index))).relative_to(root).as_posix()])
     from managed_base_resources import _validate_target_ancestors
