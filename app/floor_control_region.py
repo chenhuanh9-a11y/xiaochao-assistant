@@ -214,6 +214,51 @@ def _read_vertical(gray, floors, origin, size, reason):
                 labelEvidence=evidence, controlGeometryVerified=False)
 
 
+def _read_vertical_contrast(gray, floors, origin, size, reason):
+    """Prove one whole column at one exposure, without loosening its checks.
+
+    A blue map backdrop can be brighter than the selected-fill segmentation
+    threshold and merge with the highlight. A bounded background measurement
+    proposes one lower exposure for this same ROI. Labels, signs, fill, spacing
+    and backdrop are all rechecked together; different exposures never supply
+    different rows of one proof.
+    """
+    original = _read_vertical(gray, floors, origin, size, reason)
+    if original.get("reason") == "columns-ambiguous":
+        return original
+    # The upper quartile sees a raised panel even beside darker map pixels.
+    # In a tight two-row player box it may instead sample the selected tile;
+    # only then use the median on the unselected panel/gaps. Choose one bounded
+    # exposure, never combine rows or try a ladder until something matches.
+    sample = gray[::2, ::2]
+    background = float(np.percentile(sample, 75))
+    if background > 90:
+        background = float(np.median(sample))
+    # Restrict this correction to dark, slightly raised map panels. Bright app
+    # UI is not normalized into a dark HUD, nor is a faint label amplified.
+    if not FILL_LEVEL < background <= 90:
+        return original
+    exposure = 50. / background
+    normalized = cv2.convertScaleAbs(gray, alpha=exposure)
+    read = _read_vertical(normalized, floors, origin, size, reason)
+    if original.get("selectedFloor") is not None:
+        # A dark valid column can coexist with a brighter one merged into the
+        # original backdrop. Do not let the first success hide a contradiction
+        # revealed by normalization, or replace it when normalization fails.
+        conflict = read.get("reason") == "columns-ambiguous"
+        if read.get("selectedFloor") is not None:
+            tolerance_x = max(original["tileBounds"][2], read["tileBounds"][2]) * .25
+            tolerance_y = max(original["tileBounds"][3], read["tileBounds"][3]) * .25
+            conflict |= (read["selectedFloor"] != original["selectedFloor"]
+                or any(abs(a[0] - b[0]) > tolerance_x or abs(a[1] - b[1]) > tolerance_y
+                       for a, b in zip(original["centerPoints"], read["centerPoints"])))
+        return (_unread("columns-ambiguous", controlExposure=exposure, controlBackground=background)
+                if conflict else original)
+    if read.get("selectedFloor") is not None or read.get("reason") == "columns-ambiguous":
+        return dict(read, controlExposure=exposure, controlBackground=background)
+    return original
+
+
 def _merge_region_read(fixed, read, source, **extra):
     """A calibrated reading replaces the current vertical observation completely."""
     out = dict(read, **extra, floorSource=source)
@@ -241,7 +286,7 @@ def read_floor_in_region(frame: np.ndarray, region, mode: str, *, season="s0") -
     gray, origin = _crop(frame, box)
     if gray is None:
         return _unread("region-too-small")
-    read = _read_vertical(gray, contract.observed_values, origin, frame.shape[1::-1], "region-highlight-read")
+    read = _read_vertical_contrast(gray, contract.observed_values, origin, frame.shape[1::-1], "region-highlight-read")
     return dict(read, controlSearchRegion=list(box))
 
 
@@ -254,7 +299,7 @@ def locate_vertical_floor_controls(frame: np.ndarray, mode: str, *, season="s0",
         return _unread("region-invalid")
     area = AUTO_VERTICAL_SEARCH_AREA if expanded else VERTICAL_SEARCH_AREA
     column, origin = _crop(frame, area)
-    result = (_read_vertical(column, contract.observed_values, origin, frame.shape[1::-1], "auto-located")
+    result = (_read_vertical_contrast(column, contract.observed_values, origin, frame.shape[1::-1], "auto-located")
               if column is not None else _unread("region-too-small"))
     if not expanded:
         return dict(result, controlSearchRegion=list(area))
