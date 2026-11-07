@@ -22,6 +22,8 @@ import time
 import cv2
 import numpy as np
 
+from structure_cache_memory import reference_arrays, trim_prepared_cache, prepared_cache_snapshot
+
 
 MAX_SPARSE_POINTS = 150
 MIN_SCALE, MAX_SCALE = .40, 2.40
@@ -32,6 +34,19 @@ _K5 = np.ones((5, 5), np.uint8)
 _K11 = np.ones((11, 11), np.uint8)
 _cache = OrderedDict()
 _cache_lock = threading.Lock()
+PREPARED_CACHE_MAX_BYTES = 512 * 1024 * 1024
+
+
+def _prepared_arrays(entry):
+    reference, result = entry
+    return (*reference_arrays(reference), result.edge, result.k3, result.k5,
+            result.distance, result.reference_points)
+
+
+def prepared_memory_snapshot():
+    with _cache_lock:
+        return prepared_cache_snapshot(_cache, max_entries=6,
+            max_bytes=PREPARED_CACHE_MAX_BYTES, arrays_for=_prepared_arrays)
 
 
 @dataclass(frozen=True)
@@ -101,8 +116,9 @@ def prepare(reference) -> PreparedReference:
         'shared-renderer-footprint-boundary; numpy-byte-index', distance, reference_points, pitch, pitch_ratio)
     with _cache_lock:
         _cache[key] = (reference, prepared)
-        while len(_cache) > 6:
-            _cache.popitem(last=False)
+        _cache.move_to_end(key)
+        trim_prepared_cache(_cache, max_entries=6,
+            max_bytes=PREPARED_CACHE_MAX_BYTES, arrays_for=_prepared_arrays)
     return prepared
 
 

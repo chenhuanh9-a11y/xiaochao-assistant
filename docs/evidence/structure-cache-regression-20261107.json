@@ -1,0 +1,125 @@
+{
+  "modules": [
+    "test_structure_cache_memory",
+    "test_pose_prior_contract",
+    "test_s1_fit_diagnostics",
+    "test_idvb0059_runtime",
+    "test_idvb0059_retained_display",
+    "test_client_idvb0059_adapter",
+    "test_marker_occluded_structure",
+    "test_marker_implicit_domain",
+    "test_client_providers",
+    "test_client_image_memory",
+    "test_client_aligned_transform"
+  ],
+  "elapsedSeconds": 40.11394451599972,
+  "testsRun": 184,
+  "passed": 174,
+  "skipped": [
+    {
+      "test": "test_s1_fit_diagnostics.AutomaticEvidenceTests.test_exhausted_image_budget_returns_metadata_without_image",
+      "reason": "Windows handle storage"
+    },
+    {
+      "test": "test_s1_fit_diagnostics.AutomaticEvidenceTests.test_invalidation_during_image_write_keeps_intent_without_final_commit",
+      "reason": "Windows handle storage"
+    },
+    {
+      "test": "test_s1_fit_diagnostics.AutomaticEvidenceTests.test_no_frame_drops_fit_details_in_metadata_only_result",
+      "reason": "Windows handle storage"
+    },
+    {
+      "test": "test_s1_fit_diagnostics.AutomaticEvidenceTests.test_saved_crop_mapping_is_distinct_from_solver_component",
+      "reason": "Windows handle storage"
+    },
+    {
+      "test": "test_idvb0059_retained_display.NativeRetainedTests.test_explicit_hide_cancels_even_fully_clipped_drag",
+      "reason": "requires real Windows HWND APIs"
+    },
+    {
+      "test": "test_idvb0059_retained_display.NativeRetainedTests.test_failed_guard_and_close_edge_do_not_show_or_upload_stale_surface",
+      "reason": "requires real Windows HWND APIs"
+    },
+    {
+      "test": "test_idvb0059_retained_display.NativeRetainedTests.test_fully_outside_hides_without_losing_native_bitmap",
+      "reason": "requires real Windows HWND APIs"
+    },
+    {
+      "test": "test_idvb0059_retained_display.NativeRetainedTests.test_late_close_after_upload_and_show_window_stays_hidden",
+      "reason": "requires real Windows HWND APIs"
+    },
+    {
+      "test": "test_idvb0059_retained_display.NativeRetainedTests.test_real_native_source_scale_opacity_and_legacy_upload",
+      "reason": "requires real Windows HWND APIs"
+    },
+    {
+      "test": "test_idvb0059_retained_display.NativeRetainedTests.test_real_native_upload_move_hide_restore_and_clipping",
+      "reason": "requires real Windows HWND APIs"
+    }
+  ],
+  "failures": [],
+  "errors": [],
+  "networkAttempts": 0,
+  "baselineComparison": {
+    "modules": [
+      "test_pose_prior_contract",
+      "test_s1_fit_diagnostics",
+      "test_idvb0059_runtime",
+      "test_idvb0059_retained_display",
+      "test_client_idvb0059_adapter",
+      "test_marker_occluded_structure",
+      "test_marker_implicit_domain",
+      "test_client_providers",
+      "test_client_image_memory",
+      "test_client_aligned_transform"
+    ],
+    "elapsedSeconds": 40.22121978300038,
+    "testsRun": 170,
+    "passed": 160,
+    "skipped": [
+      {
+        "test": "test_s1_fit_diagnostics.AutomaticEvidenceTests.test_exhausted_image_budget_returns_metadata_without_image",
+        "reason": "Windows handle storage"
+      },
+      {
+        "test": "test_s1_fit_diagnostics.AutomaticEvidenceTests.test_invalidation_during_image_write_keeps_intent_without_final_commit",
+        "reason": "Windows handle storage"
+      },
+      {
+        "test": "test_s1_fit_diagnostics.AutomaticEvidenceTests.test_no_frame_drops_fit_details_in_metadata_only_result",
+        "reason": "Windows handle storage"
+      },
+      {
+        "test": "test_s1_fit_diagnostics.AutomaticEvidenceTests.test_saved_crop_mapping_is_distinct_from_solver_component",
+        "reason": "Windows handle storage"
+      },
+      {
+        "test": "test_idvb0059_retained_display.NativeRetainedTests.test_explicit_hide_cancels_even_fully_clipped_drag",
+        "reason": "requires real Windows HWND APIs"
+      },
+      {
+        "test": "test_idvb0059_retained_display.NativeRetainedTests.test_failed_guard_and_close_edge_do_not_show_or_upload_stale_surface",
+        "reason": "requires real Windows HWND APIs"
+      },
+      {
+        "test": "test_idvb0059_retained_display.NativeRetainedTests.test_fully_outside_hides_without_losing_native_bitmap",
+        "reason": "requires real Windows HWND APIs"
+      },
+      {
+        "test": "test_idvb0059_retained_display.NativeRetainedTests.test_late_close_after_upload_and_show_window_stays_hidden",
+        "reason": "requires real Windows HWND APIs"
+      },
+      {
+        "test": "test_idvb0059_retained_display.NativeRetainedTests.test_real_native_source_scale_opacity_and_legacy_upload",
+        "reason": "requires real Windows HWND APIs"
+      },
+      {
+        "test": "test_idvb0059_retained_display.NativeRetainedTests.test_real_native_upload_move_hide_restore_and_clipping",
+        "reason": "requires real Windows HWND APIs"
+      }
+    ],
+    "failures": [],
+    "errors": [],
+    "networkAttempts": 0
+  }
+}

@@ -18,6 +18,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from structure_cache_memory import reference_arrays, trim_prepared_cache, prepared_cache_snapshot
+
 
 @dataclass(frozen=True)
 class PreparedStructure:
@@ -30,6 +32,18 @@ class PreparedStructure:
 
 _prepared = OrderedDict()
 _prepared_lock = threading.Lock()
+PREPARED_CACHE_MAX_BYTES = 512 * 1024 * 1024
+
+
+def _prepared_arrays(entry):
+    reference, result = entry
+    return (*reference_arrays(reference), result.distance, result.chains, result.rays)
+
+
+def prepared_memory_snapshot():
+    with _prepared_lock:
+        return prepared_cache_snapshot(_prepared, max_entries=4,
+            max_bytes=PREPARED_CACHE_MAX_BYTES, arrays_for=_prepared_arrays)
 
 
 def _pitch(mask):
@@ -109,8 +123,9 @@ def load_prepared(reference):
             # Retaining the reference prevents Python id reuse from admitting
             # another resource through an existing in-memory cache entry.
             _prepared[key] = (reference, result)
-            while len(_prepared) > 4:
-                _prepared.popitem(last=False)
+            _prepared.move_to_end(key)
+            trim_prepared_cache(_prepared, max_entries=4,
+                max_bytes=PREPARED_CACHE_MAX_BYTES, arrays_for=_prepared_arrays)
         return result
     except (OSError, ValueError, KeyError):
         return None
