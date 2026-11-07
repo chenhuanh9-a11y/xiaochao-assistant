@@ -21,7 +21,7 @@ class ExplicitComponentAlignmentTests(unittest.TestCase):
     def fit(self, outcomes, *, islands=None, cancelled=lambda: False):
         def geometry(frame, **kwargs):
             visible = kwargs.get('visible_override')
-            return dict(query='independent', observationBounds=visible[1]) if visible is not None else None
+            return dict(query='independent', lines=[], observationBounds=visible[1]) if visible is not None else None
         with patch('nightmare_candidate.visible_map_components', return_value=self.islands if islands is None else islands), \
              patch('single_map_structure.current_geometry', side_effect=geometry), \
              patch('single_map_structure.observed_corner_chains', return_value=[]), \
@@ -57,17 +57,29 @@ class ExplicitComponentAlignmentTests(unittest.TestCase):
         self.assertEqual(count, 2)
         self.assertEqual(result['acceptedPoseCount'], 1)
 
-    def test_original_structure_bearing_failure_is_not_bypassed(self):
-        with patch('single_map_structure.current_geometry', return_value=dict(query='real-observation')), \
-             patch('single_map_structure.observed_corner_chains', return_value=[object()]), \
-             patch('nightmare_candidate.visible_map_components', side_effect=AssertionError('bypassed structural rejection')), \
-             patch.object(self.host, '_fit_observation', return_value=dict(success=False, reason='geometry-rejected')):
-            result = self.host.fit(self.frame, 'map', '-1', lambda: False, observation_bounds=self.bounds)
-            self.assertEqual(result['reason'], 'geometry-rejected')
+    def test_original_structure_bearing_failure_remains_independent_evidence(self):
+        original = dict(query='original', observationBounds=self.islands[0][1])
+        peer = dict(query='peer', observationBounds=self.islands[1][1])
+        recovered = dict(self.pose(), observationBounds=peer['observationBounds'])
+        for consistent in (True, False):
+            with self.subTest(consistent=consistent), \
+                 patch('single_map_structure.current_geometry', side_effect=[original, peer]), \
+                 patch('single_map_structure.observed_corner_chains', return_value=[object()]), \
+                 patch('nightmare_candidate.visible_map_components', return_value=self.islands), \
+                 patch.object(self.host, '_fit_observation', side_effect=[dict(success=False, reason='geometry-rejected'), recovered]) as solver, \
+                 patch.object(self.host, '_component_pose_consistent', return_value=consistent) as check:
+                result = self.host.fit(self.frame, 'map', '-1', lambda: False, observation_bounds=self.bounds)
+                self.assertEqual(result['success'], consistent)
+                self.assertEqual(solver.call_count, 2)  # Original is not fitted twice.
+                self.assertIs(check.call_args.args[-1], original)
+                check.assert_called_once()
+                if not consistent:
+                    self.assertEqual(result['reason'], 'manual-components-inconsistent')
 
     def test_original_wall_only_success_and_unresolved_result_are_preserved(self):
         for initial in (self.pose(), dict(success=False, reason='initial-structure-ambiguous'),
-                        dict(success=False, reason='initial-structure-validation-budget-unresolved')):
+                        dict(success=False, reason='initial-structure-validation-budget-unresolved'),
+                        dict(success=False, reason='structure-work-obsolete')):
             with self.subTest(initial=initial['reason']), \
                  patch('single_map_structure.current_geometry', return_value=dict(query='wall-only')), \
                  patch('single_map_structure.observed_corner_chains', return_value=[]), \
@@ -170,11 +182,42 @@ class ExplicitComponentAlignmentTests(unittest.TestCase):
             self.assertFalse(self.host._component_pose_consistent(frame, reference, np.eye(3), context))
 
     def test_cancellation_never_returns_previous_component_success(self):
-        calls = iter([False, True])
+        calls = iter([False, False, True])
         result, count = self.fit([self.pose()], cancelled=lambda: next(calls, True))
         self.assertFalse(result['success'])
         self.assertEqual(result['reason'], 'structure-work-obsolete')
         self.assertEqual(count, 1)
+
+    def test_cancellation_after_original_failure_does_not_enumerate(self):
+        cancelled = [False]
+        def original_fit(*args, **kwargs):
+            cancelled[0] = True
+            return dict(success=False, reason='geometry-rejected')
+        with patch('single_map_structure.current_geometry', return_value=dict(query='original')), \
+             patch.object(self.host, '_fit_observation', side_effect=original_fit), \
+             patch('nightmare_candidate.visible_map_components', side_effect=AssertionError('cancelled fallback')):
+            result = self.host.fit(self.frame, 'map', '-1', lambda: cancelled[0], observation_bounds=self.bounds)
+        self.assertEqual(result['reason'], 'structure-work-obsolete')
+
+    def test_primary_chain_failure_still_respects_component_budget(self):
+        with patch('single_map_structure.current_geometry', return_value=dict(query='original')), \
+             patch('single_map_structure.observed_corner_chains', return_value=[object()]), \
+             patch.object(self.host, '_fit_observation', return_value=dict(success=False, reason='geometry-rejected')) as solver, \
+             patch('nightmare_candidate.visible_map_components', return_value=self.islands * 17):
+            result = self.host.fit(self.frame, 'map', '-1', lambda: False, observation_bounds=self.bounds)
+        self.assertEqual(result['reason'], 'manual-component-budget-unresolved')
+        self.assertEqual(solver.call_count, 1)
+
+    def test_wall_evidence_needs_separated_planes_on_both_axes(self):
+        cases = [([], False),
+                 ([(0, 0), (0, 30), (1, 0)], False),
+                 ([(0, 0), (0, 23), (1, 0), (1, 50)], False),
+                 ([(0, 0), (0, 24), (1, 0), (1, 24)], True)]
+        with patch('single_map_structure.observed_corner_chains', return_value=[]):
+            for planes, expected in cases:
+                with self.subTest(planes=planes):
+                    context = dict(lines=[dict(axis=axis, normal=normal) for axis, normal in planes])
+                    self.assertEqual(self.host._component_has_pose_evidence(self.frame, context), expected)
 
 
 if __name__ == '__main__':

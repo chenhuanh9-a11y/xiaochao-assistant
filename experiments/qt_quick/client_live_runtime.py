@@ -335,23 +335,22 @@ class _AlignmentHost:
         _test_evidence("solver-input", frame)
         if observation_bounds is None:
             return self._fit_observation(frame, map_id, floor, cancelled, entry_candidate)
-        # Preserve the existing result whenever the largest island has usable
-        # structure (including wall-only success). Only an unsupported failure
-        # can trigger the wider search for map pixels behind brighter scenery.
+        # A chain can propose a pose without enough support to solve it. Search
+        # other islands after a resolved failure, but keep the original island
+        # as independent evidence against any recovered pose.
         import numpy as np
         from nightmare_candidate import visible_map_components
-        from single_map_structure import current_geometry, observed_corner_chains
+        from single_map_structure import current_geometry
         original = (_scan_observation[0]() if _scan_observation is not None else
                     current_geometry(frame, observation_bounds=observation_bounds))
         initial = (self._fit_observation(frame, map_id, floor, cancelled, entry_candidate,
             observation_bounds=observation_bounds, _context=original) if original is not None
             else dict(success=False, reason="manual-current-geometry-unavailable"))
         initial_reason = str(initial.get("reason", ""))
-        if initial.get("success") and cancelled and cancelled():
+        if cancelled and cancelled():
             return dict(success=False, reason="structure-work-obsolete")
         if (initial.get("success") or any(word in initial_reason for word in
-                ("obsolete", "ambiguous", "budget-unresolved"))
-                or original is not None and observed_corner_chains(frame, original)):
+                ("obsolete", "ambiguous", "budget-unresolved"))):
             return initial
         islands = (_scan_observation[1]() if _scan_observation is not None else
                    visible_map_components(frame, observation_bounds=observation_bounds))
@@ -364,6 +363,8 @@ class _AlignmentHost:
         h, w = reference.clean_mask.shape
         extent = np.array([[0, 0, 1], [w, 0, 1], [0, h, 1], [w, h, 1]])
         accepted, diagnostics, evidence_contexts, unresolved = [], [], [], False
+        if original is not None and self._component_has_pose_evidence(frame, original):
+            evidence_contexts.append(original)
         for island in islands:
             if cancelled and cancelled():
                 return dict(success=False, reason="structure-work-obsolete")
@@ -375,7 +376,7 @@ class _AlignmentHost:
                        current_geometry(frame, observation_bounds=observation_bounds, visible_override=island))
             if context is None:
                 continue
-            if observed_corner_chains(frame, context):
+            if self._component_has_pose_evidence(frame, context):
                 evidence_contexts.append(context)
             fit = self._fit_observation(frame, map_id, floor, cancelled, entry_candidate,
                 observation_bounds=observation_bounds, _context=context)
@@ -416,6 +417,21 @@ class _AlignmentHost:
             return dict(fit, componentFits=diagnostics, acceptedPoseCount=1, manualComponentFallback=True)
         return dict(success=False, reason="manual-components-current-geometry-rejected" if diagnostics
                     else "manual-current-geometry-unavailable", componentFits=diagnostics)
+
+    def _component_has_pose_evidence(self, frame, context):
+        from single_map_structure import current_part, observed_corner_chains
+        if observed_corner_chains(frame, context):
+            return True
+        # Missing complete corner chains does not erase measured wall evidence.
+        # Reuse the wall solver's source-independent observability prerequisite:
+        # two separated normals on each axis. Sparse scenery/UI fragments do
+        # not become vetoes just because their bounding box was enumerated.
+        lines = current_part(frame, context, "lines")
+        for axis in (0, 1):
+            normals = [line["normal"] for line in lines if line["axis"] == axis]
+            if len(normals) < 2 or max(normals) - min(normals) < 24:
+                return False
+        return True
 
     def _component_pose_consistent(self, frame, reference, matrix, context):
         from single_map_structure import projected_geometry, regional_validation, _static_validation_context
