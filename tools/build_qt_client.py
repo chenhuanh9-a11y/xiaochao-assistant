@@ -158,7 +158,7 @@ def verify_invoker_manifest(executable):
 
 def assemble_recovery_helper(output, stage, environment_vars, *, kind="recovery"):
     """One separate helper freeze in the same build chain; no EXE launch."""
-    if kind not in ("recovery", "import"):
+    if kind not in ("recovery", "import", "reset"):
         raise ValueError("Unknown resource helper")
     product = "star-map-" + kind + "-helper"
     subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
@@ -222,6 +222,43 @@ def assemble_game_watcher(output, stage, environment_vars):
     verify_invoker_manifest(destination)
     return dict(included=True, executable=executable.name, files={executable.name: row},
                 invokerManifests=manifests, launched=False, startupRegistrationChanged=False)
+
+
+def resource_reset_installer_defines(stage, record, output, source):
+    """Pin the complete new helper/runtime and target identities into Setup."""
+    stage, output = Path(stage), Path(output)
+    helper = record.get('resetHelper', {})
+    inventory = helper.get('files', {})
+    executable, runtime = 'star-map-reset-helper.exe', '_star_map_reset_runtime/'
+    if (helper.get('included') is not True or helper.get('executable') != executable
+            or helper.get('runtimeDirectory') != runtime[:-1] or executable not in inventory
+            or not any(name.startswith(runtime) for name in inventory)):
+        raise ValueError('Current resource reset helper inventory missing; perform a full freeze')
+    actual = {path.relative_to(stage).as_posix() for path in (stage / runtime).rglob('*') if path.is_file()}
+    if actual | {executable} != set(inventory):
+        raise ValueError('Resource reset helper runtime differs from recorded exact inventory')
+    rows = []
+    for name, row in sorted(inventory.items()):
+        if name != executable and not name.startswith(runtime):
+            raise ValueError('Resource reset helper inventory contains an unrelated file')
+        path = _local_file(stage, name)
+        if path.stat().st_size != row['bytes'] or sha256(path) != row['sha256']:
+            raise ValueError('Resource reset helper changed: ' + name)
+        rows.append(row['sha256'] + ' ' + name.replace('/', '\\'))
+    listing = output / 'reset-helper-inventory.txt'
+    listing.write_text('\n'.join(rows) + '\n', encoding='utf-8-sig')
+    report = _local_file(stage, record['releaseReport']['file'])
+    candidate = _local_file(stage, record['fileProjection']['managedBaseManifest'])
+    if (sha256(report) != record['releaseReport']['sha256'] or
+            sha256(candidate) != record['fileProjection']['managedBaseManifestSha256']):
+        raise ValueError('Resource reset target report/candidate differs from build receipt')
+    record['resourceResetInstaller'] = dict(sourceCommit=source['commit'],
+        helperInventorySha256=sha256(listing), targetReportSha256=sha256(report),
+        targetManifestSha256=sha256(candidate), lease='verified-duplicate-of-setup-share-zero-handle',
+        confirmation='exact-plan-sha256', nativeTested=False)
+    return [f'/DResetHelperInventory={listing}', f'/DResetHelperInventorySHA256={sha256(listing)}',
+            f'/DResetSourceCommit={source["commit"]}', f'/DResetTargetReportSHA256={sha256(report)}',
+            f'/DResetCandidateSHA256={sha256(candidate)}']
 
 
 def notice_inputs():
@@ -1055,6 +1092,7 @@ def main(argv=None):
                 resourceInstallationPolicy=RESOURCE_INSTALLATION_POLICY if args.instance == "production" else None,
                 recoveryHelper=dict(included=args.instance == "production", product="star-map-recovery-helper"),
                 importHelper=dict(included=args.instance == "production", product="star-map-import-helper"),
+                resetHelper=dict(included=args.instance == "production", product="star-map-reset-helper"),
                 gameWatcher=dict(included=args.instance == "production", executable="XingtuGameWatcher.exe"),
                 sourceRoot=str(ROOT), version=version, profileId=LIGHT_PROFILE,
                 resourceRoot=str(args.resource_root.resolve()), resourceVersion=declaration["resourceVersion"],
@@ -1095,6 +1133,7 @@ def main(argv=None):
                    resourceInstallationPolicy=RESOURCE_INSTALLATION_POLICY if args.instance == "production" else None,
                    recoveryHelper=dict(included=args.instance == "production", executable="star-map-recovery-helper.exe"),
                    importHelper=dict(included=args.instance == "production", executable="star-map-import-helper.exe"),
+                   resetHelper=dict(included=args.instance == "production", executable="star-map-reset-helper.exe"),
                    gameWatcher=dict(included=args.instance == "production", executable="XingtuGameWatcher.exe"),
                    resourceVersion=declaration["resourceVersion"], authorDisplayPackagesIncluded=args.bundled_package,
                    includedResourceContexts=included_resource_contexts(args.instance, resources,
@@ -1126,6 +1165,7 @@ def main(argv=None):
     if args.instance == "production":
         plan["recoveryHelper"] = assemble_recovery_helper(output, stage, environment_vars)
         plan["importHelper"] = assemble_recovery_helper(output, stage, environment_vars, kind="import")
+        plan["resetHelper"] = assemble_recovery_helper(output, stage, environment_vars, kind="reset")
         plan['gameWatcher'] = assemble_game_watcher(output, stage, environment_vars)
     plan["qtClosure"] = prune_unneeded_qt(stage)
     plan["notices"] = collect_notices(stage, plan["qtClosure"])
@@ -1162,6 +1202,7 @@ def main(argv=None):
                                         backup="{app}/work/installer-backups", userDataOwned=False)
         plan["fileProjection"] = projection
         production_defines = ["/DProductionInstaller", f"/DProductionFilesInclude={include}"]
+        production_defines += resource_reset_installer_defines(stage, plan, output, source)
     setup_name = setup_basename(instance, display, source["commit"])
     subprocess.run([str(args.iscc.resolve()), f"/DStageDir={stage}", f"/DSetupOutputDir={output / 'setup'}",
                     f"/DSetupName={setup_name}", f"/DDisplayVersion={display}", f"/DNumericVersion={numeric}",
@@ -1177,9 +1218,9 @@ def main(argv=None):
         raise ValueError("Inno Setup completed without the expected Setup artifact")
     plan["installer"] = dict(fileName=setup.name, bytes=setup.stat().st_size, sha256=sha256(setup))
     recipes = [Path(__file__), TOOLS / "qt-client.spec", TOOLS / "qt-recovery-helper.spec",
-               TOOLS / "qt-import-helper.spec", TOOLS / "qt-game-watcher.spec", TOOLS / "qt-client.iss"]
+               TOOLS / "qt-import-helper.spec", TOOLS / "qt-reset-helper.spec", TOOLS / "qt-game-watcher.spec", TOOLS / "qt-client.iss"]
     if args.instance == 'production':
-        recipes.extend((TOOLS / "qt-game-watcher-lifecycle.iss", TOOLS / "qt-uninstall-data.iss"))
+        recipes.extend((TOOLS / "qt-game-watcher-lifecycle.iss", TOOLS / "qt-uninstall-data.iss", TOOLS / "qt-resource-reset.iss"))
     plan["recipes"] = {p.name: sha256(p) for p in recipes}
     plan["source"] = source_identity(args.source_commit)
     plan["buildCompleted"] = True

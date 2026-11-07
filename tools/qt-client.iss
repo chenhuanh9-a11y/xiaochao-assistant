@@ -144,6 +144,7 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 
 [Files]
 #ifdef ProductionInstaller
+Source: "{#ResetHelperInventory}"; DestName: "reset-helper-inventory.txt"; Flags: dontcopy
   #ifndef ProductionFilesInclude
     #error ProductionFilesInclude is required for the exact production projection
   #endif
@@ -393,7 +394,9 @@ begin
         if RetirableProgramFile(OldFiles[I]) then AddUpgradePath(OldFiles[I]);
       end;
     end;
-    { Native rollback owns registry/shortcuts. Preserve the prior uninstall log too. }
+    { Native rollback owns registry/shortcuts only while PerformInstall fails.
+      Post-install script failures need separate recovery, reported below.
+      Preserve the prior uninstall log for the existing exact-file rollback. }
     AddUpgradePath('unins000.exe');
     AddUpgradePath('unins000.dat');
     AddUpgradePath('unins000.msg');
@@ -436,6 +439,7 @@ begin
     OldFiles.Free;
   end;
 end;
+#include "qt-resource-reset.iss"
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   WatcherReason: String;
@@ -451,25 +455,52 @@ begin
     Log('RESOURCE_BASE_CANDIDATE_STAGED_VERIFY_AND_REPAIR_BEFORE_RUNTIME');
     if InstallEditorBase then Log('RESOURCE_EDITOR_SEED_COMPLETE_FAMILY')
     else Log('RESOURCE_EDITOR_PRESERVE_EXISTING_FAMILY');
+    if not PrepareResourceReset(WatcherReason) then RaiseException(WatcherReason);
     BeginUpgrade;
   end;
   if CurStep = ssPostInstall then begin
-    UpgradeCommitted := True;
-    RetireLegacyShortcuts;
-    Log('UPGRADE_COMMITTED');
+    { Native file installation finished. Commit resources before claiming the
+      combined upgrade; exact installed EXE/report hashes are also checked. }
+    if not CommitResourceReset(WatcherReason) then begin
+      { Inno catches ssPostInstall exceptions and native metadata is already
+        committed. Do not use RaiseException as a fictitious rollback signal. }
+      ResourceResetFailureCode := 64;
+      ResourceResetNativeMetadataNeedsRepair := not ResourceResetCommitted;
+      Log('UPGRADE_RESOURCE_RECOVERY_REQUIRED ' + WatcherReason);
+    end;
+    UpgradeCommitted := not ResourceResetStarted or ResourceResetCommitted;
+    if not ResourceResetStarted or ResourceResetFinalized then begin
+      RetireLegacyShortcuts;
+      Log('UPGRADE_COMMITTED');
+    end;
     { Restore only the exact opt-in captured from this installation. A failed
       restore is retried/reported during deinitialization, not a false rollback. }
-    if not RestoreGameWatcher(WatcherReason) then Log(WatcherReason);
+    if not ResourceResetStarted or ResourceResetFinalized then
+      if not RestoreGameWatcher(WatcherReason) then Log(WatcherReason);
   end;
 end;
 procedure DeinitializeSetup;
 var
   I: Integer;
   Source, Destination, WatcherReason: String;
-  Restored: Boolean;
+  Restored, ResetWasPending: Boolean;
 begin
   Restored := True;
-  if UpgradeStarted and not UpgradeCommitted then begin
+  ResetWasPending := ResourceResetCommitAttempted and not ResourceResetFinalized;
+  { A lost commit receipt is not permission to rewind only the program half. }
+  if not ResolveResourceResetCommit(WatcherReason) then begin
+    Restored := False;
+    SuppressibleMsgBox(WatcherReason + #13#10 + '提交结果未确认；程序、资料和隔离证据均保留，请先核对恢复。',
+      mbError, MB_OK, IDOK);
+  end;
+  if ResourceResetCommitted then begin
+    UpgradeCommitted := True;
+    ResourceResetNativeMetadataNeedsRepair := False;
+  end;
+  if ResetWasPending and ResourceResetFinalized then
+    SuppressibleMsgBox('资源提交后的恢复标记已完成核对清理，现在可以正常启动。旧资源隔离区仍保留。',
+      mbInformation, MB_OK, IDOK);
+  if UpgradeStarted and not UpgradeCommitted and not ResourceResetOutcomeUnknown then begin
     Restored := True;
     for I := 0 to UpgradeFiles.Count - 1 do begin
       Destination := ExpandConstant('{app}\') + UpgradeFiles[I];
@@ -490,18 +521,51 @@ begin
         UpgradeBackup, mbError, MB_OK, IDOK);
     end;
   end;
+  { Program rollback always precedes resource rollback under the same lock.
+    Incomplete program rollback leaves the pending marker and quarantine intact. }
+  if Restored and not UpgradeCommitted then
+    if not RollbackResourceReset(WatcherReason) then begin
+      Restored := False;
+      SuppressibleMsgBox(WatcherReason, mbError, MB_OK, IDOK);
+    end;
+  if ResourceResetNativeMetadataNeedsRepair then begin
+    { The old native uninstall registration/shortcut state is not captured by
+      this existing file rollback. Report that boundary rather than touching
+      unrelated user links/registry values or claiming complete restoration. }
+    Restored := False;
+    SuppressibleMsgBox('升级失败，已尝试恢复程序和资源文件。Windows 安装登记及快捷方式没有完整回滚，仍需用原安装包修复。' +
+      #13#10 + '请保留 work/installer-backups 与 work/resource-upgrades；本次不自动恢复游戏启动绑定。',
+      mbError, MB_OK, IDOK);
+  end;
   { Restore the old opt-in only after a complete file rollback, or after a
     committed upgrade. Never enable a partially restored executable payload. }
   if Restored then begin
     if not RestoreGameWatcher(WatcherReason) then
       SuppressibleMsgBox(WatcherReason, mbError, MB_OK, IDOK);
   end else if GameWatcherRestorePending then
-    SuppressibleMsgBox('旧程序文件尚未完整恢复，游戏启动绑定保持关闭。请先修复安装，再在设置中核对开启。',
+    SuppressibleMsgBox('程序或资源尚未完整恢复/提交，游戏启动绑定保持关闭。请先修复安装，再在设置中核对开启。',
       mbError, MB_OK, IDOK);
   { Backups intentionally remain under work for recovery/audit, including success. }
   if UpgradeFiles <> nil then UpgradeFiles.Free;
   if UpgradeExisting <> nil then UpgradeExisting.Free;
   ReleaseResourceLock;
+end;
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if (CurPageID = wpFinished) and ResourceResetStarted and not ResourceResetFinalized then begin
+    if ResourceResetCommitted then
+      WizardForm.FinishedLabel.Caption := '程序和资源已提交，但恢复标记尚未清理，暂不能启动星图。'
+    else
+      WizardForm.FinishedLabel.Caption := '升级未完成。退出安装时将按已确认状态尝试恢复程序与资源文件；Windows 安装登记和快捷方式可能仍需原包修复。';
+    WizardForm.FinishedLabel.Caption := WizardForm.FinishedLabel.Caption + #13#10 +
+      '请保留 work/installer-backups、work/resource-upgrades 和恢复记录，先核对恢复。';
+  end;
+end;
+function GetCustomSetupExitCode: Integer;
+begin
+  { Inno queries this BEFORE DeinitializeSetup. Keep a conservative nonzero
+    outcome even if the last deinitialization retry later finalizes safely. }
+  Result := ResourceResetFailureCode;
 end;
 function ExecutableAvailable(const FileName: String): Boolean;
 var
@@ -546,6 +610,8 @@ begin
     removed Run, so restore the prior explicit opt-in before offering retry. }
   if not DisableGameWatcher(WatcherReason) then begin
     Result := WatcherReason;
+  end else if not ReviewResourceReset(WatcherReason) then Result := WatcherReason;
+  if Result <> '' then begin
     if not RestoreGameWatcher(RestoreReason) then
       Result := Result + #13#10 + RestoreReason;
   end;

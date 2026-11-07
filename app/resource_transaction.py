@@ -155,6 +155,7 @@ def assert_resources_ready(root):
     """Call under the runtime lease or a short lock, before reading any resource."""
     root = _safe(Path(os.path.abspath(root)))
     for name, code in (
+        ('pending-resource-reset.json', 'resource-reset-recovery-required'),
         ('pending-upgrade.json', 'upgrade-recovery-required'),
         ('pending-base-repair.json', 'base-recovery-required'),
         ('pending-additions.json', 'additions-recovery-required'),

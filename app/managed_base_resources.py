@@ -889,6 +889,8 @@ def repair_managed_base_resources(install_root):
     from resource_transaction import resource_write_lock, preflight_hardlinks
     with resource_write_lock(install_root) as root:
         root = Path(root)
+        if files._target(root, 'work/map-packages/pending-resource-reset.json').exists():
+            raise ManagedBaseResourceError('resource-reset-recovery-required')
         if files._target(root, PENDING).exists():
             _recover(root)
         for name, code in (("pending-upgrade.json", "author-upgrade-recovery-required"),

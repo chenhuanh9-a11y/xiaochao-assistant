@@ -19,6 +19,7 @@ INSTALLER_ONLY_FILES = {
     "tools/qt-client.iss", "tools/build_qt_client.py",
     "tools/rebuild_qt_installer.py", "tools/INSTALLER_LANGUAGE.md",
     "tools/qt-game-watcher-lifecycle.iss", "tools/qt-uninstall-data.iss",
+    "tools/qt-resource-reset.iss",
 }
 
 
@@ -64,7 +65,7 @@ def validate_managed_runtime_reuse(stage, prior, source):
             raise ValueError("Managed runtime profile identity changed; perform a full freeze")
     # asInvoker only describes elevation, not the helper's compiled behavior.
     # Reuse the complete helper inventories recorded by the original freeze.
-    for kind in ("recovery", "import"):
+    for kind in ("recovery", "import", "reset"):
         helper = prior.get(kind + "Helper")
         executable = "star-map-" + kind + "-helper.exe"
         runtime = "_star_map_" + kind + "_runtime/"
@@ -206,11 +207,12 @@ def main():
     record["frozenVerification"] = build.verify_frozen(stage, record["resources"],
         [p.name for p in (ROOT / "experiments/qt_quick").glob("*.qml")], record["product"],
         bundled_author_paths=author_paths)
-    for kind in ("recovery", "import"):
+    for kind in ("recovery", "import", "reset"):
         build.verify_invoker_manifest(stage / ("star-map-" + kind + "-helper.exe"))
     build.verify_invoker_manifest(stage / 'XingtuGameWatcher.exe')
     include, record["fileProjection"] = build.write_production_files_include(stage, record["resources"], output,
         resource_version=record["resourceVersion"], bundled_author_paths=author_paths, source=source)
+    reset_defines = build.resource_reset_installer_defines(stage, record, output, source)
     record_path = output / "build-record.json"
     record_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
     instance = record["installerInstance"]
@@ -223,6 +225,7 @@ def main():
         f"/DInstallerAppName={instance['appName']}", f"/DInstallerFolder={instance['installFolder']}",
         f"/DInstallerGroup={instance['startMenuGroup']}", f"/DInstallerExeName={record['product']}.exe",
         f"/DProductionFilesInclude={include}", "/DProductionInstaller",
+        *reset_defines,
         str(ROOT / "tools/qt-client.iss")], cwd=ROOT, check=True)
     if build.source_identity(args.source_commit) != source:
         raise ValueError("Source changed during installer compilation")

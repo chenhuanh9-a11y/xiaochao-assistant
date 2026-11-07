@@ -498,6 +498,10 @@ begin
     { Abort here is an Inno-supported pre-uninstall exit. No native removals yet. }
     if not InstalledExecutableAvailable or not AcquireResourceLock then
       RaiseException('星图或资源任务正在运行，尚未开始卸载。请退出后重试。');
+    { A different installer may have left recovery state while this wizard
+      waited for the user's choice. Only this locked recheck is authoritative. }
+    if FileExists(ExpandConstant('{app}\work\map-packages\pending-resource-reset.json')) then
+      RaiseException('资源升级尚未恢复，不能卸载或移动其恢复证据。请先核对程序与资源。');
     if not DisableGameWatcher(WatcherReason) then RaiseException(WatcherReason);
     if not PrepareUninstallData then Abort;
     { All cancellable preparation succeeded. Native removal starts after this
@@ -549,6 +553,11 @@ end;
 function InitializeUninstall: Boolean;
 begin
   Result := False;
+  if FileExists(ExpandConstant('{app}\work\map-packages\pending-resource-reset.json')) then begin
+    SuppressibleMsgBox('上次资源升级尚未完成，请先核对恢复程序与资源；卸载不会覆盖或清除待恢复资料。',
+      mbError, MB_OK, IDOK);
+    Exit;
+  end;
   if DirExists(UninstallHoldingDirectory) or FileExists(UninstallHoldingDirectory) then begin
     SuppressibleMsgBox('检测到上次中断的卸载保留目录，请先按路径清单核对恢复，不能覆盖或忽略：' +
       UninstallHoldingDirectory, mbError, MB_OK, IDOK);
