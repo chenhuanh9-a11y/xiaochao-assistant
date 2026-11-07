@@ -160,6 +160,9 @@ def _plan_locked(root, package_id=None, cancelled=None):
                 if files.known_package_id(package):
                     known.add(package)
     selected = known if package_id is None else {package_id}
+    import author_resource_snapshots as snapshots
+    if any(snapshots.managed(root, package) for package in selected if files.is_generic_profile(package)):
+        _reject('author-snapshot-retained-use-deactivate')
     protected = set(managed_base_inventory(root))
     active, histories, witnesses, archives = {}, [], {}, {}
 
@@ -168,6 +171,11 @@ def _plan_locked(root, package_id=None, cancelled=None):
         digest = upgrade._digest(value.get("archiveSha256"))
         archives.setdefault(package, set()).add(digest)
     for package in sorted(known):
+        if files.is_generic_profile(package) and snapshots.managed(root, package):
+            activation, _ = snapshots._read_activation(root, package)
+            if activation['snapshotId'] is not None:
+                protected.update(snapshots.SnapshotPackage(root, package).dependencies)
+            continue
         path = _target(root, f"work/map-packages/{package}.json")
         if not path.exists():
             continue

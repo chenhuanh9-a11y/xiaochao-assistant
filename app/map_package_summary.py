@@ -50,6 +50,28 @@ def declared_packages(install_root, *, cancelled=None):
         result = []
         for package in sorted(known | history):
             files._check_cancelled(cancelled)
+            import author_resource_snapshots as snapshots
+            if files.is_generic_profile(package) and snapshots.managed(root, package):
+                row = dict(packageId=package, title=package, status='declared', canRemove=False,
+                    canInspectRemoval=False, verified=False, mode='unknown',
+                    storageFormat=snapshots.SNAPSHOT_SCHEMA, retainedPreviousVersions=True)
+                try:
+                    activation, _ = snapshots._read_activation(root, package)
+                    row['season'] = activation['season']
+                    if activation['snapshotId'] is None:
+                        row.update(status='not-installed', compatibilityNotice='已停用；旧版本仍保留，不释放磁盘空间。')
+                    else:
+                        row['canInspectRemoval'] = True
+                        view = snapshots.SnapshotPackage(root, package)
+                        row['declaredFileCount'] = len(view.owned)
+                        from generic_author_package import bindings_path, _label
+                        declaration = files._json(view.read(bindings_path(package)))
+                        if declaration.get('profileId') == package and _label(declaration.get('displayName')):
+                            row['title'] = declaration['displayName']
+                except (OSError, ValueError, TypeError, KeyError):
+                    row['status'] = 'unverified'
+                result.append(row)
+                continue
             path = files._target(root, f'work/map-packages/{package}.json')
             active = path.exists()
             if not active and package not in history:

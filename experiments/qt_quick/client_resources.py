@@ -91,6 +91,7 @@ def recovery_status_label(status):
         "committed": "更新已完成，待清理临时文件", "rolling-back": "正在恢复更新前的图包",
         "rollback-incomplete": "恢复尚未完成", "rolled-back": "已恢复，待清理临时文件",
         "additions-pending": "上次导入未完成", "removal-pending": "上次删除未完成",
+        "author-snapshot-pending": "作者图版本切换未完成",
         "upgrade-cleanup-pending": "还需清理临时文件", "upgrade-cleanup-available": "有临时文件可清理",
     }.get(status, "需要重新核对")
 
@@ -120,11 +121,13 @@ class _Work(QRunnable):
 def _confirmation_fingerprint(result):
     return json.dumps({key: result.get(key) for key in (
         "packageId", "archiveSha256", "previousReceiptSha256", "files",
-        "replaceFiles", "missingFiles", "legacyReceiptSha256")}, sort_keys=True, separators=(",", ":"))
+        "replaceFiles", "missingFiles", "legacyReceiptSha256", "storageFormat", "snapshotPlanSha256")}, sort_keys=True, separators=(",", ":"))
 
 
 def _duplicate_import(result):
     """Only a committed import with no additions/replacements is a duplicate."""
+    if isinstance(result, dict) and result.get('storageFormat'):
+        return result.get('status') == 'author-already-installed'
     return (isinstance(result, dict) and type(result.get("added")) is int
             and result["added"] == 0 and type(result.get("alreadyPresent")) is int
             and result["alreadyPresent"] > 0 and not result.get("replaceFiles")
@@ -370,7 +373,7 @@ class ResourceService(QObject):
         # A malformed, linked, or unreadable pointer still forbids consumers.
         # This bounded metadata probe does not inspect resource contents.
         for name in ("pending-upgrade.json", "pending-base-repair.json",
-                     "pending-additions.json", "pending-removal.json"):
+                     "pending-additions.json", "pending-removal.json", "pending-author-snapshot.json"):
             try:
                 (self.sandbox / "work/map-packages" / name).lstat()
             except FileNotFoundError:
@@ -478,7 +481,7 @@ class ResourceService(QObject):
             self._message = self._report_problem("non-local-archive", "inspect")
             self.changed.emit()
             return
-        self._start("inspect", lambda cancel: (str(path), importer.inspect_package(path, self.sandbox, season=season)),
+        self._start("inspect", lambda cancel: (str(path), importer.inspect_package(path, self.sandbox, season=season, versioned=True)),
                     "正在检查图包文件…")
 
     @Slot(str)
@@ -515,7 +518,7 @@ class ResourceService(QObject):
             importer._no_links(path)
             if path.stat().st_size != expected["bytes"]:
                 raise importer.ImportRejected("online-archive-size-mismatch")
-            result = importer.inspect_package(path, self.sandbox, season="s0")
+            result = importer.inspect_package(path, self.sandbox, season="s0", versioned=True)
             if (result.get("packageId") != expected["packageId"]
                     or result.get("archiveSha256") != expected["sha256"]
                     or path.stat().st_size != expected["bytes"]):
@@ -527,11 +530,12 @@ class ResourceService(QObject):
     def _install(self, path, result):
         season = result.get("season", "s0")
         live = importer.supports_live_author_import(result)
+        versioned = bool(result.get('storageFormat'))
         if not live and self._import_launcher is not None:
             launcher = self._import_launcher
             def launch(_cancel):
                 with importer._writer_locked_installation(self.sandbox, require_closed=False) as (root, _state):
-                    current = importer.inspect_package(path, root, season=season)
+                    current = importer.inspect_package(path, root, season=season, versioned=versioned)
                     if _confirmation_fingerprint(current) != _confirmation_fingerprint(result):
                         raise importer.ImportRejected("resource-plan-changed-reinspect-required")
                     request_id = launcher(path, dict(result))
@@ -546,19 +550,19 @@ class ResourceService(QObject):
                 # consent under the same OS writer lock as the shared live
                 # transaction, including the previous receipt fingerprint.
                 with importer._writer_locked_installation(self.sandbox, require_closed=False) as (root, state):
-                    current = importer.inspect_package(path, root, season=season)
+                    current = importer.inspect_package(path, root, season=season, versioned=versioned)
                     if _confirmation_fingerprint(current) != _confirmation_fingerprint(result):
                         raise importer.ImportRejected("resource-plan-changed-reinspect-required")
                     return importer._install_staged(path, root, state, season=season, live=True,
-                        expected_archive_sha256=result["archiveSha256"], cancelled=cancel.is_set)
+                        expected_archive_sha256=result["archiveSha256"], cancelled=cancel.is_set, versioned=versioned)
             # Hold the same writer lock between confirmation recheck and the
             # existing staging/upgrade transaction; never expand an old consent.
             with importer._locked_installation(self.sandbox, True) as (root, state):
-                current = importer.inspect_package(path, root, season=season)
+                current = importer.inspect_package(path, root, season=season, versioned=versioned)
                 if _confirmation_fingerprint(current) != _confirmation_fingerprint(result):
                     raise importer.ImportRejected("resource-plan-changed-reinspect-required")
                 return importer._install_staged(path, root, state, season=season,
-                    expected_archive_sha256=result["archiveSha256"])
+                    expected_archive_sha256=result["archiveSha256"], versioned=versioned)
         self._start("install", install, "正在安装图包，请等待完成…",
                     cancellable=live)
 
@@ -639,7 +643,7 @@ class ResourceService(QObject):
             self._recovery = self._recovery or code in {
                 "upgrade-recovery-required", "pending-upgrade", "base-recovery-required",
                 "upgrade-cleanup-incomplete", "base-cleanup-incomplete",
-                "additions-recovery-required", "removal-recovery-required"} or recovery
+                "additions-recovery-required", "removal-recovery-required", "author-snapshot-recovery-required"} or recovery
             if self._recovery:
                 self._rows = [dict(row, canRemove=False, status="recovery-required") for row in self._rows]
                 self._message = self._report_problem(error, kind, recovery_required=True)
@@ -729,11 +733,19 @@ class ResourceService(QObject):
         elif kind == "inspect":
             path, inspection = result
             self._import_package_id = str(inspection.get("packageId", ""))
-            if (inspection.get("replaceFiles") or (self._import_launcher is not None
+            if (inspection.get("requiresConfirmation") or inspection.get("replaceFiles") or (self._import_launcher is not None
                     and not importer.supports_live_author_import(inspection))):
                 self._kind, self._pending = "overwrite", (path, inspection)
                 self._message = "请确认是否更新这个图包。"
                 self.changed.emit()
+                if inspection.get('storageFormat'):
+                    self.confirmationRequested.emit("切换作者图版本",
+                        f"{inspection.get('displayName', inspection['packageId'])}\n"
+                        f"新版将移除 {len(inspection['removedLayers'])} 层、改变 {len(inspection['formatChangedLayers'])} 层图片格式。\n"
+                        f"有 {len(inspection['inactiveLayers'])} 层暂不可用，仅启用核对通过的层。\n\n"
+                        "原版本、旧文件与改动内容均保留，不会覆盖；自定义路线和底模不变。新版不包含的层将不再显示。"
+                        "保留版本会继续占用磁盘空间，当前没有自动清理或一键回退。取消不会切换。")
+                    return
                 self.confirmationRequested.emit("更新图包", ("已识别到受支持的旧版图包，无需手动寻找或删除文件。\n\n" if inspection.get("legacyReceiptSha256") else "") + "将更新“%s”中的 %s 个文件，并新增 %s 个文件。\n\n只替换能确认属于这个图包、且没有被改动的文件。处理失败时会恢复尚未完成的更改；成功后会清理临时文件。\n点击取消可返回，不会开始更新。" % (
                     package_title(inspection["packageId"]), len(inspection["replaceFiles"]), len(inspection["missingFiles"]))
                     + ("\n\n确认后软件会正常退出再导入，完成后请重新打开查看结果。" if self._import_launcher is not None and not importer.supports_live_author_import(inspection) else ""))
@@ -744,6 +756,11 @@ class ResourceService(QObject):
             self._kind, self._pending = "remove", result
             self._message = "等待确认备份并移除。"
             self.changed.emit()
+            if result.get('storageFormat'):
+                self.confirmationRequested.emit("停用作者图包",
+                    result['title'] + "\n将停用当前作者图版本，全部图片、旧版本与修改内容仍保留，不释放磁盘空间。"
+                    "底模、自定义路线及设置不变。可以重新导入 ZIP 启用；当前没有一键回退。")
+                return
             self.confirmationRequested.emit("备份并移除图包", "%s\n将保留备份并移除 %s 个地图图片文件（%s 字节），其中 %s 个有改动、%s 个已缺失。保留 %s 个软件必需文件，以及来源不明的文件和自定义路线。\n\n此操作会保留备份，但不能在软件中一键恢复。" % (
                 result["title"], result["fileCount"], result["bytes"], len(result["modifiedFiles"]),
                 len(result["missingFiles"]), result["preservedCoreFiles"]))
@@ -757,7 +774,7 @@ class ResourceService(QObject):
             self._import_completion_message = (("这个图包已经安装，无需重复导入。" if duplicate else
                 "图包安装完成，可以使用了。") if kind == "install" else "")
             if kind == 'install' and result.get('inactiveLayers'):
-                self._import_completion_message += " S1 普通层已停用并保留作者文件，仅启用核对通过的困难/噩梦层。"
+                self._import_completion_message = "图包版本已保存，仅启用核对通过的层；其余层及文件保留。请在资源管理查看逐层兼容结果。"
             self._message = ("图包已移除，备份已保留。" if kind == "remove" else
                              "这个图包已经安装，正在核对当前状态…" if duplicate else
                              "图包文件已安装，正在核对是否可用…")

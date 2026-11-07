@@ -503,7 +503,14 @@ def _check_other_package_constraints(root, package_id, incoming, replacements):
     """
     replaced = {row["path"].casefold() for row in replacements}
     for other in package_ids(root) - {package_id}:
-        owned, dependencies, _digest = _installed_inventory(root, other)
+        import author_resource_snapshots as snapshots
+        if is_generic_profile(other) and snapshots.managed(root, other):
+            activation, _ = snapshots._read_activation(root, other)
+            owned = {}  # Logical image paths are not owned flat installation files.
+            dependencies = (snapshots.SnapshotPackage(root, other).dependencies
+                            if activation['snapshotId'] is not None else {})
+        else:
+            owned, dependencies, _digest = _installed_inventory(root, other)
         shared = replaced & owned.keys()
         if shared:
             path = owned[min(shared)]["path"]
@@ -521,7 +528,7 @@ def _pending_upgrade(root: Path):
         raise ImportRejected(str(error), code=error.code, details=error.details) from error
 
 
-def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None, *, season="s0") -> dict:
+def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None, *, season="s0", versioned=False) -> dict:
     infos = archive.infolist()
     if not 2 <= len(infos) <= MAX_FILES + 1:
         raise ImportRejected("invalid-archive-count")
@@ -588,7 +595,7 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None, *
         raise ImportRejected("unsupported-client-version")
     from generic_author_package import effective_dependencies
     live_dependencies = effective_dependencies(dependencies, season) if generic else dependencies
-    for row in live_dependencies.values():
+    for row in (() if generic and versioned else live_dependencies.values()):
         dependency = _target(root, row["path"])
         missing = not dependency.exists()
         actual_bytes = dependency.stat().st_size if dependency.is_file() else None
@@ -604,6 +611,16 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None, *
     total = sum(row["bytes"] for row in rows.values())
     if total > MAX_TOTAL_BYTES:
         raise ImportRejected("archive-expanded-size-limit")
+    if generic:
+        import author_resource_snapshots as snapshots
+        if versioned:
+            for row in rows.values():
+                member = entries[("data/" + row["path"]).casefold()]
+                if member.filename != "data/" + row["path"] or member.file_size != row["bytes"]:
+                    raise ImportRejected("file-size-or-case-mismatch")
+            return snapshots.inspect_validated_archive(metadata, archive, root, rows, dependencies)
+        if snapshots.managed(root, package_id):
+            raise ImportRejected("author-snapshot-use-versioned-import")
     if generic:
         from generic_author_package import validate_archive
         display_document = validate_archive(metadata, archive, root, rows, dependencies)
@@ -723,7 +740,7 @@ def _require_season(season):
         raise ImportRejected("unsupported-package-season")
 
 
-def inspect_package(zip_path, install_root, *, season="s0") -> dict:
+def inspect_package(zip_path, install_root, *, season="s0", versioned=False) -> dict:
     """Validate bytes/CRC/dependencies under the coordination lock; no resource writes."""
     _require_season(season)
     root = Path(os.path.abspath(install_root))
@@ -732,7 +749,7 @@ def inspect_package(zip_path, install_root, *, season="s0") -> dict:
         with resource_read_lock(root):
             _pending_upgrade(root)
             with _open_archive(zip_path) as (archive, digest):
-                result = _validate(archive, root, season=season)
+                result = _validate(archive, root, season=season, versioned=versioned)
                 result["archiveSha256"] = digest
                 result["season"] = season
                 return result
@@ -853,6 +870,9 @@ def recover_package_upgrade(install_root, *, application_stopped=False):
     """Recover an interrupted owned-resource transaction, preserving unknown files."""
     from map_package_upgrade import recover_pending_upgrade, recover_pending_additions
     with _locked_installation(install_root, application_stopped) as (root, _):
+        import author_resource_snapshots as snapshots
+        if _target(root, snapshots.PENDING).exists():
+            return snapshots.recover_locked(root)
         result = recover_pending_additions(root)
         if result['status'] != 'no-pending-additions':
             return result
@@ -975,7 +995,7 @@ def _commit_additions(root, result, stage, *, live=False, cancelled=None):
         raise
 
 
-def _install_staged(zip_path, root, state, *, expected_archive_sha256=None, live=False, cancelled=None, season="s0"):
+def _install_staged(zip_path, root, state, *, expected_archive_sha256=None, live=False, cancelled=None, season="s0", versioned=False):
     _require_season(season)
     _pending_upgrade(root)
     _check_cancelled(cancelled)
@@ -983,7 +1003,10 @@ def _install_staged(zip_path, root, state, *, expected_archive_sha256=None, live
     prepared = False
     try:
         with _open_archive(zip_path, expected_archive_sha256) as (archive, digest):
-            result = _validate(archive, root, stage, season=season)
+            result = _validate(archive, root, stage, season=season, versioned=versioned)
+            if result.get('storageFormat'):
+                import author_resource_snapshots as snapshots
+                return snapshots.install_archive_locked(archive, digest, root, result, cancelled=cancelled)
             result["archiveSha256"] = digest
             result["season"] = season
         if live and not supports_live_author_import(result):
@@ -1024,7 +1047,7 @@ def _install_staged(zip_path, root, state, *, expected_archive_sha256=None, live
             shutil.rmtree(stage)
 
 
-def install_package(zip_path, install_root, *, application_stopped=False, expected_archive_sha256=None, season="s0") -> dict:
+def install_package(zip_path, install_root, *, application_stopped=False, expected_archive_sha256=None, season="s0", versioned=False) -> dict:
     """Append data, or transactionally upgrade unchanged files owned by this package.
 
     UI must run this off its Tk thread with the application closed. Unknown or
@@ -1033,11 +1056,11 @@ def install_package(zip_path, install_root, *, application_stopped=False, expect
     """
     _require_season(season)
     with _locked_installation(install_root, application_stopped) as (root, state):
-        return _install_staged(zip_path, root, state, expected_archive_sha256=expected_archive_sha256, season=season)
+        return _install_staged(zip_path, root, state, expected_archive_sha256=expected_archive_sha256, season=season, versioned=versioned)
 
 
 def install_author_package_live(zip_path, install_root, *, application_idle=False,
-                                expected_archive_sha256=None, cancelled=None, season="s0") -> dict:
+                                expected_archive_sha256=None, cancelled=None, season="s0", versioned=False) -> dict:
     """Install optional author art while the caller owns an idle application.
 
     The caller must keep its idle/generation token valid until completion and
@@ -1051,7 +1074,7 @@ def install_author_package_live(zip_path, install_root, *, application_idle=Fals
         raise ImportRejected("live-import-requires-idle")
     with _writer_locked_installation(install_root, require_closed=False) as (root, state):
         return _install_staged(zip_path, root, state, expected_archive_sha256=expected_archive_sha256,
-                               live=True, cancelled=cancelled, season=season)
+                               live=True, cancelled=cancelled, season=season, versioned=versioned)
 
 
 if __name__ == "__main__":
@@ -1094,6 +1117,10 @@ def _verified_installed_package_locked(root, package_id, expected_sha256=None, *
     root = Path(root).resolve()
     try:
         _pending_upgrade(root)
+        if is_generic_profile(package_id):
+            import author_resource_snapshots as snapshots
+            if snapshots.managed(root, package_id):
+                return snapshots.verified(root, package_id, expected_sha256, cancelled=cancelled)
         rows, dependencies, receipt_digest = _installed_inventory(root, package_id)
         if not rows:
             return dict(status='not-installed')

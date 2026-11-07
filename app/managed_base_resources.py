@@ -269,7 +269,7 @@ def _package_constraints(root, *, prospective_base_root=None):
     # satisfy the bounded legacy envelope/path checks to constrain preservation;
     # they never silently become a registered or writable installed author.
     reserved = {Path(STATE).name, Path(PENDING).name, "pending-upgrade.json",
-                "pending-additions.json", "pending-removal.json", "qt-import-pending.json",
+                "pending-additions.json", "pending-removal.json", "pending-author-snapshot.json", "qt-import-pending.json",
                 "qt-recovery-pending.json", "last-import-result.json", "last-recovery-result.json",
                 "qt-import-notice-seen.json", "main-import-request.json"}
     for path in sorted(directory.glob("*.json")):
@@ -893,7 +893,8 @@ def repair_managed_base_resources(install_root):
             _recover(root)
         for name, code in (("pending-upgrade.json", "author-upgrade-recovery-required"),
                            ("pending-additions.json", "additions-recovery-required"),
-                           ("pending-removal.json", "removal-recovery-required")):
+                           ("pending-removal.json", "removal-recovery-required"),
+                           ("pending-author-snapshot.json", "author-snapshot-recovery-required")):
             if files._target(root, "work/map-packages/" + name).exists():
                 raise ManagedBaseResourceError(code)
         _retire_completed(root)

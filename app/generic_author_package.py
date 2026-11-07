@@ -172,6 +172,12 @@ def profile_ids(resource_root, *, strict=False):
                     raise
                 # Runtime discovery cannot grant an invalid optional display.
                 continue
+    import author_resource_snapshots as snapshots
+    try:
+        found.extend(pid for pid in snapshots.profile_ids(Path(resource_root).parent, strict=strict) if pid not in found)
+    except (OSError, ValueError):
+        if strict:
+            raise
     return tuple(found)
 
 
@@ -203,7 +209,8 @@ def validate_display_affine(value):
         _reject('invalid-display-affine')
 
 
-def validate_bindings(raw, rows, dependencies, read, *, root, dependency_paths=None):
+def validate_bindings(raw, rows, dependencies, read, *, root, dependency_paths=None,
+                      isolate_incompatible_layers=False, tolerate_damaged_images=False):
     from generic_author_base import resolve_layer, check_browse_cancelled
     from s1_author_package import _shape
     from PIL import Image, UnidentifiedImageError
@@ -220,10 +227,11 @@ def validate_bindings(raw, rows, dependencies, read, *, root, dependency_paths=N
     if not isinstance(layers, list) or not 1 <= len(layers) <= MAX_LAYERS:
         _reject('invalid-layers')
     expected = {bindings_path(profile)}
-    active_layers, inactive_layers = [], []
+    active_layers, inactive_layers, layer_states = [], [], []
     active_dependencies = effective_dependencies(dependencies, season)
     required = set()
     seen = set()
+    checked_dependencies = {}
     for row in layers:
         check_browse_cancelled()
         if not isinstance(row, dict):
@@ -243,34 +251,11 @@ def validate_bindings(raw, rows, dependencies, read, *, root, dependency_paths=N
         if (inv is None or row.get('displaySha256') != inv['sha256'] or row.get('displayBytes') != inv['bytes']
                 or not _shape(row.get('displayShapeHW')) or not _shape(row.get('referenceShapeHW'))):
             _reject('display-inventory-mismatch')
-        if retired_layer(season, key[0]):
-            inactive_layers.append(dict(season=season, mode=key[0], mapId=key[1], floor=key[2],
-                                        reason='retired-mode', bindingVerified=False))
-        else:
-            try:
-                base = resolve_layer(Path(root), season, *key)
-            except ValueError as error:
-                _reject('base-unavailable:' + str(error))
-            for field in ('referenceResource', 'referenceShapeHW', 'coordinateSpace',
-                          'structureVersionKey', 'baseSnapshot', 'sourceVersion'):
-                if row.get(field) != base[field]:
-                    _reject('reference-binding-mismatch:' + field)
-            required.update(base['dependencies'])
-            if dependency_paths is not None:
-                dependency_paths[key] = tuple(base['dependencies'])
-            dep = active_dependencies.get(base['referenceResource'].casefold())
-            if dep is None or row.get('referenceSha256') != dep['sha256']:
-                _reject('reference-inventory-mismatch')
-            if base.get('nativeImageResource'):
-                native = active_dependencies.get(base['nativeImageResource'].casefold())
-                if (row.get('nativeImageResource') != base['nativeImageResource'] or native is None
-                        or row.get('nativeImageSha256') != native['sha256']):
-                    _reject('native-inventory-mismatch')
-            active_layers.append(row)
         validate_display_affine(row.get('matrixDisplayToReference'))
-        data = read(path)
-        check_browse_cancelled()
+        reason = None
         try:
+            data = read(path)
+            check_browse_cancelled()
             with Image.open(io.BytesIO(data)) as image:
                 if (image.format != {'png': 'PNG', 'jpeg': 'JPEG'}[extension]
                         or list(reversed(image.size)) != row['displayShapeHW']
@@ -280,18 +265,73 @@ def validate_bindings(raw, rows, dependencies, read, *, root, dependency_paths=N
                 image.load()
                 check_browse_cancelled()
         except (OSError, ValueError, UnidentifiedImageError, Image.DecompressionBombError) as error:
-            _reject('invalid-image')
+            if not isolate_incompatible_layers or not tolerate_damaged_images:
+                _reject('invalid-image')
+            reason = 'display-missing' if isinstance(error, FileNotFoundError) else 'display-damaged'
+        if retired_layer(season, key[0]):
+            reason = 'retired-mode'
+        elif reason is None:
+            try:
+                base = resolve_layer(Path(root), season, *key)
+            except ValueError as error:
+                if not isolate_incompatible_layers:
+                    _reject('base-unavailable:' + str(error))
+                reason = 'base-unavailable'
+            if reason is None:
+                required.update(base['dependencies'])
+                try:
+                    for field in ('referenceResource', 'referenceShapeHW', 'coordinateSpace',
+                                  'structureVersionKey', 'baseSnapshot', 'sourceVersion'):
+                        if row.get(field) != base[field]:
+                            _reject('reference-binding-mismatch:' + field)
+                    dep = active_dependencies.get(base['referenceResource'].casefold())
+                    if dep is None or row.get('referenceSha256') != dep['sha256']:
+                        _reject('reference-inventory-mismatch')
+                    if base.get('nativeImageResource'):
+                        native = active_dependencies.get(base['nativeImageResource'].casefold())
+                        if (row.get('nativeImageResource') != base['nativeImageResource'] or native is None
+                                or row.get('nativeImageSha256') != native['sha256']):
+                            _reject('native-inventory-mismatch')
+                    for dependency in base['dependencies']:
+                        if dependency.casefold() not in active_dependencies:
+                            _reject('dependency-closure-mismatch')
+                        if dependency not in checked_dependencies:
+                            try:
+                                read(dependency)
+                                checked_dependencies[dependency] = None
+                            except (OSError, ValueError) as error:
+                                checked_dependencies[dependency] = error
+                        if checked_dependencies[dependency] is not None:
+                            raise checked_dependencies[dependency]
+                except (OSError, ValueError) as error:
+                    if not isolate_incompatible_layers:
+                        raise
+                    reason = ('base-missing' if isinstance(error, FileNotFoundError) else
+                              'binding-incompatible' if getattr(error, 'code', '').startswith((
+                                  'author-v2-reference-', 'author-v2-native-', 'author-v2-dependency-'))
+                              else 'base-incompatible')
+                if reason is None and dependency_paths is not None:
+                    dependency_paths[key] = tuple(base['dependencies'])
+        state = dict(season=season, mode=key[0], mapId=key[1], floor=key[2],
+                     reason=reason or 'available', bindingVerified=reason is None)
+        layer_states.append(state)
+        if reason is None:
+            active_layers.append(row)
+        else:
+            inactive_layers.append(state)
     if expected != {row['path'] for row in rows.values()}:
         _reject('unlisted-or-missing-display-file')
-    if required != {row['path'] for row in active_dependencies.values()}:
+    if (not isolate_incompatible_layers or not any(row['reason'] != 'retired-mode' for row in inactive_layers)) and (
+            required != {row['path'] for row in active_dependencies.values()}):
         _reject('dependency-closure-mismatch')
     # Re-check all dependency bytes at use time, not only at initial import.
-    for path in required:
+    for path in required if not isolate_incompatible_layers else ():
         check_browse_cancelled()
         read(path)
     # This view is derived, never written over the archive or installed binding.
     # Every payload byte above remains integrity checked and receipt-owned.
-    return dict(doc, layers=active_layers, inactiveLayers=inactive_layers)
+    return dict(doc, layers=active_layers, inactiveLayers=inactive_layers,
+                **({'layerStates': layer_states} if isolate_incompatible_layers else {}))
 
 
 def validate_import_modes(metadata, rows):
