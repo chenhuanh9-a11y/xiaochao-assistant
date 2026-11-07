@@ -60,7 +60,8 @@ class GenericPackageTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name) / 'install'
+        # Match production provider roots, including Windows temp 8.3 aliases.
+        self.root = (Path(self.temp.name) / 'install').resolve()
         self.root.mkdir()
         make_base(self.root)
         self.profile = 'author-aichicu'
@@ -213,6 +214,16 @@ class GenericPackageTests(unittest.TestCase):
             finally:
                 path.write_bytes(original)
         self.assertEqual(runtime.pixels(image, 'aligned-overlay').shape, (8, 9, 4))
+
+    def test_display_rejects_another_installation_root(self):
+        from s1_author_displays import S1AuthorDisplays
+        self.install(self.package())
+        native = SimpleNamespace(root=self.root.parent/'other-install/_internal', mode='nightmare',
+            catalog=SimpleNamespace(profiles={}, _raw={'profiles': []}, default_profile_id='shared-structure'),
+            adapters=SimpleNamespace(profiles={}))
+        runtime = S1AuthorDisplays(self.root/'_internal', native, season='s0')
+        self.assertIsNone(runtime.binding(self.profile, 'map', 'B1'))
+        self.assertIn('s1-author-resource-root-mismatch', runtime.errors.values())
 
 
 if __name__ == '__main__': unittest.main()

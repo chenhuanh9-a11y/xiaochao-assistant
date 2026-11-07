@@ -651,6 +651,21 @@ def _finish_cleanup(root, directory, journal, *, prune=True):
         raise _cleanup_error(HISTORY + "/" + transaction_id, "cleanup-write-or-validation-failed") from error
 
 
+def _validate_rollback_ancestors(path):
+    # On Windows a descendant under a regular file can look absent, and the
+    # directory-sync adapter is a no-op. Neither is proof of a valid parent.
+    # Check all lexical ancestors so a missing immediate parent cannot conceal
+    # an unknown file higher up. Missing directories remain valid rollback input.
+    for parent in path.parents:
+        try:
+            info = parent.lstat()
+        except FileNotFoundError:
+            continue
+        if (not stat.S_ISDIR(info.st_mode)
+                or getattr(info, 'st_file_attributes', 0) & 0x400):
+            raise ManagedBaseResourceError('base-rollback-parent-not-directory')
+
+
 def _rollback(root, directory, journal):
     blocked = []
     # Preflight the entire restoration; changed unknown files remain untouched.
@@ -658,6 +673,7 @@ def _rollback(root, directory, journal):
         new, old = entry["new"], entry["old"]
         row = new or old
         path = files._target(root, row["path"])
+        _validate_rollback_ancestors(path)
         if old is not None and transaction._matches(path, old, entry["oldIdentity"]):
             continue
         if old is not None and not transaction._matches(files._target(directory, "backup/" + row["path"]), old, entry["oldIdentity"]):
@@ -669,6 +685,7 @@ def _rollback(root, directory, journal):
             new, old = entry["new"], entry["old"]
             row = new or old
             path = files._target(root, row["path"])
+            _validate_rollback_ancestors(path)
             if old is not None and transaction._matches(path, old, entry["oldIdentity"]):
                 continue
             if old is None and not path.exists() and not path.parent.exists():

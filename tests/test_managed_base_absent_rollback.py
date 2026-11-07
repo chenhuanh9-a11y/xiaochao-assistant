@@ -3,6 +3,7 @@
 No player data, Windows installation or power-loss durability claim.
 """
 from pathlib import Path
+from contextlib import contextmanager
 import unittest
 from unittest.mock import patch
 
@@ -147,6 +148,69 @@ class AbsentBaseRollbackTests(unittest.TestCase):
         self.assertEqual(parent.read_bytes(), b'unrelated object, preserve')
         self.assertTrue((self.root / managed.PENDING).exists())
         self.assertTrue((self.root / self.first).is_file())
+
+    @contextmanager
+    def windows_lookup_and_sync(self):
+        """Model missing descendants under a file plus Windows' no-op sync.
+
+        Keep actual fixture bytes and directory types. This is a portable fault
+        contract, not a replacement for the native Windows CI case above.
+        """
+        original_lstat = Path.lstat
+        def lstat(path, *args, **kwargs):
+            try:
+                return original_lstat(path, *args, **kwargs)
+            except NotADirectoryError as error:
+                raise FileNotFoundError(str(error)) from error
+        with patch.object(Path, 'lstat', lstat), \
+                patch.object(managed.transaction, '_directory_sync', return_value=None):
+            yield
+
+    def test_non_directory_parent_blocks_even_when_sync_is_noop(self):
+        self.interrupt_publication()
+        parent = (self.root / self.unpublished).parent
+        parent.write_bytes(b'unknown parent object')
+        with self.windows_lookup_and_sync(), self.assertRaises((OSError, ValueError)):
+            managed.recover_managed_base_resources(self.root)
+        self.assertEqual(parent.read_bytes(), b'unknown parent object')
+        self.assertTrue((self.root / managed.PENDING).exists())
+        self.assertTrue((self.root / self.first).is_file())
+
+    def test_non_directory_ancestor_cannot_be_hidden_by_absent_immediate_parent(self):
+        self.interrupt_publication()
+        ancestor = self.root / '_internal/references'
+        ancestor.rmdir(); ancestor.write_bytes(b'unknown ancestor object')
+        with self.windows_lookup_and_sync(), self.assertRaises((OSError, ValueError)):
+            managed.recover_managed_base_resources(self.root)
+        self.assertEqual(ancestor.read_bytes(), b'unknown ancestor object')
+        self.assertTrue((self.root / managed.PENDING).exists())
+        self.assertTrue((self.root / self.first).is_file())
+
+    def test_parent_type_is_rechecked_after_whole_preflight(self):
+        self.interrupt_publication()
+        original_target = managed.files._target
+        calls = 0
+        def target(root, relative):
+            nonlocal calls
+            path = original_target(root, relative)
+            if Path(root) == self.root and relative == self.unpublished:
+                calls += 1
+                if calls == 2:
+                    path.parent.write_bytes(b'late unknown parent object')
+            return path
+        with self.windows_lookup_and_sync(), patch.object(managed.files, '_target', side_effect=target), \
+                self.assertRaises((OSError, ValueError)):
+            managed.recover_managed_base_resources(self.root)
+        self.assertEqual(calls, 2)
+        self.assertEqual((self.root / self.unpublished).parent.read_bytes(), b'late unknown parent object')
+        self.assertTrue((self.root / managed.PENDING).exists())
+        self.assertTrue((self.root / self.first).is_file())
+
+    def test_genuinely_uncreated_parent_still_recovers_with_noop_sync(self):
+        self.interrupt_publication()
+        with self.windows_lookup_and_sync():
+            self.assertEqual(managed.recover_managed_base_resources(self.root)['status'], 'rolled-back')
+        self.assert_rolled_back()
 
     def test_missing_parent_with_owned_old_object_must_be_recreated_and_restored(self):
         case = base_fixtures.ManagedBaseResourcesTests('runTest')

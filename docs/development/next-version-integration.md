@@ -219,6 +219,39 @@ frameSwapped 信号、显示器像素或 GUI 验收。最终组合 SHA 的 Windo
 loader 检查有效、组内不重复；本地按同样的逐模块独立进程运行共 288 次执行，286 通过、
 2 平台 skip。与其他组存在交叠，不能相加为独立用例数。其 Windows 结果须绑定新增组后的 SHA。
 
+## 新 Windows 合同组发现的跨平台缺口
+
+固定 `beb65b69` 的五个工作流通过，joint 原九组通过（含 season-ui），新增合同组失败。
+[job 128333466118](https://github.com/chenhuanh9-a11y/xiaochao-assistant/actions/runs/42349187681/job/128333466118)
+真实执行了留样/arrival 合同并通过，但暴露以下此前未被旧集合覆盖的问题，未删组或跳过失败：
+
+1. Windows 目录 sync 是 no-op，普通文件占据父目录/更高祖先时，原回滚未显式拒绝。
+   来源 `79096b61` 在整体预检及每项写入前对全部词法祖先做 lstat，存在者须为目录且非
+   reparse；真正缺失目录仍允许，权限和 NotADirectoryError 不吞。此前 `61132f6e` 无
+   missing-parent 快捷判断时也可复现前两例，不能归咎于先前 7 行修复。可移植 Windows
+   语义反例旧 3 红、新绿，独立审查确认旧对象/备份/外来字节及 pending 保护保留。
+2. `_local_file` 只 resolve 文件而不 resolve 比较根，合法 Windows 8.3/长路径别名会被
+   拒为越界。来源 `649448c1` 保留规范化前的词法路径链接检查，再将根和文件同时规范化；
+   补查原本被排除的 root.parent，不能用 resolve 隐藏链接或路径外逃。
+3. 作者显示的生产 provider 本已使用规范根；共享测试 fixture 保留临时目录的 8.3 拼写，
+   破坏严格 provider 根比较及 mock native.root 合同。同一提交只规范化共享 fixture 根，
+   未修改作者运行时、收据或依赖校验。不同安装根仍拒绝，原混合图包文件/收据断言保留。
+
+等价非链接 `alias-hop/..` 在旧源码复现 manifest 越界、binding=None 和混合根断言失败，
+修复后通过；外逃、不同根、文件/目录/父目录链接、helper 篡改/缺失、依赖变化仍拒绝。
+本地语义替身和路径别名不是 Windows NTFS 的替代验收，仍以新远端 SHA CI 为准。
+
+实际组合代码检查点 `f147719` 再跑：
+
+- 留样/生命周期/赛季：473 次，467 通过、6 平台 skip，63.727 秒。
+- 资源/构建/卸载：241 次，240 通过、1 原生 Windows sharing skip，14.689 秒。
+- Windows 新组同样 27 模块逐进程：299 次，297 通过、2 平台 skip。
+- 本轮 6 个 Python 文件 compile、diff check 通过。各组有重叠，不合计为独立用例数。
+
+路径修复的额外扩展检查还发现旧 `test_qt_production_author_defaults` 九例及
+`test_startup_validation_request` 一例失败，在固定 `beb65b69` 同样复现 6 FAIL + 4 ERROR，
+未顺带修改或当作通过。Windows 留样模块的两个 POSIX 专属测试明确 skip，不计原生通过。
+
 ## 最终验收门槛
 
 生产 source payload/version 锁仍刻意指向旧值，当前整合源码不得构建为正式交付物。

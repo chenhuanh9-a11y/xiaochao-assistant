@@ -8,6 +8,8 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -167,6 +169,38 @@ class MixedRetiredAuthorTests(unittest.TestCase):
         self.assertEqual(receipt.read_bytes(), before)
         for name, data in payload.items(): self.assertEqual((self.root / name).read_bytes(), data)
         self.assertTrue(self.install(archive)['receiptPreserved'])
+
+
+class RootAliasFixtureTests(unittest.TestCase):
+    def test_equivalent_temp_roots_keep_original_display_and_receipt_assertions(self):
+        # Exercise the original full-byte fixtures through a non-link alias,
+        # rather than weakening either the provider root or display assertions.
+        cases = (
+            (GenericPackageTests, 'test_warm_pixel_cache_rechecks_every_layer_dependency'),
+            (MixedRetiredAuthorTests,
+             'test_mixed_import_retains_original_receipt_and_activates_only_supported_layers'),
+        )
+        for case_type, name in cases:
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as folder:
+                hop = Path(folder) / 'alias-hop'
+                hop.mkdir()
+                alias = hop / '..'
+                self.assertNotEqual(alias, alias.resolve())
+                temporary = SimpleNamespace(name=str(alias), cleanup=lambda: None)
+                case = case_type(name)
+                try:
+                    with patch.object(tempfile, 'TemporaryDirectory', return_value=temporary):
+                        case.setUp()
+                    getattr(case, name)()
+                    self.assertEqual(case.root, case.root.resolve())
+                    if isinstance(case, MixedRetiredAuthorTests):
+                        # An unrelated installation must still fail the exact
+                        # resolver assertion; no permissive provider fallback.
+                        with self.assertRaises(AssertionError):
+                            base.resolve_layer(case.root.parent / 'other-install',
+                                's1', 'nightmare', 'map', 'B1')
+                finally:
+                    case.doCleanups()
 
 
 if __name__ == '__main__': unittest.main()

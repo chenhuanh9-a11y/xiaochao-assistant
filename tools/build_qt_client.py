@@ -463,8 +463,11 @@ def _local_file(root, name):
     path = root / name
     def linked(candidate):
         return candidate.is_symlink() or (hasattr(candidate, "is_junction") and candidate.is_junction())
-    if linked(path) or any(linked(parent) for parent in path.parents if parent != root.parent):
+    if linked(path) or any(linked(parent) for parent in path.parents):
         raise ValueError(f"Resource links are not allowed: {name}")
+    # Compare canonical paths on both sides (including Windows 8.3 aliases),
+    # but only after checking lexical paths so resolution cannot hide links.
+    root = root.resolve()
     path = path.resolve()
     if not path.is_relative_to(root) or not path.is_file():
         raise ValueError(f"Resource missing or outside explicit root: {name}")
