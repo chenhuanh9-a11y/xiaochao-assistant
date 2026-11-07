@@ -23,6 +23,18 @@ def unsupported(*_a, **_kw):
     raise OSError(errno.EOPNOTSUPP, 'no hardlinks')
 
 
+def assert_destination_collision(test, error):
+    # The Windows handle publisher exposes native ERROR_FILE_EXISTS or
+    # ERROR_ALREADY_EXISTS; POSIX renameat2 exposes EEXIST. Other I/O failures
+    # are not success.
+    if os.name == 'nt':
+        test.assertIn(error.errno, {80, 183})
+        test.assertEqual(error.strerror, 'upgrade-owned-target-rename-failed')
+    else:
+        test.assertIsInstance(error, FileExistsError)
+        test.assertEqual(error.errno, errno.EEXIST)
+
+
 class LinklessAdoption(unittest.TestCase):
     def fixture(self):
         case = adoption_fixture.LegacyAdoptionTests('runTest')
@@ -43,16 +55,26 @@ class LinklessAdoption(unittest.TestCase):
         case = self.fixture()
         import map_package_upgrade as transaction
         move = transaction._move_owned
+        original = case.f.root / adoption_fixture.fixture.SUJU
+        original_stamp = (original.read_bytes(), transaction._identity(original.stat()))
+        foreign = []
         def race(source, target, *args, **kwargs):
-            if not Path(source).parent.name.startswith('move-probe-'):
+            if Path(target) == case.f.receipt():
                 Path(target).write_bytes(b'foreign receipt')
+                foreign.append((Path(target).read_bytes(), transaction._identity(Path(target).stat())))
             return move(source, target, *args, **kwargs)
         with patch.object(resource.os, 'link', side_effect=unsupported):
             with self.assertRaisesRegex(ValueError, 'cancelled'):
                 manager.adopt_legacy_author_package(case.f.root, 'nightmare-suju', cancelled=lambda: True)
-            with patch.object(transaction, '_move_owned', side_effect=race), self.assertRaises(FileExistsError):
+            self.assertFalse(case.f.receipt().exists())
+            with patch.object(transaction, '_move_owned', side_effect=race), self.assertRaises(OSError) as rejected:
                 manager.adopt_legacy_author_package(case.f.root, 'nightmare-suju')
-        self.assertEqual(case.f.receipt().read_bytes(), b'foreign receipt')
+        assert_destination_collision(self, rejected.exception)
+        self.assertEqual(len(foreign), 1)  # The actual publisher encountered the raced target.
+        self.assertEqual((case.f.receipt().read_bytes(), transaction._identity(case.f.receipt().stat())), foreign[0])
+        self.assertEqual((original.read_bytes(), transaction._identity(original.stat())), original_stamp)
+        case.f.assert_base_preserved()
+        self.assertEqual(list((case.f.root / 'work/map-packages').glob('legacy-receipt-*.tmp')), [])
 
 
 class CacheProtocol:
@@ -140,6 +162,7 @@ class LinklessDiagnosticExport(unittest.TestCase):
         import tempfile
         import zipfile
         import diagnostic_export as export
+        import map_package_upgrade as transaction
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             live = root / 'logs'; live.mkdir()
@@ -148,15 +171,25 @@ class LinklessDiagnosticExport(unittest.TestCase):
                 export.export_safe_diagnostic_bundle(root, live, app_version='1.1.2',
                     build_fingerprint='synthetic', destination=destination)
             self.assertTrue(zipfile.is_zipfile(destination))
+            original = (destination.read_bytes(), transaction._identity(destination.stat()))
             raced = root / 'raced.zip'
-            rename = resource.rename_no_replace
-            def race(source, target):
-                target.write_bytes(b'foreign file')
-                return rename(source, target)
-            with patch.object(resource, 'rename_no_replace', side_effect=race), self.assertRaises(FileExistsError):
+            move = transaction._move_owned
+            foreign = []
+            def race(source, target, *args, **kwargs):
+                if Path(target) == raced:
+                    target.write_bytes(b'foreign file')
+                    foreign.append((target.read_bytes(), transaction._identity(target.stat())))
+                # Exercise the real Windows handle publisher or POSIX rename,
+                # rather than a platform-specific helper Windows never calls.
+                return move(source, target, *args, **kwargs)
+            with patch.object(transaction, '_move_owned', side_effect=race), self.assertRaises(OSError) as rejected:
                 export.export_safe_diagnostic_bundle(root, live, app_version='1.1.2',
                     build_fingerprint='synthetic', destination=raced)
-            self.assertEqual(raced.read_bytes(), b'foreign file')
+            assert_destination_collision(self, rejected.exception)
+            self.assertEqual(len(foreign), 1)
+            self.assertEqual((raced.read_bytes(), transaction._identity(raced.stat())), foreign[0])
+            self.assertEqual((destination.read_bytes(), transaction._identity(destination.stat())), original)
+            self.assertEqual(list(root.glob('.diagnostic-export-*')), [])
 
 class ConsumedTemporaryRetention(unittest.TestCase):
     def test_adoption_consumed_temp_name_can_be_reused_by_foreign_writer(self):

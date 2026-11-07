@@ -241,24 +241,72 @@ class ResourceServiceTests(unittest.TestCase):
         self.settle()
         self.assertEqual(self.service.recoveryTransactions, [])
 
-    def test_recovery_confirmation_rejects_changed_journal_pointer_and_files(self):
+    def assert_recovery_replacement_is_rejected(self, name, expected_error):
+        # Each caller gets its own installation and interrupted transaction.
+        # A rejected pointer replacement remains invalid and cannot be reused
+        # to inspect another recovery plan in a later subtest.
         transaction_id = self.upgrade(interrupted=True)
         directory = self.root / f"work/map-packages/upgrades/{transaction_id}"
-        for target in (directory / "journal.json", self.root / recovery.upgrade.PENDING,
-                       directory / "pending-pointer.json", self.root / IMAGE,
-                       directory / "backup" / IMAGE):
-            with self.subTest(target=target):
-                self.request_recovery()
-                replacement = self.folder / "replacement"
-                replacement.write_bytes(target.read_bytes())
-                replacement.replace(target)  # Same bytes, different owned object.
-                self.service.confirmOperation(True)
-                self.settle()
-                self.assertIn("reinspect", self.problems[-1]["raw"])
-                self.assertEqual((self.root / IMAGE).read_bytes(), b"new")
-                self.assertTrue((self.root / recovery.upgrade.PENDING).exists())
-                self.assertTrue(self.lease.active)  # Pending recovery still gates runtime readers.
+        target = {
+            "journal": directory / "journal.json",
+            "pending": self.root / recovery.upgrade.PENDING,
+            "retained-pointer": directory / "pending-pointer.json",
+            "current-image": self.root / IMAGE,
+            "backup-image": directory / "backup" / IMAGE,
+        }[name]
+        self.write("_internal/assets/suju/custom-note.txt", b"unknown resource content")
+        (directory / "private-note.txt").write_bytes(b"unknown transaction content")
+        self.request_recovery()
+        original_identity = recovery.upgrade._identity(target.stat())
+        replacement = self.folder / "replacement"
+        replacement.write_bytes(target.read_bytes())
+        replacement.replace(target)  # Same bytes, different owned object.
+        self.assertNotEqual(recovery.upgrade._identity(target.stat()), original_identity)
+
+        def snapshot():
+            return {path.relative_to(self.root).as_posix():
+                    (path.read_bytes(), recovery.upgrade._identity(path.stat()))
+                    for path in self.root.rglob("*") if path.is_file()}
+
+        before = snapshot()
+        completions = list(self.completions)
+        problem_count = len(self.problems)
+        released = len(self.lease.released)
+        with patch.object(recovery.upgrade, "recover_pending_upgrade",
+                          wraps=recovery.upgrade.recover_pending_upgrade) as recover:
+            self.service.confirmOperation(True)
+            self.settle()
+            recover.assert_not_called()  # Reject before rollback or committed cleanup.
+        self.assertEqual(len(self.problems), problem_count + 1)
+        self.assertEqual(self.problems[-1]["raw"], expected_error)
+        self.assertEqual(self.problems[-1]["errorCode"], expected_error)
+        self.assertEqual(snapshot(), before)  # Preserve all bytes and original/replacement objects.
+        self.assertEqual((self.root / IMAGE).read_bytes(), b"new")
+        self.assertEqual((directory / "backup" / IMAGE).read_bytes(), b"old")
+        receipt_path = "work/map-packages/nightmare-suju.json"
+        self.assertFalse((self.root / receipt_path).exists())  # New receipt has not committed.
+        self.assertEqual((directory / "backup" / receipt_path).read_bytes(), self.old_receipt)
+        self.assertEqual(json.loads((directory / "journal.json").read_bytes())["status"], "prepared")
+        self.assertTrue((self.root / recovery.upgrade.PENDING).exists())
+        self.assertTrue(self.lease.active)  # Pending recovery still gates runtime readers.
+        self.assertEqual(len(self.lease.released), released)
+        self.assertEqual(self.completions, completions)
         self.assertEqual(self.changes, [])
+
+    def test_recovery_confirmation_rejects_changed_journal_pointer_and_files(self):
+        self.assert_recovery_replacement_is_rejected("journal", "recovery-plan-changed-reinspect-required")
+
+    def test_recovery_confirmation_rejects_replaced_pending_marker(self):
+        self.assert_recovery_replacement_is_rejected("pending", "metadata-publication-target-changed")
+
+    def test_recovery_confirmation_rejects_replaced_retained_pointer(self):
+        self.assert_recovery_replacement_is_rejected("retained-pointer", "metadata-publication-target-changed")
+
+    def test_recovery_confirmation_rejects_replaced_current_image(self):
+        self.assert_recovery_replacement_is_rejected("current-image", "recovery-plan-changed-reinspect-required")
+
+    def test_recovery_confirmation_rejects_replaced_backup_image(self):
+        self.assert_recovery_replacement_is_rejected("backup-image", "recovery-plan-changed-reinspect-required")
 
     def test_recovery_conflict_retains_edits_backup_and_pending_journal(self):
         transaction_id = self.upgrade(interrupted=True)

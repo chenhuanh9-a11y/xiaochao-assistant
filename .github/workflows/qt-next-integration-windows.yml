@@ -46,6 +46,81 @@ jobs:
           architecture: x64
       - name: Pinned dependencies (tests only, no Setup or publication)
         run: python -m pip install --disable-pip-version-check -r experiments/qt_quick/requirements-client.txt
+      # Read-only eligibility evidence, not a Setup test or automatic approval.
+      # A green step can report blocked; no subsequent step executes Setup.
+      - name: Read-only native installer minimum prerequisites
+        if: matrix.group == 'installer-reset'
+        id: native-installer-preflight
+        shell: pwsh
+        run: |
+          @'
+          import json
+          import os
+          import re
+          import sys
+
+          report = {
+              "schema": "xingtu-native-installer-environment-preflight-v1",
+              "scope": "minimum-prerequisites-only",
+              "interactiveShellSameSessionAndSid": False,
+              "productionRegistration": [],
+              "reasons": [],
+              "setupStarted": False,
+              "e2eValidated": False,
+          }
+          expected_app_id = "{D04394A0-DACE-4FF9-874D-3DCB43EE53D1}"
+          key = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\" + expected_app_id + "_is1"
+          if os.name != "nt":
+              report["reasons"].append("not-windows")
+          else:
+              sys.path.insert(0, "app")
+              try:
+                  from installer_native_observation import APP_ID, NativeObservationError, current_user_sid
+              except Exception as error:
+                  report["reasons"].append("observer-import-failed:" + type(error).__name__)
+              else:
+                  if APP_ID != expected_app_id:
+                      report["reasons"].append("production-app-id-contract-changed")
+                  else:
+                      try:
+                          current_user_sid()  # Never print or persist the returned SID.
+                      except NativeObservationError as error:
+                          code = getattr(error, "code", "")
+                          report["reasons"].append(code if re.fullmatch(r"native-observation-[a-z0-9-]+", code) else "native-observation-unclassified")
+                      except Exception as error:
+                          report["reasons"].append("interactive-check-failed:" + type(error).__name__)
+                      else:
+                          report["interactiveShellSameSessionAndSid"] = True
+              try:
+                  import winreg
+                  for hive_name, hive in (("HKCU", winreg.HKEY_CURRENT_USER), ("HKLM", winreg.HKEY_LOCAL_MACHINE)):
+                      for view_name, view in (("32", winreg.KEY_WOW64_32KEY), ("64", winreg.KEY_WOW64_64KEY)):
+                          row = {"hive": hive_name, "view": view_name, "state": "unknown"}
+                          try:
+                              with winreg.OpenKey(hive, key, 0, winreg.KEY_READ | view):
+                                  row["state"] = "present"
+                          except FileNotFoundError:
+                              row["state"] = "absent"
+                          except OSError as error:
+                              row["error"] = "registry-read-error"
+                              row["winerror"] = getattr(error, "winerror", None)
+                          report["productionRegistration"].append(row)
+                          if row["state"] != "absent":
+                              report["reasons"].append("production-registration-" + row["state"] + ":" + hive_name + ":" + view_name)
+              except Exception as error:
+                  report["reasons"].append("registry-check-failed:" + type(error).__name__)
+
+          registration_empty = len(report["productionRegistration"]) == 4 and all(row["state"] == "absent" for row in report["productionRegistration"])
+          qualified = report["interactiveShellSameSessionAndSid"] and registration_empty and not report["reasons"]
+          report["status"] = "minimum-preconditions-present" if qualified else "blocked"
+          print(json.dumps(report, ensure_ascii=True, sort_keys=True, indent=2))
+          output = os.environ.get("GITHUB_OUTPUT")
+          if output:
+              with open(output, "a", encoding="utf-8") as stream:
+                  stream.write("minimum_preconditions=" + ("true" if qualified else "false") + "\n")
+                  stream.write("e2e_validated=false\n")
+          '@ | python -B -X utf8 -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Independent modules retain every failure
         shell: pwsh
         run: |

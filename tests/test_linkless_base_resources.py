@@ -206,19 +206,46 @@ else:
     def test_cross_volume_target_blocks_before_probe(self):
         directory = self.root / '_internal/assets'
         directory.mkdir(parents=True, exist_ok=True)
+        (self.root / 'work/map-packages').mkdir(parents=True, exist_ok=True)
+        (directory / 'preserved.bin').write_bytes(b'unchanged resource')
+        def snapshot():
+            return {path.relative_to(self.root).as_posix():
+                    (transaction._identity(path.stat()), path.stat().st_mtime_ns,
+                     path.read_bytes() if path.is_file() else None)
+                    for path in self.root.rglob('*')}
+        before = snapshot()
         original = Path.stat
+        class OtherVolumeStat:
+            def __init__(self, info):
+                self.info = info
+                self.st_dev = info.st_dev + 1
+
+            def __getattr__(self, name):
+                # Rebuilding the stat tuple loses Windows reparse attributes
+                # and nanosecond/birth-time fields. Change only the device.
+                return getattr(self.info, name)
+
+        actual = original(directory)
+        alternate = OtherVolumeStat(actual)
+        self.assertNotEqual(alternate.st_dev, actual.st_dev)
+        for name in dir(actual):
+            if name.startswith('st_') and name != 'st_dev':
+                self.assertEqual(getattr(alternate, name), getattr(actual, name), name)
         def other_volume(path, *args, **kwargs):
             info = original(path, *args, **kwargs)
-            if path == directory:
-                changed = list(info)
-                changed[2] = info.st_dev + 1
-                return os.stat_result(changed)
-            return info
+            return OtherVolumeStat(info) if path == directory else info
         with patch.object(Path, 'stat', new=other_volume), \
-             patch.object(os, 'link', side_effect=AssertionError('must not probe')):
-            with self.assertRaisesRegex(lease.ResourceTransactionError, 'resource-cross-volume-target'):
+             patch.object(lease.tempfile, 'TemporaryDirectory', side_effect=AssertionError('must not probe')) as probe, \
+             patch.object(os, 'link', side_effect=AssertionError('must not link')) as link, \
+             patch.object(transaction, '_write_new', side_effect=AssertionError('must not write')) as write, \
+             patch.object(transaction, '_move_owned', side_effect=AssertionError('must not move')) as move:
+            with self.assertRaisesRegex(lease.ResourceTransactionError, 'resource-cross-volume-target') as caught:
                 lease.preflight_resource_publication(self.root, ['_internal/assets/new'])
-        self.assertEqual(list(directory.iterdir()), [])
+        self.assertEqual(caught.exception.code, 'resource-cross-volume-target')
+        self.assertEqual(caught.exception.details, {'path': '_internal/assets/new'})
+        for operation in (probe, link, write, move):
+            operation.assert_not_called()
+        self.assertEqual(snapshot(), before)
 
     def test_commit_journal_write_uncertainty_never_restores_previous_version(self):
         self.before_upgrade()

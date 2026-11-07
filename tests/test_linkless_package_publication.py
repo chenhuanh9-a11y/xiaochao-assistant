@@ -231,7 +231,12 @@ with resource_write_lock(Path(sys.argv[1])): tx.recover_pending_upgrade(Path(sys
                 proof.write_bytes(b'private data by another writer')
                 foreign['path'], foreign['identity'] = proof, tx._identity(proof.stat())
         with patch.object(tx, '_write_new', side_effect=create):
-            with self.assertRaises(FileExistsError): self.install(self.fixture.old)
+            with self.assertRaises(OSError) as caught:
+                self.install(self.fixture.old)
+        # The Windows handle rename exposes raw ERROR_FILE_EXISTS / ALREADY_EXISTS
+        # as errno; POSIX renameat2 reports EEXIST. Other I/O failures must fail.
+        collision_codes = {80, 183} if os.name == 'nt' else {errno.EEXIST}
+        self.assertIn(caught.exception.errno, collision_codes)
         self.assertEqual(foreign['path'].read_bytes(), b'private data by another writer')
         self.assertEqual(tx._identity(foreign['path'].stat()), foreign['identity'])
         self.assertFalse((self.root / OLD_PATH).exists())
