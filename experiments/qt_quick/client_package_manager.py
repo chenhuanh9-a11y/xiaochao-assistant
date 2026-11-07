@@ -1,4 +1,4 @@
-"""Qt deletion adapter over the receipt-owned production removal transaction."""
+"""Qt package management and verified retained-author rollback transactions."""
 from __future__ import annotations
 
 import os
@@ -11,6 +11,7 @@ from client_resources import _Work, package_problem, package_cancelled, package_
 from client_resource_errors import error_fields
 import map_package_removal as removal
 import author_resource_snapshots as snapshots
+import author_snapshot_history as history
 import author_package_management as authors
 from generic_author_package import is_generic_profile
 from resource_transaction import resource_read_lock
@@ -23,6 +24,7 @@ class PackageManagerService(QObject):
     confirmationRequested = Signal(str, str)
     resourcesChanged = Signal()
     removalCompleted = Signal(str, str)
+    historyReady = Signal(str)
 
     def __init__(self, sandbox, resources, parent=None):
         super().__init__(parent)
@@ -39,12 +41,18 @@ class PackageManagerService(QObject):
         self._cancel = threading.Event()
         self._completion = None
         self._refresh_requested = False
+        self._history_rows, self._history_package = [], ""
+        self._publishing_history_result = False
+        self._refresh_result_notice = ""
+        self.resources.resourcesChanged.connect(self._invalidate_history)
         self.resources.changed.connect(self._drain_refresh)
 
     packageRows = Property("QVariantList", lambda s: s._rows, notify=changed)
     busy = Property(bool, lambda s: s._busy, notify=changed)
     operationStage = Property(str, lambda s: ("cancelling" if s._cancel.is_set() else "manage-" + s._kind) if s._busy else "", notify=changed)
-    pendingKind = Property(str, lambda s: "remove" if s._pending is not None else "", notify=changed)
+    pendingKind = Property(str, lambda s: s._pending.get("action", "remove") if s._pending is not None else "", notify=changed)
+    historyRows = Property("QVariantList", lambda s: s._history_rows, notify=changed)
+    historyPackageId = Property(str, lambda s: s._history_package, notify=changed)
     canCancel = Property(bool, lambda s: s._busy and not s._cancel.is_set(), notify=changed)
     recoveryRequired = Property(bool, lambda s: s._recovery, notify=changed)
     message = Property(str, lambda s: s._message, notify=changed)
@@ -72,10 +80,12 @@ class PackageManagerService(QObject):
                 return False
             lease = self._lease_provider.acquireResourceLease()
             if not lease:
-                self._message = "当前会话或资源操作仍在运行，请停止后再删除图包。"
+                self._message = "当前会话或资源操作仍在运行，请停止后再管理图包。"
                 self.changed.emit()
                 return False
             self._lease_id = lease
+        if kind != 'refresh':
+            self._refresh_result_notice = ""
         self._token += 1
         self._busy, self._kind, self._message = True, kind, message
         self._cancel = cancel = threading.Event()
@@ -95,7 +105,10 @@ class PackageManagerService(QObject):
 
     @Slot()
     def requestRefresh(self):
-        if not self._closed:
+        # The real client forwards our resourcesChanged back through the
+        # resource service. A freshly verified restore result already includes
+        # this same package inventory, so do not re-enter refresh for that echo.
+        if not self._closed and not self._publishing_history_result:
             self._refresh_requested = True
             self._drain_refresh()
 
@@ -103,8 +116,40 @@ class PackageManagerService(QObject):
     def _drain_refresh(self):
         if self._refresh_requested and self._available():
             if self._start("refresh", lambda cancel: declared_packages(self.sandbox, cancelled=cancel.is_set),
-                           "正在查看已导入图包和上次操作记录…"):
+                           self._refresh_result_notice or "正在查看已导入图包和上次操作记录…"):
                 self._refresh_requested = False
+            elif self._refresh_result_notice:
+                self._message = self._refresh_result_notice + ' 资源会话忙，列表核对仍待完成。'
+                self.changed.emit()
+
+    @Slot()
+    def _invalidate_history(self):
+        if self._history_rows and not self._publishing_history_result:
+            self._history_rows = []
+            self.changed.emit()
+
+    @Slot(str)
+    def requestHistory(self, package_id):
+        if self._available():
+            self._start("history", lambda cancel: (package_id, history.list_versions(
+                self.sandbox, package_id, cancelled=cancel.is_set)), "正在核对保留版本的来源记录…")
+
+    @Slot(str, str)
+    def requestRestoreVersion(self, package_id, transaction_id):
+        if self._available():
+            self._start("inspect-restore", lambda cancel: history.inspect_restore(
+                self.sandbox, package_id, transaction_id, cancelled=cancel.is_set),
+                "正在核对历史版本内容与当前底模…")
+
+    @Slot()
+    def dismissHistory(self):
+        # Closing this view cancels only its reads/unaccepted confirmation.
+        # Once accepted, restore owns the normal write/recovery lifecycle and
+        # must not be silently cancelled by navigation or a closing popup.
+        if self._busy and self._kind in {'history', 'inspect-restore'}:
+            self.cancel()
+        elif self._pending is not None and self._pending.get('action') == 'restore-author-version':
+            self.confirmOperation(False)
 
     @Slot(str)
     def requestRemove(self, package_id):
@@ -130,10 +175,16 @@ class PackageManagerService(QObject):
             return
         plan, self._pending = self._pending, None
         if not accepted:
-            self._message = "已取消删除，图包未改动。"
+            self._message = ("已取消回退，当前作者版本未改动。" if plan.get('action') == 'restore-author-version'
+                             else "已取消删除，图包未改动。")
             self._release()
             self.changed.emit()
             self._drain_refresh()
+            return
+        if plan.get('action') == 'restore-author-version':
+            self._start("restore", lambda cancel: history.restore_version(self.sandbox, plan['packageId'],
+                plan['sourceTransactionId'], application_idle=True, expected_plan_sha256=plan['planSha256'],
+                cancelled=cancel.is_set), "正在切换到已核对的作者历史版本…")
             return
         if plan.get('storageFormat'):
             self._start("remove", lambda cancel: authors.remove_author_package_live(self.sandbox, plan['packageId'],
@@ -166,8 +217,13 @@ class PackageManagerService(QObject):
             self._completion = None
             self._recovery = bool(error.get("recovery"))
             code = error_fields(error)["code"]
+            is_history = kind in {'history', 'inspect-restore', 'restore', 'refresh-after-restore'}
             if package_cancelled(error) and not self._recovery:
-                self._message = "删除已取消；已撤回本次文件改动。"
+                self._message = (self._refresh_result_notice + ' 已取消后续列表核对。' if kind == 'refresh' and self._refresh_result_notice else
+                                 "作者版本已切换；已取消列表核对，请重新核对当前状态。" if kind == 'refresh-after-restore' else
+                                 "历史版本操作已取消；未提交的切换已撤回。" if is_history
+                                 else "删除已取消；已撤回本次文件改动。")
+                if kind == 'refresh': self._refresh_result_notice = ''
             else:
                 problem = package_problem(error, "package-" + kind)
                 if code == 'author-snapshot-retained-use-deactivate':
@@ -175,7 +231,19 @@ class PackageManagerService(QObject):
                 elif code == "removal-committed-cleanup-required":
                     problem["summary"] = "图包已删除，但本次临时文件还没清理完。请正常退出并重启，按提示继续清理；清理结束后才会提示完成。"
                 elif self._recovery:
-                    problem["summary"] = "图包删除还没完成。请正常退出并重启，按提示恢复图包；无法确认来源的文件会保留。"
+                    problem["summary"] = (
+                        "作者版本切换结果需要恢复核对。请正常退出并重启，按提示恢复资源；当前版本是否已提交将以事务记录核验，无法确认来源的文件会保留。"
+                        if is_history else "图包删除还没完成。请正常退出并重启，按提示恢复图包；无法确认来源的文件会保留。")
+                elif is_history:
+                    problem['summary'] = (
+                        '历史版本没有与当前底模核对通过的层，不能回退。当前版本和全部文件均保留。'
+                        if code == 'author-history-no-compatible-layers' else
+                        '历史记录、文件或当前状态已改变，回退未能确认完成。请重新核对历史版本；不会覆盖改动过的历史图片。'
+                        if kind != 'refresh-after-restore' else
+                        '作者版本已切换，但列表核对未完成。请重新核对状态，不要重复操作。')
+                elif kind == 'refresh' and self._refresh_result_notice:
+                    problem['summary'] = self._refresh_result_notice + ' 列表仍未核对完成。'
+                    self._refresh_result_notice = ''
                 elif kind == "remove":
                     problem["summary"] = "图包删除未完成；本次文件改动已撤回。详细原因可在帮助页的“最近问题”查看。"
                 elif kind == "refresh-after-remove":
@@ -185,16 +253,51 @@ class PackageManagerService(QObject):
             if not self._recovery:
                 self._release()
             self.changed.emit()
-            if kind in {"remove", "refresh-after-remove"}:
+            if kind in {"remove", "refresh-after-remove", "restore", "refresh-after-restore"}:
                 # Consumers may have observed a transient state before rollback.
                 # With pending recovery the lease remains held and read guards
                 # must refuse refresh until the helper finishes recovery.
-                self.resourcesChanged.emit()
+                self._invalidate_history()
+                if is_history:
+                    # Keep the known terminal result visible while an explicit
+                    # follow-up inventory scan updates the package rows. The
+                    # client signal echo must not re-enter and replace it.
+                    notice = self._message
+                    self._publishing_history_result = True
+                    try:
+                        self.resourcesChanged.emit()
+                    finally:
+                        self._publishing_history_result = False
+                    if not self._recovery:
+                        self._refresh_result_notice = notice
+                        self._refresh_requested = True
+                else:
+                    self.resourcesChanged.emit()
             self._drain_refresh()
             return
-        if kind in {"inspect", "refresh"} and self._cancel.is_set():
-            self._message = "已取消核对，图包未改动。"
+        if kind in {"inspect", "refresh", "history", "inspect-restore"} and self._cancel.is_set():
+            self._message = (self._refresh_result_notice + ' 已取消后续列表核对。'
+                             if kind == 'refresh' and self._refresh_result_notice else "已取消核对，图包未改动。")
+            if kind == 'refresh': self._refresh_result_notice = ''
             self._release()
+        elif kind == "history":
+            self._history_package, self._history_rows = result
+            self._message = "历史列表已读取；回退前还会核对完整内容与当前底模。"
+            self._release()
+            self.changed.emit()
+            self.historyReady.emit(self._history_package)
+            self._drain_refresh()
+            return
+        elif kind == "inspect-restore":
+            self._pending = result
+            self._message = "请确认作者版本回退范围。"
+            self.changed.emit()
+            self.confirmationRequested.emit('回退作者图版本',
+                result['title'] + '\n目标版本：' + result['snapshotId'][:12]
+                + f"\n当前可用 {result['activeLayerCount']} 层，另有 {len(result['inactiveLayers'])} 层保持停用。"
+                + '\n仅切换作者显示版本，不回退程序、识别底模或设置；图片和所有历史版本仍保留。'
+                + '\n确认后重新校验并切换，未提交的失败会恢复原激活记录。取消不改动当前版本。')
+            return
         elif kind == "inspect":
             self._pending = result
             self._message = "请确认删除范围。"
@@ -202,7 +305,7 @@ class PackageManagerService(QObject):
                 self.changed.emit()
                 self.confirmationRequested.emit('停用作者图包',
                     result['title'] + '\n将停用当前版本，全部图片、旧版本与修改内容仍保留，不释放磁盘空间。'
-                    '底模、自定义路线及设置不变。重新导入 ZIP 可以启用；当前没有一键回退。')
+                    '底模、自定义路线及设置不变。重新导入 ZIP 可以启用；也可在“历史版本”中核对并回退。')
                 return
             title = "清理全部已导入图包" if result["packageId"] is None else "删除图包：" + package_title(result["packageId"])
             text = (f"将删除 {len(result['packageIds'])} 个图包的 {result['fileCount']} 个图包文件，"
@@ -212,6 +315,26 @@ class PackageManagerService(QObject):
             self.changed.emit()
             self.confirmationRequested.emit(title, text)
             return
+        elif kind == "restore":
+            self._completion = result
+            package = result['packageId']
+            self._start("refresh-after-restore", lambda cancel: (declared_packages(self.sandbox, cancelled=cancel.is_set),
+                history.list_versions(self.sandbox, package, cancelled=cancel.is_set)), "作者版本已切换，正在核对当前状态…")
+            return
+        elif kind == "refresh-after-restore":
+            self._rows, self._history_rows = result
+            done, self._completion = self._completion, None
+            self._history_package = done['packageId']
+            message = f"作者图已回退，当前启用 {done['activeLayerCount']} 层；程序、底模和历史文件未改动。"
+            self._message = message
+            self._release()
+            self._publishing_history_result = True
+            try:
+                self.resourcesChanged.emit()
+            finally:
+                self._publishing_history_result = False
+            # Preserve the established completion-to-notification wiring.
+            self.removalCompleted.emit('作者图已回退', message)
         elif kind == "remove":
             self._completion = result
             self._start("refresh-after-remove", lambda cancel: declared_packages(self.sandbox),
@@ -219,9 +342,11 @@ class PackageManagerService(QObject):
             return
         elif kind in {"refresh", "refresh-after-remove"}:
             self._rows = result
-            self._message = "图包清单已读取；删除前将核对实际范围。" if result else "没有已登记的图包。"
+            self._message = self._refresh_result_notice or ("图包清单已读取；删除前将核对实际范围。" if result else "没有已登记的图包。")
+            self._refresh_result_notice = ''
             self._release()
             if kind == "refresh-after-remove":
+                self._invalidate_history()
                 self.resourcesChanged.emit()
             if self._completion is not None:
                 done, self._completion = self._completion, None

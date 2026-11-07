@@ -115,6 +115,11 @@ def _read_activation(root, package):
         return None, None
     raw, stamp = _metadata(path)
     value = files._json(raw)
+    _validate_activation(value, package)
+    return value, stamp['sha256']
+
+
+def _validate_activation(value, package):
     if (set(value) != {'schema', 'packageId', 'season', 'snapshotId', 'manifestSha256', 'generation'}
             or value['schema'] != ACTIVATION_SCHEMA or value['packageId'] != package
             or not generic.valid_season(value['season'])):
@@ -125,7 +130,7 @@ def _read_activation(root, package):
             _reject('invalid-activation')
     else:
         _id(value['snapshotId']); _sha(value['manifestSha256'])
-    return value, stamp['sha256']
+    return value
 
 
 def managed(root, package):
@@ -356,8 +361,13 @@ def _load_pending(root):
     directory = files._target(Path(root), STORE + '/transactions/' + _transaction_id(pointer['transactionId']))
     journal = _read_json(files._target(directory, 'journal.json'))
     _validate_pointer(root, directory, pointer['transactionId'], journal)
+    return directory, _validated_journal(root, directory, pointer['transactionId'], journal)
+
+
+def _validated_journal(root, directory, transaction_id, journal):
+    """Shared strict envelope/outcome check for recovery and retained history."""
     if (set(journal) != {'schema', 'transactionId', 'rootIdentity', 'packageId', 'status', 'changes'}
-            or journal['schema'] != JOURNAL_SCHEMA or journal['transactionId'] != pointer['transactionId']
+            or journal['schema'] != JOURNAL_SCHEMA or journal['transactionId'] != transaction_id
             or journal['rootIdentity'] != transaction._identity(Path(root).stat())
             or journal['status'] not in {'prepared', 'committed', 'rolled-back'}
             or not isinstance(journal['changes'], list) or not 1 <= len(journal['changes']) <= 2):
@@ -393,7 +403,7 @@ def _load_pending(root):
         journal = dict(journal, status='committed')
     elif journal['status'] == 'committed':
         _reject('commit-outcome-missing')
-    return directory, journal
+    return journal
 
 
 def _rollback_preflight(root, directory, journal):
@@ -472,7 +482,7 @@ def _commit_outcome(directory, journal):
     transaction._directory_sync(directory)
 
 
-def _activate_locked(root, package, value, *, expected_activation_sha, expected_legacy_sha, expected_activation_identity, expected_legacy_identity, cancelled=None):
+def _activate_locked(root, package, value, *, expected_activation_sha, expected_legacy_sha, expected_activation_identity, expected_legacy_identity, cancelled=None, before_commit=None):
     current, current_sha = _read_activation(root, package)
     legacy = files._target(Path(root), f'work/map-packages/{package}.json')
     legacy_sha = files._sha(legacy) if legacy.exists() else None
@@ -536,6 +546,23 @@ def _activate_locked(root, package, value, *, expected_activation_sha, expected_
                 transaction._directory_sync(target.parent)
                 if not transaction._matches(target, entry['new'], entry['new']['identity']):
                     _reject('activation-changed-during-publish')
+        files._check_cancelled(cancelled)
+        if before_commit is not None:
+            before_commit()
+        # The callback may perform substantial validation. Do not let changes
+        # during that interval become a committed activation or claimed backup.
+        for index, entry in enumerate(changes):
+            target = files._target(Path(root), entry['path'])
+            _validate_target_ancestors(target)
+            if entry['old'] is not None and not transaction._matches(
+                    directory / ('old-' + str(index)), entry['old'], entry['old']['identity']):
+                _reject('backup-changed-before-commit')
+            if entry['new'] is None:
+                if target.exists():
+                    _reject('activation-changed-before-commit')
+            elif (not transaction._matches(target, entry['new'], entry['new']['identity'])
+                    or not transaction._matches(new_pin, entry['new'], entry['new']['identity'])):
+                _reject('activation-changed-before-commit')
         files._check_cancelled(cancelled)
         _commit_outcome(directory, journal)
         journal['status'] = 'committed'

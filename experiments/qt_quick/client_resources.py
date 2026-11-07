@@ -28,7 +28,7 @@ from resource_compatibility import compatibility_message
 
 
 def package_cancelled(error):
-    return error_fields(error)["code"] in {"cancelled", "import-cancelled", "import-request-cancelled"}
+    return error_fields(error)["code"] in {"cancelled", "import-cancelled", "import-request-cancelled", "resource-read-cancelled"}
 
 
 def package_problem(error, action, *, online=False, recovery_required=False):
@@ -759,7 +759,7 @@ class ResourceService(QObject):
             if result.get('storageFormat'):
                 self.confirmationRequested.emit("停用作者图包",
                     result['title'] + "\n将停用当前作者图版本，全部图片、旧版本与修改内容仍保留，不释放磁盘空间。"
-                    "底模、自定义路线及设置不变。可以重新导入 ZIP 启用；当前没有一键回退。")
+                    "底模、自定义路线及设置不变。可以重新导入 ZIP 启用；可在“历史版本”中核对并回退。")
                 return
             self.confirmationRequested.emit("备份并移除图包", "%s\n将保留备份并移除 %s 个地图图片文件（%s 字节），其中 %s 个有改动、%s 个已缺失。保留 %s 个软件必需文件，以及来源不明的文件和自定义路线。\n\n此操作会保留备份，但不能在软件中一键恢复。" % (
                 result["title"], result["fileCount"], result["bytes"], len(result["modifiedFiles"]),
