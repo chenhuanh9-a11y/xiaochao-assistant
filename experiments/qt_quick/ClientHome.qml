@@ -47,6 +47,32 @@ Item {
             columns: page.wide ? 2 : 1
             columnSpacing: page.wide ? Math.round(page.width * .034 / 8) * 8 : 0
             rowSpacing: 24
+            Rectangle {
+                objectName: "homeAnnouncementCard"
+                Layout.columnSpan: page.wide ? 2 : 1
+                Layout.fillWidth: true; implicitHeight: announcementContents.implicitHeight + 28
+                radius: 12; color: "#eaf1ff"; border.color: "#cdddff"
+                RowLayout {
+                    id: announcementContents
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                    anchors.margins: 14; spacing: 12
+                    ColumnLayout {
+                        Layout.fillWidth: true; spacing: 4
+                        Label { Layout.fillWidth: true; text: infoService.hasUnread ? "公告 · 有新内容" : "公告"; color: "#17365e"; font.bold: true; font.pixelSize: 15; textFormat: Text.PlainText }
+                        Label {
+                            objectName: "homeAnnouncementSummary"
+                            Layout.fillWidth: true; color: "#567096"; font.pixelSize: 14
+                            visible: !!infoService.release.announcementId || infoService.updatePhase === "checking" || infoService.updatePhase === "error"
+                            text: infoService.release.announcementId
+                                ? "v" + infoService.release.version + " · " + (infoService.release.notes || "暂无公告正文").split("\n")[0]
+                                : infoService.updatePhase === "checking" ? "正在读取最新公告…"
+                                : infoService.updatePhase === "error" ? "公告读取失败" : ""
+                            textFormat: Text.PlainText; wrapMode: Text.Wrap; maximumLineCount: 2; elide: Text.ElideRight
+                        }
+                    }
+                    AppButton { objectName: "homeOpenAnnouncement"; text: "查看公告"; primary: infoService.hasUnread; onClicked: infoService.openAnnouncement() }
+                }
+            }
             ColumnLayout {
                 Layout.fillWidth: true; Layout.alignment: Qt.AlignTop; spacing: 12
                 Rectangle {
@@ -128,7 +154,6 @@ Item {
                                 onContextRequested: function(season, mode) { clientCoordinator.requestGameContext(season, mode) }
                             }
                             Item { Layout.fillWidth: true }
-                            AppButton { text: "识别详情"; implicitHeight: 32; onClicked: clientCoordinator.navigate("recognition") }
                         }
                         Label {
                             Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#567096"
@@ -172,6 +197,7 @@ Item {
                             AppButton { text: "游戏连接设置"; onClicked: connectionDialog.open() }
                             Item { Layout.fillWidth: true }
                         }
+                        HomeMapActions { Layout.fillWidth: true }
                     }
                 }
                 Rectangle {
@@ -282,7 +308,6 @@ Item {
                                 background: Rectangle { radius: 8; color: parent.hovered ? "#f1f5fc" : "transparent" }
                             }
                         }
-                        AppButton { text: "查看识别回放"; implicitHeight: 32; onClicked: clientCoordinator.navigate("replay") }
                     }
                 }
             }

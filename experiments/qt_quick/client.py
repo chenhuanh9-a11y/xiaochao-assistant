@@ -294,7 +294,7 @@ class QtClient:
         set_startup_stage("create-windows")
         for name, file in (("main", "Client.qml"), ("controls", "ClientControls.qml"),
                            ("reference", "ClientReference.qml"), ("aligned", "ClientAligned.qml"),
-                           ("replay", "Overlay.qml"), ("preview", "ClientPreview.qml"),
+                           ("preview", "ClientPreview.qml"),
                            ("toast", "ClientToast.qml"), ("map-picker", "ClientMapPicker.qml")):
             before = len(self.engine.rootObjects())
             self.engine.load(QUrl.fromLocalFile(str(HERE / file)))
@@ -319,7 +319,9 @@ class QtClient:
         self._initialize_timer.timeout.connect(self._initialize_resources)
         self.session.changed.connect(self._refresh_resource_preparation)
         self._initialize_timer.start()
-        self.info.scheduleStartupCheck(bool(self.paths.production and not probe_output))
+        # Notices are a user-facing feature in source, isolated private and
+        # production clients. Only automated probes suppress the shared check.
+        self.info.scheduleStartupCheck(not bool(probe_output))
 
     def _record_qml_warnings(self, rows):
         self.warnings.extend(str(row) for row in rows)

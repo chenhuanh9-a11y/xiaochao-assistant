@@ -319,7 +319,6 @@ class ClientCoordinator(QObject):
             pointer_signal.connect(self._game_pointer_event if self._ordered_map_input else self._game_pointer_pressed)
         native_input.changed.connect(self.changed)
         native_input.changed.connect(self._input_changed)
-        backend.replayOverlayRequested.connect(self.showAlignedReplay)
         self._foreground_timer = QTimer(self)
         self._foreground_timer.setInterval(100)
         self._foreground_timer.timeout.connect(self._watch_foreground)
@@ -898,23 +897,9 @@ class ClientCoordinator(QObject):
 
     @Slot(str)
     def navigate(self, name):
-        if name in {"home", "recognition", "gallery", "resources", "downloads", "custom", "settings", "replay", "help", "plaza"}:
+        if name in {"home", "gallery", "resources", "downloads", "custom", "settings", "help", "plaza"}:
             self.pageRequested.emit(name)
-            if name == "recognition" and self.runtime.snapshot().get("roundActive"):
-                # Even show()/showNormal() may activate a normal QQuickWindow.
-                # Do not mutate its visibility/z-order from in-round routing.
-                self._message = "候选页已就绪；控制面板中点击“打开候选列表（切到主界面）”可查看，重新识别会切回游戏"
-                self.changed.emit()
-                return
             self._show_main()
-
-    @Slot()
-    def openRecognitionDetails(self):
-        """Explicit controls click, labelled as switching to the main window."""
-        if self._closing or self._closed:
-            return
-        self.pageRequested.emit("recognition")
-        self._show_main()
 
     @Slot()
     def requestManualMapSelection(self):
@@ -933,7 +918,11 @@ class ClientCoordinator(QObject):
             self._manual_map_picker.open(source="map-button")
             return
         self.session.dispatch("reselect_map")
-        self.navigate("recognition")
+        controls = self.windows._windows.get("controls")
+        if controls is not None:
+            controls.setProperty("collapsed", False)
+            controls.setProperty("mapSelectionRequested", True)
+        self.showControls()
 
     @Slot(str)
     def setMapSelectionMode(self, mode):
@@ -1738,22 +1727,6 @@ class ClientCoordinator(QObject):
     @Slot()
     def cancelReferenceEdit(self):
         self._end_reference_edit(True)
-
-    @Slot()
-    def showAlignedReplay(self):
-        if self.backend.replayAvailable:
-            window = self.windows._windows.get("replay")
-            if window is not None:
-                window.setProperty("replayMode", True)
-            self.windows.show("replay")
-        else:
-            self.navigate("replay")
-
-    @Slot(str)
-    def loadReplay(self, value):
-        path = QUrl(value).toLocalFile()
-        self.backend.loadReplay(value)
-        self.session.dispatchWithPayload("load_saved_result", {"path": path})
 
     def _draft_changed(self):
         if self._closing or self._closed:

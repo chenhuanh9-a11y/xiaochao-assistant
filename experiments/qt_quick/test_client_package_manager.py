@@ -202,6 +202,19 @@ def click(name):
     assert 0<=point.x()<view.width() and 0<=point.y()<view.height(),(name,point)
     QTest.mouseClick(view,Qt.LeftButton,Qt.NoModifier,point.toPoint());QTest.qWait(30)
 assert find(view.contentItem(),'managedPackageList').property('count')==3
+# Maintenance is available on demand; Escape closes without any operation.
+assert not view.rootObject().findChild(QObject,'clearManagedPackagesButton').property('visible')
+more=find(view.contentItem(),'resourceMoreButton');more.forceActiveFocus()
+QTest.keyClick(view, Qt.Key_Space);QTest.qWait(60)
+assert find(view.contentItem(),'clearManagedPackagesButton').isVisible()
+assert view.activeFocusItem().objectName()=='checkPackagesButton'
+for name in ('recoveryHistoryButton','clearManagedPackagesButton','checkPackagesButton'):
+    QTest.keyClick(view, Qt.Key_Tab);QTest.qWait(20)
+    assert view.activeFocusItem().objectName()==name,view.activeFocusItem().objectName()
+QTest.keyClick(view, Qt.Key_Escape);QTest.qWait(60)
+assert not view.rootObject().findChild(QObject,'clearManagedPackagesButton').property('visible')
+assert not case.service.pendingKind
+
 assert not find(view.contentItem(),'removePackageButton-builtin-difficult-zhan10').isEnabled()
 def builtin_status():
     return find(view.contentItem(),'packageStatusLabel-builtin-difficult-zhan10').property('text')
@@ -232,6 +245,7 @@ assert (case.fixture.root/'_internal/assets/suju/map-01-1.png').exists()
 click('removePackageButton-nightmare-suju');case.settle();QTest.qWait(30)
 click('resourceConfirmAcceptButton');case.settle(lambda:len(case.service.packageRows)==1);QTest.qWait(30)
 assert not (case.fixture.root/'_internal/assets/suju/map-01-1.png').exists()
+click('resourceMoreButton');QTest.qWait(60)
 click('clearManagedPackagesButton');case.settle();QTest.qWait(30)
 click('resourceConfirmAcceptButton');case.settle(lambda:len(case.service.packageRows)==0)
 assert not (case.fixture.root/second).exists()

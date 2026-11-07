@@ -190,7 +190,7 @@ class ResourceServiceTests(unittest.TestCase):
         with patch.object(self.service, '_snapshot', side_effect=AssertionError('full audit on list')):
             self.service.listPackages(); self.settle()
         self.assertFalse(self.service.inventoryVerified)
-        self.assertIn('尚未核对', self.service.message)
+        self.assertEqual(self.service.message, '')  # Row labels carry the unverified state.
         self.service.refresh(); self.settle()
         self.assertTrue(self.service.inventoryVerified)
         self.service.resourcesChanged.emit()

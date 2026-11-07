@@ -25,13 +25,13 @@ class StartupValidationTests(unittest.TestCase):
     def package(self):
         return displays.InstalledAuthorPackage(self.root / '_internal', self.fixture.profile)
 
-    def test_startup_receipt_and_bindings_resolve_once_and_decode(self):
+    def test_startup_receipt_and_bindings_resolve_once_without_decoding_all_pixels(self):
         from PIL import Image
         with patch.object(base, '_one', wraps=base._one) as one, patch.object(
                 Image.Image, 'load', autospec=True, side_effect=Image.Image.load) as decode:
             self.package()
         self.assertEqual(one.call_count, 3)
-        self.assertGreater(decode.call_count, 0)
+        self.assertEqual(decode.call_count, 0)
         self.assertIsNone(base._BROWSE_REQUEST.get())
 
     def test_next_request_revalidates_dependency_bytes_even_same_stat(self):
@@ -114,13 +114,13 @@ class StartupValidationTests(unittest.TestCase):
         # Native registration is real; product decoding/engine is a fixture.
         registry._build = build
         adapter = EngineAdapter(engine_factories=registry)
-        adapter.dispatch('set_context', dict(season='s1', mode='difficulty2'))
+        adapter.dispatch('set_context', dict(season='s1', mode='nightmare'))
         self.assertTrue(adapter.dispatch('inspect_engine_resources')['success'])
-        self.assertEqual(calls, [('s1', 'difficulty2')])
-        self.assertFalse(registry.capabilities('s1')['nightmare']['prepared'])
+        self.assertEqual(calls, [('s1', 'nightmare')])
+        self.assertFalse(registry.capabilities('s1')['difficult']['prepared'])
         adapter.dispatch('set_context', dict(season='s1', mode='difficult'))
         adapter.dispatch('inspect_engine_resources')
-        self.assertEqual(calls, [('s1', 'difficulty2'), ('s1', 'difficult')])
+        self.assertEqual(calls, [('s1', 'nightmare'), ('s1', 'difficult')])
         # Damage the declared context before a later cached lookup. The
         # existing registration-before-cache contract must remain enforced.
         (self.root / '_internal/seasons/s1/difficult/native-map-manifest.json').write_text('{}')

@@ -96,6 +96,11 @@ class GalleryResourceRefreshTests(unittest.TestCase):
         Image.new('RGB', (8, 6), color).save(data, format='PNG')
         return data.getvalue()
 
+    def test_retired_ordinary_context_cannot_be_selected_programmatically(self):
+        before = (self.backend.season, self.backend.mode, self.backend.viewKey)
+        self.backend.setContext('s1', 'difficulty2')
+        self.assertEqual((self.backend.season, self.backend.mode, self.backend.viewKey), before)
+
     def optional_package(self, name, color):
         image = 'assets/authors/nightingale/map-01-1.png'
         files = {'_internal/' + image: self.png(color),

@@ -214,10 +214,30 @@ class _AlignmentHost:
         if reference is None:
             return dict(verified=False, reason="shared-reference-unavailable"), None
         pack_id = self.author_coordinate_adapters.canonical_pack_id
-        residual = dict(selected_route_current_frame_residual(frame, None, matrix,
-            maximum_dimension=kwargs.get("maximum_dimension", 960),
-            visible_override=kwargs.get("visible_override"), route_profile_id="wang-qingxin",
-            reference_override=reference.validation_mask, shared_reference=reference))
+        # Reuse only identical numerical work within one synchronous fit.
+        # Never trust a residual supplied by a solver or retain one across
+        # observations. The canonical evidence wrapper still runs below.
+        import numpy as np
+        cache = getattr(self, "_observation_residual_cache", None)
+        visible = kwargs.get("visible_override")
+        transform = np.asarray(matrix)
+        key = (str(map_id), str(floor), id(frame), id(reference), id(reference.validation_mask),
+               transform.dtype.str, transform.shape, transform.tobytes(),
+               kwargs.get("maximum_dimension", 960), id(visible))
+        cached = cache.get(key) if cache is not None else None
+        if cached is None:
+            residual = dict(selected_route_current_frame_residual(frame, None, matrix,
+                maximum_dimension=kwargs.get("maximum_dimension", 960),
+                visible_override=visible, route_profile_id="wang-qingxin",
+                reference_override=reference.validation_mask, shared_reference=reference))
+            if cache is not None:
+                # Strong references prevent identity reuse; copies isolate any
+                # diagnostic additions made by individual consumers.
+                if len(cache) >= 2:
+                    cache.pop(next(iter(cache)))
+                cache[key] = (frame, reference, visible, copy.deepcopy(residual))
+        else:
+            residual = copy.deepcopy(cached[3])
         # These are the existing canonical consumer's provenance fields. The
         # original residual kernel supplies the verdict; no caller flag does.
         canonical_residual_evidence(residual, basis="game-rendered-shared-structure", coordinate_pack_id=pack_id)
@@ -528,6 +548,15 @@ class _AlignmentHost:
         return rendered_profile_residual_is_verified(residual)
 
     def _fit_observation(self, frame, map_id, floor, cancelled, entry_candidate=None, *, observation_bounds=None, _context=None):
+        previous = getattr(self, "_observation_residual_cache", None)
+        self._observation_residual_cache = {}
+        try:
+            return self._fit_observation_uncached(frame, map_id, floor, cancelled, entry_candidate,
+                observation_bounds=observation_bounds, _context=_context)
+        finally:
+            self._observation_residual_cache = previous
+
+    def _fit_observation_uncached(self, frame, map_id, floor, cancelled, entry_candidate=None, *, observation_bounds=None, _context=None):
         from alignment_observation import rendered_profile_residual_is_verified
         from fast_structure_alignment import try_alignment
         from single_map_structure import current_geometry, solve, solve_initial_structure

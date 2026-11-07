@@ -22,7 +22,7 @@ Rectangle {
         }
         Label {
             Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#526785"
-            text: problemService.recent.length ? "保留本次运行最近32项。先查看原因和建议；需要排查时，点开问题复制技术详情。" : "本次运行尚未记录错误或警告。"
+            text: problemService.recent.length ? "可展开查看原因。" : "暂无错误或警告。"
         }
         Label { visible: !!problemService.writeError; text: problemService.writeError; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#b8364a" }
         ColumnLayout {

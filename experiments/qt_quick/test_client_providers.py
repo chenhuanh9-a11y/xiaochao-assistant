@@ -17,7 +17,7 @@ class ClientProviderTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
 
     def write(self, relative, data):
         path = self.root / relative
@@ -139,6 +139,23 @@ class ClientProviderTests(unittest.TestCase):
         versions[next(iter(versions))]["expected"] = dict(expected, sourceVersion="wrong-version")
         provider = SharedReferenceProvider(self.root, resources, versions)
         self.assertIsNone(provider("geometry", "fixture", "1"))
+
+    def test_typed_reference_fixture_canonicalizes_temporary_directory_alias(self):
+        # Windows TEMP may name the same directory using an 8.3 alias.  Use a
+        # portable lexical alias to exercise the fixture's canonical-path
+        # contract without weakening the production provider's exact check.
+        with tempfile.TemporaryDirectory() as directory:
+            canonical = Path(directory).resolve()
+            alias = canonical / ".." / canonical.name
+            case = ClientProviderTests(
+                "test_typed_reference_reuses_original_loader_and_rejects_version_mismatch")
+            temporary = SimpleNamespace(name=str(alias), cleanup=lambda: None)
+            with patch.object(tempfile, "TemporaryDirectory", return_value=temporary):
+                case.setUp()
+                try:
+                    case.test_typed_reference_reuses_original_loader_and_rejects_version_mismatch()
+                finally:
+                    case.doCleanups()
 
     def test_malformed_optional_catalog_keeps_validated_typed_mode_available(self):
         import numpy as np

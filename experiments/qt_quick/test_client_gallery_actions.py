@@ -174,6 +174,15 @@ ApplicationWindow {
         QTest.mouseClick(self.window, Qt.LeftButton, Qt.NoModifier, point.toPoint())
         QTest.qWait(50)
 
+    def test_retired_ordinary_entry_is_absent_in_actual_gallery(self):
+        self.backend.setContext('s1', 'nightmare')
+        APP.processEvents()
+        selector = self.item('galleryContext')
+        self.assertFalse(selector.property('ordinaryAvailable'))
+        self.assertFalse(self.item('galleryContextDifficulty2').isVisible())
+        selector.requestContext('s1', 'difficulty2')
+        self.assertEqual(self.backend.mode, 'nightmare')
+
     def show_import(self):
         grid = self.item("galleryAuthorGrid")
         self.assertTrue(QMetaObject.invokeMethod(grid, "positionViewAtEnd"))

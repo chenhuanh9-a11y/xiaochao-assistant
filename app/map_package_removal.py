@@ -98,6 +98,9 @@ def _unknown_history(directory, known):
 
 
 def _valid_target(package, relative):
+    from author_snapshot_removal import valid_target
+    if valid_target(package, relative):
+        return True
     receipt = f"work/map-packages/{package}.json"
     if relative == receipt or (files._allowed(package, relative) and files._live_author_path(package, relative)):
         return True
@@ -159,10 +162,15 @@ def _plan_locked(root, package_id=None, cancelled=None):
                 package = upgrade._read_json(source).get("packageId")
                 if files.known_package_id(package):
                     known.add(package)
-    selected = known if package_id is None else {package_id}
     import author_resource_snapshots as snapshots
-    if any(snapshots.managed(root, package) for package in selected if files.is_generic_profile(package)):
-        _reject('author-snapshot-retained-use-deactivate')
+    for directory in _children(root, snapshots.STORE + '/versions'):
+        if files.is_generic_profile(directory.name):
+            known.add(directory.name)
+    selected = known if package_id is None else {package_id}
+    from author_snapshot_removal import collect
+    snapshot_plans = {package: collect(root, package, cancelled=cancelled)
+        for package in sorted(selected) if files.is_generic_profile(package) and (
+            snapshots.managed(root, package) or _target(root, snapshots.STORE + '/versions/' + package).exists())}
     protected = set(managed_base_inventory(root))
     active, histories, witnesses, archives = {}, [], {}, {}
 
@@ -301,6 +309,10 @@ def _plan_locked(root, package_id=None, cancelled=None):
             witnesses[terminal.relative_to(root).as_posix()] = _stamp(terminal)
         histories.append((package, directory, sources, metadata))
         witnesses[source.relative_to(root).as_posix()] = _stamp(source)
+    for package, snapshot in snapshot_plans.items():
+        archives.setdefault(package, set()).update(snapshot['archives'])
+        for path in snapshot['metadata']:
+            witnesses[path.relative_to(root).as_posix()] = _stamp(path)
     entries, preserved, packages = {}, [], set()
 
     def add(package, path, expected=None):
@@ -348,9 +360,24 @@ def _plan_locked(root, package_id=None, cancelled=None):
                 add(package, path)
         for path in _unknown_history(directory, {path for _row, path in sources} | set(metadata)):
             preserved.append(dict(path=path.relative_to(root).as_posix(), reason="unknown-history-file"))
+    for package, snapshot in snapshot_plans.items():
+        clean = not snapshot['retained'] and package not in dirty_cache
+        for row, path in snapshot['sources']:
+            if path.relative_to(root).as_posix().casefold() in protected:
+                preserved.append(dict(path=path.relative_to(root).as_posix(), reason="official-core-or-shared"))
+                continue
+            clean = add(package, path, row) and clean
+        preserved.extend(dict(path=path.relative_to(root).as_posix(), reason="unknown-snapshot-file")
+                         for path in snapshot['retained'])
+        # Keep all provenance when any payload/history is unverified. A later
+        # cleanup can still identify its remaining files without reviving an
+        # old flat installation or claiming unknown bytes.
+        if clean:
+            for path in snapshot['metadata']:
+                add(package, path, witnesses[path.relative_to(root).as_posix()])
     if len(entries) > MAX_ENTRIES or sum(row["bytes"] for row in entries.values()) > MAX_BYTES:
         _reject("removal-plan-too-large")
-    registered = (set(active) & selected) | {package for package, _directory, _sources, _metadata in histories}
+    registered = (set(active) & selected) | set(snapshot_plans) | {package for package, _directory, _sources, _metadata in histories}
     result = dict(packageId=package_id, packageIds=sorted(packages), registeredPackageIds=sorted(registered),
         entries=sorted(entries.values(), key=lambda row: row["path"]), witnesses=witnesses,
         preserved=sorted(preserved, key=lambda row: row["path"]), fileCount=len(entries),
@@ -411,7 +438,7 @@ def _prune_empty(root, paths):
 
 
 def _check_other_pending(root):
-    for name in ("pending-upgrade.json", "pending-base-repair.json", "pending-additions.json"):
+    for name in ("pending-upgrade.json", "pending-base-repair.json", "pending-additions.json", "pending-author-snapshot.json"):
         if _target(root, "work/map-packages/" + name).exists():
             _reject("removal-other-transaction-pending")
 
@@ -510,7 +537,8 @@ def _retire(root, directory, journal):
         # Never prune active-resource parents after a durable outcome: a user
         # may have recreated even empty directories there in the meantime.
         private_history = [row["path"] for row in journal["entries"] if row["path"].startswith((
-            "work/map-packages/upgrades/", "work/map-packages/staging-", "work/map-package-removals/"))]
+            "work/map-packages/upgrades/", "work/map-packages/staging-", "work/map-package-removals/",
+            "work/map-packages/author-snapshots/"))]
         _prune_empty(root, private_history + [source.relative_to(root).as_posix(),
                            (directory / "objects/0").relative_to(root).as_posix()])
     except (OSError, files.ImportRejected):

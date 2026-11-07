@@ -7,7 +7,7 @@ import unittest
 
 
 class SnapshotPageTests(unittest.TestCase):
-    def test_snapshot_button_cancel_and_deactivate_retain_files(self):
+    def test_snapshot_button_cancel_preserves_then_confirm_deletes(self):
         code = r'''
 from pathlib import Path
 import time
@@ -45,24 +45,25 @@ def click(name):
     QTest.mouseClick(view, Qt.LeftButton, Qt.NoModifier, point.toPoint()); QTest.qWait(30)
 button_name = 'removePackageButton-' + case.profile
 button = find(view.contentItem(), button_name)
-assert button.property('text') == '停用作者图'
-assert QAccessible.queryAccessibleInterface(button).text(QAccessible.Name).startswith('停用作者图 ')
+assert button.property('text') == '检查并删除'
+assert QAccessible.queryAccessibleInterface(button).text(QAccessible.Name).startswith('删除图包 ')
 def visible_texts(item):
     value = item.property('text')
     return ([value] if isinstance(value, str) and item.isVisible() else []) + [text for child in item.childItems() for text in visible_texts(child)]
-assert any('所有文件和历史版本都会保留' in text for text in visible_texts(view.contentItem()))
+assert not any('所有文件和历史版本都会保留' in text for text in visible_texts(view.contentItem()))
+# Retention and disk consequences remain explicit in the action confirmation.
 click(button_name); case.settle(case.manager); QTest.qWait(30)
-assert '不释放磁盘空间' in case.prompts[-1][1]
+assert '成功后不保留' in case.prompts[-1][1]
 click('resourceConfirmCancelButton'); old.assert_active()
 click(button_name); case.settle(case.manager); QTest.qWait(30)
 click('resourceConfirmAcceptButton'); case.settle(case.manager); QTest.qWait(30)
-assert old.directory.exists()
-assert snapshots._read_activation(case.root, case.profile)[0]['snapshotId'] is None
-assert not find(view.contentItem(), button_name).isEnabled()
-assert '磁盘空间未释放' in case.manager.message
+assert not old.directory.exists()
+assert snapshots._read_activation(case.root, case.profile)[0] is None
+assert find(view.contentItem(), button_name) is None
+assert '图包删除完成' in case.manager.message
 assert not warnings, warnings
 view.setSource(QUrl()); case.doCleanups()
-print('snapshot page cancel and retained deactivation passed')
+print('snapshot page cancel and confirmed removal passed')
 '''
         root = Path(__file__).resolve().parents[2]
         run = subprocess.run([sys.executable, '-c', code], cwd=root,
@@ -70,4 +71,4 @@ print('snapshot page cancel and retained deactivation passed')
                      PYTHONPATH=os.pathsep.join(str(root / x) for x in ('experiments/qt_quick', 'app', 'tests'))),
             capture_output=True, text=True, timeout=30)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-        self.assertIn('retained deactivation passed', run.stdout)
+        self.assertIn('confirmed removal passed', run.stdout)

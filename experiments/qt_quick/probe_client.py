@@ -225,7 +225,7 @@ def run_client_probe(client, output):
                 window.grabWindow()
                 state["registered_surface_names"] = sorted(client.windows._windows)
                 check("registered_surfaces", {
-                    "main", "controls", "reference", "aligned", "replay", "preview", "toast"
+                    "main", "controls", "reference", "aligned", "preview", "toast"
                 }.issubset(client.windows._windows))
                 check("no_implicit_native_input", not client.input.enabled and not client.capture.snapshot["enabled"])
                 check("no_tk_import", "tkinter" not in __import__("sys").modules)

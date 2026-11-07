@@ -115,6 +115,11 @@ def _read_activation(root, package):
         return None, None
     raw, stamp = _metadata(path)
     value = files._json(raw)
+    _validate_activation(value, package)
+    return value, stamp['sha256']
+
+
+def _validate_activation(value, package):
     if (set(value) != {'schema', 'packageId', 'season', 'snapshotId', 'manifestSha256', 'generation'}
             or value['schema'] != ACTIVATION_SCHEMA or value['packageId'] != package
             or not generic.valid_season(value['season'])):
@@ -125,7 +130,7 @@ def _read_activation(root, package):
             _reject('invalid-activation')
     else:
         _id(value['snapshotId']); _sha(value['manifestSha256'])
-    return value, stamp['sha256']
+    return value
 
 
 def managed(root, package):
@@ -218,10 +223,11 @@ class SnapshotPackage:
         self.assert_active()
         return data
 
-    def document(self, dependency_paths=None):
+    def document(self, dependency_paths=None, *, decode_images=True):
         return generic.validate_bindings(self.read(generic.bindings_path(self.package)),
             self.owned, self.dependencies, self.read, root=self.root,
-            dependency_paths=dependency_paths, isolate_incompatible_layers=True, tolerate_damaged_images=True)
+            dependency_paths=dependency_paths, isolate_incompatible_layers=True, tolerate_damaged_images=True,
+            decode_images=decode_images)
 
 
 def _previous(root, package, season):
@@ -356,8 +362,13 @@ def _load_pending(root):
     directory = files._target(Path(root), STORE + '/transactions/' + _transaction_id(pointer['transactionId']))
     journal = _read_json(files._target(directory, 'journal.json'))
     _validate_pointer(root, directory, pointer['transactionId'], journal)
+    return directory, _validated_journal(root, directory, pointer['transactionId'], journal)
+
+
+def _validated_journal(root, directory, transaction_id, journal):
+    """Shared strict envelope/outcome check for recovery and retained history."""
     if (set(journal) != {'schema', 'transactionId', 'rootIdentity', 'packageId', 'status', 'changes'}
-            or journal['schema'] != JOURNAL_SCHEMA or journal['transactionId'] != pointer['transactionId']
+            or journal['schema'] != JOURNAL_SCHEMA or journal['transactionId'] != transaction_id
             or journal['rootIdentity'] != transaction._identity(Path(root).stat())
             or journal['status'] not in {'prepared', 'committed', 'rolled-back'}
             or not isinstance(journal['changes'], list) or not 1 <= len(journal['changes']) <= 2):
@@ -393,7 +404,7 @@ def _load_pending(root):
         journal = dict(journal, status='committed')
     elif journal['status'] == 'committed':
         _reject('commit-outcome-missing')
-    return directory, journal
+    return journal
 
 
 def _rollback_preflight(root, directory, journal):
@@ -608,9 +619,13 @@ def verified(root, package, expected_sha256=None, *, cancelled=None):
         return dict(status='not-installed', retainedPreviousVersions=True)
     view = SnapshotPackage(root, package)
     files._check_cancelled(cancelled)
-    document = view.document()
-    files._check_cancelled(cancelled)
-    view.assert_active()
+    from generic_author_base import browse_validation_request
+    with browse_validation_request(cancelled or (lambda: False), reuse=True):
+        # Inventory inspection needs all hashes/bindings, not every raster's
+        # pixels. Import and selected-image consumers still decode fully.
+        document = view.document(decode_images=False)
+        files._check_cancelled(cancelled)
+        view.assert_active()
     digest = view.manifest['receipt']['archiveSha256']
     status = ('update-available' if expected_sha256 and digest != expected_sha256 else
               'partially-compatible' if document['inactiveLayers'] and document['layers'] else

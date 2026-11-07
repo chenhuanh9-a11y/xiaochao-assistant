@@ -36,7 +36,6 @@ class SyntheticPeripheral(QObject):
     changed = Signal()
     resourcesChanged = Signal()
     actionTriggered = Signal(str)
-    replayOverlayRequested = Signal()
 
 
 class S1AuthorSettingsChainTests(unittest.TestCase):

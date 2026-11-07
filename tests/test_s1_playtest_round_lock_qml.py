@@ -36,7 +36,7 @@ class PlaytestLockPresentation(unittest.TestCase):
             engine.rootContext().setContextProperty(name, value)
         components, roots = [], []
         try:
-            for file in ('ClientRecognition.qml', 'ClientControls.qml', 'ClientHome.qml'):
+            for file in ('ClientControls.qml', 'ClientHome.qml'):
                 component = QQmlComponent(engine, QUrl.fromLocalFile(str(candidate_qml.HERE / file)))
                 root = component.create()
                 self.assertIsNotNone(root, component.errors())
@@ -52,11 +52,9 @@ class PlaytestLockPresentation(unittest.TestCase):
                 self.producer.floor = floor; self.producer.unknown.add('a')
                 self.assertFalse(self.runtime.dispatch('observe_candidate_floor')['success'])
                 self.settle()
-                recognition, controls, home = roots
-                self.assertIn('本局地图已锁定', recognition.findChild(QObject, 'recognitionIdentitySummary').property('text'))
+                controls, home = roots
                 self.assertIn('地图已锁定', controls.findChild(QObject, 'controlStatusText').property('text'))
                 self.assertNotIn('候选', controls.findChild(QObject, 'controlMapFloorText').property('text'))
-                self.assertFalse(recognition.property('privateIdentityRetained'))
                 self.assertFalse(home.property('privateIdentityRetained'))
                 self.assertFalse(controls.property('unconfirmedCandidate'))
                 self.assertFalse(self.coordinator.alignedData)

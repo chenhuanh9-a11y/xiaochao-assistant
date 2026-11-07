@@ -51,8 +51,10 @@ class InstalledAuthorPackage:
         self.bindings_path = protocol.bindings_path(package_id) if protocol else bindings_path(package_id)
         raw=self._read(self.bindings_path)
         self.layer_dependencies = {}
-        self.document=(self.snapshot.document(self.layer_dependencies) if self.snapshot is not None else protocol.validate_bindings(raw,owned,deps,self._read,root=self.root.parent,
-                         dependency_paths=self.layer_dependencies)
+        self.document=(protocol.validate_bindings(raw,owned,deps,self._read,root=self.root.parent,
+                         dependency_paths=self.layer_dependencies, decode_images=False,
+                         isolate_incompatible_layers=self.snapshot is not None,
+                         tolerate_damaged_images=self.snapshot is not None)
             if protocol else validate_bindings(raw,owned,deps,self._read))
         if self.document["profileId"] != package_id:
             raise ValueError("s1-author-binding-context-mismatch")
@@ -80,6 +82,41 @@ class InstalledAuthorPackage:
         if len(data)!=row['bytes'] or hashlib.sha256(data).hexdigest()!=row['sha256']:
             raise ValueError('s1-author-resource-changed')
         return data
+
+
+def _matches_context(resource_root, package_id, season, mode):
+    """A negative-only metadata filter. Matching packages still load strictly.
+
+    Do not decode an S1 pack while browsing S0, or a nightmare-only pack while
+    preparing difficult. No receipt/activation result is cached across calls.
+    Invalid/unknown records fall through to the existing diagnostic reader.
+    """
+    if not is_generic_profile(package_id):
+        return True
+    import star_map_import as api
+    import author_resource_snapshots as snapshots
+    from generic_author_base import check_browse_cancelled
+    check_browse_cancelled()
+    root = Path(resource_root).parent
+    try:
+        if snapshots.managed(root, package_id):
+            package = snapshots.SnapshotPackage(root, package_id)
+            receipt, owned = package.manifest['receipt'], package.owned
+        else:
+            path = api._target(root, f'work/map-packages/{package_id}.json')
+            if not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
+                return True
+            receipt = api._json(path.read_bytes())
+            owned, _ = api._receipt_inventory(receipt, package_id)
+        check_browse_cancelled()
+        if receipt['season'] != season:
+            return False
+        prefix = f'_internal/assets/authors/{package_id}/{season}/'
+        modes = {row['path'][len(prefix):].split('/')[0] for row in owned.values()
+                 if row['path'].startswith(prefix)}
+        return mode in modes
+    except (OSError, ValueError, KeyError, TypeError):
+        return True
 
 
 class S1AuthorCatalog(AuthorRouteCatalog):
@@ -128,6 +165,8 @@ class S1AuthorDisplays:
                 receipt=api._target(self.root.parent,f'work/map-packages/{profile_id}.json')
                 import author_resource_snapshots as snapshots
                 if not receipt.exists() and not (is_generic_profile(profile_id) and snapshots.managed(self.root.parent, profile_id)):
+                    continue
+                if not _matches_context(self.root, profile_id, season, native.mode):
                     continue
                 package=InstalledAuthorPackage(self.root, profile_id)
                 doc=package.document
@@ -231,6 +270,8 @@ def _append_browse_profile(context, profile_id):
     if context.mode not in known_modes_for_season(context.season) or context.error:
         return context
     try:
+        if not _matches_context(context.root, profile_id, context.season, context.mode):
+            return context
         package=InstalledAuthorPackage(context.root, profile_id)
     except FileNotFoundError:
         return context

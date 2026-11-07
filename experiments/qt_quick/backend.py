@@ -10,7 +10,7 @@ from PySide6.QtCore import (QAbstractListModel, QObject, Property, QRunnable,
 
 from client_paths import RESOURCE_ROOT as ROOT, WORK_ROOT, runtime_paths, bundled_author_root
 sys.path.insert(0, str(ROOT / "app"))
-from season_context import SEASONS, season_label
+from season_context import SEASONS, season_label, is_retired_mode
 from map_resource_context import load_browse_context
 from season_map_resources import browse_modes
 from star_map_import import inspect_package, install_package
@@ -91,7 +91,6 @@ class Backend(QObject):
     viewChanged = Signal(str)
     confirmReplacement = Signal(str)
     overlayRequested = Signal()
-    replayOverlayRequested = Signal()
     clickThroughRequested = Signal(bool)
 
     def __init__(self, sandbox):
@@ -118,9 +117,6 @@ class Backend(QObject):
         self._jobs = set()
         self._pending = None
         self._import_notice = ""
-        self._replay = {}
-        self._replay_message = "选择一份已保存的回放"
-        self._replay_generation = 0
         self._shutting_down = False
         self.stale_results = 0
         self.refresh()
@@ -136,9 +132,6 @@ class Backend(QObject):
     clickThrough = Property(bool, lambda s: s._click_through, notify=changed)
     message = Property(str, lambda s: s._message, notify=changed)
     hasError = Property(bool, lambda s: s._message.startswith(("资源读取失败", "导入失败")), notify=changed)
-    replayData = Property("QVariantMap", lambda s: s._replay, notify=changed)
-    replayAvailable = Property(bool, lambda s: bool(s._replay), notify=changed)
-    replayMessage = Property(str, lambda s: s._replay_message, notify=changed)
     selectedKey = Property(str, lambda s: s._selected, notify=changed)
     selectedRow = Property(int, lambda s: next((i for i, row in enumerate(s.model.rows)
                                                if row["key"] == s._selected), -1), notify=changed)
@@ -289,7 +282,7 @@ class Backend(QObject):
 
     @Slot(str, str)
     def setContext(self, season, mode):
-        if season not in SEASONS or mode not in browse_modes(season):
+        if season not in SEASONS or mode not in browse_modes(season) or is_retired_mode(mode, season=season):
             return
         if (season, mode) == (self._season, self._mode):
             return
@@ -358,31 +351,6 @@ class Backend(QObject):
     @Slot()
     def showOverlay(self):
         self.overlayRequested.emit()
-
-    @Slot()
-    def showReplayOverlay(self):
-        if self._replay:
-            self.replayOverlayRequested.emit()
-
-    @Slot(str)
-    def loadReplay(self, value):
-        path = Path(QUrl(value).toLocalFile())
-        self._replay_generation += 1
-        generation = self._replay_generation
-        self._replay = {}
-        self._replay_message = "正在校验并载入回放…"
-        self.changed.emit()
-        def read():
-            from replay_adapter import load_render_replay
-            return load_render_replay(path, WORK_ROOT)
-        def loaded(result, error):
-            if generation != self._replay_generation:
-                return
-            self._replay = result if not error else {}
-            self._replay_message = f"回放载入失败：{error}" if error else (
-                f"{result['label']} · {result['floor']}楼 · 未连接游戏")
-            self.changed.emit()
-        self._submit(read, loaded)
 
     @Slot(bool)
     def setClickThrough(self, enabled):

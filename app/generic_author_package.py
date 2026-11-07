@@ -210,7 +210,8 @@ def validate_display_affine(value):
 
 
 def validate_bindings(raw, rows, dependencies, read, *, root, dependency_paths=None,
-                      isolate_incompatible_layers=False, tolerate_damaged_images=False):
+                      isolate_incompatible_layers=False, tolerate_damaged_images=False,
+                      decode_images=True):
     from generic_author_base import resolve_layer, check_browse_cancelled
     from s1_author_package import _shape
     from PIL import Image, UnidentifiedImageError
@@ -262,7 +263,11 @@ def validate_bindings(raw, rows, dependencies, read, *, root, dependency_paths=N
                         or image.mode not in (('RGB', 'RGBA') if extension == 'png' else ('RGB', 'L'))
                         or getattr(image, 'n_frames', 1) != 1):
                     _reject('image-format-mismatch')
-                image.load()
+                # Import validates every compressed pixel. Installed readers
+                # still verify all bytes and the image contract, but defer pixel
+                # allocation/decompression to the selected display consumer.
+                if decode_images:
+                    image.load()
                 check_browse_cancelled()
         except (OSError, ValueError, UnidentifiedImageError, Image.DecompressionBombError) as error:
             if not isolate_incompatible_layers or not tolerate_damaged_images:

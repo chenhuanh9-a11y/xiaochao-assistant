@@ -38,13 +38,13 @@ def package_problem(error, action, *, online=False, recovery_required=False):
     category = error_category(code)
     title = "在线图包操作未完成" if online else "图包操作未完成"
     summary = ("这次在线图包操作没有完成。请刷新图包列表后重试。" if online else
-               "这次图包操作没有完成。请点击“核对状态”查看当前结果，再重试。")
+               "这次图包操作没有完成。请从“更多”检查图包完整性后重试。")
     if code == "non-local-archive":
         summary = "请选择保存在本机的 ZIP 图包文件，不能直接导入网页地址。"
     elif recovery_required:
-        title, summary = "上次图包操作还没完成", "暂时不能继续导入或删除图包。请点击“恢复记录”，按提示完成上次操作。"
+        title, summary = "上次图包操作还没完成", "暂时不能继续导入或删除图包。请从“更多”查看恢复记录，按提示完成上次操作。"
     elif action == "refresh-after-write":
-        summary = "图包文件已经处理完，但还没确认是否可用。请点击“核对状态”再检查一次。"
+        summary = "图包文件已经处理完，但还没确认是否可用。请从“更多”检查图包完整性。"
     elif compatibility_message(code, fields["details"]) is not None:
         summary = compatibility_message(code, fields["details"])
     elif category == "network":
@@ -62,13 +62,13 @@ def package_problem(error, action, *, online=False, recovery_required=False):
     elif category == "dependency":
         summary = "这个图包需要的地图文件有缺失，或版本与当前软件不匹配，暂时不能导入。请查看图包适用的版本，使用与当前软件配套的图包。"
     elif category == "conflict":
-        summary = "图包文件或安装记录发生了变化，这次操作已停止。请点击“核对状态”，重新确认后再试。"
+        summary = "图包文件或安装记录发生了变化，这次操作已停止。请从“更多”检查图包完整性，重新确认后再试。"
     elif category == "unsafe":
         summary = "这个图包不能按当前方式安全导入，操作已停止。请使用图包提供者发布的原始 ZIP 文件。"
     elif category == "busy":
         summary = "本局或另一个图包操作还在进行。请先结束本局，或等待当前操作完成后再试。"
     elif category == "helper":
-        summary = "图包处理没有完成，软件还没收到可以确认的结果。请点击“核对状态”；仍有问题时，可导出诊断信息寻求帮助。"
+        summary = "图包处理没有完成，软件还没收到可以确认的结果。请从“更多”检查图包完整性；仍有问题时，可导出诊断信息寻求帮助。"
     elif category == "file":
         summary = "软件暂时无法访问图包文件。请确认磁盘空间足够、文件没有被其他程序占用，再重试。"
     elif category == "package":
@@ -313,7 +313,7 @@ class ResourceService(QObject):
 
     def _report_problem(self, error, action, *, recovery_required=False, deferred=False):
         if package_cancelled(error):
-            return ("恢复操作已取消；上次未完成的操作仍需处理，可稍后点击“恢复记录”继续。"
+            return ("恢复操作已取消；上次未完成的操作仍需处理，可稍后从“更多”查看恢复记录继续。"
                     if recovery_required else "操作已取消。")
         problem = package_problem(error, action, recovery_required=recovery_required)
         if deferred:
@@ -667,7 +667,7 @@ class ResourceService(QObject):
             self._message, self._kind = "操作已取消。", ""
             if kind == "refresh-after-write":
                 self._import_completion_message = ""
-                self._message = "已停止检查。刚才完成的图包操作仍然保留，可点击“核对状态”继续检查。"
+                self._message = "已停止检查。刚才完成的图包操作仍然保留，可从“更多”继续检查图包完整性。"
             self._release_lease()
             self.changed.emit()
             return
@@ -711,7 +711,7 @@ class ResourceService(QObject):
         elif kind == "list":
             self._inventory_verified = False
             self._rows, self._recovery, self._kind = result, False, ""
-            self._message = "清单已读取，内容尚未核对；使用“核对状态”检查文件。"
+            self._message = ""
         elif kind == "refresh":
             self._rows, self._recovery, self._kind = result, False, ""
             if self._import_receipt_notification:

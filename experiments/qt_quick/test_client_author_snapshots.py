@@ -60,20 +60,22 @@ class ClientAuthorSnapshotsTests(unittest.TestCase):
         with self.assertRaises(ValueError):first.assert_active()
         self.assertFalse(self.lease.active)
 
-    def test_actual_management_entry_deactivates_and_reports_retention(self):
+    def test_actual_management_entry_deletes_verified_snapshots(self):
         self.install();view=snapshots.SnapshotPackage(self.root,self.profile)
         self.manager.requestRemove(self.profile);self.settle(self.manager)
-        self.assertEqual(self.manager.pendingKind,'remove');self.assertIn('不释放磁盘空间',self.prompts[-1][1])
+        self.assertEqual(self.manager.pendingKind,'remove');self.assertIn('成功后不保留',self.prompts[-1][1])
         self.manager.confirmOperation(True);self.settle(self.manager)
         self.assertEqual(self.errors,[]);self.assertEqual(imp.verified_installed_package(self.root,self.profile)['status'],'not-installed')
-        self.assertTrue(view.directory.exists());self.assertIn('磁盘空间未释放',self.manager.message)
+        self.assertFalse(view.directory.exists());self.assertIn('图包删除完成',self.manager.message)
         self.assertFalse(self.lease.active)
 
-    def test_batch_purge_reports_limitation_no_false_success(self):
+    def test_batch_purge_includes_snapshots_and_waits_for_confirmation(self):
         self.install();view=snapshots.SnapshotPackage(self.root,self.profile)
         self.manager.requestClearAll();self.settle(self.manager)
-        self.assertIn('暂不支持批量彻底删除',self.manager.message);view.assert_active()
-        self.assertEqual(self.manager.pendingKind,'');self.assertFalse(self.lease.active)
+        self.assertIn('请确认删除范围',self.manager.message);view.assert_active()
+        self.assertEqual(self.manager.pendingKind,'remove');self.assertTrue(self.lease.active)
+        self.manager.confirmOperation(True);self.settle(self.manager)
+        self.assertFalse(view.directory.exists());self.assertFalse(self.lease.active)
 
     def test_cancel_update_retains_active_generation(self):
         self.install();view=snapshots.SnapshotPackage(self.root,self.profile)

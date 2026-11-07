@@ -11,9 +11,6 @@ from client_resources import _Work, package_problem, package_cancelled, package_
 from client_resource_errors import error_fields
 import map_package_removal as removal
 import author_resource_snapshots as snapshots
-import author_package_management as authors
-from generic_author_package import is_generic_profile
-from resource_transaction import resource_read_lock
 from map_package_summary import declared_packages
 
 
@@ -118,9 +115,6 @@ class PackageManagerService(QObject):
 
     def _inspect(self, package_id):
         def inspect(cancel):
-            with resource_read_lock(self.sandbox):
-                if is_generic_profile(package_id) and snapshots.managed(self.sandbox, package_id):
-                    return authors.inspect_author_package_removal(self.sandbox, package_id)
             return removal.inspect_package_removal(self.sandbox, package_id, cancelled=cancel.is_set)
         self._start("inspect", inspect, "正在核对本次处理范围…")
 
@@ -134,11 +128,6 @@ class PackageManagerService(QObject):
             self._release()
             self.changed.emit()
             self._drain_refresh()
-            return
-        if plan.get('storageFormat'):
-            self._start("remove", lambda cancel: authors.remove_author_package_live(self.sandbox, plan['packageId'],
-                application_idle=True, expected_receipt_sha256=plan['receiptSha256'],
-                expected_plan_sha256=plan['planSha256'], cancelled=cancel.is_set), "正在停用作者图版本…")
             return
         self._start("remove", lambda cancel: removal.remove_packages(self.sandbox, plan["packageId"],
             application_idle=True, expected_plan_sha256=plan["planSha256"], cancelled=cancel.is_set),
@@ -170,9 +159,7 @@ class PackageManagerService(QObject):
                 self._message = "删除已取消；已撤回本次文件改动。"
             else:
                 problem = package_problem(error, "package-" + kind)
-                if code == 'author-snapshot-retained-use-deactivate':
-                    problem['summary'] = '版本化作者图保留了历史版本，暂不支持批量彻底删除。请单独选择“停用作者图”；覆盖升级的资源清理会统一盘点并隔离这些版本。'
-                elif code == "removal-committed-cleanup-required":
+                if code == "removal-committed-cleanup-required":
                     problem["summary"] = "图包已删除，但本次临时文件还没清理完。请正常退出并重启，按提示继续清理；清理结束后才会提示完成。"
                 elif self._recovery:
                     problem["summary"] = "图包删除还没完成。请正常退出并重启，按提示恢复图包；无法确认来源的文件会保留。"
@@ -219,7 +206,7 @@ class PackageManagerService(QObject):
             return
         elif kind in {"refresh", "refresh-after-remove"}:
             self._rows = result
-            self._message = "图包清单已读取；删除前将核对实际范围。" if result else "没有已登记的图包。"
+            self._message = "" if result else "没有已登记的图包。"
             self._release()
             if kind == "refresh-after-remove":
                 self.resourcesChanged.emit()

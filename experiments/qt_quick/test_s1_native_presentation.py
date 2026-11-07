@@ -1,4 +1,4 @@
-"""Offscreen real recognition page and extracted Home bindings; synthetic state only."""
+"""Extracted Home identity bindings; synthetic state only, not layout/game QA."""
 from pathlib import Path
 import unittest
 from PySide6.QtCore import QUrl
@@ -7,46 +7,21 @@ import test_client_recognition as fixture
 
 
 class NativeRecognitionPresentation(unittest.TestCase):
-    setUp = fixture.RecognitionTests.setUp
+    def setUp(self):
+        from PySide6.QtQml import QQmlEngine
+        self.session = fixture.FakeSession()
+        self.engine = QQmlEngine()
+        self.engine.rootContext().setContextProperty("session", self.session)
+
     def tearDown(self):
         from PySide6.QtCore import QCoreApplication, QEvent
-        fixture.RecognitionTests.tearDown(self)
         QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
-        fixture.APP.processEvents()
-    item = fixture.RecognitionTests.item
+        self.engine.deleteLater(); fixture.APP.processEvents()
 
     def publish(self, **changes):
         self.session.state.update(changes)
         self.session.changed.emit()
         fixture.APP.processEvents()
-
-    def test_retained_identity_requires_fresh_pose_and_never_dispatches(self):
-        self.publish(season='s1', roundActive=True, candidateProvisionalDisplayEnabled=True,
-            privateExperiment=dict(privateExperimental=True, privateExperimentalLocked=True, privateLockMapId='101'),
-            displayAuthorized=False, provisionalMapId='101')
-        label = self.item('recognitionIdentitySummary')
-        self.assertIn('位置待核对', label.property('text'))
-        self.assertIn('本局 101', label.property('text'))
-        self.assertNotIn('未锁定候选', label.property('text'))
-        self.publish(displayAuthorized=True, provisionalMapId='102')
-        self.assertIn('位置待核对', label.property('text'))
-        self.publish(provisionalMapId='101')
-        self.assertIn('当前画面已贴合', label.property('text'))
-        self.publish(displayAuthorized=False)
-        self.assertIn('位置待核对', label.property('text'))
-        self.assertTrue(self.page.property('privateIdentityRetained'))
-        self.assertEqual(self.session.calls, [])
-        self.assertFalse(self.warnings)
-
-    def test_old_round_or_other_season_never_exposes_retained_lock(self):
-        self.publish(season='s1', roundActive=False,
-            privateExperiment=dict(privateExperimental=True, privateExperimentalLocked=True, privateLockMapId='101'))
-        self.assertFalse(self.page.property('privateIdentityRetained'))
-        self.publish(season='s0', roundActive=True)
-        self.assertFalse(self.page.property('privateIdentityRetained'))
-        self.publish(season='s1', privateExperiment={})
-        self.assertFalse(self.page.property('privateIdentityRetained'))
-        self.assertEqual(self.session.calls, [])
 
     def test_home_binding_contract_offscreen(self):
         # Evaluate the exact Home identity properties, without claiming Home layout/service coverage.
@@ -64,8 +39,13 @@ class NativeRecognitionPresentation(unittest.TestCase):
                 displayAuthorized=False, provisionalMapId='101')
             self.assertTrue(home.property('privateIdentityRetained'))
             self.assertIn('位置待核对', home.property('privateStatus'))
-            self.publish(displayAuthorized=True)
+            self.publish(displayAuthorized=True, provisionalMapId='102')
+            self.assertIn('位置待核对', home.property('privateStatus'))
+            self.publish(provisionalMapId='101')
             self.assertIn('当前画面已贴合', home.property('privateStatus'))
+            self.publish(season='s0')
+            self.assertFalse(home.property('privateIdentityRetained'))
+            self.publish(season='s1')
             self.publish(roundActive=False)
             self.assertFalse(home.property('privateIdentityRetained'))
         finally:
@@ -84,14 +64,6 @@ class PreservationSourceContracts(unittest.TestCase):
             self.assertIn("'" + name + "'", workflow)
         self.assertIn("'season-ui'", workflow)
 
-    def test_presentation_does_not_add_actions_or_claim_live_validation(self):
-        source = Path(__file__).with_name('ClientRecognition.qml').read_text()
-        self.assertNotIn('贴合失败时恢复识别', source)
-        self.assertIn('静态选中行核验不代表结构贴合或实机通过', source)
-        self.assertIn('暂时无法贴合只停止显示', source)
-        self.assertNotIn('requestManualMapSelection', source)
-        self.assertNotIn('prepare_manual_alignment', source)
-        self.assertIn('候选不代表已确认身份', source)
 
 
 if __name__ == '__main__':

@@ -101,7 +101,8 @@ Item {
                 id: galleryContextSelector; objectName: "galleryContext"
                 seasons: settingsService.seasonOptions
                 season: backend.season; mode: backend.mode
-                browseDifficulty2: true
+                // Retired ordinary mode is not a usable gallery entry.
+                browseDifficulty2: false
                 enabled: true
                 onContextRequested: function(season, mode) { backend.setContext(season, mode) }
             }

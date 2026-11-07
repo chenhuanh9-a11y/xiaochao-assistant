@@ -32,6 +32,7 @@ class _BrowseValidation:
     def __init__(self, cancelled):
         self.cancelled = cancelled
         self.files = {}
+        self.paths = {}
         self.documents = {}
         self.layers = {}
         self.registrations = {}
@@ -60,7 +61,22 @@ class _BrowseValidation:
         if before != after or (path in self.files and self.files[path] != evidence):
             raise ValueError('base changed during browse validation')
         self.files[path] = evidence
+        self.paths[(Path(root), relative)] = path
         return data
+
+    def matches_inventory(self, root, relative, row):
+        """Reuse source evidence, not trust, until the independent final read.
+
+        S1 declares shared JSON for every layer. Reading and hashing it again
+        per layer is quadratic in pack size. Every first read is recorded and
+        every source is still re-read from disk before the request may publish.
+        """
+        self.check()
+        key = (Path(root), relative)
+        if key not in self.paths:
+            self.read(root, relative)
+        info, digest = self.files[self.paths[key]]
+        return row.get('bytes') == info[2] and row.get('sha256') == digest.hex()
 
     def verify(self):
         # Re-read bytes, not just timestamps. Same-size/timestamp replacements,
@@ -117,19 +133,22 @@ def _path(root, relative):
 
 
 def _json(root, relative):
+    request = _BROWSE_REQUEST.get()
+    key = (Path(root), relative)
+    if request is not None:
+        request.check()
+        if key in request.documents:
+            # Exact lexical key: aliases cannot inherit another path's check.
+            # The recorded source still undergoes final path and byte checks.
+            return request.documents[key]
     path = _path(root, relative)
     if path.stat().st_size > 32 * 1024 * 1024:
         raise ValueError('base declaration too large')
-    request = _BROWSE_REQUEST.get()
-    if request is not None:
-        request.check()
-        if path in request.documents:
-            return request.documents[path]
     value = json.loads(_read_bytes(root, relative).decode('utf-8'))
     if not isinstance(value, dict):
         raise ValueError('base declaration must be an object')
     if request is not None:
-        request.documents[path] = value
+        request.documents[key] = value
     return value
 
 
@@ -265,11 +284,19 @@ def _resolve(root, season, mode, mid, floor):
         inventory = manifest['files']
         for relative in dependencies - {'native-map-manifest.json'}:
             row = _one(inventory, lambda r: r.get('path') == relative)
-            data = _read_bytes(base, relative)
-            if row.get('bytes') != len(data) or row.get('sha256') != hashlib.sha256(data).hexdigest():
+            request = _BROWSE_REQUEST.get()
+            if request is not None:
+                matches = request.matches_inventory(base, relative, row)
+            else:
+                data = _read_bytes(base, relative)
+                matches = row.get('bytes') == len(data) and row.get('sha256') == hashlib.sha256(data).hexdigest()
+            if not matches:
                 raise ValueError('base inventory hash mismatch')
-    for relative in dependencies:
-        _path(base, relative)
+    if _BROWSE_REQUEST.get() is None:
+        for relative in dependencies:
+            _path(base, relative)
+    # In a request all dependencies above have already been read through _path;
+    # verify() independently repeats both the path and complete-byte checks.
     result['dependencies'] = sorted(f'{prefix}/{p}' for p in dependencies)
     return result
 

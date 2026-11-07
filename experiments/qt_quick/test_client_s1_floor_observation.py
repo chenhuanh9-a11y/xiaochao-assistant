@@ -211,7 +211,7 @@ class S1FloorCoordinatorTests(unittest.TestCase):
 
 
 class S1FloorQmlTests(unittest.TestCase):
-    def test_native_cap_runtime_snapshot_reaches_both_qml_floor_labels(self):
+    def test_native_cap_runtime_snapshot_reaches_controls_floor_label(self):
         """Use Runtime's real source values through Session, never invented enums.
 
         NativeCap resources, pixels and fitting remain synthetic fixtures; this
@@ -230,10 +230,7 @@ class S1FloorQmlTests(unittest.TestCase):
 
         runtime_case = ManualS1FloorRuntime()
         runtime_case.setUp()
-        page_case = qml_fixture.RecognitionTests()
-        page_case.setUp()
         session = SessionService(runtime_case.runtime)
-        page_case.engine.rootContext().setContextProperty("session", session)
         settings = Settings()
         coordinator = controls_fixture.Coordinator(settings)
         windows = QObject()
@@ -255,12 +252,9 @@ class S1FloorQmlTests(unittest.TestCase):
         def check(recognition_text, controls_text):
             session.refreshRuntime()
             qml_fixture.APP.processEvents()
-            self.assertEqual(page_case.item("recognitionCurrentFloor").property("text"), recognition_text)
             label = next(item for item in items(window.contentItem())
                          if item.objectName() == "controlMapFloorText")
             self.assertTrue(label.property("text").endswith(controls_text), label.property("text"))
-            self.assertFalse(page_case.item("recognitionFloor_-3").property("visible"))
-            self.assertFalse(page_case.item("recognitionCycleFloor").property("visible"))
             self.assertFalse(any(item.objectName() == "controlManualFloor_-3"
                                  for item in items(window.contentItem())))
 
@@ -279,48 +273,15 @@ class S1FloorQmlTests(unittest.TestCase):
             runtime_case.raw = None
             self.assertFalse(runtime_case.runtime.dispatch("observe_manual_floor")["success"])
             check("当前楼层未知", "楼层待核对")
-            self.assertEqual(page_case.warnings, [])
             self.assertEqual(warnings, [])
         finally:
             window.hide()
             window.deleteLater()
             engine.deleteLater()
-            page_case.tearDown()
             QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
             qml_fixture.APP.processEvents()
             session.shutdown()
             runtime_case.doCleanups()
-
-    def test_current_observation_and_fallback_labels_do_not_treat_default_as_observed(self):
-        case = qml_fixture.RecognitionTests()
-        case.setUp()
-        try:
-            state = case.session.state
-            state.update(season="s1", manualAlignmentSession=True, automaticFloorObservationAvailable=True,
-                manualFloor="", targetFloor="-1", observedFloor="", floorSource="unknown",
-                availableFloors=["-1", "-2", "-3", "-4"])
-            case.session.changed.emit()
-            qml_fixture.APP.processEvents()
-            label = case.page.findChild(qml_fixture.QObject, "recognitionCurrentFloor")
-            self.assertIn("当前楼层未知", label.property("text"))
-            self.assertNotIn("自动观察当前", label.property("text"))
-            state.update(floorSource="automatic-current-frame", observedFloor="-2", targetFloor="-2")
-            case.session.changed.emit(); qml_fixture.APP.processEvents()
-            self.assertEqual(label.property("text"), "自动观察当前 B2")
-            state.update(floorSource="manual-unvalidated-fallback", observedFloor="", manualFloor="-3", targetFloor="-3")
-            case.session.changed.emit(); qml_fixture.APP.processEvents()
-            self.assertEqual(label.property("text"), "当前楼层未知 · 人工回退 B3")
-            button = case.item("recognitionFloor_-3")
-            self.assertIn("实机待验", button.property("text"))
-            auto = case.item("recognitionFloor_auto")
-            self.assertTrue(auto.property("visible"))
-            self.assertFalse(auto.property("selected"))
-            from PySide6.QtCore import QMetaObject
-            self.assertTrue(QMetaObject.invokeMethod(auto, "clicked"))
-            self.assertEqual(case.session.calls[-1], ("set_floor", {"floor": "auto"}))
-            self.assertEqual(case.warnings, [])
-        finally:
-            case.tearDown()
 
 
 if __name__ == "__main__":

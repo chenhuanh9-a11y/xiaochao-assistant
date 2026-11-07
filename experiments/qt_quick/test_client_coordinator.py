@@ -21,7 +21,6 @@ class Service(QObject):
     actionRequested = Signal(str, object)
     resourcesChanged = Signal()
     actionTriggered = Signal(str)
-    replayOverlayRequested = Signal()
     overlayRequested = Signal()
     shortcutRecordingChanged = Signal(bool)
     mapInputRequested = Signal(object)
@@ -919,6 +918,26 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertEqual(errors[0]["action"], "game-floor-control")
         self.assertNotIn("快捷键暂不可用", errors[0]["title"])
+
+    def test_auto_map_selection_opens_existing_controls_without_persisting_layout(self):
+        controls = Mock()
+        self.windows._windows["controls"] = controls
+        self.settings.persistedValues["mapSelectionMode"] = "auto"
+        with patch.object(self.coordinator, "showControls") as show:
+            self.coordinator.requestManualMapSelection()
+        self.session.dispatch.assert_called_once_with("reselect_map")
+        controls.setProperty.assert_any_call("collapsed", False)
+        controls.setProperty.assert_any_call("mapSelectionRequested", True)
+        show.assert_called_once_with()
+
+    def test_retired_routes_cannot_show_or_activate_any_window(self):
+        pages = []
+        self.coordinator.pageRequested.connect(pages.append)
+        with patch.object(self.coordinator, "_show_main") as show:
+            for name in ("recognition", "replay"):
+                self.coordinator.navigate(name)
+            show.assert_not_called()
+        self.assertEqual(pages, [])
 
     def test_manual_picker_hotkey_button_and_confirm_share_the_existing_command(self):
         picker = Mock()

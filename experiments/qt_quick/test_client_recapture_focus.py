@@ -78,7 +78,7 @@ class RecaptureFocusTests(unittest.TestCase):
         self.qml = QQmlEngine()
         self.qml.rootContext().setContextProperty('session', self.session)
         self.qml.rootContext().setContextProperty('clientCoordinator', self.coordinator)
-        self.component = QQmlComponent(self.qml, QUrl.fromLocalFile(str(Path(__file__).with_name('ClientRecognition.qml'))))
+        self.component = QQmlComponent(self.qml, QUrl.fromLocalFile(str(Path(__file__).with_name('HomeMapActions.qml'))))
         self.page = self.component.create()
         self.assertIsNotNone(self.page, str(self.component.errors()))
         self.window = QQuickWindow()
@@ -98,15 +98,16 @@ class RecaptureFocusTests(unittest.TestCase):
         APP.processEvents()
 
     def click(self):
-        def find(item):
-            if item.objectName() == 'recognitionCapture': return item
+        def find(item, name):
+            if item.objectName() == name: return item
             for child in item.childItems():
-                result = find(child)
+                result = find(child, name)
                 if result is not None: return result
-        item = find(self.page)
-        point = item.mapToScene(QPointF(item.width()/2, item.height()/2)).toPoint()
-        QTest.mouseClick(self.window, Qt.LeftButton, Qt.NoModifier, point)
-        APP.processEvents()
+        for name in ('homeMapMore', 'homeRecapture'):
+            item = find(self.window.contentItem(), name)
+            point = item.mapToScene(QPointF(item.width()/2, item.height()/2)).toPoint()
+            QTest.mouseClick(self.window, Qt.LeftButton, Qt.NoModifier, point)
+            APP.processEvents(); QTest.qWait(180)
 
     def settle(self):
         deadline = time.monotonic() + 5
@@ -391,9 +392,6 @@ class RecaptureFocusTests(unittest.TestCase):
             self.coordinator.navigate('recognition'); APP.processEvents()
             self.assertIs(APP.focusWindow(), game)
             self.assertFalse(main.isVisible())
-            self.coordinator.openRecognitionDetails(); APP.processEvents()
-            self.assertTrue(main.isVisible())
-            self.assertIs(APP.focusWindow(), main)
             main.hide(); game.requestActivate(); APP.processEvents()
             self.coordinator.navigate('settings'); APP.processEvents()
             self.assertTrue(main.isVisible())

@@ -49,7 +49,8 @@ class S1ManualSettingsUiTests(unittest.TestCase):
             if season == 's1':
                 self.assertTrue(self.item(view, 'settingsS1FloorObservation').isVisible())
                 self.assertIn('B1～B4', self.item(view, 'settingsS1FloorObservation').property('text'))
-                self.assertIn('S1 自动识别', self.item(view, 'settingsMapSelectionExplanation').property('text'))
+                self.assertFalse(self.item(view, 'settingsMapSelectionExplanation').isVisible())
+                self.assertEqual(self.item(view, 'settingsS1FloorObservation').property('text'), '自动识别地图与楼层（B1～B4）')
                 # A queued activation from the previous season cannot change S0's saved setting.
                 self.item(view, 'setting_mapSelectionMode_auto').clicked.emit()
                 self.item(view, 'setting_mapSelectionMode_manual').clicked.emit()

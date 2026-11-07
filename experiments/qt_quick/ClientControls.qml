@@ -40,10 +40,20 @@ Window {
     readonly property string appliedMode: session.appliedMode || session.currentMode
     readonly property bool compactAutomatic: false
     property bool recoveryExpanded: false
-    readonly property var activeModules: layout.order.filter(function(key) {
-        return layout.enabled.indexOf(key) >= 0
-            && (snapshot.season !== "s1" || (key !== "manual_map" && key !== "recognition"))
-    })
+    property bool mapSelectionRequested: false
+    onVisibleChanged: { if (!visible) mapSelectionRequested = false }
+    readonly property var activeModules: {
+        const ordered = layout.order.slice()
+        if (mapSelectionRequested && snapshot.season !== "s1") {
+            for (const key of ["manual_map", "recognition"])
+                if (ordered.indexOf(key) < 0) ordered.push(key)
+        }
+        return ordered.filter(function(key) {
+            return (layout.enabled.indexOf(key) >= 0
+                    || (mapSelectionRequested && (key === "manual_map" || key === "recognition")))
+                && (snapshot.season !== "s1" || (key !== "manual_map" && key !== "recognition"))
+        })
+    }
     readonly property var privateIdentity: snapshot.privateExperiment || ({})
     readonly property string privateLockedMap: privateIdentity.privateLockMapId || ""
     readonly property bool privateIdentityRetained: snapshot.season === "s1" && snapshot.roundActive === true
@@ -284,7 +294,6 @@ Window {
                             if (panel.snapshot.season === "s1") session.dispatchWithPayload("capture_now", {forceCatalogue: true})
                             else session.dispatch("capture_now")
                         } }
-                        MenuItem { objectName: "controlsRecognitionMenu"; text: "打开候选列表（切到主界面）"; onTriggered: clientCoordinator.openRecognitionDetails() }
                     }
                 }
             }
@@ -533,7 +542,6 @@ Window {
             ControlButton { visible: !panel.compactAutomatic || panel.recoveryExpanded; text: panel.snapshot.candidateProvisionalDisplayEnabled === true ? "人工确认本局地图（可选）" : "确认地图"; enabled: panel.available("confirm_route"); Layout.fillWidth: true; onClicked: session.dispatch("confirm_route") }
             KeyHint { text: !panel.compactAutomatic || panel.recoveryExpanded ? panel.shortcut("confirm-round") : "" }
             ControlButton { objectName: "controlReidentify"; text: panel.snapshot.s1FormalRoundLock && panel.snapshot.identityLocked ? "重新贴合" : "重新识别"; enabled: panel.available("capture_now"); Layout.fillWidth: true; onClicked: session.dispatchWithPayload("capture_now", {forceCatalogue: !(panel.snapshot.s1FormalRoundLock && panel.snapshot.identityLocked)}) }
-            ControlButton { objectName: "controlsRecognitionDetails"; visible: !panel.compactAutomatic || panel.recoveryExpanded; text: "打开候选列表（切到主界面）"; Layout.fillWidth: true; onClicked: clientCoordinator.openRecognitionDetails() }
         }
     }
     Component {

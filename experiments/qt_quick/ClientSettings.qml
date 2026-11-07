@@ -76,7 +76,7 @@ Item {
     }
     component Note: Label {
         font.family: "Microsoft YaHei UI"
-        font.pixelSize: 12
+        font.pixelSize: 14
         color: "#526785"
         wrapMode: Text.WordWrap
         Layout.fillWidth: true
@@ -187,7 +187,7 @@ Item {
                 text: typeof gameStartupService !== "undefined" ? gameStartupService.message : ""
             }
             Note {
-                text: "仅监听当前 Windows 会话中的第五人格窗口。星图仍需管理员确认；不会绕过 UAC。默认关闭，不随升级自动开启。"
+                text: "启动星图时需确认管理员权限。"
             }
         }
         Rectangle {
@@ -440,11 +440,6 @@ Item {
                         visible: !root.automaticMapSelection
                         enabled: visible
                     }
-                    Note {
-                        objectName: "settingsS1FloorObservation"
-                        visible: root.automaticMapSelection
-                        text: "S1 楼层随当前画面自动识别 B1～B4；未知时停止贴合。S0 的框选与固定位置设置不参与 S1 识别。"
-                    }
                     Disclosure { objectName: "modeSettingsToggle"; text: root.modeExpanded ? "收起模式与路线" : "模式与路线"; expanded: root.modeExpanded; onClicked: root.modeExpanded = !root.modeExpanded }
                     ColumnLayout {
                         visible: root.modeExpanded
@@ -461,7 +456,10 @@ Item {
                     }
                     Item { Layout.fillWidth: true }
                 }
-                Note { text: "保存默认赛季、难度与路线作者；可用作者来自对应赛季的本地图包。" }
+                Note {
+                    objectName: "settingsS1FloorObservation"; visible: root.automaticMapSelection
+                    text: "自动识别地图与楼层（B1～B4）"
+                }
                 RowLayout {
                     objectName: "settingsMapSelectionActions"
                     visible: !root.automaticMapSelection
@@ -481,9 +479,9 @@ Item {
                 }
                 Note {
                     objectName: "settingsMapSelectionExplanation"
+                    visible: !root.automaticMapSelection && root.preferences.mapSelectionMode === "manual"
                     text: root.automaticMapSelection
-                        ? "S1 自动识别地图并跨层核对；候选显示不代表身份已锁定。S0 的选图方式与手动选图快捷键保留，切回 S0 后可设置。"
-                        : "手动选图时不自动识别地图，按“手动选图”快捷键或游戏控件里的“选择本局地图”自己选；锁图后两种方式相同。"
+                        ? "" : "手动选图：用快捷键或游戏控件选择地图。"
                 }
                 GridLayout {
                     columns: root.width < 560 ? 1 : 2

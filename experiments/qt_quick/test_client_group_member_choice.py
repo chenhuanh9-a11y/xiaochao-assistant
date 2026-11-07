@@ -4,11 +4,8 @@ from dataclasses import FrozenInstanceError
 import unittest
 from unittest.mock import patch
 
-from PySide6.QtCore import Property
-from PySide6.QtTest import QTest
 
 from client_group_member_choice import plan_group_member_choice, group_member_choice_is_current
-import test_client_recognition as ui
 
 
 def state():
@@ -75,71 +72,6 @@ class ChoicePlanTests(unittest.TestCase):
             self.assertEqual(plan.reason, reason)
             self.assertTrue(plan.message)
 
-
-class GroupSession(ui.FakeSession):
-    busy = Property(bool, lambda self: bool(self.state.get("busy")), notify=ui.FakeSession.changed)
-
-
-class GroupChoiceUiTests(ui.RecognitionTests):
-    def setUp(self):
-        with patch.object(ui, "FakeSession", GroupSession):
-            super().setUp()
-        self.session.state.update(state(), groupMemberRows=[dict(mapId="map-a", name="地图甲"),
-            dict(mapId="map-b", name="地图乙"), dict(mapId="map-c", name="组外地图")])
-        self.session.state["commands"].update({action: dict(available=True)
-            for action in ("select_group_member", "resume_group_automatic")})
-        self.session.changed.emit()
-        ui.APP.processEvents()
-
-    # Original candidate tests use a non-group snapshot and remain in their own module.
-    test_candidate_select_previous_next_confirm_reselect_and_floor_flow = None
-    test_unsupported_empty_state_disables_commands_and_has_no_browser_dependency = None
-
-    def test_click_pending_ack_hold_has_no_resume_or_global_candidate_action(self):
-        self.assertTrue(self.page.property("groupVisible"))
-        self.assertTrue(self.item("groupMember_map-a").isEnabled())
-        self.click("groupMember_map-b")
-        self.assertEqual(self.session.calls[-1], ("select_group_member", payload(state())))
-        self.assertTrue(self.item("groupMember_map-a").property("selected"))
-        self.session.state.update(groupMemberSelectionPending=True, pendingGroupMemberId="map-b",
-            desiredGroupMemberId="map-b",groupMemberChoiceStatus="awaiting-geometry")
-        self.session.changed.emit(); ui.APP.processEvents()
-        self.assertFalse(self.item("groupMember_map-b").isEnabled())
-        self.assertTrue(self.item("groupMember_map-b").property("selected"))
-        self.assertIn("已选地图乙，等待定位；当前地图地图甲",self.item("groupMemberCurrent").property("text"))
-        self.session.state.update(groupMemberSelectionPending=False,
-            groupMemberSelectionReason="切换未生效，仍使用地图甲；请打开地图重试")
-        self.session.changed.emit(); ui.APP.processEvents()
-        self.assertTrue(self.item("groupMember_map-b").property("selected"))
-        self.assertTrue(self.item("groupMember_map-a").isEnabled())
-        self.assertIn("自动重试", self.item("groupMemberReason").property("text"))
-        self.session.state.update(groupMemberSelectionPending=False, currentGroupMemberId="map-b",
-            manualGroupMemberHeld=True, manualGroupMemberId="map-b", identityPhase="MANUAL_MEMBER_CONFIRMED",
-            groupMemberSelectionReason="",groupMemberChoiceStatus="confirmed")
-        self.session.changed.emit(); ui.APP.processEvents()
-        self.assertIn("本局已手动选择：地图乙", self.item("groupMemberCurrent").property("text"))
-        self.assertFalse(self.item("groupMember_map-b").isEnabled())
-        self.assertNotIn("groupMemberResumeAutomatic", [item.objectName() for item in self.page.findChildren(ui.QObject)])
-        self.assertTrue(self.session.state["manualGroupMemberHeld"])
-        self.assertFalse(any(action == "select_candidate" for action, _ in self.session.calls))
-        self.assertEqual(self.warnings, [])
-
-    def test_refresh_keeps_button_instances_and_disabled_actions_explain_why(self):
-        button = self.item("groupMember_map-b")
-        button.forceActiveFocus()
-        for n in range(20):
-            self.session.state.update(busy=bool(n % 2), pendingAction="refresh_map")
-            self.session.changed.emit(); ui.APP.processEvents()
-            self.assertIs(self.item("groupMember_map-b"), button)
-            self.assertTrue(button.isEnabled())
-            self.assertTrue(button.hasActiveFocus())
-        self.session.state.update(resourceLocked=True, busy=False)
-        self.session.changed.emit(); ui.APP.processEvents()
-        self.assertFalse(button.isEnabled())
-        self.assertIn("正在更新资源", self.item("groupMemberReason").property("text"))
-        before = len(self.session.calls); self.click("groupMember_map-b")
-        self.assertEqual(len(self.session.calls), before)
-        self.assertEqual(self.warnings, [])
 
 
 if __name__ == "__main__":

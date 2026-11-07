@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import Qt, QUrl, QObject
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQuick import QQuickView
 from PySide6.QtTest import QTest
@@ -96,8 +96,18 @@ class RetirementPresentationTests(unittest.TestCase):
             APP.processEvents()
             self.fixture.settle()
             plan = cleanup_plan(pending=False)
-            self.service._recovery_rows = [plan]
-            self.service.changed.emit()
+            # Normal history is hidden until the user requests it from More.
+            more = view.rootObject().findChild(QObject, 'resourceMoreButton')
+            QTest.mouseClick(view, Qt.LeftButton, Qt.NoModifier,
+                            more.mapToScene(more.boundingRect().center()).toPoint())
+            QTest.qWait(60)
+            history = view.rootObject().findChild(QObject, 'recoveryHistoryButton')
+            self.assertTrue(history.property('visible'))
+            with patch.object(self.service, '_recovery_history', return_value=[plan]):
+                QTest.mouseClick(view, Qt.LeftButton, Qt.NoModifier,
+                                history.mapToScene(history.boundingRect().center()).toPoint())
+                self.fixture.settle()
+            self.assertTrue(view.rootObject().property('recoveryHistoryVisible'))
             QTest.qWait(60)
             items, queue = [], [view.contentItem()]
             while queue:

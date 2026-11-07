@@ -53,7 +53,7 @@ ClientLazyPage {
 
     def test_real_client_uses_lazy_nonhome_pages_and_keeps_resource_dialog_host(self):
         result = composition(check_lazy=True)
-        self.assertEqual(result["unvisitedPageCount"], 8)
+        self.assertEqual(result["unvisitedPageCount"], 6)
 
 
 def composition(*, check_lazy=False):
@@ -99,14 +99,19 @@ def _composition(*, check_lazy=False):
                 construction_ms = (time.monotonic()-start)*1000
                 wait(lambda: not client.session.busy and client._initialized)
                 QTest.qWait(100)
-                names = ("Gallery", "Settings", "Replay", "Help", "Recognition", "Custom", "Downloads", "Plaza")
+                names = ("Gallery", "Settings", "Help", "Custom", "Downloads", "Plaza")
                 loaders = [client.main.findChild(QObject, "lazy"+name+"Page") for name in names]
                 result = dict(constructionMs=construction_ms, workingSetBytes=psutil.Process().memory_info().rss,
                     qmlObjectCount=sum(1+len(window.findChildren(QObject)) for window in client.engine.rootObjects()),
                     unvisitedPageCount=sum(page is not None and page.property("item") is None for page in loaders),
                     evidence="fixture-composition-not-packaged-startup")
                 if check_lazy:
-                    assert result["unvisitedPageCount"] == 8, result
+                    assert result["unvisitedPageCount"] == 6, result
+                    assert "replay" not in client.windows._windows
+                    assert client.main.findChild(QObject, "lazyRecognitionPage") is None
+                    assert client.main.findChild(QObject, "lazyReplayPage") is None
+                    assert not hasattr(client.backend, "loadReplay")
+                    assert not hasattr(client.coordinator, "openRecognitionDetails")
                     assert client.main.findChild(QObject, "resourceArchiveDialog") is not None
                     client.main.setProperty("page", "settings")
                     wait(lambda: loaders[1].property("item") is not None)
@@ -115,7 +120,7 @@ def _composition(*, check_lazy=False):
                     client.main.setProperty("page", "settings")
                     assert loaders[1].property("item") is settings_page
                     assert all(page.property("item") is None for i, page in enumerate(loaders) if i != 1)
-                    for key, loader in zip(("gallery", "settings", "replay", "help", "recognition",
+                    for key, loader in zip(("gallery", "settings", "help",
                                              "custom", "downloads", "plaza"), loaders):
                         client.main.setProperty("page", key)
                         wait(lambda: loader.property("item") is not None)

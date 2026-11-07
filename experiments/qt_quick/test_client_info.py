@@ -133,13 +133,16 @@ class InfoTests(unittest.TestCase):
             self.assertEqual(calls[0]['source_commit'], '')
             self.assertEqual(calls[0]['build_fingerprint'], 'UNKNOWN')
 
-    def test_manual_picker_help_binding_keeps_main_action_order(self):
-        service=self.service()
-        service._help_topic_template=[dict(steps=[dict(targets=['manual-map-picker'])])]
-        service._providers={'coordinator':SimpleNamespace(settings=SimpleNamespace(
-            persistedValues=dict(actionHotkeys=['']*9+['F4'])))}
-        rows=service._help_rows()
-        self.assertIn('F4',json.dumps(rows))
+    def test_retired_help_cards_have_no_runtime_or_bundle_dependency(self):
+        service = self.service()
+        self.assertFalse(hasattr(service, 'helpTopics'))
+        self.assertFalse(hasattr(service, 'helpImages'))
+        self.assertFalse(hasattr(service, 'helpNavigate'))
+        self.assertFalse(Path(__file__).with_name('help-topics.json').exists())
+        spec = Path(__file__).resolve().parents[2] / 'tools/qt-client.spec'
+        self.assertNotIn('help-topics.json', spec.read_text('utf-8'))
+        # The complete tutorial and its current hotkey tests are retained.
+        self.assertTrue(Path(__file__).with_name('tutorial-chapters.json').is_file())
 
     def test_help_reset_changes_only_random_identity_and_next_production_log(self):
         from client_problems import ProblemsService
@@ -366,6 +369,11 @@ ClientHelp { objectName: "helpPanel"; anchors.fill: parent } }
         window = component.create()
         self.assertIsNotNone(window, str(component.errors()))
         self.assertEqual(self.calls, [])
+        self.assertIsNone(window.findChild(QObject, "helpTopic-quick-start"))
+        self.assertIsNone(window.findChild(QObject, "helpTopic-check-feedback"))
+        self.assertFalse(window.findChild(QObject, "helpAutomaticFailureSampling").property("visible"))
+        self.assertTrue(QMetaObject.invokeMethod(window.findChild(QObject, "helpDiagnosticsOptions"), "clicked"))
+        self.app.processEvents()
         auto = window.findChild(QObject, "helpExportAutomaticFailureEvidence")
         self.assertTrue(auto.property('checked'))
         text_only = window.findChild(QObject, "helpTextOnlyDiagnostics")

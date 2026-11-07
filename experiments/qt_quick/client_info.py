@@ -26,6 +26,7 @@ from diagnostic_export import export_safe_diagnostic_bundle, diagnostic_package_
 class ClientInfoService(QObject):
     changed = Signal()
     startupAnnouncement = Signal("QVariantMap")
+    announcementRequested = Signal("QVariantMap")
     homePreviewRequested = Signal(str, str, str, str)
 
     def __init__(self, sandbox, *, fetch=None, open_url=None):
@@ -71,7 +72,6 @@ class ClientInfoService(QObject):
         self._operation = ""
         self._history_message = "检查更新后可查看往期公告"
         self._diagnostics = {}
-        self._help_topic_template = json.loads(Path(__file__).with_name("help-topics.json").read_text("utf-8"))
         self._home_previews = []
         self._home_context = None
         self._home_preview_generation = 0
@@ -89,6 +89,8 @@ class ClientInfoService(QObject):
         self._startup_requested = False
         self._startup_checked = False
         self._announcements = {}
+        self._announcement_check_pending = False
+        self._manual_notice_fetch = False
         self._pending_notice_reads = {}
         self._startup_timer = QTimer(self)
         self._startup_timer.setSingleShot(True)
@@ -144,33 +146,6 @@ class ClientInfoService(QObject):
         return getattr(coordinator, "backend", None)
 
     homePreviews = Property("QVariantList", lambda s: s._home_previews, notify=changed)
-    helpImages = Property("QVariantMap", lambda s: {
-        topic: QUrl.fromLocalFile(str(s.paths.resource_root / "assets/help" / name)).toString()
-        for topic, name in (("quick-start", "home.png"), ("shortcuts-visibility", "settings.png"),
-                            ("resources-opacity", "resources.png"), ("check-feedback", "help.png"))}, constant=True)
-
-    def _help_rows(self):
-        rows = deepcopy(self._help_topic_template)
-        coordinator = self._providers.get("coordinator")
-        settings = getattr(coordinator, "settings", None)
-        values = settings.persistedValues if settings is not None else {}
-        order = ("toggle-panel", "candidate-prev", "candidate-next", "confirm-round", "cycle-floor",
-                 "end-round", "toggle-sheet-visibility", "start-round", "toggle-round",
-                 "manual-map-picker")
-        actions = dict(zip(order, values.get("actionHotkeys", [])))
-        actions["map"] = values.get("hotkey", "")
-        for row in rows:
-            for step in row["steps"]:
-                step["bindings"] = "  /  ".join(str(actions.get(key) or "未设置") for key in step["targets"])
-        return rows
-    helpTopics = Property("QVariantList", _help_rows, notify=changed)
-
-    @Slot(str)
-    def helpNavigate(self, page):
-        coordinator = self._providers.get("coordinator")
-        if coordinator is not None and page in {"preferences", "maps"}:
-            coordinator.navigate("settings" if page == "preferences" else "gallery")
-
     def setHomeContext(self, mode, profile_id, *, season="s0", force=False):
         """Receive the actual applied runtime context, never the browsing selection."""
         if self._closed or season not in SEASONS or mode not in browse_modes(season):
@@ -361,7 +336,39 @@ class ClientInfoService(QObject):
             self._startup_timer.start(100)
             return
         self._startup_checked = True
-        self._check_updates(manual=False)
+        # A prior manual request already owns this check and its retry schedule.
+        if self._service.phase == "idle":
+            self._check_updates(manual=False)
+
+    def _remember_announcement(self, release):
+        self._announcements[release.announcement_id] = release
+        while len(self._announcements) > 64:
+            self._announcements.pop(next(iter(self._announcements)))
+        return self._release_row(release)
+
+    @Slot()
+    def openAnnouncement(self):
+        """Open cached content, or one cancellable view of the shared check.
+
+        Cancelling the view does not cancel the service's bounded checks, but
+        that request's late result must not become an automatic popup.
+        """
+        if self._closed:
+            return
+        release = self._service.latest
+        if release is not None:
+            self.announcementRequested.emit(self._remember_announcement(release))
+            return
+        self._manual_notice_fetch = True
+        self._announcement_check_pending = self._service.phase != "checking"
+        self._timer.start()
+        self.announcementRequested.emit({})
+        self._start_announcement_check()
+
+    def _start_announcement_check(self):
+        if self._announcement_check_pending and not self.checking and not self._closed:
+            self._announcement_check_pending = False
+            self._check_updates(manual=True)
 
     @Slot()
     def checkUpdates(self):
@@ -383,23 +390,27 @@ class ClientInfoService(QObject):
         self._flush_notice_reads()
         if self._writing:
             return
+        self._start_announcement_check()
         event = self._service.poll()
         if event is not None:
+            manual_notice = self._manual_notice_fetch
+            # Retry belongs to the same cold manual view until content arrives,
+            # even if that view was closed after an error.
+            if "error" not in event:
+                self._manual_notice_fetch = False
             self._message = self._service.message
             self._action_error = "error" in event
             self._operation = ""
             if "error" not in event:
+                self._remember_announcement(self._service.latest)
                 self._history_message = ("更新历史暂时无法读取，可重新检查更新" if event.get("history") is None
                                          else "暂无更早的更新公告" if not self.history else "")
             # Keep the service's bounded retry/recheck schedule alive. Network
             # requests remain daemon workers and never block window startup.
             self.changed.emit()
-            if ("error" not in event and (self._startup_requested or not event.get("manual", False))
+            if (not manual_notice and "error" not in event and (self._startup_requested or not event.get("manual", False))
                     and self._service.should_announce()):
                 release = self._service.latest
-                self._announcements[release.announcement_id] = release
-                while len(self._announcements) > 64:
-                    self._announcements.pop(next(iter(self._announcements)))
                 self.startupAnnouncement.emit(self._release_row(release))
         elif self._service.phase == "checking" and not self._operation:
             self._operation = "正在读取最新版本与更新历史…"
@@ -665,6 +676,8 @@ class ClientInfoService(QObject):
         self._startup_timer.stop()
         self._closed = True
         self._pending_notice_reads.clear()
+        self._announcement_check_pending = False
+        self._manual_notice_fetch = False
         self._announcements.clear()
         self._home_preview_generation += 1
         self._timer.stop()

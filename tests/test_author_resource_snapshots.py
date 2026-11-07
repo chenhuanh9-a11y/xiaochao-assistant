@@ -389,11 +389,13 @@ class AuthorSnapshotTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'plan-changed'):recovery.execute_locked(self.root,plan,'recover')
         self.assertTrue(self.pending().exists())
 
-    def test_full_purge_refuses_snapshot_instead_of_false_success(self):
+    def test_full_purge_plans_snapshot_payload_and_activation(self):
         self.install(self.package())
         import map_package_removal
-        with self.assertRaisesRegex(ValueError,'retained-use-deactivate'):
-            with resource_write_lock(self.root):map_package_removal._plan_locked(self.root,self.profile)
+        with resource_write_lock(self.root):
+            plan = map_package_removal._plan_locked(self.root, self.profile)
+        self.assertGreater(plan['fileCount'], 0)
+        self.assertIn(snapshots.activation_path(self.profile), {row['path'] for row in plan['entries']})
 
     def test_committed_status_cannot_be_downgraded_to_rollback(self):
         self.install(self.package())
@@ -454,7 +456,7 @@ class AuthorSnapshotTests(unittest.TestCase):
         management.remove_author_package_live(self.root,self.profile,application_idle=True,
             expected_receipt_sha256=plan['receiptSha256'],expected_plan_sha256=plan['planSha256'])
         row=next(row for row in declared_packages(self.root) if row['packageId']==self.profile)
-        self.assertEqual(row['status'],'not-installed');self.assertFalse(row['canInspectRemoval'])
+        self.assertEqual(row['status'],'not-installed');self.assertTrue(row['canInspectRemoval'])
 
     def test_snapshot_pending_startup_plan_supported(self):
         self.interrupt_publish(self.package())

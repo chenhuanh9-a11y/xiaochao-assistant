@@ -59,7 +59,7 @@ def declared_packages(install_root, *, cancelled=None):
                     activation, _ = snapshots._read_activation(root, package)
                     row['season'] = activation['season']
                     if activation['snapshotId'] is None:
-                        row.update(status='not-installed', compatibilityNotice='已停用；旧版本仍保留，不释放磁盘空间。')
+                        row.update(status='not-installed', canInspectRemoval=True, compatibilityNotice='已停用；可检查并删除保留的图包版本。')
                     else:
                         row['canInspectRemoval'] = True
                         view = snapshots.SnapshotPackage(root, package)

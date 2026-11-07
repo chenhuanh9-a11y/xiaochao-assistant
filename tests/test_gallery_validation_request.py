@@ -31,14 +31,14 @@ class GalleryValidationRequestTests(unittest.TestCase):
     def resolve(self):
         return base.resolve_layer(self.root, 's0', 'nightmare', 'map', 'B1')
 
-    def test_real_receipt_and_binding_resolve_once_and_decode_still_runs(self):
+    def test_real_receipt_and_binding_resolve_once_without_decoding_all_pixels(self):
         from PIL import Image
         with patch.object(base, '_one', wraps=base._one) as one, \
                 patch.object(Image.Image, 'load', autospec=True, side_effect=Image.Image.load) as decode:
             result = displays.append_browse_profile(self.context)
         self.assertEqual(len(result.profiles), 1)
         self.assertEqual(one.call_count, 3)  # one source/index/registry resolution, not two
-        self.assertGreater(decode.call_count, 0)
+        self.assertEqual(decode.call_count, 0)
         self.assertIsNone(base._BROWSE_REQUEST.get())
 
     def test_request_isolation_return_copy_and_thread_isolation(self):
@@ -101,7 +101,7 @@ class GalleryValidationRequestTests(unittest.TestCase):
         path.write_bytes(data)
         result = displays.append_browse_profile(self.context)
         self.assertFalse(result.profiles)
-        self.assertTrue(any('resource-changed' in w for w in result.warnings))
+        self.assertTrue(any('author-v2-invalid-image' in w for w in result.warnings))
 
     def test_synthetic_resolution_work_count_and_timing(self):
         samples = {}
