@@ -33,6 +33,8 @@ class SeasonPreparationTests(unittest.TestCase):
                 result = subprocess.run([sys.executable, str(Path(__file__).resolve()),
                     "--scenario", stage, str(root)], env=dict(os.environ),
                     capture_output=True, text=True, timeout=30)
+                if os.environ.get("QT_CONTEXT_CLICK_PROBE"):
+                    print(result.stdout + result.stderr, flush=True)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 evidence = json.loads(result.stdout.strip().splitlines()[-1])
                 self.assertTrue(evidence["closed"], evidence)
@@ -158,16 +160,33 @@ def scenario(name, root):
                 from PySide6.QtCore import QPoint, QPointF, Qt
                 from PySide6.QtQml import QQmlEngine, QQmlExpression
                 click_trace = []
-                def control_state(item):
+                probe = os.environ.get("QT_CONTEXT_CLICK_PROBE", "full")
+                assert probe in ("full", "baseline", "geometry", "popup", "render"), probe
+                mouse_events = []
+                if os.environ.get("QT_CONTEXT_CLICK_PROBE"):
+                    from PySide6.QtCore import QObject, QEvent
+                    class MouseTrace(QObject):
+                        def eventFilter(self, watched, event):
+                            if event.type() in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease,
+                                                QEvent.MouseButtonDblClick):
+                                point = event.position()
+                                mouse_events.append(dict(type=event.type().name,
+                                    point=[point.x(), point.y()], timestamp=event.timestamp(), time=time.perf_counter()))
+                            return False
+                    mouse_trace = MouseTrace(client.main)
+                    client.main.installEventFilter(mouse_trace)
+                def control_state(item, *, geometry=True, popup_read=True):
                     point = item.mapToScene(QPointF(item.width() / 2, item.height() / 2))
-                    popup = QQmlExpression(QQmlEngine.contextForObject(picker), picker,
+                    popup = None
+                    if popup_read:
+                        popup = QQmlExpression(QQmlEngine.contextForObject(picker), picker,
                         "JSON.stringify({visible: popup.visible, opened: popup.opened, "
                         "type: popup.popupType, x: popup.x, y: popup.y, width: popup.width, "
                         "height: popup.height, contentWidth: popup.contentItem.width, "
                         "contentHeight: popup.contentItem.height})").evaluate()[0]
                     ancestors = []
                     parent = item.parentItem()
-                    while parent is not None:
+                    while geometry and parent is not None:
                         origin = parent.mapToScene(QPointF(0, 0))
                         ancestors.append(dict(name=parent.objectName(), clip=parent.clip(),
                             rect=[origin.x(), origin.y(), parent.width(), parent.height()],
@@ -175,7 +194,9 @@ def scenario(name, root):
                         parent = parent.parentItem()
                     return dict(center=[point.x(), point.y()], size=[item.width(), item.height()],
                                 visible=item.isVisible(), enabled=item.isEnabled(), popup=popup,
-                                window=[client.main.width(), client.main.height()], ancestors=ancestors)
+                                window=[client.main.width(), client.main.height()],
+                                windowVisible=client.main.isVisible(), windowExposed=client.main.isExposed(),
+                                windowActive=client.main.isActive(), ancestors=ancestors)
                 def choose_home_season(season):
                     for object_name in ("homeGameContextSeason", "homeGameContextSeasonOption_" + season):
                         # Popup delegates are created/polished asynchronously.
@@ -188,18 +209,42 @@ def scenario(name, root):
                         try:
                             wait(clickable, "clickable QML control " + object_name)
                         except AssertionError:
-                            print("SEASON_CLICK_TRACE " + json.dumps(click_trace), file=sys.stderr)
+                            print("SEASON_CLICK_TRACE " + json.dumps(dict(probe=probe,
+                                clicks=click_trace, events=mouse_events, final=control_state(picker))), file=sys.stderr)
                             raise
+                        if probe == "render":
+                            # A frame is an observable boundary, not an enlarged sleep.
+                            from PySide6.QtTest import QSignalSpy
+                            frame = QSignalSpy(client.main.frameSwapped)
+                            client.main.update()
+                            wait(lambda: frame.count() > 0, "rendered frame before " + object_name)
                         item = qml_item(client.main, object_name)
                         point = item.mapToScene(QPointF(item.width() / 2, item.height() / 2))
-                        trace = dict(target=object_name, before=control_state(item))
+                        trace = dict(target=object_name, center=[point.x(), point.y()])
+                        if probe in ("full", "geometry", "popup"):
+                            trace["before"] = control_state(item,
+                                geometry=probe != "popup", popup_read=probe != "geometry")
                         click_trace.append(trace)
                         QTest.mouseClick(client.main, Qt.LeftButton, Qt.NoModifier,
                                          QPoint(round(point.x()), round(point.y())))
-                        trace["headerAfterClick"] = control_state(picker)
+                        if probe == "full":
+                            trace["headerAfterClick"] = control_state(picker)
                         QTest.qWait(20)
-                        trace["afterEvents"] = control_state(picker)
+                        if probe == "full":
+                            trace["afterEvents"] = control_state(picker)
                 picker = qml_item(client.main, "homeGameContextSeason")
+                if os.environ.get("QT_CONTEXT_CLICK_PROBE"):
+                    def picker_event(event):
+                        mouse_events.append(dict(type=event, time=time.perf_counter(),
+                            enabled=picker.isEnabled(), pressed=picker.property("pressed"),
+                            sessionBusy=client.session.busy, settingsBusy=client.settings.busy,
+                            resourceBusy=client.resources.busy,
+                            initializeTimer=client._initialize_timer.isActive()))
+                    picker.enabledChanged.connect(lambda: picker_event("enabledChanged"))
+                    picker.pressedChanged.connect(lambda: picker_event("pressedChanged"))
+                    picker.activated.connect(lambda index: picker_event("activated:" + str(index)))
+                    client._initialize_timer.timeout.connect(lambda: picker_event("initializeTimeout"))
+                    client.session.actionRequested.connect(lambda action, payload: picker_event("action:" + action))
                 original_dispatch = client.runtime.dispatch
                 attempts = []
                 def dispatch(action, payload, cancelled):
@@ -386,6 +431,9 @@ def scenario(name, root):
                 QTest.qWait(500)
                 assert len(calls) == count == 1, calls
                 assert len(builds) == 1, builds
+            if name in ("context-error", "context-superseded") and os.environ.get("QT_CONTEXT_CLICK_PROBE"):
+                print("SEASON_CLICK_TRACE " + json.dumps(dict(probe=probe,
+                    clicks=click_trace, events=mouse_events, final=control_state(picker))), file=sys.stderr)
             before_close = len(calls)
             client.coordinator.requestClose()
             client.resources.resourcesChanged.emit()
