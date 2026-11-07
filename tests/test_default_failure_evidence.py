@@ -99,17 +99,22 @@ class DefaultFailureEvidenceContracts(unittest.TestCase):
 
     def test_partial_crop_success_is_reported_as_saved_without_hiding_missing_reason(self):
         from client_live_runtime import LiveRuntime
-        captured = SimpleNamespace(context=object())
-        samples = SimpleNamespace(metadata={}, record_automatic=Mock(side_effect=[
+        captured = SimpleNamespace(context=object(), frame_bgr=np.zeros((10, 10, 3), np.uint8))
+        runtime = LiveRuntime(engine_factories={})
+        runtime._active = True
+        runtime._capture_is_current = lambda *args: True
+        runtime._full_frame = lambda frame: captured.frame_bgr
+        runtime._failure_samples.automatic_enabled = True
+        runtime._failure_samples.record_automatic = Mock(side_effect=[
             dict(saved=False, missingReason='map-crop-unproven'),
-            dict(saved=True, missingReason='')]))
-        runtime = SimpleNamespace(_failure_capture_stamp=(captured, '2026-11-03T00:00:00+00:00', None, 2),
-            _active=True, _capture_is_current=lambda *args: True,
-            _full_frame=lambda frame: np.zeros((10, 10, 3), np.uint8),
-            _evidence_kind='live-client-capture', _mode='nightmare', _failure_samples=samples,
-            _engine=SimpleNamespace(memory_store=SimpleNamespace(root=Path('/fixture'))),
-            _failure_control_observation=(captured, (0, 0, 5, 5)), _notify=Mock())
-        result = LiveRuntime._record_automatic_failure_sample(runtime, 'map-open-preparation-deadline')
+            dict(saved=True, missingReason='')])
+        runtime._engine = SimpleNamespace(memory_store=SimpleNamespace(root=Path('/fixture')))
+        runtime._failure_capture_stamp = (captured, '2026-11-03T00:00:00+00:00', 1., 2,
+            'a'*32, runtime._failure_capture_scope())
+        runtime._failure_control_observation = (captured, (0, 0, 5, 5))
+        runtime._notify = Mock()
+        result = runtime._record_automatic_failure_sample('map-open-preparation-deadline',
+            captured=captured, attempt_id='a'*32)
         self.assertFalse(result['saved'])
         self.assertTrue(result['controlBand']['saved'])
         self.assertEqual(result['missingReason'], 'map-crop-unproven')

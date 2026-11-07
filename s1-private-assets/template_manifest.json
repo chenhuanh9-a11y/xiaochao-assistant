@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "template_file": "native_glyph_template.png",
+  "template_sha256": "6acf898962f8e1661f4a11835071fe03f86d1c499f2f89895a1d3f65b4857f08",
+  "template_size_px": [
+    60,
+    60
+  ],
+  "gray_pixels_sha256": "71dc97542bffd700ad65025c17ea633083a5521d02dea4251f7b14a0c6d4400d",
+  "source_resource": "s1-rendered-display-20261105/render-assets/seasons/s1/difficult/assets/game-native/106009/-1.png",
+  "source_sha256": "d436dcd12cd0507dc2b42de44a77f1b09bb6932c1579b31c4cf2f9cb8729d82b",
+  "crop_xywh": [
+    850,
+    840,
+    60,
+    60
+  ],
+  "anchor_in_template_px": [
+    30,
+    30
+  ],
+  "provenance": "Offline glyph-only crop copied exactly from native resource. One identical template for all frames and all catalogue members; no candidate geometry or per-map selection.",
+  "calibration_scope": "Raster glyph observation only. No calibrated probability, canonical world point, map zoom, orientation, identity, or display authority."
+}

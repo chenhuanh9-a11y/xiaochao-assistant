@@ -7,9 +7,10 @@ import threading
 
 from PySide6.QtCore import QObject, Property, QThreadPool, Qt, Signal, Slot
 from client_paths import validate_installation_root
-from client_resources import _Work, package_problem, package_cancelled
+from client_resources import _Work, package_problem, package_cancelled, package_title
 from client_resource_errors import error_fields
 import map_package_removal as removal
+from map_package_summary import declared_packages
 
 
 class PackageManagerService(QObject):
@@ -96,7 +97,7 @@ class PackageManagerService(QObject):
     @Slot()
     def _drain_refresh(self):
         if self._refresh_requested and self._available():
-            if self._start("refresh", lambda cancel: removal.managed_packages_snapshot(self.sandbox, cancelled=cancel.is_set),
+            if self._start("refresh", lambda cancel: declared_packages(self.sandbox, cancelled=cancel.is_set),
                            "正在查看已导入图包和上次操作记录…"):
                 self._refresh_requested = False
 
@@ -181,7 +182,7 @@ class PackageManagerService(QObject):
         elif kind == "inspect":
             self._pending = result
             self._message = "请确认删除范围。"
-            title = "清理全部已导入图包" if result["packageId"] is None else "删除图包"
+            title = "清理全部已导入图包" if result["packageId"] is None else "删除图包：" + package_title(result["packageId"])
             text = (f"将删除 {len(result['packageIds'])} 个图包的 {result['fileCount']} 个图包文件，"
                     f"共 {result['bytes']} 字节，包含已确认属于这些图包的旧副本。\n\n"
                     "成功后不保留这些图包的备份副本。软件必需的地图文件、其他图包仍需使用的文件、自定义路线，以及来源不明或改动过的文件会保留。点击取消可返回，不会开始删除。"
@@ -191,12 +192,12 @@ class PackageManagerService(QObject):
             return
         elif kind == "remove":
             self._completion = result
-            self._start("refresh-after-remove", lambda cancel: removal.managed_packages_snapshot(self.sandbox),
+            self._start("refresh-after-remove", lambda cancel: declared_packages(self.sandbox),
                         "图包删除与临时副本清理已完成，正在核对状态…")
             return
         elif kind in {"refresh", "refresh-after-remove"}:
             self._rows = result
-            self._message = "图包状态已核对。" if result else "没有可删除的已导入图包。"
+            self._message = "图包清单已读取；删除前将核对实际范围。" if result else "没有已登记的图包。"
             self._release()
             if kind == "refresh-after-remove":
                 self.resourcesChanged.emit()

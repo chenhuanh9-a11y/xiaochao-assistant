@@ -42,7 +42,11 @@ class ClientProviderTests(unittest.TestCase):
         self.assertTrue(result["success"])
         reports = engine.snapshot()["savedFrameCapabilities"]
         self.assertIn("missing-resource:references/nightmare-map-pack.json", reports["nightmare"]["reason"])
-        self.assertIn("missing-resource:difficult-native-manifest.json", reports["difficult"]["reason"])
+        self.assertEqual("resource-validation-pending", reports["difficult"]["reason"])
+        engine.dispatch("set_game_mode", dict(mode="difficult"))
+        engine.dispatch("inspect_engine_resources")
+        self.assertIn("missing-resource:difficult-native-manifest.json",
+                      engine.snapshot()["savedFrameCapabilities"]["difficult"]["reason"])
         self.assertNotIn("rank_saved_frame", engine.snapshot()["availableCommands"])
         self.assertFalse(engine.snapshot()["liveEngineAvailable"])
 
@@ -57,7 +61,8 @@ class ClientProviderTests(unittest.TestCase):
     def test_capability_reads_do_not_wait_for_resource_build(self):
         factories = build_engine_factories(self.root)
         entered, release, finished = threading.Event(), threading.Event(), threading.Event()
-        def build(mode):
+        def build(mode, *, season="s0"):
+            self.assertEqual(season, "s0")
             entered.set()
             if not release.wait(5):
                 raise AssertionError("test release timed out")
@@ -78,7 +83,7 @@ class ClientProviderTests(unittest.TestCase):
 
     def test_rank_capability_only_ready_for_prepared_mode(self):
         factories = build_engine_factories(self.root)
-        factories._build = lambda mode: SimpleNamespace(pack=SimpleNamespace(maps=[]), identity_floors=("1",))
+        factories._build = lambda mode, *, season="s0": SimpleNamespace(pack=SimpleNamespace(maps=[]), identity_floors=("1",))
         engine = EngineAdapter(engine_factories=factories)
         factories["nightmare"]()
         self.assertIn("rank_saved_frame", engine.snapshot()["availableCommands"])
@@ -89,7 +94,8 @@ class ClientProviderTests(unittest.TestCase):
     def test_resource_invalidation_discards_late_build_without_blocking(self):
         factories = build_engine_factories(self.root)
         entered, release = threading.Event(), threading.Event()
-        def build(mode):
+        def build(mode, *, season="s0"):
+            self.assertEqual(season, "s0")
             entered.set()
             if not release.wait(5):
                 raise AssertionError("test release timeout")

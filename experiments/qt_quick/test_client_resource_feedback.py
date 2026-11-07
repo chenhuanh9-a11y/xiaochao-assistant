@@ -42,7 +42,7 @@ class ResourceFeedbackTests(unittest.TestCase):
                     resources=owner.resources, session=session, windows=owner.windows,
                     native_input=keys, capture=capture, runtime=runtime, images=owner.images,
                     window_catalog=Mock(side_effect=AssertionError("discovery forbidden")))
-            c._bound = "123"; c._applied_context = (mode, "profile-one")
+            c._bound = "123"; c._applied_context = (mode, "profile-one", "s0")
             c._foreground_timer.stop(); c._tracking_timer.stop()
             notices, actions = [], []
             c.notificationRequested.connect(lambda *args: notices.append(args))
@@ -74,7 +74,7 @@ class ResourceFeedbackTests(unittest.TestCase):
     def test_real_lease_rejects_open_once_and_next_edge_opens_after_ready(self):
         for mode in ("nightmare", "difficult"):
             with self.subTest(mode=mode), self.chain(mode) as (o,c,s,r,f,k,n,a,root):
-                f._build = runtime_fixture.fixture_engine
+                f._build = lambda mode, *, season="s0": runtime_fixture.fixture_engine(mode)
                 f.prepare(); s.refreshRuntime()
                 lease = s.acquireResourceLease(); self.assertTrue(lease)
                 self.press(k); self.press(k)
@@ -118,7 +118,7 @@ class ResourceFeedbackTests(unittest.TestCase):
                 # Same resource-change hook used after import/delete, with its
                 # existing invalidation and worker recheck; no transaction fake.
                 build = f._build
-                f._build = runtime_fixture.fixture_engine
+                f._build = lambda mode, *, season="s0": runtime_fixture.fixture_engine(mode)
                 c._resources_changed()
                 self.assertIn("校验", c.runtimeStatus)
                 s.dispatch("inspect_engine_resources"); self.drain(o,s)
@@ -134,8 +134,8 @@ class ResourceFeedbackTests(unittest.TestCase):
     def test_ready_mode_switch_without_map_input_rearms_previous_missing_reason(self):
         with self.chain("nightmare") as (o,c,s,r,f,k,n,a,root):
             original_build = f._build
-            f._build = lambda mode: (runtime_fixture.fixture_engine(mode)
-                if mode == "difficult" else original_build(mode))
+            f._build = lambda mode, *, season="s0": (runtime_fixture.fixture_engine(mode)
+                if mode == "difficult" else original_build(mode, season=season))
             s.dispatch("inspect_engine_resources"); self.drain(o,s)
             self.press(k)
             self.assertEqual(len(self.resource_notices(n)), 1)
@@ -143,6 +143,10 @@ class ResourceFeedbackTests(unittest.TestCase):
             o.settings.persistedValues["gameMode"] = "difficult"
             o.settings.saved.emit(); self.drain(o,s)
             self.assertEqual(s.snapshot["mode"], "difficult")
+            # This fixture does not own QtClient's context-change timer. The
+            # full lifecycle test covers that automatic scheduling boundary.
+            self.assertFalse(s.snapshot["liveEngineAvailable"])
+            s.dispatch("inspect_engine_resources"); self.drain(o,s)
             self.assertTrue(s.snapshot["liveEngineAvailable"])
             self.assertIsNone(c._pending_context)
             self.assertIsNone(c._map_resource_problem())
@@ -171,7 +175,7 @@ class ResourceFeedbackTests(unittest.TestCase):
         for mode, resources in retained_resources.items():
             for relative in resources:
                 with self.subTest(mode=mode, resource=relative), self.chain(mode) as (o,c,s,r,f,k,n,a,root):
-                    def build(current_mode):
+                    def build(current_mode, *, season="s0"):
                         if current_mode == mode: _read(root, relative)
                         return runtime_fixture.fixture_engine(current_mode)
                     f._build = build
@@ -186,7 +190,7 @@ class ResourceFeedbackTests(unittest.TestCase):
                     self.assertNotIn(str(root), self.resource_notices(n)[0][1])
                     self.assertNotIn(relative, self.resource_notices(n)[0][1])
                     # A real resource-change/recheck rearms the identical reason.
-                    f._build = lambda current_mode: runtime_fixture.fixture_engine(current_mode)
+                    f._build = lambda current_mode, *, season="s0": runtime_fixture.fixture_engine(current_mode)
                     c._resources_changed()
                     s.dispatch("inspect_engine_resources"); self.drain(o,s)
                     self.assertTrue(s.snapshot["liveEngineAvailable"])
@@ -208,7 +212,7 @@ class ResourceFeedbackTests(unittest.TestCase):
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text("{damaged" if error_type is ValueError else "{}", encoding="utf8")
                     error = error_type(str(root / "private-fixture-detail"))
-                    def build(current_mode):
+                    def build(current_mode, *, season="s0"):
                         if current_mode == mode: _read(root, relative)
                         return runtime_fixture.fixture_engine(current_mode)
                     f._build = build

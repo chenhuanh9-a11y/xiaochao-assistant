@@ -10,6 +10,25 @@ from managed_base_resources import ManagedBaseResourceError
 
 
 class StartupUserMessageTests(unittest.TestCase):
+    def test_receipt_rejection_names_only_registered_record_in_private_log(self):
+        error = ManagedBaseResourceError('installed-package-receipt-rejected', [dict(
+            reason='invalid-installed-package-dependencies', path='work/map-packages/nightmare-suju.json'),
+            dict(reason='receipt-validation-rejected', path='work/map-packages/private-player-settings.json')])
+        with tempfile.TemporaryDirectory(prefix='private-player-') as temp:
+            with patch.object(diagnostics, '_candidate_directories', return_value=[Path(temp)]), \
+                 patch.object(diagnostics, '_show_native_error') as show, \
+                 patch.object(sys, 'stderr', None):
+                path = diagnostics.report_startup_failure(error)
+            record = path.read_text('utf-8')
+            self.assertIn('resourceCode=installed-package-receipt-rejected', record)
+            self.assertIn('issue.0.reason=invalid-installed-package-dependencies', record)
+            self.assertIn('issue.0.path=work/map-packages/nightmare-suju.json', record)
+            self.assertNotIn('private-player', record)
+            message = show.call_args.args[0]
+            self.assertIn('不要卸载', message)
+            self.assertNotIn('nightmare-suju', message)
+            self.assertNotIn('损坏', message)
+
     def test_resource_default_does_not_dump_codes_paths_or_guess_corruption(self):
         error = ManagedBaseResourceError('base-repair-preflight-blocked', [dict(
             reason='installed-package-owned-conflict',

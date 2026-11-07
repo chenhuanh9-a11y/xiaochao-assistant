@@ -10,20 +10,71 @@ Item {
     property var packageManager: typeof packageManagerService !== "undefined" ? packageManagerService : null
     property var confirmationOwner: resourceService
     property bool managerRefreshPending: false
-    readonly property bool operationPending: resourceService.busy || resourceService.pendingKind !== "" || (packageManager && (packageManager.busy || packageManager.pendingKind !== ""))
+    // Persistent hidden pages must not turn construction into a full audit.
+    property bool active: false
+    property bool refreshAllowed: true
+    property bool activationRefreshPending: false
+    property bool pageReady: false
+    onActiveChanged: {
+        activationRefreshPending = active
+    }
+    Timer {
+        interval: 120
+        running: panel.pageReady && panel.active && panel.activationRefreshPending
+                 && panel.refreshAllowed && !panel.operationPending && !panel.recoveryPending
+        onTriggered: panel.listPackages()
+    }
+    signal importSelectionCancelled()
+    readonly property bool operationPending: archiveDialog.visible || resourceService.busy || resourceService.pendingKind !== "" || (packageManager && (packageManager.busy || packageManager.pendingKind !== ""))
     readonly property bool recoveryPending: resourceService.recoveryRequired || (packageManager && packageManager.recoveryRequired)
+    readonly property var visibleResourceRows: resourceService.packageRows.map(function(row) {
+        if (resourceService.inventoryVerified || (row.status !== "bundled" && row.status !== "installed")) return row
+        // Previous successful checks are presentation history, not current
+        // content evidence. Drop their verified counts as well as the label.
+        return {packageId: row.packageId, title: row.title, builtin: row.builtin === true || row.status === "bundled",
+                status: "declared", canRemove: false, verified: false}
+    })
+
+    // Both persistent pages share this single chooser and confirmation owner.
+    // Capture the browsing season before opening, never the running game season.
+    function openImport(season) {
+        if (panel.operationPending || panel.recoveryPending) return
+        archiveDialog.targetSeason = season
+        archiveDialog.open()
+    }
+
+    function removePackage(packageId) {
+        if (!panel.packageManager || !packageId || panel.operationPending || panel.recoveryPending) return
+        panel.packageManager.requestRemove(packageId)
+    }
+
+    function listPackages() {
+        activationRefreshPending = false
+        managerRefreshPending = false
+        resourceService.listPackages()
+        managerRefreshPending = !!packageManager && resourceService.busy
+    }
 
     function refreshPackages() {
-        managerRefreshPending = !!packageManager
+        activationRefreshPending = false
+        managerRefreshPending = false
         resourceService.refresh()
+        // Only a started read owns the follow-up management scan. A lease
+        // refusal must not silently enqueue another hidden reader.
+        managerRefreshPending = !!packageManager && resourceService.busy
     }
 
     function stateLabel(status) {
-        const labels = {"installed": "已安装，可以使用", "not-installed": "未安装", "incomplete": "文件缺失或有改动",
+        const labels = {"declared": "已登记，内容待核对", "history-unchecked": "有历史记录，范围待核对", "installed": "已安装，可以使用", "not-installed": "未安装", "incomplete": "文件缺失或有改动",
             "unmanaged": "已有文件，暂时无法确认来源", "unverified": "还没确认是否可用", "recovery-required": "上次操作还没完成", "managed-remnants": "有旧图包文件可清理", "bundled": "内置默认资源"}
         return labels[status] || "需要重新核对"
     }
     function stateDetail(row) {
+        if (row.status === "declared" || row.status === "history-unchecked")
+            return row.builtin ? "内置资源清单已读取，文件内容尚未核对。" : "仅显示安装记录；点击检查并删除后，会先核对实际文件范围，再请你确认。"
+        if (row.builtin) return row.status === "bundled"
+            ? "安装包自带 · " + row.mapCount + " 份图 · " + row.layerCount + " 层，可在对应赛季和模式的图库浏览。"
+            : "内置资源有缺失或改动，请重新获取完整安装包。"
         if (row.status === "bundled") return "安装包自带，已导入的资源和当前选择保持优先。"
         if (row.status === "unmanaged") return "暂时无法确认这些文件是否属于图包，会保留原文件。"
         if (row.status === "incomplete") return "部分文件有改动或无法确认来源，会保留这些文件，删除可能无法全部完成。"
@@ -36,19 +87,22 @@ Item {
     ColumnLayout {
         anchors.fill: parent
         spacing: 12
-        RowLayout {
+        GridLayout {
+            id: resourceActions
             Layout.fillWidth: true
-            Label { text: "管理本地资源"; color: "#142b4b"; font.pixelSize: 18; font.bold: true }
-            Item { Layout.fillWidth: true }
+            columns: width < 600 ? 3 : 7
+            columnSpacing: 6; rowSpacing: 6
+            Label { Layout.columnSpan: resourceActions.columns === 3 ? 3 : 1; text: "管理本地资源"; color: "#142b4b"; font.pixelSize: 18; font.bold: true }
+            Item { Layout.fillWidth: true; visible: resourceActions.columns === 7 }
             AppButton { text: "恢复记录"; enabled: !panel.operationPending; onClicked: resourceService.inspectRecovery() }
             AppButton { text: "在线图包"; onClicked: clientCoordinator.navigate("downloads") }
             AppButton { text: "核对状态"; enabled: !panel.operationPending && !panel.recoveryPending; onClicked: panel.refreshPackages() }
             AppButton { objectName: "clearManagedPackagesButton"; text: "清理全部图包"; enabled: !!panel.packageManager && !panel.operationPending && !panel.recoveryPending; onClicked: panel.packageManager.requestClearAll() }
-            AppButton { text: "导入 ZIP"; primary: true; enabled: !panel.operationPending && !panel.recoveryPending; onClicked: archiveDialog.open() }
+            AppButton { text: "导入 ZIP"; primary: true; enabled: !panel.operationPending && !panel.recoveryPending; onClicked: panel.openImport(backend.season) }
         }
         Label {
             Layout.fillWidth: true
-            text: "删除只清理已核对归属的图包和历史副本；成功后不保留包副本。官方基础资源、自定义路线与未知文件会保留。"
+            text: "此处显示内置资源与已安装的图包。导入目标：" + backend.season.toUpperCase() + "。S1 作者包仅接受已核验的地图和逐层坐标，缺少作者 B4 时使用内置底图。" + "删除只清理已核对归属的图包和历史副本；官方基础资源、自定义路线与未知文件会保留。"
             wrapMode: Text.Wrap; color: "#526785"; font.pixelSize: 12
         }
         ColumnLayout {
@@ -78,6 +132,10 @@ Item {
                 }
             }
         }
+        ClientPackageProgress {
+            Layout.fillWidth: true
+            localService: resourceService
+        }
         // The package list sits on one white card like the other pages.
         Rectangle {
             Layout.fillWidth: true; Layout.fillHeight: true
@@ -88,7 +146,10 @@ Item {
             objectName: "managedPackageList"
             anchors.fill: parent; anchors.margins: 4; anchors.leftMargin: 18; anchors.rightMargin: 12
             clip: true; spacing: 0
-            model: panel.packageManager ? panel.packageManager.packageRows.concat(resourceService.packageRows.filter(function(row) { return row.status === "bundled" })) : resourceService.packageRows
+            model: panel.packageManager ? panel.packageManager.packageRows.map(function(row) {
+                const checked = resourceService.inventoryVerified && panel.visibleResourceRows.find(function(item) { return item.packageId === row.packageId })
+                return checked ? Object.assign({}, row, checked, {canRemove: false, canInspectRemoval: row.canInspectRemoval}) : row
+            }).concat(panel.visibleResourceRows.filter(function(row) { return row.status === "bundled" || row.builtin === true })) : panel.visibleResourceRows
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar {}
             delegate: Item {
@@ -103,6 +164,7 @@ Item {
                         Label { Layout.fillWidth: true; text: modelData.title; elide: Text.ElideRight; font.pixelSize: 14; color: "#142b4b"; font.bold: true }
                         Label {
                             Layout.fillWidth: true
+                            objectName: "packageStatusLabel-" + modelData.packageId
                             text: panel.stateLabel(modelData.status) + (modelData.fileCount !== undefined ? " · " + modelData.fileCount + " 个图包文件（含旧副本）" : "")
                             color: modelData.status === "installed" ? "#17775a" : "#526785"; font.pixelSize: 12; wrapMode: Text.Wrap
                         }
@@ -113,9 +175,9 @@ Item {
                     }
                     AppButton {
                         objectName: "removePackageButton-" + modelData.packageId
-                        text: "删除图包"; enabled: !!panel.packageManager && !!modelData.canRemove && !panel.operationPending && !panel.recoveryPending
+                        text: modelData.canInspectRemoval ? "检查并删除" : "删除图包"; enabled: !!panel.packageManager && (!!modelData.canRemove || !!modelData.canInspectRemoval) && !panel.operationPending && !panel.recoveryPending
                         Accessible.name: "删除图包 " + modelData.title
-                        onClicked: panel.packageManager.requestRemove(modelData.packageId)
+                        onClicked: panel.removePackage(modelData.packageId)
                     }
                 }
                 Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#edf1f7"; visible: index < packages.count - 1 }
@@ -143,9 +205,11 @@ Item {
     FileDialog {
         id: archiveDialog
         objectName: "resourceArchiveDialog"
-        title: "选择本地地图资源包"
+        property string targetSeason: "s0"
+        title: "选择 " + targetSeason.toUpperCase() + " 本地地图资源包"
         nameFilters: ["地图资源包 (*.zip)"]
-        onAccepted: resourceService.importArchive(selectedFile.toString())
+        onAccepted: resourceService.importArchive(selectedFile.toString(), targetSeason)
+        onRejected: panel.importSelectionCancelled()
     }
     Dialog {
         id: confirmation
@@ -190,5 +254,8 @@ Item {
             confirmation.open()
         }
     }
-    Component.onCompleted: panel.refreshPackages()
+    Component.onCompleted: {
+        pageReady = true
+        activationRefreshPending = active
+    }
 }

@@ -56,9 +56,13 @@ class ProductionAuthorDefaultsTests(unittest.TestCase):
         self.project()
         destination = self.folder / "existing-with-author"
         originals = {"_internal/" + name: b"imported-author" for name in self.names}
+        from star_map_import import BASE_DEPENDENCIES
+        dependencies = {path: b"fixture-base" for path in BASE_DEPENDENCIES}
         receipt = dict(packageId="difficult-zhan10", revision=1, archiveSha256="a" * 64,
             files=[dict(path=name, bytes=len(data), sha256=hashlib.sha256(data).hexdigest()) for name, data in originals.items()],
-            requiresFiles=[])
+            requiresFiles=[dict(path=path, bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
+                           for path, data in dependencies.items()])
+        originals.update(dependencies)
         originals.update({"work/map-packages/difficult-zhan10.json": json.dumps(receipt).encode(),
             "work/nightmare-memory/ui-settings.json": b"custom-choice",
             "assets/custom-maps/manifest.json": b"custom-gallery"})

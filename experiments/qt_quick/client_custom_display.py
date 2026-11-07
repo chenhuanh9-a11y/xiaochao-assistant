@@ -16,6 +16,7 @@ if str(APP_ROOT) not in sys.path:
 from custom_maps import (RouteError, gallery_of, profile_id as custom_profile_id,
                          mask_sha256, render_game_layer)
 from shared_structure_reference import SharedStructureReference
+from season_context import normalize_season, season_label
 
 
 def _route_hash(points):
@@ -39,8 +40,10 @@ class CustomGalleryDisplay:
         with self._lock:
             return self._last_error
 
-    def eligibility(self, gallery_id, mode):
+    def eligibility(self, gallery_id, mode, season="s0"):
         """Prepare a preference request; this does not apply it or mark it active."""
+        if normalize_season(season) != "s0":
+            return dict(allowed=False, reason=f"season-resources-unavailable:{season}", message=f"{season_label(season)} 自定义地图资源尚不可用")
         if mode != "nightmare":
             return dict(allowed=False, message="切换到噩梦模式后才能使用自定义图集")
         try:
@@ -54,16 +57,18 @@ class CustomGalleryDisplay:
         except (OSError, ValueError, TypeError, KeyError) as error:
             return dict(allowed=False, message=f"图集不可用：{error}")
 
-    def use_request(self, gallery_id, mode, *, fallback_profile="wang-qingxin"):
+    def use_request(self, gallery_id, mode, season="s0", *, fallback_profile="wang-qingxin"):
+        if normalize_season(season) != "s0":
+            return dict(success=False, applied=False, reason=f"season-resources-unavailable:{season}", message=f"{season_label(season)} 资源尚不可用")
         if not gallery_id:
             return dict(success=True, applied=False, galleryId="", profileId=fallback_profile,
                         message="正在恢复作者路线")
-        result = self.eligibility(gallery_id, mode)
+        result = self.eligibility(gallery_id, mode, season)
         return dict(result, success=result["allowed"], applied=False)
 
-    def active_gallery(self, profile, mode):
+    def active_gallery(self, profile, mode, season="s0"):
         gallery_id = gallery_of(profile)
-        return gallery_id if gallery_id and self.eligibility(gallery_id, mode)["allowed"] else ""
+        return gallery_id if gallery_id and self.eligibility(gallery_id, mode, season)["allowed"] else ""
 
     def invalidate(self):
         with self._lock:
@@ -79,9 +84,9 @@ class CustomGalleryDisplay:
             self._numbers_generation += 1
             self._layers.clear()
 
-    def base_layer(self, map_id, floor, reference, mode):
+    def base_layer(self, map_id, floor, reference, mode, season="s0"):
         """Original no-route base pixels; caller owns missing-author eligibility."""
-        if mode != "nightmare":
+        if normalize_season(season) != "s0" or mode != "nightmare":
             return None
         library = self.service.base_display_library()
         result = self._base_display.resolve(library, str(map_id), str(floor), reference)
@@ -92,8 +97,12 @@ class CustomGalleryDisplay:
             resourceIdentity=layer["displayResourceKey"], displayKind=layer["displayKind"],
             displayLabel=layer["displayLabel"], routeProfileId="shared-structure", pixelFormat="BGRA")
 
-    def layer(self, profile, map_id, floor, reference, mode):
+    def layer(self, profile, map_id, floor, reference, mode, season="s0"):
         """Return BGRA for the runtime's existing single BGRA→RGBA conversion."""
+        if normalize_season(season) != "s0":
+            with self._lock:
+                self._last_error = f"season-resources-unavailable:{season}"
+            return None
         gallery_id = gallery_of(profile)
         if gallery_id is None:
             return None
@@ -120,7 +129,7 @@ class CustomGalleryDisplay:
             with self._lock:
                 point_numbers, numbers_generation = self._point_numbers, self._numbers_generation
             reference_hash = mask_sha256(reference.clean_mask)
-            identity = dict(kind="custom-gallery", galleryId=gallery_id, libraryVersion=library.version,
+            identity = dict(season=season, kind="custom-gallery", galleryId=gallery_id, libraryVersion=library.version,
                 libraryManifestSha256=manifest_hash, routeSha256=route_hash,
                 pointNumbers=point_numbers, mapId=str(map_id), floor=str(floor), referencePath=str(reference.path),
                 referenceBinding=deepcopy(binding), referenceMaskSha256=reference_hash,

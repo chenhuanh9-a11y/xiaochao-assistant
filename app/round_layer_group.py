@@ -80,12 +80,13 @@ class RoundLayerGroup:
     canonical_geometry_verified_floors: set[str] = field(default_factory=set)
     source_structure_verified_floors: set[str] = field(default_factory=set)
     provisional_floors: set[str] = field(default_factory=set)
+    floors: tuple[str, ...] = FLOORS
 
     def __post_init__(self) -> None:
         root = _matrix(self.root_pose)
         if root is None:
             raise ValueError("round layer group requires a finite 3x3 root pose")
-        if self.anchor_floor not in FLOORS:
+        if self.anchor_floor not in self.floors:
             raise ValueError(f"unsupported anchor floor: {self.anchor_floor}")
         self.root_pose = root.copy()
         normalized: dict[str, np.ndarray] = {
@@ -93,7 +94,7 @@ class RoundLayerGroup:
         }
         for floor, relation in self.relations.items():
             parsed = _matrix(relation)
-            if floor in FLOORS and parsed is not None:
+            if floor in self.floors and parsed is not None:
                 normalized[str(floor)] = parsed.copy()
         self.relations = normalized
         self.verified_floors.add(self.anchor_floor)
@@ -114,7 +115,7 @@ class RoundLayerGroup:
         metadata: dict[str, Any] | None = None,
     ) -> bool:
         parsed = _matrix(relation)
-        if floor not in FLOORS or parsed is None:
+        if floor not in self.floors or parsed is None:
             return False
         self.relations[str(floor)] = parsed.copy()
         if metadata is not None:

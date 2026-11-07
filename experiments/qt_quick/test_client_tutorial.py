@@ -27,7 +27,7 @@ class Settings(QObject):
 
     def __init__(self):
         super().__init__()
-        self.persistedValues = dict(hotkey="G", actionHotkeys=["F9", "F6", "F7", "F8", "", "", "F11", "", "F10"])
+        self.persistedValues = dict(mapSelectionMode="auto", hotkey="G", actionHotkeys=["F9", "F6", "F7", "F8", "", "", "F11", "", "F10"])
 
 
 class Coordinator(QObject):
@@ -221,6 +221,35 @@ class TutorialServiceTests(unittest.TestCase):
         service.open()
         self.assertEqual(requested, ["custom", "", ""])
 
+    def test_selection_mode_is_distinct_from_optional_manual_hotkey(self):
+        service = self.service()
+        changes = []
+        service.changed.connect(lambda: changes.append(1))
+        def step():
+            return next(c for c in service.chapters if c['id'] == 'round')['steps'][2]
+        self.assertEqual(step()['selectionModeText'], '当前选图方式：自动识别')
+        self.assertEqual(step()['bindings'], '')
+        self.settings.persistedValues['actionHotkeys'].append('Ctrl+F4')
+        self.settings.changed.emit()
+        self.assertEqual(step()['bindings'], '')
+        for mode, expected, binding in [('manual', '手动选图', '手动选图 Ctrl+F4'),
+                                        ('auto', '自动识别', ''), ('invalid', '未知，请到设置页核对', '')]:
+            with self.subTest(mode=mode):
+                before = len(changes)
+                self.settings.persistedValues['mapSelectionMode'] = mode
+                self.settings.changed.emit()
+                self.assertEqual(len(changes), before + 1)
+
+                self.assertEqual(step()['selectionModeText'], '当前选图方式：' + expected)
+                self.assertEqual(step()['bindings'], binding)
+                self.settings.changed.emit()
+                self.assertEqual(len(changes), before + 1)
+
+        self.settings.persistedValues.pop('mapSelectionMode')
+        self.settings.changed.emit()
+        self.assertEqual(step()['selectionModeText'], '当前选图方式：未知，请到设置页核对')
+        self.assertEqual(step()['bindings'], '')
+
 
 class TutorialQmlTests(unittest.TestCase):
     @classmethod
@@ -290,6 +319,34 @@ ClientTutorial { objectName: "tutorialPopup" } }
         self.click("tutorialBack")
         self.app.processEvents()
         self.assertFalse(self.popup.property("opened"))
+        self.assertEqual(self.warnings, [])
+
+    def test_player_shows_saved_mode_not_manual_hotkey_as_binding_status(self):
+        self.service.open('round')
+        self.popup.setProperty('step', 2)
+        self.app.processEvents()
+        mode = self.window.findChild(QObject, 'tutorialSelectionMode')
+        self.assertIsNotNone(mode)
+        hint = self.window.findChild(QObject, 'tutorialBindings')
+        self.assertEqual(mode.property('text'), '当前选图方式：自动识别')
+        self.assertFalse(hint.property('visible'))
+        self.service.settings.persistedValues['mapSelectionMode'] = 'manual'
+        self.service.settings.changed.emit()
+        self.app.processEvents()
+        self.assertEqual(mode.property('text'), '当前选图方式：手动选图')
+        self.assertEqual(hint.property('text'), '当前快捷键：手动选图 未设置')
+        self.assertTrue(hint.property('visible'))
+        self.window.show()
+        self.window.setWidth(650)
+        self.window.setHeight(470)
+        self.app.processEvents()
+        button = self.window.findChild(QQuickItem, 'tutorialNext')
+        self.assertLessEqual(button.mapToScene(QPointF(0, button.height())).y(), 470)
+        self.service.settings.persistedValues['mapSelectionMode'] = 'auto'
+        self.service.settings.changed.emit()
+        self.app.processEvents()
+        self.assertEqual(mode.property('text'), '当前选图方式：自动识别')
+        self.assertFalse(hint.property('visible'))
         self.assertEqual(self.warnings, [])
 
     def test_repeated_close_and_reopen_reloads_current_image(self):

@@ -41,7 +41,8 @@ def independent_member_fit(self, frame, route, map_id, floor, profile, *, cancel
             fit = dict(fit)
             if not isinstance(fit.get('selectedRouteCurrentFrameResidual'), dict):
                 fit['selectedRouteCurrentFrameResidual'] = self._rendered_profile_current_frame_residual(
-                    frame, route, fit.get('matrixSourceToClient'), profile_id=profile)
+                    frame, route, fit.get('matrixSourceToClient'), profile_id=profile,
+                    visible_override=context.get('visible') if context is not None else None)
             if not rendered_profile_residual_is_verified(fit['selectedRouteCurrentFrameResidual']):
                 fit.update(success=False, reason='initial-structure-author-unverified')
         return fit

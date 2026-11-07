@@ -19,7 +19,7 @@ PAGE_SIZE = len(OPTION_KEYS)
 PICKER_KEY_CODES = {"F1": 0x70, "F2": 0x71, "F3": 0x72, "F4": 0x73,
                     "PageUp": 0x21, "PageDown": 0x22, "Backspace": 0x08}
 THUMBNAIL_SIZE = (200, 116)
-MODE_TITLES = {"nightmare": "噩梦", "difficult": "困难"}
+MODE_TITLES = {"nightmare": "噩梦", "difficult": "困难", "difficulty2": "普通"}
 
 
 def normalize_selection_mode(value) -> str:
