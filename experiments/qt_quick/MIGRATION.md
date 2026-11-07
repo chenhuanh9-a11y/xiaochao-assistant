@@ -590,10 +590,25 @@ owner's new `require_release` option defaults false for legacy Tk. It does not
 replace the existing release ledger or bounded failure retries.
 
 Saved preference, per-session arming and native running are distinct. Conflicts,
-OS/input errors, binding identity loss and end/stop/reset-round pause/disarm input
-without saving false. Binding loss/end-round still require explicit re-arming in
-that session; restarting may restore readiness, never a held-key gesture. The UI
-switch represents the saved preference even while paused (toggle off/on to re-arm).
+OS/input errors and binding identity loss disarm input without saving false and
+still require explicit re-arming in that session. The UI switch represents the
+saved preference; a separate safety-pause state and re-arm button explain stopped
+input without forcing an off/on toggle. Restarting may restore readiness, never
+a held-key gesture.
+
+Ordinary end/stop/reset-round (including an ending toggle) instead immediately
+suspends the native owner and retains arming. It waits for a post-end start/map/
+capture/manual-start request in the current SessionService generation and a
+validated, non-busy snapshot with a strictly newer committed roundId in active or
+prepared state. Queued starts, unchanged old active flags, failed preparation,
+cancelled/superseded starts, unavailable context and resource leases cannot resume
+input. Both the first manual-start and implicit map-key start use this same gate.
+Normal cross-round resume does not rewrite either settings file. Binding identity,
+foreground, trigger release and pending-release/native-fault gates still apply;
+late key-up failures during the between-round wait become safety pauses. Explicit
+off and safety faults cannot be undone merely by starting another round. This
+round wait is in-process lifecycle state, not a persisted record of the game.
+
 Explicit off stops before validation/I/O and saves false even when other entered
 fields are invalid. Shutdown stops without writing false. Save failures are reported
 and fail closed; a failed off-save cannot promise persistence across restart.

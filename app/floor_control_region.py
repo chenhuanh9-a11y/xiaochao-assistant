@@ -23,6 +23,9 @@ BACKDROP_MAX = 75     # median of the unselected buttons and the gaps between th
 # New S0 HUD: search the right-side column, excluding the zoom slider.
 # These are search bounds, never fixed click coordinates.
 VERTICAL_SEARCH_AREA = (.75, .15, .18, .45)
+# Automatic fallback uses the S1 position-search domain, not its four-floor
+# reader. Keep the default/fixed pass small and retain all S0 signed checks.
+AUTO_VERTICAL_SEARCH_AREA = (.55, .04, .435, .89)
 
 
 def normalized_region(value) -> tuple[float, float, float, float] | None:
@@ -242,17 +245,33 @@ def read_floor_in_region(frame: np.ndarray, region, mode: str, *, season="s0") -
     return dict(read, controlSearchRegion=list(box))
 
 
-def locate_vertical_floor_controls(frame: np.ndarray, mode: str, *, season="s0") -> dict:
+def locate_vertical_floor_controls(frame: np.ndarray, mode: str, *, season="s0", expanded=False) -> dict:
     """Read only the new S0 column; never infer a season from button count."""
     contract = floor_contract(mode, season=season)
     if season != "s0" or contract is None:
         return _unread("vertical-floor-detector-unvalidated" if contract else "floor-contract-unavailable")
     if frame is None or getattr(frame, "ndim", 0) != 3:
         return _unread("region-invalid")
-    column, origin = _crop(frame, VERTICAL_SEARCH_AREA)
+    area = AUTO_VERTICAL_SEARCH_AREA if expanded else VERTICAL_SEARCH_AREA
+    column, origin = _crop(frame, area)
     result = (_read_vertical(column, contract.observed_values, origin, frame.shape[1::-1], "auto-located")
               if column is not None else _unread("region-too-small"))
-    return dict(result, controlSearchRegion=list(VERTICAL_SEARCH_AREA))
+    if not expanded:
+        return dict(result, controlSearchRegion=list(area))
+    # The broad search domain is metadata, never an automatic screenshot ROI.
+    # Once verified, retain only the measured column for failure diagnostics.
+    # An unread broad pass supplies no new pixel-saving region.
+    height, width = frame.shape[:2]
+    result["controlSearchBounds"] = [origin[0], origin[1],
+        min(width, math.ceil(width * (area[0] + area[2]))),
+        min(height, math.ceil(height * (area[1] + area[3])))]
+    if result.get("selectedFloor") is not None:
+        x, y, w, h = result["tileBounds"]
+        ys = [point[1] for point in result["centerPoints"]]
+        left, right = max(0., x - .3 * w), min(1., x + 1.3 * w)
+        top, bottom = max(0., min(ys) - .7 * h), min(1., max(ys) + .7 * h)
+        result["controlSearchRegion"] = [left, top, right - left, bottom - top]
+    return result
 
 
 def region_for_client(setting, size) -> tuple[float, float, float, float] | None:
@@ -278,10 +297,10 @@ def region_for_client(setting, size) -> tuple[float, float, float, float] | None
 
 
 def _auto(mode, frame, floor_read: dict, source: str, **extra) -> dict:
-    """Use the current default column, or locate the same vertical layout."""
+    """Keep a current default read, otherwise expand only its search domain."""
     if floor_read.get("selectedFloor") is not None:
         return dict(floor_read, floorSource=source, **extra)
-    located = locate_vertical_floor_controls(frame, mode)
+    located = locate_vertical_floor_controls(frame, mode, expanded=True)
     if located["selectedFloor"] is None:
         return dict(floor_read, floorSource=source + "-auto-unread", autoRead=located, **extra)
     return _merge_region_read(floor_read, located, "auto-located", autoRead=located, **extra)

@@ -17,8 +17,8 @@ from PySide6.QtQuick import QQuickImageProvider
 from floor_control_region import (MODE_FLOORS, locate_vertical_floor_controls, normalized_region, read_floor_in_region,
                                   region_for_client)
 
-# Current S0 column in the right-side editor. Other aspect ratios need acceptance.
-VIEW = (.5, 0., .5, .65)
+# Include the expanded automatic domain so its complete suggestion is editable.
+VIEW = (.5, 0., .5, 1.)
 DEFAULT_RECT = (.75, .15, .18, .45)
 FLOOR_LABELS = {-1: "B1 层", 1: "1 楼", 2: "2 楼"}
 REASONS = {

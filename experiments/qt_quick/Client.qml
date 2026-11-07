@@ -47,6 +47,10 @@ ApplicationWindow {
     ClientOnboarding {}
     ClientTutorial {}
     ClientAccount {}
+    ClientAnnouncement {
+        hostWindow: root
+        blocked: clientCoordinator.closing || closeChoice.visible || onboardingService.active
+    }
     onClosing: function(event) {
         if (clientCoordinator.closeReady) {
             closeChoice.close()

@@ -16,27 +16,6 @@ Item {
         && (session.snapshot.provisionalMapId || session.snapshot.mapId || "") === privateLockedMap
     readonly property string privateStatus: "实验锁定（未正式校准） · " + (privatePoseCurrent ? "当前画面已贴合" : "位置待核对")
     readonly property bool wide: width >= 720
-    readonly property var hostWindow: page.Window.window
-    property var pendingUpdate: ({})
-    function showPendingUpdate() {
-        if (!pendingUpdate.version || !hostWindow || !hostWindow.visible
-                || hostWindow.visibility === Window.Minimized) return
-        updateAnnouncement.releaseData = pendingUpdate
-        pendingUpdate = ({})
-        updateAnnouncement.open()
-    }
-    Connections {
-        target: infoService
-        function onStartupAnnouncement(release) {
-            page.pendingUpdate = release
-            page.showPendingUpdate()
-        }
-    }
-    Connections {
-        target: page.hostWindow
-        function onVisibleChanged() { page.showPendingUpdate() }
-        function onVisibilityChanged() { page.showPendingUpdate() }
-    }
     function floorLabel(floor, label) {
         if (label) return label
         if (session.appliedSeason === "s1" && /^-[1-4]$/.test(String(floor)))
@@ -303,33 +282,6 @@ Item {
                         AppButton { text: "查看识别回放"; implicitHeight: 32; onClicked: clientCoordinator.navigate("replay") }
                     }
                 }
-            }
-        }
-    }
-    Dialog {
-        id: updateAnnouncement
-        objectName: "startupUpdateAnnouncement"
-        property var releaseData: ({})
-        parent: Overlay.overlay; anchors.centerIn: parent
-        width: Math.min(520, parent ? parent.width - 40 : 520)
-        modal: true; focus: false; title: "发现新版本 v" + (releaseData.version || "")
-        closePolicy: Popup.CloseOnEscape
-        onOpened: infoService.markRead()
-        background: Rectangle { radius: 12; color: "white"; border.color: "#d5e2f5" }
-        contentItem: ColumnLayout {
-            spacing: 14
-            Label { text: "当前 " + infoService.version + " · " + (updateAnnouncement.releaseData.published_date || ""); color: "#567096"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-            Label { text: "更新公告"; color: "#17365e"; font.bold: true }
-            ScrollView {
-                Layout.fillWidth: true; Layout.preferredHeight: 190; clip: true; contentWidth: availableWidth
-                Label { width: parent.width; text: updateAnnouncement.releaseData.notes || ""; wrapMode: Text.Wrap; textFormat: Text.PlainText; color: "#354f75" }
-            }
-            Flow {
-                Layout.fillWidth: true; spacing: 8
-                AppButton { text: "夸克网盘下载"; primary: true; visible: !!(updateAnnouncement.releaseData.pages && updateAnnouncement.releaseData.pages.quark); enabled: !infoService.checking; onClicked: { infoService.openDownloadPage("quark"); updateAnnouncement.close() } }
-                AppButton { text: "UC 网盘下载"; visible: !!(updateAnnouncement.releaseData.pages && updateAnnouncement.releaseData.pages.uc); enabled: !infoService.checking; onClicked: { infoService.openDownloadPage("uc"); updateAnnouncement.close() } }
-                AppButton { objectName: "startupUpdateSkip"; text: "跳过此版本"; enabled: !infoService.checking; onClicked: { infoService.skipVersion(); updateAnnouncement.close() } }
-                AppButton { objectName: "startupUpdateLater"; text: "稍后提醒"; onClicked: updateAnnouncement.close() }
             }
         }
     }
