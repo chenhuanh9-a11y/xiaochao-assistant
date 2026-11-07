@@ -35,15 +35,17 @@ def map_input_method():
 
 class MapInputEvidenceTests(unittest.TestCase):
     def owner(self):
-        state = dict(roundActive=False, mapOpen=False, displayAuthorized=False,
+        # Explicitly prepared by the user, but not yet active. A raw map edge
+        # no longer starts a round; routing tests must model that distinction.
+        state = dict(roundActive=False, roundPreparing=True, mapOpen=False, displayAuthorized=False,
             mode='nightmare', roundId=0, generation=7, frameId='',
             windowTitle='PRIVATE OTHER APP', username='PRIVATE PLAYER')
         owner = SimpleNamespace(_closing=False, _closed=False, _bound='42',
             _map_input_sequence=0, _waiting_foreground=False, _map_was_open=False,
             _diagnostics=None, _native_windows=SimpleNamespace(foreground_window=lambda:42),
-            runtime=SimpleNamespace(cancel_map_open_recovery=Mock()),
-            session=SimpleNamespace(snapshot=state, dispatchWithPayload=Mock()),
-            _trace=Mock(), _pending_context=False,
+            runtime=SimpleNamespace(cancel_map_open_recovery=Mock(), snapshot=lambda: state),
+            session=SimpleNamespace(snapshot=state, busy=False, dispatchWithPayload=Mock()),
+            _trace=Mock(), _pending_context=False, _notified=set(),
             resources=SimpleNamespace(busy=False, pendingKind=''),
             _map_resource_notified=set(), _cancel_pointer_drag=Mock(),
             _revoke_runtime=Mock(), _close_map_from_input=Mock(),
@@ -53,6 +55,9 @@ class MapInputEvidenceTests(unittest.TestCase):
         # inspection and action delivery offline with the production signature.
         owner._manual_floor_observation_ready = MethodType(
             coordinator_method('_manual_floor_observation_ready'), owner)
+        owner._map_round_ready = MethodType(coordinator_method('_map_round_ready'), owner)
+        owner._show_map_resource_problem = MethodType(
+            coordinator_method('_show_map_resource_problem'), owner)
         owner._map_resource_problem = create_autospec(MethodType(
             coordinator_method('_map_resource_problem'), owner), return_value=None)
         return owner
@@ -77,6 +82,31 @@ class MapInputEvidenceTests(unittest.TestCase):
         owner.session.dispatchWithPayload.assert_called_once_with('map',
             dict(inputSequence=1, openIntent=True, inputCreatedAt=12., inputSource='hotkey'))
 
+    def test_idle_and_pending_edges_keep_evidence_without_starting_round_work(self):
+        for pending in ('', 'start_round', 'prepare_manual_alignment',
+                        'end_round', 'stop_round', 'reset_round', 'cancel', 'toggle_round'):
+            for opening in (False, True):
+                with self.subTest(pending=pending, opening=opening):
+                    owner = self.owner()
+                    owner.session.snapshot.update(roundPreparing=bool(pending), pendingAction=pending)
+                    owner.session.busy = bool(pending)
+                    event = dict(sequence=1, openIntent=opening, createdAt=12., hwnd=42, source='hotkey')
+                    method = map_input_method()
+                    method(owner, event)
+                    method(owner, event)
+                    owner._trace.assert_called_once()
+                    self.assertEqual(owner._map_input_sequence, 1)
+                    self.assertEqual(owner._trace.call_args.kwargs['diag']['openIntent'], opening)
+                    self.assertNotIn('PRIVATE', json.dumps(owner._trace.call_args.kwargs['diag']))
+                    owner._map_resource_problem.assert_not_called()
+                    owner.session.dispatchWithPayload.assert_not_called()
+                    owner.runtime.cancel_map_open_recovery.assert_not_called()
+                    owner._cancel_pointer_drag.assert_not_called()
+                    owner._revoke_runtime.assert_not_called()
+                    owner._close_map_from_input.assert_not_called()
+                    owner._reset_map_input.assert_not_called()
+                    self.assertEqual(owner.notificationRequested.emit.call_count, int(opening))
+
     def test_failed_optional_trace_does_not_swallow_accepted_map_action(self):
         owner = self.owner()
         owner._trace.side_effect = RuntimeError('diagnostic sink failed')
@@ -100,10 +130,14 @@ class MapInputEvidenceTests(unittest.TestCase):
         for state_changes, owner_changes, resource_changes, ready in cases:
             with self.subTest(state=state_changes, owner=owner_changes, resources=resource_changes):
                 owner = self.owner()
-                owner.session.snapshot.update(season='s1', roundActive=True,
+                owner.session.snapshot.update(season='s1', roundActive=True, roundPreparing=False,
                     manualAlignmentSession=True, mapId='fixture-map',
                     automaticFloorObservationAvailable=True)
                 owner.session.snapshot.update(state_changes)
+                if state_changes.get('roundActive') is False:
+                    # Not a live manual session, but still explicitly prepared:
+                    # it takes the normal map path, not an implicit round start.
+                    owner.session.snapshot['roundPreparing'] = True
                 vars(owner).update(owner_changes)
                 vars(owner.resources).update(resource_changes)
                 map_input_method()(owner, dict(sequence=1, openIntent=True,
