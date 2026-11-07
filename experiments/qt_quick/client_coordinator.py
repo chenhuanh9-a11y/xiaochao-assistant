@@ -658,7 +658,9 @@ class ClientCoordinator(QObject):
         elif active or preparing:
             return True
         else:
-            message = "地图键只控制游戏地图；请先在主页或游戏控件点击“开始本局”，也可使用独立的本局快捷键"
+            # Outside a round, pass-through map keys are deliberately silent.
+            # Preserve the input phase, previews and any existing status/error.
+            return False
         # The pass-through key still changed the game's map while our round
         # work was idle/pending. Preserve that physical phase: its next G is
         # a close, not a new open. Escape already records a close in the input
@@ -668,7 +670,7 @@ class ClientCoordinator(QObject):
         key = ("map-round-not-ready", current.get("roundId", state.get("roundId")), pending)
         if opening and key not in self._notified:
             self._notified.add(key)
-            self.notificationRequested.emit("本局尚未开始" if not pending else "请等待本局状态更新", message, "info")
+            self.notificationRequested.emit("请等待本局状态更新", message, "info")
         self.changed.emit()
         return False
 
@@ -1381,11 +1383,6 @@ class ClientCoordinator(QObject):
         after = bool(self.windows.snapshot.get("controls", {}).get("visible"))
         if before != after:
             self.controlVisibilityChanged.emit(after, source)
-        if not visible:
-            actions = self.settings.persistedValues.get("actionHotkeys") or []
-            binding = actions[0] if actions else ""
-            restore = f"按 {binding} 或在主页点击“打开游戏控件”恢复。" if binding else "在主页点击“打开游戏控件”恢复。"
-            self.notificationRequested.emit("控件已隐藏", restore, "info")
         self.settings.persistControlsVisibility(visible)
         self.changed.emit()
 

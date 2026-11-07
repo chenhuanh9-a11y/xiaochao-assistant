@@ -109,6 +109,9 @@ class InputSeparationTests(unittest.TestCase):
             with self.subTest(mode=mode), self.chain(mode, prepared=False) as (o, live, keys, events, actions):
                 notices = []
                 o.coordinator.notificationRequested.connect(lambda *args: notices.append(args))
+                changed = Mock()
+                o.coordinator.changed.connect(changed)
+                o.coordinator._message = 'existing status'
                 o.coordinator._reference = {'token': 'independent-preview'}
                 o.images.clear.reset_mock()
                 for _ in range(3):
@@ -121,9 +124,9 @@ class InputSeparationTests(unittest.TestCase):
                 self.assertEqual(o.coordinator._reference['token'], 'independent-preview')
                 o.images.clear.assert_not_called()
                 self.assertFalse(keys._map_input.open_intent)
-                self.assertEqual(len(notices), 1)
-                self.assertEqual(notices[0][0], '本局尚未开始')
-                self.assertIn('开始本局', notices[0][1])
+                self.assertEqual(notices, [])
+                self.assertEqual(o.coordinator.message, 'existing status')
+                changed.assert_not_called()
                 live.dispatch('start_round')
                 o.session.snapshot = live.runtime.snapshot()
                 self.press(keys)
@@ -136,32 +139,44 @@ class InputSeparationTests(unittest.TestCase):
             with self.subTest(pending=pending), self.chain('nightmare', prepared=False) as (o, live, keys, events, actions):
                 o.session.busy = True
                 o.session.snapshot.update(pendingAction=pending)
+                notices = []
+                o.coordinator.notificationRequested.connect(lambda *args: notices.append(args))
                 o.session.cancelPending.reset_mock()
                 self.press(keys)
                 keys._dispatch_action('escape', dict(createdAt=1.0))
                 self.assertEqual(actions, [])
                 o.session.cancelPending.assert_not_called()
                 self.assertFalse(keys._map_input.open_intent)
+                self.assertEqual(len(notices), 1)
+                self.assertEqual(notices[0][0], '请等待本局状态更新')
 
-    def test_idle_resource_failure_does_not_replace_start_hint(self):
+    def test_idle_map_stays_silent_without_replacing_existing_resource_warning(self):
         with self.chain('nightmare', prepared=False) as (o, live, keys, events, actions):
             notices = []
             o.coordinator.notificationRequested.connect(lambda *args: notices.append(args))
             o.resources.busy = True
             o.session.snapshot.update(resourceLocked=True, liveEngineAvailable=False,
                                       liveUnavailableReason='missing-assets')
+            o.coordinator._show_map_resource_problem(('fixture', 'existing resource warning'))
+            notices.clear()
             self.press(keys)
             self.assertEqual(actions, [])
-            self.assertEqual(notices[0][0], '本局尚未开始')
-            self.assertFalse(any(n[0] == '地图资源未就绪' for n in notices))
+            self.assertEqual(notices, [])
+            self.assertEqual(o.coordinator.message, 'existing resource warning')
 
     def test_legacy_map_cannot_start_or_end_round_and_start_action_is_retained(self):
         with self.chain('nightmare', prepared=False) as (o, live, keys, events, actions):
             c = o.coordinator
-            c._native_action('map')
-            c._native_action('escape')
+            notices = []
+            c.notificationRequested.connect(lambda *args: notices.append(args))
+            c._message = 'legacy status'
+            for _ in range(3):
+                c._native_action('map')
+                c._native_action('escape')
             o.session.dispatch.assert_not_called()
             self.assertEqual(actions, [])
+            self.assertEqual(notices, [])
+            self.assertEqual(c.message, 'legacy status')
             c.startRound = Mock()
             c._native_action('start-round')
             c.startRound.assert_called_once()
