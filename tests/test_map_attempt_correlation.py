@@ -7,9 +7,9 @@ import json
 import math
 from pathlib import Path
 import sys
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, create_autospec
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / 'app'), str(ROOT / 'experiments/qt_quick')]
@@ -18,15 +18,19 @@ from client_input_diagnostics import InputDiagnostics
 from diagnostic_privacy import safe_record, sanitize_log_payload
 
 
-def map_input_method():
-    source = ast.parse((ROOT / 'experiments/qt_quick/client_coordinator.py').read_text())
+def coordinator_method(name):
+    source = ast.parse((ROOT / 'experiments/qt_quick/client_coordinator.py').read_text(encoding='utf-8'))
     cls = next(row for row in source.body if isinstance(row, ast.ClassDef) and row.name == 'ClientCoordinator')
-    method = next(row for row in cls.body if isinstance(row, ast.FunctionDef) and row.name == '_map_input_requested')
+    method = next(row for row in cls.body if isinstance(row, ast.FunctionDef) and row.name == name)
     method.decorator_list = []
     namespace = dict(math=math, InputDiagnostics=InputDiagnostics)
     exec(compile(ast.fix_missing_locations(ast.Module(body=[method], type_ignores=[])),
                  'client_coordinator.py', 'exec'), namespace)
-    return namespace['_map_input_requested']
+    return namespace[name]
+
+
+def map_input_method():
+    return coordinator_method('_map_input_requested')
 
 
 class MapInputEvidenceTests(unittest.TestCase):
@@ -34,14 +38,24 @@ class MapInputEvidenceTests(unittest.TestCase):
         state = dict(roundActive=False, mapOpen=False, displayAuthorized=False,
             mode='nightmare', roundId=0, generation=7, frameId='',
             windowTitle='PRIVATE OTHER APP', username='PRIVATE PLAYER')
-        return SimpleNamespace(_closing=False, _closed=False, _bound='42',
+        owner = SimpleNamespace(_closing=False, _closed=False, _bound='42',
             _map_input_sequence=0, _waiting_foreground=False, _map_was_open=False,
             _diagnostics=None, _native_windows=SimpleNamespace(foreground_window=lambda:42),
             runtime=SimpleNamespace(cancel_map_open_recovery=Mock()),
             session=SimpleNamespace(snapshot=state, dispatchWithPayload=Mock()),
-            _trace=Mock(), _map_resource_problem=lambda:None,
+            _trace=Mock(), _pending_context=False,
+            resources=SimpleNamespace(busy=False, pendingKind=''),
             _map_resource_notified=set(), _cancel_pointer_drag=Mock(),
-            _revoke_runtime=Mock(), _close_map_from_input=Mock())
+            _revoke_runtime=Mock(), _close_map_from_input=Mock(),
+            _reset_map_input=Mock(), notificationRequested=SimpleNamespace(emit=Mock()),
+            changed=SimpleNamespace(emit=Mock()))
+        # Execute the real memory-only readiness predicate, but keep resource
+        # inspection and action delivery offline with the production signature.
+        owner._manual_floor_observation_ready = MethodType(
+            coordinator_method('_manual_floor_observation_ready'), owner)
+        owner._map_resource_problem = create_autospec(MethodType(
+            coordinator_method('_map_resource_problem'), owner), return_value=None)
+        return owner
 
     def test_accepted_intent_reaches_default_trace_without_optional_lifecycle_log(self):
         owner = self.owner()
@@ -58,6 +72,8 @@ class MapInputEvidenceTests(unittest.TestCase):
         self.assertIs(values['diag']['state']['roundActive'], False)
         self.assertNotIn('PRIVATE', json.dumps(values['diag']))
         self.assertNotIn('hwnd', values['diag'])
+        owner._map_resource_problem.assert_called_once_with(
+            owner.session.snapshot, allow_manual_floor=False)
         owner.session.dispatchWithPayload.assert_called_once_with('map',
             dict(inputSequence=1, openIntent=True, inputCreatedAt=12., inputSource='hotkey'))
 
@@ -66,6 +82,64 @@ class MapInputEvidenceTests(unittest.TestCase):
         owner._trace.side_effect = RuntimeError('diagnostic sink failed')
         map_input_method()(owner, dict(sequence=1, openIntent=True, createdAt=12., hwnd=42))
         owner.session.dispatchWithPayload.assert_called_once()
+
+    def test_manual_floor_readiness_selects_actual_dispatch_and_resource_contract(self):
+        # The resource gate is independently stubbed as accepting here: these
+        # cases test routing, not whether blocked resources are globally ready.
+        cases = [({}, {}, {}, True)]
+        for field, value in (('season', 's0'), ('roundActive', False),
+                ('manualAlignmentSession', False), ('mapId', ''),
+                ('automaticFloorObservationAvailable', False),
+                ('contextPending', True), ('resourceLocked', True)):
+            cases.append(({field: value}, {}, {}, False))
+        cases.extend([
+            ({}, {'_pending_context': True}, {}, False),
+            ({}, {}, {'busy': True}, False),
+            ({}, {}, {'pendingKind': 'import'}, False),
+        ])
+        for state_changes, owner_changes, resource_changes, ready in cases:
+            with self.subTest(state=state_changes, owner=owner_changes, resources=resource_changes):
+                owner = self.owner()
+                owner.session.snapshot.update(season='s1', roundActive=True,
+                    manualAlignmentSession=True, mapId='fixture-map',
+                    automaticFloorObservationAvailable=True)
+                owner.session.snapshot.update(state_changes)
+                vars(owner).update(owner_changes)
+                vars(owner.resources).update(resource_changes)
+                map_input_method()(owner, dict(sequence=1, openIntent=True,
+                    createdAt=12., hwnd=42, source='hotkey'))
+                owner._map_resource_problem.assert_called_once_with(
+                    owner.session.snapshot, allow_manual_floor=ready)
+                payload = dict(inputSequence=1, openIntent=True,
+                    inputCreatedAt=12., inputSource='hotkey')
+                if ready:
+                    payload['s1OpenEdge'] = True
+                owner.session.dispatchWithPayload.assert_called_once_with(
+                    'fit_manual_frame' if ready else 'map', payload)
+                owner._cancel_pointer_drag.assert_called_once_with('map-key-open')
+                owner._revoke_runtime.assert_called_once_with('map-key-open')
+                owner.runtime.cancel_map_open_recovery.assert_called_once_with('new-map-input')
+
+    def test_resource_rejection_keeps_evidence_but_never_dispatches(self):
+        owner = self.owner()
+        key = ('nightmare', 'resource-validation-pending')
+        owner._map_resource_problem.return_value = (key, 'fixture resource unavailable')
+        event = dict(sequence=1, openIntent=True, createdAt=12., hwnd=42)
+        method = map_input_method()
+        method(owner, event)
+        method(owner, event)  # The rejected physical edge is still deduplicated.
+        owner._trace.assert_called_once()
+        owner._map_resource_problem.assert_called_once_with(
+            owner.session.snapshot, allow_manual_floor=False)
+        owner._reset_map_input.assert_called_once_with('map-input-resources-unready')
+        self.assertEqual(owner._map_input_sequence, 1)
+        self.assertEqual(owner._map_resource_notified, {key})
+        owner.notificationRequested.emit.assert_called_once()
+        owner.changed.emit.assert_called_once_with()
+        owner.session.dispatchWithPayload.assert_not_called()
+        owner._cancel_pointer_drag.assert_not_called()
+        owner._revoke_runtime.assert_not_called()
+        owner._close_map_from_input.assert_not_called()
 
     def test_foreign_stale_and_invalid_edges_do_not_add_input_evidence(self):
         for changed in ({'hwnd':99}, {'sequence':0}, {'openIntent':1}, {'createdAt':float('nan')}):

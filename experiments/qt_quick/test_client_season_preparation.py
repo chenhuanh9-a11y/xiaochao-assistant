@@ -1,8 +1,9 @@
 """Real QtClient save/restart and timer wiring, with synthetic engine/native IO.
 
 Each scenario runs in an isolated process and owned temporary installation. Only
-native input, capture and heavy engine construction are fixtures. Settings,
-coordinator, session, runtime, EngineFactories and QTimer connections are real.
+native input, capture, heavy engine construction and explicit detector evidence
+are fixtures. Settings, coordinator, session, runtime, S0 geometry validation,
+EngineFactories and QTimer connections are real.
 """
 import json
 import os
@@ -207,12 +208,51 @@ def scenario(name, root):
                 import numpy as np
                 assert client.runtime._season == "s0"
                 assert client.runtime._settings["gameSeason"] == "s1"
-                with patch("map_interface_observation.detect_selected_floor", return_value=dict(selectedFloor=1)), \
-                     patch("map_interface_observation.detect_map_interface", return_value=dict(detected=True)):
-                    for mode in ("nightmare", "difficult"):
-                        _, floor, reading = client.runtime._observe(fixture_engine(mode), np.zeros((720, 1280, 3), np.uint8))
+                frame = np.zeros((720, 1280, 3), np.uint8)
+                for mode in ("nightmare", "difficult"):
+                    engine = fixture_engine(mode)
+                    order = [2, 1, -1] if mode == "nightmare" else [2, 1]
+                    # Stub only detector evidence. The real S0 composition,
+                    # applied-season override and geometry binder still run.
+                    evidence = dict(selectedFloor=1, reason="fixture-signed-column",
+                        controlAxis="vertical", observedOrder=order,
+                        tileBounds=[.80, .28, .04, .04],
+                        centerPoints=[[.82, .25 + i * .05] for i in range(len(order))],
+                        labelEvidence=[dict(floor=floor, negative=floor < 0) for floor in order])
+                    with patch("floor_control_region.locate_vertical_floor_controls", return_value=evidence) as locate, \
+                         patch("map_interface_observation.detect_map_interface", return_value=dict(detected=True)):
+                        observation, floor, reading = client.runtime._observe(engine, frame)
+                        assert locate.call_count == 1, locate.call_args_list
+                        args, kwargs = locate.call_args
+                        assert args[0] is frame and args[1] == mode and kwargs == {"season": "s0"}
                         assert floor == "1", (mode, reading)
                         assert reading["floorSource"] == "fixed", (mode, reading)
+                        assert reading["season"] == "s0" and reading["mode"] == mode
+                        assert observation["mapOpen"] is True
+                        assert reading["controlGeometryVerified"] is True, (mode, reading)
+                        assert [row["floor"] for row in reading["controlRects"]] == order
+                    # A selected-floor scalar alone is no longer enough. Nor
+                    # may valid labels authorize geometry without map proof.
+                    for detector_read, map_open in ((dict(evidence, labelEvidence=[]), True),
+                                                    (evidence, False)):
+                        with patch("floor_control_region.locate_vertical_floor_controls", return_value=detector_read), \
+                             patch("map_interface_observation.detect_map_interface", return_value=dict(detected=map_open)):
+                            _, floor, reading = client.runtime._observe(engine, frame)
+                            assert floor is None, (mode, reading)
+                            assert reading["selectedFloor"] is None, (mode, reading)
+                            assert reading["controlGeometryVerified"] is False, (mode, reading)
+                            assert "controlRects" not in reading, (mode, reading)
+                            assert reading["reason"] == "vertical-control-geometry-unverified", (mode, reading)
+                    # With no detector stub, a black frame must remain unread,
+                    # even when independent map-open proof is supplied.
+                    with patch("map_interface_observation.detect_map_interface", return_value=dict(detected=True)):
+                        _, floor, reading = client.runtime._observe(engine, frame)
+                        assert floor is None and reading["selectedFloor"] is None, (mode, reading)
+                        assert reading["controlGeometryVerified"] is False, (mode, reading)
+                        assert "controlRects" not in reading, (mode, reading)
+                        assert reading["reason"] == "vertical-control-geometry-unverified", (mode, reading)
+                assert client.runtime._season == "s0"
+                assert client.runtime._settings["gameSeason"] == "s1"
                 if evidence_dir:
                     assert client.main.grabWindow().save(str(Path(evidence_dir) / "context-failed.png"))
                 # Same persisted target must be explicitly retryable without
