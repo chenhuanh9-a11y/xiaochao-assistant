@@ -399,7 +399,8 @@ class CropReplayTests(unittest.TestCase):
         chain = dict(points=np.array([[10., 10.], [20., 30.], [40., 30.]]), rays=np.eye(2))
         context = dict(query=np.ones((120, 160), np.uint8), observationBounds=[0, 0, 160, 120],
                        observed=np.ones((120, 160), bool))
-        with patch.object(replay, 'current_geometry', return_value=context), \
+        # This test isolates coordinate inversion, not client segmentation.
+        with patch.object(replay, '_retained_roi_geometry', return_value=context), \
                 patch.object(replay, 'observed_corner_chains', return_value=[chain]):
             result = replay.replay(np.zeros((120, 160, 3), np.uint8), np.ones((100, 100), np.uint8), [1405, 371], scales=(1., .75, 1.25))
         self.assertEqual(result['rows'][0]['queryChains'], 1)

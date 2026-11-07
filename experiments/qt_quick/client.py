@@ -51,7 +51,10 @@ def prepare_first_run(sandbox):
 
 
 class QtClient:
-    def __init__(self, app, sandbox, *, probe_output=None, info_fetch=None, on_created=None):
+    def __init__(self, app, sandbox, *, probe_output=None, info_fetch=None, on_created=None,
+                 g_cycle_evidence=False, g_cycle_full_input=False):
+        if g_cycle_full_input and not g_cycle_evidence:
+            raise ValueError("full solver evidence requires explicit test evidence")
         self._closed = False
         self._shutdown_complete = False
         if on_created is not None:
@@ -193,6 +196,25 @@ class QtClient:
         self.tutorial = TutorialService(self.paths.tutorial_state_path, settings=self.settings, parent=self.coordinator)
         self.problems = ProblemsService(self.paths, build_fingerprint=self.info._build_fingerprint,
             source_commit=self.info._source_commit)
+        self.g_cycle_evidence = None
+        self.g_cycle_reporter = None
+        if g_cycle_evidence:
+            from g_cycle_evidence import GCycleEvidenceRecorder
+            from client_g_cycle_evidence import EvidenceReporter
+            self.g_cycle_reporter = EvidenceReporter(self.problems)
+            self.g_cycle_reporter.warning.connect(self.coordinator.notificationRequested)
+            self.runtime.g_cycle_reporter = self.g_cycle_reporter
+            self.g_cycle_evidence = GCycleEvidenceRecorder(
+                self.paths.work_root / "g-cycle-test-evidence", enabled=True,
+                result_callback=self.g_cycle_reporter.publish, full_input=g_cycle_full_input)
+            self.g_cycle_evidence.start()
+            self.runtime.g_cycle_evidence = self.g_cycle_evidence
+            QTimer.singleShot(0, lambda: self.coordinator.notificationRequested.emit(
+                "逐次开图留样测试已开启",
+                ("本次进程会在本地保存已采集的完整游戏客户区求解输入，可能含昵称、聊天或其他游戏内信息。"
+                 if g_cycle_full_input else "本次进程会在本地保存成功和失败的地图/楼层检测局部图，可能含昵称或聊天。") +
+                "不自动上传；最多 100 个样本、256 MiB；后续写入时清理超过 24 小时的样本。"
+                "退出后不会自动清理，需重新用测试参数开启。", "warning"))
         if self.lifecycle_trace is not None:
             self.lifecycle_trace.record("startup", buildFingerprint=self.info._build_fingerprint,
                 sourceCommit=self.problems._source_commit)
@@ -213,6 +235,12 @@ class QtClient:
                                          self.capture_exclusion, self.manual_map_picker, self.package_manager)
         if self.lifecycle_trace is not None:
             self.coordinator.close_writers += (self.lifecycle_trace,)
+        if self.g_cycle_evidence is not None:
+            # Keep ProblemsService accepting until evidence completion reports
+            # have drained. Reporter includes its pending writes in close checks.
+            self.coordinator.close_writers = tuple(w for w in self.coordinator.close_writers
+                                                   if w is not self.problems)
+            self.coordinator.close_writers += (self.g_cycle_evidence, self.g_cycle_reporter)
         self.custom_galleries.setUseHandler(self._use_custom_gallery)
         self.coordinator.close_writers += (self.tutorial,)
         self.custom_galleries.galleriesChanged.connect(self._custom_gallery_changed)
@@ -523,11 +551,19 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sandbox", type=Path, default=DEFAULT_SANDBOX)
     parser.add_argument("--probe-output", type=Path)
+    parser.add_argument("--g-cycle-evidence", action="store_true",
+                        help="this process only: bounded local G-attempt algorithm ROI evidence; may contain game text; no upload")
+    parser.add_argument("--g-cycle-full-input", action="store_true",
+                        help="with --g-cycle-evidence only: keep the existing full game-client solver input locally, including game text; no desktop capture or upload")
     parser.add_argument("--self-check", action="store_true", help="read-only packaged import/resource check, no windows or listeners")
     parser.add_argument("--verify-resources", action="store_true", help="with self-check, verify S0 and every included S1 provider without capture")
     parser.add_argument("--offline-resource-root", type=Path,
                         help="with self-check, verify the explicit S1 offline gallery root and decode its images")
     args = parser.parse_args()
+    if args.g_cycle_full_input and not args.g_cycle_evidence:
+        parser.error("--g-cycle-full-input requires --g-cycle-evidence")
+    if args.g_cycle_evidence and (args.self_check or args.probe_output):
+        parser.error("--g-cycle-evidence cannot be combined with self-check or UI probes")
     if args.verify_resources and not args.self_check:
         parser.error("--verify-resources requires --self-check")
     if args.offline_resource_root is not None and not args.self_check:
@@ -678,7 +714,9 @@ def _run_primary_client(app, args, guard):
             local_manifest = (lambda url: dict(schemaVersion=1, platform="windows", version="1.0.5",
                               versionCode=9, releaseNotes="Local probe", publishedAt="2026-10-30", releases=[])) if args.probe_output else None
             client = holder["client"] = QtClient(app, sandbox, probe_output=args.probe_output, info_fetch=local_manifest,
-                on_created=lambda partial: holder.update(client=partial))
+                on_created=lambda partial: holder.update(client=partial),
+                g_cycle_evidence=getattr(args, "g_cycle_evidence", False),
+                g_cycle_full_input=getattr(args, "g_cycle_full_input", False))
             close_startup_splash()
             if holder.pop("activationPending", False):
                 restore_main_window(client.main)

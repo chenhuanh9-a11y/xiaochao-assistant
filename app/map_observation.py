@@ -4,6 +4,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 from nightmare_candidate import visible_map_component, map_color_mask
+from g_cycle_observation import emit as _test_evidence
 
 
 def map_reuse_evidence(
@@ -81,8 +82,10 @@ def structure_current_map_evidence(frame: np.ndarray | None, *, observation_boun
         visible_override=visible)['translationMask']
     if current is None:
         return None
-    return dict(query=(current[0] > .22).astype(np.uint8),
-                observationBounds=tuple(visible[1]), visible=visible)
+    result = dict(query=(current[0] > .22).astype(np.uint8),
+                  observationBounds=tuple(visible[1]), visible=visible)
+    _test_evidence("structure-input", frame, result)
+    return result
 
 
 def map_translation_mask(

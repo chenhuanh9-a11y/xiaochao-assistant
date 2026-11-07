@@ -74,6 +74,9 @@ class PartialClientCleanupTests(unittest.TestCase):
         # as evidence that the product drained its workers.
         self.release.set()
         for instance in self.instances:
+            evidence = getattr(instance, "g_cycle_evidence", None)
+            if evidence is not None:
+                evidence.shutdown(wait=True)
             trace = getattr(instance, "lifecycle_trace", None)
             if trace is not None:
                 trace.shutdown()
@@ -88,7 +91,18 @@ class PartialClientCleanupTests(unittest.TestCase):
                     value.shutdown()
         self.app.processEvents()
 
-    def run_complete_client_exit(self, *, loop_error=False, shutdown_error=False):
+    def run_complete_client_exit(self, *, loop_error=False, shutdown_error=False, evidence_mode=None, normal_close=False):
+        if evidence_mode is not None:
+            self.args.g_cycle_evidence = True
+        if evidence_mode == "busy":
+            import g_cycle_evidence
+            original_encode = g_cycle_evidence._encode
+            def blocked_encode(*args):
+                self.started.set()
+                if not self.release.wait(8):
+                    raise RuntimeError("fixture evidence writer timeout")
+                return original_encode(*args)
+            self.enterContext(patch.object(g_cycle_evidence, "_encode", side_effect=blocked_encode))
         surface = self.root / "fixture.qml"
         surface.write_text('import QtQuick\nWindow { objectName: "clientControlsWindow"; width: 120; height: 90; visible: false }')
         original_load = QQmlApplicationEngine.load
@@ -104,6 +118,16 @@ class PartialClientCleanupTests(unittest.TestCase):
         jobs = []
         def ready(instance, output):
             nonlocal original_shutdown
+            if evidence_mode is not None:
+                recorder = instance.g_cycle_evidence
+                recorder.shutdown = Mock(wraps=recorder.shutdown)
+                self.assertTrue(recorder.snapshot()["running"])
+                if evidence_mode == "busy":
+                    reply = recorder.submit(None, dict(identity="fixture", session="fixture",
+                        round=1, cycle=1, opening="none", attempt="none", frame="none",
+                        outcome="missing", reason="fixture-no-input"))
+                    self.assertEqual(reply["status"], "queued")
+                    self.assertEqual(recorder.pendingWrites, 1)
             for pool in (instance.session._pool, instance.resources.pool):
                 job = Work()
                 jobs.append(job)
@@ -116,7 +140,7 @@ class PartialClientCleanupTests(unittest.TestCase):
             instance.tutorial.markDone('round')
             self.loaded.set()
             if not loop_error:
-                QTimer.singleShot(0, self.app.quit)
+                QTimer.singleShot(0, instance.coordinator.requestClose if normal_close else self.app.quit)
         self.enterContext(patch("probe_client.run_client_probe", side_effect=ready))
         def observer():
             try:
@@ -149,6 +173,18 @@ class PartialClientCleanupTests(unittest.TestCase):
                 else:
                     self.assertEqual(client._run_primary_client(self.app, self.args, self.guard), 0)
                 instance = self.instances[0]
+                if evidence_mode is not None:
+                    recorder = instance.g_cycle_evidence
+                    recorder.shutdown.assert_any_call(wait=True)
+                    self.assertEqual(recorder.pendingWrites, 0)
+                    self.assertFalse(recorder.snapshot()["running"])
+                    if evidence_mode == "busy":
+                        self.assertEqual(recorder.snapshot()["counters"]["saved-missing-input"], 1)
+                        text = instance.problems.log_path.read_text(encoding="utf-8")
+                        self.assertIn('"g-cycle-evidence"', text)
+                        self.assertIn('"completion"', text)
+                        self.assertIn('"saved-missing-input"', text)
+                        self.assertFalse(instance.g_cycle_reporter.pendingWrites)
                 import json
                 saved = json.loads(instance.tutorial.state_path.read_text(encoding='utf-8'))
                 self.assertEqual(saved['done'], ['start', 'round'])
@@ -183,6 +219,18 @@ class PartialClientCleanupTests(unittest.TestCase):
 
     def test_shutdown_failure_continues_other_pool_drains_without_success_record(self):
         self.run_complete_client_exit(shutdown_error=True)
+
+    def test_complete_client_exit_joins_idle_evidence_writer(self):
+        self.run_complete_client_exit(evidence_mode="idle")
+
+    def test_complete_client_exit_drains_and_joins_busy_evidence_writer(self):
+        self.run_complete_client_exit(evidence_mode="busy")
+
+    def test_normal_close_keeps_problems_open_until_evidence_completion(self):
+        self.run_complete_client_exit(evidence_mode="busy", normal_close=True)
+
+    def test_other_shutdown_failure_still_joins_evidence_writer(self):
+        self.run_complete_client_exit(evidence_mode="busy", shutdown_error=True)
 
     def test_actual_constructor_import_failure_keeps_original_error_before_lifecycle_exists(self):
         original = builtins.__import__

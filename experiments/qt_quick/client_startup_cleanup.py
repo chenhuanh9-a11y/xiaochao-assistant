@@ -41,8 +41,13 @@ def shutdown_client(client):
 
     owners = [value for name, value in vars(client).items()
               if name != "app" and isinstance(value, QObject)]
+    evidence = getattr(client, "g_cycle_evidence", None)
+    if evidence is not None:
+        owners.append(evidence)
     pools = {}
     for owner in owners:
+        if not isinstance(owner, QObject):
+            continue
         for pool in owner.findChildren(QThreadPool):
             pools[id(pool)] = pool
         for key in ("pool", "_pool"):
@@ -75,6 +80,8 @@ def shutdown_client(client):
         # Stop producers before waiting. Discover descendant timers too, so a
         # failed shutdown member cannot leave other owner timers scheduling work.
         for owner in owners:
+            if not isinstance(owner, QObject):
+                continue
             for timer in owner.findChildren(QTimer):
                 attempt(type(owner).__name__ + ".timer.stop", timer.stop)
         coordinator = getattr(client, "coordinator", None)
@@ -89,12 +96,19 @@ def shutdown_client(client):
         # and capture shutdown still run if coordinator.shutdown itself fails.
         call("route_plaza", "cancel")
         call("runtime", "stop_private_evidence")
+        call("g_cycle_evidence")
         for name in ("coordinator", "input", "capture", "capture_exclusion", "session", "resources",
-                     "package_manager", "chest_auto_tap", "problems", "lifecycle_trace"):
+                     "package_manager", "chest_auto_tap", "lifecycle_trace"):
             call(name)
         call("online_packages", "cancel")
         call("reference_preview", "close")
         drain()
+        if evidence is not None:
+            # Zero pending writes precedes the worker's final return. Its last
+            # outcome may also enqueue a main-thread diagnostic callback.
+            attempt("g_cycle_evidence.join", lambda: evidence.shutdown(wait=True))
+            drain()
+        call("problems")
         for name in ("settings", "preview", "control_snap", "backend", "route_choices", "info", "tutorial",
                      "custom_galleries", "online_packages", "route_plaza", "manual_map_picker", "windows"):
             call(name)
