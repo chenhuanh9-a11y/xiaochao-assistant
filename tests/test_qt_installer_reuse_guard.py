@@ -86,7 +86,7 @@ class ManagedRuntimeReuseTests(unittest.TestCase):
                 managedBaseManifest=managed.CANDIDATE + '/manifest.json',
                 managedBaseManifestSha256=build.sha256(candidate), managedBaseBundleId=manifest['bundleId']),
             releaseReport=dict(file=report.name, sha256=build.sha256(report), executableSha256=release['executableSha256']))
-        for kind in ('recovery', 'import'):
+        for kind in ('recovery', 'import', 'reset'):
             product = 'star-map-' + kind + '-helper'
             runtime = '_star_map_' + kind + '_runtime'
             inventory = {}
@@ -157,6 +157,7 @@ class ManagedRuntimeReuseTests(unittest.TestCase):
 
     def test_replaced_helper_or_its_runtime_rejects_reuse(self):
         for name in ('star-map-recovery-helper.exe', 'star-map-import-helper.exe',
+                     'star-map-reset-helper.exe', '_star_map_reset_runtime/python313.dll',
                      '_star_map_recovery_runtime/python313.dll', '_star_map_import_runtime/python313.dll'):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as folder:
                 root = Path(folder)

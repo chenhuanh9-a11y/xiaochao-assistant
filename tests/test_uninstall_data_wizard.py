@@ -108,7 +108,7 @@ class UninstallSourceContracts(unittest.TestCase):
         self.assertIn('#include "qt-game-watcher-lifecycle.iss"', production)
         events = production.split('procedure CurStepChanged', 1)[1].split('procedure DeinitializeSetup', 1)[0]
         self.assertLess(events.index('DisableGameWatcher'), events.index('BeginUpgrade'))
-        self.assertLess(events.index('UpgradeCommitted := True'), events.index('RestoreGameWatcher'))
+        self.assertLess(events.index('UpgradeCommitted :='), events.index('RestoreGameWatcher'))
         cleanup = production.split('procedure DeinitializeSetup', 1)[1].split('function ExecutableAvailable', 1)[0]
         self.assertLess(cleanup.index('UPGRADE_ROLLBACK_RESTORED'), cleanup.index('RestoreGameWatcher'))
         self.assertIn('if Restored then begin', cleanup)
