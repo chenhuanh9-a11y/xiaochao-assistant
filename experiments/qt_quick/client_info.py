@@ -19,7 +19,7 @@ from season_context import SEASONS
 from season_map_resources import browse_modes
 from client_paths import PRODUCTION, WORK_ROOT, runtime_paths, bundled_author_root
 from PySide6.QtCore import QThreadPool, Qt
-from update_service import UpdateService, DOWNLOAD_HOSTS
+from update_service import UpdateService, DOWNLOAD_HOSTS, is_newer
 from diagnostic_export import export_safe_diagnostic_bundle, diagnostic_package_metadata
 
 
@@ -88,6 +88,8 @@ class ClientInfoService(QObject):
         self._timer.timeout.connect(self._poll)
         self._startup_requested = False
         self._startup_checked = False
+        self._announcements = {}
+        self._pending_notice_reads = {}
         self._startup_timer = QTimer(self)
         self._startup_timer.setSingleShot(True)
         self._startup_timer.setInterval(2500)
@@ -102,6 +104,8 @@ class ClientInfoService(QObject):
     hasError = Property(bool, lambda s: s._action_error, notify=changed)
     hasUnread = Property(bool, lambda s: s._service.has_unread, notify=changed)
     skippedVersion = Property(str, lambda s: s._service.skipped_version, notify=changed)
+    announcementSkipped = Property(bool, lambda s: bool(s._service.latest and
+        s._service._stored.get("skippedAnnouncementId") == s._service.latest.announcement_id), notify=changed)
     historyMessage = Property(str, lambda s: s._history_message, notify=changed)
     includeFailureEvidence = Property(bool, lambda s: s._include_failure_evidence, notify=changed)
     textOnlyDiagnostics = Property(bool, lambda s: not (s._include_failure_evidence or s._include_automatic_failure_evidence), notify=changed)
@@ -112,9 +116,10 @@ class ClientInfoService(QObject):
     history = Property("QVariantList", lambda s: [s._release_row(r) for r in s._service.history
         if not s._service.latest or r.version != s._service.latest.version][:10], notify=changed)
 
-    @staticmethod
-    def _release_row(release):
-        return dict(asdict(release), published_date=release.published_date)
+    def _release_row(self, release):
+        return dict(asdict(release), published_date=release.published_date,
+                    announcementId=release.announcement_id,
+                    updateAvailable=is_newer(release.version, self._version))
     facts = Property("QVariantMap", lambda s: dict(version=s._version, entrypoint=str(Path(__file__).with_name("client.py")),
                     interpreter=sys.executable, platform=platform.platform(),
                     liveInput=bool(s._providers.get("input") and s._providers["input"].enabled),
@@ -352,6 +357,9 @@ class ClientInfoService(QObject):
     def _startup_check(self):
         if self._closed or self._startup_checked:
             return
+        if self._writing or self._automatic_sampling_pending is not None:
+            self._startup_timer.start(100)
+            return
         self._startup_checked = True
         self._check_updates(manual=False)
 
@@ -370,7 +378,10 @@ class ClientInfoService(QObject):
             self.changed.emit()
 
     def _poll(self):
-        if self._closed:
+        if self._closed or self._writing:
+            return
+        self._flush_notice_reads()
+        if self._writing:
             return
         event = self._service.poll()
         if event is not None:
@@ -380,11 +391,19 @@ class ClientInfoService(QObject):
             if "error" not in event:
                 self._history_message = ("更新历史暂时无法读取，可重新检查更新" if event.get("history") is None
                                          else "暂无更早的更新公告" if not self.history else "")
-            self._timer.stop()
+            # Keep the service's bounded retry/recheck schedule alive. Network
+            # requests remain daemon workers and never block window startup.
             self.changed.emit()
-            if "error" not in event and not event.get("manual", False) and self._service.should_prompt():
-                self._service.mark_prompted()
-                self.startupAnnouncement.emit(self._release_row(self._service.latest))
+            if ("error" not in event and (self._startup_requested or not event.get("manual", False))
+                    and self._service.should_announce()):
+                release = self._service.latest
+                self._announcements[release.announcement_id] = release
+                while len(self._announcements) > 64:
+                    self._announcements.pop(next(iter(self._announcements)))
+                self.startupAnnouncement.emit(self._release_row(release))
+        elif self._service.phase == "checking" and not self._operation:
+            self._operation = "正在读取最新版本与更新历史…"
+            self.changed.emit()
 
     def _write(self, function, message, *, operation="正在保存…", complete=None):
         if self.checking or self._closed:
@@ -406,39 +425,77 @@ class ClientInfoService(QObject):
             if complete:
                 complete(value, error)
             self.changed.emit()
+            self._flush_notice_reads()
         job.signals.done.connect(done, Qt.QueuedConnection)
         self._pool.start(job)
         return True
 
-    def _notice_action(self, method, key, message):
-        if self._service.latest is None:
-            return
-        version = self._service.latest.version
+    def _notice_action(self, fields, message):
+        # Capture both content and preferences on the UI thread. Workers only
+        # write this snapshot; they must not read a newer self.latest or mutate
+        # the UI-owned preferences while a check is finishing.
+        stored = dict(self._service._stored, **fields)
         def save():
-            previous = dict(self._service._stored)
-            try:
-                method()
-                persisted = json.loads(self._service.state_path.read_text(encoding="utf-8"))
-                if persisted.get(key) != version:
-                    raise OSError("提醒偏好未写入")
-            except Exception:
-                self._service._stored = previous
-                raise
-        self._write(save, message)
+            self._service._save(stored)
+            persisted = json.loads(self._service.state_path.read_text(encoding="utf-8"))
+            if any(persisted.get(key) != value for key, value in fields.items()):
+                raise OSError("提醒偏好未写入")
+        def complete(value, error):
+            if not error:
+                self._service._stored.update(fields)
+        return self._write(save, message, complete=complete)
+
+    def _flush_notice_reads(self):
+        if self._closed or self.checking or not self._pending_notice_reads:
+            return
+        identity = next(iter(self._pending_notice_reads))
+        release = self._pending_notice_reads.pop(identity)
+        self._notice_action(self._service.notes_seen_fields(release), "已标记为已读")
+
+    @Slot(str, result=bool)
+    def shouldShowAnnouncement(self, identity):
+        return bool(not self._closed and self._service.latest
+                    and self._service.latest.announcement_id == identity
+                    and self._service.should_announce())
+
+    @Slot(str)
+    def announcementShown(self, identity):
+        release = self._announcements.get(identity)
+        if self._closed or release is None:
+            return
+        self._queue_notice_read(release)
+
+    def _queue_notice_read(self, release):
+        self._service.mark_announcement_prompted(release)
+        self._pending_notice_reads[release.announcement_id] = release
+        self._timer.start()
+        self._flush_notice_reads()
 
     @Slot()
     def markRead(self):
-        self._notice_action(self._service.mark_notes_seen, "seenNotesVersion", "已标记为已读")
+        if not self._closed and self._service.latest is not None:
+            self._queue_notice_read(self._service.latest)
 
     @Slot()
     def skipVersion(self):
-        self._notice_action(self._service.skip_latest, "skippedVersion", "已忽略此版本提醒")
+        if self._service.latest is not None:
+            self._skip_release(self._service.latest)
+
+    def _skip_release(self, release):
+        self._notice_action(dict(skippedVersion=release.version,
+                                 skippedAnnouncementId=release.announcement_id), "已忽略此公告提醒")
+
+    @Slot(str, str)
+    def openAnnouncementDownload(self, identity, provider):
+        self._open_release_download(self._announcements.get(identity), provider)
 
     @Slot(str)
     def openDownloadPage(self, provider):
+        self._open_release_download(self._service.latest, provider)
+
+    def _open_release_download(self, release, provider):
         if self._closed or self.checking:
             return
-        release = self._service.latest
         url = release.pages.get(provider) if release else None
         try:
             parts = urlsplit(url or "")
@@ -607,6 +664,8 @@ class ClientInfoService(QObject):
         self._set_automatic_failure_sampling(False)
         self._startup_timer.stop()
         self._closed = True
+        self._pending_notice_reads.clear()
+        self._announcements.clear()
         self._home_preview_generation += 1
         self._timer.stop()
         self._pool.waitForDone()
