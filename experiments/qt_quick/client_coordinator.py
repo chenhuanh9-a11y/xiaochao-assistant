@@ -659,11 +659,11 @@ class ClientCoordinator(QObject):
             return True
         else:
             message = "地图键只控制游戏地图；请先在主页或游戏控件点击“开始本局”，也可使用独立的本局快捷键"
-        # Ignored game edges must not toggle the next authorized opening into
-        # a close. Do not cancel a pending explicit start/end or clear previews.
-        reset = getattr(self.input, "resetMapInput", None)
-        if callable(reset):
-            reset(False)
+        # The pass-through key still changed the game's map while our round
+        # work was idle/pending. Preserve that physical phase: its next G is
+        # a close, not a new open. Escape already records a close in the input
+        # owner. Refusing round work proves neither visual open nor closed.
+        # Do not cancel explicit start/end, reset recovery, or clear previews.
         self._message = message
         key = ("map-round-not-ready", current.get("roundId", state.get("roundId")), pending)
         if opening and key not in self._notified:
@@ -1329,7 +1329,9 @@ class ClientCoordinator(QObject):
         self._map_resource_notified.clear()
         # Preparation is permitted before a game exists and does not grant
         # capture/input authority. A later G activates this prepared round.
-        if self._bound:
+        # Reconfiguring an already enabled observer calls disable(), which
+        # would erase map edges that have already passed through to the game.
+        if self._bound and not self.input.enabled:
             self.setInputEnabled(True)
         self._apply_controls_visibility(self.settings.values.get("qtControlsVisible", True))
         self.session.dispatch("start_round")
@@ -1953,7 +1955,9 @@ class ClientCoordinator(QObject):
             self._binding_resume_pending = False
         if receipt.get("action") == "bind_capture":
             if receipt.get("success") and self._bound:
-                self._message = "窗口已连接；切回游戏打开地图即可识别"
+                self._message = ("窗口已连接；本局已准备，切回游戏打开地图后识别"
+                    if state.get("roundPreparing") or state.get("roundActive") else
+                    "窗口已连接；请先点击“开始本局”，再回到游戏打开地图")
                 if self._automatic_live and not self.input.enabled and self._input_enable_allowed():
                     self.input.enable()
             else:
