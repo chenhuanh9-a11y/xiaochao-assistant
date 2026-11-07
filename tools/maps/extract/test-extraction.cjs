@@ -53,9 +53,47 @@ test('synthetic full package extraction, overlay, geometry, fail-closed boundari
     const game=path.join(tmp,'game'),out=path.join(tmp,'literal'),geo=path.join(tmp,'geometry');fixture(game);
     // A second same-format layer proves explicit overlay selection.
     fs.mkdirSync(path.join(game,'Documents'),{recursive:true});fs.cpSync(path.join(game,'res'),path.join(game,'Documents/res'),{recursive:true});
+    fs.writeFileSync(path.join(game,'Documents/update.ini'),'version=fixture-1\n');
     run('extract-map-configs.cjs',['--game',game,'--out',out]);
     const summary=JSON.parse(fs.readFileSync(path.join(out,'summary.json')));
     assert.equal(summary.layoutRecordCount,1);assert(Object.values(summary.moduleSources).every(x=>x==='Documents/res'));
+    const bridge=path.join(tmp,'bridge');
+    run('prepare-increment-inputs.cjs',['--run',out,'--output',bridge,'--season','S1','--mode','nightmare']);
+    const normalized=JSON.parse(fs.readFileSync(path.join(bridge,'normalized-literals.json')));
+    assert.equal(normalized.levelLayouts.data['900001'].room_data.length,2);
+    assert.equal(normalized.mapImages.data['9001_0'].image_path,'synthetic-only.png');
+    const bm=JSON.parse(fs.readFileSync(path.join(bridge,'extraction-manifest.json')));
+    assert.equal(bm.scope.seasonId,'S1');assert.equal(bm.scope.competitionScopeEnforced,false);
+    assert.equal(fs.readdirSync(bridge).filter(n=>n.endsWith('.bin')).length,0);
+    const old=path.join(tmp,'baseline.json');fs.writeFileSync(old,JSON.stringify({maps:{},mapImageConfigs:{}}));
+    run('../normalize_increment_catalog.cjs',['--run',bridge,'--old-catalog',old,'--output',path.join(bridge,'catalog-candidate')]);
+    const candidate=JSON.parse(fs.readFileSync(path.join(bridge,'catalog-candidate/latest-catalog-candidate.json')));
+    assert.equal(candidate.gameConfigVersion,'fixture-1');assert.equal(candidate.maps['900001'].rooms.length,2);
+    assert.equal(candidate.inputScope.seasonId,'S1');assert.equal(candidate.inputScope.mode,'nightmare');
+    run('prepare-increment-inputs.cjs',['--run',out,'--output',bridge,'--season','S1','--mode','nightmare'],false);
+    run('prepare-increment-inputs.cjs',['--run',out,'--output',path.join(out,'nested'),'--season','S1','--mode','nightmare'],false);
+    const original=fs.readFileSync(path.join(out,'literal-exports.json'));
+    const bad=JSON.parse(original);bad.levelLayouts.partial=true;
+    fs.writeFileSync(path.join(out,'literal-exports.json'),JSON.stringify(bad));
+    const rejected=path.join(tmp,'rejected');
+    run('prepare-increment-inputs.cjs',['--run',out,'--output',rejected,'--season','S1','--mode','nightmare'],false);
+    assert.equal(fs.existsSync(rejected),false);
+    fs.writeFileSync(path.join(out,'literal-exports.json'),original);
+    for(const mutate of [
+      v=>{v.mapImages.exports.data.entries.push(['9001_0',{}]);},
+      v=>{v.levelLayouts.sha256='0'.repeat(64);},
+      v=>{v.levelLayouts.exports.data={kind:'code'};}
+    ]){
+      const changed=JSON.parse(original);mutate(changed);
+      fs.writeFileSync(path.join(out,'literal-exports.json'),JSON.stringify(changed));
+      run('prepare-increment-inputs.cjs',['--run',out,'--output',rejected,'--season','S1','--mode','nightmare'],false);
+      assert.equal(fs.existsSync(rejected),false);
+    }
+    fs.writeFileSync(path.join(out,'literal-exports.json'),original);
+    const modulesPath=path.join(out,'modules.json'),moduleBytes=fs.readFileSync(modulesPath),moduleMap=JSON.parse(moduleBytes);
+    moduleMap.levelLayouts='../outside.bin';fs.writeFileSync(modulesPath,JSON.stringify(moduleMap));
+    run('prepare-increment-inputs.cjs',['--run',out,'--output',rejected,'--season','S1','--mode','nightmare'],false);
+    assert.equal(fs.existsSync(rejected),false);fs.writeFileSync(modulesPath,moduleBytes);
     run('export-catalog.cjs',['--literals',path.join(out,'literal-exports.json'),'--out',geo,'--game-version','synthetic']);
     const g=JSON.parse(fs.readFileSync(path.join(geo,'900001.geometry.json')));
     assert.equal(g.rooms.length,2);assert.equal(g.pairedDoors.length,1);assert.equal(g.unpairedDoorPaths.length,1);
@@ -71,4 +109,119 @@ test('cell rotation is about boundaries; ambiguous doors never become edges',()=
   assert.deepEqual(worldVoxel([0,0,0],{position:[0,0,0],rotation:1}),[0,0,-1]);
   const d={maps:{1:{rooms:[{roomIndex:0,roomConfigId:1,position:[0,0,0],rotation:0},{roomIndex:1,roomConfigId:1,position:[0,0,0],rotation:0}]}},roomDefinitions:{1:{room_voxels:[[0,0,0]],room_paths:[[[0,0,0],[1,0,0]]]}}};
   const g=geometry(d,'1');assert.equal(g.pairedDoors.length,0);assert(g.unpairedDoorPaths.every(p=>p.status==='ambiguous'));
+});
+
+function bridgeFixture(tmp){
+  const game=path.join(tmp,'game'),out=path.join(tmp,'run');fixture(game);
+  fs.mkdirSync(path.join(game,'Documents'));fs.writeFileSync(path.join(game,'Documents/update.ini'),'version=fixture-1\n');
+  run('extract-map-configs.cjs',['--game',game,'--out',out]);return out;
+}
+function addCommaAlias(file){
+  const raw=JSON.parse(fs.readFileSync(file));
+  raw.mapImages.exports.data.entries.push(['9001,0',raw.mapImages.exports.data.entries[0][1]]);
+  fs.writeFileSync(file,JSON.stringify(raw));
+}
+test('bridge rejects tuple/comma alias before creating output',()=>{
+  const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'bridge-alias-'));
+  try{
+    const input=bridgeFixture(tmp),out=path.join(tmp,'bridge');addCommaAlias(path.join(input,'literal-exports.json'));
+    run('prepare-increment-inputs.cjs',['--run',input,'--output',out,'--season','S1','--mode','nightmare'],false);
+    assert.equal(fs.existsSync(out),false);
+  }finally{fs.rmSync(tmp,{recursive:true,force:true});}
+});
+test('normalizer independently rejects tuple/comma aliases',()=>{
+  const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'normalizer-alias-'));
+  try{
+    const input=bridgeFixture(tmp),bridge=path.join(tmp,'bridge');
+    run('prepare-increment-inputs.cjs',['--run',input,'--output',bridge,'--season','S1','--mode','nightmare']);
+    addCommaAlias(path.join(bridge,'literal-exports.json'));
+    const old=path.join(tmp,'old.json');fs.writeFileSync(old,JSON.stringify({maps:{},mapImageConfigs:{}}));
+    const out=path.join(tmp,'catalog');
+    run('../normalize_increment_catalog.cjs',['--run',bridge,'--old-catalog',old,'--output',out],false);
+    assert.equal(fs.existsSync(path.join(out,'latest-catalog-candidate.json')),false);
+  }finally{fs.rmSync(tmp,{recursive:true,force:true});}
+});
+test('bridge rejects each metadata symlink outside run',()=>{
+  const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'bridge-symlinks-'));
+  try{
+    const input=bridgeFixture(tmp);
+    for(const name of ['literal-exports.json','summary.json','modules.json','discovery.json']){
+      const p=path.join(input,name),saved=fs.readFileSync(p),outside=path.join(tmp,name),out=path.join(tmp,'bridge-'+name);
+      fs.writeFileSync(outside,saved);fs.unlinkSync(p);fs.symlinkSync(outside,p);
+      try{
+        run('prepare-increment-inputs.cjs',['--run',input,'--output',out,'--season','S1','--mode','nightmare'],false);
+        assert.equal(fs.existsSync(out),false);
+      }finally{fs.unlinkSync(p);fs.writeFileSync(p,saved);}
+    }
+  }finally{fs.rmSync(tmp,{recursive:true,force:true});}
+});
+test('required module data must be typed dictionaries, not scalar empty-success',()=>{
+  const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'bridge-scalars-'));
+  try{
+    const input=bridgeFixture(tmp),bridge=path.join(tmp,'bridge');
+    run('prepare-increment-inputs.cjs',['--run',input,'--output',bridge,'--season','S1','--mode','nightmare']);
+    const file=path.join(input,'literal-exports.json'),original=fs.readFileSync(file),old=path.join(tmp,'old.json');
+    fs.writeFileSync(old,JSON.stringify({maps:{},mapImageConfigs:{}}));
+    for(const key of ['levelLayouts','roomDefinitions','mapImages','levelRules','outdoorMaps','roomArrange']){
+      const raw=JSON.parse(original);raw[key].exports.data=7;
+      fs.writeFileSync(file,JSON.stringify(raw));fs.writeFileSync(path.join(bridge,'literal-exports.json'),JSON.stringify(raw));
+      const out=path.join(tmp,'bad-'+key),catalog=path.join(tmp,'cat-'+key);
+      run('prepare-increment-inputs.cjs',['--run',input,'--output',out,'--season','S1','--mode','nightmare'],false);
+      assert.equal(fs.existsSync(out),false);
+      run('../normalize_increment_catalog.cjs',['--run',bridge,'--old-catalog',old,'--output',catalog],false);
+      assert.equal(fs.existsSync(catalog),false);
+    }
+  }finally{fs.rmSync(tmp,{recursive:true,force:true});}
+});
+test('normalizer records actual partial status for optional modules',()=>{
+  const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'bridge-partial-status-'));
+  try{
+    const input=bridgeFixture(tmp),bridge=path.join(tmp,'bridge');
+    const file=path.join(input,'literal-exports.json'),raw=JSON.parse(fs.readFileSync(file));
+    raw.scenes.partial=true;raw.dungeonParams.partial=false;fs.writeFileSync(file,JSON.stringify(raw));
+    run('prepare-increment-inputs.cjs',['--run',input,'--output',bridge,'--season','S1','--mode','nightmare']);
+    const old=path.join(tmp,'old.json'),out=path.join(tmp,'catalog');fs.writeFileSync(old,JSON.stringify({maps:{},mapImageConfigs:{}}));
+    run('../normalize_increment_catalog.cjs',['--run',bridge,'--old-catalog',old,'--output',out]);
+    const c=JSON.parse(fs.readFileSync(path.join(out,'latest-catalog-candidate.json')));
+    assert.equal(c.sourceModules.scenes.partial,true);assert.equal(c.sourceModules.dungeonParams.partial,false);
+  }finally{fs.rmSync(tmp,{recursive:true,force:true});}
+});
+test('required catalog emptiness and malformed room bindings fail before output',()=>{
+  const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'bridge-shapes-'));
+  try{
+    const input=bridgeFixture(tmp),file=path.join(input,'literal-exports.json'),original=fs.readFileSync(file);
+    const mutations=[
+      ...['levelLayouts','roomDefinitions','mapImages'].map(key=>raw=>{raw[key].exports.data.entries=[];}),
+      raw=>{raw.levelLayouts.exports.data.entries[0][1]={kind:'dict',entries:[['room_data',[]]]};},
+      raw=>{raw.levelLayouts.exports.data.entries[0][1]={kind:'dict',entries:[['room_data',[[999999,[0,2,0],0]]]]};},
+      raw=>{raw.roomDefinitions.exports.data.entries[0][1]={kind:'dict',entries:[['room_voxels',7]]};}
+    ];
+    mutations.forEach((mutate,i)=>{
+      const raw=JSON.parse(original);mutate(raw);fs.writeFileSync(file,JSON.stringify(raw));
+      const out=path.join(tmp,'bad'+i);
+      run('prepare-increment-inputs.cjs',['--run',input,'--output',out,'--season','S1','--mode','nightmare'],false);
+      assert.equal(fs.existsSync(out),false);
+    });
+  }finally{fs.rmSync(tmp,{recursive:true,force:true});}
+});
+test('legacy extraction manifest without scope and unique comma image keys remain readable',()=>{
+  const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'legacy-increment-'));
+  try{
+    const input=bridgeFixture(tmp),bridge=path.join(tmp,'bridge');
+    run('prepare-increment-inputs.cjs',['--run',input,'--output',bridge,'--season','S1','--mode','nightmare']);
+    const manifestPath=path.join(bridge,'extraction-manifest.json'),manifest=JSON.parse(fs.readFileSync(manifestPath));
+    delete manifest.scope;delete manifest.schema;delete manifest.inputHashes;delete manifest.moduleBytesCopied;
+    // Retain the historical normalizer's actual field contract, not the bridge schema.
+    fs.writeFileSync(manifestPath,JSON.stringify(manifest));
+    const literalPath=path.join(bridge,'literal-exports.json'),raw=JSON.parse(fs.readFileSync(literalPath));
+    raw.mapImages.exports.data.entries[0][0]='9001,0';fs.writeFileSync(literalPath,JSON.stringify(raw));
+    const fields={image_path:'synthetic-only.png'},old=path.join(tmp,'old.json'),out=path.join(tmp,'catalog');
+    fs.writeFileSync(old,JSON.stringify({gameConfigVersion:'fixture-old',maps:{},mapImageConfigs:{'9001_0':{fields,assetFiles:['synthetic-only.png']}}}));
+    run('../normalize_increment_catalog.cjs',['--run',bridge,'--old-catalog',old,'--output',out]);
+    const result=JSON.parse(fs.readFileSync(path.join(out,'latest-catalog-candidate.json')));
+    assert.equal(result.inputScope,null);assert.equal(result.maps['900001'].rooms.length,2);
+    assert.equal(result.mapImageConfigs['9001_0'].assetResolutionStatus,'legacy_asset_exact_config_match');
+    assert.deepEqual(result.mapImageConfigs['9001_0'].assetFiles,['synthetic-only.png']);
+    assert.equal(result.assetGaps.length,0);
+  }finally{fs.rmSync(tmp,{recursive:true,force:true});}
 });

@@ -9,6 +9,7 @@ Network work runs on a daemon thread; results are delivered through
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -60,6 +61,13 @@ class Release:
     @property
     def published_date(self) -> str:
         return self.published_at[:10] if self.published_at else ""
+
+    @property
+    def announcement_id(self) -> str:
+        """Content identity, independent of the installed version and share URLs."""
+        payload = json.dumps([self.version, self.version_code, self.published_at, self.notes],
+                             ensure_ascii=False, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _https_page(value, host: str) -> str | None:
@@ -146,11 +154,12 @@ class UpdateService:
         except (OSError, ValueError):
             return {}
 
-    def _save(self) -> None:
+    def _save(self, stored=None) -> None:
         try:
             self.state_path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.state_path.with_suffix(".tmp")
-            temporary.write_text(json.dumps(self._stored, ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.write_text(json.dumps(self._stored if stored is None else stored,
+                                           ensure_ascii=False, indent=2), encoding="utf-8")
             os.replace(temporary, self.state_path)
         except OSError:
             pass  # Reminder preferences are best-effort; never block the window.
@@ -162,6 +171,30 @@ class UpdateService:
     @property
     def seen_notes_version(self) -> str:
         return str(self._stored.get("seenNotesVersion") or "")
+
+    @property
+    def seen_announcement_ids(self) -> list[str]:
+        values = self._stored.get("seenAnnouncementIds", [])
+        return [value for value in values if isinstance(value, str)
+                and re.fullmatch(r"[0-9a-f]{64}", value)][-64:] if isinstance(values, list) else []
+
+    def notes_seen_fields(self, release: Release) -> dict:
+        identity = release.announcement_id
+        seen = [value for value in self.seen_announcement_ids if value != identity]
+        return dict(seenNotesVersion=release.version, seenAnnouncementIds=(seen + [identity])[-64:])
+
+    def should_announce(self) -> bool:
+        """New notices, including same-version revisions; legacy version-only reads
+        cannot prove which content was displayed, so migrate by showing it once.
+        """
+        release = self.latest
+        return bool(release and release.notes and self.phase in ("available", "latest", "error")
+                    and release.announcement_id not in self.seen_announcement_ids
+                    and release.announcement_id != self._stored.get("skippedAnnouncementId")
+                    and release.announcement_id not in self._prompted)
+
+    def mark_announcement_prompted(self, release: Release) -> None:
+        self._prompted.add(release.announcement_id)
 
     # Actions ---------------------------------------------------------------
     def check(self, *, manual=False) -> bool:
@@ -231,15 +264,16 @@ class UpdateService:
     def skip_latest(self) -> None:
         if self.latest is not None:
             self._stored["skippedVersion"] = self.latest.version
+            self._stored["skippedAnnouncementId"] = self.latest.announcement_id
             self._save()
 
     def mark_notes_seen(self) -> None:
-        if self.latest is not None and self.seen_notes_version != self.latest.version:
-            self._stored["seenNotesVersion"] = self.latest.version
+        if self.latest is not None:
+            self._stored.update(self.notes_seen_fields(self.latest))
             self._save()
 
     @property
     def has_unread(self) -> bool:
-        """Badge: a newer version whose notes the user has not opened yet."""
-        return (self.phase == "available" and self.latest is not None
-                and self.latest.version != self.seen_notes_version)
+        """A notice not displayed yet, even for the currently installed version."""
+        return bool(self.latest and self.latest.notes
+                    and self.latest.announcement_id not in self.seen_announcement_ids)

@@ -1,0 +1,6098 @@
+{
+  "schema": "s1-common-entrance-coordinate-index-v1",
+  "sourceVersion": "2.104.3099014",
+  "basis": "all maps use the same entrance coordinate; native per-file origins are rebased to their independently located identical entrance glyph",
+  "glyphTemplateSha256": "6acf898962f8e1661f4a11835071fe03f86d1c499f2f89895a1d3f65b4857f08",
+  "maps": {
+    "difficulty2": {
+      "105001": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -640
+            ],
+            [
+              0,
+              -1,
+              810
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1500,
+            1260
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "15ebd8fa6c418fa267a023be5aa433f4d1444194e1dbf3db077ea8d0fa8bc065",
+          "entranceNativeB1": [
+            640,
+            810
+          ],
+          "entranceSourcePlaneXZ": [
+            1120,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -400
+            ],
+            [
+              0,
+              -1,
+              1590
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2280,
+            1560
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "4a0cd028dd8e3d4c0c3beaba93e512e51832afb504dda1ce2a492a53fba19209",
+          "entranceNativeB1": [
+            640,
+            810
+          ],
+          "entranceSourcePlaneXZ": [
+            1120,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -820
+            ],
+            [
+              0,
+              -1,
+              1410
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2100,
+            1980
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "02f4efada39277312f3c1a84ea7bd6f7d050864e27450bc368e47ad1ab9cbcad",
+          "entranceNativeB1": [
+            640,
+            810
+          ],
+          "entranceSourcePlaneXZ": [
+            1120,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -820
+            ],
+            [
+              0,
+              -1,
+              870
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            420,
+            540
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "5d5b558437106d227a38b4af6971d946908048d37fdbed55c1e85ad5ac021fe8",
+          "entranceNativeB1": [
+            640,
+            810
+          ],
+          "entranceSourcePlaneXZ": [
+            1120,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        }
+      },
+      "105002": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -580
+            ],
+            [
+              0,
+              -1,
+              810
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1500,
+            1260
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "17f69381f428dbc93e6346028bceb202a20676a00f27caa102a00bcbf79a54b2",
+          "entranceNativeB1": [
+            580,
+            810
+          ],
+          "entranceSourcePlaneXZ": [
+            1060,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -580
+            ],
+            [
+              0,
+              -1,
+              1470
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2160,
+            1440
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "9990f427e02360f4c7b00f077b9aea2c5ae99b52025a6fc787d7adc4b934782b",
+          "entranceNativeB1": [
+            580,
+            810
+          ],
+          "entranceSourcePlaneXZ": [
+            1060,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -580
+            ],
+            [
+              0,
+              -1,
+              1470
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2160,
+            1440
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "8fe12df8788437d64ca8b129f4fd28b240a25691de0a97ec0b1eeba6324c96da",
+          "entranceNativeB1": [
+            580,
+            810
+          ],
+          "entranceSourcePlaneXZ": [
+            1060,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -220
+            ],
+            [
+              0,
+              -1,
+              630
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            540,
+            420
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "4dc2175e236c87a589ffcbeeaec50a734d23e257f2ec7548e7f4a154de33cb9b",
+          "entranceNativeB1": [
+            580,
+            810
+          ],
+          "entranceSourcePlaneXZ": [
+            1060,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "105003": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -640
+            ],
+            [
+              0,
+              -1,
+              690
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1380,
+            1440
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "b878c5db62053a75316e159d6d163e9195b278295fe88ac49ab1ea7fc10c3ce3",
+          "entranceNativeB1": [
+            640,
+            690
+          ],
+          "entranceSourcePlaneXZ": [
+            1120,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -700
+            ],
+            [
+              0,
+              -1,
+              1350
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2040,
+            1680
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "08d157850a38e886ae2c4e946126ae4884557080267cefbb5347d4a5fcbd7bdf",
+          "entranceNativeB1": [
+            640,
+            690
+          ],
+          "entranceSourcePlaneXZ": [
+            1120,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -580
+            ],
+            [
+              0,
+              -1,
+              1350
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2040,
+            1740
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "d34054460ad3b57646c8d887296ad4c8bbe246c95a086ec0b6030f310c909cec",
+          "entranceNativeB1": [
+            640,
+            690
+          ],
+          "entranceSourcePlaneXZ": [
+            1120,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              620
+            ],
+            [
+              0,
+              -1,
+              390
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            420,
+            540
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "96044864c874ae24821532006ece079ddbd57ba4fdb569d5efcea12ab417f8bb",
+          "entranceNativeB1": [
+            640,
+            690
+          ],
+          "entranceSourcePlaneXZ": [
+            1120,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "105004": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -580
+            ],
+            [
+              0,
+              -1,
+              1170
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1860,
+            1260
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "5e65feeac3747100d12ca4a64499e6359469f34f1d893e26380a20b7e10e852d",
+          "entranceNativeB1": [
+            580,
+            1170
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -940
+            ],
+            [
+              0,
+              -1,
+              1170
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1860,
+            2040
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "aa8928d0938d41f56066e5ef105fa0307e1a783d1a3925202d2721f76d20fcd2",
+          "entranceNativeB1": [
+            580,
+            1170
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1000
+            ],
+            [
+              0,
+              -1,
+              1230
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1920,
+            2100
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "33e0c56345148f5ea97625d99de70cb36425baca91a4e0e52d494f80a6b5512f",
+          "entranceNativeB1": [
+            580,
+            1170
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -640
+            ],
+            [
+              0,
+              -1,
+              1230
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            420,
+            540
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "c51bf413fbfa67c79a21f3e6e2f55b4d4ada4641435eb0e7d4a9f5af12566ee3",
+          "entranceNativeB1": [
+            580,
+            1170
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "105005": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -520
+            ],
+            [
+              0,
+              -1,
+              750
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1440,
+            1140
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "120c366f21739e9a308c4c6797e0ae880dba27a510c53b09a7f3d20c5c194cc0",
+          "entranceNativeB1": [
+            520,
+            750
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1120
+            ],
+            [
+              0,
+              -1,
+              1350
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2040,
+            1560
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "16479f8f324512d6e56df223b3ad0d319a52261eacde761e5dd664610cb845e1",
+          "entranceNativeB1": [
+            520,
+            750
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1180
+            ],
+            [
+              0,
+              -1,
+              1290
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1980,
+            2280
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "70e1cbc21ba0167dc46e01d4f366276bbc3f4af4e2cc53f84133b91f0a1afd5b",
+          "entranceNativeB1": [
+            520,
+            750
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              500
+            ],
+            [
+              0,
+              -1,
+              450
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            540,
+            420
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "35b4f7c69b207288a6f5a6811c0de583f00c16a3d021c44af669efa5934bb86e",
+          "entranceNativeB1": [
+            520,
+            750
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "105006": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -760
+            ],
+            [
+              0,
+              -1,
+              930
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1620,
+            1500
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "3c81283d5de78142f1064d555517575c88ec9f2ba7afb4e63b31b798130f2779",
+          "entranceNativeB1": [
+            760,
+            930
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998821020126343
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1240
+            ],
+            [
+              0,
+              -1,
+              1350
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2040,
+            1680
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "dea58c0cdb770a04b6770fbf199d99d11b86a15567f1b7cbf7ab0cfc0c875e91",
+          "entranceNativeB1": [
+            760,
+            930
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998821020126343
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1180
+            ],
+            [
+              0,
+              -1,
+              1350
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2040,
+            2100
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "eeb1232714c25bab8b31383b267c0d914bf4ca1180f43ab89bb4d18fc22ce2f1",
+          "entranceNativeB1": [
+            760,
+            930
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998821020126343
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              500
+            ],
+            [
+              0,
+              -1,
+              510
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            540,
+            420
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "557e25b48f52ff23a92a4eed9015adfe9c58db05c000b74fd8496fb8f014345a",
+          "entranceNativeB1": [
+            760,
+            930
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998821020126343
+        }
+      },
+      "105007": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -520
+            ],
+            [
+              0,
+              -1,
+              1050
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1740,
+            1260
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "bc91f883b50a6c595c1858e759dfd9e27a4f8d5b5d14311221aee4bf8deb8cf8",
+          "entranceNativeB1": [
+            520,
+            1050
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -880
+            ],
+            [
+              0,
+              -1,
+              1050
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1740,
+            1980
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "84ce3ea86beecbefe554fc61736d5e0340e3f242c82452a5221c6a575381b98e",
+          "entranceNativeB1": [
+            520,
+            1050
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -940
+            ],
+            [
+              0,
+              -1,
+              1350
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2040,
+            2040
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "7c886a3f82b831c91bd08d5aa963de2bb3cb4ab3016120fac878c8f406e04d22",
+          "entranceNativeB1": [
+            520,
+            1050
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -580
+            ],
+            [
+              0,
+              -1,
+              690
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            420,
+            540
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "64b2347eea1c8bbecc04ce474d74b096cf6e68d6cd2563dc334ab9b8619d01fe",
+          "entranceNativeB1": [
+            520,
+            1050
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "105008": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -640
+            ],
+            [
+              0,
+              -1,
+              750
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1440,
+            1500
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "1b32862201497884081589d81389808a590c86cf0e83bf58d76dd6b069505756",
+          "entranceNativeB1": [
+            640,
+            750
+          ],
+          "entranceSourcePlaneXZ": [
+            1120,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -460
+            ],
+            [
+              0,
+              -1,
+              1050
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1740,
+            1620
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "ea88505f8552ec8ece70c1e50db79412df6caf2fd89d582726074077beceac75",
+          "entranceNativeB1": [
+            640,
+            750
+          ],
+          "entranceSourcePlaneXZ": [
+            1120,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -580
+            ],
+            [
+              0,
+              -1,
+              1650
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2340,
+            1680
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "c656a7e9fd451d31864aa7130743ecc9463b3dabf69c11c7b68b415db2298f4e",
+          "entranceNativeB1": [
+            640,
+            750
+          ],
+          "entranceSourcePlaneXZ": [
+            1120,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              200
+            ],
+            [
+              0,
+              -1,
+              1650
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            540,
+            420
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "347754ae9d10abeed4397761294a766ad5a8769925608f8a40a8a81a25868567",
+          "entranceNativeB1": [
+            640,
+            750
+          ],
+          "entranceSourcePlaneXZ": [
+            1120,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "105009": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -640
+            ],
+            [
+              0,
+              -1,
+              630
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1320,
+            1500
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "7e5bcb4efda1bc69897144c7b93e7d9cc78fcb87547dd8512bfbf01f6bbf9eb4",
+          "entranceNativeB1": [
+            640,
+            630
+          ],
+          "entranceSourcePlaneXZ": [
+            1120,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -400
+            ],
+            [
+              0,
+              -1,
+              1350
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2040,
+            1740
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "edf43845eb574463c216478497e0d65440feaa79edc71975829ae6c13b0b3c07",
+          "entranceNativeB1": [
+            640,
+            630
+          ],
+          "entranceSourcePlaneXZ": [
+            1120,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -520
+            ],
+            [
+              0,
+              -1,
+              1350
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2040,
+            1860
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "8d3c51d9db9ef992cc06440636dbf4e06cf6489425a05fa94fe5997eb55812f8",
+          "entranceNativeB1": [
+            640,
+            630
+          ],
+          "entranceSourcePlaneXZ": [
+            1120,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -520
+            ],
+            [
+              0,
+              -1,
+              510
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            420,
+            540
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "782298867146bc039de888b5ca3e6125be638f56f898d0e614a76cf57995b542",
+          "entranceNativeB1": [
+            640,
+            630
+          ],
+          "entranceSourcePlaneXZ": [
+            1120,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "105010": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -580
+            ],
+            [
+              0,
+              -1,
+              750
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1440,
+            1140
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "88e6910c75dea1b09a95ce29e169bc64290926fe14d89058388d081bc62cf227",
+          "entranceNativeB1": [
+            580,
+            750
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -460
+            ],
+            [
+              0,
+              -1,
+              1590
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2280,
+            1680
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "bf28b592ca1f64ffc718756f2340d84a5da3c13e01b5212014087ce4eb891ad3",
+          "entranceNativeB1": [
+            580,
+            750
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1180
+            ],
+            [
+              0,
+              -1,
+              1590
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2280,
+            2160
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "1392960a855376460d7cdf3bb9f68ad318570977a0c00d67ba2350a2e0418b76",
+          "entranceNativeB1": [
+            580,
+            750
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -940
+            ],
+            [
+              0,
+              -1,
+              510
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            540,
+            420
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "f6bbada3d915a77610da56d105529494588eed60e0064abab638ebfc91450580",
+          "entranceNativeB1": [
+            580,
+            750
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        }
+      },
+      "105011": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -580
+            ],
+            [
+              0,
+              -1,
+              810
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1500,
+            1440
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "d8f9d5faa891699425a64b4e0f61dc715da41502e591319748aa952259d6e567",
+          "entranceNativeB1": [
+            580,
+            810
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1000
+            ],
+            [
+              0,
+              -1,
+              1050
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1740,
+            1980
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "ee28a7f87bfb4134c31dfc24641306020652e88aa1bdb085a5ae8106c89b4544",
+          "entranceNativeB1": [
+            580,
+            810
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -880
+            ],
+            [
+              0,
+              -1,
+              1770
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2460,
+            1800
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "94f5eede347722c35e72a56c2a011d5bc7e557818e749f526c8bc2449ed34c85",
+          "entranceNativeB1": [
+            580,
+            810
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              200
+            ],
+            [
+              0,
+              -1,
+              1770
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            540,
+            420
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "fb80e97d99195c5e16e05326fa09e2c8a382b365e82158c3ba7dd3c9974b2d61",
+          "entranceNativeB1": [
+            580,
+            810
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "105012": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -580
+            ],
+            [
+              0,
+              -1,
+              810
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1500,
+            1380
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "4357f1538414a87ae7fd18426f9672961f74f8dda5a8a6b148c471b1ec81c68e",
+          "entranceNativeB1": [
+            580,
+            810
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -400
+            ],
+            [
+              0,
+              -1,
+              1650
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2340,
+            1500
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "68c3de4906bf7592efac682a3e49d38cafc965ff33089e61dd00381c8d3c24c9",
+          "entranceNativeB1": [
+            580,
+            810
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -760
+            ],
+            [
+              0,
+              -1,
+              1650
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2340,
+            1680
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "a227a7f600a4b957af3ed1784a3355e028adc0a1f0c22fa2084463162ce30f15",
+          "entranceNativeB1": [
+            580,
+            810
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -760
+            ],
+            [
+              0,
+              -1,
+              870
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            420,
+            540
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "06afc9a30cd7cdf5e9617b65b124e9cbe65079d5880a2e198f784ebbe48cc051",
+          "entranceNativeB1": [
+            580,
+            810
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "105013": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -580
+            ],
+            [
+              0,
+              -1,
+              750
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1440,
+            1320
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "20c391f20e90ae1d850b4f896c5b1e3bf33772061cfbd12e123a9d7aeee2d494",
+          "entranceNativeB1": [
+            580,
+            750
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1060
+            ],
+            [
+              0,
+              -1,
+              1590
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2280,
+            1500
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "1b167414da141b8eacca15ffda426f702849d992a522034d67e80e32a5a14b17",
+          "entranceNativeB1": [
+            580,
+            750
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1180
+            ],
+            [
+              0,
+              -1,
+              1590
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2280,
+            2220
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "3468c0800ebbb551f907bfd1a1f3fa242825b11dad4e1a1956fe66712962e719",
+          "entranceNativeB1": [
+            580,
+            750
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              500
+            ],
+            [
+              0,
+              -1,
+              930
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            420,
+            540
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "32a9e0b4c3c630e19520e2b0f770f2b75b704af72ef06a7105384e4a46d04717",
+          "entranceNativeB1": [
+            580,
+            750
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        }
+      },
+      "105014": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -580
+            ],
+            [
+              0,
+              -1,
+              810
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1500,
+            1260
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "ec765e144c2c4bab0601ed632887f9a84fcbe343b47b51bed791ebfb25e0f0b0",
+          "entranceNativeB1": [
+            580,
+            810
+          ],
+          "entranceSourcePlaneXZ": [
+            1060,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -580
+            ],
+            [
+              0,
+              -1,
+              1470
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2160,
+            1320
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "79e8d7299d3c6acc9448f18434290f2e4f108efdaeecb13ffa299ba96feb0345",
+          "entranceNativeB1": [
+            580,
+            810
+          ],
+          "entranceSourcePlaneXZ": [
+            1060,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -580
+            ],
+            [
+              0,
+              -1,
+              1470
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2160,
+            1680
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "9c7261095b06cfecdbf7185633c23306d21d7dfbbf2b152a745854631dd0ca7b",
+          "entranceNativeB1": [
+            580,
+            810
+          ],
+          "entranceSourcePlaneXZ": [
+            1060,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              560
+            ],
+            [
+              0,
+              -1,
+              810
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            420,
+            540
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "8e02234c912ea43df27d31cb82d093ac6f1dfd303ebadaaeb33a1cf94a760dcf",
+          "entranceNativeB1": [
+            580,
+            810
+          ],
+          "entranceSourcePlaneXZ": [
+            1060,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "105015": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -520
+            ],
+            [
+              0,
+              -1,
+              810
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1500,
+            1320
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "6ada0931629ec58e4bd5388bbd17d4823e7b9f096bef977dc01e4174e03bb1dc",
+          "entranceNativeB1": [
+            520,
+            810
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1120
+            ],
+            [
+              0,
+              -1,
+              1290
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1980,
+            1560
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "9844ef08496c3c6ea9ff55f13a7d4efc5b62284006019bd6ee087e0b95b04fb9",
+          "entranceNativeB1": [
+            520,
+            810
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1060
+            ],
+            [
+              0,
+              -1,
+              1350
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2040,
+            2160
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "62ebae094522e0892cb9301e86e4427e821f581f000f411637ad80c2b1a55a8d",
+          "entranceNativeB1": [
+            520,
+            810
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              500
+            ],
+            [
+              0,
+              -1,
+              510
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            540,
+            420
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "6549c77d5d044978aac108b1b59baeb056f41ab334cbcbb8f47ed411a5a1077d",
+          "entranceNativeB1": [
+            520,
+            810
+          ],
+          "entranceSourcePlaneXZ": [
+            1240,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      }
+    },
+    "difficult": {
+      "106001": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -580
+            ],
+            [
+              0,
+              -1,
+              1170
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1860,
+            1320
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "c3ce105da8ac9d15211549100d514bf762d830aacc081e3801f869966dabc6d2",
+          "entranceNativeB1": [
+            580,
+            1170
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -820
+            ],
+            [
+              0,
+              -1,
+              1290
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1980,
+            1920
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "28634b7d2bb448c9c867e201d7ddd134b398747e702eca30f204c3440e8fcfe1",
+          "entranceNativeB1": [
+            580,
+            1170
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1060
+            ],
+            [
+              0,
+              -1,
+              1230
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1920,
+            2100
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "b2bab7f29f2a86f404bc3ecc505992ac285592b12be2c6c954fbe32d3eb666c2",
+          "entranceNativeB1": [
+            580,
+            1170
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1060
+            ],
+            [
+              0,
+              -1,
+              570
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            420,
+            540
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "c3a7869b2c123fb03dffa591ef642cf6fb535845f0a337b579e1ca4a8230574c",
+          "entranceNativeB1": [
+            580,
+            1170
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "106002": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -760
+            ],
+            [
+              0,
+              -1,
+              930
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1620,
+            1500
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "6604fb7b5a6637416f13dd2a9a28821ae4179dd5d10e6c5ea17e1eaefe023443",
+          "entranceNativeB1": [
+            760,
+            930
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998821020126343
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1060
+            ],
+            [
+              0,
+              -1,
+              1290
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1980,
+            2100
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "2907670fb6700f79b460593a7be9975b9bf2ba4fa4f282291127396e0b08623b",
+          "entranceNativeB1": [
+            760,
+            930
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998821020126343
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -880
+            ],
+            [
+              0,
+              -1,
+              1590
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2280,
+            1680
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "be299f43bcfb514998aac0be0fe994c63e024cbfbea2f46fa78b752809c84a42",
+          "entranceNativeB1": [
+            760,
+            930
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998821020126343
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              140
+            ],
+            [
+              0,
+              -1,
+              1590
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            540,
+            420
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "6ed78cc353e58a110c6388a67bb053e834b7e01510492d814290bdfe98369d90",
+          "entranceNativeB1": [
+            760,
+            930
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998821020126343
+        }
+      },
+      "106003": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -760
+            ],
+            [
+              0,
+              -1,
+              930
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1620,
+            1500
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "70e1eb7afb91933562c71807d6e8ae76d2667f16fe89222b388cc9f580a8b18a",
+          "entranceNativeB1": [
+            760,
+            930
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998821020126343
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1060
+            ],
+            [
+              0,
+              -1,
+              1230
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1920,
+            1920
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "584c1679f95c65541940ce4456a4ea93c3e068c4796b60cd0dd111995cf4fd7c",
+          "entranceNativeB1": [
+            760,
+            930
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998821020126343
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1000
+            ],
+            [
+              0,
+              -1,
+              1530
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2220,
+            1860
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "2735473cc7315f4186df30bc08af53ca1202a467674bee9d56606d53cd013387",
+          "entranceNativeB1": [
+            760,
+            930
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998821020126343
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -40
+            ],
+            [
+              0,
+              -1,
+              1530
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            540,
+            420
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "981efbb0b5880e2a5025a27a5cccb129c93538f40ff006ccb54d39b8acfca4b9",
+          "entranceNativeB1": [
+            760,
+            930
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998821020126343
+        }
+      },
+      "106004": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -820
+            ],
+            [
+              0,
+              -1,
+              930
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1620,
+            1560
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "1345df72c2263d7a99386a1c4ef1f9390f5aa05158de693fbf5263e3e7d26e02",
+          "entranceNativeB1": [
+            820,
+            930
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -880
+            ],
+            [
+              0,
+              -1,
+              1110
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1800,
+            2040
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "ca3e5bca136cb14839e1dee9435ea9455c8601ab61ee1bff6ba2b6e686bc7634",
+          "entranceNativeB1": [
+            820,
+            930
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -880
+            ],
+            [
+              0,
+              -1,
+              1530
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2220,
+            1860
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "498ccdfdf7da2da6c5de676c5567f32ab15ddb4d329d50816aadbca3ee532d84",
+          "entranceNativeB1": [
+            820,
+            930
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              20
+            ],
+            [
+              0,
+              -1,
+              1530
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            540,
+            420
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "1e621e594163271a363e164dc08cc6182ed842c75004eacbe9a0b1b7e309acf0",
+          "entranceNativeB1": [
+            820,
+            930
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        }
+      },
+      "106005": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -820
+            ],
+            [
+              0,
+              -1,
+              930
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1620,
+            1560
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "3c13c546527d53e78411e91b24f61b931ee22661f1cfdbd22dc6c94ed95d5e27",
+          "entranceNativeB1": [
+            820,
+            930
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -880
+            ],
+            [
+              0,
+              -1,
+              930
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1620,
+            1920
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "3d16765deffb489fdc38a8300258e5bbc157760d70dbb6d69f4da91b7c878ed9",
+          "entranceNativeB1": [
+            820,
+            930
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -880
+            ],
+            [
+              0,
+              -1,
+              1350
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2040,
+            1860
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "9e347f55d24a0d68c4db7d8cb95308292d0bbd16effb00cd55660c7a4e13d580",
+          "entranceNativeB1": [
+            820,
+            930
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -340
+            ],
+            [
+              0,
+              -1,
+              1350
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            540,
+            420
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "800b9bf1ab0c4455ad7758684b49ab2881df6b874b58bfebd0b02ea42b85dd6e",
+          "entranceNativeB1": [
+            820,
+            930
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        }
+      },
+      "106007": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -760
+            ],
+            [
+              0,
+              -1,
+              930
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1620,
+            1500
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "1be23e4c23dc09cc5cc51b6f4a7eeb7a30b5ce44ea5f737617a309065971228b",
+          "entranceNativeB1": [
+            760,
+            930
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998821020126343
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1000
+            ],
+            [
+              0,
+              -1,
+              1110
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1800,
+            2100
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "162bd1f0219938d13edf4d07a4ae3508e62f05b37f35e4329ad6efd980d0fa96",
+          "entranceNativeB1": [
+            760,
+            930
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998821020126343
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -760
+            ],
+            [
+              0,
+              -1,
+              1650
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2340,
+            1920
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "16aec64f8fb261266c0489baef6b5a7cf1ce6151d879a80c9528715a76f19006",
+          "entranceNativeB1": [
+            760,
+            930
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998821020126343
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              20
+            ],
+            [
+              0,
+              -1,
+              1650
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            540,
+            420
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "c4bbe5521f9d5b0319d9e03bfd74b20a3cb8e29963ba9b9c9a1565d93cc1d7d6",
+          "entranceNativeB1": [
+            760,
+            930
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998821020126343
+        }
+      },
+      "106008": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -880
+            ],
+            [
+              0,
+              -1,
+              870
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1560,
+            1500
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "d4d8b95e0a8b466dbd60248064db8d8cdd62cab3b56b034a94a21d5754458b2d",
+          "entranceNativeB1": [
+            880,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1000
+            ],
+            [
+              0,
+              -1,
+              1350
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2040,
+            2040
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "948cb1db64d6e1956e8b686d3ce5986da3c9de1791b2800d8b6fd36b9417b5b3",
+          "entranceNativeB1": [
+            880,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1120
+            ],
+            [
+              0,
+              -1,
+              1350
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2040,
+            2220
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "2acfe2e5fe1bc0880640384903d98800003c958945e33dd89c8782dcc4d631a8",
+          "entranceNativeB1": [
+            880,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1120
+            ],
+            [
+              0,
+              -1,
+              690
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            420,
+            540
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "f5083f55e25c2c867140a84768b1cebd4a7d522f49ca80eceb009583a26199b1",
+          "entranceNativeB1": [
+            880,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        }
+      },
+      "106009": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -880
+            ],
+            [
+              0,
+              -1,
+              870
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1560,
+            1500
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "84e4d37a5915764715f56f64f73759165412242a422e72a40ce15e69d5012423",
+          "entranceNativeB1": [
+            880,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -760
+            ],
+            [
+              0,
+              -1,
+              1350
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2040,
+            1860
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "a43cc56135083729bb35528bbc598662b20db6da93e13029c97ecf2116ef1abd",
+          "entranceNativeB1": [
+            880,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1120
+            ],
+            [
+              0,
+              -1,
+              1350
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2040,
+            2220
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "422ad53052e3feec5f142912b74d0a1b4d7ab1e09fc5dfa2e74c006b121bcd69",
+          "entranceNativeB1": [
+            880,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1120
+            ],
+            [
+              0,
+              -1,
+              690
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            420,
+            540
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "a807adb248163aa3824802034593d734a9b03e2d92781f58deed869ade1672cc",
+          "entranceNativeB1": [
+            880,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        }
+      },
+      "106010": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -640
+            ],
+            [
+              0,
+              -1,
+              870
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1560,
+            1260
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "42e52cf164515b493a6d1aa3cef6ddffe532462679f7d72d6fefeb7117aba798",
+          "entranceNativeB1": [
+            640,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -820
+            ],
+            [
+              0,
+              -1,
+              1470
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2160,
+            1680
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "f21d9b46a588e3b9a709ae5202d04833cdce5289e484d6d4b7238acfa99908f8",
+          "entranceNativeB1": [
+            640,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -880
+            ],
+            [
+              0,
+              -1,
+              1410
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2100,
+            2160
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "5fd3f2e025012d6ab9e927bdd1f992918c73af566e9b1cb8c68f2642c08185ab",
+          "entranceNativeB1": [
+            640,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              740
+            ],
+            [
+              0,
+              -1,
+              1050
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            420,
+            540
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "ea9544842eb2dbc287a0b98a0af857f1b509f1197a01c3213ab081863c5dc374",
+          "entranceNativeB1": [
+            640,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "106011": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -940
+            ],
+            [
+              0,
+              -1,
+              870
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1560,
+            1560
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "6481d047aaf0da6a36900e42e2d4c5d94fe372c94bba6c79112b3ad3de4cebcb",
+          "entranceNativeB1": [
+            940,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -760
+            ],
+            [
+              0,
+              -1,
+              1530
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2220,
+            1800
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "37592f80c99a02a5fc6635a92214eaa15282851bc83bc837cd4831afd86a8a19",
+          "entranceNativeB1": [
+            940,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -760
+            ],
+            [
+              0,
+              -1,
+              1470
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2160,
+            1920
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "2db17fc3ccbf70ac5bdf8c0a43d6887b293a1d309abf4ffcd37a6edb15813f4e",
+          "entranceNativeB1": [
+            940,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -760
+            ],
+            [
+              0,
+              -1,
+              450
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            540,
+            420
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "7b76d001e5d7e72d7913a591eef94c43df84e541a7b47712708563dccc96ab1a",
+          "entranceNativeB1": [
+            940,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "106012": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -940
+            ],
+            [
+              0,
+              -1,
+              870
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1560,
+            1560
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "1f7be4da55c190f530dd967400d9227de0eb5d37eb62060397bffefc20f0b7b4",
+          "entranceNativeB1": [
+            940,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -640
+            ],
+            [
+              0,
+              -1,
+              1470
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2160,
+            1860
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "ecb4e5e1db77e453739585b0ebaf6bed2f885270a80f35dda63796552fc7ffa9",
+          "entranceNativeB1": [
+            940,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -760
+            ],
+            [
+              0,
+              -1,
+              1470
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2160,
+            2040
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "09a6fbc2ddd6c5887024b0f9b4b4fe707802af9d54e01488e6d16c9e980cc6d3",
+          "entranceNativeB1": [
+            940,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -760
+            ],
+            [
+              0,
+              -1,
+              450
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            540,
+            420
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "3cec37ffd4a93e1732535860527822f803a10a9bbeff29566a47b521cd0b8734",
+          "entranceNativeB1": [
+            940,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "106013": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -760
+            ],
+            [
+              0,
+              -1,
+              870
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1560,
+            1380
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "a68ea6b9558ddd9ff3b3e1985119b0a0cdb28149630873fcaa1bdae5c07a062e",
+          "entranceNativeB1": [
+            760,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -700
+            ],
+            [
+              0,
+              -1,
+              1470
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2160,
+            1800
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "195ebe3c39eca203cc1fa33877c70fb15d4cbed9f605231dfb80a2874542346e",
+          "entranceNativeB1": [
+            760,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1120
+            ],
+            [
+              0,
+              -1,
+              1470
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2160,
+            2280
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "dfd0d78af62af52bcf3ab11107fe089251ca648e7778a87005f2ade037bb4144",
+          "entranceNativeB1": [
+            760,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1120
+            ],
+            [
+              0,
+              -1,
+              630
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            420,
+            540
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "08ca00f79f9f016258b72e76649c1e22546cf1b0fe0690344fa1b17fe200b511",
+          "entranceNativeB1": [
+            760,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "106014": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -640
+            ],
+            [
+              0,
+              -1,
+              870
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1560,
+            1260
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "8928fb86811bae9baec36b34a65b08e96bd33a3150907dd5d0da227a613d398f",
+          "entranceNativeB1": [
+            640,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -820
+            ],
+            [
+              0,
+              -1,
+              1530
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2220,
+            1740
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "e39fe2440300f5c1bf5251cc58570a4ca44aceb67bf8b3780e2ba317c508ac16",
+          "entranceNativeB1": [
+            640,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -820
+            ],
+            [
+              0,
+              -1,
+              1410
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2100,
+            2040
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "e9a0a69189bf24dbe20a53ed8e38648266a4bf7cb06b2b69da3ec7f8aeb654de",
+          "entranceNativeB1": [
+            640,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              680
+            ],
+            [
+              0,
+              -1,
+              1410
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            420,
+            540
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "9676007c3d672c7d42d33b9e538d03e0fccff6d3ca6478cede42411398061b0c",
+          "entranceNativeB1": [
+            640,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "106015": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -880
+            ],
+            [
+              0,
+              -1,
+              870
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1560,
+            1500
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "4407509f18cd5096f4193503d43f2defdb20c4920d7b51390005fd8ed7455c77",
+          "entranceNativeB1": [
+            880,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -880
+            ],
+            [
+              0,
+              -1,
+              1530
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2220,
+            1680
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "84d9e5d22d4d514d00ad038e39b937b967f9bd47b4b50aa17e331a468bab84fa",
+          "entranceNativeB1": [
+            880,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1120
+            ],
+            [
+              0,
+              -1,
+              1350
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2040,
+            2160
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "b9a4cd886c49de20fc5dfa5a0a90c3b61d6a4531c4632ea2d19fad7588f08955",
+          "entranceNativeB1": [
+            880,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1120
+            ],
+            [
+              0,
+              -1,
+              690
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            420,
+            540
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "5b55ca7f1b319739fd8a78d34400d8cef1558d0f35e40ae6b4ed1fa19e2df380",
+          "entranceNativeB1": [
+            880,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        }
+      }
+    },
+    "nightmare": {
+      "107001": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -640
+            ],
+            [
+              0,
+              -1,
+              1290
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1980,
+            1440
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "ebc00a5516aaea336b837b894c479001ead28655bb0aa7197e30a1cd8d23b1f8",
+          "entranceNativeB1": [
+            640,
+            1290
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1060
+            ],
+            [
+              0,
+              -1,
+              1290
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1980,
+            2040
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "3430535243d3dcd1fba26ab43bbacbcd345c5ee12673db89852f19c22fc00a72",
+          "entranceNativeB1": [
+            640,
+            1290
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -580
+            ],
+            [
+              0,
+              -1,
+              1830
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2520,
+            1560
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "e680dfdce48549a5cf064666f4568557677261705f611b75db25d0ee6ded196f",
+          "entranceNativeB1": [
+            640,
+            1290
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -100
+            ],
+            [
+              0,
+              -1,
+              1830
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            540,
+            420
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "5b7f01339fb73394ca699a0ebf19895dc984be27034dbffe7c7f920c2b71dafd",
+          "entranceNativeB1": [
+            640,
+            1290
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "107002": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -640
+            ],
+            [
+              0,
+              -1,
+              1290
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1980,
+            1440
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "529d24e8714544b6c5add1a3864299839e46da024fae0fa44b127798c1d4c3c3",
+          "entranceNativeB1": [
+            640,
+            1290
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1120
+            ],
+            [
+              0,
+              -1,
+              1350
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2040,
+            2100
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "153632bcda95aef24151a02840f9de22004b82cf73ac43778487b112048ed577",
+          "entranceNativeB1": [
+            640,
+            1290
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -940
+            ],
+            [
+              0,
+              -1,
+              1830
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2520,
+            1920
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "32b6a434614f6066a502db04dc3a3ef215a1325d04ae6aa0651ada9be020e642",
+          "entranceNativeB1": [
+            640,
+            1290
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -100
+            ],
+            [
+              0,
+              -1,
+              1830
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            540,
+            420
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "93bff50986bb2f00176e4b6cd0a81b0bd48cb42b89716aa5329d7857b7b25cae",
+          "entranceNativeB1": [
+            640,
+            1290
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "107003": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -580
+            ],
+            [
+              0,
+              -1,
+              1290
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1980,
+            1200
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "ca0902f3a2da74ba73efa166576a61220d47ec21a29ed4bf8d26dc8f6c49dcc6",
+          "entranceNativeB1": [
+            580,
+            1290
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1060
+            ],
+            [
+              0,
+              -1,
+              1290
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1980,
+            2160
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "5191785c3f2b877a246e96c8334e4f44a263447e76d20c9ad00b713e801ce023",
+          "entranceNativeB1": [
+            580,
+            1290
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -700
+            ],
+            [
+              0,
+              -1,
+              1650
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2340,
+            1680
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "d15f88fd53ff479b01087298e5e727493e98deb7ad235b843911972cc2325b00",
+          "entranceNativeB1": [
+            580,
+            1290
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              80
+            ],
+            [
+              0,
+              -1,
+              1650
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            540,
+            420
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "e7ed84529a1e0f80bf616d804190efb5ff877d92b7f603b2735c8f1e99fd9ef4",
+          "entranceNativeB1": [
+            580,
+            1290
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "107004": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -700
+            ],
+            [
+              0,
+              -1,
+              870
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1560,
+            1380
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "39bdc5b66d33dbc53654f4c778d05a6bc2340fba40763968282e0a65b0d5e363",
+          "entranceNativeB1": [
+            700,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1000
+            ],
+            [
+              0,
+              -1,
+              1470
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2160,
+            2100
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "b36fe9c88508d465cde6d4d6cd313da7db6dced047945d7cf3e8de2d3cec1df8",
+          "entranceNativeB1": [
+            700,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1060
+            ],
+            [
+              0,
+              -1,
+              1410
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2100,
+            2160
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "f07a97ff26733593518a8f98f9debba787316c911b7830f2d0d37f7ad27b121d",
+          "entranceNativeB1": [
+            700,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -880
+            ],
+            [
+              0,
+              -1,
+              990
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            420,
+            540
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "486c07b585a7d2e53a625a732feca6eff6443b2273e2eda29585a0ff85023614",
+          "entranceNativeB1": [
+            700,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "107005": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -700
+            ],
+            [
+              0,
+              -1,
+              870
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1560,
+            1380
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "77e06d1b1982c712ff2d13cd01de97a22f72185509326cd7622a379a8b24b5d7",
+          "entranceNativeB1": [
+            700,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -760
+            ],
+            [
+              0,
+              -1,
+              1410
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2100,
+            1740
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "dd74e0e0ba0245ab86b45a460a1338ee1c469d50e2686574b9e1d9420b727675",
+          "entranceNativeB1": [
+            700,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -940
+            ],
+            [
+              0,
+              -1,
+              1410
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2100,
+            1920
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "66453d874bef4612a2d0fd8a70a8e99b876b93683cb3c314b426794874d39a47",
+          "entranceNativeB1": [
+            700,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -940
+            ],
+            [
+              0,
+              -1,
+              990
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            420,
+            540
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "d098808d6780ec236984857f9d22b5fd6f26fcb460ee1b7595d52dc8bc527a00",
+          "entranceNativeB1": [
+            700,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "107006": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -700
+            ],
+            [
+              0,
+              -1,
+              870
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1560,
+            1320
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "bf5efda295178dd5c48b9efe62af06580683ad6f817e4b40b65dd2fccaa37b41",
+          "entranceNativeB1": [
+            700,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1060
+            ],
+            [
+              0,
+              -1,
+              1230
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1920,
+            2100
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "1314f5565fa54b564725434f1dfac2461c1f3a24b699d94c393c27e88beb6a19",
+          "entranceNativeB1": [
+            700,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -700
+            ],
+            [
+              0,
+              -1,
+              1350
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2040,
+            1740
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "98700f4e4ebf2dd8f68504db4725ea01f58e144bf66fd5e30a44415ce2de0702",
+          "entranceNativeB1": [
+            700,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              200
+            ],
+            [
+              0,
+              -1,
+              1350
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            540,
+            420
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "d3f8e885cb9f36c412477ef7cf800d09a9cbeb50bc4808a5283b671ffe6ef0e8",
+          "entranceNativeB1": [
+            700,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "107007": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -580
+            ],
+            [
+              0,
+              -1,
+              1290
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1980,
+            1440
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "e99820ff0fa7e27a083448e2c0555971d67e3d204d6d42391b928112d4954e6c",
+          "entranceNativeB1": [
+            580,
+            1290
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1060
+            ],
+            [
+              0,
+              -1,
+              1530
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2220,
+            2040
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "e6d90c465dfca5bf2a76c6af4df7e2c1a00139a748ef93731666e44b43fcd706",
+          "entranceNativeB1": [
+            580,
+            1290
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -580
+            ],
+            [
+              0,
+              -1,
+              1830
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2520,
+            1740
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "9a226772b88d18a185c8a1b76ee05d76ae5d1a74ef177c4c7bca983ec2780024",
+          "entranceNativeB1": [
+            580,
+            1290
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -400
+            ],
+            [
+              0,
+              -1,
+              1830
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            540,
+            420
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "c7590f42a9f2c13140bf58c30faaa7e3ca4224f0142e6d7311409a7f1ddebcca",
+          "entranceNativeB1": [
+            580,
+            1290
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "107008": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -640
+            ],
+            [
+              0,
+              -1,
+              870
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1560,
+            1260
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "54c5321d498b08c6257ea6fe2f352044ba1d5ed16c0482ab2f622e16729dbac1",
+          "entranceNativeB1": [
+            640,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -940
+            ],
+            [
+              0,
+              -1,
+              1170
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1860,
+            2040
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "f4eeb3e372982512eed7077bde3553c55a3cf9273a5c6bba7b0f14c962c35465",
+          "entranceNativeB1": [
+            640,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -700
+            ],
+            [
+              0,
+              -1,
+              1350
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2040,
+            1800
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "64c70bdda0ef0bfb593a873f0558291600f459dea78b851a118fbb7d32050214",
+          "entranceNativeB1": [
+            640,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              200
+            ],
+            [
+              0,
+              -1,
+              1350
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            540,
+            420
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "5b0296d3a6faf2d8f5d1020a08708a355992fc3a0f53968e9a32527e6eab465a",
+          "entranceNativeB1": [
+            640,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "107009": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -700
+            ],
+            [
+              0,
+              -1,
+              870
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1560,
+            1620
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "47adffd9ccfbffa6c3d3133cb0e8fae72cd5689a1880a0f889e9c3bddb699bc2",
+          "entranceNativeB1": [
+            700,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1060
+            ],
+            [
+              0,
+              -1,
+              1230
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1920,
+            2100
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "08745f1c258667c9578addb3afc78e86e1b300c2671c7879a6c7bad11c2eae86",
+          "entranceNativeB1": [
+            700,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1120
+            ],
+            [
+              0,
+              -1,
+              1350
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2040,
+            2160
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "752c23744a98a97cbba129e5130e9867269622e3b2558dbbfce3253467f8ab16",
+          "entranceNativeB1": [
+            700,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              200
+            ],
+            [
+              0,
+              -1,
+              1350
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            540,
+            420
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "f0def4fb3114b90bf921d517e9752467f1b26f4a30ada8964829ddc5e639e1dd",
+          "entranceNativeB1": [
+            700,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "107010": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -640
+            ],
+            [
+              0,
+              -1,
+              1290
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1980,
+            1500
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "8591b1ac23f3bc9514e9c2f0c79840b5f6c4410babf5462b9f46b64d02f98221",
+          "entranceNativeB1": [
+            640,
+            1290
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -940
+            ],
+            [
+              0,
+              -1,
+              1530
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2220,
+            1860
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "d1f135aedad6e61b6c70dc83fa0d6bb68912a142fb3196866d81fd2b588e08d3",
+          "entranceNativeB1": [
+            640,
+            1290
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -580
+            ],
+            [
+              0,
+              -1,
+              1830
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2520,
+            1740
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "c60a46c87241f8f4793042b0df417ea00301620f67d41b6030f73e7a155f3e7a",
+          "entranceNativeB1": [
+            640,
+            1290
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -400
+            ],
+            [
+              0,
+              -1,
+              1830
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            540,
+            420
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "96f5939330a9c1c4c6d50f006bca3267900f20048158678493dc4157c8f39563",
+          "entranceNativeB1": [
+            640,
+            1290
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "107011": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -700
+            ],
+            [
+              0,
+              -1,
+              870
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1560,
+            1380
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "f4506ff7a0c61fcc8aa50f2de0dfa0f0bfb77afd20a2cf860a3dc76b7a4113f1",
+          "entranceNativeB1": [
+            700,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -880
+            ],
+            [
+              0,
+              -1,
+              1410
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2100,
+            1800
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "7ccfb6a65b46c075fde53f401d4bfa5109cf0c1ab49c26a80a5a214df1430668",
+          "entranceNativeB1": [
+            700,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -940
+            ],
+            [
+              0,
+              -1,
+              1410
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2100,
+            1740
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "d9db9a28b6e032568193e356c3589301b03eac8d2d6ad56017a2ccccafec9379",
+          "entranceNativeB1": [
+            700,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -880
+            ],
+            [
+              0,
+              -1,
+              990
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            420,
+            540
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "9e070b696a7e214050de1fbc91b3f48e886d960651142e832d4c8cc68074f563",
+          "entranceNativeB1": [
+            700,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "107012": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -580
+            ],
+            [
+              0,
+              -1,
+              870
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1560,
+            1380
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "def11e0fd6d8228ee7471e76a2b99b72f1c41625ad7362081cdb5ef4b322a743",
+          "entranceNativeB1": [
+            580,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -940
+            ],
+            [
+              0,
+              -1,
+              1230
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1920,
+            1980
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "408911b44fd66a0a48d9025f18c44b0204ba8feed3509182c85bce9e72c4fa29",
+          "entranceNativeB1": [
+            580,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -1000
+            ],
+            [
+              0,
+              -1,
+              1410
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2100,
+            1860
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "b273d9eba06a285cf41030b8fb0a06412c5dfb2a2bbed1a0c6d90321d040b71b",
+          "entranceNativeB1": [
+            580,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -880
+            ],
+            [
+              0,
+              -1,
+              990
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            420,
+            540
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "4e2e91f14c435f0365172919c0bb939c49b75fed22d69b40f0aff1552070bc7b",
+          "entranceNativeB1": [
+            580,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998806118965149
+        }
+      },
+      "107013": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -640
+            ],
+            [
+              0,
+              -1,
+              870
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1560,
+            1320
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "7b7e0342b3aeb88deaf877ac7f0dfe132bc09488b0640baa4fc6761c950d0c8f",
+          "entranceNativeB1": [
+            640,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -700
+            ],
+            [
+              0,
+              -1,
+              1410
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2100,
+            1680
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "94ba32feb99890459592e35d5fc837c5e7408af061af6243f3de5681874006ed",
+          "entranceNativeB1": [
+            640,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -880
+            ],
+            [
+              0,
+              -1,
+              1590
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2280,
+            1800
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "d0ef225aa8782073c5d6faf6fd675d71c9cfb25a560e614817ce92c047014369",
+          "entranceNativeB1": [
+            640,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -880
+            ],
+            [
+              0,
+              -1,
+              690
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            420,
+            540
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "0cfaff110881fbc0f5aab4f3d824283481b4e72f09e1a43fb52df98c49b578ff",
+          "entranceNativeB1": [
+            640,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "107014": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -640
+            ],
+            [
+              0,
+              -1,
+              870
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1560,
+            1260
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "e8a84f8de7b72a18a86c6aab4f78e60fae3257f977be906516671e4d96926667",
+          "entranceNativeB1": [
+            640,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -940
+            ],
+            [
+              0,
+              -1,
+              1110
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1800,
+            2040
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "40bcf9659f776b00a045d464d67617a8eb172c104dcab2d411cf411b09de103f",
+          "entranceNativeB1": [
+            640,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -880
+            ],
+            [
+              0,
+              -1,
+              1350
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2040,
+            1980
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "364aba1643dddc093641c442957a1983bafdbf702ee2798ed23044601a278de2",
+          "entranceNativeB1": [
+            640,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              200
+            ],
+            [
+              0,
+              -1,
+              1350
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            540,
+            420
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "3eb819abbf0cb82830089243235144abe9c8bb01cbbc3e31a9ace92d2f9aadf8",
+          "entranceNativeB1": [
+            640,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      },
+      "107015": {
+        "-1": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -640
+            ],
+            [
+              0,
+              -1,
+              870
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1560,
+            1320
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "f312fa77c3eb10fc2b0999623296f0d09d241a4b7f742e8f438e01f967f38144",
+          "entranceNativeB1": [
+            640,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-2": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -940
+            ],
+            [
+              0,
+              -1,
+              1110
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            1800,
+            2100
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "b6d695be23d0c1af87d2072b6a9883c9977b952ba4ee82668b774b715df91693",
+          "entranceNativeB1": [
+            640,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-3": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -880
+            ],
+            [
+              0,
+              -1,
+              1530
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            2220,
+            2040
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "da8d3af0497ffba52bfba03c0b6189cf84f356a4023a496636a4205c713021e7",
+          "entranceNativeB1": [
+            640,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        },
+        "-4": {
+          "imageToEntranceXZ": [
+            [
+              1,
+              0,
+              -40
+            ],
+            [
+              0,
+              -1,
+              1530
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "shapeHW": [
+            540,
+            420
+          ],
+          "sourceCatalogSha256": "ac21ae19b3d5ecfb7296eee5eb7ee918b4a89756d4c21f7f3d7613c61fe0702e",
+          "sourceRendererMetadataSha256": "4e22cbc9d3367fcc13acc1fcc34e2e26826e98826082477e3c15121793c14477",
+          "entranceNativeB1": [
+            640,
+            870
+          ],
+          "entranceSourcePlaneXZ": [
+            1180,
+            630
+          ],
+          "anchorNCC": 0.9998813271522522
+        }
+      }
+    }
+  },
+  "floorOrder": [
+    "-1",
+    "-2",
+    "-3",
+    "-4"
+  ],
+  "entryOrigin": [
+    0,
+    0
+  ],
+  "axes": "x-right,z-up; helper flips z to renderer y-down",
+  "liveAuthorization": false
+}

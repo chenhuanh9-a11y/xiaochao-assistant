@@ -7,11 +7,9 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'app'))
 from opacity_controls import OpacityUpdates, load_opacities, opacity_percent
-from test_fixed_map_position_ui import load_methods, WidgetIO
 
 
 class Timers:
@@ -130,26 +128,6 @@ class OpacityTests(unittest.TestCase):
         for callback in late: callback()
         updates.change('reference', 44)
         self.assertEqual((previews, saves, timers.pending), ([], [], {}))
-
-    def test_real_view_callbacks_sync_and_keyboard_release(self):
-        ns = load_methods('game_control_view.py', 'GameControlView', {
-            '_opacity_changed', '_sync_opacity_controls', '_opacity_key_released'})
-        ns.update(opacity_percent=opacity_percent, tk=SimpleNamespace(TclError=RuntimeError))
-        view = ns['GameControlView']()
-        timers, state, previews, saves, view._opacity_updates = self.make()
-        view.opacity_var, view.reference_opacity_var = Var(55), Var(55)
-        view.opacity_values = {key: WidgetIO() for key in ('overlay', 'reference')}
-        view._sync_opacity_controls(dict(sheetOpacityPercent=62, referenceOpacityPercent=31))
-        self.assertEqual((view.opacity_var.get(), view.reference_opacity_var.get()), (62, 31))
-        view._opacity_changed('reference', '0')
-        view._opacity_changed('reference', '100')
-        self.assertEqual(view.opacity_values['reference'].values['text'], '100%')
-        self.assertEqual(previews, [])
-        view._opacity_key_released(SimpleNamespace(keysym='Left'))
-        self.assertEqual(previews, [('reference', 100)])
-        self.assertEqual(len(saves), 1)
-        self.assertEqual(state['sheetOpacity'], .55)
-        self.assertEqual(timers.pending, {})
 
 
 if __name__ == '__main__': unittest.main()

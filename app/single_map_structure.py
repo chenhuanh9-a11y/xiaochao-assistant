@@ -70,10 +70,11 @@ def regional_observed_edges(frame,query):
     return result
 
 
-def current_geometry(frame):
+def current_geometry(frame, *, observation_bounds=None, visible_override=None):
     """One solver-owned observation; never retained across frames/cycles."""
     from map_observation import structure_current_map_evidence
-    current=structure_current_map_evidence(frame)
+    current=(structure_current_map_evidence(frame, observation_bounds=observation_bounds, visible_override=visible_override)
+             if observation_bounds is not None or visible_override is not None else structure_current_map_evidence(frame))
     if current is None: return None
     return dict(query=current['query'],observationBounds=current['observationBounds'],visible=current.get('visible'))
 
@@ -249,6 +250,16 @@ def graph_point_geometry(frame, reference, target, *, _context=None, allow_scale
 
 
 def observed_corner_chains(frame,context):
+    # Scan contexts may carry immutable, source-independent chain results.
+    # A filtered observation or replacement node set must never reuse them.
+    cached=context.get('_observed_corner_chains')
+    if (cached is not None and cached[0] is context.get('nodes')
+            and cached[1] is context.get('observed')):
+        return cached[2]
+    return _observed_corner_chains(frame,context)
+
+
+def _observed_corner_chains(frame,context):
     """Sharp connected chains are hypotheses, not proof of complete walls."""
     nodes=current_part(frame,context,'nodes')
     observed=current_part(frame,context,'observed')
@@ -266,6 +277,77 @@ def observed_corner_chains(frame,context):
                 supported=False; break
         if supported: chains.append(dict(index=i,points=points,rays=node['rays']))
     return chains
+
+
+def marker_occluded_corner_proposals(frame, context, measured):
+    """Infer only search seeds across independently excluded marker pixels.
+
+    These are never measured corners. Each arm must retain a contiguous wall
+    fragment of the same minimum length as visible_wall_segments; every other
+    missing sample must be explained by the existing marker exclusion mask.
+    Fog, crop boundaries and unexplained sharpness gaps remain unsupported.
+    The ordinary all-wall, held-out and ambiguity gates decide every seed.
+    """
+    nodes = current_part(frame, context, 'nodes')
+    observed = current_part(frame, context, 'observed')
+    measured_indexes = tuple(chain['index'] for chain in measured)
+    cached = context.get('_marker_occluded_corner_proposals')
+    if (cached is not None and cached[0] is nodes and cached[1] is observed
+            and cached[2] == measured_indexes):
+        return cached[3]
+    result = _marker_occluded_corner_proposals(frame, context, nodes, observed, set(measured_indexes))
+    context['_marker_occluded_corner_proposals'] = (nodes, observed, measured_indexes, result)
+    return result
+
+
+def _marker_occluded_corner_proposals(frame, context, nodes, observed, measured_indexes):
+    if all(i in measured_indexes or not node['valid'] for i, node in enumerate(nodes)):
+        return []
+    h, w = observed.shape
+    x0, y0, x1, y1 = context.get('observationBounds') or (0, 0, w, h)
+    mx0, my0, mx1, my1 = max(0, x0-2), max(0, y0-2), min(w, x1+2), min(h, y1+2)
+    hsv = cv2.cvtColor(frame[my0:my1, mx0:mx1, :3], cv2.COLOR_BGR2HSV)
+    marker = ((hsv[:, :, 1] >= 88) & (hsv[:, :, 2] >= 80)).astype(np.uint8)
+    if not marker.any():
+        return []
+    marker = cv2.dilate(marker, np.ones((5, 5), np.uint8)) > 0
+    bounds = context.get('observationBounds')
+    if bounds is not None:
+        x0, y0, x1, y1 = bounds
+        interior = np.zeros_like(marker)
+        interior[y0+3-my0:y1-3-my0, x0+3-mx0:x1-3-mx0] = True
+        marker &= interior  # A marker cannot turn a crop edge into a wall.
+    proposals = []
+    for i, node in enumerate(nodes):
+        if i in measured_indexes:
+            continue
+        ids = (node['previous'], i, node['next'])
+        if not all(nodes[j]['valid'] for j in ids):
+            continue
+        points = np.array([nodes[j]['point'] for j in ids])
+        if np.any(points < [mx0, my0]) or np.any(points >= [mx1, my1]):
+            continue
+        if np.any(points < 5) or np.any(points > np.array([w-6, h-6])):
+            continue
+        supported = True
+        for endpoint in (points[0], points[2]):
+            delta = endpoint - points[1]
+            # The downstream wall fitter only measures axis-aligned fragments.
+            if np.min(np.abs(delta)) > 3:
+                supported = False
+                break
+            samples = np.rint(points[1] + np.linspace(0, 1,
+                int(np.ceil(np.linalg.norm(delta)))+1)[:, None]*delta).astype(int)
+            evidence = observed[samples[:, 1], samples[:, 0]]
+            occluded = marker[samples[:, 1]-my0, samples[:, 0]-mx0]
+            indexes = np.flatnonzero(evidence)
+            runs = np.split(indexes, np.flatnonzero(np.diff(indexes) > 1)+1)
+            if not (evidence | occluded).all() or max(map(len, runs)) < 12:
+                supported = False
+                break
+        if supported:
+            proposals.append(dict(index=i, points=points, rays=node['rays']))
+    return proposals
 
 
 def _wall_raster_samples(qlines):
@@ -287,7 +369,8 @@ def _wall_raster_samples(qlines):
     return dict(points=points,lower=lower,upper=upper,local=points-lower,
         fragmentCount=len(samples),starts=starts,directions=directions,
         pointFragments=np.repeat(np.arange(len(nonempty)),lengths[nonempty]),
-        pointDirections=np.repeat(directions,lengths[nonempty]),pointIndexes=np.arange(len(points)))
+        pointDirections=np.repeat(directions,lengths[nonempty]),pointIndexes=np.arange(len(points)),
+        fragmentWindows=[(xy-lower, direction) for xy,direction in samples if len(xy)])
 
 
 def _wall_distance_six_stencil():
@@ -323,13 +406,35 @@ def _wall_raster_negative_witness(supports, unknown, samples):
     return False
 
 
+def _wall_raster_local_verified(supports, unknown, samples):
+    """Check all measured pixels using local copies of the same <=6 gate.
+
+    A 3x3 DIST_L2 path leaving a seven-pixel halo costs more than six,
+    even using its cheapest steps. Cropping cannot alter the verdict, but
+    backend vectorization can round distances differently by one ULP. This
+    is only a proposal gate; retained candidates get full-field diagnostics.
+    """
+    any_measured=False
+    for points,direction in samples['fragmentWindows']:
+        measured=~unknown[points[:,1],points[:,0]]
+        if not measured.any():continue
+        any_measured=True
+        lo=points.min(axis=0)-7;hi=points.max(axis=0)+8
+        x0,y0=np.maximum(lo,0);x1,y1=np.minimum(hi,unknown.shape[::-1])
+        support=supports[direction][y0:y1,x0:x1] & ~unknown[y0:y1,x0:x1]
+        distances=cv2.distanceTransform((~support).astype(np.uint8),cv2.DIST_L2,3)
+        selected=points[measured]
+        if np.any(distances[selected[:,1]-y0,selected[:,0]-x0]>6):return False
+    return any_measured
+
+
 def initial_wall_raster_validation(qlines, reference, model, *, source_unknown=None, source_wall_mask=None, _samples=None):
     """Public callers always retain complete success and failure diagnostics."""
     return _wall_raster_validation(qlines,reference,model,source_unknown=source_unknown,
         source_wall_mask=source_wall_mask,_samples=_samples)
 
 
-def _wall_raster_validation(qlines, reference, model, *, source_unknown=None, source_wall_mask=None, _samples=None, _discard_rejected_details=False):
+def _wall_raster_validation(qlines, reference, model, *, source_unknown=None, source_wall_mask=None, _samples=None, _discard_rejected_details=False, _defer_verified_details=False):
     """Check every observed fragment against the unsimplified directed raster.
 
     Polygon segment filtering is useful for fitting but is not an exhaustive
@@ -359,6 +464,9 @@ def _wall_raster_validation(qlines, reference, model, *, source_unknown=None, so
         and all(edge.ndim==2 for edge in supports)
         and _wall_raster_negative_witness(supports,unknown,samples)):
         return dict(verified=False)
+    if (_defer_verified_details and _discard_rejected_details
+        and projected.ndim==2 and unknown.ndim==2 and all(edge.ndim==2 for edge in supports)):
+        return dict(verified=_wall_raster_local_verified(supports,unknown,samples))
     fields=[cv2.distanceTransform((~(edge & ~unknown)).astype(np.uint8),cv2.DIST_L2,3)
             for edge in supports]
     local=samples['local']
@@ -382,7 +490,7 @@ def _wall_raster_validation(qlines, reference, model, *, source_unknown=None, so
                 fragmentCount=samples['fragmentCount'],observedPixels=len(points),measuredPixels=measured_count,sourceUnknownPixels=unknown_count,worstPoints=worst)
 
 
-def initial_wall_geometry(qlines, slines, scale, translation, arrays, cache=None, *, reference=None, source_unknown=None, raster_samples=None):
+def initial_wall_geometry(qlines, slines, scale, translation, arrays, cache=None, *, reference=None, source_unknown=None, raster_samples=None, _defer_raster_details=False):
     """Validate unknown uniform scale with independent directed wall planes.
 
     A chain only proposes a pose. Partial walls supply normal constraints;
@@ -442,7 +550,7 @@ def initial_wall_geometry(qlines, slines, scale, translation, arrays, cache=None
     # the same unsupported candidate first avoids solving those fits in vain.
     raster_validation=None
     if reference is not None:
-        raster_validation=_wall_raster_validation(qlines,reference,full_model,source_unknown=source_unknown,_samples=raster_samples,_discard_rejected_details=True)
+        raster_validation=_wall_raster_validation(qlines,reference,full_model,source_unknown=source_unknown,_samples=raster_samples,_discard_rejected_details=True,_defer_verified_details=_defer_raster_details)
         if not raster_validation['verified']:return None
     elif np.any(reduce_rows(distances_at(full_model[0],full_model[1:]),np.minimum,np.inf)>6):return None
     errors=[]
@@ -519,6 +627,8 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
     # frame. Do not launch the quadratic descriptor search in parallel; the
     # shared graph/refinement/author gates below will decide those seeds.
     query_chains=[] if pose_index_candidates else observed_corner_chains(frame,context)
+    wall_proposals=[] if pose_index_candidates else marker_occluded_corner_proposals(frame,context,query_chains)
+    all_query_chains=query_chains+wall_proposals
     source_nodes=contour_graph(reference)
     source_chains=[]
     for i,n in enumerate(source_nodes):
@@ -532,17 +642,17 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
                     if not source_known_boundary[samples[:,1],samples[:,0]].all():
                         supported=False;break
             source_chains.append(dict(index=i,points=points,rays=n['rays'],measured=supported))
-    diagnostic=dict(queryChains=len(query_chains),sourceChains=len(source_chains),candidates=[],pointRejections=[],stages=[],seedBudget=1024,validationBudget=8)
+    diagnostic=dict(queryChains=len(query_chains),markerOccludedProposalChains=len(wall_proposals),sourceChains=len(source_chains),candidates=[],pointRejections=[],stages=[],seedBudget=1024,validationBudget=8)
     def finish(success,reason,**kw):
         diagnostic['elapsedMs']=(time.perf_counter()-started)*1000
         return dict(success=success,reason=reason,diagnostics=diagnostic,**kw)
-    if not query_chains and not pose_index_candidates:
+    if not all_query_chains and not pose_index_candidates:
         return finish(False,'initial-structure-supported-chains-insufficient')
     seeds=[]
     source_rays=np.array([s['rays'] for s in source_chains]).reshape(-1,2,2)
     source_delta=np.array([s['points'][[0,2]]-s['points'][1] for s in source_chains]).reshape(-1,2,2)
     denominators=np.sum(source_delta*source_delta,axis=(1,2))
-    for qi,q in enumerate(query_chains):
+    for qi,q in enumerate(all_query_chains):
         if cancelled and cancelled(): return finish(False,'structure-work-obsolete')
         qdelta=q['points'][[0,2]]-q['points'][1]
         orientations=np.min(np.sum(q['rays']*source_rays,axis=2),axis=1)>=.95
@@ -561,16 +671,19 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
     diagnostic['seedCount']=len(seeds)
     diagnostic['stages'].append(dict(stage='chain-descriptors',elapsedMs=(time.perf_counter()-started)*1000))
     if not seeds and not pose_index_candidates:return finish(False,'initial-structure-no-chain-ratios')
-    qtriples=np.array([query_chains[q]['points'] for q,s,scale,t in seeds])
-    striples=np.array([source_chains[s]['points'] for q,s,scale,t in seeds])
+    # Marker-covered coordinates can propose wall poses, never enter point fits.
+    point_seeds=[seed for seed in seeds if seed[0]<len(query_chains)]
+    diagnostic['measuredSeedCount']=len(point_seeds)
+    qtriples=np.array([query_chains[q]['points'] for q,s,scale,t in point_seeds])
+    striples=np.array([source_chains[s]['points'] for q,s,scale,t in point_seeds])
     seen=set(); maximal=[]; candidates=[]
     h,w=reference.shape
     extent=np.array([[0,0,1],[w,0,1],[0,h,1],[w,h,1]])
     consensus_started=time.perf_counter()
-    for qi,si,scale,translation in seeds:
+    for qi,si,scale,translation in point_seeds:
         if cancelled and cancelled(): return finish(False,'structure-work-obsolete')
         compatible=np.flatnonzero(np.linalg.norm(striples*scale+translation-qtriples,axis=2).max(axis=1)<=3)
-        pairs=set((seeds[j][0],seeds[j][1]) for j in compatible)
+        pairs=set((point_seeds[j][0],point_seeds[j][1]) for j in compatible)
         unique=tuple(sorted((q,s) for q,s in pairs if sum(qj==q for qj,sj in pairs)==1 and sum(sj==s for qj,sj in pairs)==1))
         if len(unique)<6 or unique in seen: continue
         seen.add(unique)
@@ -683,6 +796,18 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
     wall_identities=set()
     wall_fit_cache={}
     raster_samples=_wall_raster_samples(qlines)
+    def complete_raster(candidate):
+        wall=candidate['geometry'].get('wallScale')
+        if wall is None:return True
+        raster=wall['rasterValidation']
+        if 'maxPixels' not in raster:
+            matrix=candidate['matrix']
+            # Keep shared diagnostic references (including pose-index records)
+            # intact while replacing the private gate with original evidence.
+            raster.update(initial_wall_raster_validation(qlines,reference,
+                np.array([matrix[0,0],matrix[0,2],matrix[1,2]]),
+                source_unknown=source_unknown,_samples=raster_samples))
+        return raster['verified']
     for index,seed in index_seed_rows:
         if cancelled and cancelled():return finish(False,'structure-work-obsolete')
         wall=initial_wall_geometry(qlines,slines,float(seed[0,0]),np.asarray(seed[:2,2]),arrays,
@@ -714,9 +839,9 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
         # solution; rerunning its weaker normal hypothesis adds no identity.
         if cancelled and cancelled():return finish(False,'structure-work-obsolete')
         source_chain=source_chains[si]['points']
-        query_chain=query_chains[qi]['points']
+        query_chain=all_query_chains[qi]['points']
         if any(c['pairs'] and np.linalg.norm(source_chain@c['matrix'][:2,:2].T+c['matrix'][:2,2]-query_chain,axis=1).max()<=3 for c in candidates):continue
-        wall=initial_wall_geometry(qlines,slines,scale,translation,arrays,wall_fit_cache,reference=reference,source_unknown=source_unknown,raster_samples=raster_samples)
+        wall=initial_wall_geometry(qlines,slines,scale,translation,arrays,wall_fit_cache,reference=reference,source_unknown=source_unknown,raster_samples=raster_samples,_defer_raster_details=True)
         if wall is None:continue
         # Masked fragments of one directed contour edge can have different
         # median normals (slightly sloped raster walls). Those medians are
@@ -743,9 +868,13 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
         # Never average it with a less constrained wall-only estimate.
         if any(c['pairs'] and all(abs(c['matrix'][g['axis'],g['axis']]*g['sourceNormal']+c['matrix'][g['axis'],2]-g['queryNormal'])<=6 for g in wall['planes']) for c in candidates):continue
         if any(np.linalg.norm((extent@(matrix-c['matrix']).T)[:,:2],axis=1).max()<=3 for c in candidates):continue
-        candidates.append(dict(matrix=matrix,geometry={'wallScale':{k:v for k,v in wall.items() if k!='matrix'}},pairs=[],sourcePoints=[],queryPoints=[],wallIdentity=identity))
+        candidates.append(dict(matrix=matrix,geometry={'wallScale':{k:v for k,v in wall.items() if k!='matrix'}},pairs=[],sourcePoints=[],queryPoints=[],wallIdentity=identity,markerOccludedProposal=qi>=len(query_chains)))
         if len(candidates)>diagnostic['validationBudget']:
             diagnostic['candidateCount']=len(candidates)
+            for c in candidates:
+                if cancelled and cancelled():return finish(False,'structure-work-obsolete')
+                complete_raster(c)
+            if cancelled and cancelled():return finish(False,'structure-work-obsolete')
             diagnostic['wallCandidates']=[dict(matrix=c['matrix'].tolist(),geometry=c['geometry']) for c in candidates]
             return finish(False,'initial-structure-validation-budget-unresolved')
     diagnostic['candidateCount']=len(candidates)
@@ -754,11 +883,19 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
     for c in candidates:
         if cancelled and cancelled():return finish(False,'structure-work-obsolete')
         matrix=c['matrix']
+        # Correspondence deduplication may discard many wall proposals. Only
+        # retained hypotheses need full-field distances, without changing the
+        # public success/failure details or the original final validators.
+        if not complete_raster(c):
+            diagnostic['candidates'].append(dict(matrix=matrix.tolist(),pointGeometry=c['geometry'],
+                pairs=c['pairs'],sourcePoints=c['sourcePoints'],queryPoints=c['queryPoints'],accepted=False))
+            continue
         projected=cv2.warpAffine(reference,matrix[:2],(frame.shape[1],frame.shape[0]),flags=cv2.INTER_NEAREST)
         validation_context=_static_validation_context(frame,context,matrix,source_unknown)
         regions=regional_validation(frame,context['query'],projected,_context=validation_context)
         residual=(selected_route_current_frame_residual(frame,route,matrix,maximum_dimension=960,
-            route_profile_id=profile,reference_override=validation) if regions['regionalEdgeVerified'] else None)
+            route_profile_id=profile,reference_override=validation,
+            visible_override=context.get('visible')) if regions['regionalEdgeVerified'] else None)
         passed=bool(regions['regionalEdgeVerified'] and residual and residual.get('verified'))
         diagnostic['candidates'].append(dict(matrix=matrix.tolist(),pointGeometry=c['geometry'],pairs=c['pairs'],sourcePoints=c['sourcePoints'],queryPoints=c['queryPoints'],regions=regions,residual=residual,accepted=passed))
         if passed and not any(np.linalg.norm((extent@(matrix-old[0]).T)[:,:2],axis=1).max()<=3
@@ -771,6 +908,7 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
     # No coordinate conversion occurs after this exact author/frame check.
     # Return its evidence with the selected pose instead of recalculating it.
     return finish(True,'initial-structure-candidate',matrixSourceToClient=matrix,coordinateSpace='author-render-to-client',routeProfileId=profile,
+        markerOccludedWallProposal=bool(selected_candidate.get('markerOccludedProposal')),
         currentFrameScaleObservation=selected_scale_observation(selected_candidate['geometry'],matrix,matrix,residual,profile),
         selectedRouteCurrentFrameResidual=dict(residual,validationBasis='actual-rendered-profile-structural-mask',poseVerifiedAgainstRenderedProfile=True))
 

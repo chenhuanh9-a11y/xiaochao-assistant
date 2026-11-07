@@ -1,5 +1,6 @@
 """Real JSON/restart adapter tests; native input and worker sync are substituted."""
 import json
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -8,6 +9,39 @@ from unittest import mock
 import test_client_chest_auto_tap as fixtures
 from client_chest_auto_tap import ChestAutoTapService
 from chest_auto_tap import ChestAutoTap, SCHEMA
+
+
+class RoundRuntime:
+    """Real SessionService queue/receipts; no game, capture or native input."""
+    def __init__(self):
+        self.state = dict(engineConnected=True, season='s0', mode='nightmare', profileId='',
+            roundId=1, frameId='', roundActive=True, roundPreparing=False,
+            availableCommands=['start_round', 'end_round', 'stop_round', 'reset_round',
+                               'toggle_round', 'map', 'capture_now', 'prepare_manual_alignment'])
+        self.started, self.release = threading.Event(), threading.Event()
+        self.release.set()
+        self.fail_actions = set()
+        self.ignore_cancel = False
+
+    def snapshot(self):
+        return dict(self.state)
+
+    def dispatch(self, action, payload, cancelled):
+        self.started.set()
+        if not self.release.wait(2):
+            raise RuntimeError('fixture was not released')
+        success = action not in self.fail_actions and (self.ignore_cancel or not cancelled.is_set())
+        if success:
+            ending = action in {'end_round', 'stop_round', 'reset_round'} or (
+                action == 'toggle_round' and (self.state['roundActive'] or self.state['roundPreparing']))
+            if ending:
+                self.state.update(roundActive=False, roundPreparing=False)
+            else:
+                if not (self.state['roundActive'] or self.state['roundPreparing']):
+                    self.state['roundId'] += 1
+                self.state.update(roundActive=action != 'start_round', roundPreparing=action == 'start_round')
+        return dict(action=action, success=success, requestContext=dict(payload),
+            resultContext={key: self.state[key] for key in ('season', 'mode', 'profileId', 'roundId', 'frameId')})
 
 
 class IntentTests(unittest.TestCase):
@@ -52,6 +86,137 @@ class IntentTests(unittest.TestCase):
             self.adapter.pollOnce()
         save.assert_not_called()
         self.assertTrue(self.adapter.snapshot['running'])
+
+    def test_temporary_catalog_absence_pauses_without_revoking_intent(self):
+        self.assertTrue(self.enable()['success'])
+        original_rows = self.owner.gameWindows
+        self.focus = 99
+        self.owner.gameWindows = []
+        self.adapter.pollOnce()
+        self.assertTrue(self.adapter.snapshot['savedEnabled'])
+        self.assertTrue(self.adapter.snapshot['enabled'])
+        self.assertFalse(self.adapter.snapshot['running'])
+        self.assertIsNone(self.service._target_window())
+        self.focus = 42
+        self.adapter.pollOnce()
+        self.assertFalse(self.adapter.snapshot['running'])
+        self.owner.gameWindows = original_rows
+        self.held = True
+        self.adapter.pollOnce()
+        self.assertFalse(self.adapter.snapshot['running'])
+        self.held = False
+        self.adapter.pollOnce()
+        self.assertTrue(self.adapter.snapshot['running'])
+
+    def test_catalog_return_with_replaced_process_revokes_intent(self):
+        self.assertTrue(self.enable()['success'])
+        original_rows = self.owner.gameWindows
+        self.owner.gameWindows = []
+        self.adapter.pollOnce()
+        self.owner.gameWindows = [dict(original_rows[0], pid=701)]
+        self.pid = 701
+        self.adapter.pollOnce()
+        self.assertTrue(self.adapter.snapshot['savedEnabled'])
+        self.assertFalse(self.adapter.snapshot['enabled'])
+        self.assertFalse(self.adapter.snapshot['running'])
+
+    def test_missing_catalog_during_restore_or_enable_waits_for_identity(self):
+        self.assertTrue(self.enable()['success'])
+        rows = self.owner.gameWindows
+        for restart in (True, False):
+            with self.subTest(restart=restart):
+                self.owner.gameWindows = []
+                if restart:
+                    self.restart()
+                else:
+                    self.assertTrue(self.enable()['success'])
+                self.adapter.pollOnce()
+                self.assertTrue(self.adapter.snapshot['enabled'])
+                self.assertFalse(self.adapter.snapshot['running'])
+                self.owner.gameWindows = rows
+                self.adapter.pollOnce()
+                self.assertTrue(self.adapter.snapshot['running'])
+
+    def test_real_coordinator_unknown_catalog_does_not_disarm_chest(self):
+        from test_client_coordinator import CoordinatorTests
+        fixture = CoordinatorTests()
+        fixture.setUpClass()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        coordinator = fixture.coordinator
+        rows = [dict(self.owner.gameWindows[0], processCreateTime=123,
+                     executable='fixture-game.exe')]
+        coordinator._bound = '42'
+        coordinator._binding_identity = coordinator._window_identity(rows[0])
+        coordinator._window_rows = rows
+        coordinator._catalog = mock.Mock(return_value=[])
+        coordinator._binding_probe = mock.Mock(return_value=dict(status='unknown', reason='fixture-unreadable'))
+        coordinator.capture.disable = mock.Mock()
+        self.owner = coordinator
+        self.restart()
+        self.assertTrue(self.enable()['success'])
+        coordinator._discover_game()
+        self.assertEqual(coordinator.boundWindow, '42')
+        self.assertTrue(coordinator._binding_suspended)
+        self.assertTrue(self.adapter.snapshot['enabled'])
+        self.assertFalse(self.adapter.snapshot['running'])
+        coordinator._catalog.return_value = rows
+        coordinator._discover_game()
+        self.assertFalse(coordinator._binding_suspended)
+        self.assertTrue(self.adapter.snapshot['running'])
+
+    def test_real_worker_catalog_gap_releases_and_requires_new_gesture(self):
+        import threading
+        import time
+        self.patch.stop()
+        events = []
+        pressed, released = threading.Event(), threading.Event()
+        def send(vk, up):
+            events.append((vk, up))
+            (released if up else pressed).set()
+            return 0
+        with mock.patch('chest_auto_tap.key_down', lambda vk: self.held), \
+             mock.patch('chest_auto_tap.foreground_window', lambda: self.focus), \
+             mock.patch('chest_auto_tap.same_top_window', lambda a, b: bool(b and a == b)), \
+             mock.patch('chest_auto_tap._send_key', send):
+            try:
+                self.enable()
+                deadline = time.monotonic() + 1
+                while not self.service.snapshot()['status'].startswith('等待按住'):
+                    self.assertLess(time.monotonic(), deadline)
+                    time.sleep(.002)
+                self.held = True
+                self.assertTrue(pressed.wait(1))
+                rows = self.owner.gameWindows
+                self.owner.gameWindows = []
+                self.focus = 99
+                self.adapter.pollOnce()
+                self.assertTrue(released.wait(1))
+                count = sum(not up for _, up in events)
+                self.focus = 42
+                self.adapter.pollOnce()
+                time.sleep(.04)
+                self.assertEqual(sum(not up for _, up in events), count)
+                self.owner.gameWindows = rows
+                self.adapter.pollOnce()
+                time.sleep(.04)
+                self.assertEqual(sum(not up for _, up in events), count)
+                self.held = False
+                self.adapter.pollOnce()
+                deadline = time.monotonic() + 1
+                while not self.service.snapshot()['status'].startswith('等待按住'):
+                    self.assertLess(time.monotonic(), deadline)
+                    time.sleep(.002)
+                pressed.clear()
+                self.held = True
+                self.assertTrue(pressed.wait(1))
+                self.assertTrue(self.adapter.snapshot['savedEnabled'])
+            finally:
+                self.held = False
+                self.adapter.shutdown()
+                if self.service._thread:
+                    self.service._thread.join(1)
+                    self.assertFalse(self.service._thread.is_alive())
 
     def test_compiled_binding_change_without_save_stops_conflicting_worker(self):
         self.assertTrue(self.enable()['success'])
@@ -239,15 +404,294 @@ class IntentTests(unittest.TestCase):
         self.assertFalse(self.adapter.snapshot['running'])
         self.assertTrue(self.adapter.snapshot['savedEnabled'])
 
-    def test_end_round_disarms_but_does_not_forget(self):
+    def test_end_round_pauses_until_new_round_without_forgetting_or_resaving(self):
+        self.owner.session._runtime = SimpleNamespace()
+        self.owner.session._state.update(engineConnected=True, roundId=7, roundActive=True)
+        self.enable()
+        intent = self.adapter._intent_path.read_bytes()
+        with mock.patch.object(self.service, '_save', side_effect=AssertionError('must not resave')):
+            self.owner.session.actionRequested.emit('end_round', {})
+            self.assertFalse(self.adapter.snapshot['running'])
+            self.assertTrue(self.service._stop.is_set())
+            self.assertTrue(self.adapter.snapshot['waitingForRound'])
+            self.assertTrue(self.adapter.snapshot['enabled'])
+            self.assertTrue(self.adapter.snapshot['savedEnabled'])
+            self.assertFalse(self.adapter.snapshot['needsManualResume'])
+            # The old active snapshot can remain visible until the worker ends.
+            self.adapter.pollOnce()
+            self.assertFalse(self.adapter.snapshot['running'])
+            self.owner.session._state.update(roundActive=False)
+            self.owner.session.changed.emit()
+            self.assertFalse(self.adapter.snapshot['running'])
+            self.owner.session.actionRequested.emit('start_round', {})
+            self.owner.session._state.update(roundId=8, roundPreparing=True)
+            self.owner.session.changed.emit()
+            self.assertTrue(self.adapter.snapshot['running'])
+            self.assertFalse(self.adapter.snapshot['waitingForRound'])
+        self.assertEqual(self.adapter._intent_path.read_bytes(), intent)
+
+    def test_round_resume_requires_current_ready_state_and_fresh_gesture(self):
+        self.owner.session._runtime = SimpleNamespace()
+        self.owner.session._state.update(engineConnected=True, roundId=7, roundActive=True)
         self.enable()
         self.owner.session.actionRequested.emit('end_round', {})
+        self.owner.session.actionRequested.emit('start_round', {})
+        for state in (
+            dict(roundId=7, roundActive=True),
+            dict(roundId=8, roundActive=False, roundPreparing=False),
+            dict(roundId=8, roundActive=True, engineConnected=False),
+            dict(roundId=8, roundActive=True, contextPending=True),
+            dict(roundId=8, roundActive=True, resourceLocked=True),
+        ):
+            with self.subTest(state=state):
+                self.owner.session._state = dict({'engineConnected': True}, **state)
+                self.owner.session._leases = {'fixture'} if state.get('resourceLocked') else set()
+                self.adapter.pollOnce()
+                self.assertFalse(self.adapter.snapshot['running'])
+        self.owner.session._leases.clear()
+        self.owner.session._state = dict(engineConnected=True, roundId=8, roundActive=True)
+        self.held = True
+        self.focus = 99
         self.adapter.pollOnce()
         self.assertFalse(self.adapter.snapshot['running'])
-        self.assertFalse(self.adapter.snapshot['enabled'])
-        self.assertTrue(self.adapter.snapshot['savedEnabled'])
+        self.focus = 42
+        self.adapter.pollOnce()
+        self.assertFalse(self.adapter.snapshot['running'])
+        self.held = False
+        self.adapter.pollOnce()
+        self.assertTrue(self.adapter.snapshot['running'])
+
+    def test_round_transition_does_not_clear_safety_disarm_or_explicit_off(self):
+        self.owner.session._runtime = SimpleNamespace()
+        for cause in ('binding', 'conflict', 'fault', 'off'):
+            with self.subTest(cause=cause):
+                self.input.snapshot['bindings'].pop('conflict', None)
+                self.owner.boundWindow = '42'
+                self.restart()
+                self.owner.session._state = dict(engineConnected=True, roundId=7, roundActive=True)
+                self.enable()
+                self.owner.session.actionRequested.emit('end_round', {})
+                if cause == 'binding':
+                    self.owner.boundWindow = ''
+                elif cause == 'conflict':
+                    self.input.snapshot['bindings']['conflict'] = 'F12'
+                elif cause == 'fault':
+                    self.service._fault('synthetic key-up failure')
+                else:
+                    self.adapter.update(False, 'F12', 'F', '90')
+                self.adapter.pollOnce()
+                self.assertFalse(self.adapter.snapshot['enabled'])
+                self.assertEqual(self.adapter.snapshot['needsManualResume'], cause != 'off')
+                self.owner.boundWindow = '42'
+                self.input.snapshot['bindings'].pop('conflict', None)
+                self.owner.session.actionRequested.emit('start_round', {})
+                self.owner.session._state.update(roundId=8)
+                self.adapter.pollOnce()
+                self.assertFalse(self.adapter.snapshot['running'])
+                self.assertEqual(self.adapter.snapshot['savedEnabled'], cause != 'off')
+
+    def test_repeated_terminal_actions_preserve_round_pause_without_rearming(self):
+        self.owner.session._runtime = SimpleNamespace()
+        for action in ('end_round', 'stop_round', 'reset_round', 'toggle_round'):
+            with self.subTest(action=action):
+                self.owner.session._state = dict(engineConnected=True, roundId=7, roundPreparing=True)
+                self.enable()
+                for _ in range(2):
+                    self.owner.session.actionRequested.emit(action, {})
+                    self.adapter.pollOnce()
+                    self.assertFalse(self.adapter.snapshot['running'])
+                    self.assertTrue(self.adapter.snapshot['enabled'])
+                self.owner.session.actionRequested.emit('start_round', {})
+                self.owner.session._state.update(roundId=8)
+                self.adapter.pollOnce()
+                self.assertTrue(self.adapter.snapshot['running'])
+
+    def test_end_round_does_not_forget_across_restart(self):
+        self.enable()
+        self.owner.session.actionRequested.emit('end_round', {})
         self.restart()
         self.assertTrue(self.adapter.snapshot['enabled'])
+
+    def attach_round_runtime(self):
+        from client_session import SessionService
+        from test_client_session import until
+        runtime = RoundRuntime()
+        session = self.owner.session = SessionService(runtime)
+        self.restart()
+        def cleanup():
+            runtime.release.set()
+            session.shutdown()
+            until(lambda: not session._jobs)
+        self.addCleanup(cleanup)
+        return runtime, session, until
+
+    def test_real_session_end_failed_cancelled_and_successful_next_start(self):
+        runtime, session, until = self.attach_round_runtime()
+        self.enable()
+        intent = self.adapter._intent_path.read_bytes()
+        runtime.release.clear()
+        session.dispatch('end_round')
+        self.assertFalse(self.adapter.snapshot['running'])
+        self.assertTrue(self.service._stop.is_set())
+        until(runtime.started.is_set)
+        self.adapter.pollOnce()
+        self.assertFalse(self.adapter.snapshot['running'])
+        runtime.release.set()
+        until(lambda: not session._jobs)
+        self.assertTrue(self.adapter.snapshot['waitingForRound'])
+        runtime.fail_actions.add('start_round')
+        session.dispatch('start_round')
+        until(lambda: not session._jobs)
+        self.assertFalse(session.snapshot['lastReceipt']['success'])
+        self.assertFalse(self.adapter.snapshot['running'])
+        runtime.fail_actions.clear()
+        runtime.started.clear()
+        runtime.release.clear()
+        session.dispatch('start_round')
+        until(runtime.started.is_set)
+        session.cancelPending('fixture-cancelled-start')
+        runtime.release.set()
+        until(lambda: not session._jobs)
+        self.assertFalse(self.adapter.snapshot['running'])
+        # Every real next-round entry uses the same validated session transition.
+        with mock.patch.object(self.service, '_save', side_effect=AssertionError('must not resave')):
+            for action in ('start_round', 'map', 'capture_now', 'prepare_manual_alignment', 'toggle_round'):
+                with self.subTest(action=action):
+                    session.dispatch(action)
+                    until(lambda: not session._jobs)
+                    self.assertTrue(session.snapshot['lastReceipt']['success'])
+                    self.assertTrue(self.adapter.snapshot['running'])
+                    self.assertFalse(self.adapter.snapshot['waitingForRound'])
+                    session.dispatch('end_round')
+                    self.assertFalse(self.adapter.snapshot['running'])
+                    until(lambda: not session._jobs)
+                    self.assertTrue(self.adapter.snapshot['savedEnabled'])
+        self.assertEqual(self.adapter._intent_path.read_bytes(), intent)
+
+    def test_pre_end_start_result_cannot_revive_input_after_end_failure(self):
+        runtime, session, until = self.attach_round_runtime()
+        runtime.state.update(roundActive=False)
+        session.refreshRuntime()
+        self.enable()
+        runtime.ignore_cancel = True  # Adversarial worker that ignores cancellation.
+        runtime.fail_actions.add('end_round')
+        runtime.release.clear()
+        session.dispatch('start_round')
+        until(runtime.started.is_set)
+        session.dispatch('end_round')
+        self.assertFalse(self.adapter.snapshot['running'])
+        runtime.release.set()
+        until(lambda: not session._jobs)
+        session.refreshRuntime()  # Even observing the stale worker's new ID is insufficient.
+        self.adapter.pollOnce()
+        self.assertGreater(runtime.state['roundId'], 1)
+        self.assertTrue(runtime.state['roundPreparing'])
+        self.assertFalse(self.adapter.snapshot['running'])
+        self.assertTrue(self.adapter.snapshot['waitingForRound'])
+
+    def test_cancelled_next_start_cannot_revive_from_a_late_runtime_refresh(self):
+        runtime, session, until = self.attach_round_runtime()
+        self.enable()
+        session.dispatch('end_round')
+        until(lambda: not session._jobs)
+        runtime.ignore_cancel = True
+        runtime.started.clear()
+        runtime.release.clear()
+        session.dispatch('start_round')
+        until(runtime.started.is_set)
+        session.cancelPending('fixture-cancelled-start')
+        runtime.release.set()
+        until(lambda: not session._jobs)
+        session.refreshRuntime()
+        self.assertGreater(runtime.state['roundId'], 1)
+        self.assertTrue(runtime.state['roundPreparing'])
+        self.adapter.pollOnce()
+        self.assertFalse(self.adapter.snapshot['running'])
+        self.assertTrue(self.adapter.snapshot['waitingForRound'])
+
+    def test_worker_releases_at_end_and_never_repeats_held_key_in_next_round(self):
+        import time
+        runtime, session, until = self.attach_round_runtime()
+        self.patch.stop()
+        pressed, released = threading.Event(), threading.Event()
+        events = []
+        def send(vk, up):
+            events.append((vk, up))
+            (released if up else pressed).set()
+            return 0
+        with mock.patch('chest_auto_tap.key_down', lambda vk: self.held), \
+             mock.patch('chest_auto_tap._send_key', send), \
+             mock.patch.object(self.service, '_in_game', lambda: self.service._target_window() == 42):
+            try:
+                self.enable()
+                until(lambda: self.service.snapshot()['status'].startswith('等待按住'))
+                self.held = True
+                self.assertTrue(pressed.wait(1))
+                session.dispatch('end_round')
+                self.assertFalse(self.adapter.snapshot['running'])
+                self.assertTrue(released.wait(1))
+                until(lambda: not session._jobs)
+                before = sum(not up for _, up in events)
+                session.dispatch('start_round')
+                until(lambda: not session._jobs)
+                time.sleep(.04)
+                self.assertEqual(sum(not up for _, up in events), before)
+                self.assertFalse(self.adapter.snapshot['running'])
+                self.held = False
+                self.adapter.pollOnce()
+                until(lambda: self.service.snapshot()['status'].startswith('等待按住'))
+                pressed.clear()
+                self.held = True
+                self.assertTrue(pressed.wait(1))
+                self.assertTrue(self.adapter.snapshot['savedEnabled'])
+            finally:
+                self.held = False
+                self.adapter.shutdown()
+                if self.service._thread:
+                    self.service._thread.join(1)
+                    self.assertFalse(self.service._thread.is_alive())
+
+    def test_qml_distinguishes_round_wait_and_safety_pause_without_switch_reset(self):
+        from PySide6.QtCore import QObject, QMetaObject, QUrl
+        from PySide6.QtQml import QQmlComponent, QQmlEngine
+        runtime, session, until = self.attach_round_runtime()
+        engine = QQmlEngine()
+        engine.rootContext().setContextProperty('chestAutoTapService', self.adapter)
+        component = QQmlComponent(engine, QUrl.fromLocalFile(str(Path(__file__).with_name('ClientChestAutoTap.qml'))))
+        root = component.create()
+        self.assertIsNotNone(root, [error.toString() for error in component.errors()])
+        try:
+            root.setProperty('width', 400)
+            switch = root.findChild(QObject, 'chestAutoTapEnabled')
+            resume = root.findChild(QObject, 'chestResume')
+            wait = root.findChild(QObject, 'chestRoundPause')
+            self.enable()
+            fixtures.APP.processEvents()
+            self.assertTrue(switch.property('checked'))
+            self.assertFalse(resume.property('visible'))
+            session.dispatch('end_round')
+            until(lambda: not session._jobs)
+            self.assertTrue(switch.property('checked'))
+            self.assertTrue(wait.property('visible'))
+            self.assertFalse(resume.property('visible'))
+            self.owner.boundWindow = ''
+            self.adapter.pollOnce()
+            fixtures.APP.processEvents()
+            self.assertTrue(switch.property('checked'))
+            self.assertTrue(resume.property('visible'))
+            self.assertFalse(wait.property('visible'))
+            self.owner.boundWindow = '42'
+            session.dispatch('start_round')
+            until(lambda: not session._jobs)
+            self.assertFalse(self.adapter.snapshot['running'])
+            QMetaObject.invokeMethod(resume, 'clicked')
+            fixtures.APP.processEvents()
+            self.assertTrue(self.adapter.snapshot['running'])
+            self.assertTrue(switch.property('checked'))
+            self.assertFalse(resume.property('visible'))
+        finally:
+            root.deleteLater()
+            fixtures.APP.processEvents()
 
     def test_worker_fault_keeps_saved_intent(self):
         self.enable()

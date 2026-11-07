@@ -44,6 +44,26 @@ class AlignedTransformProbe(unittest.TestCase):
         producer.begin_and_capture()
         self.run_probe(producer.runtime, queued_pointer=True)
 
+    def test_render_ready_rejects_mismatched_mode_profile_and_season(self):
+        CoordinatorTests.setUpClass()
+        fixture = CoordinatorTests("test_same_token_transform_revision_preserves_material_and_rejects_scope_change")
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        coordinator = fixture.coordinator
+        mode, profile, season = coordinator._applied_context
+        current = dict(mode=mode, profileId=profile, season=season)
+        with patch.object(coordinator, '_present_runtime_state') as present, \
+             patch.object(fixture.runtime, 'snapshot', return_value=current) as snapshot:
+            for field, value in (('mode', 'different-mode'), ('profileId', 'different-author'),
+                                 ('season', 's1' if season == 's0' else 's0')):
+                with self.subTest(field=field):
+                    snapshot.return_value = dict(current, **{field: value})
+                    coordinator._on_runtime_event(dict(event='render-ready'))
+                    present.assert_not_called()
+            snapshot.return_value = current
+            coordinator._on_runtime_event(dict(event='render-ready'))
+            present.assert_called_once_with(current, trigger='render-ready')
+
     def run_probe(self, actual_runtime=None, queued_pointer=False):
         CoordinatorTests.setUpClass()
         fixture = CoordinatorTests("test_same_token_transform_revision_preserves_material_and_rejects_scope_change")
@@ -54,7 +74,7 @@ class AlignedTransformProbe(unittest.TestCase):
             fixture.runtime = coordinator.runtime = actual_runtime
             actual_runtime.set_event_callback(coordinator.runtimeEvent.emit)
             fixture.session.snapshot = actual_runtime.snapshot()
-            coordinator._applied_context = (fixture.session.snapshot["mode"], fixture.session.snapshot["profileId"])
+            coordinator._applied_context = (fixture.session.snapshot["mode"], fixture.session.snapshot["profileId"], fixture.session.snapshot["season"])
         images = LiveImages()
         publish = Mock(wraps=images.publish)
         images.publish = publish

@@ -24,6 +24,11 @@ def _stamp(path):
 
 def inspect_locked(root, transaction_id=None):
     """Caller holds the OS resource writer lock; no files are changed."""
+    import author_resource_snapshots as snapshots
+    if importer._target(root, snapshots.PENDING).exists():
+        plan = snapshots.recovery_plan_locked(root)
+        if transaction_id is None or transaction_id == plan['transactionId']:
+            return plan
     if importer._target(root, 'work/map-packages/pending-removal.json').exists():
         from map_package_removal import inspect_pending_removal_locked
         removal = inspect_pending_removal_locked(root)
@@ -80,6 +85,9 @@ def inspect_locked(root, transaction_id=None):
 def history_locked(root):
     pending = upgrade._pending_id(root)
     result = []
+    import author_resource_snapshots as snapshots
+    if importer._target(root, snapshots.PENDING).exists():
+        result.append(snapshots.recovery_plan_locked(root))
     if importer._target(root, 'work/map-packages/pending-removal.json').exists():
         from map_package_removal import inspect_pending_removal_locked
         result.append(inspect_pending_removal_locked(root))
@@ -112,6 +120,11 @@ def execute_locked(root, plan, action):
     current = inspect_locked(root, plan["transactionId"])
     if current != plan:
         raise importer.ImportRejected("recovery-plan-changed-reinspect-required")
+    if current['status'] == 'author-snapshot-pending':
+        if action != 'recover':
+            raise importer.ImportRejected('recovery-operation-no-longer-valid')
+        import author_resource_snapshots as snapshots
+        return snapshots.recover_locked(root)
     if current['status'] == 'removal-pending':
         if action != 'recover':
             raise importer.ImportRejected('recovery-operation-no-longer-valid')

@@ -227,7 +227,7 @@ class InfoTests(unittest.TestCase):
             self.assertFalse(service.setHomeContext('nightmare','actual-author'))
             self.assertEqual(load.call_count, 1)
             service.openHomePreview(service.homePreviews[0]['key'])
-            self.assertEqual(requests[0][:2], ('nightmare','actual-author'))
+            self.assertEqual(requests[0][:3], ('nightmare','actual-author','s0'))
             service.setHomeContext('difficult','actual-author')
             self.wait(lambda: bool(service.homePreviews) and service.homePreviews[0]['mode']=='difficult')
             self.assertEqual(load.call_count, 2)
@@ -235,7 +235,7 @@ class InfoTests(unittest.TestCase):
             self.wait(lambda: bool(service.homePreviews))
             self.assertEqual(load.call_count, 3)
         started, finish = threading.Event(), threading.Event()
-        def delayed_load(*args):
+        def delayed_load(*args, **kwargs):
             if not started.is_set():
                 started.set(); finish.wait(2)
             return context
@@ -390,6 +390,15 @@ ClientHelp { objectName: "helpPanel"; anchors.fill: parent } }
         self.assertEqual(requested, ["start"])
         self.assertEqual(self.opened, [])
         self.assertEqual(warnings, [])
+        skip = window.findChild(QObject, "helpSkipAnnouncement")
+        service.skipVersion()
+        self.wait(lambda: not service.checking)
+        self.assertTrue(service.announcementSkipped)
+        self.assertFalse(skip.property('enabled'))
+        service._service.latest = replace(service._service.latest, notes='Same version, revised notice')
+        service.changed.emit(); self.app.processEvents()
+        self.assertFalse(service.announcementSkipped)
+        self.assertTrue(skip.property('enabled'))
         window.deleteLater()
         self.app.processEvents()
 

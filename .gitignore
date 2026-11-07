@@ -70,6 +70,7 @@ Desktop.ini
 # This hand-maintained recipe is source, unlike generated PyInstaller specs.
 !/tools/xiaochao-assistant.spec
 !/tools/qt-client.spec
+!/tools/qt-reset-helper.spec
 
 # Windows update notice drafts (tools/publish_windows_notice.py)
 /notes.txt

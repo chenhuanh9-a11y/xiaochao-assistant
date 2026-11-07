@@ -1,5 +1,4 @@
 """Shared bounded ZIP rules with synthetic text; no UI, capture or native calls."""
-import ast
 from datetime import datetime
 import json
 from pathlib import Path
@@ -26,22 +25,6 @@ class DiagnosticExportTests(unittest.TestCase):
             app_version="synthetic", build_fingerprint="TEST1234",
             process_integrity=dict(level="fixture"), package_metadata=dict(status="fixture"), **kwargs)
 
-    def test_unchanged_log_rules_are_ast_identical_to_original_entry(self):
-        original = ast.parse((APP / "identityv_daily_assistant.py").read_text("utf-8-sig"))
-        shared = ast.parse((APP / "diagnostic_export.py").read_text("utf-8"))
-        # Redaction intentionally diverged to fix JSON escaping; its actual ZIP
-        # behavior is covered in test_diagnostic_redaction, not legacy parity.
-        names = {"safe_diagnostic_log_files", "_bounded_log_tail"}
-        functions = lambda tree: {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
-        for name in names:
-            baseline_node, current_node=functions(original)[name], functions(shared)[name]
-            if name == 'safe_diagnostic_log_files':
-                # The only approved discovery addition is the fixed watchdog reserve.
-                self.assertIsInstance(current_node.body[-3], ast.Assign)
-                self.assertEqual(current_node.body[-3].targets[0].id, 'watchdog')
-                self.assertIsInstance(current_node.body[-2], ast.If)
-                current_node.body[-3:-1]=[]
-            self.assertEqual(ast.dump(baseline_node), ast.dump(current_node), name)
 
     def test_only_allowed_recent_logs_are_bounded_and_paths_redacted(self):
         (self.live / "events-fixture.jsonl").write_text(

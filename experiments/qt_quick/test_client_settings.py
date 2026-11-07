@@ -10,11 +10,12 @@ import unittest
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-from PySide6.QtCore import QObject, QUrl, Qt
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, QUrl, Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlComponent, QQmlEngine
 from PySide6.QtQuick import QQuickView
 from PySide6.QtTest import QTest
+import shiboken6
 
 from client_settings import ACTION_ORDER, LEGACY_ACTIONS, ROOT, SettingsService
 from client_control_layout import preset_layout
@@ -587,6 +588,106 @@ class SettingsTests(unittest.TestCase):
             service.cancelShortcutCapture()
             view.close()
             view.deleteLater()
+            # processEvents() alone does not deliver deferred QObject deletion.
+            # Destroy the QML consumer before its context service leaves scope.
+            QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+            self.app.processEvents()
+            self.assertFalse(shiboken6.isValid(view))
+            self.assertEqual(warnings, [])
+
+    def test_qml_season_author_draft_save_reaches_runtime_and_rejects_stale_options(self):
+        from client_live_runtime import LiveRuntime
+        from client_session import SessionService
+        from test_client_coordinator import CoordinatorTests
+        self.write(dict(gameSeason="s0", gameMode="nightmare", routeProfileId="profile-one",
+            modeRouteProfiles={"nightmare":"profile-one", "difficult":"other"},
+            contextRouteProfiles={"s0:nightmare":"profile-one", "s0:difficult":"other"}))
+        service = self.service()
+        # Real settings writer, coordinator save handler, session worker and runtime;
+        # only native input/window discovery and display consumers are fakes.
+        harness = CoordinatorTests()
+        harness.app = self.app
+        harness.setUp()
+        coordinator = harness.coordinator
+        runtime = LiveRuntime(engine_factories={})
+        runtime.configure_settings(service.persistedValues)
+        runtime.dispatch("set_context", dict(season="s0", mode="nightmare", profileId="profile-one"))
+        session = SessionService(runtime)
+        coordinator.settings, coordinator.session, coordinator.runtime = service, session, runtime
+        coordinator._bound = ""
+        service.changed.connect(coordinator._draft_changed)
+        service.saved.connect(coordinator._settings_saved)
+        session.changed.connect(coordinator._session_changed)
+        view = QQuickView()
+        view.setResizeMode(QQuickView.SizeRootObjectToView)
+        view.rootContext().setContextProperty("settingsService", service)
+        view.setSource(QUrl.fromLocalFile(str(Path(__file__).with_name("ClientSettings.qml"))))
+        self.assertFalse(view.errors())
+        view.resize(900, 1000)
+        view.show()
+        panel = view.rootObject()
+        panel.setProperty("modeExpanded", True)
+        panel.setProperty("profilesMode", "nightmare")
+        panel.setProperty("profilesSeason", "s0")
+        panel.setProperty("profileOptions", [{"id":"profile-one", "name":"One"}, {"id":"profile-two", "name":"Two"}])
+        self.app.processEvents()
+        picker = visual_item(panel, "setting_routeProfileId")
+        def click_settings_action(name):
+            from PySide6.QtCore import QPointF, QPoint
+            item = visual_item(panel, name)
+            point = item.mapToScene(QPointF(item.width()/2, item.height()/2))
+            self.assertTrue(item.isVisible())
+            self.assertGreaterEqual(point.x(), 0)
+            self.assertGreaterEqual(point.y(), 0)
+            self.assertLess(point.x(), view.width())
+            self.assertLess(point.y(), view.height())
+            QTest.mouseClick(view, Qt.LeftButton, Qt.NoModifier, QPoint(round(point.x()), round(point.y())))
+            self.app.processEvents()
+        try:
+            self.assertEqual(picker.property("currentIndex"), 0)
+            picker.forceActiveFocus()
+            QTest.keyClick(view, Qt.Key_Down)
+            self.app.processEvents()
+            self.assertEqual(service.values["contextRouteProfiles"]["s0:nightmare"], "profile-two")
+            self.assertEqual(runtime.snapshot()["profileId"], "profile-one")
+            click_settings_action("settingsReset")
+            self.assertEqual(service.values["contextRouteProfiles"]["s0:nightmare"], "profile-one")
+            picker.forceActiveFocus()
+            QTest.keyClick(view, Qt.Key_Down)
+            click_settings_action("settingsSave")
+            self.wait(lambda: not service.busy and not session.busy and runtime.snapshot()["profileId"] == "profile-two")
+            self.assertEqual(session.appliedProfile, "profile-two")
+            self.assertEqual(service.persistedValues["contextRouteProfiles"]["s0:difficult"], "other")
+            self.assertEqual(json.loads(self.path.read_text())["contextRouteProfiles"]["s0:nightmare"], "profile-two")
+            # Same difficulty with new season must disable still-published S0 rows.
+            context_picker = visual_item(panel, "setting_gameContextSeason")
+            context_picker.forceActiveFocus()
+            QTest.keyClick(view, Qt.Key_Down)
+            self.app.processEvents()
+            self.assertEqual((service.values["gameSeason"], service.values["gameMode"]), ("s1", "nightmare"))
+            self.assertFalse(picker.property("enabled"))
+            self.assertEqual(picker.property("currentIndex"), -1)
+            before = service.values["contextRouteProfiles"]
+            picker.activated.emit(0)  # A queued activation from the obsolete model.
+            self.assertEqual(service.values["contextRouteProfiles"], before)
+            panel.setProperty("profilesSeason", "s1")
+            panel.setProperty("profilesBusy", True)
+            self.assertFalse(picker.property("enabled"))
+            panel.setProperty("profileOptions", [])
+            panel.setProperty("profilesBusy", False)
+            self.assertFalse(picker.property("enabled"))
+            self.assertEqual("当前作者未安装", picker.property("displayText"))
+            self.assertEqual(runtime.snapshot()["season"], "s0")
+            click_settings_action("settingsReset")
+            self.assertEqual(service.values["gameSeason"], "s0")
+        finally:
+            coordinator._closed = True
+            session.shutdown()
+            harness.tearDown()
+            view.close()
+            view.deleteLater()
+            from PySide6.QtCore import QCoreApplication, QEvent
+            QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
             self.app.processEvents()
 
     def test_sandbox_marker_and_path_guard(self):
@@ -626,7 +727,13 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(json.loads(self.path.read_text())["mapSelectionMode"], "manual")
         self.assertEqual(warnings, [])
         panel.deleteLater()
+        component.deleteLater()
+        engine.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
         self.app.processEvents()
+        self.assertFalse(shiboken6.isValid(panel))
+        self.assertFalse(shiboken6.isValid(engine))
+        self.assertEqual(warnings, [])
 
 
 if __name__ == "__main__":

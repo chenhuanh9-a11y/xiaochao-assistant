@@ -17,15 +17,15 @@ GitHub 仓库是源码协作与交付的依据。本地完成的改动应及时�
 | 变更入口 | 必须跟到的消费者 | 现有代码与测试起点 |
 | --- | --- | --- |
 | 识别、正门/侧门、相似组 | 候选证据 → 组态/身份 → 当前帧验证 → 提交；暂定成员与唯一身份确认分清 | [map_identity_engine.py](../app/map_identity_engine.py)、[difficult_native_identity.py](../app/difficult_native_identity.py)、[test_native_similarity_runtime.py](../tests/test_native_similarity_runtime.py)、[test_front_gate_observation.py](../tests/test_front_gate_observation.py)、[test_side_entry_search.py](../tests/test_side_entry_search.py) |
-| 首次/后续贴合、楼层、关闭与重开 | 当前地图/层/帧 → worker → 验证 → round-pose/core → 正确可见像素 | [identityv_daily_assistant.py](../app/identityv_daily_assistant.py)、[fast_structure_alignment.py](../app/fast_structure_alignment.py)、[alignment_pose_transaction.py](../app/alignment_pose_transaction.py)、[test_queued_first_pose_delivery.py](../tests/test_queued_first_pose_delivery.py)、[test_queued_delivery_core_contract.py](../tests/test_queued_delivery_core_contract.py) |
-| 作者与自定义路线选择 | 偏好 → 实际来源与每层显示桥 → 渲染缓存 → 当前显示；身份/结构位姿不漂移 | [optional_author_displays.py](../app/optional_author_displays.py)、[test_route_selection_controller.py](../tests/test_route_selection_controller.py)、[test_route_selection_regressions.py](../tests/test_route_selection_regressions.py)、[test_custom_route_integration.py](../tests/test_custom_route_integration.py) |
-| 下载/导入资源 | 下载状态与校验 → 安装事务 → 资源工厂 → 作者选项/列表 → 缓存和旧任务失效 | [star_map_download.py](../app/star_map_download.py)、[star_map_import.py](../app/star_map_import.py)、[map_resource_browser.py](../app/map_resource_browser.py)、[test_live_author_import.py](../tests/test_live_author_import.py)、[test_live_author_import_controller.py](../tests/test_live_author_import_controller.py)、[test_map_package_upgrade.py](../tests/test_map_package_upgrade.py) |
+| 首次/后续贴合、楼层、关闭与重开 | 当前地图/层/帧 → worker → 验证 → round-pose/core → 正确可见像素 | [client_live_runtime.py](../experiments/qt_quick/client_live_runtime.py)、[fast_structure_alignment.py](../app/fast_structure_alignment.py)、[alignment_pose_transaction.py](../app/alignment_pose_transaction.py)、[test_client_group_queue.py](../experiments/qt_quick/test_client_group_queue.py)、[test_client_session.py](../experiments/qt_quick/test_client_session.py) |
+| 作者与自定义路线选择 | 偏好 → 实际来源与每层显示桥 → 渲染缓存 → 当前显示；身份/结构位姿不漂移 | [optional_author_displays.py](../app/optional_author_displays.py)、[test_client_route_preferences.py](../experiments/qt_quick/test_client_route_preferences.py)、[test_client_route_reprojection.py](../experiments/qt_quick/test_client_route_reprojection.py)、[test_client_custom_display.py](../experiments/qt_quick/test_client_custom_display.py) |
+| 下载/导入资源 | 下载状态与校验 → 安装事务 → 资源工厂 → 作者选项/列表 → 缓存和旧任务失效 | [star_map_download.py](../app/star_map_download.py)、[star_map_import.py](../app/star_map_import.py)、[client_resources.py](../experiments/qt_quick/client_resources.py)、[test_live_author_import.py](../tests/test_live_author_import.py)、[test_client_import_upgrade_parity.py](../experiments/qt_quick/test_client_import_upgrade_parity.py)、[test_map_package_upgrade.py](../tests/test_map_package_upgrade.py) |
 
 噩梦与困难应使用同一识别/贴合及生命周期实现，差异由资源、楼层元数据和必要参数提供。修改前核实际调用路径，修改后用两模式受影响的参数或代表资源验证。无法验证的资源契约要留明确缺口；不能删验证、复制模式专属算法或强套另一模式的门/坐标语义。既有测试名只是起点，例如排队首次任务测试不能代表后续每次开图延迟已经修复。
 
 涉及异步与状态的改动，按风险选择成功、失败、取消、重复触发、迟到回调及换图/换层/关图/结束本局反例。检查最后实际消费者，而不只检查日志、列表条目或中间返回值。可重复的少量代表回归优先；不为小修添加镜像实现的测试或无关全量测试。
 
-Tk 交互沿用持久页面和稳定卡片 ID：重复点击当前页/标签应幂等；普通状态变更只写发生变化的控件，不先隐藏整页/全列表再重新摆放。轮询可以读取最新状态，但状态相同就不重复写 Tk 属性、布局或图片。导入/删除等真正改变资源身份时才失效对应列表与预览缓存，保留其他区域的选择、焦点和滚动。核对卡顿时分别记录回调、布局/绘图调度和实际可见效果；仅缩短回调不能证明流畅。
+Qt 交互沿用持久页面和稳定卡片 ID：重复点击当前页/标签应幂等；普通状态变更只写发生变化的控件，不先隐藏整页/全列表再重新摆放。轮询可以读取最新状态，但状态相同就不重复写模型或控件属性、布局或图片。导入/删除等真正改变资源身份时才失效对应列表与预览缓存，保留其他区域的选择、焦点和滚动。核对卡顿时分别记录回调、布局/绘图调度和实际可见效果；仅缩短回调不能证明流畅。
 
 ## 贴合速度与可靠显示的验收口径
 
@@ -61,6 +61,14 @@ TokenElevation 的“管理员 / 普通 / 未知”状态；查询失败必须�
 
 ## 通用机制优先复用
 
+Qt 启动公告由窗口常驻组件承接，后台读取已校验的 Windows 清单，不依赖当前页面或阻塞启动。
+公告身份是版本、versionCode、发布时间和纯文本正文的 SHA-256；同版本正文修订也属于新公告，
+下载链接或大小变化不触发重复提醒。仅实际打开弹窗后记录该快照的已读身份，保留最近 64 条，
+旧版仅含版本号的已读/跳过记录不足以证明读过同一正文，升级后允许重显一次。
+隐藏、最小化、入门引导和关闭确认期间延后；显示中不替换正文，新结果在关闭后再展示。
+偏好写入串行化并绑定显示快照，失败不冒称保存成功；退出后的网络结果不再显示或写入。
+沿用 HTTPS 来源校验、纯文本显示和用户点击后才打开白名单网盘页，不新增遥测或个人信息上传。
+
 Qt 迁移的默认启动链单独验收：单实例占锁须早于引擎/监听/worker；等待游戏时管理快捷键仍有效；严格身份的游戏窗口出现或重启后自动绑定，手动连接仅作兜底。应用内 `QShortcut` 不能充当后台全局输入。按 [Win32 低级键盘回调](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelkeyboardproc) 保持独立消息循环和输入穿透，关闭时注销并等待所属线程结束；单实例参照 [QLocalServer](https://doc.qt.io/qtforpython-6/PySide6/QtNetwork/QLocalServer.html)，Windows 还需独占仲裁，不能只凭 `listen()` 判断唯一进程。
 
 完整客户区采集传递“full-client”意图，由采集线程使用本次原生上下文计算完整矩形；UI发现窗口时的宽高只供显示，不得作为后续完整帧的固定ROI。保留原始完整帧、坐标、代次、取消和前台校验。采集错误须保留尺寸元数据与原始异常，向用户展示中文原因及可回看记录。退出还须覆盖错误发生后再退出、再启动；窗口拒绝关闭不能否决已排空的程序退出，IPC只有实际恢复窗口后才能回复成功，“退出中”或无法恢复必须明确反馈。
@@ -88,9 +96,11 @@ Qt 迁移的默认启动链单独验收：单实例占锁须早于引擎/监听/
 | `work/nightmare-memory/samples/<地图>/<楼层>/` | 确认地图时的裁剪样本 | 识别实际使用的样本（每层最近 6 张可用的）加最近 12 张，识别结果不变 |
 | `work/map-packages/downloads/` | 在线下载的地图包 | 启动时删除已安装（安装记录的压缩包 SHA-256 与文件名一致）的压缩包；有待恢复的升级、排队中的导入请求或导入锁时不删 |
 
-用户主动接受、拒绝的贴合记录及其截图不做清理。地图包升级备份仍按原设计保留。
+用户主动接受、拒绝的贴合记录及其截图不做清理。图包升级或删除成功后，事务临时副本会完成清理；中断或清理失败时保留恢复记录并阻止新操作，不冒称成功。
 
-Tk 和 Qt 客户端启动时都做同样的清理（`diagnostic_export.prune_diagnostic_logs` 与 `star_map_download.prune_installed_downloads`），Qt 的 `events-qt-*` 日志也在同一个上限内；Qt 有 `qt-import-pending.json` 或 `qt-recovery-pending.json` 时同样不删下载包。
+直接导入时可只读识别内置认可清单中的完整旧版作者图；完整路径、大小和哈希均匹配、没有现有安装收据，且新包覆盖该旧版完整文件集合时，进入普通更新确认。确认并完成全包校验后才登记旧资源，再复用原升级事务；不依赖用户先刷新列表或手动找文件。残缺、改动、未知来源及其他包占用的文件不扩大认领。 更新也须保持其他已安装包 `requiresFiles` 的精确依赖约束；依赖不等于文件所有权，保持依赖字节不变时仍可更新其他作者图。检查和提交前均重验收据，损坏收据失败关闭。 普通安装收据必须保留完整基础依赖声明，缺失、空或损坏声明在导入和删除时均失败关闭；只有字段、文件清单及来源哈希与认可库存完全一致的旧领养收据可没有依赖字段。相同文件但依赖合同改变的重复导入目前明确拒绝，原收据和数据不变，不报告已应用或无需更新；这也包括旧领养记录与完整同字节 ZIP 之间的仅依赖迁移，实际图像内容改变的合法升级仍受支持。若将来支持仅迁移收据，须单独设计确认、回滚与 helper 合同。
+
+Qt 客户端启动时做有界清理（`diagnostic_export.prune_diagnostic_logs` 与 `star_map_download.prune_installed_downloads`），Qt 的 `events-qt-*` 日志也在同一个上限内；Qt 有 `qt-import-pending.json` 或 `qt-recovery-pending.json` 时同样不删下载包。
 
 
 ### 默认失败证据（Qt，新自动样本）
@@ -102,3 +112,32 @@ Tk 和 Qt 客户端启动时都做同样的清理（`diagnostic_export.prune_dia
 `failures/automatic-v2/` 是新的身份绑定缓存，每模式最多 6 张、12 MiB，超过 7 天或为新图腾空间时轮换最旧对象。新 PNG 的创建、写入和身份记录使用同一 Windows 独占句柄；读取或删除再次核对原文件 identity、单链接、尺寸及 SHA256。删除使用 `SetFileInformationByHandle(FileDispositionInfo)` 针对验证过的同一句柄，不使用 pathname unlink，也不回退到不安全删除。参考微软 [CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew) 的共享权限及 [SetFileInformationByHandle](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfileinformationbyhandle) 的 DELETE 权限合同。
 
 旧 `failures/automatic/` 缺少原文件 identity，只读保留与兼容导出，不为其补写当下 identity 后自动删除。迁移期间每模式可能额外留存旧版最多 12 MiB 样本；旧目录异常不阻断新 v2 空间。链接、外部替换、未知文件、未提交且仍有图片的写入、损坏 journal 都失败关闭并明确状态，不冒称完整恢复。删除完成但 journal 未更新的缺图记录可安全修复；部分 journal 写入或断电仍可能需要人工检查。POSIX 不实施自动图写入/轮换，Linux 单元测试的 Windows skips 不代表原生合同通过。
+
+
+#### 同次失败事件关联与局部图覆盖
+
+默认文字诊断仅记录已经过绑定与前台校验的本程序地图按键意图，不记录原始键码、其他程序输入或窗口身份。`inputSequence` 关联意图，`openingId` 关联初次准备及其有限恢复，`attemptId` 区分每个实际 worker 尝试；恢复不是新按键。准备记录区分采集异常、当前观测未就绪和超时，运行状态标为内存快照，不能把历史观测说成本次画面或把收到按键说成游戏已开图。
+
+自动局部图只接受显式传入、属于同一尝试及相同 epoch/对局/赛季/模式/资源实例/采集代次的完整游戏客户区帧。开始新采集或失效时清除旧凭据，失败后不得回退上一帧；写入前后继续核当前窗口、前台与关闭选项。原几何失败及准备超时之外，当前身份不唯一、相似组待定、采集后的待确认、当前楼层不可用、恢复耗尽可产生证据决定。采集前待确认、正常关图和过渡重试不因此抓图；生命周期已撤销或没有可证明的局部区域时只记缺图原因。新增身份类失败只保留地图颜色区，楼层类失败只保留实际检测控件带；无控件范围时不得退回地图或整帧。地图颜色区仍未经过身份验证，局部图不保证匿名，不扩大到整窗/桌面兜底。
+
+只有图片和最终 journal 都提交成功才消耗图片成功冷却；无帧/无 ROI 的元数据独立有界限流，不阻断同次控件局部图或下一次有效图；真实编码/存储错误保留失败退避。容量、7 天清理与会话匹配导出合同不变，有限缓存并不保证每次失败都有图，导出的 ZIP 不受本地缓存轮换自动删除。例行刷新不逐帧写采集成功日志；重复缺图状态按 60 秒合并并报告抑制数量，成功保存的样本事件仍及时记录。
+
+
+### S1 private experimental package 1.0.13 (2026-11-05)
+
+Includes the verified joint color-display/preferred-candidate base, common entrance coordinates, within-round B1-B4 positive-contradiction candidate accumulation, and a unique experimental lock only after current-frame material validation. A failed singleton fit restores competition. This is a private experiment, not formally calibrated identity. B3/B4 static screenshot evidence is distinct from pending real-time game acceptance. The compact UI shows experimental lock/current-map fit separately and explicit rediscovery resets the pool.
+
+Cloud delta: 11 text files / 34 segments / 228035 bytes, SHA256 2bca682b87ceaff102c1b7d4b1d3a3dac00744c7b95843f13c1fa4391bb75281; all cloud after hashes and the locally derived pinned glyph verified before the Windows merge. Local four-floor qualification and installer identity are preserved; final runtime has its own hash. Six display-only JSONs match their target hashes; PNG/NPZ resources are unchanged. All 176 coordinate bindings match production typed metadata. Per user instruction no simulated recognition tests or accuracy matrix are a delivery gate; only integrity/build/startup/install/data-protection checks are run and recorded separately. No actual game acceptance is claimed.
+
+
+### Private dual-lane first-material candidate 1.0.15 (2026-11-05)
+
+Uses the verified cloud dual-lane delta rather than the internal synchronous 1.0.14 candidate. The unchanged current-frame fit/material path streams its first accepted candidate and cooperatively stops the main scan. One private evidence lane owns at most one running and one latest queued immutable verified frame. Ordinary map close revokes pixels while same-round/binding/resource/pool-revision guards permit historical evidence accumulation. Historical evidence cannot display or lock; a later opening must validate fresh geometry/material before an experimental lock. Only explicit same-coordinate contradictions remove candidates; unknowns do not. The B1 static resource cache key and bounded resumable static construction are fixed without changing downstream geometry.
+
+Preserve the local B1-B4 qualification, compact UI, experimental labels, isolated installer identity and stronger map/frame/new-token material guard. New background stage logs bypass UI callbacks, preserve original attempt/opening/frame scope, and use the existing bounded disk writer. This baked private identity enables that writer without relying on an environment flag; other identities retain their existing default. Queue stop/admission cancellation and active-lane drain are wired to both normal close and partial-client cleanup, with no blocking UI join.
+
+All nine transmitted file diffs plus the separately pinned helper were checked against exact cloud parent/source targets before local safety integration. Twelve narrow async ownership/queue/disk/purpose checks passed in 0.917 seconds. Initial default C:Temp disk check hit restricted-token WinError5; the owned task E:Temp check passed without changing storage safeguards. No accuracy matrix or game operation is an acceptance gate. Setup build and packaged startup evidence are separate. The user current 1.0.13 installation is preserved.
+
+已核验旧作者导入收据的缺失依赖字段，只能按源码登记的原始发布 ZIP、包 ID、归档 SHA256 与完整拥有清单摘要精确匹配后，只读恢复原包全部 requiresFiles。不改写收据，不从安装目录推定依赖；未知或不匹配收据仍失败关闭。
+
+启动阶段另按保留原则处理旧回执：缺少依赖字段但基本格式及路径合法时，仅把其文件声明作为禁止覆盖的约束，不恢复或猜测依赖，也不授予导入、删除或作者显示能力。格式合法的未知作者记录同样保留，不动态注册作者。此时基础资源修复可添加经过当前候选清单校验的缺失文件，不能替换任何已有基础字节；与旧声明冲突、坏记录、路径越界、无效的已有依赖字段及未完成事务继续明确阻断。严格图包操作与作者显示 provider 的独立校验不变；旧版基础资源确需替换时须另核其历史依赖与迁移范围，不能把“保留启动”当成已批准迁移或兼容所有旧资源。

@@ -150,7 +150,7 @@ import hashlib,json,sys,time,zipfile
 from pathlib import Path
 from unittest.mock import patch
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtCore import QUrl, QPointF, Qt
+from PySide6.QtCore import QUrl, QPointF, Qt, QObject, Property
 from PySide6.QtQuick import QQuickView
 from PySide6.QtTest import QTest
 app=QGuiApplication([])
@@ -179,8 +179,13 @@ view=QQuickView();warnings=[]
 view.engine().warnings.connect(lambda rows:warnings.extend(str(r) for r in rows))
 view.rootContext().setContextProperty('resourceService',case.fixture.service)
 view.rootContext().setContextProperty('packageManagerService',case.service)
+class BrowseContext(QObject):
+    season=Property(str,lambda self:'s0',constant=True)
+browse=BrowseContext()
+view.rootContext().setContextProperty('backend',browse)
 view.setSource(QUrl.fromLocalFile(str(Path('experiments/qt_quick/ClientResources.qml').resolve())))
 assert view.status()==QQuickView.Ready, view.errors()
+view.rootObject().setProperty("active", True)  # Explicitly open the management page.
 view.setResizeMode(QQuickView.SizeRootObjectToView);view.resize(1100,680);view.show()
 case.settle(lambda:len(case.service.packageRows)==2);QTest.qWait(60)
 assert len(case.fixture.completions)==2,case.fixture.completions
@@ -198,6 +203,28 @@ def click(name):
     QTest.mouseClick(view,Qt.LeftButton,Qt.NoModifier,point.toPoint());QTest.qWait(30)
 assert find(view.contentItem(),'managedPackageList').property('count')==3
 assert not find(view.contentItem(),'removePackageButton-builtin-difficult-zhan10').isEnabled()
+def builtin_status():
+    return find(view.contentItem(),'packageStatusLabel-builtin-difficult-zhan10').property('text')
+def visible_builtin():
+    rows=view.rootObject().property('visibleResourceRows')
+    rows=rows.toVariant() if hasattr(rows,'toVariant') else rows
+    return next(row for row in rows if row['packageId']=='builtin-difficult-zhan10')
+assert '待核对' in builtin_status(),builtin_status()
+case.fixture.service.refresh();case.fixture.settle();QTest.qWait(30)
+assert case.fixture.service.inventoryVerified
+assert '内置默认资源' in builtin_status(),builtin_status()
+assert visible_builtin()['bundledFiles']==1
+case.fixture.service.resourcesChanged.emit();QTest.qWait(30)
+assert not case.fixture.service.inventoryVerified
+assert '待核对' in builtin_status(),builtin_status()
+assert not {'mapCount','layerCount','bundledFiles'} & visible_builtin().keys()
+case.fixture.service.refresh();case.fixture.settle();QTest.qWait(30)
+assert '内置默认资源' in builtin_status(),builtin_status()
+with patch.object(case.fixture.service,'_snapshot',side_effect=ValueError('controlled-check-failure')):
+    case.fixture.service.refresh();case.fixture.settle();QTest.qWait(30)
+assert not case.fixture.service.inventoryVerified
+assert '待核对' in builtin_status(),builtin_status()
+assert not {'mapCount','layerCount','bundledFiles'} & visible_builtin().keys()
 click('removePackageButton-nightmare-suju');case.settle();QTest.qWait(30)
 assert case.service.pendingKind=='remove'
 click('resourceConfirmCancelButton')

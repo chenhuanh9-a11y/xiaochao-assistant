@@ -263,6 +263,16 @@ class FloorClickContracts(unittest.TestCase):
 
 
 class SharedFloorHitContracts(unittest.TestCase):
+    def test_registered_s1_verified_geometry_retains_generic_hit_capability(self):
+        read = dict(season="s1", mode="difficulty2", layout="localized-floor-contract",
+            mapOpen=True, controlGeometryVerified=True, controlAxis="vertical",
+            controlRects=[dict(floor=floor, rect=[.80, .2+i*.1, .90, .28+i*.1])
+                          for i, floor in enumerate((-1, -2, -3, -4))])
+        for i, floor in enumerate((-1, -2, -3, -4)):
+            self.assertEqual(game_floor_control_hit((100+.85*1280, 200+(.24+i*.1)*720),
+                (100, 200, 1380, 920), read), floor)
+        self.assertIsNone(game_floor_control_hit((1188, 373), (100, 200, 1380, 920),
+            dict(read, mapOpen=False)))
 
     def test_removed_horizontal_triplet_never_produces_a_hit(self):
         read = dict(layout="localized-triplet", centers=[.45, .50, .55])

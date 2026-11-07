@@ -40,6 +40,9 @@ class ChestAutoTapService(QObject):
         self._key_is_down = key_is_down
         self._needs_release = True
         self._saved_enabled = False
+        self._waiting_for_round = False
+        self._ended_round = None
+        self._next_round_generation = None
         self._message = "请连接游戏并启用快捷键，再手动开启开箱连点"
         self._last = None
         self._reported_error = ""
@@ -65,6 +68,7 @@ class ChestAutoTapService(QObject):
         session = getattr(coordinator, "session", None)
         if session is not None:
             session.actionRequested.connect(self._action_requested)
+            session.changed.connect(self.pollOnce)
         if self._armed:
             self._message = "已记住开启偏好；等待游戏，松开后再按触发键"
             self._timer.start()
@@ -90,6 +94,8 @@ class ChestAutoTapService(QObject):
         display_state = dict(state, error=state.get("runtimeError", state.get("error", "")))
         return dict(state, savedEnabled=self._saved_enabled, enabled=self._armed,
                     running=self._running, message=chest_message(display_state, self._message),
+                    waitingForRound=self._waiting_for_round and self._armed,
+                    needsManualResume=self._saved_enabled and not self._armed and not self._closed,
                     status=chest_message(display_state, state.get("status", "")),
                     rawMessage=self._message, rawStatus=state.get("status", ""), rawError=state.get("error", ""),
                     tapKeys=list(TAP_KEYS), triggerKeys=list(TRIGGER_KEYS))
@@ -121,19 +127,53 @@ class ChestAutoTapService(QObject):
 
     @Slot(str, dict)
     def _action_requested(self, action, payload):
+        if self._closed:
+            return
         state = getattr(getattr(self.coordinator, "session", None), "snapshot", {})
         ending = action == "toggle_round" and (state.get("roundActive") or state.get("roundPreparing"))
         if action in {"end_round", "stop_round", "reset_round"} or ending:
-            self._armed = False
-            self._timer.stop()
+            # Stop at accepted intent, before the end worker or its receipt.
+            # Keep the user's preference and arming; only a proven NEW round
+            # may remove this latch, never the still-active previous snapshot.
+            self._waiting_for_round = True
+            self._ended_round = state.get("roundId")
+            self._next_round_generation = None
             self._stop()
-            self._message = "本局结束或绑定变化，连点已暂停；开启偏好仍保留，请重新手动开启"
+            if self._armed:
+                self._message = "开箱连点保持开启；本局已结束，下一局开始后自动恢复"
             self._publish()
+        elif self._waiting_for_round and action in {
+                "start_round", "toggle_round", "map", "capture_now", "prepare_manual_alignment"}:
+            # A late pre-end worker must not count as the user's next round.
+            # This is only intent; the validated committed snapshot below is
+            # still required. Cancellation/supersession changes this generation,
+            # so a late worker followed by refreshRuntime cannot restore input.
+            self._next_round_generation = state.get("generation")
+
+    def _next_round_ready(self):
+        if not self._waiting_for_round:
+            return True
+        state = getattr(getattr(self.coordinator, "session", None), "snapshot", {})
+        round_id = state.get("roundId")
+        # LiveSessionRuntime increments roundId only after preparation commits.
+        # SessionService publishes validated results; do not use a queued start,
+        # a failed snapshot's retained lifecycle fields or a stale active flag.
+        if (type(self._next_round_generation) is not int
+                or state.get("generation") != self._next_round_generation
+                or type(self._ended_round) is not int or type(round_id) is not int
+                or round_id <= self._ended_round or not state.get("engineConnected")
+                or state.get("busy") or state.get("closed") or state.get("contextPending")
+                or state.get("resourceLocked")
+                or not (state.get("roundActive") or state.get("roundPreparing"))):
+            return False
+        self._waiting_for_round = False
+        return True
 
     def _binding_identity(self):
         hwnd = str(self.coordinator.boundWindow or "")
-        row = next((r for r in self.coordinator.gameWindows if str(r.get("hwnd")) == hwnd), {})
-        return hwnd, row.get("pid"), row.get("processCreateTime"), row.get("executable")
+        row = next((r for r in self.coordinator.gameWindows if str(r.get("hwnd")) == hwnd), None)
+        return ((hwnd, row.get("pid"), row.get("processCreateTime"), row.get("executable"))
+                if row is not None else None)
 
     def _gate(self):
         owner, state = self.coordinator, self.input.snapshot
@@ -178,16 +218,40 @@ class ChestAutoTapService(QObject):
             self._stop()
             self._publish()
             return
-        if self._bound and self._binding_identity() != self._bound_identity:
+        bound = str(self.coordinator.boundWindow or "")
+        catalog_has_bound = any(str(row.get("hwnd")) == bound
+                                for row in self.coordinator.gameWindows)
+        # Discovery can temporarily omit a minimized/unreadable game while the
+        # coordinator retains its binding. Absence is not a replacement: the
+        # foreground gate below still blocks input until a verified row returns.
+        if self._bound and (bound != self._bound or
+                (catalog_has_bound and self._bound_identity is not None
+                 and self._binding_identity() != self._bound_identity)):
             self._armed = False
             self._timer.stop()
             self._stop()
-            self._message = "游戏绑定已变化；请重新手动开启"
+            self._message = "游戏绑定已变化；核对游戏连接后点击“重新就绪”"
             self._publish()
             return
         if not self._bound and self.coordinator.boundWindow:
             self._bound = str(self.coordinator.boundWindow)
+        if self._bound and self._bound_identity is None and catalog_has_bound:
             self._bound_identity = self._binding_identity()
+        # Releases continue on the native owner after end-round. A late native
+        # fault is safety-disarmed even while waiting, not hidden until next round.
+        current = self._service.snapshot()
+        if current.get("error"):
+            self._armed = False
+            self._timer.stop()
+            self._stop()
+            self._message = current["error"]
+            self._publish()
+            return
+        if not self._next_round_ready():
+            self._stop()
+            self._message = "开箱连点保持开启；等待下一局开始后自动恢复"
+            self._publish()
+            return
         handle, reason = self._gate()
         if not handle:
             self._stop()

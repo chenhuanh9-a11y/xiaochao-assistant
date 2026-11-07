@@ -22,16 +22,16 @@ class FloorEvidence:
     stable: int | None
 
 
-def read_floor_evidence(floor_read, observations, *, explicit_floor=None):
+def read_floor_evidence(floor_read, observations, *, explicit_floor=None, contract=None):
     observed = floor_read.get("selectedFloor")
-    allowed = (-1, 1, 2)
+    allowed = contract.observed_values if contract is not None else (-1, 1, 2)
     observed = observed if type(observed) is int and observed in allowed else None
     window = [*observations, observed][-5:]
     scores = floor_read.get("scores") or {}
     observed_score = float(scores.get(str(observed), 0.0))
     strong_latest = False
     explicit = type(explicit_floor) is int and explicit_floor in allowed
-    stable = explicit_floor if explicit else stable_floor_from_observations(window, strong_latest=strong_latest)
+    stable = explicit_floor if explicit else stable_floor_from_observations(window, strong_latest=strong_latest, allowed_values=allowed)
     return FloorEvidence(observed, tuple(window), observed_score, strong_latest, explicit, stable)
 
 
@@ -50,7 +50,7 @@ class FloorTransition:
 
 def decide_floor_transition(evidence, *, current_floor, floor_required=False,
                             manual_override=False, hard_locked=False, hold_until=0.0,
-                            cycle_id=None, game_intent=None, now):
+                            cycle_id=None, game_intent=None, now, contract=None):
     """Original `_consider_floor_observation` hold/intent/target rules.
 
     A pending game click may block conflicting observations before any hold
@@ -68,7 +68,9 @@ def decide_floor_transition(evidence, *, current_floor, floor_required=False,
         game_intent = None
     if stable is None:
         return FloorTransition(clear_game_intent=clear_intent, manual_override=manual_override)
-    target = "B1" if stable == -1 else str(stable)
+    target = contract.floor_id_for(stable) if contract is not None else "B1" if stable == -1 else str(stable)
+    if target is None:
+        return FloorTransition(reason="floor-contract-unavailable")
     hold_active = bool(manual_override and not hard_locked and now < hold_until)
     hold_ended = bool(manual_override and not hard_locked and not hold_active)
     effective_override = False if hold_ended else manual_override
@@ -94,8 +96,43 @@ def decide_floor_transition(evidence, *, current_floor, floor_required=False,
 
 
 def game_floor_control_hit(cursor, client_bounds, floor_read):
-    """Read clicks only from complete current-frame S0 vertical geometry."""
-    if not isinstance(floor_read, dict) or floor_read.get("layout") != "localized-s0-vertical":
+    """Read clicks only from complete current-frame registered geometry."""
+    if (not isinstance(floor_read, dict) or floor_read.get("layout") not in
+            {"localized-s0-vertical", "localized-floor-contract"}):
         return None
-    from s0_vertical_controls import control_hit
-    return control_hit(cursor, client_bounds, floor_read)
+    if floor_read.get("layout") == "localized-s0-vertical":
+        from s0_vertical_controls import control_hit
+        return control_hit(cursor, client_bounds, floor_read)
+    if floor_read.get("layout") == "localized-floor-contract":
+        from floor_contract import floor_contract
+        contract = floor_contract(floor_read.get("mode"), season=floor_read.get("season"))
+        if (contract is None or floor_read.get("mapOpen") is not True
+                or floor_read.get("controlGeometryVerified") is not True
+                or floor_read.get("controlAxis") != contract.control_axis):
+            return None
+        rects = floor_read.get("controlRects")
+        if not isinstance(rects, (list, tuple)) or len(rects) != len(contract.floors):
+            return None
+        import math
+        left, top, right, bottom = map(float, client_bounds)
+        width, height = right - left, bottom - top
+        if min(width, height) < 100:
+            return None
+        point = ((cursor[0] - left) / width, (cursor[1] - top) / height)
+        hits, centers = [], []
+        for definition, row in zip(contract.floors, rects):
+            try:
+                x0, y0, x1, y1 = row["rect"]
+            except (KeyError, TypeError, ValueError):
+                return None
+            if (type(row.get("floor")) is not int or row["floor"] != definition.observed_value
+                    or not all(type(x) in (int, float) and math.isfinite(x) for x in (x0, y0, x1, y1))
+                    or not (0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1)):
+                return None
+            centers.append((y0 + y1) / 2 if contract.control_axis == "vertical" else (x0 + x1) / 2)
+            if x0 <= point[0] <= x1 and y0 <= point[1] <= y1:
+                hits.append(definition.observed_value)
+        if any(a >= b for a, b in zip(centers, centers[1:])):
+            return None
+        return hits[0] if len(hits) == 1 else None
+    return None

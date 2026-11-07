@@ -41,6 +41,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m unittest discover -s tests -p 'test_default_failure_evidence.py' -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -s tests -p 'test_automatic_failure_sample_admission.py' -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -s tests -p 'test_failure_capture*.py' -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -s tests -p 'test_map_attempt_correlation.py' -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m unittest discover -s tests -p 'test_storage_retention.py' -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tests/test_runtime_environment_diagnostics.py
@@ -48,7 +54,7 @@ jobs:
       - name: Qt production paths and same-input main comparison
         shell: pwsh
         run: |
-          $modules = @('test_diagnostic_log_budget', 'test_diagnostic_noninterference', 'test_client_problems', 'test_client_problem_history', 'test_client_info', 'test_client_diagnostic_integration', 'test_field_failure_samples', 'test_client_capture_full', 'test_client_capture_exclusion', 'test_client_lifecycle_trace.LifecycleTraceTests.test_existing_writer_rotation_has_fixed_total_bound', 'test_client_lifecycle_trace.LifecycleTraceTests.test_interpreter_exits_with_diagnostic_stream_write_blocked', 'test_client_settings', 'test_hotkey_layout_compat', 'test_client_manual_map', 'test_client_manual_map_integration', 'test_client_session', 'test_client_shutdown', 'test_client_notification_geometry', 'test_client_modifier_shortcuts', 'test_client_native_key_state', 'test_client_native_mouse', 'test_client_input_event_freshness', 'test_client_input_recovery', 'test_client_shortcut_delivery', 'test_client_input', 'test_client_onboarding', 'test_client_coordinator', 'test_client_floor_region', 'test_client_map_intent_reset', 'test_client_map_input', 'test_client_live_runtime')
+          $modules = @('test_diagnostic_log_budget', 'test_diagnostic_noninterference', 'test_client_problems', 'test_client_problem_history', 'test_client_info', 'test_client_diagnostic_integration', 'test_field_failure_samples', 'test_client_capture_full', 'test_client_capture_exclusion', 'test_client_lifecycle_trace.LifecycleTraceTests.test_existing_writer_rotation_has_fixed_total_bound', 'test_client_lifecycle_trace.LifecycleTraceTests.test_interpreter_exits_with_diagnostic_stream_write_blocked', 'test_client_settings', 'test_hotkey_layout_compat', 'test_client_manual_map', 'test_client_manual_map_integration', 'test_client_session', 'test_client_shutdown', 'test_client_notification_geometry', 'test_client_modifier_shortcuts', 'test_client_native_key_state', 'test_client_native_mouse', 'test_client_input_event_freshness', 'test_client_input_recovery', 'test_client_shortcut_delivery', 'test_client_input', 'test_client_onboarding', 'test_client_coordinator', 'test_client_floor_region', 'test_client_map_intent_reset', 'test_client_map_input', 'test_client_preparation_diagnostics', 'test_client_map_attempt_diagnostics', 'test_client_map_open_recovery', 'test_client_map_recovery_late_error', 'test_client_live_runtime')
           $failed = @()
           foreach ($module in $modules) {
             python -m unittest $module -v
