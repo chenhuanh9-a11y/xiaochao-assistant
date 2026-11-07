@@ -196,6 +196,34 @@ def assemble_recovery_helper(output, stage, environment_vars, *, kind="recovery"
                 launched=False, nativeParentWaitTested=False)
 
 
+def assemble_game_watcher(output, stage, environment_vars):
+    """Freeze the production-only opt-in watcher; never launch or register it."""
+    inputs = _read(Path(environment_vars['XINGTU_QT_BUILD_INPUTS']))
+    if Path(inputs['sourceRoot']).resolve() != ROOT or inputs.get('product') != '星图':
+        raise ValueError('Game watcher requires this exact production build input')
+    directory = Path(output) / 'game-watcher-freeze'
+    subprocess.run([sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean',
+                    '--distpath', str(directory), '--workpath', str(Path(output) / 'game-watcher-pyinstaller'),
+                    str(TOOLS / 'qt-game-watcher.spec')], cwd=ROOT, env=environment_vars, check=True)
+    executable = directory / 'XingtuGameWatcher.exe'
+    for path in (directory, executable):
+        if path.is_symlink() or (hasattr(path, 'is_junction') and path.is_junction()):
+            raise ValueError('Game watcher output must not contain links')
+    if not executable.is_file() or set(directory.iterdir()) != {executable}:
+        raise ValueError('Game watcher must be one exact standalone executable')
+    manifests = verify_invoker_manifest(executable)
+    row = dict(bytes=executable.stat().st_size, sha256=sha256(executable))
+    destination = Path(stage) / executable.name
+    if destination.exists() or destination.is_symlink():
+        raise ValueError('Game watcher would replace an existing staged path')
+    shutil.copy2(executable, destination)
+    if destination.stat().st_size != row['bytes'] or sha256(destination) != row['sha256']:
+        raise ValueError('Game watcher changed during staging')
+    verify_invoker_manifest(destination)
+    return dict(included=True, executable=executable.name, files={executable.name: row},
+                invokerManifests=manifests, launched=False, startupRegistrationChanged=False)
+
+
 def notice_inputs():
     """Validate vendored, exact upstream texts; the build itself never downloads."""
     index = _read(QT_LICENSE_ROOT / "UPSTREAM-SOURCES.json")
@@ -448,7 +476,17 @@ def _local_file(root, name):
 # version bytes remain included. Exclusion avoids a self-referential hash.
 S1_PRODUCTION_LOCK = "tools/s1-production-release-lock.json"
 S0_RESOURCE_CONTEXTS = ("s0:nightmare", "s0:difficult")
-S1_RESOURCE_CONTEXTS = ("s1:difficulty2", "s1:difficult", "s1:nightmare")
+S1_RESOURCE_CONTEXTS = ("s1:difficult", "s1:nightmare")
+S1_HISTORICAL_MODES = ("difficulty2", "difficult", "nightmare")
+
+
+def s1_inventory_modes(resources):
+    """Projection of an explicit inventory; never directory discovery."""
+    modes = {PurePosixPath(name).parts[2] for name in resources
+             if name.startswith("seasons/s1/") and len(PurePosixPath(name).parts) > 3}
+    if modes - set(S1_HISTORICAL_MODES):
+        raise ValueError("Unknown S1 resource inventory mode")
+    return tuple(mode for mode in S1_HISTORICAL_MODES if mode in modes)
 
 
 def source_payload_fingerprint(source):
@@ -557,6 +595,10 @@ def production_s1_release(resources, resource_version="", *, source=None, bundle
     policies, exact clean source/version and complete S1 byte inventory must
     agree. Historical managed inventories alone never authorize new builds.
     """
+    if bundled_packages:
+        raise ValueError("Production Setup no longer bundles optional author packages; use map-package downloads")
+    if any(name.casefold().startswith("seasons/s1/difficulty2/") for name in resources):
+        raise ValueError("Production Setup cannot include retired S1 difficulty2 resources")
     lock_path = _local_file(ROOT, S1_PRODUCTION_LOCK)
     lock = _read(lock_path)
     if (not isinstance(lock, dict) or set(lock) != {"schema", "enabled", "release"}
@@ -583,6 +625,8 @@ def production_s1_release(resources, resource_version="", *, source=None, bundle
     expected = release["files"]
     if not selected or resource_version != release["resourceVersion"] or selected != expected:
         raise ValueError("Production S1 inventory/version differs from the current source-owned release")
+    if set(s1_inventory_modes(expected)) != {"difficult", "nightmare"}:
+        raise ValueError("Production S1 release must contain exactly the supported runtime modes")
     rows = []
     for name, row in expected.items():
         if (not name.startswith("seasons/s1/") or not isinstance(row, dict)
@@ -591,7 +635,7 @@ def production_s1_release(resources, resource_version="", *, source=None, bundle
                 or not re.fullmatch(r"[a-f0-9]{64}", row["sha256"])):
             raise ValueError("Invalid exact production S1 release inventory")
         rows.append(dict(path="_internal/" + name, **row))
-    # Independently checks normalized scope, all three mode manifests and the
+    # Independently checks normalized scope, reviewed mode manifests and the
     # complete inventory against source-reviewed historical/runtime locks.
     from managed_base_resources import manifest_for_rows
     manifest_for_rows(rows, resource_version)
@@ -610,7 +654,8 @@ def included_resource_contexts(instance, resources, resource_version="", *, sour
     include_s1 = instance in PRIVATE_S1_INSTANCES
     if instance == "production":
         include_s1 = production_s1_release(resources, resource_version, source=source, bundled_packages=bundled_packages) is not None
-    return list(S0_RESOURCE_CONTEXTS + (S1_RESOURCE_CONTEXTS if include_s1 else ()))
+    contexts = tuple("s1:" + mode for mode in s1_inventory_modes(resources)) if include_s1 else ()
+    return list(S0_RESOURCE_CONTEXTS + contexts)
 
 
 def validate_resources(root, inventory, *, bundled_packages=(), instance="client", source=None):
@@ -659,7 +704,7 @@ def validate_resources(root, inventory, *, bundled_packages=(), instance="client
     if instance in PRIVATE_S1_INSTANCES or production_release:
         sys.path.insert(0, str(ROOT / "experiments/qt_quick"))
         from s1_private_resources import validated_s1_resources
-        contract["s1"] = validated_s1_resources(root, required=True)
+        contract["s1"] = validated_s1_resources(root, required=True, modes=s1_inventory_modes(rows))
         if production_release:
             if contract["s1"]["files"] != {name: row for name, row in rows.items() if name.startswith("seasons/")}:
                 raise ValueError("Native S1 validation differs from the production release inventory")
@@ -734,8 +779,10 @@ BUNDLED_AUTHOR_ROOT = "_internal/qt-author-base/"
 
 def selected_bundled_author_paths(resources, packages, instance):
     """Explicit build input, not permission inferred from resources on disk."""
-    if packages and instance not in {"client", "production"} | PRIVATE_S1_INSTANCES:
-        raise ValueError("Bundled author defaults require client, production or an allowlisted S1 private Setup")
+    if packages and instance == "production":
+        raise ValueError("Production Setup no longer bundles optional author packages; use map-package downloads")
+    if packages and instance not in {"client"} | PRIVATE_S1_INSTANCES:
+        raise ValueError("Bundled author defaults require an isolated client or allowlisted S1 private Setup")
     if set(packages) - {"difficult-zhan10"}:
         raise ValueError("Unsupported bundled author package")
     names = sorted(name for name in resources if name.startswith(BUNDLED_AUTHOR_PREFIXES))
@@ -826,7 +873,7 @@ def production_file_projection(stage, resources, *, bundled_author_paths=(), res
         # metadata or a serialized prior success report.
         sys.path.insert(0, str(ROOT / "experiments/qt_quick"))
         from s1_private_resources import validated_s1_resources
-        native = validated_s1_resources(stage / "_internal", required=True)
+        native = validated_s1_resources(stage / "_internal", required=True, modes=s1_inventory_modes(resources))
         if native["files"] != {name: row for name, row in resources.items() if name.startswith("seasons/")}:
             raise ValueError("Staged native S1 contract differs from the production release inventory")
     return families
@@ -956,7 +1003,7 @@ def main(argv=None):
     parser.add_argument("--resource-root", type=Path, help="Exact isolated assets/references root, not its parent")
     parser.add_argument("--resource-inventory", type=Path)
     parser.add_argument("--bundled-package", action="append", choices=("difficult-zhan10",), default=[],
-                        help="Include this explicitly authorized read-only display default in the client or production Setup")
+                        help="Include this explicitly authorized read-only display default in an isolated client/private Setup only")
     parser.add_argument("--iscc", type=Path)
     parser.add_argument("--output-dir", type=Path, help="NEW directory within this checkout's work/ or dist/")
     args = parser.parse_args(argv)
@@ -1005,6 +1052,7 @@ def main(argv=None):
                 resourceInstallationPolicy=RESOURCE_INSTALLATION_POLICY if args.instance == "production" else None,
                 recoveryHelper=dict(included=args.instance == "production", product="star-map-recovery-helper"),
                 importHelper=dict(included=args.instance == "production", product="star-map-import-helper"),
+                gameWatcher=dict(included=args.instance == "production", executable="XingtuGameWatcher.exe"),
                 sourceRoot=str(ROOT), version=version, profileId=LIGHT_PROFILE,
                 resourceRoot=str(args.resource_root.resolve()), resourceVersion=declaration["resourceVersion"],
                 resourceInventorySha256=sha256(args.resource_inventory), resourceFiles=len(resources),
@@ -1044,6 +1092,7 @@ def main(argv=None):
                    resourceInstallationPolicy=RESOURCE_INSTALLATION_POLICY if args.instance == "production" else None,
                    recoveryHelper=dict(included=args.instance == "production", executable="star-map-recovery-helper.exe"),
                    importHelper=dict(included=args.instance == "production", executable="star-map-import-helper.exe"),
+                   gameWatcher=dict(included=args.instance == "production", executable="XingtuGameWatcher.exe"),
                    resourceVersion=declaration["resourceVersion"], authorDisplayPackagesIncluded=args.bundled_package,
                    includedResourceContexts=included_resource_contexts(args.instance, resources,
                        declaration["resourceVersion"], source=source, bundled_packages=args.bundled_package),
@@ -1074,6 +1123,7 @@ def main(argv=None):
     if args.instance == "production":
         plan["recoveryHelper"] = assemble_recovery_helper(output, stage, environment_vars)
         plan["importHelper"] = assemble_recovery_helper(output, stage, environment_vars, kind="import")
+        plan['gameWatcher'] = assemble_game_watcher(output, stage, environment_vars)
     plan["qtClosure"] = prune_unneeded_qt(stage)
     plan["notices"] = collect_notices(stage, plan["qtClosure"])
     plan["frozenVerification"] = verify_frozen(stage, resources, [p.name for p in qt.glob("*.qml")], product,
@@ -1123,7 +1173,11 @@ def main(argv=None):
     if not setup.is_file():
         raise ValueError("Inno Setup completed without the expected Setup artifact")
     plan["installer"] = dict(fileName=setup.name, bytes=setup.stat().st_size, sha256=sha256(setup))
-    plan["recipes"] = {p.name: sha256(p) for p in (Path(__file__), TOOLS / "qt-client.spec", TOOLS / "qt-recovery-helper.spec", TOOLS / "qt-import-helper.spec", TOOLS / "qt-client.iss")}
+    recipes = [Path(__file__), TOOLS / "qt-client.spec", TOOLS / "qt-recovery-helper.spec",
+               TOOLS / "qt-import-helper.spec", TOOLS / "qt-game-watcher.spec", TOOLS / "qt-client.iss"]
+    if args.instance == 'production':
+        recipes.extend((TOOLS / 'qt-game-watcher-lifecycle.iss', TOOLS / 'qt-uninstall-data.iss'))
+    plan["recipes"] = {p.name: sha256(p) for p in recipes}
     plan["source"] = source_identity(args.source_commit)
     plan["buildCompleted"] = True
     record_path.write_text(json.dumps(plan, indent=2), encoding="utf-8")

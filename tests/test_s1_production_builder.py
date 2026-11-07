@@ -1,7 +1,7 @@
 """Inactive builder gates and generated projection, synthetic bytes only.
 
 No build, Setup, installation or application launch. The positive fixture uses
-real temporary Git identities, real three-mode inventory parsing and real
+real temporary Git identities, real two-mode inventory parsing and real
 managed-base repair, with synthetic S0/package and typed-provider stand-ins.
 """
 from contextlib import redirect_stdout
@@ -18,6 +18,7 @@ from unittest.mock import patch
 
 import build_qt_client as build
 import managed_base_resources as managed
+from s1_resource_retirement import SOURCE_VERSION, TARGET_VERSION, projected_release
 import s1_candidate_purpose as purpose
 import test_s1_private_packaging as private_fixture
 import test_qt_installer_projection as projection_fixture
@@ -35,8 +36,16 @@ class ProductionS1BuilderTests(unittest.TestCase):
         fixture = private_fixture.PrivatePackagingTests()
         fixture.root, fixture.resources = self.root, self.resources
         self.registry = fixture.packs()
+        # Preserve all three source modes before making the production projection.
+        # These are synthetic bytes, not newly approved real production geometry.
+        self.source_s1 = {p.relative_to(self.resources).as_posix():
+            dict(bytes=p.stat().st_size, sha256=build.sha256(p))
+            for p in (self.resources / 'seasons/s1').rglob('*') if p.is_file()}
+        shutil.rmtree(self.resources / "seasons/s1/difficulty2")
         self.inventory = fixture.inventory()
         self.declaration = json.loads(self.inventory.read_text())
+        self.declaration['resourceVersion'] = TARGET_VERSION
+        self.inventory.write_text(json.dumps(self.declaration))
         self.rows = self.declaration['files']
         self.s1 = {name: row for name, row in self.rows.items() if name.startswith('seasons/')}
         self.source_root = self.root / 'source'; self.source_root.mkdir()
@@ -54,8 +63,8 @@ class ProductionS1BuilderTests(unittest.TestCase):
         self.patch(build, 'ROOT', self.source_root)
         self.source = build.source_identity(self.git('rev-parse', 'HEAD'))
         self.fingerprint = build.source_payload_fingerprint(self.source)
-        self.managed_lock = ('fixture', tuple(('_internal/' + name, row['bytes'], row['sha256'])
-                                              for name, row in sorted(self.s1.items())))
+        self.managed_lock = (SOURCE_VERSION, tuple(('_internal/' + name, row['bytes'], row['sha256'])
+                                              for name, row in sorted(self.source_s1.items())))
 
     def patch(self, target, name, value):
         item = patch.object(target, name, value)
@@ -73,7 +82,7 @@ class ProductionS1BuilderTests(unittest.TestCase):
         self.lock_path.write_text(json.dumps(self.lock, sort_keys=True))
 
     def enable_fixture(self, *, managed_policy=True):
-        self.lock.update(enabled=True, release=dict(resourceVersion='fixture',
+        self.lock.update(enabled=True, release=dict(resourceVersion=TARGET_VERSION,
             sourcePayloadSha256=self.fingerprint,
             versionSha256=build.sha256(self.source_root / 'version.json'), files=self.s1))
         # Source-owned published evidence is synthetic here, never cloud history.
@@ -88,7 +97,7 @@ class ProductionS1BuilderTests(unittest.TestCase):
         if managed_policy:
             self.patch(managed, '_REVIEWED_S1_BASE_RELEASES', (self.managed_lock,))
 
-    def check(self, rows=None, version='fixture', source=None):
+    def check(self, rows=None, version=TARGET_VERSION, source=None):
         return build.production_s1_release(self.rows if rows is None else rows, version,
                                            source=self.source if source is None else source)
 
@@ -126,18 +135,33 @@ class ProductionS1BuilderTests(unittest.TestCase):
         wrong_size = copy.deepcopy(self.rows); wrong_size[next(iter(self.s1))]['bytes'] += 1
         mixed = copy.deepcopy(self.rows); mixed[next(iter(self.s1))]['sha256'] = 'b'*64
         empty = {name: row for name, row in self.rows.items() if not name.startswith('seasons/')}
-        for rows, version in ((missing, 'fixture'), (extra, 'fixture'), (changed, 'fixture'),
-                              (wrong_size, 'fixture'), (mixed, 'fixture'), (empty, 'fixture'),
+        for rows, version in ((missing, TARGET_VERSION), (extra, TARGET_VERSION), (changed, TARGET_VERSION),
+                              (wrong_size, TARGET_VERSION), (mixed, TARGET_VERSION), (empty, TARGET_VERSION),
                               (self.rows, 'retired-private'), (self.rows, ''), (self.rows, None)):
             with self.subTest(version=version, count=len(rows)), self.assertRaises(ValueError):
                 self.check(rows, version)
         # Historical recovery authority does not grant current build eligibility.
-        old_rows = copy.deepcopy(self.s1)
+        old_rows = copy.deepcopy(self.source_s1)
         old_rows[next(iter(old_rows))]['sha256'] = 'c'*64
         old_lock = ('retired-private', tuple(('_internal/' + n, r['bytes'], r['sha256']) for n, r in old_rows.items()))
         with patch.object(managed, '_REVIEWED_S1_BASE_RELEASES', (self.managed_lock, old_lock)):
-            with self.assertRaisesRegex(ValueError, 'current source-owned release'):
+            with self.assertRaisesRegex(ValueError, 'current source-owned release|retired S1 difficulty2'):
                 self.check(dict(empty, **old_rows), 'retired-private')
+
+    def test_production_projection_is_derived_from_complete_historical_source(self):
+        self.enable_fixture()
+        version, projected = projected_release(*self.managed_lock)
+        self.assertEqual(version, TARGET_VERSION)
+        expected = frozenset(('_internal/' + name, row['bytes'], row['sha256'])
+                             for name, row in self.s1.items())
+        self.assertEqual(projected, expected)
+        self.assertEqual({path.split('/')[3] for path, _, _ in self.managed_lock[1]},
+                         {'difficulty2', 'difficult', 'nightmare'})
+        self.assertEqual(self.check()['resourceVersion'], TARGET_VERSION)
+        # A free-standing two-mode lock is not source review or migration evidence.
+        with patch.object(managed, '_REVIEWED_S1_BASE_RELEASES', ((TARGET_VERSION, tuple(expected)),)):
+            with self.assertRaisesRegex(managed.ManagedBaseResourceError, 'incomplete-reviewed'):
+                self.check()
 
     def test_source_policy_and_runtime_policy_must_independently_agree(self):
         self.enable_fixture(managed_policy=False)
@@ -150,7 +174,7 @@ class ProductionS1BuilderTests(unittest.TestCase):
         self.assertEqual(result[1], self.rows)
         self.assertEqual(result[4]['s1']['files'], self.s1)
         self.assertEqual(result[4]['productionS1Release']['sourceCommit'], self.source['commit'])
-        self.assertEqual(build.included_resource_contexts('production', self.rows, 'fixture', source=self.source),
+        self.assertEqual(build.included_resource_contexts('production', self.rows, TARGET_VERSION, source=self.source),
                          list(build.S0_RESOURCE_CONTEXTS + build.S1_RESOURCE_CONTEXTS))
         self.assertIs(purpose._PRODUCTION_S1_CANDIDATE_ROLLOUT_ENABLED, False)
 
@@ -208,7 +232,7 @@ class ProductionS1BuilderTests(unittest.TestCase):
         (stage / '星图.exe').write_bytes(b'synthetic-never-executed')
         with patch('client_providers.build_engine_factories', return_value=self.registry):
             include, report = build.write_production_files_include(stage, self.rows, output,
-                                                  resource_version='fixture', source=self.source)
+                                                  resource_version=TARGET_VERSION, source=self.source)
         active_s1 = {'_internal/' + name for name in self.s1}
         self.assertTrue(active_s1 <= set(report['families']['base']))
         self.assertFalse(active_s1 & set(report['installedFiles']))
@@ -242,17 +266,17 @@ class ProductionS1BuilderTests(unittest.TestCase):
         data = path.read_bytes()
         path.write_bytes(b'changed')
         with self.assertRaisesRegex(ValueError, 'Staged S1 bytes'):
-            build.production_file_projection(stage, self.rows, resource_version='fixture', source=self.source)
+            build.production_file_projection(stage, self.rows, resource_version=TARGET_VERSION, source=self.source)
         path.unlink()
         with self.assertRaisesRegex(ValueError, 'exact inventory'):
-            build.production_file_projection(stage, self.rows, resource_version='fixture', source=self.source)
+            build.production_file_projection(stage, self.rows, resource_version=TARGET_VERSION, source=self.source)
         path.write_bytes(data)
         extra = stage / '_internal/seasons/s1/nightmare/references/extra.json'; extra.write_bytes(b'extra')
         with self.assertRaises(ValueError):
-            build.production_file_projection(stage, self.rows, resource_version='fixture', source=self.source)
+            build.production_file_projection(stage, self.rows, resource_version=TARGET_VERSION, source=self.source)
         extra.unlink(); path.unlink(); path.symlink_to(self.resources / name)
         with self.assertRaisesRegex(ValueError, 'links'):
-            build.production_file_projection(stage, self.rows, resource_version='fixture', source=self.source)
+            build.production_file_projection(stage, self.rows, resource_version=TARGET_VERSION, source=self.source)
 
 
 if __name__ == '__main__':

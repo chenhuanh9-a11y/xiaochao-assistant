@@ -53,12 +53,12 @@ class GenericAuthorConsumerTests(unittest.TestCase):
         return display.S1AuthorDisplays(self.root, SimpleNamespace(root=root, mode='nightmare',
             catalog=self.catalog, adapters=self.adapters), season=season, fallback=fallback)
 
-    def test_generic_difficulty2_registered_mode(self):
+    def test_generic_difficulty2_cannot_create_runtime_display_adapter(self):
         self.row['mode'] = 'difficulty2'
         runtime = display.S1AuthorDisplays(self.root, SimpleNamespace(
             root=self.root/'seasons/s1/difficulty2', mode='difficulty2', catalog=self.catalog,
             adapters=self.adapters))
-        self.assertIn(self.profile, runtime.profiles)
+        self.assertNotIn(self.profile, runtime.profiles)
         context = BrowseContext('difficulty2', self.root, None, None, None, (), {}, season='s1')
         self.assertEqual(display.append_browse_profile(context).profiles[0].profile_id, self.profile)
 

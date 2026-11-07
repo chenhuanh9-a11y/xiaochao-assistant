@@ -523,6 +523,9 @@ class ClientCoordinator(QObject):
         season = state.get("season", "s0")
         if self._pending_context or state.get("contextPending"):
             return ((mode, "context-pending"), "正在切换地图资源，请稍后再打开地图")
+        from season_context import is_retired_mode, RETIRED_MODE_MESSAGE
+        if is_retired_mode(mode, season):
+            return ((season, mode, "retired-mode"), RETIRED_MODE_MESSAGE)
         if not CONTEXTS[context_key(mode, season)].registered:
             return ((season, mode, "season-resources-unregistered"), f"{season_label(season)} 地图资源尚未登记，暂不能开始识别")
         if self.resources.busy or self.resources.pendingKind or state.get("resourceLocked"):

@@ -140,7 +140,9 @@ def editor_library_usable(root):
 def bundled_author_root():
     # Source tools never discover installed resources; frozen defaults stay
     # beside program code and are never seeded into user-owned directories.
-    return RESOURCE_ROOT / "qt-author-base" if FROZEN else None
+    # Production now requires separately imported author packs. An old Setup's
+    # residual default directory cannot silently restore a removed builtin.
+    return RESOURCE_ROOT / "qt-author-base" if FROZEN and not PRODUCTION else None
 
 
 def runtime_paths(root=None):

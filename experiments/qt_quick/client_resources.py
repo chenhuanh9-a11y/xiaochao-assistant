@@ -24,6 +24,7 @@ import star_map_import as importer
 import author_package_management as manager
 import client_resource_recovery as recovery
 from client_resource_errors import error_text as _error_text, error_fields, error_category
+from resource_compatibility import compatibility_message
 
 
 def package_cancelled(error):
@@ -44,6 +45,8 @@ def package_problem(error, action, *, online=False, recovery_required=False):
         title, summary = "上次图包操作还没完成", "暂时不能继续导入或删除图包。请点击“恢复记录”，按提示完成上次操作。"
     elif action == "refresh-after-write":
         summary = "图包文件已经处理完，但还没确认是否可用。请点击“核对状态”再检查一次。"
+    elif compatibility_message(code, fields["details"]) is not None:
+        summary = compatibility_message(code, fields["details"])
     elif category == "network":
         summary = "暂时连接不上图包下载服务，这次下载没有完成。请检查网络，稍后重试。"
     elif category == "url":
@@ -167,10 +170,18 @@ class ResourceService(QObject):
         self._import_completion_message = ""
         self._import_package_id = ""
         self._helper_popup_request = ""
+        self._startup_compatibility_notice = ""
+
+    def setStartupCompatibilityReport(self, report):
+        """Display verified startup outcome, without rescanning or authorizing changes."""
+        self._startup_compatibility_notice = (
+            "S1 普通模式已停用。旧普通底模仍被历史图包引用，或有本地改动，本次已保留；困难与噩梦资源已核对。"
+            if isinstance(report, dict) and report.get('status') == 'retirement-deferred' else "")
+        self.changed.emit()
 
     packageRows = Property("QVariantList", lambda s: s._rows, notify=changed)
     busy = Property(bool, lambda s: s._busy, notify=changed)
-    message = Property(str, lambda s: "\n".join(filter(None, (s._import_notice, s._recovery_notice, s._message))), notify=changed)
+    message = Property(str, lambda s: "\n".join(filter(None, (s._startup_compatibility_notice, s._import_notice, s._recovery_notice, s._message))), notify=changed)
     operationStage = Property(str, lambda s: ("cancelling" if s._cancel.is_set() else s._kind) if s._busy else "", notify=changed)
     pendingKind = Property(str, lambda s: s._kind if s._pending else "", notify=changed)
     canCancel = Property(bool, lambda s: s._can_cancel, notify=changed)
@@ -745,6 +756,8 @@ class ResourceService(QObject):
             # Keep the final feedback pending until the actual-state scan succeeds.
             self._import_completion_message = (("这个图包已经安装，无需重复导入。" if duplicate else
                 "图包安装完成，可以使用了。") if kind == "install" else "")
+            if kind == 'install' and result.get('inactiveLayers'):
+                self._import_completion_message += " S1 普通层已停用并保留作者文件，仅启用核对通过的困难/噩梦层。"
             self._message = ("图包已移除，备份已保留。" if kind == "remove" else
                              "这个图包已经安装，正在核对当前状态…" if duplicate else
                              "图包文件已安装，正在核对是否可用…")

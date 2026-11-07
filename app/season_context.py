@@ -10,11 +10,22 @@ import re
 from season_catalog import SEASON_DEFINITIONS
 
 MODES = ("nightmare", "difficult")
-RUNTIME_MODES = (*MODES, "difficulty2")
+RUNTIME_MODES = MODES
+KNOWN_MODES = (*MODES, "difficulty2")
+RETIRED_MODE_MESSAGE = "S1 普通模式已退役，无法开始识别。历史设置和资源已保留，请选择困难或噩梦模式。"
 
 
 def modes_for_season(season):
-    return RUNTIME_MODES if season == "s1" else MODES
+    return RUNTIME_MODES
+
+
+def known_modes_for_season(season):
+    """Includes retired identities for preferences and resource maintenance only."""
+    return KNOWN_MODES if season == "s1" else MODES
+
+
+def is_retired_mode(mode, season="s0"):
+    return season == "s1" and mode == "difficulty2"
 
 
 def validate_catalog(definitions):
@@ -32,8 +43,8 @@ def validate_catalog(definitions):
         if not isinstance(name, str) or len(name) > 80 or any(ord(c) < 32 for c in name):
             raise ValueError("Invalid season display name")
         resources = row["resources"]
-        if (not isinstance(resources, dict) or set(resources) != set(modes_for_season(season))
-                or any(value not in ("legacy-s0", "native-s1", "unregistered") for value in resources.values())
+        if (not isinstance(resources, dict) or set(resources) != set(known_modes_for_season(season))
+                or any(value not in ("legacy-s0", "native-s1", "unregistered", "retired") for value in resources.values())
                 or any(value == "legacy-s0" and season != "s0" or value == "native-s1" and season != "s1"
                        for value in resources.values())):
             raise ValueError("Season catalog cannot grant unregistered resource capability")
@@ -79,7 +90,7 @@ class SeasonContext:
 
     def __post_init__(self):
         normalize_season(self.season)
-        if self.mode not in modes_for_season(self.season):
+        if self.mode not in known_modes_for_season(self.season):
             raise ValueError(f"Unknown game mode: {self.mode}")
 
     @property
@@ -96,7 +107,7 @@ class SeasonContext:
 
 
 CONTEXTS = MappingProxyType({context_key(mode, season): SeasonContext(season, mode)
-                             for season in SEASONS for mode in modes_for_season(season)})
+                             for season in SEASONS for mode in known_modes_for_season(season)})
 
 
 def selected_profile(values, mode=None, season=None, default=""):

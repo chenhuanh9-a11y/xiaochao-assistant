@@ -41,7 +41,7 @@ def declarations(base, mode):
 class S1FloorContractTests(unittest.TestCase):
     def test_modes_and_floor_ids_are_contextual_and_s0_exports_are_unchanged(self):
         self.assertNotIn("difficulty2", modes_for_season("s0"))
-        self.assertIn("difficulty2", modes_for_season("s1"))
+        self.assertNotIn("difficulty2", modes_for_season("s1"))
         self.assertEqual(S0_FLOOR_NAMES, {-1: "B1", 1: "1", 2: "2"})
         self.assertIsNone(floor_contract("difficulty2", season="s0"))
         for mode in modes_for_season("s1"):
@@ -211,15 +211,19 @@ class S1SettingsAndAdapterTests(unittest.TestCase):
                 self.assertTrue(service.setValue("gameMode", "difficulty2"))  # Temporary draft pair.
                 self.assertFalse(service.saveFields(["gameMode"]))
                 self.assertEqual(path.read_bytes(), original)
+                self.assertFalse(service.setValue("gameSeason", "s1"))  # Retired pair is not a repair target.
+                self.assertEqual(path.read_bytes(), original)
+                self.assertTrue(service.setValue("gameMode", "difficult"))
                 self.assertTrue(service.setValue("gameSeason", "s1"))
                 self.assertTrue(service.saveFields(["gameSeason", "gameMode"]))
                 self.wait(lambda: not service.busy)
                 saved = json.loads(path.read_text("utf8"))
-                self.assertEqual((saved["gameSeason"], saved["gameMode"]), ("s1", "difficulty2"))
+                self.assertEqual((saved["gameSeason"], saved["gameMode"]), ("s1", "difficult"))
                 self.assertEqual(saved["privateUnknown"], "retained")
                 self.assertTrue(service.setValue("gameSeason", "s0"))
-                self.assertFalse(service.saveFields(["gameSeason"]))
-                self.assertEqual(json.loads(path.read_text("utf8"))["gameSeason"], "s1")
+                self.assertTrue(service.saveFields(["gameSeason"]))
+                self.wait(lambda: not service.busy)
+                self.assertEqual(json.loads(path.read_text("utf8"))["gameSeason"], "s0")
             finally:
                 service.shutdown()
 
@@ -304,9 +308,9 @@ class S1SettingsAndAdapterTests(unittest.TestCase):
         capture = Mock()
         capture.snapshot = {}
         runtime = LiveRuntime(engine_factories=Registry(), capture_provider=capture)
-        self.assertTrue(runtime.dispatch("set_context", dict(season="s1", mode="difficulty2"))["success"])
+        self.assertTrue(runtime.dispatch("set_context", dict(season="s1", mode="difficult"))["success"])
         state = runtime.snapshot()
-        self.assertTrue(state["savedFrameCapabilities"]["difficulty2"]["available"])
+        self.assertTrue(state["savedFrameCapabilities"]["difficult"]["available"])
         self.assertFalse(state["liveEngineAvailable"])
         self.assertEqual(state["liveUnavailableReason"], "s1-floor-controls-unregistered")
         self.assertIn("rank_saved_frame", state["availableCommands"])

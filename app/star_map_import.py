@@ -560,8 +560,9 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None, *
         raise ImportRejected("unsupported-client-compatibility")
     rows = _rows(metadata.get("files"))
     if generic:
-        from generic_author_package import dependency_rows
-        dependencies = dependency_rows(metadata.get("requiresFiles"), season)
+        from generic_author_package import receipt_rows, validate_import_modes
+        _, dependencies = receipt_rows(metadata)
+        validate_import_modes(metadata, rows)
         required = set()  # Exact trusted base closure checked by the V2 validator.
     elif season == "s1":
         from s1_author_package import dependency_rows, required_dependencies
@@ -585,7 +586,9 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None, *
     supported_versions = SUPPORTED_DISPLAY_VERSIONS | ({f"1.0.{n}" for n in range(8, 16)} if season == "s1" else set())
     if not generic and (version.get("displayVersion") not in supported_versions or build is None or int(build[1]) > 65535):
         raise ImportRejected("unsupported-client-version")
-    for row in dependencies.values():
+    from generic_author_package import effective_dependencies
+    live_dependencies = effective_dependencies(dependencies, season) if generic else dependencies
+    for row in live_dependencies.values():
         dependency = _target(root, row["path"])
         missing = not dependency.exists()
         actual_bytes = dependency.stat().st_size if dependency.is_file() else None
@@ -687,7 +690,8 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None, *
         receipt_digest = installed_digest
     _check_other_package_constraints(root, package_id, rows, replacements)
     return {**({"schema": metadata["schema"], "authorName": display_document["authorName"],
-                "displayName": display_document["displayName"]} if generic else
+                "displayName": display_document["displayName"],
+                "inactiveLayers": display_document.get('inactiveLayers', [])} if generic else
                ({"schema": metadata["schema"], "sourceVersion": metadata["sourceVersion"]} if season == "s1" else {})),
             "season": season, "packageId": package_id, "revision": 1, "files": list(rows.values()),
             "requiresFiles": list(dependencies.values()),
@@ -1096,6 +1100,9 @@ def _verified_installed_package_locked(root, package_id, expected_sha256=None, *
         receipt = _json(_target(root, f"work/map-packages/{package_id}.json").read_bytes())
         # A complete author payload still depends on the exact installed base.
         # Dependencies are compatibility constraints, never ownership grants.
+        if is_generic_profile(package_id):
+            from generic_author_package import effective_dependencies
+            dependencies = effective_dependencies(dependencies, receipt['season'])
         for row in (*rows.values(), *dependencies.values()):
             if cancelled and cancelled():
                 return dict(status='unverified')

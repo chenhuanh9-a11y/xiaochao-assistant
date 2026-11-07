@@ -5,11 +5,32 @@ import json
 import re
 import stat
 
-S1_MODES = ("difficulty2", "difficult", "nightmare")
+S1_MODES = ("difficulty2", "difficult", "nightmare")  # Historical read scope, not runtime authority.
+S1_RUNTIME_MODES = ("difficult", "nightmare")
 S1_INTERFACES = dict(identityPack="references/map-pack.json",
     typedIndex="references/shared-structure-index.json", versionBindings="references/structure-version-bindings.json",
     coordinatePack="references/coordinate-pack.json", neutralDisplay="references/structure-display.json",
     identityEntries="references/entries", authorCatalog="references/author-catalog.json")
+
+
+def private_profile_modes(profile):
+    """Read an isolated profile's exact declaration; never grant capabilities.
+
+    Old private profiles predate context declarations and used all three packs.
+    The caller still validates every directory, schema and inventoried byte.
+    """
+    declared = profile.get("includedResourceContexts")
+    if declared is None:
+        return S1_MODES
+    if (type(declared) is not list or any(type(key) is not str for key in declared)
+            or len(declared) != len(set(declared))):
+        raise ValueError("Invalid private resource context declaration")
+    s0 = {"s0:nightmare", "s0:difficult"}
+    active = {"s1:" + mode for mode in S1_RUNTIME_MODES}
+    historical = {"s1:" + mode for mode in S1_MODES}
+    if set(declared) not in (s0 | active, s0 | historical):
+        raise ValueError("Incomplete private S1 resource context declaration")
+    return S1_MODES if "s1:difficulty2" in declared else S1_RUNTIME_MODES
 
 
 def _no_links(path):
@@ -34,12 +55,15 @@ def _native_path(root, name):
     return path
 
 
-def validated_s1_resources(root, *, required=False):
+def validated_s1_resources(root, *, required=False, modes=S1_RUNTIME_MODES):
     """Exact native subtree gate shared by build, first-run seed and self-check.
 
     No discovery outside this root, capture, listeners, learning or user writes.
     Geometry availability never grants S1 automatic live authorization.
     """
+    modes = tuple(modes)
+    if not modes or len(set(modes)) != len(modes) or set(modes) - set(S1_MODES):
+        raise ValueError("Invalid explicit S1 resource mode scope")
     root = Path(root).absolute()
     _no_links(root)
     root = root.resolve()
@@ -47,16 +71,16 @@ def validated_s1_resources(root, *, required=False):
     _no_links(seasons)
     if not seasons.exists():
         if required:
-            raise ValueError("S0/S1 private Setup requires all three S1 native packs")
+            raise ValueError("S0/S1 Setup requires all declared S1 native packs")
         return dict(included=False, files={}, providers={})
     if (not seasons.is_dir() or {p.name for p in seasons.iterdir()} != {"s1"}
             or not (seasons / "s1").is_dir()
-            or {p.name for p in (seasons / "s1").iterdir()} != set(S1_MODES)):
+            or {p.name for p in (seasons / "s1").iterdir()} != set(modes)):
         raise ValueError("Only the complete exact seasons/s1 native mode roots may be seeded")
     files = {}
     from s1_native_resources import MANIFEST, MODE_LAYOUTS, S1_FLOORS, registration
     import numpy as np
-    for mode in S1_MODES:
+    for mode in modes:
         mode_root = seasons / "s1" / mode
         _no_links(mode_root)
         for path in mode_root.rglob("*"):
@@ -110,13 +134,19 @@ def validated_s1_resources(root, *, required=False):
             path = mode_root / name
             files[f"seasons/s1/{mode}/{name}"] = dict(bytes=path.stat().st_size,
                 sha256=hashlib.sha256(path.read_bytes()).hexdigest())
-    # Reuse the actual typed loaders, canvas/version bindings and candidate scope.
+    # Historical modes retain registration/schema/hash verification above, but
+    # cannot instantiate a retired runtime provider. Only selected active modes
+    # are prepared, so explicit historical-only inspection is fully read-only.
     from client_providers import build_engine_factories
-    registry = build_engine_factories(root)
-    providers = registry.prepare(season="s1")
-    if (set(providers) != set(S1_MODES) or not all(row.get("available") is True
-            and row.get("prepared") is True and row.get("season") == "s1" and row.get("mode") == mode
-            for mode, row in providers.items())):
+    active = tuple(mode for mode in modes if mode in S1_RUNTIME_MODES)
+    providers = {}
+    if active:
+        registry = build_engine_factories(root)
+        for mode in active:
+            providers[mode] = registry.prepare_context(mode, season="s1").get(mode, {})
+    if not all(row.get("available") is True and row.get("prepared") is True
+            and row.get("season") == "s1" and row.get("mode") == mode
+            for mode, row in providers.items()):
         raise ValueError("S1 typed/version provider contract rejected: " + json.dumps(providers))
     if any(row.get("liveReady") is not False or row.get("liveAuthorization") is not False for row in providers.values()):
         raise ValueError("S1 private resources cannot authorize automatic live operation")

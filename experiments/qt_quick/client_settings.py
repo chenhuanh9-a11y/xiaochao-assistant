@@ -20,7 +20,7 @@ from PySide6.QtGui import QGuiApplication, QKeyEvent
 from client_paths import RESOURCE_ROOT as ROOT, WORK_ROOT, runtime_paths
 if str(ROOT / "app") not in sys.path:
     sys.path.insert(0, str(ROOT / "app"))
-from season_context import CONTEXTS, MODES, RUNTIME_MODES, context_key, normalize_season, selected_profile, season_options
+from season_context import CONTEXTS, MODES, KNOWN_MODES, context_key, normalize_season, selected_profile, season_options
 from client_control_layout import load_layout, preset_layout, validate_layout
 from floor_control_region import normalized_region
 from client_manual_map import MANUAL_MAP_PICKER_DEFAULT_HOTKEY, MANUAL_PICKER_ACTION, SELECTION_MODES
@@ -62,7 +62,7 @@ def _validate(key, value):
             raise ValueError(f"需要 {low:g}–{high:g} 之间的数值")
         value = float(value)
     elif key == "gameMode":
-        if value not in RUNTIME_MODES:
+        if value not in KNOWN_MODES:
             raise ValueError("未知地图模式")
     elif key == "gameSeason":
         value = normalize_season(value)
@@ -530,6 +530,12 @@ class SettingsService(QObject):
             if key in ("gameMode", "gameSeason") and not self._mode_change_allowed(value, key):
                 return False
             proposal = {**self._draft, key: value}
+            from season_context import is_retired_mode, RETIRED_MODE_MESSAGE
+            if (key in ("gameMode", "gameSeason") and self._draft.get(key) != value
+                    and is_retired_mode(proposal["gameMode"], proposal["gameSeason"])):
+                self._message = RETIRED_MODE_MESSAGE
+                self.changed.emit()
+                return False
             if key in ("hotkey", "actionHotkeys"):
                 _validate_hotkeys(proposal, self._raw.get("actionHotkeys"))
             if self._draft.get(key) == value and key not in self._invalid:
@@ -621,6 +627,9 @@ class SettingsService(QObject):
         self._write_error = ""
         self._message = ("已读取；无效字段保留原值，只有编辑过的设置会写入：" + "、".join(invalid)
                          if invalid else "已读取设置" if data is not None else "尚未保存设置；编辑后保存")
+        from season_context import is_retired_mode, RETIRED_MODE_MESSAGE
+        if is_retired_mode(values["gameMode"], values["gameSeason"]):
+            self._message = RETIRED_MODE_MESSAGE
         self.changed.emit()
         return True
 

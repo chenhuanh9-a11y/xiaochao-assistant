@@ -18,6 +18,7 @@ CHINESE_SHA256 = "e0b0b350e2245f3c5e65586dfe43d574f6e7f06f2261149aba284954b3fc9a
 INSTALLER_ONLY_FILES = {
     "tools/qt-client.iss", "tools/build_qt_client.py",
     "tools/rebuild_qt_installer.py", "tools/INSTALLER_LANGUAGE.md",
+    "tools/qt-game-watcher-lifecycle.iss", "tools/qt-uninstall-data.iss",
 }
 
 
@@ -85,6 +86,23 @@ def validate_managed_runtime_reuse(stage, prior, source):
                 raise ValueError("Helper payload missing or changed; perform a full freeze") from error
             if not matches:
                 raise ValueError("Helper payload missing or changed; perform a full freeze")
+    watcher = prior.get('gameWatcher')
+    executable = 'XingtuGameWatcher.exe'
+    inventory = watcher.get('files') if isinstance(watcher, dict) else None
+    if (not isinstance(inventory, dict) or set(inventory) != {executable}
+            or watcher.get('included') is not True or watcher.get('executable') != executable
+            or executable not in projection.get('families', {}).get('program', [])):
+        raise ValueError('Game watcher inventory/projection missing; perform a full freeze')
+    row = inventory[executable]
+    try:
+        path = build._local_file(stage, executable)
+        matches = (isinstance(row, dict) and type(row.get('bytes')) is int
+                   and isinstance(row.get('sha256'), str) and path.stat().st_size == row['bytes']
+                   and build.sha256(path) == row['sha256'])
+    except (OSError, ValueError) as error:
+        raise ValueError('Game watcher missing or changed; perform a full freeze') from error
+    if not matches:
+        raise ValueError('Game watcher missing or changed; perform a full freeze')
     return compiled
 
 
@@ -190,8 +208,9 @@ def main():
         bundled_author_paths=author_paths)
     for kind in ("recovery", "import"):
         build.verify_invoker_manifest(stage / ("star-map-" + kind + "-helper.exe"))
+    build.verify_invoker_manifest(stage / 'XingtuGameWatcher.exe')
     include, record["fileProjection"] = build.write_production_files_include(stage, record["resources"], output,
-        resource_version=record["resourceVersion"], bundled_author_paths=author_paths)
+        resource_version=record["resourceVersion"], bundled_author_paths=author_paths, source=source)
     record_path = output / "build-record.json"
     record_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
     instance = record["installerInstance"]

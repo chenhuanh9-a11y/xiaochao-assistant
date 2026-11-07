@@ -70,6 +70,7 @@ class PrivatePackagingTests(unittest.TestCase):
                 season='s1', mode=mode, liveGaps=['s1-floor-controls-unregistered'])
         registry = Mock()
         registry.prepare.return_value = reports
+        registry.prepare_context.return_value = reports
         return registry
 
     def mutate_manifest(self, mode, callback):
@@ -91,11 +92,53 @@ class PrivatePackagingTests(unittest.TestCase):
     def test_exact_three_packs_use_real_registration_then_existing_typed_provider(self):
         registry = self.packs()
         with patch('client_providers.build_engine_factories', return_value=registry) as factory:
-            result = native.validated_s1_resources(self.resources, required=True)
+            result = native.validated_s1_resources(self.resources, required=True, modes=native.S1_MODES)
         self.assertEqual(len(result['files']), 561)
         factory.assert_called_once_with(self.resources.resolve())
-        registry.prepare.assert_called_once_with(season='s1')
+        self.assertEqual([call.args[0] for call in registry.prepare_context.call_args_list], ['difficult', 'nightmare'])
+        registry.prepare.assert_not_called()
         self.assertTrue(all(row['available'] and not row['liveReady'] for row in result['providers'].values()))
+
+    def test_current_default_requires_only_active_modes_and_never_prepares_retired(self):
+        registry = self.packs()
+        shutil.rmtree(self.resources / 'seasons/s1/difficulty2')
+        with patch('client_providers.build_engine_factories', return_value=registry):
+            result = native.validated_s1_resources(self.resources, required=True)
+        self.assertEqual(set(result['providers']), {'difficult', 'nightmare'})
+        self.assertFalse(any('/difficulty2/' in name for name in result['files']))
+        self.assertEqual([call.args[0] for call in registry.prepare_context.call_args_list], ['difficult', 'nightmare'])
+
+    def test_historical_only_verification_never_constructs_runtime_provider(self):
+        self.packs()
+        for mode in native.S1_RUNTIME_MODES:
+            shutil.rmtree(self.resources / 'seasons/s1' / mode)
+        with patch('client_providers.build_engine_factories', side_effect=AssertionError('retired engine')):
+            result = native.validated_s1_resources(self.resources, required=True, modes=('difficulty2',))
+        self.assertTrue(result['files'])
+        self.assertEqual(result['providers'], {})
+        path = next((self.resources / 'seasons/s1/difficulty2/assets').rglob('*.png'))
+        path.write_bytes(b'bad historical byte')
+        with self.assertRaisesRegex(ValueError, 'size/hash mismatch'):
+            native.validated_s1_resources(self.resources, required=True, modes=('difficulty2',))
+
+    def test_default_rejects_historical_extra_mode_and_invalid_explicit_scope(self):
+        self.packs()
+        with self.assertRaisesRegex(ValueError, 'complete exact'):
+            native.validated_s1_resources(self.resources, required=True)
+        for modes in ((), ('unknown',), ('difficult', 'difficult')):
+            with self.subTest(modes=modes), self.assertRaisesRegex(ValueError, 'explicit S1'):
+                native.validated_s1_resources(self.resources, modes=modes)
+
+    def test_production_rejects_retired_and_optional_author_before_lock_read(self):
+        with patch.object(build, '_read', side_effect=AssertionError('must reject before lock')):
+            with self.assertRaisesRegex(ValueError, 'retired S1 difficulty2'):
+                build.production_s1_release({'seasons/s1/difficulty2/native-map-manifest.json': {}})
+            with self.assertRaisesRegex(ValueError, 'no longer bundles'):
+                build.production_s1_release({}, bundled_packages=('difficult-zhan10',))
+            with self.assertRaisesRegex(ValueError, 'no longer bundles'):
+                build.selected_bundled_author_paths({}, ('difficult-zhan10',), 'production')
+            with self.assertRaisesRegex(ValueError, 'no longer bundles'):
+                build.production_file_projection(self.root, {}, bundled_author_paths=('author.png',))
 
     def test_display_registration_is_optional_exact_inventoried_resource(self):
         registry = self.packs()
@@ -104,7 +147,7 @@ class PrivatePackagingTests(unittest.TestCase):
             row = self.write(self.resources / 'seasons/s1' / mode / name, b'{"fixture":true}')
             self.mutate_manifest(mode, lambda data, row=row: data['files'].append(dict(path=name, **row)))
         with patch('client_providers.build_engine_factories', return_value=registry):
-            result = native.validated_s1_resources(self.resources, required=True)
+            result = native.validated_s1_resources(self.resources, required=True, modes=native.S1_MODES)
         self.assertEqual(len(result['files']), 564)
         self.assertTrue(all(not row['liveReady'] and not row['liveAuthorization'] for row in result['providers'].values()))
 
@@ -115,26 +158,26 @@ class PrivatePackagingTests(unittest.TestCase):
         row = self.write(path, b'{"fixture":true}')
         with patch('client_providers.build_engine_factories') as factory:
             with self.assertRaisesRegex(ValueError, 'exactly match'):
-                native.validated_s1_resources(self.resources)
+                native.validated_s1_resources(self.resources, modes=native.S1_MODES)
             self.mutate_manifest('difficult', lambda data: data['files'].append(dict(path=name, **row)))
             path.write_bytes(b'{"fixture":false}')
             with self.assertRaisesRegex(ValueError, 'size/hash mismatch'):
-                native.validated_s1_resources(self.resources)
+                native.validated_s1_resources(self.resources, modes=native.S1_MODES)
             factory.assert_not_called()
 
     def test_absent_optional_s1_is_compatible_but_private_profile_requires_it(self):
-        self.assertFalse(native.validated_s1_resources(self.resources)['included'])
-        with self.assertRaisesRegex(ValueError, 'requires all three'):
-            native.validated_s1_resources(self.resources, required=True)
+        self.assertFalse(native.validated_s1_resources(self.resources, modes=native.S1_MODES)['included'])
+        with self.assertRaisesRegex(ValueError, 'requires all declared'):
+            native.validated_s1_resources(self.resources, required=True, modes=native.S1_MODES)
 
     def test_incomplete_or_unknown_season_directory_is_rejected_before_provider(self):
         (self.resources / 'seasons/s1/difficult').mkdir(parents=True)
         with patch('client_providers.build_engine_factories') as factory:
             with self.assertRaisesRegex(ValueError, 'complete exact'):
-                native.validated_s1_resources(self.resources)
+                native.validated_s1_resources(self.resources, modes=native.S1_MODES)
             (self.resources / 'seasons/s2').mkdir()
             with self.assertRaisesRegex(ValueError, 'complete exact'):
-                native.validated_s1_resources(self.resources)
+                native.validated_s1_resources(self.resources, modes=native.S1_MODES)
             factory.assert_not_called()
 
     def test_corrupt_hash_and_undeclared_file_fail_before_provider(self):
@@ -144,11 +187,11 @@ class PrivatePackagingTests(unittest.TestCase):
         path.write_bytes(b'corruption')
         with patch('client_providers.build_engine_factories') as factory:
             with self.assertRaisesRegex(ValueError, 'size/hash mismatch'):
-                native.validated_s1_resources(self.resources)
+                native.validated_s1_resources(self.resources, modes=native.S1_MODES)
             path.write_bytes(original)
             self.write(self.resources / 'seasons/s1/difficulty2/references/user-settings.json')
             with self.assertRaisesRegex(ValueError, 'exactly match'):
-                native.validated_s1_resources(self.resources)
+                native.validated_s1_resources(self.resources, modes=native.S1_MODES)
             factory.assert_not_called()
 
     def test_manifest_cannot_claim_settings_or_escape_mode_root(self):
@@ -157,7 +200,7 @@ class PrivatePackagingTests(unittest.TestCase):
         row = self.write(self.resources / 'seasons/s1/difficulty2' / extra)
         self.mutate_manifest('difficulty2', lambda data: data['files'].append(dict(path=extra, **row)))
         with self.assertRaisesRegex(ValueError, 'producer file scope'):
-            native.validated_s1_resources(self.resources)
+            native.validated_s1_resources(self.resources, modes=native.S1_MODES)
         for value in ('../outside.json', 'references\\map-pack.json', 'C:/outside.json'):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 native._native_path(self.resources, value)
@@ -165,18 +208,18 @@ class PrivatePackagingTests(unittest.TestCase):
     def test_typed_failure_and_live_claim_do_not_pass_packaging(self):
         registry = self.packs()
         with patch('client_providers.build_engine_factories', return_value=registry):
-            registry.prepare.return_value['difficulty2']['available'] = False
+            registry.prepare_context.return_value['difficult']['available'] = False
             with self.assertRaisesRegex(ValueError, 'typed/version provider'):
-                native.validated_s1_resources(self.resources)
-            registry.prepare.return_value['difficulty2'].update(available=True, liveReady=True)
+                native.validated_s1_resources(self.resources, modes=native.S1_MODES)
+            registry.prepare_context.return_value['difficult'].update(available=True, liveReady=True)
             with self.assertRaisesRegex(ValueError, 'automatic live'):
-                native.validated_s1_resources(self.resources)
+                native.validated_s1_resources(self.resources, modes=native.S1_MODES)
 
     def test_numpy_producer_version_must_match(self):
         self.packs()
         self.mutate_manifest('difficulty2', lambda data: data.update(numpyVersion='unvalidated'))
         with self.assertRaisesRegex(ValueError, 'NumPy runtime'):
-            native.validated_s1_resources(self.resources)
+            native.validated_s1_resources(self.resources, modes=native.S1_MODES)
 
     def test_builder_new_profile_accepts_exact_s1_and_others_reject_it(self):
         registry = self.packs()
@@ -187,7 +230,7 @@ class PrivatePackagingTests(unittest.TestCase):
                     result = build.validate_resources(self.resources, inventory, instance=instance)
                     self.assertTrue(result[4]['s1']['included'])
             for instance in ('client', 'layout-preview', 'production'):
-                with self.subTest(instance=instance), self.assertRaisesRegex(ValueError, 'only the exact S1|inventory/version differs'):
+                with self.subTest(instance=instance), self.assertRaisesRegex(ValueError, 'only the exact S1|inventory/version differs|retired S1 difficulty2'):
                     build.validate_resources(self.resources, inventory, instance=instance)
 
     def test_production_projection_cannot_silently_classify_seasons_as_program(self):
@@ -202,6 +245,7 @@ class PrivatePackagingTests(unittest.TestCase):
         source = self.root / 'program'
         (source / '_internal/references').mkdir(parents=True)
         shutil.move(str(self.resources / 'seasons'), source / '_internal/seasons')
+        self.write(source / "_internal/installation-profile.json", json.dumps(dict(installerInstance=dict(id="s1-playtest"))).encode())
         self.write(source / 'work/user-state.json')
         self.write(source / 'ui-settings.json')
         target = self.root / 'work/seed'
@@ -268,7 +312,7 @@ class PrivatePackagingTests(unittest.TestCase):
             (source / '_internal/installation-profile.json').write_text(json.dumps(
                 dict(installerInstance=dict(id=instance))))
             with self.subTest(instance=instance), patch('client_paths.WORK_ROOT', self.root / 'work'):
-                with self.assertRaisesRegex(ValueError, 'requires all three'):
+                with self.assertRaisesRegex(ValueError, 'requires all declared'):
                     seed_sandbox.seed(source, target)
             self.assertFalse(target.exists())
 
@@ -281,7 +325,7 @@ class PrivatePackagingTests(unittest.TestCase):
             with self.subTest(instance=instance), patch.object(sys, 'argv', ['client', '--self-check', '--verify-resources']), patch.object(client, 'FROZEN', True), patch.object(client, 'PRODUCTION', False), patch.object(client, 'RESOURCE_ROOT', self.root), patch.object(client, 'WORK_ROOT', self.root / 'work'), patch.object(client, 'QGuiApplication', side_effect=AssertionError('GUI')), patch('client_providers.build_engine_factories', return_value=registry), patch.object(native, 'validated_s1_resources', side_effect=ValueError('required packs rejected')) as verify:
                 with self.assertRaisesRegex(ValueError, 'required packs rejected'):
                     client.main()
-                verify.assert_called_once_with(self.root, required=True)
+                verify.assert_called_once_with(self.root, required=True, modes=native.S1_MODES)
 
     @staticmethod
     def selected_guard(source, symbols):

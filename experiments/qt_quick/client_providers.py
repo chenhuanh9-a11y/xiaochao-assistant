@@ -20,7 +20,7 @@ if APP not in sys.path:
     sys.path.insert(0, APP)
 
 
-from season_context import CONTEXTS, SEASONS, RUNTIME_MODES, modes_for_season, context_key, normalize_season, SeasonContext
+from season_context import CONTEXTS, SEASONS, RUNTIME_MODES, modes_for_season, known_modes_for_season, is_retired_mode, context_key, normalize_season, SeasonContext
 
 
 @dataclass(frozen=True)
@@ -141,13 +141,13 @@ class EngineFactories(dict):
     def _initial_reports(self):
         return {context_key(mode, season): dict(available=False, prepared=not CONTEXTS[context_key(mode, season)].registered,
                     season=season, mode=mode, contextKey=context_key(mode, season),
-                    reason="resource-validation-pending" if CONTEXTS[context_key(mode, season)].registered else f"season-resources-unavailable:{season}")
-                for season in SEASONS for mode in modes_for_season(season)}
+                    reason="retired-mode" if is_retired_mode(mode, season) else "resource-validation-pending" if CONTEXTS[context_key(mode, season)].registered else f"season-resources-unavailable:{season}")
+                for season in SEASONS for mode in known_modes_for_season(season)}
 
     def capabilities(self, season="s0"):
         season = normalize_season(season)
         with self._lock:
-            return {mode: copy.deepcopy(self._reports[context_key(mode, season)]) for mode in modes_for_season(season)}
+            return {mode: copy.deepcopy(self._reports[context_key(mode, season)]) for mode in known_modes_for_season(season)}
 
     def context_capabilities(self):
         with self._lock:
@@ -195,7 +195,7 @@ class EngineFactories(dict):
         Full inventory/self-check callers keep using prepare(). The client's
         existing context-change scheduler prepares another mode when selected.
         """
-        if mode not in modes_for_season(season):
+        if mode not in known_modes_for_season(season):
             raise ValueError("unknown resource preparation context")
         if not (cancelled and (cancelled.is_set() if hasattr(cancelled, "is_set") else cancelled())):
             try:
@@ -218,6 +218,8 @@ class EngineFactories(dict):
         validates its declaration before cache lookup; no directory discovery.
         """
         context = SeasonContext(season=season, mode=mode)
+        if is_retired_mode(mode, season):
+            raise ProviderUnavailable("retired-mode")
         if not context.registered:
             raise ProviderUnavailable(f"season-resources-unavailable:{season}")
         if season == "s1":

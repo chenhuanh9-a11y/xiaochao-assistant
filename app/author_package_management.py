@@ -217,7 +217,10 @@ def managed_author_packages_snapshot(install_root, *, cancelled=None, inspect_re
                 package = InstalledAuthorPackage(root / '_internal', package_id)
                 modes = {row['mode'] for row in package.document['layers']}
                 item.update(title=package.display_name, season=package.document['season'],
-                            mode=next(iter(modes)) if len(modes) == 1 else 'both')
+                            mode=next(iter(modes)) if len(modes) == 1 else 'both' if modes else 'retired',
+                            inactiveLayerCount=len(package.document.get('inactiveLayers', [])),
+                            compatibilityNotice=('S1 普通层已停用，已保留作者文件；其余层按当前底模核对。'
+                                if package.document.get('inactiveLayers') else ''))
             except (OSError, ValueError, KeyError, TypeError):
                 pass
         adoption = None
