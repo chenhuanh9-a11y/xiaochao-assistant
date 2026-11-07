@@ -158,6 +158,10 @@ def inspect_author_package_removal(install_root, package_id) -> dict:
     root = Path(os.path.abspath(install_root))
     _no_links(root)
     _pending_upgrade(root)
+    if is_generic_profile(package_id):
+        import author_resource_snapshots as snapshots
+        if snapshots.managed(root, package_id):
+            return snapshots.inspect_deactivation(root, package_id)
     rows, receipt_sha = _owned_inventory(root, package_id)
     if not rows:
         raise ImportRejected('author-package-not-managed')
@@ -219,7 +223,7 @@ def managed_author_packages_snapshot(install_root, *, cancelled=None, inspect_re
                 item.update(title=package.display_name, season=package.document['season'],
                             mode=next(iter(modes)) if len(modes) == 1 else 'both' if modes else 'retired',
                             inactiveLayerCount=len(package.document.get('inactiveLayers', [])),
-                            compatibilityNotice=('S1 普通层已停用，已保留作者文件；其余层按当前底模核对。'
+                            compatibilityNotice=('部分作者层已停用并保留；仅启用与当前底模核对通过的层。'
                                 if package.document.get('inactiveLayers') else ''))
             except (OSError, ValueError, KeyError, TypeError):
                 pass
@@ -231,6 +235,14 @@ def managed_author_packages_snapshot(install_root, *, cancelled=None, inspect_re
         _check_cancelled(cancelled)
         state = verified_installed_package(root, package_id, cancelled=cancelled)
         item.update(state)
+        if state.get('layerStates'):
+            labels = {'available': '可用', 'retired-mode': '模式已停用', 'display-missing': '图片缺失',
+                      'display-damaged': '图片损坏或被改动', 'base-unavailable': '底模不可用',
+                      'base-missing': '底模文件缺失', 'base-incompatible': '底模版本不符',
+                      'binding-incompatible': '坐标绑定不符'}
+            item['compatibilityNotice'] = '\n'.join(
+                f"{row['season'].upper()} {row['mode']} {row['mapId']} {row['floor']}：{labels.get(row['reason'], row['reason'])}"
+                for row in state['layerStates']) + '\n历史版本保留，不自动清理。'
         if not inspect_removal:
             result.append(item)
             continue
@@ -286,6 +298,9 @@ def remove_author_package_live(install_root, package_id, *, application_idle=Fal
         if plan['planSha256'] != expected_plan_sha256:
             raise ImportRejected('author-files-changed-reinspect-required')
         _check_cancelled(cancelled)
+        if plan.get('storageFormat'):
+            import author_resource_snapshots as snapshots
+            return snapshots.deactivate_locked(root, plan, cancelled=cancelled)
         parent = _target(root, 'work/map-package-removals')
         parent.mkdir(parents=True, exist_ok=True)
         _no_links(parent)

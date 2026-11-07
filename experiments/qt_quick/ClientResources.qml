@@ -28,7 +28,7 @@ Item {
     readonly property bool operationPending: archiveDialog.visible || resourceService.busy || resourceService.pendingKind !== "" || (packageManager && (packageManager.busy || packageManager.pendingKind !== ""))
     readonly property bool recoveryPending: resourceService.recoveryRequired || (packageManager && packageManager.recoveryRequired)
     readonly property var visibleResourceRows: resourceService.packageRows.map(function(row) {
-        if (resourceService.inventoryVerified || (row.status !== "bundled" && row.status !== "installed")) return row
+        if (resourceService.inventoryVerified || (row.status !== "bundled" && row.status !== "installed" && row.status !== "partially-compatible" && row.status !== "incompatible")) return row
         // Previous successful checks are presentation history, not current
         // content evidence. Drop their verified counts as well as the label.
         return {packageId: row.packageId, title: row.title, builtin: row.builtin === true || row.status === "bundled",
@@ -65,13 +65,13 @@ Item {
     }
 
     function stateLabel(status) {
-        const labels = {"declared": "已登记，内容待核对", "history-unchecked": "有历史记录，范围待核对", "installed": "已安装，可以使用", "not-installed": "未安装", "incomplete": "文件缺失或有改动",
+        const labels = {"declared": "已登记，内容待核对", "history-unchecked": "有历史记录，范围待核对", "installed": "已安装，可以使用", "partially-compatible": "部分层可用", "incompatible": "当前无兼容层", "not-installed": "未安装", "incomplete": "文件缺失或有改动",
             "unmanaged": "已有文件，暂时无法确认来源", "unverified": "还没确认是否可用", "recovery-required": "上次操作还没完成", "managed-remnants": "有旧图包文件可清理", "bundled": "内置默认资源"}
         return labels[status] || "需要重新核对"
     }
     function stateDetail(row) {
         if (row.status === "declared" || row.status === "history-unchecked")
-            return row.builtin ? "内置资源清单已读取，文件内容尚未核对。" : "仅显示安装记录；点击检查并删除后，会先核对实际文件范围，再请你确认。"
+            return row.builtin ? "内置资源清单已读取，文件内容尚未核对。" : row.storageFormat ? "仅显示作者版本记录；可核对状态或停用，所有文件和历史版本都会保留。" : "仅显示安装记录；点击检查并删除后，会先核对实际文件范围，再请你确认。"
         if (row.builtin) return row.status === "bundled"
             ? "安装包自带 · " + row.mapCount + " 份图 · " + row.layerCount + " 层，可在对应赛季和模式的图库浏览。"
             : "内置资源有缺失或改动，请重新获取完整安装包。"
@@ -103,7 +103,7 @@ Item {
         }
         Label {
             Layout.fillWidth: true
-            text: "此处显示内置资源与已安装的图包。导入目标：" + backend.season.toUpperCase() + "。S1 作者包仅接受已核验的地图和逐层坐标，缺少作者 B4 时使用内置底图。" + "删除只清理已核对归属的图包和历史副本；官方基础资源、自定义路线与未知文件会保留。"
+            text: "此处显示内置资源与已安装的图包。导入目标：" + backend.season.toUpperCase() + "。S1 作者包仅接受已核验的地图和逐层坐标，缺少作者 B4 时使用内置底图。" + "旧式图包删除只清理已核对归属的文件；版本化作者图只停用并保留历史版本。官方基础资源、自定义路线与未知文件会保留。"
             wrapMode: Text.Wrap; color: "#526785"; font.pixelSize: 12
         }
         ColumnLayout {
@@ -177,8 +177,8 @@ Item {
                     }
                     AppButton {
                         objectName: "removePackageButton-" + modelData.packageId
-                        text: modelData.canInspectRemoval ? "检查并删除" : "删除图包"; enabled: !!panel.packageManager && (!!modelData.canRemove || !!modelData.canInspectRemoval) && !panel.operationPending && !panel.recoveryPending
-                        Accessible.name: "删除图包 " + modelData.title
+                        text: modelData.storageFormat ? "停用作者图" : modelData.canInspectRemoval ? "检查并删除" : "删除图包"; enabled: !!panel.packageManager && (!!modelData.canRemove || !!modelData.canInspectRemoval) && !panel.operationPending && !panel.recoveryPending
+                        Accessible.name: (modelData.storageFormat ? "停用作者图 " : "删除图包 ") + modelData.title
                         onClicked: panel.removePackage(modelData.packageId)
                     }
                 }

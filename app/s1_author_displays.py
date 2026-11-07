@@ -34,7 +34,15 @@ class InstalledAuthorPackage:
         import star_map_import as api
         api._no_links(Path(resource_root))
         self.root=Path(resource_root).resolve()
-        owned,deps,_=api._installed_inventory(self.root.parent,package_id)
+        self.snapshot = None
+        if is_generic_profile(package_id):
+            import author_resource_snapshots as snapshots
+            if snapshots.managed(self.root.parent, package_id):
+                self.snapshot = snapshots.SnapshotPackage(self.root.parent, package_id)
+        if self.snapshot is not None:
+            owned, deps = self.snapshot.owned, self.snapshot.dependencies
+        else:
+            owned,deps,_=api._installed_inventory(self.root.parent,package_id)
         if not owned:
             raise FileNotFoundError('s1-author-not-installed')
         self._inventory={**deps,**owned}
@@ -43,22 +51,24 @@ class InstalledAuthorPackage:
         self.bindings_path = protocol.bindings_path(package_id) if protocol else bindings_path(package_id)
         raw=self._read(self.bindings_path)
         self.layer_dependencies = {}
-        self.document=(protocol.validate_bindings(raw,owned,deps,self._read,root=self.root.parent,
+        self.document=(self.snapshot.document(self.layer_dependencies) if self.snapshot is not None else protocol.validate_bindings(raw,owned,deps,self._read,root=self.root.parent,
                          dependency_paths=self.layer_dependencies)
             if protocol else validate_bindings(raw,owned,deps,self._read))
         if self.document["profileId"] != package_id:
             raise ValueError("s1-author-binding-context-mismatch")
         self.author_name = self.document["authorName"] if is_generic_profile(package_id) else "爱吃醋"
         self.display_name = self.document["displayName"] if is_generic_profile(package_id) else title(package_id)
-        self.registration_sha=hashlib.sha256(raw).hexdigest()
+        self.registration_sha=hashlib.sha256(raw + (self.snapshot.activation_sha.encode() if self.snapshot else b'')).hexdigest()
 
     def _path(self, relative):
         import star_map_import as api
         if not relative.startswith('_internal/'):
             raise ValueError('s1-author-resource-path-invalid')
-        return api._target(self.root,relative[len('_internal/'):])
+        return self.snapshot.path(relative) if self.snapshot else api._target(self.root,relative[len('_internal/'):])
 
     def _read(self, relative):
+        if self.snapshot is not None:
+            return self.snapshot.read(relative)
         from generic_author_base import check_browse_cancelled
         check_browse_cancelled()
         row=self._inventory.get(relative.casefold())
@@ -114,10 +124,11 @@ class S1AuthorDisplays:
             self.errors[PROFILE_ID]='s1-author-resource-root-mismatch'
             return
         for profile_id in (*(PROFILE_IDS if season == "s1" else ()), *profile_ids(self.root)):
-            receipt=api._target(self.root.parent,f'work/map-packages/{profile_id}.json')
-            if not receipt.exists():
-                continue
             try:
+                receipt=api._target(self.root.parent,f'work/map-packages/{profile_id}.json')
+                import author_resource_snapshots as snapshots
+                if not receipt.exists() and not (is_generic_profile(profile_id) and snapshots.managed(self.root.parent, profile_id)):
+                    continue
                 package=InstalledAuthorPackage(self.root, profile_id)
                 doc=package.document
                 if doc['season'] != season:

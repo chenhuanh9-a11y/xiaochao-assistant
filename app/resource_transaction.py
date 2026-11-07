@@ -159,6 +159,7 @@ def assert_resources_ready(root):
         ('pending-base-repair.json', 'base-recovery-required'),
         ('pending-additions.json', 'additions-recovery-required'),
         ('pending-removal.json', 'removal-recovery-required'),
+        ('pending-author-snapshot.json', 'author-snapshot-recovery-required'),
     ):
         if _safe(root / 'work/map-packages' / name).exists():
             raise ResourceTransactionError(code, details={'pendingFile': 'work/map-packages/' + name})
