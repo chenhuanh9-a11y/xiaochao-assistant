@@ -67,10 +67,11 @@ class RuntimeExclusionTests(unittest.TestCase):
             self.assertIs(exe.call_args.kwargs["uac_admin"], True)
             verify.assert_called_once_with(executable.name)
             self.assertIs(collect.call_args.args[0], executable)
+            collected = {(source, Path(target).as_posix()) for source, target in calls["datas"]}
             for name in ("wechat.png", "alipay.png"):
                 path = root / "assets/support" / name
                 self.assertTrue(path.is_file())
-                self.assertIn((str(path), "assets/support"), calls["datas"])
+                self.assertIn((str(path), "assets/support"), collected)
             self.assertIn((str(root / "experiments/qt_quick/tutorial-chapters.json"), "."), calls["datas"])
             self.assertTrue(any(target == "tutorial" for _, target in calls["datas"]))
             self.assertTrue({"tkinter", "_tkinter", "PIL.ImageTk"} <= set(calls["excludes"]))
