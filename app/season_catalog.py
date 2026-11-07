@@ -8,5 +8,5 @@ SEASON_DEFINITIONS = (
     {"id": "s0", "number": 0, "name": "厄运之女", "resources": {
         "nightmare": "legacy-s0", "difficult": "legacy-s0"}},
     {"id": "s1", "number": 1, "name": "磷光症", "resources": {
-        "nightmare": "native-s1", "difficult": "native-s1", "difficulty2": "native-s1"}},
+        "nightmare": "native-s1", "difficult": "native-s1", "difficulty2": "retired"}},
 )

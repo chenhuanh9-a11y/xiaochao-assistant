@@ -6,7 +6,7 @@ start of their reason; arbitrary text (including filenames) never classifies it.
 from __future__ import annotations
 
 import re
-import unicodedata
+from resource_compatibility import safe_dependency_path
 
 
 def error_text(value):
@@ -33,11 +33,7 @@ def safe_error_details(value):
         return {}
     result = {}
     path = value.get("path")
-    if (isinstance(path, str) and len(path.encode("utf-8", errors="replace")) <= 240
-            and path.startswith("_internal/references/")
-            and not any(char in "\\:<>\"|?*" or unicodedata.category(char).startswith("C") for char in path)
-            and all(part and part not in {".", ".."} and not part.endswith((" ", "."))
-                    for part in path.split("/"))):
+    if safe_dependency_path(path):
         result["path"] = path
     for name in ("expectedBytes", "actualBytes"):
         item = value.get(name)

@@ -216,8 +216,8 @@ def _append_browse_profile(context, profile_id):
     from types import MappingProxyType
     from map_resource_context import ProfileSummary
     from map_resource_model import ResourceMap, ResourceVariant
-    from season_context import modes_for_season
-    if context.mode not in modes_for_season(context.season) or context.error:
+    from season_context import known_modes_for_season
+    if context.mode not in known_modes_for_season(context.season) or context.error:
         return context
     try:
         package=InstalledAuthorPackage(context.root, profile_id)

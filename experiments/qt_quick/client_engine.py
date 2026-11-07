@@ -21,7 +21,7 @@ if APP not in sys.path:
     sys.path.insert(0, APP)
 
 from alignment_core_v2 import AlignmentCoreV2
-from season_context import normalize_season, context_key, RUNTIME_MODES, modes_for_season
+from season_context import normalize_season, context_key, RUNTIME_MODES, modes_for_season, known_modes_for_season, is_retired_mode
 
 
 INITIAL_IDENTITY_BUDGET_SECONDS = 1.85
@@ -233,6 +233,8 @@ class EngineAdapter:
                                   for mode in modes_for_season(self._context["season"])})
             if self._context["season"] != "s0" and self._provider_registry is None:
                 capabilities = {mode: dict(available=False, reason=f"season-resources-unavailable:{self._context['season']}") for mode in modes_for_season(self._context["season"])}
+            if is_retired_mode(self._context["mode"], self._context["season"]):
+                capabilities[self._context["mode"]] = dict(available=False, prepared=True, reason="retired-mode")
             for mode, report in capabilities.items():
                 report.update(season=self._context["season"], mode=mode,
                               contextKey=context_key(mode, self._context["season"]))
@@ -265,7 +267,7 @@ class EngineAdapter:
             context["cycleId"] = supplied["roundId"]
         if "cycleId" in supplied and "roundId" not in supplied:
             context["roundId"] = supplied["cycleId"]
-        if context["mode"] not in modes_for_season(context["season"]):
+        if context["mode"] not in known_modes_for_season(context["season"]):
             raise ValueError("unsupported mode")
         context["season"] = normalize_season(context["season"])
         if context["season"] != self._context["season"] and "profileId" not in supplied:
@@ -331,6 +333,8 @@ class EngineAdapter:
                 else:
                     self._core.close(reason=action)
                 return result(success=True, reason=action, snapshot=self.snapshot())
+        if is_retired_mode(context["mode"], context["season"]):
+            return result(reason="retired-mode", unavailable=True)
         try:
             if action == "inspect_engine_resources" and self._provider_registry is not None:
                 prepare_context = getattr(self._provider_registry, "prepare_context", None)

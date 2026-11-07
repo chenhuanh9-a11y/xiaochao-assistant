@@ -25,6 +25,8 @@ CANDIDATE = "_internal/managed-base-resources"
 STATE = "work/map-packages/managed-base-state.json"
 PENDING = "work/map-packages/pending-base-repair.json"
 JOURNAL_SCHEMA = "xingtu-base-repair-v1"
+RETIREMENT_JOURNAL_SCHEMA = "xingtu-base-repair-retirement-v2"
+ACTIVE_JOURNAL_SCHEMAS = {JOURNAL_SCHEMA, RETIREMENT_JOURNAL_SCHEMA}
 HISTORY = "work/map-packages/base-repairs"
 RETIRED_SCHEMA = "xingtu-base-repair-retired-v1"
 MAX_RETIRED_RECORDS = 16
@@ -76,6 +78,14 @@ def _s1_release_catalogue(releases):
             raise ManagedBaseResourceError("incomplete-reviewed-s1-release-policy")
         result.append((version, frozenset(rows)))
         paths.update(row[0] for row in rows)
+    from s1_resource_retirement import projected_release
+    for version, rows in tuple(result):
+        projection = projected_release(version, rows)
+        if projection is not None:
+            if projection[0] in versions:
+                raise ManagedBaseResourceError("duplicate-s1-retirement-target")
+            result.append(projection)
+            versions.add(projection[0])
     return tuple(result), frozenset(paths)
 
 
@@ -301,6 +311,11 @@ def _package_constraints(root, *, prospective_base_root=None):
             if package not in unrecorded:
                 unrecorded.append(package)
         else:
+            if is_generic_profile(package):
+                from generic_author_package import effective_dependencies
+                # Ownership still covers the full imported author payload. Only
+                # source-retired base dependencies cease constraining runtime.
+                package_dependencies = effective_dependencies(package_dependencies, 's1')
             dependencies.extend((package, row) for row in package_dependencies.values())
     return owned, dependencies, unrecorded
 
@@ -336,6 +351,14 @@ def _legacy_s0_previous(root, candidate):
     return {}
 
 
+def _retirement_rows(source_version, target_version, previous, candidate):
+    from s1_resource_retirement import retirement_inventory
+    select = lambda rows: frozenset((row['path'], row['bytes'], row['sha256']) for row in rows.values()
+                                    if row['path'].startswith('_internal/seasons/s1/'))
+    values = retirement_inventory(source_version, target_version, select(previous), select(candidate))
+    return {path.casefold(): dict(path=path, bytes=size, sha256=digest) for path, size, digest in values}
+
+
 def plan_managed_base_resources(install_root):
     """Read-only complete preflight. Call under a resource lease for a stable view."""
     root = Path(os.path.abspath(install_root))
@@ -357,7 +380,8 @@ def plan_managed_base_resources(install_root):
                                   if not optional_author_sidecar(row["path"])], original["resourceVersion"])
     inventory = _rows(manifest["files"])
     state = files._target(root, STATE)
-    previous = _rows(_manifest(state)["files"]) if state.exists() else {}
+    previous_manifest = _manifest(state) if state.exists() else None
+    previous = _rows(previous_manifest["files"]) if previous_manifest else {}
     if not state.exists():
         previous = _legacy_s0_previous(root, inventory)
     # A V2 closure needs source/index/typed metadata, which may be the very
@@ -373,14 +397,24 @@ def plan_managed_base_resources(install_root):
     if candidate_issues:
         return dict(status="blocked", manifest=manifest, files=manifest["files"],
                     changes=[], issues=candidate_issues, retainedLegacyPackages=[])
+    retirement = (_retirement_rows(previous_manifest['resourceVersion'], manifest['resourceVersion'], previous, inventory)
+                  if previous_manifest else {})
     owned, dependencies, unrecorded = _package_constraints(root, prospective_base_root=candidate_root)
     # Do not drop S1 ownership while leaving retired bytes active. Removal,
     # rename or S1-to-S0 downgrade needs a separately reviewed retirement
     # transaction; until then block the whole preflight without changing files.
     issues = [_issue(row, _actual(files._target(root, row["path"])), "s1-base-retirement-unreviewed")
               for key, row in previous.items()
-              if key.startswith("_internal/seasons/s1/") and key not in inventory]
+               if key.startswith("_internal/seasons/s1/") and key not in inventory and key not in retirement]
     changes = []
+    retirement_deferred = []
+    retired_dependencies = {row['path'].casefold() for _package, row in dependencies}
+    for key, row in retirement.items():
+        actual = _actual(files._target(root, row['path']))
+        if key in owned or key in retired_dependencies or unrecorded:
+            retirement_deferred.append(_issue(row, actual, 'retired-mode-still-required'))
+        elif actual['status'] != 'missing' and not _same(actual, row):
+            retirement_deferred.append(_issue(row, actual, 'retired-mode-local-content-preserved'))
     for key, row in inventory.items():
         actual = _actual(files._target(root, row["path"]))
         if _same(actual, row):
@@ -404,9 +438,24 @@ def plan_managed_base_resources(install_root):
         actual = desired or _actual(files._target(root, row["path"]))
         if not _same(actual, row):
             issues.append(_issue(row, actual, "installed-package-dependency-conflict", packageId=package))
+    # A whole-mode retirement is deferred, not partially executed, when a
+    # package or changed local bytes still needs preservation. A clean unchanged
+    # active plane may run with the old ownership state intact. Never use this
+    # exception to skip repair or a mismatch in a supported mode.
+    if retirement and retirement_deferred and not issues and not changes:
+        return dict(status='retirement-deferred', manifest=manifest, files=manifest['files'], changes=[], issues=[],
+                    retainedLegacyPackages=unrecorded, retirementDeferred=retirement_deferred)
+    if retirement_deferred:
+        issues.extend(retirement_deferred)
+    if retirement and not retirement_deferred:
+        changes.extend(dict(new=None, old=row) for row in retirement.values()
+                       if files._target(root, row['path']).exists())
     return dict(status="blocked" if issues else "repair-needed" if changes else "healthy",
                 manifest=manifest, files=manifest["files"], changes=changes, issues=issues,
-                retainedLegacyPackages=unrecorded)
+                retainedLegacyPackages=unrecorded,
+                **({'retirement': dict(sourceVersion=previous_manifest['resourceVersion'],
+                                       targetVersion=manifest['resourceVersion'], files=list(retirement.values()))}
+                   if retirement else {}))
 
 
 def _write_journal(directory, journal):
@@ -482,9 +531,10 @@ def _cleanup_inventory(directory, journal):
     bytes remain blocked instead of guessing ownership after process loss.
     """
     expected = {}
-    if journal["schema"] == JOURNAL_SCHEMA:
+    if journal["schema"] in ACTIVE_JOURNAL_SCHEMAS:
         for entry in journal["entries"]:
-            expected["new/" + entry["new"]["path"]] = (entry["new"], entry["newIdentity"])
+            if entry['new'] is not None:
+                expected["new/" + entry["new"]["path"]] = (entry["new"], entry["newIdentity"])
             if entry["old"] is not None:
                 expected["backup/" + entry["old"]["path"]] = (entry["old"], entry["oldIdentity"])
     allowed_dirs = set()
@@ -571,7 +621,7 @@ def _finish_cleanup(root, directory, journal, *, prune=True):
     _ensure_pending(root, transaction_id)
     try:
         payloads, directories = _cleanup_inventory(directory, journal)
-        if journal["schema"] == JOURNAL_SCHEMA:
+        if journal["schema"] in ACTIVE_JOURNAL_SCHEMAS:
             if journal["status"] not in {"committed", "rolled-back"}:
                 raise _cleanup_error(HISTORY + "/" + transaction_id, "transaction-not-terminal")
             if journal.get("cleanupStatus") != "retiring":
@@ -583,7 +633,7 @@ def _finish_cleanup(root, directory, journal, *, prune=True):
             transaction._directory_sync(path.parent)
         for path, identity in directories:
             _remove_empty_directory(path, identity)
-        if journal["schema"] == JOURNAL_SCHEMA:
+        if journal["schema"] in ACTIVE_JOURNAL_SCHEMAS:
             if transaction._read_json(files._target(directory, "journal.json")) != journal:
                 raise _cleanup_error(HISTORY + "/" + transaction_id + "/journal.json", "journal-changed")
             compact = dict(schema=RETIRED_SCHEMA, transactionId=transaction_id,
@@ -606,30 +656,32 @@ def _rollback(root, directory, journal):
     # Preflight the entire restoration; changed unknown files remain untouched.
     for entry in journal["entries"]:
         new, old = entry["new"], entry["old"]
-        path = files._target(root, new["path"])
+        row = new or old
+        path = files._target(root, row["path"])
         if old is not None and transaction._matches(path, old, entry["oldIdentity"]):
             continue
-        if old is not None and not transaction._matches(files._target(directory, "backup/" + new["path"]), old, entry["oldIdentity"]):
-            blocked.append(new["path"])
-        if path.exists() and not transaction._matches(path, new, entry["newIdentity"]):
-            blocked.append(new["path"])
+        if old is not None and not transaction._matches(files._target(directory, "backup/" + row["path"]), old, entry["oldIdentity"]):
+            blocked.append(row["path"])
+        if path.exists() and (new is None or not transaction._matches(path, new, entry["newIdentity"])):
+            blocked.append(row["path"])
     if not blocked:
         for entry in reversed(journal["entries"]):
             new, old = entry["new"], entry["old"]
-            path = files._target(root, new["path"])
+            row = new or old
+            path = files._target(root, row["path"])
             if old is not None and transaction._matches(path, old, entry["oldIdentity"]):
                 continue
             try:
-                if path.exists() and not files._rollback_published(path, tuple(entry["newIdentity"]), new["sha256"]):
-                    blocked.append(new["path"])
+                if path.exists() and (new is None or not files._rollback_published(path, tuple(entry["newIdentity"]), new["sha256"])):
+                    blocked.append(row["path"])
                     continue
                 if old is not None:
                     path.parent.mkdir(parents=True, exist_ok=True)
                     files._no_links(path.parent)
-                    os.link(files._target(directory, "backup/" + new["path"]), path)
+                    os.link(files._target(directory, "backup/" + row["path"]), path)
                 transaction._directory_sync(path.parent)
             except OSError:
-                blocked.append(new["path"])
+                blocked.append(row["path"])
     journal.update(status="rollback-incomplete" if blocked else "rolled-back", blockedPaths=blocked)
     _write_journal(directory, journal)
     if blocked:
@@ -646,7 +698,7 @@ def _load_history(root, transaction_id):
     journal = transaction._read_json(path)
     if (journal.get("transactionId") != transaction_id
             or journal.get("rootIdentity") != transaction._identity(root.stat())
-            or journal.get("schema") not in {JOURNAL_SCHEMA, RETIRED_SCHEMA}):
+            or journal.get("schema") not in ACTIVE_JOURNAL_SCHEMAS | {RETIRED_SCHEMA}):
         raise ManagedBaseResourceError("invalid-base-repair-journal")
     if journal["schema"] == RETIRED_SCHEMA:
         if (set(journal) != {"schema", "transactionId", "rootIdentity", "outcome", "fileCount"}
@@ -656,23 +708,44 @@ def _load_history(root, transaction_id):
             raise ManagedBaseResourceError("invalid-base-retired-record")
         return directory, journal
     if (journal.get("status") not in {"preparing", "prepared", "committed", "rolled-back", "rollback-incomplete"}
-            or set(journal) - {"schema", "transactionId", "rootIdentity", "status", "files", "entries", "blockedPaths", "cleanupStatus"}
+            or set(journal) - {"schema", "transactionId", "rootIdentity", "status", "files", "entries", "blockedPaths", "cleanupStatus", "retirement"}
             or not isinstance(journal.get("blockedPaths"), list)
             or journal.get("cleanupStatus") not in {None, "retiring"}
             or (journal.get("cleanupStatus") == "retiring" and journal["status"] not in {"committed", "rolled-back"})):
         raise ManagedBaseResourceError("invalid-base-repair-journal")
     expected = _rows(journal.get("files"))
+    retired = {}
+    if journal['schema'] == RETIREMENT_JOURNAL_SCHEMA:
+        retirement = journal.get('retirement')
+        if not isinstance(retirement, dict) or set(retirement) != {'sourceVersion', 'targetVersion', 'files'}:
+            raise ManagedBaseResourceError('invalid-base-retirement-contract')
+        releases, _ = _reviewed_s1_catalogue()
+        source = next((rows for version, rows in releases if version == retirement['sourceVersion']), None)
+        if source is None:
+            raise ManagedBaseResourceError('invalid-base-retirement-source')
+        source_rows = {path.casefold(): dict(path=path, bytes=size, sha256=digest) for path, size, digest in source}
+        retired = _retirement_rows(retirement['sourceVersion'], retirement['targetVersion'], source_rows, expected)
+        if not retired or files._rows(retirement['files']) != retired:
+            raise ManagedBaseResourceError('invalid-base-retirement-inventory')
+    elif 'retirement' in journal:
+        raise ManagedBaseResourceError('invalid-legacy-base-retirement')
     seen = set()
     entries = journal.get("entries")
-    if not isinstance(entries, list) or not entries or len(entries) > len(expected) + 1:
+    if not isinstance(entries, list) or not entries or len(entries) > len(expected) + len(retired) + 1:
         raise ManagedBaseResourceError("invalid-base-repair-entries")
     for entry in entries:
-        row = next(iter(files._rows([entry.get("new")]).values()))
+        if not isinstance(entry, dict) or set(entry) != {'new', 'old', 'newIdentity', 'oldIdentity'}:
+            raise ManagedBaseResourceError('invalid-base-repair-entry')
+        removing = entry['new'] is None
+        row = next(iter(files._rows([entry.get('old') if removing else entry['new']]).values()))
         key = row["path"].casefold()
-        if key in seen or (row["path"] != STATE and expected.get(key) != row):
+        if key in seen or (retired.get(key) != row if removing else row["path"] != STATE and expected.get(key) != row):
             raise ManagedBaseResourceError("invalid-base-repair-target")
         seen.add(key)
-        if entry.get("newIdentity") is not None:
+        if removing:
+            if entry['newIdentity'] is not None:
+                raise ManagedBaseResourceError('invalid-base-retirement-file-identity')
+        elif entry.get("newIdentity") is not None:
             transaction._valid_identity(entry["newIdentity"])
         elif journal["status"] not in {"preparing", "rolled-back"}:
             raise ManagedBaseResourceError("invalid-base-repair-file-identity")
@@ -682,7 +755,7 @@ def _load_history(root, transaction_id):
             transaction._valid_identity(entry.get("oldIdentity"))
             if old["path"] != row["path"]:
                 raise ManagedBaseResourceError("invalid-base-repair-old-target")
-    if entries[-1]["new"]["path"] != STATE:
+    if entries[-1]['new'] is None or entries[-1]["new"]["path"] != STATE:
         raise ManagedBaseResourceError("invalid-base-repair-state-entry")
     if any(not isinstance(path, str) or path.casefold() not in seen for path in journal["blockedPaths"]):
         raise ManagedBaseResourceError("invalid-base-repair-blocked-path")
@@ -715,6 +788,8 @@ def _recover(root):
         return dict(status="rolled-back", cleanupComplete=True)
     for entry in journal["entries"]:
         row = entry["new"]
+        if row is None:
+            continue
         if not transaction._matches(files._target(directory, "new/" + row["path"]), row, entry["newIdentity"]):
             raise ManagedBaseResourceError("base-repair-retained-object-changed")
     _rollback(root, directory, journal)
@@ -796,7 +871,7 @@ def repair_managed_base_resources(install_root):
                 raise ManagedBaseResourceError(code)
         _retire_completed(root)
         plan = plan_managed_base_resources(root)
-        if plan["status"] == "not-managed":
+        if plan["status"] in {"not-managed", "retirement-deferred"}:
             return plan
         if plan["issues"]:
             raise ManagedBaseResourceError("base-repair-preflight-blocked", plan["issues"])
@@ -808,25 +883,29 @@ def repair_managed_base_resources(install_root):
         state_row = dict(path=STATE, bytes=len(encoded), sha256=hashlib.sha256(encoded).hexdigest())
         old_state = dict(path=STATE, bytes=state.stat().st_size, sha256=files._sha(state)) if state.exists() else None
         changes = [*plan["changes"], dict(new=state_row, old=old_state)]
-        preflight_hardlinks(root, [entry["new"]["path"] for entry in changes])
+        preflight_hardlinks(root, [(entry['new'] or entry['old'])["path"] for entry in changes])
         transaction_id = str(uuid.uuid4())
         directory = files._target(root, HISTORY + "/" + transaction_id)
         directory.mkdir(parents=True, exist_ok=False)
         entries = []
         for change in changes:
             row, old = change["new"], change["old"]
-            target = files._target(root, row["path"])
+            target = files._target(root, (row or old)["path"])
             entries.append(dict(new=row, old=old, newIdentity=None,
                                 oldIdentity=transaction._capture(target, old) if old else None))
             if old is None and target.exists():
                 raise ManagedBaseResourceError("base-target-appeared-before-commit")
-        journal = dict(schema=JOURNAL_SCHEMA, transactionId=transaction_id, rootIdentity=transaction._identity(root.stat()),
-                       status="preparing", files=plan["files"], entries=entries, blockedPaths=[])
+        journal = dict(schema=RETIREMENT_JOURNAL_SCHEMA if plan.get('retirement') else JOURNAL_SCHEMA,
+                       transactionId=transaction_id, rootIdentity=transaction._identity(root.stat()),
+                       status="preparing", files=plan["files"], entries=entries, blockedPaths=[],
+                       **({'retirement': plan['retirement']} if plan.get('retirement') else {}))
         _write_journal(directory, journal)
         _ensure_pending(root, transaction_id)
         try:
             for entry in entries:
                 row = entry["new"]
+                if row is None:
+                    continue
                 retained = files._target(directory, "new/" + row["path"])
                 data = encoded if row["path"] == STATE else files._target(root, CANDIDATE + "/payload/" + row["path"]).read_bytes()
                 transaction._write_new(retained, data)
@@ -845,14 +924,21 @@ def repair_managed_base_resources(install_root):
         try:
             for entry in entries:
                 row = entry["new"]
-                target = files._target(root, row["path"])
-                if row["path"] == STATE:
+                relative = (row or entry['old'])['path']
+                target = files._target(root, relative)
+                if relative == STATE:
                     for current in plan["files"]:
                         if not transaction._matches(files._target(root, current["path"]), current):
                             raise ManagedBaseResourceError("base-verification-before-state-failed")
+                    for retired_entry in entries:
+                        if retired_entry['new'] is None and files._target(root, retired_entry['old']['path']).exists():
+                            raise ManagedBaseResourceError('retired-base-reappeared-before-state')
                 if entry["old"]:
-                    transaction._move_owned(target, files._target(directory, "backup/" + row["path"]),
+                    transaction._move_owned(target, files._target(directory, "backup/" + relative),
                                             entry["old"], entry["oldIdentity"])
+                if row is None:
+                    transaction._directory_sync(target.parent)
+                    continue
                 target.parent.mkdir(parents=True, exist_ok=True)
                 files._no_links(target.parent)
                 os.link(files._target(directory, "new/" + row["path"]), target)

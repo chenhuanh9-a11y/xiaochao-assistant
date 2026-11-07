@@ -3954,7 +3954,8 @@ class LiveRuntime:
             context = self._context()
             request = {key: payload.get(key) for key in ("generation", "season", "mode", "profileId", "roundId", "frameId")}
             if not extra.get("stale"):
-                self._message = reason
+                from season_context import RETIRED_MODE_MESSAGE
+                self._message = RETIRED_MODE_MESSAGE if reason == "retired-mode" else reason
             visual = payload.get("_mapInputVisual")
             if (visual is not None and visual["epoch"] == self._epoch
                     and visual["sequence"] == self._last_map_input_sequence
@@ -4025,6 +4026,11 @@ class LiveRuntime:
         capture_request_id = request_id
         payload = dict(payload or {})
         action = str(action)
+        from season_context import is_retired_mode
+        if is_retired_mode(self._mode, self._season) and action not in (
+                "set_game_mode", "set_season", "set_route_profile", "set_context",
+                "end_round", "cancel", "stop_round", "reset_round", "bind_capture"):
+            return self._receipt(action, payload, success=False, reason="retired-mode")
         if action == "observe_candidate_floor":
             return self._probe_s1_candidate_floor(action, payload, cancelled,
                 expected_epoch=capture_request_epoch, request_id=request_id)
@@ -4165,8 +4171,8 @@ class LiveRuntime:
             # A convenience season change has no authority to carry another
             # season's author preference; explicit target preferences still win.
             profile = str(payload.get("profileId", self._profile if season == self._season else ""))
-            from season_context import modes_for_season
-            if mode not in modes_for_season(season):
+            from season_context import known_modes_for_season
+            if mode not in known_modes_for_season(season):
                 return self._receipt(action, payload, success=False, reason="unsupported-mode")
             with self._lock:
                 # Cancellation may arrive while this mutator waits for state ownership.

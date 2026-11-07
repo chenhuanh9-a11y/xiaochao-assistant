@@ -5,7 +5,7 @@ import hashlib
 import json
 import shutil
 
-from s1_private_resources import validated_s1_resources, _no_links
+from s1_private_resources import validated_s1_resources, private_profile_modes, S1_RUNTIME_MODES, _no_links
 
 def seed(source: Path, target: Path):
     from client_paths import WORK_ROOT
@@ -20,8 +20,9 @@ def seed(source: Path, target: Path):
     profile_path = source / "_internal/installation-profile.json"
     _no_links(profile_path)
     profile = json.loads(profile_path.read_text(encoding="utf-8")) if profile_path.is_file() else {}
-    native = validated_s1_resources(source / "_internal",
-        required=profile.get("installerInstance", {}).get("id") in PRIVATE_S1_INSTANCES)
+    private_s1 = profile.get("installerInstance", {}).get("id") in PRIVATE_S1_INSTANCES
+    native = validated_s1_resources(source / "_internal", required=private_s1,
+        modes=private_profile_modes(profile) if private_s1 else S1_RUNTIME_MODES)
     # Scan before creating any target; copytree must never follow source links.
     for name in ("assets", "references", "recognition"):
         tree = source / "_internal" / name

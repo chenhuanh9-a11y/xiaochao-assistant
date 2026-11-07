@@ -23,7 +23,10 @@ def _api():
 
 
 def _reject(reason):
-    raise _api().ImportRejected('author-v2-' + reason)
+    # Some validators append a field after ':' without a space. Preserve a
+    # stable producer code instead of collapsing that proof to import-rejected.
+    message = 'author-v2-' + reason
+    raise _api().ImportRejected(message, code=message.split(':', 1)[0])
 
 
 def is_generic_profile(value):
@@ -104,6 +107,18 @@ def receipt_rows(receipt):
     return rows, dependency_rows(receipt.get('requiresFiles'), receipt.get('season'))
 
 
+def retired_layer(season, mode):
+    """Source-owned runtime policy, never a flag supplied by an author package."""
+    return (season, mode) == ('s1', 'difficulty2')
+
+
+def effective_dependencies(dependencies, season):
+    """Preserve full declarations in receipts; dormant bases grant no active authority."""
+    from s1_resource_retirement import RETIRED_PREFIX
+    return {key: row for key, row in dependencies.items()
+            if season != 's1' or not row['path'].startswith(RETIRED_PREFIX)}
+
+
 def validate_receipt_closure(root, receipt, rows, dependencies):
     """Never let a shortened receipt erase another package's constraints.
 
@@ -119,12 +134,14 @@ def validate_receipt_closure(root, receipt, rows, dependencies):
             continue
         mode, map_id, filename = row['path'][len(prefix):].split('/')
         floor = filename.rsplit('.', 1)[0]
+        if retired_layer(receipt['season'], mode):
+            continue  # Owned author bytes remain; no dependency or runtime grant.
         try:
             base = resolve_layer(root, receipt['season'], mode, map_id, floor)
         except ValueError as error:
             _reject('receipt-base-unavailable')
         required.update(base['dependencies'])
-    if required != {row['path'] for row in dependencies.values()}:
+    if required != {row['path'] for row in effective_dependencies(dependencies, receipt['season']).values()}:
         _reject('receipt-dependency-closure-mismatch')
 
 
@@ -203,6 +220,8 @@ def validate_bindings(raw, rows, dependencies, read, *, root, dependency_paths=N
     if not isinstance(layers, list) or not 1 <= len(layers) <= MAX_LAYERS:
         _reject('invalid-layers')
     expected = {bindings_path(profile)}
+    active_layers, inactive_layers = [], []
+    active_dependencies = effective_dependencies(dependencies, season)
     required = set()
     seen = set()
     for row in layers:
@@ -224,25 +243,30 @@ def validate_bindings(raw, rows, dependencies, read, *, root, dependency_paths=N
         if (inv is None or row.get('displaySha256') != inv['sha256'] or row.get('displayBytes') != inv['bytes']
                 or not _shape(row.get('displayShapeHW')) or not _shape(row.get('referenceShapeHW'))):
             _reject('display-inventory-mismatch')
-        try:
-            base = resolve_layer(Path(root), season, *key)
-        except ValueError as error:
-            _reject('base-unavailable:' + str(error))
-        for field in ('referenceResource', 'referenceShapeHW', 'coordinateSpace',
-                      'structureVersionKey', 'baseSnapshot', 'sourceVersion'):
-            if row.get(field) != base[field]:
-                _reject('reference-binding-mismatch:' + field)
-        required.update(base['dependencies'])
-        if dependency_paths is not None:
-            dependency_paths[key] = tuple(base['dependencies'])
-        dep = dependencies.get(base['referenceResource'].casefold())
-        if dep is None or row.get('referenceSha256') != dep['sha256']:
-            _reject('reference-inventory-mismatch')
-        if base.get('nativeImageResource'):
-            native = dependencies.get(base['nativeImageResource'].casefold())
-            if (row.get('nativeImageResource') != base['nativeImageResource'] or native is None
-                    or row.get('nativeImageSha256') != native['sha256']):
-                _reject('native-inventory-mismatch')
+        if retired_layer(season, key[0]):
+            inactive_layers.append(dict(season=season, mode=key[0], mapId=key[1], floor=key[2],
+                                        reason='retired-mode', bindingVerified=False))
+        else:
+            try:
+                base = resolve_layer(Path(root), season, *key)
+            except ValueError as error:
+                _reject('base-unavailable:' + str(error))
+            for field in ('referenceResource', 'referenceShapeHW', 'coordinateSpace',
+                          'structureVersionKey', 'baseSnapshot', 'sourceVersion'):
+                if row.get(field) != base[field]:
+                    _reject('reference-binding-mismatch:' + field)
+            required.update(base['dependencies'])
+            if dependency_paths is not None:
+                dependency_paths[key] = tuple(base['dependencies'])
+            dep = active_dependencies.get(base['referenceResource'].casefold())
+            if dep is None or row.get('referenceSha256') != dep['sha256']:
+                _reject('reference-inventory-mismatch')
+            if base.get('nativeImageResource'):
+                native = active_dependencies.get(base['nativeImageResource'].casefold())
+                if (row.get('nativeImageResource') != base['nativeImageResource'] or native is None
+                        or row.get('nativeImageSha256') != native['sha256']):
+                    _reject('native-inventory-mismatch')
+            active_layers.append(row)
         validate_display_affine(row.get('matrixDisplayToReference'))
         data = read(path)
         check_browse_cancelled()
@@ -259,18 +283,32 @@ def validate_bindings(raw, rows, dependencies, read, *, root, dependency_paths=N
             _reject('invalid-image')
     if expected != {row['path'] for row in rows.values()}:
         _reject('unlisted-or-missing-display-file')
-    if required != {row['path'] for row in dependencies.values()}:
+    if required != {row['path'] for row in active_dependencies.values()}:
         _reject('dependency-closure-mismatch')
     # Re-check all dependency bytes at use time, not only at initial import.
     for path in required:
         check_browse_cancelled()
         read(path)
-    return doc
+    # This view is derived, never written over the archive or installed binding.
+    # Every payload byte above remains integrity checked and receipt-owned.
+    return dict(doc, layers=active_layers, inactiveLayers=inactive_layers)
+
+
+def validate_import_modes(metadata, rows):
+    """Import policy only; historical receipt maintenance remains readable."""
+    retired_prefix = f'_internal/assets/authors/{metadata["packageId"]}/s1/difficulty2/'
+    displays = [row for row in rows.values() if row['path'] != bindings_path(metadata['packageId'])]
+    if metadata['season'] == 's1' and displays and all(row['path'].startswith(retired_prefix) for row in displays):
+        # Installed receipt inspection/removal remains available. A new import
+        # cannot reactivate a mode with no route runtime. Mixed packs retain the
+        # original whole payload but only verified supported layers are enabled.
+        _reject('retired-mode')
 
 
 def validate_archive(metadata, archive, root, rows, dependencies):
     api = _api()
     receipt_rows(metadata)
+    validate_import_modes(metadata, rows)
     def read(path):
         row = rows.get(path.casefold()) or dependencies.get(path.casefold())
         if row is None:

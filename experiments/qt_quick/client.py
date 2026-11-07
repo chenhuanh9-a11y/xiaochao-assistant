@@ -589,13 +589,16 @@ def main():
                 registry = build_engine_factories(root)
                 registry.prepare()
                 result["providers"] = registry.capabilities()
-                from s1_private_resources import validated_s1_resources
+                from s1_private_resources import validated_s1_resources, S1_RUNTIME_MODES, private_profile_modes
                 from packaged_product_identity import PRIVATE_S1_INSTANCES
                 required_s1 = False
+                native_modes = S1_RUNTIME_MODES
                 formal_s1_contexts = None
                 if FROZEN:
                     profile = json.loads((RESOURCE_ROOT / "installation-profile.json").read_text(encoding="utf-8"))
                     required_s1 = profile["installerInstance"]["id"] in PRIVATE_S1_INSTANCES
+                    if required_s1:
+                        native_modes = private_profile_modes(profile)
                     declared = profile.get("includedResourceContexts")
                     if PRODUCTION and "includedResourceContexts" in profile:
                         s0_contexts = {"s0:nightmare", "s0:difficult"}
@@ -603,13 +606,13 @@ def main():
                                 or len(declared) != len(set(declared))):
                             raise ValueError("Invalid production resource context declaration")
                         if set(declared) != s0_contexts:
-                            expected = s0_contexts | {"s1:difficulty2", "s1:difficult", "s1:nightmare"}
+                            expected = s0_contexts | {"s1:" + mode for mode in S1_RUNTIME_MODES}
                             if set(declared) != expected:
                                 raise ValueError("Incomplete production S1 resource context declaration")
                             # A declaration requires validation; it never grants runtime capability.
                             formal_s1_contexts = expected
                             required_s1 = True
-                native = validated_s1_resources(root, required=required_s1)
+                native = validated_s1_resources(root, required=required_s1, modes=native_modes)
                 result["resourceContexts"] = {"s0:" + mode: row for mode, row in result["providers"].items()}
                 result["resourceContexts"].update({"s1:" + mode: row for mode, row in native["providers"].items()})
                 result["s1Included"] = native["included"]
@@ -670,8 +673,9 @@ def main():
     try:
         resource_root = owned_sandbox(args.sandbox.resolve()) if PRODUCTION else args.sandbox.resolve()
         set_startup_stage("resource-check")
+        args.resource_startup_report = {}
         with production_resources(resource_root, production=PRODUCTION,
-                on_failure=recover_startup) as recovery:
+                on_failure=recover_startup, startup_report=args.resource_startup_report) as recovery:
             if recovery is not None:
                 return recovery.exit_code
             return _run_primary_client(app, args, guard)
@@ -714,6 +718,7 @@ def _run_primary_client(app, args, guard):
                               versionCode=9, releaseNotes="Local probe", publishedAt="2026-10-30", releases=[])) if args.probe_output else None
             client = holder["client"] = QtClient(app, sandbox, probe_output=args.probe_output, info_fetch=local_manifest,
                 on_created=lambda partial: holder.update(client=partial))
+            client.resources.setStartupCompatibilityReport(getattr(args, 'resource_startup_report', {}))
             if holder.pop("activationPending", False):
                 restore_main_window(client.main)
             holder["quit_journal"] = lambda: client.lifecycle.record_event(dict(stage="about-to-quit"))

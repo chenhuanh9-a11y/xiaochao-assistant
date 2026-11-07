@@ -81,6 +81,7 @@ Item {
         if (row.status === "managed-remnants") return "包含这个图包的旧备份，或上次操作留下的临时文件。"
         if (row.status === "unverified") return "暂时无法完成核对，请重新检查状态。"
         if (row.status === "recovery-required") return "请点击“恢复记录”，按提示完成上次操作。"
+        if (row.compatibilityNotice) return row.compatibilityNotice
         return ""
     }
 

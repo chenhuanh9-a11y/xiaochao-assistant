@@ -172,7 +172,7 @@ class StartupRecoveryTests(unittest.TestCase):
     def test_native_confirmation_defaults_to_no_and_never_implicitly_accepts(self):
         import ctypes
         box = Mock(return_value=7)
-        with patch.object(sys, "platform", "win32"), patch.object(ctypes, "WinDLL", return_value=SimpleNamespace(MessageBoxW=box)):
+        with patch.object(sys, "platform", "win32"), patch.object(ctypes, "WinDLL", return_value=SimpleNamespace(MessageBoxW=box), create=True):
             self.assertFalse(recovery._confirm("fixture only"))
             self.assertTrue(box.call_args.args[3] & 0x100)
             box.return_value = 6

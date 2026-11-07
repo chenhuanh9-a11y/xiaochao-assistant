@@ -433,8 +433,8 @@ class SessionService(QObject):
             self._message = "Resource operation is in progress."
             self.changed.emit()
             return False
-        from season_context import modes_for_season
-        if mode not in modes_for_season(season):
+        from season_context import known_modes_for_season
+        if mode not in known_modes_for_season(season):
             self._message = f"Unknown mode: {mode}"
             self.changed.emit()
             return False

@@ -45,6 +45,10 @@ class ManagedRuntimeReuseTests(unittest.TestCase):
                 inventory[name] = dict(bytes=path.stat().st_size, sha256=build.sha256(path))
             prior[kind + 'Helper'] = dict(included=True, product=product, executable=product + '.exe',
                                          runtimeDirectory=runtime, files=inventory)
+        watcher = root / 'XingtuGameWatcher.exe'; watcher.write_bytes(b'synthetic watcher')
+        prior['gameWatcher'] = dict(included=True, executable=watcher.name,
+            files={watcher.name: dict(bytes=watcher.stat().st_size, sha256=build.sha256(watcher))})
+        prior['fileProjection']['families'] = dict(program=[watcher.name])
         return prior, dict(commit='c' * 40)
 
     def test_legacy_record_cannot_opt_in_by_changing_side_profile(self):
@@ -108,6 +112,22 @@ class ManagedRuntimeReuseTests(unittest.TestCase):
                 with mock.patch.object(build, '_git', return_value=''):
                     with self.assertRaisesRegex(ValueError, 'full freeze'):
                         rebuild.validate_managed_runtime_reuse(root, prior, source)
+
+    def test_watcher_missing_tampered_or_unprojected_cannot_reuse_old_build(self):
+        for change in ('receipt', 'bytes', 'projection'):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder); prior, source = self.fixture(root)
+                if change == 'receipt': prior.pop('gameWatcher')
+                elif change == 'bytes': (root / 'XingtuGameWatcher.exe').write_bytes(b'changed watcher')
+                else: prior['fileProjection']['families']['program'] = []
+                with mock.patch.object(build, '_git', return_value=''), self.assertRaisesRegex(ValueError, 'full freeze'):
+                    rebuild.validate_managed_runtime_reuse(root, prior, source)
+
+    def test_lifecycle_include_only_is_installer_change_but_watcher_source_is_not(self):
+        for path in ('tools/qt-game-watcher-lifecycle.iss', 'tools/qt-uninstall-data.iss'):
+            self.assertIn(path, rebuild.INSTALLER_ONLY_FILES)
+        self.assertNotIn('tools/qt-game-watcher.spec', rebuild.INSTALLER_ONLY_FILES)
+        self.assertNotIn('app/game_startup_watcher.py', rebuild.INSTALLER_ONLY_FILES)
 
 
 if __name__ == '__main__':

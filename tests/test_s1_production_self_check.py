@@ -11,6 +11,7 @@ import io
 import json
 from pathlib import Path
 import sys
+import shutil
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -27,7 +28,7 @@ import s1_private_resources as native
 import test_s1_private_packaging as fixtures
 
 S0 = ['s0:nightmare', 's0:difficult']
-FIVE = S0 + ['s1:difficulty2', 's1:difficult', 's1:nightmare']
+FOUR = S0 + ['s1:difficult', 's1:nightmare']
 REAL_NATIVE = object()
 
 
@@ -42,7 +43,7 @@ class ProductionSelfCheckTests(unittest.TestCase):
         self.resources = self.root / '_internal'
         self.resources.mkdir()
         self.profile = dict(product='星图', installerInstance=dict(id='production', product='星图',
-            appId=identity.PRODUCTION_APP_ID), includedResourceContexts=list(FIVE))
+            appId=identity.PRODUCTION_APP_ID), includedResourceContexts=list(FOUR))
         self.registry = client_providers.build_engine_factories(self.resources)
         self.registry._build = lambda mode, *, season='s0': SimpleNamespace(
             pack=SimpleNamespace(maps=[]), identity_floors=('1',))
@@ -53,6 +54,7 @@ class ProductionSelfCheckTests(unittest.TestCase):
         fixture = fixtures.PrivatePackagingTests()
         fixture.root, fixture.resources = self.root, self.resources
         self.native_registry = fixture.packs()
+        shutil.rmtree(self.resources / "seasons/s1/difficulty2")
         return self.native_registry
 
     def invoke(self, *, native_result=REAL_NATIVE, frozen=True, production=True, entry=False):
@@ -88,16 +90,16 @@ class ProductionSelfCheckTests(unittest.TestCase):
 
     def synthetic_native_result(self):
         return dict(included=True, providers={mode: dict(available=True, prepared=True,
-            season='s1', mode=mode, liveReady=False, liveAuthorization=False) for mode in native.S1_MODES})
+            season='s1', mode=mode, liveReady=False, liveAuthorization=False) for mode in native.S1_RUNTIME_MODES})
 
-    def test_complete_five_context_fixture_succeeds_with_real_native_inventory_checks(self):
+    def test_complete_four_context_fixture_succeeds_with_real_native_inventory_checks(self):
         self.packs()
         status, result = self.invoke()
         self.assertEqual(status, 0)
         self.assertIs(result['ready'], True)
-        self.assertEqual(set(result['resourceContexts']), set(FIVE))
-        self.verify.assert_called_once_with(self.resources, required=True)
-        self.native_registry.prepare.assert_called_once_with(season='s1')
+        self.assertEqual(set(result['resourceContexts']), set(FOUR))
+        self.verify.assert_called_once_with(self.resources, required=True, modes=native.S1_RUNTIME_MODES)
+        self.assertEqual([call.args[0] for call in self.native_registry.prepare_context.call_args_list], ['difficult', 'nightmare'])
         self.assertIs(result['s1Included'], True)
         for flag in ('nativeInputStarted', 'windowsCreated', 'listenersStarted', 'captureStarted'):
             self.assertIs(result[flag], False)
@@ -107,16 +109,16 @@ class ProductionSelfCheckTests(unittest.TestCase):
         self.assertIs(purpose._PRODUCTION_S1_CANDIDATE_ROLLOUT_ENABLED, False)
 
     def test_entire_declared_s1_absence_rejects_not_s0_only_success(self):
-        with self.assertRaisesRegex(ValueError, 'requires all three'):
+        with self.assertRaisesRegex(ValueError, 'requires all declared'):
             self.invoke()
-        self.verify.assert_called_once_with(self.resources, required=True)
+        self.verify.assert_called_once_with(self.resources, required=True, modes=native.S1_RUNTIME_MODES)
         self.assertEqual(self.factory.call_count, 1)
         self.assertFalse((self.root / 'work/client-self-check.json').exists())
         self.assertFalse((self.root / managed.STATE).exists())
 
     def test_one_missing_native_mode_rejects_before_typed_provider(self):
         self.packs()
-        (self.resources / 'seasons/s1/difficulty2').rename(self.root / 'removed-fixture-mode')
+        (self.resources / 'seasons/s1/difficult').rename(self.root / 'removed-fixture-mode')
         with self.assertRaisesRegex(ValueError, 'complete exact'):
             self.invoke()
         self.native_registry.prepare.assert_not_called()
@@ -141,8 +143,8 @@ class ProductionSelfCheckTests(unittest.TestCase):
         self.native_registry.prepare.assert_not_called()
 
     def test_profile_declared_contexts_must_be_complete_unique_and_typed(self):
-        bad_values = [None, {}, 's1:nightmare', [], FIVE[:-1], FIVE + [FIVE[-1]],
-                      FIVE + ['s1:unknown'], [*S0, 's2:nightmare'], [*FIVE[:-1], {}]]
+        bad_values = [None, {}, 's1:nightmare', [], FOUR[:-1], FOUR + [FOUR[-1]],
+                      FOUR + ['s1:unknown'], [*S0, 's2:nightmare'], [*FOUR[:-1], {}]]
         for value in bad_values:
             with self.subTest(value=value):
                 self.profile['includedResourceContexts'] = value
@@ -151,7 +153,7 @@ class ProductionSelfCheckTests(unittest.TestCase):
                 self.verify.assert_not_called()
 
     def test_one_reported_s1_context_missing_or_extra_rejects(self):
-        for mode in native.S1_MODES:
+        for mode in native.S1_RUNTIME_MODES:
             result = self.synthetic_native_result()
             result['providers'].pop(mode)
             with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, 'context missing or extra'):
@@ -180,7 +182,7 @@ class ProductionSelfCheckTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'unavailable or misbound'):
             self.invoke(native_result=result)
 
-    def test_absent_s0_report_fails_complete_five_context_check(self):
+    def test_absent_s0_report_fails_complete_four_context_check(self):
         self.registry.capabilities = lambda season='s0': {'nightmare': dict(available=True, prepared=True, season='s0', mode='nightmare')}
         with self.assertRaisesRegex(ValueError, 'context missing or extra'):
             self.invoke(native_result=self.synthetic_native_result())
@@ -196,26 +198,26 @@ class ProductionSelfCheckTests(unittest.TestCase):
                 self.assertIs(result['ready'], True)
                 self.assertFalse(result['s1Included'])
                 self.assertEqual(set(result['resourceContexts']), set(S0))
-                self.verify.assert_called_once_with(self.resources, required=False)
+                self.verify.assert_called_once_with(self.resources, required=False, modes=native.S1_RUNTIME_MODES)
 
     def test_private_profiles_still_require_native_resources(self):
         for instance in identity.PRIVATE_S1_INSTANCES:
             self.profile = dict(installerInstance=dict(id=instance))
-            with self.subTest(instance=instance), self.assertRaisesRegex(ValueError, 'requires all three'):
+            with self.subTest(instance=instance), self.assertRaisesRegex(ValueError, 'requires all declared'):
                 self.invoke(production=False)
-            self.verify.assert_called_once_with(self.resources, required=True)
+            self.verify.assert_called_once_with(self.resources, required=True, modes=native.S1_MODES)
 
     def test_source_self_check_does_not_adopt_frozen_profile_authority(self):
         status, result = self.invoke(frozen=False, production=False)
         self.assertEqual(status, 0)
         self.assertFalse(result['s1Included'])
-        self.verify.assert_called_once_with(self.resources, required=False)
+        self.verify.assert_called_once_with(self.resources, required=False, modes=native.S1_RUNTIME_MODES)
 
     def test_staged_candidate_does_not_replace_missing_active_s1_during_self_check(self):
         candidate = self.root / managed.CANDIDATE / 'payload/_internal/seasons/s1/difficult/native-map-manifest.json'
         candidate.parent.mkdir(parents=True)
         candidate.write_text('{"candidate":"not active"}')
-        with self.assertRaisesRegex(ValueError, 'requires all three'):
+        with self.assertRaisesRegex(ValueError, 'requires all declared'):
             self.invoke()
         self.assertEqual(candidate.read_text(), '{"candidate":"not active"}')
         self.assertFalse((self.resources / 'seasons').exists())

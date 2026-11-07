@@ -4,6 +4,7 @@ Only QtClient (resource consumer), native single-instance guard, and the owned
 application identity are replaced. The actual main, Qt event loop, build
 projection, repair, file hashing and resource lease execute against Temp.
 """
+from contextlib import nullcontext
 from pathlib import Path
 import os
 import sys
@@ -36,6 +37,8 @@ class ResourceStartupTests(unittest.TestCase):
     def run_main(self, constructor):
         guard = Mock()
         guard.start.return_value = True
+        native_identity = (patch('ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID', return_value=0)
+                           if os.name == 'nt' else nullcontext())
         with patch.object(sys, 'argv', ['client', '--sandbox', str(self.root)]), \
              patch.object(client, 'PRODUCTION', True), \
              patch.object(client, 'owned_sandbox', side_effect=lambda p: Path(p)), \
@@ -43,7 +46,7 @@ class ResourceStartupTests(unittest.TestCase):
              patch.object(client, 'QtClient', side_effect=constructor), \
              patch('client_resource_startup_recovery.offer_startup_recovery', return_value=None), \
              patch('client_single_instance.SingleInstanceGuard', return_value=guard), \
-             patch('ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID', return_value=0):
+             native_identity:
             result = client.main()
         self.assertTrue(guard.close.called)
         return result

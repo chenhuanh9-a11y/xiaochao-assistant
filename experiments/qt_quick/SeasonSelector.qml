@@ -20,7 +20,7 @@ GridLayout {
             textWidth = Math.max(textWidth, seasonFontMetrics.advanceWidth(seasons[i].label))
         return Math.max(130, Math.ceil(textWidth) + seasonPicker.leftPadding + seasonPicker.rightPadding + 2)
     }
-    readonly property bool ordinaryAvailable: season === "s1" && (browseDifficulty2 || registeredContext(season, "difficulty2"))
+    readonly property bool ordinaryAvailable: season === "s1" && browseDifficulty2
     readonly property int modeCount: ordinaryAvailable ? 3 : 2
     readonly property real singleRowWidth: seasonMinimumWidth + modeCount * 64 + modeCount * columnSpacing
     readonly property bool stacked: width < singleRowWidth
@@ -64,7 +64,7 @@ GridLayout {
         }
         if (!enabled || (nextSeason === season && nextMode === mode && !allowCurrentContextRequest)) return
         if (nextMode !== "nightmare" && nextMode !== "difficult"
-                && !((browseDifficulty2 || registeredContext(nextSeason, "difficulty2")) && nextSeason === "s1" && nextMode === "difficulty2")) return
+                && !(browseDifficulty2 && nextSeason === "s1" && nextMode === "difficulty2")) return
         for (var i = 0; i < seasons.length; i++) {
             if (seasons[i].id === nextSeason) {
                 contextRequested(nextSeason, nextMode)

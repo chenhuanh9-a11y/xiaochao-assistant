@@ -35,6 +35,39 @@ class ClientSplashTests(unittest.TestCase):
             close.assert_called_once()
             instance.shutdown.assert_called_once()
 
+    def test_compatibility_report_does_not_close_splash_before_first_frame(self):
+        with tempfile.TemporaryDirectory() as folder:
+            report = dict(status='retirement-deferred', reasons=['retired-mode-still-required'])
+            args = SimpleNamespace(sandbox=Path(folder), probe_output=None,
+                                   resource_startup_report=report)
+            instance = Mock()
+            instance._closed, instance._main_frame_seen = False, False
+            frame_ready = client.QtClient._main_frame_ready
+            close_counts, reports_at_frame = [], []
+
+            def observe_first_frame():
+                try:
+                    close_counts.append(close.call_count)
+                    reports_at_frame.append(instance.resources.setStartupCompatibilityReport.call_args)
+                    frame_ready(instance)
+                    close_counts.append(close.call_count)
+                finally:
+                    self.app.quit()
+
+            def construct(*a, **kw):
+                QTimer.singleShot(0, observe_first_frame)
+                return instance
+
+            with patch.object(client, 'PRODUCTION', False), \
+                 patch.object(client, 'owned_sandbox', side_effect=lambda p: p), \
+                 patch.object(client, 'QtClient', side_effect=construct), \
+                 patch('qt_startup_splash.close_startup_splash') as close:
+                self.assertEqual(client._run_primary_client(self.app, args, Mock()), 0)
+            self.assertEqual(close_counts, [0, 1])
+            self.assertEqual(reports_at_frame[0].args, (report,))
+            instance.resources.setStartupCompatibilityReport.assert_called_once_with(report)
+            instance.shutdown.assert_called_once()
+
     def test_first_submitted_main_frame_closes_once_and_records_real_boundary(self):
         from types import SimpleNamespace
         instance = client.QtClient.__new__(client.QtClient)
