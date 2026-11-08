@@ -1,4 +1,4 @@
-"""Real temporary filesystem and JS execution; Win32 handles alone are substituted.
+"""Real temporary filesystem and JS execution; fault injection at move/GC seams.
 
 No native QtIFW, actual installation, AppData or application process is accessed.
 """
@@ -17,6 +17,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / 'tools'), str(ROOT / 'app')]
 import qtifw_trial_helper as helper
+import map_package_upgrade as upgrade
 import failure_sampling
 from build_qtifw_trial import release_text
 
@@ -31,8 +32,8 @@ class DataProtectionTests(unittest.TestCase):
         self.policy = dict(scope=str(self.scope), instance='fixture', payloadSource='a'*40, files={})
         helper.prepare(self.policy, self.target)
         self.work = self.target / 'program/work'
-        self.settings = self.write('nightmare-memory/ui-settings.json', b'{"sound":true}')
-        self.routes = self.write('nightmare-memory/custom-routes.json', b'{"routes":[]}')
+        self.settings = self.write('nightmare-memory/custom-galleries.json', b'{"schema":"xingtu-custom-gallery-v1","galleries":[]}')
+        self.routes = self.write('nightmare-memory/custom-routes.json', b'{"schema":"xingtu-custom-routes-v1","maps":{}}')
         self.unknown = self.write('nightmare-memory/personal.txt', b'unknown, keep')
         self.outside = self.target / 'personal.txt'
         self.outside.write_bytes(b'outside, keep')
@@ -49,19 +50,23 @@ class DataProtectionTests(unittest.TestCase):
         self.handles[fd] = path
         return fd
 
-    def fake_mark(self, fd):
-        # POSIX unlink is ONLY a test substitute for Win32 same-handle deletion.
-        self.handles[fd].unlink()
-
     def clear(self, mark=None, opener=None, **kwargs):
-        with patch.object(failure_sampling, '_open_delete_image', opener or self.fake_open), \
-                patch.object(failure_sampling, '_mark_delete_image', mark or self.fake_mark):
+        real_move = upgrade._move_owned
+        def move(source, destination, row, identity, **options):
+            if source in (self.settings, self.routes):
+                if opener:
+                    fd = opener(source)
+                    os.close(fd)
+                if mark:
+                    mark(source)
+            return real_move(source, destination, row, identity, **options)
+        with patch.object(upgrade, '_move_owned', side_effect=move):
             return helper.clear_data(self.policy, self.target, 'clear', **kwargs)
 
     def test_default_keep_does_not_scan_or_open_any_data(self):
         with patch.object(helper, 'data_files', side_effect=AssertionError('keep scanned')):
             self.assertEqual(helper.clear_data(self.policy, self.target, 'keep')['cleared'], 0)
-        self.assertEqual(self.settings.read_bytes(), b'{"sound":true}')
+        self.assertEqual(self.settings.read_bytes(), b'{"schema":"xingtu-custom-gallery-v1","galleries":[]}')
         self.assertTrue(self.routes.exists())
 
     def test_confirmed_clear_only_exact_owned_paths_and_repeat_is_safe(self):
@@ -69,43 +74,55 @@ class DataProtectionTests(unittest.TestCase):
         self.assertFalse(self.settings.exists())
         self.assertFalse(self.routes.exists())
         self.assertEqual(self.clear()['cleared'], 0)
+        self.assertFalse((self.target / helper.CLEAR_STATE).exists())
         self.assertEqual(self.unknown.read_bytes(), b'unknown, keep')
         self.assertEqual(self.outside.read_bytes(), b'outside, keep')
 
-    def test_mid_clear_failure_leaves_remaining_bytes_and_can_retry(self):
+    def test_mid_clear_failure_restores_all_bytes_and_can_retry(self):
         def fail_second(fd):
-            if self.handles[fd] == self.routes:
+            if fd == self.routes:
                 raise OSError('synthetic deletion failure')
-            self.fake_mark(fd)
+            return None
         with self.assertRaisesRegex(OSError, 'synthetic'):
             self.clear(fail_second)
-        self.assertFalse(self.settings.exists())
-        self.assertEqual(self.routes.read_bytes(), b'{"routes":[]}')
+        self.assertTrue(self.settings.exists())
+        self.assertEqual(self.routes.read_bytes(), b'{"schema":"xingtu-custom-routes-v1","maps":{}}')
         self.assertEqual(self.unknown.read_bytes(), b'unknown, keep')
-        self.assertEqual(self.clear()['cleared'], 1)
+        self.assertEqual(self.clear()['cleared'], 2)
 
-    def test_actual_undo_entry_reports_partial_failure_and_allows_retry(self):
-        from unittest.mock import Mock
-        (self.scope / "qtifw-trial-policy.json").write_text(json.dumps(self.policy))
-        (self.target / "trial-select-data.json").write_text(json.dumps(dict(choice="clear", operation="purge")))
-        def fail_second(fd):
-            if self.handles[fd] == self.routes:
-                raise OSError("synthetic mid-clear failure")
-            self.fake_mark(fd)
-        with patch.object(helper, "__file__", str(self.scope / "helper.py")), \
-                patch.object(sys, "argv", ["helper", "undo-data", str(self.target)]), \
-                patch('qtifw_trial_lease.verified_uninstaller_lease', return_value=Mock()), \
-                patch.object(failure_sampling, '_open_delete_image', self.fake_open), \
-                patch.object(failure_sampling, '_mark_delete_image', fail_second), redirect_stdout(StringIO()):
-            self.assertEqual(helper.main(), 2)
-            receipt = json.loads((self.target / "trial-data.json").read_bytes())
-            self.assertFalse(receipt["success"])
-            self.assertEqual(receipt["status"], "incomplete")
-            self.assertEqual(self.routes.read_bytes(), b'{"routes":[]}')
-            with patch.object(failure_sampling, '_mark_delete_image', self.fake_mark):
-                self.assertEqual(helper.main(), 0)
-        self.assertTrue(json.loads((self.target / "trial-data.json").read_bytes())["success"])
-        self.assertEqual(self.unknown.read_bytes(), b'unknown, keep')
+    def test_interrupted_move_recovers_and_retries(self):
+        real = upgrade._move_owned
+        def interrupt(source, destination, *args, **kwargs):
+            real(source, destination, *args, **kwargs)
+            raise KeyboardInterrupt()
+        with patch.object(upgrade, '_move_owned', side_effect=interrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                helper.clear_data(self.policy, self.target, 'clear')
+        self.assertTrue((self.target / helper.CLEAR_STATE / 'journal.json').exists())
+        self.assertEqual(self.clear()['cleared'], 2)
+        self.assertFalse((self.target / helper.CLEAR_STATE).exists())
+        self.assertEqual(self.clear()['cleared'], 0)
+
+    def test_committed_cleanup_failure_is_persistent_and_retry_finishes_gc(self):
+        import star_map_import as files
+        with patch.object(files, '_rollback_published', side_effect=OSError('GC failure')):
+            with self.assertRaisesRegex(OSError, 'GC failure'):
+                self.clear()
+        journal = json.loads((self.target / helper.CLEAR_STATE / 'journal.json').read_bytes())
+        self.assertEqual(journal['status'], 'committed')
+        self.assertFalse(self.settings.exists())
+        self.assertFalse(self.routes.exists())
+        self.assertEqual(self.clear()['cleared'], 0)
+        self.assertFalse((self.target / helper.CLEAR_STATE).exists())
+
+    def test_valid_unknown_json_at_all_fixed_paths_is_preserved_in_receipt(self):
+        for name in helper.SETTINGS_FILES:
+            self.write(name, b'{"personal":"unknown"}')
+        result = self.clear()
+        self.assertEqual(result['cleared'], 0)
+        self.assertEqual(len(result['preserved']), 6)
+        for name in helper.SETTINGS_FILES:
+            self.assertEqual((self.work / name).read_bytes(), b'{"personal":"unknown"}')
 
     def test_install_rollback_cannot_consume_a_clear_choice_without_purge(self):
         (self.scope / "qtifw-trial-policy.json").write_text(json.dumps(self.policy))
@@ -130,9 +147,10 @@ class DataProtectionTests(unittest.TestCase):
 
     def test_replaced_or_changed_file_after_plan_is_not_deleted(self):
         def changed(path):
-            path.write_bytes(b'foreign replacement')
+            if path == self.settings:
+                path.write_bytes(b'foreign replacement')
             return self.fake_open(path)
-        with self.assertRaisesRegex(ValueError, 'data-changed'):
+        with self.assertRaisesRegex(ValueError, 'changed'):
             self.clear(opener=changed)
         self.assertEqual(self.settings.read_bytes(), b'foreign replacement')
         self.assertTrue(self.routes.exists())

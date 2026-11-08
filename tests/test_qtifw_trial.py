@@ -38,7 +38,7 @@ class TrialTests(unittest.TestCase):
         work.mkdir(parents=True)
         (work / "settings.json").write_bytes(b"synthetic settings")
         (work / "nightmare-memory").mkdir()
-        (work / "nightmare-memory/ui-settings.json").write_bytes(b'{"synthetic": true}')
+        (work / "nightmare-memory/custom-galleries.json").write_bytes(b'{"schema":"xingtu-custom-gallery-v1","galleries":[]}')
         (self.target / "personal.txt").write_bytes(b"outside declared data scope")
         return work
 
@@ -294,7 +294,7 @@ class TrialTests(unittest.TestCase):
         self.assertEqual(clear_data(self.policy, self.target, "keep")["cleared"], 0)
         self.assertEqual((work / "settings.json").read_bytes(), b"synthetic settings")
         self.assertEqual(clear_data(self.policy, self.target, "clear")["cleared"], 1)
-        self.assertFalse((work / "nightmare-memory/ui-settings.json").exists())
+        self.assertFalse((work / "nightmare-memory/custom-galleries.json").exists())
         self.assertEqual((work / "settings.json").read_bytes(), b"synthetic settings")
         self.assertEqual((self.target / "personal.txt").read_bytes(), b"outside declared data scope")
         self.assertTrue((work / "map-packages/import.lock").exists())
@@ -319,10 +319,10 @@ class TrialTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "Windows cleanup preflight")
     def test_hardlink_rejects_clear_before_deleting_other_files(self):
         work = self.seed()
-        os.link(work / "nightmare-memory/ui-settings.json", self.scope / "external-hardlink")
+        os.link(work / "nightmare-memory/custom-galleries.json", self.scope / "external-hardlink")
         with self.assertRaisesRegex(ValueError, "exclusive-file"):
             clear_data(self.policy, self.target, "clear")
-        self.assertEqual((self.scope / "external-hardlink").read_bytes(), b'{"synthetic": true}')
+        self.assertEqual((self.scope / "external-hardlink").read_bytes(), b'{"schema":"xingtu-custom-gallery-v1","galleries":[]}')
 
 
 if __name__ == "__main__":

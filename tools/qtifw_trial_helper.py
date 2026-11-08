@@ -6,7 +6,7 @@ files are quarantined, never deleted or treated as a general rollback engine.
 from __future__ import annotations
 
 import argparse
-from contextlib import ExitStack, closing
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -172,10 +172,18 @@ SETTINGS_FILES = tuple("nightmare-memory/" + name for name in (
     "tutorial-state.json", "chest-auto-tap.json"))
 
 
-def data_files(policy, target):
+SETTINGS_SCHEMAS = {
+    "custom-routes.json": ("xingtu-custom-routes-v1", "maps", dict),
+    "custom-galleries.json": ("xingtu-custom-gallery-v1", "galleries", list),
+    "chest-auto-tap.json": ("xingtu-chest-auto-tap-v1", None, None),
+}
+
+
+def data_files(policy, target, *, preserved=None):
     target, _ = bound_owner(policy, target)
     work = _safe(target / "program/work")
     result = []
+    preserved = [] if preserved is None else preserved
     for name in SETTINGS_FILES:
         path = _safe(work / name)
         if not path.exists():
@@ -183,25 +191,33 @@ def data_files(policy, target):
         info = path.stat()
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
             raise ValueError("data-object-not-exclusive-file")
-        # Malformed/foreign data is retained for manual review.
+        # Only application-specific schemas grant ownership. Legacy untagged
+        # preferences have no reliable provenance and remain user data.
         try:
             raw = path.read_bytes()
-            if not isinstance(json.loads(raw), dict):
-                continue
+            value = json.loads(raw)
+            contract = SETTINGS_SCHEMAS.get(path.name)
+            owned = (isinstance(value, dict) and contract is not None
+                     and value.get("schema") == contract[0]
+                     and (contract[1] is None or isinstance(value.get(contract[1]), contract[2])))
         except (ValueError, UnicodeError):
+            owned = False
+        if not owned:
+            preserved.append(dict(path="work/" + name, reason="ownership-unverified"))
             continue
         result.append((path, dict(bytes=info.st_size, sha256=hashlib.sha256(raw).hexdigest(),
-                                  identity=(info.st_dev, info.st_ino))))
+                                  identity=[info.st_dev, info.st_ino])))
     # Reuse authoritative package ownership, including changed/unknown retention.
     # Keep metadata as retry evidence; never remove receipts ahead of payloads.
     if (work / "map-packages").exists():
         from map_package_removal import _plan_locked
         plan = _plan_locked(target / "program")
+        preserved.extend(plan["preserved"])
         for row in plan["entries"]:
             if row["path"] not in plan["witnesses"] and row["path"] != "work/map-packages/" + row["packageId"] + ".json":
                 path = _safe(target / "program" / row["path"])
                 result.append((path, dict(bytes=row["bytes"], sha256=row["sha256"],
-                                          identity=row["identity"])))
+                                          identity=row["identity"], packageId=row["packageId"])))
     return target, result
 
 
@@ -221,31 +237,96 @@ def clear_data(policy, target, choice, *, native_lease=False):
         lease = resource_write_lock(program)
     with lease:
         assert_resources_ready(program)
-        _, paths = data_files(policy, target)
+        recover_clear(target, program)
+        preserved = []
+        _, paths = data_files(policy, target, preserved=preserved)
         if len(paths) > 50000:
             raise ValueError("trial-data-limit")
-        # Reuse existing same-handle Win32 deletion primitives. Open every file
-        # before marking any; sharing conflicts/links reject the whole preflight.
-        from failure_sampling import _open_delete_image, _mark_delete_image
-        with ExitStack() as stack:
-            handles = []
-            for path, expected in paths:
-                fd = _open_delete_image(path)
-                stack.callback(os.close, fd)
-                current = os.fstat(fd)
-                previous = path.stat()
-                digest = hashlib.sha256()
-                while block := os.read(fd, 1024 * 1024):
-                    digest.update(block)
-                if (current.st_nlink != 1 or not stat.S_ISREG(current.st_mode)
-                        or (current.st_dev, current.st_ino) != (previous.st_dev, previous.st_ino)
-                        or (current.st_dev, current.st_ino) != tuple(expected["identity"])
-                        or current.st_size != expected["bytes"] or digest.hexdigest() != expected["sha256"]):
-                    raise ValueError("trial-data-changed")
-                handles.append(fd)
-            for fd in handles:
-                _mark_delete_image(fd)
-    return dict(dataChoice="clear", cleared=len(paths), lockFilePreserved=True)
+        if paths:
+            import map_package_upgrade as upgrade
+            directory = _safe(target / CLEAR_STATE)
+            directory.mkdir(exist_ok=False)
+            rows = [dict(path=path.relative_to(program).as_posix(), **expected)
+                    for path, expected in paths]
+            journal = dict(schema="qtifw-data-clear-v1", rootIdentity=upgrade._identity(program.stat()),
+                           status="preparing", entries=rows)
+            upgrade._write_journal(directory, journal)
+            upgrade._directory_sync(target)
+            try:
+                if any(path.stat().st_dev != directory.stat().st_dev for path, _ in paths):
+                    raise ValueError("trial-clear-cross-volume")
+                for number, row in enumerate(rows):
+                    upgrade._move_owned(_safe(program / row["path"]),
+                        _safe(directory / str(number)), row, row["identity"], linkless=True)
+                    upgrade._directory_sync(program.joinpath(row["path"]).parent)
+                    upgrade._directory_sync(directory)
+                upgrade._write_journal(directory, dict(journal, status="committed"))
+            except Exception:
+                recover_clear(target, program)
+                raise
+            recover_clear(target, program)
+    return dict(dataChoice="clear", cleared=len(paths), preserved=preserved, lockFilePreserved=True)
+
+
+CLEAR_STATE = ".qtifw-data-clear"
+
+
+def recover_clear(target, program):
+    """Under the resource lease: restore precommit moves, finish committed GC.
+
+    Each numbered object is bound to its original identity and bytes. A journal
+    precedes every move, so even interruption between rename and journal update
+    is recoverable. No overwrite is permitted during restoration.
+    """
+    import map_package_upgrade as upgrade
+    import star_map_import as files
+    from map_package_removal import _valid_target
+    directory = _safe(target / CLEAR_STATE)
+    if not directory.exists():
+        return
+    if not any(directory.iterdir()):
+        directory.rmdir()
+        return
+    journal = upgrade._read_json(_safe(directory / "journal.json"))
+    if (journal.get("schema") != "qtifw-data-clear-v1"
+            or journal.get("rootIdentity") != upgrade._identity(program.stat())
+            or journal.get("status") not in {"preparing", "committed"}
+            or not isinstance(journal.get("entries"), list) or len(journal["entries"]) > 50000):
+        raise ValueError("trial-clear-recovery-invalid")
+    seen = set()
+    for row in journal["entries"]:
+        relative = row["path"]
+        from map_package_removal import _validate_relative
+        _validate_relative(relative)
+        if (relative in seen or (relative not in {"work/" + name for name in SETTINGS_FILES}
+                and not _valid_target(row.get("packageId", ""), relative))):
+            raise ValueError("trial-clear-recovery-invalid-path")
+        seen.add(relative)
+        upgrade._valid_identity(list(row["identity"]))
+        upgrade._digest(row["sha256"])
+    committed = journal["status"] == "committed"
+    for number, row in enumerate(journal["entries"]):
+        retained = _safe(directory / str(number))
+        original = _safe(program / row["path"])
+        if retained.exists():
+            if not upgrade._matches(retained, row, row["identity"]):
+                raise ValueError("trial-clear-recovery-object-changed")
+            if committed:
+                if not files._rollback_published(retained, tuple(row["identity"]), row["sha256"]):
+                    raise ValueError("trial-clear-cleanup-required")
+            else:
+                upgrade._move_owned(retained, original, row, row["identity"], linkless=True)
+                upgrade._directory_sync(original.parent)
+            upgrade._directory_sync(directory)
+        elif not committed and not upgrade._matches(original, row, row["identity"]):
+            raise ValueError("trial-clear-recovery-original-missing-or-changed")
+    # Unknown objects (including interrupted metadata writes) are never erased.
+    extras = [path for path in directory.iterdir() if path.name != "journal.json"]
+    if extras:
+        raise ValueError("trial-clear-recovery-extra-files")
+    (directory / "journal.json").unlink()
+    directory.rmdir()
+    upgrade._directory_sync(target)
 
 
 def receipt(policy, target, name, value):
@@ -329,7 +410,8 @@ def main():
             from qtifw_trial_lease import hold_uninstaller_lease
             result = hold_uninstaller_lease(target)
         elif args.action == "inspect-data":
-            target, paths = data_files(policy, args.target)
+            preserved = []
+            target, paths = data_files(policy, args.target, preserved=preserved)
             if policy.get("allowNewTargets"):
                 for path in target.rglob("*"):
                     _safe(path)
@@ -338,7 +420,7 @@ def main():
                         raise ValueError("installation-object-not-exclusive-file")
             with resource_write_lock(target / "program"):
                 assert_resources_ready(target / "program")
-            result = dict(dataFiles=len(paths), scope="program/work only")
+            result = dict(dataFiles=len(paths), preserved=preserved, scope="program/work only")
         else:
             target, _ = bound_owner(policy, args.target)
             if not policy.get("faultsAllowed"):
