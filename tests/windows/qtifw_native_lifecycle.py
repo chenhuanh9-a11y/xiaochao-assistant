@@ -1,7 +1,6 @@
-"""Two-file native QtIFW review regression; never launches the synthetic EXE."""
+"""Native QtIFW lifecycle regression; never launches the synthetic EXE."""
 from pathlib import Path
-import argparse, hashlib, json, os, subprocess, sys, time, uuid
-import shutil
+import argparse, hashlib, json, os, stat, subprocess, sys, time, uuid
 import xml.etree.ElementTree as ET
 
 parser=argparse.ArgumentParser(description=__doc__)
@@ -28,6 +27,10 @@ if args.portable:
     os.environ['TEMP']=os.environ['TMP']=str(runroot/'temp')
 instance=uuid.uuid4().hex;(runroot/'targets').mkdir();(runroot/'.qtifw-trial-scope').write_text(instance)
 values={'星图.exe':b'synthetic EXE - do not execute\n','_internal/runtime.txt':b'expected runtime\n'}
+if args.portable:
+    values.update({n:b'deduplicated native payload\n'*3000 for n in
+                   ['_internal/canonical.bin','_internal/nested/alias-a.bin','runtime/alias-b.bin']})
+    values['_internal/python313.dll']=(Path(sys.base_prefix)/'python313.dll').read_bytes()
 policy=dict(scope=str(runroot),instance=instance,payloadSource='a'*40,allowNewTargets=True,fullUninstall=True,
             portable=args.portable,faultsAllowed=False,files={n:dict(bytes=len(b),sha256=hashlib.sha256(b).hexdigest()) for n,b in values.items()})
 if args.portable:policy.pop('scope')
@@ -48,6 +51,7 @@ for name in ['tools/qtifw_trial_helper.py','tools/qtifw_trial_lease.py']:
 code=call('freeze',[sys.executable,'-m','PyInstaller','--noconfirm','--clean',
     '--onefile' if old else '--onedir','--console','--name','qtifw-trial-helper',
     '--paths',ROOT/'app','--paths',sources,'--exclude-module','PySide6','--exclude-module','numpy','--exclude-module','cv2',
+    *(['--exclude-module','PIL'] if args.portable else []),
     '--distpath',runroot/'helper','--workpath',runroot/'freeze-work','--specpath',runroot,
     '--add-data',str(runroot/'qtifw-trial-policy.json')+';.',sources/'qtifw_trial_helper.py'],180)
 assert code==0, 'freeze failed'
@@ -58,18 +62,26 @@ for name in files:
     ET.SubElement(resources,'file',alias='helper.exe' if old else name).text=str(helper_root/name)
 ET.ElementTree(qrc).write(runroot/'trial.qrc',encoding='utf-8',xml_declaration=True)
 
-def build(name,broken=False):
+def build(name,broken=False,copy_fault=False):
     case=runroot/name;case.mkdir();config=case/'config';config.mkdir()
     meta=case/'packages'/PACKAGE/'meta';meta.mkdir(parents=True)
-    for filename in ['component.js','install-location.ui']:(meta/filename).write_bytes(source('tools/qtifw_trial/'+filename))
+    (meta/'install-location.ui').write_bytes(source('tools/qtifw_trial/install-location.ui'))
     write_xml(meta/'package.xml','Package',dict(DisplayName='Synthetic program',Version='1.0.0',ReleaseDate='2026-11-08',Default='true',Script='component.js',Dependencies=DATA))
     tree=ET.parse(meta/'package.xml');ET.SubElement(ET.SubElement(tree.getroot(),'UserInterfaces'),'UserInterface').text='install-location.ui';tree.write(meta/'package.xml',encoding='utf-8')
     data=case/'packages'/PACKAGE/'data/program'
     for n,b in values.items():
         p=data/n;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b'CORRUPTED\n' if broken and n.endswith('runtime.txt') else b)
-    dm=case/'packages'/DATA/'meta';dm.mkdir(parents=True);(dm/'data-component.js').write_bytes(source('tools/qtifw_trial/data-component.js'))
+    copies=[]
+    if args.portable:
+        from build_qtifw_trial import deduplicate_payload
+        copies,stats=deduplicate_payload(case,{'files':policy['files']},helper_root)
+        assert stats['copiedProgramFiles']==3,stats
+        if copy_fault:
+            copies.append(['@TargetDir@/program/missing.bin','@TargetDir@/program/failed-copy.bin'])
+    (meta/'component.js').write_bytes(source('tools/qtifw_trial/component.js').replace(b'__PROGRAM_COPIES__',json.dumps(copies).encode('utf-8')))
+    dm=case/'packages'/DATA/'meta';dm.mkdir(parents=True)
+    (dm/'data-component.js').write_bytes(source('tools/qtifw_trial/data-component.js').replace(b'__SUPPORT_FILES__',json.dumps(files).encode('utf-8')))
     write_xml(dm/'package.xml','Package',dict(DisplayName='Synthetic cleanup',Version='1.0.0',ReleaseDate='2026-11-08',Virtual='true',Script='data-component.js'))
-    if args.portable:shutil.copytree(helper_root,dm.parent/'data/_installer-support')
     text=source('tools/qtifw_trial/controller.js').decode('utf-8').replace('__SCOPE__',json.dumps('' if args.portable else runroot.as_posix())).replace('__INSTANCE__',json.dumps(instance)).replace('__SUPPORT_FILES__',json.dumps(files))
     # Only OS shortcut locations are redirected. Core helper and native
     # operations are the actual PR scripts, with no simulated algorithms.
@@ -83,21 +95,37 @@ def build(name,broken=False):
 
 report=dict(revision=args.baseline_ref if old else subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
             uncommittedChanges=bool(subprocess.check_output(['git','status','--porcelain'],cwd=ROOT).strip()),
-            baselineCounterexamples=old,portable=args.portable,syntheticFiles=2,actualProgramLaunched=False)
+            baselineCounterexamples=old,portable=args.portable,syntheticFiles=len(values),actualProgramLaunched=False)
 
-def install(name,broken=False,post_fault=False):
-    case,setup,target=build(name,broken)
-    args=[setup,'--reject-messages','--confirm-command']
+def install(name,broken=False,post_fault=False,copy_fault=False):
+    case,setup,target=build(name,broken,copy_fault)
+    command=[setup,'--reject-messages','--confirm-command']
     if post_fault:
         script=case/'post-fault.js';script.write_text('''eval(installer.readFile(":/metadata/installer-config/controller_js", "UTF-8"));
 var Original=Controller;Controller=function(){
 installer.installationFinished.connect(function(){if(installer.status===QInstaller.Success)installer.performOperation("Delete",[installer.value("TargetDir")+"/program/_internal/runtime.txt"]);});
 Original.call(this);};Controller.prototype=Original.prototype;
-''',encoding='utf-8');args+=['--script',script]
-    code=call(name+'-install',args+['install','TrialTarget='+str(target)])
+''',encoding='utf-8');command+=['--script',script]
+    code=call(name+'-install',command+['install','TrialTarget='+str(target)])
     report[name]=dict(exitCode=code,mainPresent=(target/'program/星图.exe').exists(),maintenancePresent=(target/'trial-maintenance.exe').exists())
+    if code==0 and not broken and not post_fault:
+        for n,b in values.items():
+            assert (target/'program'/n).read_bytes()==b,n
+            assert (target/'program'/n).stat().st_nlink==1,n
+        if args.portable:
+            for path in (target/'_installer-support').rglob('*'):
+                if path.is_file():
+                    assert not path.stat().st_file_attributes & stat.FILE_ATTRIBUTE_READONLY,path
     print(which,name,report[name],flush=True)
     return case,setup,target
+
+if args.portable:
+    outside=runroot/'copy-fault-outside.txt';outside.write_bytes(b'outside preserved')
+    _,_,target=install('copy-fault',copy_fault=True)
+    assert report['copy-fault']['exitCode']!=0
+    assert not (target/'program').exists() and not (target/'_installer-support').exists()
+    assert outside.read_bytes()==b'outside preserved'
+    report['nativeCopyFailureRolledBack']=True
 
 case,_,target=install('corrupt-archive',broken=True)
 assert report['corrupt-archive']['exitCode']==0 if old else report['corrupt-archive']['exitCode']!=0
@@ -164,7 +192,10 @@ case,_,target=install('pending');assert report['pending']['exitCode']==0
 journal=target/'program/work/map-packages/pending-base-repair.json';journal.parent.mkdir(parents=True,exist_ok=True);journal.write_text('{"syntheticInterrupted":true}')
 outside=target.parent/'outside-pending.txt';outside.write_bytes(b'keep external')
 code=call('pending-purge',[target/'trial-maintenance.exe','--reject-messages','--confirm-command','purge'])
-time.sleep(1.5);report['pendingPurge']=dict(exitCode=code,targetRemains=target.exists(),outsidePreserved=outside.read_bytes()==b'keep external')
+for _ in range(100):
+    if not target.exists():break
+    time.sleep(.1)
+report['pendingPurge']=dict(exitCode=code,targetRemains=target.exists(),outsidePreserved=outside.read_bytes()==b'keep external')
 assert report['pendingPurge']['outsidePreserved'], 'External sentinel was modified'
 assert code!=0 if old else code==0 and not target.exists()
 if old:

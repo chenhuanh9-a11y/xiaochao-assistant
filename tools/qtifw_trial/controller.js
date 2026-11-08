@@ -33,6 +33,16 @@ function Controller() {
         if (!installer.performOperation("Copy", [":/qtifw-trial/" + relative, support + "/" + relative]))
             throw new Error("无法读取随包安装工具");
     }
+    // QRC copies inherit read-only permissions on Windows. Normalize this
+    // private staging tree before native Copy records permanent support files;
+    // otherwise Copy UNDO cannot delete them during a failed installation.
+    if (portable) {
+        var attrib = installer.environmentVariable("SystemRoot") + "/System32/attrib.exe";
+        var writable = installer.execute(attrib, ["-R", installer.toNativeSeparators(support + "/*"), "/S"]);
+        if (writable.length !== 2 || writable[1] !== 0)
+            throw new Error("无法准备可写的安装支持文件。");
+    }
+    installer.setValue("TrialSupport", support);
     installer.setValue("TrialHelper", helper);
     // The maintenance executable is an uninstaller, not a package manager UI.
     if (!installer.isInstaller() && !installer.isCommandLineInstance()) installer.setUninstaller();

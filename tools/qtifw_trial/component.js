@@ -85,6 +85,18 @@ Component.prototype.createOperations = function() {
         if (paused.length !== 2 || paused[1] !== 0) throw new Error("测试中断点未完成");
     }
     component.createOperations();
+    // Sources are either the dependency's permanent support or an extracted
+    // canonical file. Default Copy UNDO removes aliases before Extract UNDO.
+    var copies = __PROGRAM_COPIES__;
+    var parents = {};
+    for (var i = 0; i < copies.length; ++i) {
+        var parent = copies[i][1].substring(0, copies[i][1].lastIndexOf("/"));
+        if (!parents[parent]) {
+            component.addOperation("Mkdir", parent);
+            parents[parent] = true;
+        }
+        component.addOperation("Copy", copies[i][0], copies[i][1]);
+    }
     component.addOperation("CreateShortcut", "@TargetDir@/program/星图.exe",
         "@DesktopDir@/星图（试用版）.lnk", "workingDirectory=@TargetDir@/program");
     component.addOperation("CreateShortcut", "@TargetDir@/program/星图.exe",
