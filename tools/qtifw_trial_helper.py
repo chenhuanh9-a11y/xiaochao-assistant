@@ -22,6 +22,50 @@ from resource_transaction import _safe, resource_write_lock, assert_resources_re
 
 OWNER = ".qtifw-trial-owner.json"
 
+# Only exact, path-free business codes may cross the helper/page boundary.
+BUSINESS_ERROR_CODES = frozenset({
+    "absolute-install-directory-required",
+    "completed-trial-without-maintenance-requires-inspection",
+    "data-object-not-exclusive-file",
+    "explicit-data-choice-required",
+    "fault-injection-disabled",
+    "full-uninstall-policy-required",
+    "full-uninstall-requires-clear",
+    "inside-existing-installation",
+    "install-directory-not-empty",
+    "installation-object-not-exclusive-file",
+    "invalid-install-directory",
+    "invalid-program-inventory",
+    "legacy-inno-migration-required",
+    "maintenance-not-created",
+    "maps-require-new-installation",
+    "migration-requires-new-installation",
+    "native-uninstall-not-complete",
+    "outside-trial-targets",
+    "program-incomplete",
+    "program-object-not-exclusive-file",
+    "recovery-destination-exists",
+    "resource-linked-target",
+    "system-or-network-directory-not-supported",
+    "trial-data-changed",
+    "trial-data-limit",
+    "trial-owner-mismatch",
+    "trial-owner-target-mismatch",
+    "trial-scope-mismatch",
+    "unowned-program-collision",
+    "use-existing-maintenance-tool",
+    "work-is-not-a-directory",
+})
+
+
+def public_error_reason(error):
+    if isinstance(error, ValueError) and len(error.args) == 1:
+        code = error.args[0]
+        if isinstance(code, str) and code in BUSINESS_ERROR_CODES:
+            return code
+    return "helper-operation-failed"
+
+
 
 def write_owner(target, owner, *, new=False):
     marker = _safe(target / OWNER)
@@ -335,14 +379,15 @@ def main():
         receipt(policy, args.target, args.action, dict(success=True, **result))
         print(json.dumps(result, ensure_ascii=True))
         return 0
-    except (ValueError, OSError, KeyError) as error:
+    except Exception as error:
+        reason = public_error_reason(error)
         if args.action in {"data", "undo-data", "verify", "verify-program"}:
             try:
                 name = "data" if args.action in {"data", "undo-data"} else args.action
-                receipt(policy, args.target, name, dict(success=False, status="incomplete", reason="helper-operation-failed"))
+                receipt(policy, args.target, name, dict(success=False, status="incomplete", reason=reason))
             except (ValueError, OSError):
                 pass  # Native log still records the original failure.
-        print(json.dumps(dict(success=False, reason="helper-operation-failed"), ensure_ascii=True))
+        print(json.dumps(dict(success=False, reason=reason), ensure_ascii=True))
         return 2
 
 

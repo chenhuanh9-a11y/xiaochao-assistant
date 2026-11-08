@@ -52,6 +52,9 @@ class MigrationTests(unittest.TestCase):
         with patch('client_settings.runtime_paths', return_value=RuntimePaths(self.new, True)):
             service = SettingsService(self.new)
             try:
+                self.assertFalse(service.loadFailed)
+                self.assertEqual(service.path, self.new / 'work/nightmare-memory/ui-settings.json')
+                self.assertEqual(service.persistedValues['actionHotkeys'], settings['actionHotkeys'])
                 self.assertIs(service.persistedValues['automaticFailureEvidence'], False)
             finally:
                 service.shutdown()
