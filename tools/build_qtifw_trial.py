@@ -165,6 +165,8 @@ def main():
     meta = output / "packages" / PACKAGE / "meta"
     meta.mkdir()
     config.mkdir()
+    shutil.copy2(build._local_file(args.stage, "_internal/" + build.BRAND_ICON), config / "xingtu.ico")
+    shutil.copy2(build._local_file(args.stage, "_internal/assets/brand/xingtu-round.png"), config / "xingtu-window.png")
     scripts = ROOT / "tools/qtifw_trial"
     controller = (scripts / "controller.js").read_text(encoding="utf-8")
     controller = controller.replace("__SCOPE__", json.dumps("" if args.release else output.as_posix())).replace("__INSTANCE__", json.dumps(instance))
@@ -200,6 +202,7 @@ def main():
         RemoveTargetDir="true", AllowNonAsciiCharacters="true", AllowSpaceInPath="true",
         AllowRepositoriesForOfflineInstaller="false", SaveDefaultRepositories="false", PersistentLocalCache="false",
         ControlScript="controller.js", StyleSheet="trial.qss", WizardStyle="Modern",
+        InstallerApplicationIcon="xingtu", InstallerWindowIcon="xingtu-window.png",
         WizardShowPageList="false", WizardDefaultWidth="680", WizardDefaultHeight="440"))
     # Include both IFW pages and Qt standard buttons. Explicit translations
     # also apply to the generated maintenance tool, independent of OS locale.
