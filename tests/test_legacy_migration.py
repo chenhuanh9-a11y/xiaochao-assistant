@@ -1,5 +1,6 @@
 """Synthetic old installations only; no registry or real user directories."""
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -20,7 +21,7 @@ class MigrationTests(unittest.TestCase):
         self.write('_internal/installation-profile.json', json.dumps(dict(product='星图',
             installerInstance=dict(product='星图', id='production', appId=PRODUCTION_APP_ID))))
         self.write('work/nightmare-memory/ui-settings.json', json.dumps(dict(
-            automaticFailureScreenshots=False, actionHotkeys=[''] * 9 + ['Alt+F10'])))
+            automaticFailureEvidence=False, actionHotkeys=[''] * 9 + ['Alt+F10'])))
         for name in ('custom-galleries.json', 'custom-routes.json', 'update-state.json', 'tutorial-state.json'):
             self.write('work/nightmare-memory/' + name, '{}')
         for name in ('nightmare-memory/samples/a.png', 'difficult-memory/confirmed.jsonl',
@@ -43,10 +44,23 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(result, migration.migrate(self.old, self.new))
         self.assertEqual(before, self.snapshot())
         settings = json.loads((self.new / 'work/nightmare-memory/ui-settings.json').read_text())
-        self.assertIs(settings['automaticFailureScreenshots'], False)
+        self.assertIs(settings['automaticFailureEvidence'], False)
+        from client_settings import SettingsService
+        from client_paths import RuntimePaths
+        from PySide6.QtGui import QGuiApplication
+        app = QGuiApplication.instance() or QGuiApplication([])
+        with patch('client_settings.runtime_paths', return_value=RuntimePaths(self.new, True)):
+            service = SettingsService(self.new)
+            try:
+                self.assertIs(service.persistedValues['automaticFailureEvidence'], False)
+            finally:
+                service.shutdown()
         self.assertEqual(settings['actionHotkeys'][9], 'Alt+F10')
         self.assertFalse((self.new / 'work/nightmare-memory/failures').exists())
-        self.assertNotIn(str(self.old), (self.new / 'legacy-migration.json').read_text())
+        journal = (self.new / 'legacy-migration.json').read_text()
+        self.assertNotIn(str(self.old), journal)
+        self.assertNotIn('ui-settings.json', journal)
+        self.assertNotIn('a.png', journal)
 
     def test_program_files_layout(self):
         moved = self.root / 'Program Files/XiaochaoAssistant'
@@ -102,13 +116,108 @@ class MigrationTests(unittest.TestCase):
         with self.assertRaisesRegex(migration.MigrationError, 'production-identity-required'):
             migration.migrate(self.old, self.new)
 
-    def test_changed_source_and_links_rejected(self):
+    def test_unexpected_staging_file_rejected(self):
         self.new.mkdir(parents=True)
         (self.new / '.legacy-migration-work').mkdir()
         (self.new / '.legacy-migration-work/extra').write_text('conflict')
         with self.assertRaises(migration.MigrationError):
             migration.migrate(self.old, self.new)
         self.assertFalse((self.new / 'work').exists())
+
+    def test_overlap_rejected_before_any_write(self):
+        before = sorted(str(p.relative_to(self.old)) for p in self.old.rglob('*'))
+        alias = self.root / 'old-alias'
+        alias.symlink_to(self.old, target_is_directory=True)
+        for target in (self.old, self.old / 'new', self.old / 'missing/../new',
+                       self.old.parent, alias / 'new'):
+            with self.subTest(target=target):
+                with self.assertRaisesRegex(migration.MigrationError, 'overlapping-roots'):
+                    migration.migrate(self.old, target)
+                self.assertEqual(before, sorted(str(p.relative_to(self.old)) for p in self.old.rglob('*')))
+
+    def test_unreadable_directory_blocks_scan(self):
+        # Inject scandir denial: chmod alone cannot deny a root test process.
+        original = os.scandir
+        blocked = self.old / 'work/nightmare-memory/samples'
+        def scandir(path):
+            if Path(path) == blocked:
+                raise PermissionError('private absolute path')
+            return original(path)
+        with patch.object(os, 'scandir', side_effect=scandir):
+            with self.assertRaisesRegex(migration.MigrationError, 'source-scan-error'):
+                migration.migrate(self.old, self.new)
+        self.assertFalse((self.new / 'work').exists())
+        migration.migrate(self.old, self.new)
+
+    def test_corrupt_journal_preserved(self):
+        self.new.mkdir(parents=True)
+        path = self.new / 'legacy-migration.json'
+        valid = dict(schema=1, status='pending', source='a' * 64, files={})
+        bad = ['{broken', '[]', 'null', '{}']
+        for update in (dict(schema=True), dict(status=[]), dict(files=[]),
+                       dict(source=None), dict(files={'x': {}}),
+                       dict(files={'a'*64: dict(bytes=-1, sha256='b'*64)}),
+                       dict(files={'a'*64: dict(bytes=True, sha256='b'*64)}),
+                       dict(files={'a'*64: dict(bytes=1, sha256='bad')})):
+            bad.append(json.dumps({**valid, **update}))
+        for payload in bad:
+            with self.subTest(payload=payload):
+                path.write_text(payload)
+                with self.assertRaisesRegex(migration.MigrationError, 'invalid-journal'):
+                    migration.migrate(self.old, self.new)
+                self.assertEqual(path.read_text(), payload)
+                self.assertFalse((self.new / 'work').exists())
+                self.assertFalse(path.with_suffix('.new').exists())
+
+    def test_same_size_different_digest_rejected(self):
+        stage = self.new / '.legacy-migration-work/nightmare-memory/samples'
+        stage.mkdir(parents=True)
+        (stage / 'a.png').write_text('SYNTHETIC')
+        with self.assertRaisesRegex(migration.MigrationError, 'staging-conflict'):
+            migration.migrate(self.old, self.new)
+        self.assertFalse((self.new / 'work').exists())
+
+    def test_source_changes_during_migration_rejected(self):
+        original = migration.rename_no_replace
+        changed = False
+        def rename(source, target):
+            nonlocal changed
+            result = original(source, target)
+            if not changed:
+                changed = True
+                self.write('work/nightmare-memory/samples/a.png', 'SYNTHETIC')
+            return result
+        with patch.object(migration, 'rename_no_replace', side_effect=rename):
+            with self.assertRaisesRegex(migration.MigrationError, 'source-changed|copy-mismatch'):
+                migration.migrate(self.old, self.new)
+        self.assertFalse((self.new / 'work').exists())
+
+    def test_links_rejected(self):
+        for directory in (False, True):
+            link = self.old / 'work/nightmare-memory/linked'
+            link.symlink_to(self.old / ('work/user-routes' if directory else 'work/user-routes/a.json'),
+                            target_is_directory=directory)
+            with self.subTest(directory=directory):
+                with self.assertRaises(ValueError):
+                    migration.migrate(self.old, self.new)
+                self.assertFalse((self.new / 'work').exists())
+            link.unlink()
+
+    def test_crash_after_publication_resumes(self):
+        original = migration._save
+        def save(path, state):
+            if state['status'] == 'complete':
+                raise KeyboardInterrupt()
+            return original(path, state)
+        with patch.object(migration, '_save', side_effect=save):
+            with self.assertRaises(KeyboardInterrupt):
+                migration.migrate(self.old, self.new)
+        before = {p.relative_to(self.new / 'work'): p.read_bytes()
+                  for p in (self.new / 'work').rglob('*') if p.is_file()}
+        self.assertEqual(json.loads((self.new / 'legacy-migration.json').read_text())['status'], 'publishing')
+        migration.migrate(self.old, self.new)
+        self.assertEqual(before, {p.relative_to(self.new / 'work'): p.read_bytes()
+                                 for p in (self.new / 'work').rglob('*') if p.is_file()})
 
 
 if __name__ == '__main__':

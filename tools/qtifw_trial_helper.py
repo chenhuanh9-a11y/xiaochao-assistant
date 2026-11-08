@@ -339,10 +339,10 @@ def main():
         if args.action in {"data", "undo-data", "verify", "verify-program"}:
             try:
                 name = "data" if args.action in {"data", "undo-data"} else args.action
-                receipt(policy, args.target, name, dict(success=False, status="incomplete", reason=str(error)))
+                receipt(policy, args.target, name, dict(success=False, status="incomplete", reason="helper-operation-failed"))
             except (ValueError, OSError):
                 pass  # Native log still records the original failure.
-        print(json.dumps(dict(success=False, reason=str(error)), ensure_ascii=True))
+        print(json.dumps(dict(success=False, reason="helper-operation-failed"), ensure_ascii=True))
         return 2
 
 

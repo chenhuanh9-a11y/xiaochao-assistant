@@ -7,6 +7,7 @@ from pathlib import Path
 import hashlib
 import json
 import os
+import re
 import stat
 import uuid
 
@@ -40,6 +41,48 @@ def _save(path, value):
     temporary.replace(path)
 
 
+def _roots(source, program):
+    try:
+        source, program = Path(source).resolve(), Path(program).resolve()
+        if source == program or source.is_relative_to(program) or program.is_relative_to(source):
+            raise MigrationError('overlapping-roots')
+        return _safe(source), _safe(program)
+    except (OSError, RuntimeError):
+        raise MigrationError('invalid-roots') from None
+
+
+def _private_files(files):
+    return {hashlib.sha256(name.encode('utf-8')).hexdigest(): info
+            for name, info in files.items()}
+
+
+def _load_journal(journal):
+    try:
+        state = json.loads(journal.read_text(encoding='utf-8'))
+        if (not isinstance(state, dict) or set(state) - {'schema', 'status', 'files', 'source', 'error'}
+                or type(state.get('schema')) is not int or state['schema'] != 1
+                or state.get('status') not in {'pending', 'publishing', 'complete'}
+                or not isinstance(state.get('files'), dict)):
+            raise ValueError()
+        digest = lambda value: isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value)
+        if not digest(state.get('source')):
+            raise ValueError()
+        if 'error' in state and (not isinstance(state['error'], str)
+                                or not re.fullmatch('[a-z][a-z0-9-]*', state['error'])):
+            raise ValueError()
+        for name, info in state['files'].items():
+            if (not digest(name) or not isinstance(info, dict) or set(info) != {'bytes', 'sha256'}
+                    or type(info['bytes']) is not int or info['bytes'] < 0 or not digest(info['sha256'])):
+                raise ValueError()
+        return state
+    except (OSError, ValueError, TypeError, UnicodeError):
+        raise MigrationError('invalid-journal') from None
+
+
+def _scan_error(error):
+    raise MigrationError('source-scan-error')
+
+
 def _inventory(source):
     # Exclude diagnostics by directory, not by image extension: confirmation
     # images and samples remain paired with their original JSON records.
@@ -48,7 +91,7 @@ def _inventory(source):
         root = _safe(source / 'work' / name)
         if not root.exists():
             continue
-        for directory, dirs, files in os.walk(root, followlinks=False):
+        for directory, dirs, files in os.walk(root, followlinks=False, onerror=_scan_error):
             for child in dirs:
                 _safe(Path(directory) / child)
             dirs[:] = [d for d in dirs if d not in {'failures', 'runtime-successes', 'downloads', '__pycache__'}]
@@ -69,19 +112,15 @@ def _migrate(source, program):
     Errors expose stable codes only; absolute paths and OS exception text stay
     out of installer output and the persistent journal.
     """
-    source, program = _safe(Path(source).absolute()), _safe(Path(program).absolute())
-    if source == program or source.is_relative_to(program) or program.is_relative_to(source):
-        raise MigrationError('overlapping-roots')
+    source, program = _roots(source, program)
     journal = _safe(program / 'legacy-migration.json')
     stage = _safe(program / '.legacy-migration-work')
     destination = _safe(program / 'work')
     program.mkdir(parents=True, exist_ok=True)
     state = dict(schema=1, status='pending', files={})
+    if journal.exists():
+        state = _load_journal(journal)
     try:
-        if journal.exists():
-            state = json.loads(journal.read_text(encoding='utf-8'))
-            if state.get('schema') != 1:
-                raise MigrationError('invalid-journal')
         profile = json.loads(_safe(source / '_internal/installation-profile.json').read_text(encoding='utf-8'))
         instance = profile['installerInstance']
         if (profile['product'] != PRODUCTION_PRODUCT or instance['product'] != PRODUCTION_PRODUCT
@@ -95,9 +134,9 @@ def _migrate(source, program):
                 raise MigrationError('resource-migration-or-recovery-required')
         files = _inventory(source)
         binding = hashlib.sha256(str(source).encode('utf-8')).hexdigest()
-        if state.get('source') not in (None, binding) or (state['files'] and state['files'] != files):
+        if state.get('source') not in (None, binding) or (state['files'] != _private_files(files) and 'source' in state):
             raise MigrationError('source-changed')
-        state.update(source=binding, files=files)
+        state.update(source=binding, files=_private_files(files))
         _save(journal, state)
         if destination.exists():
             if state['status'] not in {'publishing', 'complete'} or stage.exists():
@@ -148,7 +187,9 @@ def _migrate(source, program):
         code = str(error) if isinstance(error, MigrationError) else 'migration-io-or-format-error'
         state['error'] = code
         try:
-            _save(journal, state)
+            # Before a complete inventory there is no resumable state to persist.
+            if 'source' in state:
+                _save(journal, state)
         except (OSError, ValueError):
             pass
         raise MigrationError(code) from None
@@ -156,7 +197,7 @@ def _migrate(source, program):
 
 def migrate(source, program):
     """Serialize installer invocations; a crash lock requires manual inspection."""
-    program = _safe(Path(program).absolute())
+    source, program = _roots(source, program)
     program.mkdir(parents=True, exist_ok=True)
     lock = _safe(program / '.legacy-migration.lock')
     try:
