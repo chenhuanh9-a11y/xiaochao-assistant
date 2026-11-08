@@ -126,6 +126,7 @@ class NativeShortcutBackend(QObject):
         # the values are the only keys routed to the picker.
         self._picker_keys = {}
         self._picker_down = None
+        self._picker_events_after = 0.0
         if source is not None:
             source.eventReceived.connect(self._key_event, Qt.QueuedConnection)
             source.started.connect(self._hook_started, Qt.QueuedConnection)
@@ -416,6 +417,8 @@ class NativeShortcutBackend(QObject):
         # assistant is foreground; other apps and modifier chords keep their keys.
         picker_keys = self._picker_keys
         picker_vks = frozenset(picker_keys.values())
+        if down and vk in picker_vks and created < self._picker_events_after:
+            return  # A queued press predating this picker cannot act on it.
         picker_name = (next((name for name, key in picker_keys.items() if key == vk), None)
                        if down else None)
         if picker_name is not None and (not (game or assistant)
@@ -485,6 +488,7 @@ class NativeShortcutBackend(QObject):
         mapping = {name: PICKER_KEY_VKS[name] for name in names}
         if mapping != self._picker_keys:
             self._picker_keys = mapping
+            self._picker_events_after = time.monotonic()
             self._picker_down = None  # A key already held at open is not fresh.
             self.changed.emit()
 
@@ -523,7 +527,7 @@ class NativeShortcutBackend(QObject):
                                                if read(vk) & 0x8001)
                 else:
                     picker_owner = bool(game_focus or assistant_focus) and not any(
-                        read(key) & 0x8000 for key in PICKER_MODIFIER_VKS)
+                        read(key) & 0x8001 for key in PICKER_MODIFIER_VKS)
                     for name, vk in picker_keys.items():
                         state = read(vk)
                         down = bool(state & 0x8000)

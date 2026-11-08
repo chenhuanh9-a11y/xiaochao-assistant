@@ -97,3 +97,51 @@ class PickerEscapeTests(unittest.TestCase):
         keys.setPickerKeys(["Escape"])
         keys.pollOnce()
         self.assertEqual((actions, picks), ([], []))
+
+    def test_polling_released_modifier_escape_is_not_bare(self):
+        for modifier in (0x11, 0x12, 0x10):
+            with self.subTest(modifier=modifier):
+                native = Native()
+                keys = NativeShortcutBackend(native)
+                self.addCleanup(keys.shutdown)
+                keys.configure({"map": "G"})
+                keys.bindWindow(42)
+                keys.enable()
+                keys.setPickerKeys(["Escape"])
+                keys.pollOnce()
+                actions, picks = [], []
+                keys.actionTriggered.connect(actions.append)
+                keys.pickerKeyRequested.connect(picks.append)
+                # Both keys were pressed and released between polls.
+                native.states.update({modifier: 1, 0x1b: 1})
+                keys.pollOnce()
+                self.assertEqual((actions, picks), ([], []))
+                native.states.update({modifier: 0, 0x1b: 0})
+                keys.pollOnce()
+                native.states[0x1b] = 1
+                keys.pollOnce()
+                self.assertEqual((actions, picks), ([], ["Escape"]))
+
+    def test_native_escape_queued_before_open_does_not_close_new_picker(self):
+        native, source = Native(), FixtureSource()
+        keys = NativeShortcutBackend(native, source=source)
+        self.addCleanup(keys.shutdown)
+        keys.configure({"map": "G"})
+        keys.bindWindow(42)
+        keys.enable()
+        actions, picks = [], []
+        keys.actionTriggered.connect(actions.append)
+        keys.pickerKeyRequested.connect(picks.append)
+        event = source._transition_event(0x1b, 0, 0, True, 42)
+        source.eventReceived.emit(event)  # Qt delivery is still pending.
+        keys.setPickerKeys(["Escape"])
+        APP.processEvents()
+        self.assertEqual((actions, picks), ([], []))
+        # The delayed press still updates held state: repeat is not fresh.
+        source.eventReceived.emit(source._transition_event(0x1b, 0, 0, True, 42))
+        APP.processEvents()
+        self.assertEqual((actions, picks), ([], []))
+        source.eventReceived.emit(source._transition_event(0x1b, 0, 0, False, 42))
+        source.eventReceived.emit(source._transition_event(0x1b, 0, 0, True, 42))
+        APP.processEvents()
+        self.assertEqual((actions, picks), ([], ["Escape"]))

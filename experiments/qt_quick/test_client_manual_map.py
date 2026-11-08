@@ -717,7 +717,9 @@ class PickerFocusAndModifierTests(unittest.TestCase):
         keys.actionTriggered.connect(actions.append)
         self.assertTrue(keys.configure({"map": "G", "candidate-next": "F1"}))
         keys.enableManagement(); keys.bindWindow(42); keys.enable()
-        keys.setPickerKeys(["F1", "F2"])
+        # Use the same clock as the queued native packets below.
+        with patch("time.monotonic", return_value=99.8):
+            keys.setPickerKeys(["F1", "F2"])
 
         def press(vk, down, foreground=42):
             native.foreground = foreground  # Match the OS consumption-time focus.
@@ -766,7 +768,9 @@ class PickerFocusAndModifierTests(unittest.TestCase):
         keys.actionTriggered.connect(actions.append)
         self.assertTrue(keys.configure({"map": "G", "candidate-next": "F1"}))
         keys.enableManagement(); keys.bindWindow(42); keys.enable()
-        keys.setPickerKeys(["F1", "F2"])
+        # Use the same clock as the queued native packets below.
+        with patch("time.monotonic", return_value=99.8):
+            keys.setPickerKeys(["F1", "F2"])
 
         def press(vk, down, foreground=42):
             native.foreground = foreground  # Match the OS consumption-time focus.
