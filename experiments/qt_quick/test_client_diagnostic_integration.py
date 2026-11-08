@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-from PySide6.QtCore import QObject, QUrl, Qt
+from PySide6.QtCore import QObject, QUrl, Qt, QPointF
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlEngine, QQmlComponent
 from PySide6.QtQuick import QQuickItem, QQuickWindow
@@ -77,6 +77,10 @@ class DiagnosticIntegrationTests(unittest.TestCase):
         engine = QQmlEngine()
         engine.rootContext().setContextProperty('infoService', self.info)
         engine.rootContext().setContextProperty('problemService', self.problems)
+        from client_tutorial import TutorialService
+        tutorial = TutorialService(self.fixture.root / 'tutorial-state.json')
+        self.addCleanup(tutorial.shutdown)
+        engine.rootContext().setContextProperty('tutorialService', tutorial)
         component = QQmlComponent(engine)
         component.setData(b'''import QtQuick
 import QtQuick.Controls.Basic
@@ -91,6 +95,22 @@ ClientHelp { anchors.fill: parent } }
             self.assertTrue(switch.property('checked'))
             self.assertTrue(self.runtime.automatic)
             window.show()
+            def click_visible(item):
+                scroll = window.findChild(QQuickItem, 'helpPageScroll')
+                flick = scroll.property('contentItem')
+                QTest.qWait(60)
+                position = item.mapToItem(flick, QPointF(0, 0)).y() + flick.property('contentY')
+                flick.setProperty('contentY', max(0, min(position - 40,
+                    flick.property('contentHeight') - flick.height())))
+                QTest.qWait(40)
+                point = item.mapToScene(item.boundingRect().center()).toPoint()
+                self.assertTrue(item.isVisible() and item.isEnabled())
+                self.assertTrue(0 <= point.y() < window.height(), (item.objectName(), point))
+                QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, point)
+                QTest.qWait(30)
+            self.assertFalse(switch.isVisible())
+            click_visible(window.findChild(QQuickItem, 'helpDiagnosticsOptions'))
+            self.assertTrue(switch.isVisible())
             parents, item = [], switch
             while item is not None:
                 parents.append(item)
@@ -100,8 +120,7 @@ ClientHelp { anchors.fill: parent } }
                     item.ensurePolished()
                 window.requestUpdate()
                 QTest.qWait(20)
-            QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier,
-                switch.mapToScene(switch.boundingRect().center()).toPoint())
+            click_visible(switch)
             self.fixture.wait(lambda: not self.info.checking and not self.settings.busy)
             self.assertFalse(self.info.automaticFailureSampling)
             self.assertFalse(self.runtime.automatic)
@@ -112,8 +131,7 @@ ClientHelp { anchors.fill: parent } }
             export_choice = window.findChild(QQuickItem, 'helpExportAutomaticFailureEvidence')
             self.assertTrue(export_choice.property('checked'))
             self.assertTrue(self.info.includeAutomaticFailureEvidence)
-            QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier,
-                export_choice.mapToScene(export_choice.boundingRect().center()).toPoint())
+            click_visible(export_choice)
             self.fixture.wait(lambda: not self.info.includeAutomaticFailureEvidence)
             restarted = SettingsService(self.fixture.root)
             try:
@@ -172,6 +190,36 @@ ClientHelp { anchors.fill: parent } }
         self.assertNotIn('captureDiagnostics',row)
         self.assertLessEqual(len(json.dumps(row['recognitionDiagnostics'],separators=(',',':')).encode()),2048)
 
+
+    def test_s1_no_material_reasons_reach_persisted_log_and_text_only_export(self):
+        from client_coordinator import ClientCoordinator
+        from recognition_diagnostics import s1_scan_failure
+        report = dict(status='complete', scanComplete=True, elapsedSeconds=.8,
+            checkedMapIds=['107002'], supportedMapIds=[], unscannedMapIds=[],
+            outcomes=[dict(mapId='107002', outcome='unknown',
+                reason='initial-structure-current-geometry-failed')])
+        measured = dict(stage='s1-scan-no-material', reason='no-current-supported-candidates',
+            inputs=dict(attemptId='a'*32, cycleId=28, floor='-1', sourceFrameGeneration=28),
+            structureScanFailure=s1_scan_failure(report, '107002'))
+        target = SimpleNamespace(_closed=False, _closing=False)
+        target._trace = lambda stage, **values: self.problems.recordTrace(dict(stage=stage, **values))
+        ClientCoordinator._on_runtime_event(target, dict(event='recognition-diagnostic',
+            reason='no-current-supported-candidates', recognitionDiagnostics=measured))
+        self.problems.shutdown()
+        self.fixture.wait(lambda: not self.problems.pendingWrites)
+        persisted = [json.loads(line) for line in self.problems.recognition_path.read_bytes().splitlines()]
+        self.assertEqual(persisted[0]['recognitionDiagnostics'], measured)
+        self.info.setTextOnlyDiagnostics(True)
+        destination = self.fixture.root / 's1-no-material.zip'
+        self.info.exportDiagnosticsTo(QUrl.fromLocalFile(str(destination)).toString())
+        self.fixture.wait(lambda: not self.info.checking)
+        self.assertTrue(self.info.diagnosticsReceipt['success'], self.info.diagnosticsReceipt)
+        with zipfile.ZipFile(destination) as archive:
+            rows = [json.loads(line) for line in archive.read(
+                'logs/'+self.problems.recognition_path.name).splitlines()]
+            self.assertFalse(any(name.endswith('.png') for name in archive.namelist()))
+        row = next(row for row in rows if 'recognitionDiagnostics' in row)
+        self.assertEqual(row['recognitionDiagnostics'], measured)
 
     def test_failed_sampling_save_keeps_effective_choice(self):
         with patch.object(self.settings, '_write', side_effect=OSError('fixture denied')):

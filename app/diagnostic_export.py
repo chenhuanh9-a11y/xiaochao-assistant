@@ -322,10 +322,15 @@ def export_safe_diagnostic_bundle(
     fd, temporary_name = tempfile.mkstemp(
         prefix=".diagnostic-export-", suffix=".tmp", dir=destination_root,
     )
-    os.close(fd)
+    created = os.fstat(fd)
+    temporary_identity = (created.st_dev, created.st_ino)
     temporary = Path(temporary_name)
+    stream = os.fdopen(fd, 'w+b')
+    completed_digest = None
     try:
-        with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        # Keep the actual created object open while producing and flushing ZIP.
+        # A read-only reopen cannot FlushFileBuffers on Windows.
+        with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for path in logs:
                 remaining = total_byte_limit - included_bytes
                 if remaining <= 0:
@@ -432,14 +437,22 @@ def export_safe_diagnostic_bundle(
                 "diagnostic-manifest.json",
                 _redact_local_paths(json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")),
             )
-        if selected_destination:
-            # Publish without replacing a file created since the save dialog.
-            os.link(temporary, destination)
-        else:
-            os.replace(temporary, destination)
+        # A complete same-volume object is published without replacing a file
+        # created after the dialog/name selection. This does not require links.
+        stream.flush()
+        os.fsync(stream.fileno())
+        stream.seek(0)
+        completed_digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+        completed_size = os.fstat(stream.fileno()).st_size
+        stream.close()
+        import map_package_upgrade as transaction
+        row = dict(path=destination.name, bytes=completed_size, sha256=completed_digest)
+        transaction._move_owned(temporary, destination, row, list(temporary_identity), linkless=True)
     finally:
-        if temporary.exists():
-            temporary.unlink()
+        stream.close()
+        if completed_digest is not None:
+            from star_map_import import _rollback_published
+            _rollback_published(temporary, temporary_identity, completed_digest)
     return {
         "path": destination,
         "exportId": export_id,

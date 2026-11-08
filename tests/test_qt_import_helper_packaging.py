@@ -13,10 +13,10 @@ import build_qt_client as build
 
 
 class ImportHelperPackagingTests(unittest.TestCase):
-    def test_png_npz_json_install_and_upgrade_without_image_or_array_libraries(self):
-        # The production importer validates archive CRC/bytes/SHA and ownership;
-        # decoding belongs to resource consumers. A clean interpreter rejects
-        # these dependencies so accidental dynamic imports fail this test too.
+    def test_legacy_v1_install_and_upgrade_without_image_or_array_libraries(self):
+        # Legacy V1 validates archive CRC/bytes/SHA and ownership without decoding.
+        # V2 author packages DO require PIL/numpy (covered by the frozen business
+        # probe). Keep this narrower legacy branch independent of those imports.
         script = r'''
 import sys, importlib.abc, io, struct, zlib, json, hashlib, zipfile, tempfile
 from pathlib import Path

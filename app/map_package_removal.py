@@ -20,6 +20,7 @@ import uuid
 import star_map_import as files
 import map_package_upgrade as upgrade
 from author_package_management import PACKAGE_NAMES
+from generic_author_package import is_generic_profile
 from managed_base_resources import managed_base_inventory
 from resource_transaction import resource_read_lock, resource_write_lock, assert_resources_ready
 
@@ -77,14 +78,7 @@ def _children(root, relative):
 
 def _receipt(path, package):
     value = upgrade._read_json(path)
-    if value.get("packageId") != package or value.get("revision") != 1:
-        _reject("removal-invalid-receipt")
-    upgrade._digest(value.get("archiveSha256"))
-    inventory = files._rows(value.get("files"))
-    if any(not files._allowed(package, row["path"]) for row in inventory.values()):
-        _reject("removal-invalid-receipt-ownership")
-    dependencies = files._rows(value["requiresFiles"], dependencies=True) if value.get("requiresFiles") else {}
-    return inventory, dependencies
+    return files._receipt_inventory(value, package)
 
 
 def _unknown_history(directory, known):
@@ -104,6 +98,9 @@ def _unknown_history(directory, known):
 
 
 def _valid_target(package, relative):
+    from author_snapshot_removal import valid_target
+    if valid_target(package, relative):
+        return True
     receipt = f"work/map-packages/{package}.json"
     if relative == receipt or (files._allowed(package, relative) and files._live_author_path(package, relative)):
         return True
@@ -122,28 +119,61 @@ def _valid_target(package, relative):
         except files.ImportRejected:
             return False
         tail = "/".join(parts[4:])
-        if tail in {"journal.json", "pending-pointer.json"}:
+        if tail in {"journal.json", "pending-pointer.json", "pending-pointer.json.publication.json",
+                    "pending-pointer.json.publishing"}:
             return True
         logical = "/".join(parts[5:])
         return parts[4] in {"backup", "new"} and (logical == receipt or files._allowed(package, logical))
     if len(parts) >= 4 and re.fullmatch(r"work/map-packages/staging-[A-Za-z0-9_-]+", "/".join(parts[:3])):
         logical = "/".join(parts[3:])
-        return logical in {"addition-journal.json", "receipt.json", upgrade.ADDITIONS_OUTCOME} or files._allowed(package, logical)
+        return logical in {"addition-journal.json", "receipt.json", upgrade.ADDITIONS_OUTCOME,
+                           "old-receipt.json", "addition-journal.json.publication.json",
+                           "addition-journal.json.publishing"} or files._allowed(package, logical)
     return False
 
 
 def _legacy_owner(name):
     # IDs can be prefixes of other IDs (suju / suju-speed). Bind the exact
     # longest registered prefix before consulting the user's selected set.
+    generic = re.fullmatch(r"(author-[a-z0-9][a-z0-9-]{0,47})-[a-z0-9_]{8}", name)
+    if generic and is_generic_profile(generic.group(1)):
+        return generic.group(1)
     return next((package for package in sorted(files.PACKAGE_IDS, key=len, reverse=True)
                  if re.fullmatch(re.escape(package) + r"-[A-Za-z0-9_-]{1,100}", name)), None)
 
 
 def _plan_locked(root, package_id=None, cancelled=None):
     assert_resources_ready(root)
-    if package_id is not None and package_id not in files.PACKAGE_IDS:
+    if package_id is not None and not files.known_package_id(package_id):
         _reject("unsupported-author-package")
-    selected = set(files.PACKAGE_IDS) if package_id is None else {package_id}
+    known = set(files.package_ids(root))
+    # Historical display removals retain their receipt even without an active package.
+    for directory in _children(root, "work/map-package-removals"):
+        package = _legacy_owner(directory.name)
+        if package is not None:
+            known.add(package)
+    for directory in _children(root, "work/map-packages/upgrades"):
+        source = _target(directory, "journal.json")
+        if source.is_file():
+            package = upgrade._read_json(source).get("packageId")
+            if files.known_package_id(package):
+                known.add(package)
+    for directory in _children(root, "work/map-packages"):
+        if re.fullmatch(r"staging-[A-Za-z0-9_-]+", directory.name):
+            source = _target(directory, "addition-journal.json")
+            if source.is_file():
+                package = upgrade._read_json(source).get("packageId")
+                if files.known_package_id(package):
+                    known.add(package)
+    import author_resource_snapshots as snapshots
+    for directory in _children(root, snapshots.STORE + '/versions'):
+        if files.is_generic_profile(directory.name):
+            known.add(directory.name)
+    selected = known if package_id is None else {package_id}
+    from author_snapshot_removal import collect
+    snapshot_plans = {package: collect(root, package, cancelled=cancelled)
+        for package in sorted(selected) if files.is_generic_profile(package) and (
+            snapshots.managed(root, package) or _target(root, snapshots.STORE + '/versions/' + package).exists())}
     protected = set(managed_base_inventory(root))
     active, histories, witnesses, archives = {}, [], {}, {}
 
@@ -151,11 +181,16 @@ def _plan_locked(root, package_id=None, cancelled=None):
         value = upgrade._read_json(path)
         digest = upgrade._digest(value.get("archiveSha256"))
         archives.setdefault(package, set()).add(digest)
-    for package in sorted(files.PACKAGE_IDS):
+    for package in sorted(known):
+        if files.is_generic_profile(package) and snapshots.managed(root, package):
+            activation, _ = snapshots._read_activation(root, package)
+            if activation['snapshotId'] is not None:
+                protected.update(snapshots.SnapshotPackage(root, package).dependencies)
+            continue
         path = _target(root, f"work/map-packages/{package}.json")
         if not path.exists():
             continue
-        inventory, dependencies = _receipt(path, package)
+        inventory, dependencies, _ = files._installed_inventory(root, package)
         active[package] = inventory
         remember_archive(package, path)
         witnesses[path.relative_to(root).as_posix()] = _stamp(path)
@@ -211,6 +246,13 @@ def _plan_locked(root, package_id=None, cancelled=None):
             if upgrade._read_json(pointer) != dict(schema=upgrade.POINTER_SCHEMA, transactionId=directory.name):
                 _reject("removal-upgrade-pointer-changed")
             metadata.append(pointer)
+        for name, (row, identity) in upgrade._publication_cleanup_records(pointer, upgrade._publication_mode(journal)).items():
+            target = _target(directory, name)
+            if target.exists():
+                if not upgrade._matches(target, row, identity):
+                    _reject('removal-upgrade-publication-changed')
+                metadata.append(target)
+                witnesses[target.relative_to(root).as_posix()] = _stamp(target)
         histories.append((package, directory, sources, metadata))
         witnesses[source.relative_to(root).as_posix()] = _stamp(source)
     for directory in _children(root, "work/map-packages"):
@@ -225,7 +267,12 @@ def _plan_locked(root, package_id=None, cancelled=None):
         if package not in selected:
             continue
         required = {"schema", "packageId", "transactionId", "stage", "rootIdentity", "files", "entries", "oldReceiptSha256"}
-        if (set(journal) not in (required, required | {"stagedIdentities", "newReceipt"})
+        new_protocol = 'publicationMode' in journal
+        mode = upgrade._publication_mode(journal)
+        extended = required | {'stagedIdentities', 'newReceipt', 'publicationMode'}
+        if mode == 'move-v1':
+            extended |= {'newReceiptIdentity', 'oldReceipt'}
+        if (set(journal) not in ((extended,) if new_protocol else (required, required | {"stagedIdentities", "newReceipt"}))
                 or journal["schema"] != upgrade.ADDITIONS_SCHEMA
                 or journal["stage"] != directory.relative_to(root).as_posix()
                 or journal["rootIdentity"] != upgrade._identity(root.stat())):
@@ -260,6 +307,9 @@ def _plan_locked(root, package_id=None, cancelled=None):
                 upgrade._valid_identity(identities[row["path"]])
                 if target.exists() and not upgrade._matches(target, row, identities[row["path"]]):
                     _reject("removal-additions-history-changed")
+            if new_protocol and any(entry['newIdentity'] != identities[entry['new']['path']]
+                                    for entry in journal['entries']):
+                _reject('removal-additions-history-changed')
             receipt = journal["newReceipt"]
             if (not isinstance(receipt, dict) or set(receipt) != {"path", "bytes", "sha256"}
                     or receipt["path"] != "receipt.json" or type(receipt["bytes"]) is not int
@@ -269,14 +319,54 @@ def _plan_locked(root, package_id=None, cancelled=None):
             sources.append((receipt, _target(directory, "receipt.json")))
             if upgrade._matches(_target(directory, "receipt.json"), receipt):
                 remember_archive(package, _target(directory, "receipt.json"))
+        if mode == 'move-v1':
+            upgrade._valid_identity(journal['newReceiptIdentity'])
+            receipt = _target(directory, 'receipt.json')
+            if receipt.exists() and not upgrade._matches(receipt, journal['newReceipt'], journal['newReceiptIdentity']):
+                _reject('removal-additions-history-changed')
+            old = journal['oldReceipt']
+            if old is not None:
+                if (not isinstance(old, dict) or set(old) != {'path', 'bytes', 'sha256', 'identity'}
+                        or old['path'] != 'old-receipt.json' or type(old['bytes']) is not int
+                        or not 0 <= old['bytes'] <= upgrade.MAX_JOURNAL_BYTES
+                        or old['sha256'] != journal['oldReceiptSha256']):
+                    _reject('removal-invalid-additions-history')
+                upgrade._valid_identity(old['identity'])
+                upgrade._digest(old['sha256'])
+                old_path = _target(directory, old['path'])
+                if old_path.exists():
+                    if not upgrade._matches(old_path, old, old['identity']):
+                        _reject('removal-additions-history-changed')
+                    sources.append((old, old_path))
+                    remember_archive(package, old_path)
+            elif journal['oldReceiptSha256'] is not None:
+                _reject('removal-invalid-additions-history')
         metadata = [source]
         outcome = upgrade._addition_outcome(directory, source, journal)
+        if new_protocol:
+            if mode == 'move-v1' and outcome is None:
+                _reject('removal-additions-terminal-proof-required')
+            # New publication records bind every extra metadata identity. The
+            # complete stage validator rejects unknown/unwitnessed payloads;
+            # merely extending a filename allowlist grants no ownership.
+            upgrade._addition_cleanup_plan(directory, source, journal)
+            for name, (row, identity) in upgrade._publication_cleanup_records(source, mode).items():
+                target = _target(directory, name)
+                if target.exists():
+                    if not upgrade._matches(target, row, identity):
+                        _reject('removal-additions-publication-changed')
+                    metadata.append(target)
+                    witnesses[target.relative_to(root).as_posix()] = _stamp(target)
         if outcome is not None:
             terminal = _target(directory, upgrade.ADDITIONS_OUTCOME)
             metadata.append(terminal)
             witnesses[terminal.relative_to(root).as_posix()] = _stamp(terminal)
         histories.append((package, directory, sources, metadata))
         witnesses[source.relative_to(root).as_posix()] = _stamp(source)
+    for package, snapshot in snapshot_plans.items():
+        archives.setdefault(package, set()).update(snapshot['archives'])
+        for path in snapshot['metadata']:
+            witnesses[path.relative_to(root).as_posix()] = _stamp(path)
     entries, preserved, packages = {}, [], set()
 
     def add(package, path, expected=None):
@@ -324,9 +414,24 @@ def _plan_locked(root, package_id=None, cancelled=None):
                 add(package, path)
         for path in _unknown_history(directory, {path for _row, path in sources} | set(metadata)):
             preserved.append(dict(path=path.relative_to(root).as_posix(), reason="unknown-history-file"))
+    for package, snapshot in snapshot_plans.items():
+        clean = not snapshot['retained'] and package not in dirty_cache
+        for row, path in snapshot['sources']:
+            if path.relative_to(root).as_posix().casefold() in protected:
+                preserved.append(dict(path=path.relative_to(root).as_posix(), reason="official-core-or-shared"))
+                continue
+            clean = add(package, path, row) and clean
+        preserved.extend(dict(path=path.relative_to(root).as_posix(), reason="unknown-snapshot-file")
+                         for path in snapshot['retained'])
+        # Keep all provenance when any payload/history is unverified. A later
+        # cleanup can still identify its remaining files without reviving an
+        # old flat installation or claiming unknown bytes.
+        if clean:
+            for path in snapshot['metadata']:
+                add(package, path, witnesses[path.relative_to(root).as_posix()])
     if len(entries) > MAX_ENTRIES or sum(row["bytes"] for row in entries.values()) > MAX_BYTES:
         _reject("removal-plan-too-large")
-    registered = (set(active) & selected) | {package for package, _directory, _sources, _metadata in histories}
+    registered = (set(active) & selected) | set(snapshot_plans) | {package for package, _directory, _sources, _metadata in histories}
     result = dict(packageId=package_id, packageIds=sorted(packages), registeredPackageIds=sorted(registered),
         entries=sorted(entries.values(), key=lambda row: row["path"]), witnesses=witnesses,
         preserved=sorted(preserved, key=lambda row: row["path"]), fileCount=len(entries),
@@ -349,10 +454,24 @@ def managed_packages_snapshot(install_root, *, cancelled=None):
             active = _target(Path(root), f"work/map-packages/{package}.json").exists()
             inventory = _receipt(_target(Path(root), f"work/map-packages/{package}.json"), package)[0] if active else {}
             modified = any(row["reason"] == "modified-or-unverified" and row["path"].casefold() in inventory for row in plan["preserved"])
+            metadata = {}
+            if is_generic_profile(package):
+                metadata = dict(title=package, season="unknown", mode="unknown")
+                if active:
+                    try:
+                        from s1_author_displays import InstalledAuthorPackage
+                        installed = InstalledAuthorPackage(Path(root) / "_internal", package)
+                        modes = {row["mode"] for row in installed.document["layers"]}
+                        metadata.update(title=installed.display_name, season=installed.document["season"],
+                            mode=next(iter(modes)) if len(modes) == 1 else "both")
+                    except (OSError, ValueError, KeyError, TypeError):
+                        pass
             result.append(dict(packageId=package, title=PACKAGE_NAMES.get(package, package),
                 status="incomplete" if modified else "installed" if active else "managed-remnants", canRemove=bool(rows),
                 fileCount=len(rows), bytes=sum(row["bytes"] for row in rows),
-                mode="difficult" if package.startswith("difficult-") else "nightmare"))
+                mode="both" if package in ("s1-jiaye-handnotes", "s1-aichicu-routes") else ("difficult" if package.startswith("difficult-") else "nightmare"),
+                **({"season": "s1"} if package in ("s1-jiaye-handnotes", "s1-aichicu-routes") else {})))
+            result[-1].update(metadata)
         return result
 
 
@@ -373,7 +492,7 @@ def _prune_empty(root, paths):
 
 
 def _check_other_pending(root):
-    for name in ("pending-upgrade.json", "pending-base-repair.json", "pending-additions.json"):
+    for name in ("pending-upgrade.json", "pending-base-repair.json", "pending-additions.json", "pending-author-snapshot.json"):
         if _target(root, "work/map-packages/" + name).exists():
             _reject("removal-other-transaction-pending")
 
@@ -385,14 +504,27 @@ def _load_pending(root):
     transaction = upgrade._transaction_id(pointer["transactionId"])
     directory = _target(root, STATE + "/" + transaction)
     journal = upgrade._read_json(_target(directory, "journal.json"))
-    if (set(journal) != {"schema", "transactionId", "rootIdentity", "packageIds", "entries", "status"}
+    fields = {"schema", "transactionId", "rootIdentity", "packageIds", "entries", "status"}
+    move = journal.get('publication') == 'move-v1'
+    if (set(journal) != (fields | {'publication', 'pendingStamp'} if move else fields)
             or journal["schema"] != SCHEMA or journal["transactionId"] != transaction
             or journal["rootIdentity"] != upgrade._identity(root.stat())
             or journal["status"] not in {"preparing", "prepared", "committed", "rolled-back"}
             or not isinstance(journal["packageIds"], list) or not journal["packageIds"]
-            or any(not isinstance(p, str) or p not in files.PACKAGE_IDS for p in journal["packageIds"])
+            or any(not isinstance(p, str) or not files.known_package_id(p) for p in journal["packageIds"])
             or not isinstance(journal["entries"], list) or not 1 <= len(journal["entries"]) <= MAX_ENTRIES):
         _reject("removal-invalid-journal")
+    if move:
+        stamp = journal['pendingStamp']
+        if (not isinstance(stamp, dict) or set(stamp) != {'bytes', 'sha256', 'identity'}
+                or type(stamp['bytes']) is not int or not 0 < stamp['bytes'] < 1024):
+            _reject('removal-invalid-pending-stamp')
+        upgrade._digest(stamp['sha256'])
+        upgrade._valid_identity(stamp['identity'])
+        expected = _encoded(dict(schema=SCHEMA, transactionId=transaction))
+        if (stamp['bytes'] != len(expected) or stamp['sha256'] != hashlib.sha256(expected).hexdigest()
+                or not upgrade._matches(_target(root, PENDING), stamp, stamp['identity'])):
+            _reject('removal-pending-pointer-changed')
     seen = set()
     for row in journal["entries"]:
         if (not isinstance(row, dict) or set(row) != {"path", "packageId", "bytes", "sha256", "identity"}
@@ -457,7 +589,13 @@ def _retire(root, directory, journal):
     if upgrade._read_json(pointer) != expected_pointer:
         _reject("removal-pending-pointer-changed")
     # Every payload pin has gone before the pending gate is cleared.
-    identity = upgrade._identity(pointer.stat())
+    if journal.get('publication') == 'move-v1':
+        stamp = journal['pendingStamp']
+        if not upgrade._matches(pointer, stamp, stamp['identity']):
+            _reject('removal-pending-pointer-changed')
+        identity = stamp['identity']
+    else:
+        identity = upgrade._identity(pointer.stat())
     digest = hashlib.sha256(_encoded(expected_pointer)).hexdigest()
     if not files._rollback_published(pointer, tuple(identity), digest):
         _reject("removal-pending-pointer-cleanup-failed")
@@ -472,7 +610,8 @@ def _retire(root, directory, journal):
         # Never prune active-resource parents after a durable outcome: a user
         # may have recreated even empty directories there in the meantime.
         private_history = [row["path"] for row in journal["entries"] if row["path"].startswith((
-            "work/map-packages/upgrades/", "work/map-packages/staging-", "work/map-package-removals/"))]
+            "work/map-packages/upgrades/", "work/map-packages/staging-", "work/map-package-removals/",
+            "work/map-packages/author-snapshots/"))]
         _prune_empty(root, private_history + [source.relative_to(root).as_posix(),
                            (directory / "objects/0").relative_to(root).as_posix()])
     except (OSError, files.ImportRejected):
@@ -494,7 +633,11 @@ def _restore(root, directory, journal):
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         files._no_links(target.parent)
-        os.link(_target(directory, "objects/" + str(number)), target)
+        retained = _target(directory, "objects/" + str(number))
+        if journal.get('publication') == 'move-v1':
+            upgrade._move_owned(retained, target, row, row['identity'], linkless=True)
+        else:
+            os.link(retained, target)
         if not upgrade._matches(target, row, row["identity"]):
             _reject("removal-rollback-conflict; retained-objects-and-pending-marker")
         upgrade._directory_sync(target.parent)
@@ -531,8 +674,8 @@ def remove_packages(install_root, package_id=None, *, application_idle=False, ex
         if not plan["entries"]:
             return dict(status="preserved-items" if unverified else "already-removed", packageIds=[], removedFiles=0,
                 preserved=plan["preserved"], unverifiedPreservedCount=unverified, temporaryCopiesRemaining=0, restartRequired=False)
-        from resource_transaction import preflight_hardlinks
-        preflight_hardlinks(root, [row["path"] for row in plan["entries"]])
+        from resource_transaction import preflight_resource_publication
+        publication = preflight_resource_publication(root, [row["path"] for row in plan["entries"]] + [PENDING])
         transaction = str(uuid.uuid4())
         directory = _target(root, STATE + "/" + transaction)
         directory.mkdir(parents=True, exist_ok=False)
@@ -540,8 +683,20 @@ def remove_packages(install_root, package_id=None, *, application_idle=False, ex
         objects.mkdir()
         journal = dict(schema=SCHEMA, transactionId=transaction, rootIdentity=upgrade._identity(root.stat()),
             packageIds=plan["packageIds"], entries=plan["entries"], status="preparing")
+        pointer_data = _encoded(dict(schema=SCHEMA, transactionId=transaction))
+        if publication == 'move-v1':
+            # Persist the identity of the fully flushed private marker before
+            # publishing that exact object. Recovery never adopts a replacement
+            # pending marker merely because its JSON contents are identical.
+            pointer_source = _target(directory, 'pending-pointer.json')
+            upgrade._write_new(pointer_source, pointer_data)
+            journal.update(publication='move-v1', pendingStamp=_stamp(pointer_source))
         upgrade._write_journal(directory, journal)
-        upgrade._write_new(_target(root, PENDING), _encoded(dict(schema=SCHEMA, transactionId=transaction)))
+        if publication == 'move-v1':
+            upgrade._move_owned(pointer_source, _target(root, PENDING), journal['pendingStamp'],
+                                journal['pendingStamp']['identity'], linkless=True)
+        else:
+            upgrade._write_new(_target(root, PENDING), pointer_data)
         try:
             for number, row in enumerate(plan["entries"]):
                 files._check_cancelled(cancelled)
@@ -549,16 +704,24 @@ def remove_packages(install_root, package_id=None, *, application_idle=False, ex
                 if not upgrade._matches(source, row, row["identity"]):
                     _reject("removal-confirmed-file-changed")
                 retained = _target(objects, str(number))
-                os.link(source, retained)
+                if publication == 'move-v1':
+                    upgrade._move_owned(source, retained, row, row['identity'], linkless=True)
+                else:
+                    os.link(source, retained)
                 if not upgrade._matches(retained, row, row["identity"]):
                     _reject("removal-retained-object-changed")
             upgrade._directory_sync(objects)
             journal["status"] = "prepared"
             upgrade._write_journal(directory, journal)
-            for row in plan["entries"]:
+            for number, row in enumerate(plan["entries"]):
                 files._check_cancelled(cancelled)
                 target = _target(root, row["path"])
-                if not files._rollback_published(target, tuple(row["identity"]), row["sha256"]):
+                if publication == 'move-v1':
+                    # Moving is the reversible deletion. Do not remove a new
+                    # object another writer places at the now-vacant path.
+                    if target.exists() or not upgrade._matches(_target(objects, str(number)), row, row['identity']):
+                        _reject('removal-confirmed-file-changed-or-unwritable')
+                elif not files._rollback_published(target, tuple(row["identity"]), row["sha256"]):
                     _reject("removal-confirmed-file-changed-or-unwritable")
                 upgrade._directory_sync(target.parent)
             files._check_cancelled(cancelled)

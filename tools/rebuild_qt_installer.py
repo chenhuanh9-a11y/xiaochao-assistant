@@ -18,6 +18,8 @@ CHINESE_SHA256 = "e0b0b350e2245f3c5e65586dfe43d574f6e7f06f2261149aba284954b3fc9a
 INSTALLER_ONLY_FILES = {
     "tools/qt-client.iss", "tools/build_qt_client.py",
     "tools/rebuild_qt_installer.py", "tools/INSTALLER_LANGUAGE.md",
+    "tools/qt-game-watcher-lifecycle.iss", "tools/qt-uninstall-data.iss",
+    "tools/qt-resource-reset.iss",
 }
 
 
@@ -63,7 +65,7 @@ def validate_managed_runtime_reuse(stage, prior, source):
             raise ValueError("Managed runtime profile identity changed; perform a full freeze")
     # asInvoker only describes elevation, not the helper's compiled behavior.
     # Reuse the complete helper inventories recorded by the original freeze.
-    for kind in ("recovery", "import"):
+    for kind in ("recovery", "import", "reset"):
         helper = prior.get(kind + "Helper")
         executable = "star-map-" + kind + "-helper.exe"
         runtime = "_star_map_" + kind + "_runtime/"
@@ -85,6 +87,23 @@ def validate_managed_runtime_reuse(stage, prior, source):
                 raise ValueError("Helper payload missing or changed; perform a full freeze") from error
             if not matches:
                 raise ValueError("Helper payload missing or changed; perform a full freeze")
+    watcher = prior.get('gameWatcher')
+    executable = 'XingtuGameWatcher.exe'
+    inventory = watcher.get('files') if isinstance(watcher, dict) else None
+    if (not isinstance(inventory, dict) or set(inventory) != {executable}
+            or watcher.get('included') is not True or watcher.get('executable') != executable
+            or executable not in projection.get('families', {}).get('program', [])):
+        raise ValueError('Game watcher inventory/projection missing; perform a full freeze')
+    row = inventory[executable]
+    try:
+        path = build._local_file(stage, executable)
+        matches = (isinstance(row, dict) and type(row.get('bytes')) is int
+                   and isinstance(row.get('sha256'), str) and path.stat().st_size == row['bytes']
+                   and build.sha256(path) == row['sha256'])
+    except (OSError, ValueError) as error:
+        raise ValueError('Game watcher missing or changed; perform a full freeze') from error
+    if not matches:
+        raise ValueError('Game watcher missing or changed; perform a full freeze')
     return compiled
 
 
@@ -188,10 +207,13 @@ def main():
     record["frozenVerification"] = build.verify_frozen(stage, record["resources"],
         [p.name for p in (ROOT / "experiments/qt_quick").glob("*.qml")], record["product"],
         bundled_author_paths=author_paths)
-    for kind in ("recovery", "import"):
+    for kind in ("recovery", "import", "reset"):
         build.verify_invoker_manifest(stage / ("star-map-" + kind + "-helper.exe"))
+    build.verify_invoker_manifest(stage / 'XingtuGameWatcher.exe')
     include, record["fileProjection"] = build.write_production_files_include(stage, record["resources"], output,
-        resource_version=record["resourceVersion"], bundled_author_paths=author_paths)
+        resource_version=record["resourceVersion"], bundled_author_paths=author_paths, source=source)
+    build.write_program_ownership(stage, record)
+    reset_defines = build.resource_reset_installer_defines(stage, record, output, source)
     record_path = output / "build-record.json"
     record_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
     instance = record["installerInstance"]
@@ -204,6 +226,7 @@ def main():
         f"/DInstallerAppName={instance['appName']}", f"/DInstallerFolder={instance['installFolder']}",
         f"/DInstallerGroup={instance['startMenuGroup']}", f"/DInstallerExeName={record['product']}.exe",
         f"/DProductionFilesInclude={include}", "/DProductionInstaller",
+        *reset_defines,
         str(ROOT / "tools/qt-client.iss")], cwd=ROOT, check=True)
     if build.source_identity(args.source_commit) != source:
         raise ValueError("Source changed during installer compilation")

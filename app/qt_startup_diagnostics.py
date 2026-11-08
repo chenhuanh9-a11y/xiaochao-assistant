@@ -16,6 +16,9 @@ LOG_NAME = "qt-client-startup-error.txt"
 MAX_REPORT_BYTES = 16 * 1024
 _STAGES = {"validate-profile", "import-client", "run-client", "create-client"}
 _RESOURCE_ACTIONS = {
+    "installer-upgrade-recovery-required": "上次安装升级尚未完成核验，暂时无法启动。请保留现有安装目录和诊断记录，重新运行安装程序核验；记录缺失或文件状态变化时，不会自动回退。",
+    "resource-reset-recovery-required": "上次资源重置尚未完成核验，暂时无法启动。请保留现有安装目录和诊断记录，重新运行安装程序核验；记录缺失或文件状态变化时，不会自动回退。",
+    "installed-package-receipt-rejected": "无法核对旧图包的安装记录，暂时无法启动。请保留现有图包和设置，附上诊断记录反馈，不要卸载或删除图包。",
     "upgrade-cleanup-incomplete": "图包更新已结束，但临时文件还没清理完。请按提示继续清理，已经更新的图包不会被还原。",
     "base-cleanup-incomplete": "上次修复留下的临时文件还没清理完。请关闭可能占用文件的程序后重开星图；仍出现此提示时，请附上诊断记录反馈。",
     "resource-busy": "其他资源操作正在进行，请稍后重试。",
@@ -33,6 +36,7 @@ _RESOURCE_ACTIONS = {
     "resource-linked-target": "部分地图文件的位置无法安全核对，星图暂时无法处理。请保留现有文件，附上诊断记录反馈。",
     "installation-root-missing": "找不到星图的安装目录。请确认程序没有被移动，并附上诊断记录反馈。",
     "resource-hardlinks-unavailable": "当前安装位置不支持图包更新所需的文件操作。请附上诊断记录反馈，先不要反复导入或删除图包。",
+    "resource-atomic-move-unavailable": "当前安装位置无法安全提交地图文件，暂时无法完成启动。请保留现有文件并附上诊断记录反馈。",
     "resource-cross-volume-target": "地图文件分布在不同磁盘，暂时无法完成更新。请保留现有文件，附上诊断记录反馈。",
     "resource-unsafe-target": "星图无法安全访问部分地图文件，暂时停止启动。请保留现有文件，附上诊断记录反馈。",
     "base-candidate-manifest-missing": "安装文件缺少地图资源清单，暂时无法启动。请附上诊断记录反馈，不要手动删除图包。",
@@ -54,6 +58,9 @@ for _code in (
     _RESOURCE_ACTIONS[_code] = _RESOURCE_ACTIONS["resource-initialization-failed"]
 
 _ISSUE_REASONS = {
+    "invalid-installed-package-receipt": "图包安装记录格式未通过校验",
+    "invalid-installed-package-dependencies": "图包依赖记录未匹配已复核契约",
+    "receipt-validation-rejected": "图包安装记录未通过校验",
     "cleanup-object-changed": "临时对象已变化",
     "cleanup-object-unknown": "存在归属未知的临时对象",
     "cleanup-object-unwritable": "临时对象无法清理",
@@ -107,6 +114,7 @@ def _safe_issues(error):
             if (isinstance(path, str) and len(path) <= 240
                     and (path in {"_internal/difficult-native-manifest.json",
                                   "work/map-packages/pending-base-repair.json", "work/map-packages/pending-upgrade.json"}
+                         or _registered_receipt_path(path)
                          or path.startswith(("_internal/references/", "_internal/recognition/", "_internal/assets/",
                                               "references/", "recognition/", "assets/",
                                               "work/map-packages/base-repairs/", "work/map-packages/upgrades/")))
@@ -127,6 +135,37 @@ def _safe_issues(error):
         count = details.get("issueCount")
         return result, count if type(count) is int and 0 <= count < 1000000 else len(issues)
     return [], 0
+
+
+def _registered_receipt_path(path):
+    # Only source-registered package IDs, never arbitrary user JSON filenames.
+    if not path.startswith("work/map-packages/") or not path.endswith(".json"):
+        return False
+    packages = getattr(sys.modules.get("star_map_import"), "PACKAGE_IDS", ())
+    return path[len("work/map-packages/"):-len(".json")] in packages
+
+
+def _safe_resource_capabilities(error):
+    """Source-owned, fixed enums only, including when details are untrusted."""
+    for cause in _causes(error):
+        details = getattr(cause, 'details', None)
+        if not isinstance(details, dict):
+            continue
+        rows = []
+        if details.get('resourceLocation') == 'work/map-packages':
+            rows.append('resourceLocation=work/map-packages')
+        stage = details.get('resourceSubstage')
+        if isinstance(stage, str) and stage in {'hardlink-probe', 'atomic-move-probe', 'atomic-no-replace-probe'}:
+            rows.append('resourceSubstage=' + stage)
+        capabilities = details.get('filesystemCapabilities')
+        if isinstance(capabilities, dict):
+            for name in ('hardlinks', 'atomicNoReplace'):
+                value = capabilities.get(name)
+                if isinstance(value, str) and value in {'unknown', 'unavailable', 'unsupported', 'verified'}:
+                    rows.append('filesystem.' + name + '=' + value)
+        if rows:
+            return rows
+    return []
 
 
 def _token(value, limit=100):
@@ -150,6 +189,7 @@ def _details(error, stage):
             "exception=" + _token(type(error).__name__)]
     if resource_code:
         rows.append("resourceCode=" + resource_code)
+        rows.extend(_safe_resource_capabilities(error))
         issues, count = _safe_issues(error)
         rows.append("issueCount=" + str(count))
         for index, issue in enumerate(issues):

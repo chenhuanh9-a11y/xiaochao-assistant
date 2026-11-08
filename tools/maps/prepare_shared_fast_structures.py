@@ -5,30 +5,105 @@ import argparse
 import hashlib
 import json
 import sys
-import threading
 
 import numpy as np
 
-sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'app'))
-import identityv_daily_assistant as app
+ROOT = Path(__file__).resolve().parents[2]
+sys.path[:0] = [str(ROOT / 'app'), str(ROOT / 'experiments' / 'qt_quick')]
+from client_providers import SharedReferenceProvider
 from fast_structure_alignment import prepare,load_prepared,prepared_path_for
 
 
-def references(root, modes, memory_root):
-    """Construct resources only; no Tk, listener, capture, rank or pose solve."""
-    app.RESOURCE_ROOT = root
+def _local(root, relative):
+    path = (root / str(relative)).resolve()
+    if not path.is_relative_to(root):
+        raise ValueError(f'Resource escapes explicit root: {relative}')
+    return path
+
+
+def _side_entries(root, mode, profile, pack, resources):
+    # Match the original optional locator boundary. A missing/broken rank index
+    # must not disable independently validated typed structure preparation.
+    # When readable, retain its per-floor binding checks in the shared loader.
+    from difficult_side_entry_identity import MapLocalEntryIdentity
+    try:
+        return MapLocalEntryIdentity(root, mode=mode, profile_id=profile,
+            floors=pack.floors, structure_store=resources).entries
+    except (ImportError, OSError, ValueError, KeyError, TypeError):
+        return []
+
+
+def references(root, modes):
+    """Build typed resources, not a rank engine; decode pixels only on demand.
+
+    Selection remains after resource-context construction, as in the original
+    tool. Shared version/coordinate checks and difficult inventory checks are
+    retained, without adding the live client's full ranking-readiness gate.
+    """
+    from author_route_catalog import AuthorRouteCatalog
+    from nightmare_author_coordinate_adapter import AuthorCoordinateAdapters
+    from nightmare_candidate import NightmarePack
+    from shared_structure_reference import SharedStructureResourceStore
+    from shared_structure_context import load_shared_version_context
+
+    root = Path(root).resolve()
     for mode in modes:
-        context = app.DailyAssistant.__new__(app.DailyAssistant)
-        context.aligned_author_route_lock = threading.RLock()
-        context.preferred_route_profile_id = 'shared-structure'
-        context._log = lambda *args,**kwargs:None
-        context._install_map_mode(mode,resource_root=root if mode=='nightmare' else None,
-                                  memory_root=memory_root/mode)
-        if not context._shared_structure_mode_enabled():
-            raise ValueError(f'{mode} has no declared shared reference provider')
-        for item in context.pack.maps:
+        native = None
+        if mode == 'nightmare':
+            manifest = _local(root, 'references/nightmare-map-pack.json')
+            raw = json.loads(manifest.read_text(encoding='utf-8'))
+            for row in raw['maps']:
+                if row.get('resourceBase') != 'resource-root':
+                    raise ValueError('Shared maps must bind the explicit resource root')
+                for relative in [row['oneFlow'], *row['layers'].values()]:
+                    _local(root, relative)
+            pack = NightmarePack(manifest)
+            resources = SharedStructureResourceStore(
+                _local(root, 'references/nightmare-shared-structure-index.json'), root)
+            if resources.error:
+                raise ValueError(resources.error)
+            adapters = AuthorCoordinateAdapters(
+                _local(root, 'references/nightmare-canonical-coordinate-pack.json'))
+            try:
+                catalog = AuthorRouteCatalog(
+                    _local(root, 'references/nightmare-author-route-catalog.json'), asset_base=root)
+            except (OSError, ValueError, KeyError, TypeError):
+                catalog = None
+            side = _side_entries(_local(root, 'references/nightmare-entries'),
+                                 mode, 'zhan10-speed', pack, resources)
+            versions = load_shared_version_context(root, pack, resources, adapters, catalog, side)
+        elif mode == 'difficult':
+            from difficult_native_context import DifficultNativeContext
+            from difficult_native_identity import NativeDifficultPack
+            interfaces = json.loads(_local(root, 'difficult-native-manifest.json').read_text(
+                encoding='utf-8'))['runtimeInterfaces']
+            if 'identityPack' in interfaces:
+                native = DifficultNativeContext(root)
+                pack = NativeDifficultPack(root, interfaces['identityPack'], display_context=native)
+                native.validate_identity_pack(pack)
+                side = _side_entries(native.local(interfaces['identityEntries']),
+                                     mode, 'shared-structure', pack, native.resources)
+            else:
+                # Retain the original declared legacy-identity/native-display
+                # adapter, including its existing inventory and bridge checks.
+                from difficult_mode import DifficultPack
+                pack = DifficultPack(root, root / 'assets/difficult-maps')
+                check = pack.validate()
+                if not check['success']:
+                    raise ValueError(f'Difficult resources incomplete: {check}')
+                native = DifficultNativeContext(root, pack)
+                side = []
+            resources = native.resources
+            versions = load_shared_version_context(root, native.version_pack, resources,
+                native.adapters, native.catalog, side, neutral_relative=native.neutral_relative,
+                author_profile_id='zhan10-speed', entry_root_relative='')
+            native.validate_versions(versions)
+        else:
+            raise ValueError(f'Unknown game mode: {mode}')
+        provider = SharedReferenceProvider(root, resources, versions, native=native)
+        for item in pack.maps:
             for floor in item.layers:
-                yield mode,item.id,str(floor),context
+                yield mode, item.id, str(floor), provider
 
 
 def main():
@@ -45,10 +120,10 @@ def main():
     if any(len(key)!=2 for key in selected):
         raise ValueError('Selection must be MAP/FLOOR')
     seen=set();rows=[]
-    for mode,map_id,floor,context in references(root,args.mode or ('nightmare','difficult'),output_root/'work/generator-memory'):
+    for mode,map_id,floor,provider in references(root,args.mode or ('nightmare','difficult')):
         if selected and (map_id,floor) not in selected:
             continue
-        reference=context._shared_structure_reference('shared-structure',map_id,floor)
+        reference=provider('shared-structure',map_id,floor)
         if reference is None:
             raise ValueError(f'Shared reference unavailable: {mode}/{map_id}/{floor}')
         target_reference=replace(reference,resource_root=output_root)

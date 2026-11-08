@@ -7,7 +7,7 @@ import tempfile
 import time
 import unittest
 from s0_test_fixtures import synthetic_read
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, call
 import numpy as np
 from PySide6.QtCore import QObject, Signal, QUrl
 from PySide6.QtGui import QGuiApplication
@@ -247,12 +247,22 @@ class CoordinatorLiveTests(unittest.TestCase):
         self.f.session.snapshot['roundActive']=True
         self.c.setMode('difficult');self.f.settings.setValue.assert_not_called()
         self.f.session.snapshot['roundActive']=False
-        self.c.setMode('difficult');self.f.settings.setValue.assert_called_once_with('gameMode','difficult')
-    def test_manual_selection_navigates_and_raises_only_on_explicit_request(self):
+        self.c.setMode('difficult')
+        self.assertEqual(self.f.settings.setValue.call_args_list,
+                         [call('gameSeason', 's0'), call('gameMode', 'difficult')])
+        self.f.settings.saveFields.assert_called_once_with(['gameSeason', 'gameMode'])
+    def test_manual_selection_reuses_controls_without_raising_retired_page(self):
         window=Mock();self.f.windows._windows['main']=window
+        controls=Mock();self.f.windows._windows['controls']=controls
+        self.f.settings.persistControlsVisibility=Mock(return_value=True)
         self.c.requestManualMapSelection()
         self.f.session.dispatch.assert_called_once_with('reselect_map')
-        window.showNormal.assert_called_once();window.raise_.assert_called_once();window.requestActivate.assert_called_once()
+        controls.setProperty.assert_any_call('collapsed',False)
+        controls.setProperty.assert_any_call('mapSelectionRequested',True)
+        self.f.windows.show.assert_called_once_with('controls')
+        self.f.settings.persistControlsVisibility.assert_called_once_with(True)
+        self.f.settings.setValue.assert_not_called()
+        window.showNormal.assert_not_called();window.raise_.assert_not_called();window.requestActivate.assert_not_called()
     def test_toggle_round_shares_pending_settings_start_guard_and_active_means_end(self):
         self.c._bound="42"
         self.f.settings.busy=True

@@ -35,6 +35,7 @@ class Resources(QObject):
     changed = Signal()
     busy = False
     pendingKind = ""
+    operationStage = ""
     recoveryRequired = False
     operationGeneration = 0
     message = "local status"
@@ -113,14 +114,21 @@ class OnlineTests(unittest.TestCase):
         self.assertEqual(self.service.snapshot["progress"]["receivedBytes"], len(self.transport.data))
 
     def installed_package(self):
+        from star_map_import import BASE_DEPENDENCIES
         self.transport.rows[0]["packageId"] = "nightmare-suju"
         target = self.root / "_internal/assets/suju/nightmare-03/floor-2.png"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"pixels")
         receipt = self.root / "work/map-packages/nightmare-suju.json"
         receipt.parent.mkdir(parents=True, exist_ok=True)
+        dependencies = []
+        for relative in sorted(BASE_DEPENDENCIES):
+            dependency = self.root / relative
+            dependency.parent.mkdir(parents=True, exist_ok=True)
+            dependency.write_bytes(b"base")
+            dependencies.append(dict(path=relative, bytes=4, sha256=hashlib.sha256(b"base").hexdigest()))
         receipt.write_text(json.dumps(dict(packageId="nightmare-suju", revision=1,
-            archiveSha256=self.transport.rows[0]["sha256"], files=[dict(
+            archiveSha256=self.transport.rows[0]["sha256"], requiresFiles=dependencies, files=[dict(
                 path=target.relative_to(self.root).as_posix(), bytes=6,
                 sha256=hashlib.sha256(b"pixels").hexdigest())])))
         return target, receipt
@@ -140,7 +148,7 @@ class OnlineTests(unittest.TestCase):
             self.service = OnlinePackagesService(self.root, self.resources, transport=self.transport)
 
     def test_missing_corrupt_receipt_or_new_digest_still_downloads(self):
-        for failure in ("missing", "corrupt", "receipt", "new-version"):
+        for failure in ("missing", "corrupt", "receipt", "new-version", "base-missing", "base-corrupt"):
             with self.subTest(failure=failure):
                 target, receipt = self.installed_package()
                 self.index()  # Earlier proof must not mask a subsequent change.
@@ -150,6 +158,12 @@ class OnlineTests(unittest.TestCase):
                     target.write_bytes(b"broken")  # Same size, different SHA.
                 elif failure == "receipt":
                     receipt.write_text("{}")
+                elif failure.startswith("base-"):
+                    dependency = self.root / json.loads(receipt.read_text())["requiresFiles"][0]["path"]
+                    if failure == "base-missing":
+                        dependency.unlink()
+                    else:
+                        dependency.write_bytes(b"fail")  # Same size; hash must be checked.
                 else:
                     document = json.loads(receipt.read_text())
                     document["archiveSha256"] = "b" * 64
@@ -158,7 +172,7 @@ class OnlineTests(unittest.TestCase):
                 until(lambda: not self.service.busy)
                 self.assertEqual(self.transport.calls[-1], "nightmare-suju")
                 self.assertEqual(self.service.snapshot["stage"], "handoff")
-        self.assertEqual(len(self.resources.calls), 4)
+        self.assertEqual(len(self.resources.calls), 6)
 
     def test_installed_verification_cannot_publish_after_cancel_selection_or_local_change(self):
         self.installed_package()

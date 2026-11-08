@@ -10,26 +10,83 @@ Item {
     property var packageManager: typeof packageManagerService !== "undefined" ? packageManagerService : null
     property var confirmationOwner: resourceService
     property bool managerRefreshPending: false
-    readonly property bool operationPending: resourceService.busy || resourceService.pendingKind !== "" || (packageManager && (packageManager.busy || packageManager.pendingKind !== ""))
+    // Persistent hidden pages must not turn construction into a full audit.
+    property bool active: false
+    property bool refreshAllowed: true
+    property bool activationRefreshPending: false
+    property bool pageReady: false
+    property bool recoveryHistoryVisible: false
+    property bool historyOpenRequested: false
+    onActiveChanged: {
+        activationRefreshPending = active
+        if (!active) {
+            dismissHistoryView()
+            historyDialog.close()
+        }
+    }
+    Timer {
+        interval: 120
+        running: panel.pageReady && panel.active && panel.activationRefreshPending
+                 && panel.refreshAllowed && !panel.operationPending && !panel.recoveryPending
+        onTriggered: panel.listPackages()
+    }
+    signal importSelectionCancelled()
+    function dismissHistoryView() {
+        historyOpenRequested = false
+        if (packageManager && confirmationOwner === packageManager
+                && packageManager.pendingKind === "restore-author-version") confirmation.reject()
+        if (packageManager) packageManager.dismissHistory()
+    }
+    readonly property bool operationPending: archiveDialog.visible || resourceService.busy || resourceService.pendingKind !== "" || (packageManager && (packageManager.busy || packageManager.pendingKind !== ""))
     readonly property bool recoveryPending: resourceService.recoveryRequired || (packageManager && packageManager.recoveryRequired)
+    readonly property var visibleResourceRows: resourceService.packageRows.map(function(row) {
+        if (resourceService.inventoryVerified || (row.status !== "bundled" && row.status !== "installed" && row.status !== "partially-compatible" && row.status !== "incompatible")) return row
+        // Previous successful checks are presentation history, not current
+        // content evidence. Drop their verified counts as well as the label.
+        return {packageId: row.packageId, title: row.title, builtin: row.builtin === true || row.status === "bundled",
+                status: "declared", canRemove: false, verified: false}
+    })
+
+    // Both persistent pages share this single chooser and confirmation owner.
+    // Capture the browsing season before opening, never the running game season.
+    function openImport(season) {
+        if (panel.operationPending || panel.recoveryPending) return
+        archiveDialog.targetSeason = season
+        archiveDialog.open()
+    }
+
+    function removePackage(packageId) {
+        if (!panel.packageManager || !packageId || panel.operationPending || panel.recoveryPending) return
+        panel.packageManager.requestRemove(packageId)
+    }
+
+    function listPackages() {
+        activationRefreshPending = false
+        managerRefreshPending = false
+        resourceService.listPackages()
+        managerRefreshPending = !!packageManager && resourceService.busy
+    }
 
     function refreshPackages() {
-        managerRefreshPending = !!packageManager
+        activationRefreshPending = false
+        managerRefreshPending = false
         resourceService.refresh()
+        // Only a started read owns the follow-up management scan. A lease
+        // refusal must not silently enqueue another hidden reader.
+        managerRefreshPending = !!packageManager && resourceService.busy
     }
 
     function stateLabel(status) {
-        const labels = {"installed": "已安装，可以使用", "not-installed": "未安装", "incomplete": "文件缺失或有改动",
-            "unmanaged": "已有文件，暂时无法确认来源", "unverified": "还没确认是否可用", "recovery-required": "上次操作还没完成", "managed-remnants": "有旧图包文件可清理", "bundled": "内置默认资源"}
-        return labels[status] || "需要重新核对"
+        const labels = {"declared": "待核对", "history-unchecked": "历史版本待核对", "installed": "已安装", "partially-compatible": "部分层可用", "incompatible": "不兼容", "not-installed": "未安装", "incomplete": "文件缺失或已修改",
+            "unmanaged": "来源未确认", "unverified": "待核对", "recovery-required": "操作未完成", "managed-remnants": "有残留文件", "bundled": "内置默认资源"}
+        return labels[status] || "待核对"
     }
     function stateDetail(row) {
-        if (row.status === "bundled") return "安装包自带，已导入的资源和当前选择保持优先。"
-        if (row.status === "unmanaged") return "暂时无法确认这些文件是否属于图包，会保留原文件。"
-        if (row.status === "incomplete") return "部分文件有改动或无法确认来源，会保留这些文件，删除可能无法全部完成。"
-        if (row.status === "managed-remnants") return "包含这个图包的旧备份，或上次操作留下的临时文件。"
-        if (row.status === "unverified") return "暂时无法完成核对，请重新检查状态。"
-        if (row.status === "recovery-required") return "请点击“恢复记录”，按提示完成上次操作。"
+        if (row.compatibilityNotice) return row.compatibilityNotice
+        if (row.status === "recovery-required") return "请先处理上次未完成的操作。"
+        if (row.builtin && row.status !== "bundled" && row.status !== "declared") return "请重新安装以修复缺失资源。"
+        if (row.status === "incomplete") return "已修改或来源不明的文件会保留。"
+        if (row.status === "unmanaged") return "来源不明的文件不会删除。"
         return ""
     }
 
@@ -38,24 +95,38 @@ Item {
         spacing: 12
         RowLayout {
             Layout.fillWidth: true
-            Label { text: "管理本地资源"; color: "#142b4b"; font.pixelSize: 18; font.bold: true }
-            Item { Layout.fillWidth: true }
-            AppButton { text: "恢复记录"; enabled: !panel.operationPending; onClicked: resourceService.inspectRecovery() }
-            AppButton { text: "在线图包"; onClicked: clientCoordinator.navigate("downloads") }
-            AppButton { text: "核对状态"; enabled: !panel.operationPending && !panel.recoveryPending; onClicked: panel.refreshPackages() }
-            AppButton { objectName: "clearManagedPackagesButton"; text: "清理全部图包"; enabled: !!panel.packageManager && !panel.operationPending && !panel.recoveryPending; onClicked: panel.packageManager.requestClearAll() }
-            AppButton { text: "导入 ZIP"; primary: true; enabled: !panel.operationPending && !panel.recoveryPending; onClicked: archiveDialog.open() }
+            Label { text: "本地图包"; color: "#142b4b"; font.pixelSize: 18; font.bold: true; Layout.fillWidth: true }
+            Label { text: typeof backend !== "undefined" && backend ? backend.season.toUpperCase() : ""; color: "#526785"; font.pixelSize: 14 }
         }
-        Label {
-            Layout.fillWidth: true
-            text: "删除只清理已核对归属的图包和历史副本；成功后不保留包副本。官方基础资源、自定义路线与未知文件会保留。"
-            wrapMode: Text.Wrap; color: "#526785"; font.pixelSize: 12
+        RowLayout {
+            Layout.fillWidth: true; spacing: 8
+            AppButton { objectName: "downloadPackagesButton"; text: "下载图包"; onClicked: clientCoordinator.navigate("downloads") }
+            AppButton { objectName: "importPackagesButton"; text: "导入图包"; primary: true; enabled: !panel.operationPending && !panel.recoveryPending; onClicked: panel.openImport(backend.season) }
+            AppButton {
+                id: moreButton
+                objectName: "resourceMoreButton"; text: "更多"; enabled: !panel.operationPending; onClicked: moreMenu.open()
+                Popup {
+                    id: moreMenu
+                    objectName: "resourceMoreMenu"
+                    focus: true; modal: true; dim: false
+                    onOpened: (checkPackagesAction.enabled ? checkPackagesAction : recoveryHistoryAction).forceActiveFocus()
+                    y: moreButton.height + 4; padding: 8
+                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+                    contentItem: ColumnLayout {
+                        spacing: 4
+                        AppButton { id: checkPackagesAction; objectName: "checkPackagesButton"; Layout.fillWidth: true; text: "检查图包完整性"; enabled: !panel.operationPending && !panel.recoveryPending; onClicked: { moreMenu.close(); panel.refreshPackages() } }
+                        AppButton { id: recoveryHistoryAction; objectName: "recoveryHistoryButton"; Layout.fillWidth: true; text: "查看恢复记录"; enabled: !panel.operationPending; onClicked: { moreMenu.close(); panel.recoveryHistoryVisible = true; resourceService.inspectRecovery() } }
+                        AppButton { objectName: "clearManagedPackagesButton"; Layout.fillWidth: true; text: "清理全部图包"; enabled: !!panel.packageManager && !panel.operationPending && !panel.recoveryPending; onClicked: { moreMenu.close(); panel.packageManager.requestClearAll() } }
+                    }
+                }
+            }
+            Item { Layout.fillWidth: true }
         }
         ColumnLayout {
             Layout.fillWidth: true
-            visible: resourceService.recoveryRequired || resourceService.recoveryTransactions.length > 0
-            Label { text: "完成上次操作与清理"; color: "#17365e"; font.bold: true }
-            Label { text: resourceService.recoveryUsesHelper ? "确认后软件会正常退出，继续处理上次未完成的更改，或清理已完成操作留下的临时文件。完成后请重新打开查看结果。" : resourceService.recoveryExecutionAllowed ? "软件已准备好，可以确认后恢复图包或清理临时文件。" : "请先结束本局并正常退出，重新打开后按提示恢复图包。"; color: "#526785"; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            visible: panel.recoveryPending || (panel.recoveryHistoryVisible && resourceService.recoveryTransactions.length > 0)
+            Label { text: panel.recoveryPending ? "上次操作未完成" : "恢复记录"; color: "#17365e"; font.bold: true }
+            Label { text: resourceService.recoveryUsesHelper ? "处理时将退出星图；完成后请重新打开。" : resourceService.recoveryExecutionAllowed ? "选择需要处理的记录。" : "请结束本局并重启星图后处理。"; color: "#526785"; wrapMode: Text.Wrap; Layout.fillWidth: true }
             AppButton { text: "处理上次未完成的操作"; visible: resourceService.recoveryRequired; enabled: resourceService.recoveryExecutionAllowed && !resourceService.busy && resourceService.pendingKind === ""; onClicked: resourceService.requestRecovery() }
             ListView {
                 id: transactions
@@ -78,6 +149,11 @@ Item {
                 }
             }
         }
+        ClientPackageProgress {
+            Layout.fillWidth: true
+            localService: resourceService
+            managementService: panel.packageManager
+        }
         // The package list sits on one white card like the other pages.
         Rectangle {
             Layout.fillWidth: true; Layout.fillHeight: true
@@ -88,7 +164,10 @@ Item {
             objectName: "managedPackageList"
             anchors.fill: parent; anchors.margins: 4; anchors.leftMargin: 18; anchors.rightMargin: 12
             clip: true; spacing: 0
-            model: panel.packageManager ? panel.packageManager.packageRows.concat(resourceService.packageRows.filter(function(row) { return row.status === "bundled" })) : resourceService.packageRows
+            model: panel.packageManager ? panel.packageManager.packageRows.map(function(row) {
+                const checked = resourceService.inventoryVerified && panel.visibleResourceRows.find(function(item) { return item.packageId === row.packageId })
+                return checked ? Object.assign({}, row, checked, {canRemove: false, canInspectRemoval: row.canInspectRemoval}) : row
+            }).concat(panel.visibleResourceRows.filter(function(row) { return row.status === "bundled" || row.builtin === true })) : panel.visibleResourceRows
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar {}
             delegate: Item {
@@ -103,19 +182,30 @@ Item {
                         Label { Layout.fillWidth: true; text: modelData.title; elide: Text.ElideRight; font.pixelSize: 14; color: "#142b4b"; font.bold: true }
                         Label {
                             Layout.fillWidth: true
-                            text: panel.stateLabel(modelData.status) + (modelData.fileCount !== undefined ? " · " + modelData.fileCount + " 个图包文件（含旧副本）" : "")
-                            color: modelData.status === "installed" ? "#17775a" : "#526785"; font.pixelSize: 12; wrapMode: Text.Wrap
+                            objectName: "packageStatusLabel-" + modelData.packageId
+                            text: panel.stateLabel(modelData.status)
+                            color: modelData.status === "installed" ? "#17775a" : "#526785"; font.pixelSize: 14; wrapMode: Text.Wrap
                         }
                         Label {
                             Layout.fillWidth: true; visible: text.length > 0
-                            text: panel.stateDetail(modelData); color: "#526785"; font.pixelSize: 12; wrapMode: Text.Wrap
+                            text: panel.stateDetail(modelData); color: "#526785"; font.pixelSize: 14; wrapMode: Text.Wrap
+                        }
+                    }
+                    AppButton {
+                        objectName: "packageHistoryButton-" + modelData.packageId
+                        text: "历史版本"; visible: !!modelData.storageFormat
+                        enabled: !!panel.packageManager && !panel.operationPending && !panel.recoveryPending
+                        Accessible.name: "查看作者历史版本 " + modelData.title
+                        onClicked: {
+                            panel.historyOpenRequested = true
+                            panel.packageManager.requestHistory(modelData.packageId)
                         }
                     }
                     AppButton {
                         objectName: "removePackageButton-" + modelData.packageId
-                        text: "删除图包"; enabled: !!panel.packageManager && !!modelData.canRemove && !panel.operationPending && !panel.recoveryPending
+                        text: modelData.canInspectRemoval ? "检查并删除" : "删除图包"; enabled: !!panel.packageManager && (!!modelData.canRemove || !!modelData.canInspectRemoval) && !panel.operationPending && !panel.recoveryPending
                         Accessible.name: "删除图包 " + modelData.title
-                        onClicked: panel.packageManager.requestRemove(modelData.packageId)
+                        onClicked: panel.removePackage(modelData.packageId)
                     }
                 }
                 Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#edf1f7"; visible: index < packages.count - 1 }
@@ -123,7 +213,7 @@ Item {
             Label {
                 anchors.centerIn: parent; width: Math.min(parent.width, 440); horizontalAlignment: Text.AlignHCenter
                 visible: packages.count === 0
-                text: panel.operationPending ? "正在核对本地资源…" : panel.recoveryPending ? "上次图包操作还没完成，请正常退出并重启后按提示处理。" : "还没有可管理的图包。可点击“核对状态”，或导入本地 ZIP 图包。"
+                text: panel.operationPending ? "正在核对本地资源…" : panel.recoveryPending ? "请先处理上次未完成的操作。" : "暂无图包，请下载或导入。"
                 wrapMode: Text.Wrap; color: "#526785"; font.pixelSize: 13
             }
         }
@@ -131,21 +221,81 @@ Item {
         RowLayout {
             Layout.fillWidth: true
             Label {
-                Layout.fillWidth: true; text: (panel.packageManager ? panel.packageManager.message + "\n" : "") + resourceService.message; wrapMode: Text.Wrap
-                color: panel.recoveryPending ? "#b8364a" : "#354f75"; font.pixelSize: 12
+                Layout.fillWidth: true; visible: !panel.operationPending && text.length > 0; text: (panel.packageManager ? panel.packageManager.message + "\n" : "") + resourceService.message; wrapMode: Text.Wrap
+                color: panel.recoveryPending ? "#b8364a" : "#354f75"; font.pixelSize: 14
                 Accessible.role: Accessible.StaticText
             }
             AppButton { text: "取消操作"; visible: resourceService.canCancel; onClicked: resourceService.cancel() }
-            AppButton { text: "取消删除"; visible: !!panel.packageManager && panel.packageManager.canCancel; onClicked: panel.packageManager.cancel() }
+            AppButton { text: "取消操作"; visible: !!panel.packageManager && panel.packageManager.canCancel; onClicked: panel.packageManager.cancel() }
         }
     }
 
     FileDialog {
         id: archiveDialog
         objectName: "resourceArchiveDialog"
-        title: "选择本地地图资源包"
+        property string targetSeason: "s0"
+        title: "选择 " + targetSeason.toUpperCase() + " 本地地图资源包"
         nameFilters: ["地图资源包 (*.zip)"]
-        onAccepted: resourceService.importArchive(selectedFile.toString())
+        onAccepted: resourceService.importArchive(selectedFile.toString(), targetSeason)
+        onRejected: panel.importSelectionCancelled()
+    }
+    Dialog {
+        id: historyDialog
+        objectName: "resourceHistoryDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(600, parent ? parent.width - 48 : 600)
+        height: Math.min(460, parent ? parent.height - 48 : 460)
+        title: "作者历史版本"
+        modal: true; focus: true
+        closePolicy: Popup.CloseOnEscape
+        onClosed: {
+            panel.dismissHistoryView()
+        }
+        contentItem: ColumnLayout {
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap
+                text: "历史列表只核对来源记录；点击回退后会核对完整图片和当前底模。回退只切换作者显示，不回退程序或识别底模。"
+            }
+            ListView {
+                id: historyList
+                objectName: "authorHistoryList"
+                Layout.fillWidth: true; Layout.fillHeight: true
+                clip: true; spacing: 8
+                ScrollBar.vertical: ScrollBar {}
+                model: panel.packageManager ? panel.packageManager.historyRows : []
+                delegate: RowLayout {
+                    required property var modelData
+                    width: historyList.width
+                    Label {
+                        Layout.fillWidth: true; wrapMode: Text.Wrap
+                        text: modelData.snapshotId.slice(0, 12) + " · " + (modelData.current ? "当前版本" : modelData.status === "unverified-history" ? "来源或记录不完整，不可回退" : "保留版本，内容待核对")
+                              + (modelData.archiveSha256 ? "\n图包 SHA256：" + modelData.archiveSha256.slice(0, 12) : "")
+                    }
+                    AppButton {
+                        objectName: "restoreAuthorVersion-" + modelData.snapshotId
+                        text: "核对并回退"
+                        enabled: modelData.canInspectRestore && !panel.operationPending && !panel.recoveryPending
+                        Accessible.name: "核对并回退作者版本 " + modelData.snapshotId.slice(0, 12)
+                        onClicked: panel.packageManager.requestRestoreVersion(modelData.packageId, modelData.sourceTransactionId)
+                    }
+                }
+            }
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap
+                visible: !panel.packageManager || panel.packageManager.historyRows.length === 0
+                text: "当前没有已核对的历史记录，或资源已改变。可点击重新核对。"
+            }
+        }
+        footer: DialogButtonBox {
+            AppButton {
+                objectName: "refreshAuthorHistoryButton"; text: "重新核对"
+                enabled: !!panel.packageManager && !panel.operationPending && !panel.recoveryPending
+                onClicked: panel.packageManager.requestHistory(panel.packageManager.historyPackageId)
+            }
+            AppButton { objectName: "closeAuthorHistoryButton"; text: "关闭"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
+            onRejected: historyDialog.close()
+        }
     }
     Dialog {
         id: confirmation
@@ -183,6 +333,9 @@ Item {
     }
     Connections {
         target: panel.packageManager
+        function onHistoryReady(packageId) {
+            if (panel.active && panel.historyOpenRequested) historyDialog.open()
+        }
         function onConfirmationRequested(title, message) {
             panel.confirmationOwner = panel.packageManager
             confirmation.title = title
@@ -190,5 +343,8 @@ Item {
             confirmation.open()
         }
     }
-    Component.onCompleted: panel.refreshPackages()
+    Component.onCompleted: {
+        pageReady = true
+        activationRefreshPending = active
+    }
 }

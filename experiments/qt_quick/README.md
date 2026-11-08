@@ -1,7 +1,8 @@
-# 星图 Qt Quick 实验
+# 星图 Qt 客户端与历史实验记录
 
-独立 PySide6 6.11.1 / QML 原型，基于 `3438365b4cef003f76d08a001f772c888156bd03`。
-现有 Tk 入口、识别算法、用户配置和安装目录都不改。尚未生成安装器，不是正式客户端。
+当前客户端入口为 `tools/qt_client_entry.py`，运行及构建步骤见 [仓库 README](../../README.md)。本目录名沿用迁移时期命名；`main.py` 仍是独立图库/回放实验，不是当前完整客户端入口。
+
+旧 Tk 页面及入口已移除。以下保留迁移期实验记录，其历史 Tk 路径、基线与“尚未生成安装器”等状态不代表当前源码或验收状态。
 
 ## 运行
 
@@ -42,26 +43,9 @@ python -m venv .venv-qt-isolated
 不截屏、不访问游戏、不创建键盘钩子、不运行另一套识别或全局快捷键监听。
 Qt 的应用内键盘事件也没有被当作全局快捷键验证。
 
-`replay_adapter.py` 消费现有 `RoundPose.snapshot()` 数据格式，并调用同一
-`RoundPose.pose_for_floor()`，不复制贴合算法。现已另接保存结果到 Qt 渲染：
-`prepare_replay.py` 读取已有生产调用方输出，核对成功提交、原始输入 SHA、
-作者/地图/楼层的精确资源绑定和历史渲染尺寸，复制到隔离 `work/qt-replay`。
-`ReplayCanvas.qml` 对保存的客户端帧按原始尺寸应用记录中的显示矩阵，支持透明度拖动、
-窗口缩放、切页保留和悬浮查看。回放载入在后台校验图片哈希，晚到结果不能覆盖新回放。
+识别详情和识别回放界面已移除。首页直接提供选图与重新识别入口，候选确认、相似组切换和楼层操作继续使用游戏控件；手动选图窗、采集、识别贴合和诊断导出保留。
 
-本机备好的 `work/qt-replay/known-production/replay.json` 来自已有生产算法的成功输出，
-**输入是明确记录的合成帧，不是新的实机游戏验收**。没有重跑识别器、编造位姿或手调矩阵，
-也没有用历史成功给当前游戏授权。界面标明“生产算法结果 · 合成输入回放”。
-实机日志的成功摘要缺少完整成功位姿/逐帧数据，未据此伪造实机回放。
-完整迁移仍需接现有实时结果授权/生命周期，保持两模式共享算法。
-
-```powershell
-.\.venv-qt-isolated\Scripts\python.exe experiments/qt_quick/prepare_replay.py '已有生产调用方 result.json' --input-kind synthetic
-.\.venv-qt-isolated\Scripts\python.exe experiments/qt_quick/main.py --replay work/qt-replay/known-production/replay.json
-```
-
-回放输入与作者图片全部是本地副本，不随实验源码分发。`prepare_replay.py` 的目标必须是新目录；
-只有来源确为实录输入时才使用 `--input-kind recorded`，未知来源保持 `unverified`。
+`replay_adapter.py` 与 `prepare_replay.py` 仍用于保存帧/历史位姿的离线算法回归，复用原有 `RoundPose` 和严格资源校验，不授予当前游戏显示权限。实验 UI 不再提供回放页、回放浮窗或 `--replay` 参数。
 
 ## 有界验证
 

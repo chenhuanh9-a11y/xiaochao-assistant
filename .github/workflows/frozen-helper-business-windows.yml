@@ -1,0 +1,73 @@
+name: Frozen helper synthetic author import evidence
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/frozen-helper-business-windows.yml'
+      - 'tools/verify_frozen_import_business.py'
+      - 'tools/qt-import-helper.spec'
+      - 'tests/fixtures/synthetic_import_parent.py'
+      - 'tests/test_frozen_import_business_probe.py'
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-import:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        expectation: [success, invalid-image-rejected]
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13.3'
+          architecture: x64
+      - name: Isolated source-pinned helper and synthetic-data producer dependencies
+        shell: pwsh
+        run: |
+          $venv = Join-Path $env:RUNNER_TEMP 'xingtu-helper-business-venv'
+          if (Test-Path -LiteralPath $venv) { throw 'Expected new isolated venv' }
+          python -m venv $venv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $requirements = Join-Path $env:RUNNER_TEMP 'xingtu-helper-business-requirements.txt'
+          python -B -X utf8 -c "import sys; sys.path.insert(0, 'tools'); import build_qt_client as b; p=b._requirements(b.TOOLS/'requirements-qt-build.txt'); print('\n'.join(k+'=='+p[k] for k in ('PyInstaller','pyinstaller-hooks-contrib','pefile','psutil','numpy','Pillow')))" | Set-Content -LiteralPath $requirements -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & (Join-Path $venv 'Scripts\python.exe') -m pip install --disable-pip-version-check --index-url https://pypi.org/simple -r $requirements
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Focused synthetic-data and evidence contracts
+        shell: pwsh
+        run: |
+          & (Join-Path $env:RUNNER_TEMP 'xingtu-helper-business-venv\Scripts\python.exe') -B -m unittest discover -s tests -p test_frozen_import_business_probe.py -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify frozen import success or rejection with real parent and lease gates
+        shell: pwsh
+        run: |
+          $commit = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & (Join-Path $env:RUNNER_TEMP 'xingtu-helper-business-venv\Scripts\python.exe') -B -X utf8 tools/verify_frozen_import_business.py --source-commit $commit --work (Join-Path $env:RUNNER_TEMP 'xingtu-helper-business') --expect ${{ matrix.expectation }}
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # Exact old-red evidence is retained for source 34ea53e, artifact 13590168663.
+      # Rejection passes do not claim successful import or actual client/game QA.
+      # No helper EXEs, user assets, real maps, or Setup are uploaded.
+      - name: Preserve synthetic failure data and exact process receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: frozen-helper-synthetic-business-${{ matrix.expectation }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/xingtu-helper-business/evidence
+            ${{ runner.temp }}/xingtu-helper-business/parent-output.log

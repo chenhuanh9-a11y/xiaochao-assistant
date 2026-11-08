@@ -1,3 +1,5 @@
+> Tk pages and the legacy entrypoint have been retired. This migration record preserves historical evidence; current entry and cleanup scope are in [the repository README](../../README.md) and [cleanup record](../../docs/tk-cleanup.md).
+
 # Qt Quick migration map
 
 ## Reviewed group membership: current implementation contract
@@ -347,7 +349,7 @@ Production method names without a module qualifier belong to `app/identityv_dail
 | Open/hide/collapse/expand/drag floating controls; reorder modules | Actual `GameControlView` command map constructed in `_build_ui` (lines 7423–7452); `set_control_visible`, `collapse_control`, `expand_control`, control drag methods; `control_layout_snapshot`, `apply_control_layout`, `control_layout` | `WindowController` / `Client.qml`; `SettingsService` layout preferences | Integrated controls, collapse/show/hide and window routing exist. Post-f3 manual controls and real module order/visibility/display options are connected. Expanded/collapsed control geometry follows original own-window evidence; native focus parity remains unverified. |
 | Toggle aligned visibility; independently adjust aligned/pinned/interface opacity and size | `toggle_sheet_visibility`, `change_sheet_opacity`, `change_reference_opacity`, `change_interface_opacity`, `change_sheet_scale`; `OpacityUpdates`; `_save_settings` | `SettingsService` / `WindowController` | Integrated settings/controller apply aligned/reference/interface opacity and size preferences. Sound is connected. Grid/experimental fields retain their old compatibility semantics rather than advertising new visual features. Native display behavior remains unverified. |
 | Show/hide pinned reference map; edit position, Finish or Cancel | `reference_sheet_snapshot`, `set_reference_sheet_visible`, `show_sheet`, `_reference_sheet_may_show`, `move_sheet`, `finish_reference_sheet_move`, `cancel_reference_sheet_move`; `ReferencePositionEdit`, `ReferencePointerMailbox` | `ClientReference.qml` / coordinator / `WindowController` | Integrated `ClientReference.qml` and coordinator reference editing use shared edit state. Own-window probe verifies persistent edit after release, movement, Cancel rollback/passthrough and Finish persistence. Native game context/DPI acceptance remains. |
-| Show current aligned route; reopen/close map, switch floor, drag/zoom | `_start_alignment`, `_align_confirmed`, `_show_aligned_overlay`, `_restore_aligned_overlay_surface`, `_mark_overlay_display_verified`, `_suppress_map_surfaces_immediately`; `AlignmentCoreV2`, `RoundPose`, `AlignmentPoseTransaction`, `RoundLayerGroup` | Existing `ReplayCanvas.qml` for saved matrices only; `ClientAligned.qml` / coordinator / `LiveRuntime` | Integrated `ClientAligned.qml` consumes revocable `LiveRuntime` render authorization through the coordinator. A 200ms refresh schedule drives current map work. Synthetic frame chains exercise floor/refresh authorization; replay itself never authorizes a game overlay. |
+| Show current aligned route; reopen/close map, switch floor, drag/zoom | `_start_alignment`, `_align_confirmed`, `_show_aligned_overlay`, `_restore_aligned_overlay_surface`, `_mark_overlay_display_verified`, `_suppress_map_surfaces_immediately`; `AlignmentCoreV2`, `RoundPose`, `AlignmentPoseTransaction`, `RoundLayerGroup` | Saved-matrix UI removed; `ClientAligned.qml` / coordinator / `LiveRuntime` | Integrated `ClientAligned.qml` consumes revocable `LiveRuntime` render authorization through the coordinator. A 200ms refresh schedule drives current map work. Synthetic frame chains exercise floor/refresh authorization; replay itself never authorizes a game overlay. |
 | Recapture, choose/reselect candidate, confirm map, inspect/correct floor | `capture_now`, `_start_map_reselection`, `_cycle_candidate_by_key`, `on_select`, `confirm_route`, `select_floor`, `_open_recognition_details`; `MapIdentityEngine`, `RuntimeMapRecognizer`, `fast_structure_alignment.try_alignment` | `LiveRuntime` / `EngineAdapter` / `SessionService`; capture/input adapters | Real capture provider and shared live-runtime recognition/alignment are connected behind explicit user binding/enabling. Automatic synthetic floor/refresh chains pass. Post-f3 candidate navigation/selection/confirmation/reselection and floor selection/cycling use the shared gate/runtime. Manual floor intent is distinct from sensor output; no caller H or relabelled pose is accepted. |
 | Read help, runtime/route notices, update notices/history, export diagnostics, donation | `DesktopMainUI._build_help`, `show_update_dialog`, `_check_updates`, `_export_diagnostics`; `UpdateService`; `route_notification_snapshot`, `FallbackNoticeTracker`, route/status windows; `support_window.open_support_window` | `ClientHelp.qml` / `ClientInfoService` | Integrated `ClientHelp.qml`/`ClientInfoService` show runtime facts, support assets, real update-service state and opt-in diagnostics export. The probe uses a local update fixture; post-f3 source additionally provides actual release history/notes/read/skip state, check retry and diagnostics receipts/path choice. The follow-up shares the original bounded diagnostic ZIP implementation; native dialog/browser acceptance remains unverified. |
 
@@ -508,7 +510,7 @@ No new Setup or real installation is implied by this source update.
 4. Retain representative native-game/window/shortcut/DPI and timing acceptance as separate work requiring safe real inputs. Existing same-input core evidence is reused; do not ask the user to retest every map or run a second game/input owner during their session.
 5. Original-AppId installation/adoption/uninstall and formal release remain separate from the isolated preservation evidence. Do not install into the user's product directory to close this checklist.
 
-Inspection basis: [repository rules](../../AGENTS.md), [development contracts](../../docs/development.md), actual [`GameControlView`](../../app/game_control_view.py) controls and its command map, [`DesktopMainUI`](../../app/desktop_main_ui.py), [`DailyAssistant`](../../app/identityv_daily_assistant.py), [`MapResourcesPage`](../../app/map_resources_page.py), [`MapResourceBrowser`](../../app/map_resource_browser.py), core/resource/package modules named above, and the existing Qt Python/QML files. This document changes no executable behavior.
+Inspection basis: [repository rules](../../AGENTS.md), [development contracts](../../docs/development.md), actual [`GameControlView`](https://github.com/chenhuanh9-a11y/xiaochao-assistant/blob/1f3983bd0ac999671f31adc2f8df58cfe262a4d0/app/game_control_view.py) controls and its command map, [`DesktopMainUI`](https://github.com/chenhuanh9-a11y/xiaochao-assistant/blob/1f3983bd0ac999671f31adc2f8df58cfe262a4d0/app/desktop_main_ui.py), [`DailyAssistant`](https://github.com/chenhuanh9-a11y/xiaochao-assistant/blob/1f3983bd0ac999671f31adc2f8df58cfe262a4d0/app/identityv_daily_assistant.py), [`MapResourcesPage`](https://github.com/chenhuanh9-a11y/xiaochao-assistant/blob/1f3983bd0ac999671f31adc2f8df58cfe262a4d0/app/map_resources_page.py), [`MapResourceBrowser`](https://github.com/chenhuanh9-a11y/xiaochao-assistant/blob/1f3983bd0ac999671f31adc2f8df58cfe262a4d0/app/map_resource_browser.py), core/resource/package modules named above, and the existing Qt Python/QML files. This document changes no executable behavior.
 
 ## Manual map selection (手动选图)
 
@@ -588,10 +590,25 @@ owner's new `require_release` option defaults false for legacy Tk. It does not
 replace the existing release ledger or bounded failure retries.
 
 Saved preference, per-session arming and native running are distinct. Conflicts,
-OS/input errors, binding identity loss and end/stop/reset-round pause/disarm input
-without saving false. Binding loss/end-round still require explicit re-arming in
-that session; restarting may restore readiness, never a held-key gesture. The UI
-switch represents the saved preference even while paused (toggle off/on to re-arm).
+OS/input errors and binding identity loss disarm input without saving false and
+still require explicit re-arming in that session. The UI switch represents the
+saved preference; a separate safety-pause state and re-arm button explain stopped
+input without forcing an off/on toggle. Restarting may restore readiness, never
+a held-key gesture.
+
+Ordinary end/stop/reset-round (including an ending toggle) instead immediately
+suspends the native owner and retains arming. It waits for a post-end start/map/
+capture/manual-start request in the current SessionService generation and a
+validated, non-busy snapshot with a strictly newer committed roundId in active or
+prepared state. Queued starts, unchanged old active flags, failed preparation,
+cancelled/superseded starts, unavailable context and resource leases cannot resume
+input. Both the first manual-start and implicit map-key start use this same gate.
+Normal cross-round resume does not rewrite either settings file. Binding identity,
+foreground, trigger release and pending-release/native-fault gates still apply;
+late key-up failures during the between-round wait become safety pauses. Explicit
+off and safety faults cannot be undone merely by starting another round. This
+round wait is in-process lifecycle state, not a persisted record of the game.
+
 Explicit off stops before validation/I/O and saves false even when other entered
 fields are invalid. Shutdown stops without writing false. Save failures are reported
 and fail closed; a failed off-save cannot promise persistence across restart.

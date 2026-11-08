@@ -1,4 +1,4 @@
-"""One bounded offscreen QML flow with a fake session; no native/game IO."""
+"""Direct home actions after retiring diagnostic pages; fake session, no game IO."""
 from __future__ import annotations
 
 import os
@@ -67,14 +67,26 @@ class FakeSession(QObject):
         self.changed.emit()
 
 
-class RecognitionTests(unittest.TestCase):
+class Coordinator(QObject):
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+    @Slot()
+    def recaptureFromMain(self): self.calls.append("capture")
+    @Slot()
+    def requestManualMapSelection(self): self.calls.append("map")
+
+
+class HomeMapActionTests(unittest.TestCase):
     def setUp(self):
         self.session = FakeSession()
+        self.coordinator = Coordinator()
         self.engine = QQmlEngine()
         self.engine.rootContext().setContextProperty("session", self.session)
+        self.engine.rootContext().setContextProperty("clientCoordinator", self.coordinator)
         self.warnings = []
         self.engine.warnings.connect(lambda errors: self.warnings.extend(error.toString() for error in errors))
-        self.component = QQmlComponent(self.engine, QUrl.fromLocalFile(str(Path(__file__).with_name("ClientRecognition.qml"))))
+        self.component = QQmlComponent(self.engine, QUrl.fromLocalFile(str(Path(__file__).with_name("HomeMapActions.qml"))))
         self.assertFalse(self.component.isError(), "\n".join(error.toString() for error in self.component.errors()))
         self.page = self.component.create()
         self.assertIsNotNone(self.page, "\n".join(error.toString() for error in self.component.errors()))
@@ -103,7 +115,7 @@ class RecognitionTests(unittest.TestCase):
                 if match is not None:
                     return match
             return None
-        found = find(self.page)
+        found = find(self.window.contentItem())
         self.assertIsNotNone(found, name)
         return found
 
@@ -113,41 +125,78 @@ class RecognitionTests(unittest.TestCase):
         QTest.mouseClick(self.window, Qt.LeftButton, Qt.NoModifier, QPoint(round(point.x()), round(point.y())))
         APP.processEvents()
 
-    def test_candidate_select_previous_next_confirm_reselect_and_floor_flow(self):
-        self.assertEqual(self.item("recognitionCandidateList").property("count"), 2)
-        self.click("recognitionCandidate_1")
-        self.assertEqual(self.session.calls[-1], ("select_candidate", {"index": 1}))
-        self.click("recognitionPrevious")
-        self.assertEqual(self.session.state["selectedCandidateIndex"], 0)
-        self.click("recognitionNext")
-        self.assertEqual(self.session.state["selectedCandidateIndex"], 1)
-        self.click("recognitionConfirm")
-        self.assertTrue(self.session.state["identityLocked"])
-        self.assertFalse(self.item("recognitionNext").isEnabled())
-        self.click("recognitionReselect")
-        self.assertFalse(self.session.state["identityLocked"])
-        self.click("recognitionFloor_2")
-        self.assertEqual(self.session.calls[-1], ("set_floor", {"floor": "2"}))
-        self.click("recognitionCycleFloor")
-        self.assertEqual(self.session.state["floor"], "B1")
-        self.assertEqual([action for action, payload in self.session.calls], [
-            "select_candidate", "previous_candidate", "next_candidate", "confirm_route",
-            "reselect_map", "set_floor", "cycle_floor"])
-        self.assertEqual(self.warnings, [])
+    def test_direct_actions_remain_and_retired_pages_are_absent(self):
+        self.click("homeSelectMap")
+        self.open_menu()
+        self.click("homeRecapture")
+        self.assertEqual(self.coordinator.calls, ["map", "capture"])
+        for name in ("ClientRecognition.qml", "ReplayCanvas.qml"):
+            self.assertFalse(Path(__file__).with_name(name).exists())
+        self.assertFalse(self.warnings)
 
-    def test_unsupported_empty_state_disables_commands_and_has_no_browser_dependency(self):
-        self.session.state.update(candidateRows=[], selectedCandidateIndex=-1,
-                                  selectedCandidate={}, availableFloors=[],
-                                  commands={action: dict(available=False) for action in ACTIONS})
-        self.session.changed.emit()
-        APP.processEvents()
-        self.assertEqual(self.item("recognitionCandidateList").property("count"), 0)
-        for name in ("recognitionCapture", "recognitionPrevious", "recognitionNext",
-                     "recognitionConfirm", "recognitionReselect", "recognitionCycleFloor"):
-            self.assertFalse(self.item(name).isEnabled(), name)
-        self.click("recognitionNext")
+    def open_menu(self):
+        self.click("homeMapMore")
+        QTest.qWait(180); APP.processEvents()
+        self.assertTrue(self.menu().property("visible"))
+
+    def menu(self):
+        return self.page.findChild(QObject, "homeMapMoreMenu")
+
+    def test_only_selection_and_more_remain_at_narrow_width(self):
+        self.page.setWidth(250)
+        APP.processEvents(); QTest.qWait(20)
+        for name in ("homeSelectMap", "homeMapMore"):
+            item = self.item(name)
+            self.assertGreaterEqual(item.x(), 0)
+            self.assertLessEqual(item.x() + item.width(), self.page.width())
+        self.assertFalse(self.menu().property("visible"))
+
+    def test_keyboard_and_outside_click_cancel_do_not_dispatch(self):
+        self.open_menu()
+        QTest.keyClick(self.window, Qt.Key_Escape)
+        QTest.qWait(180)
+        self.assertFalse(self.menu().property("visible"))
+        self.open_menu()
+        QTest.mouseClick(self.window, Qt.LeftButton, Qt.NoModifier, QPoint(850, 650))
+        QTest.qWait(180)
+        self.assertFalse(self.menu().property("visible"))
+        self.assertEqual(self.coordinator.calls, [])
         self.assertEqual(self.session.calls, [])
-        self.assertEqual(self.warnings, [])
+        self.open_menu()
+        self.click("homeRecapture")
+        QTest.qWait(180)
+        self.assertFalse(self.menu().property("visible"))
+        self.assertEqual(self.coordinator.calls, ["capture"])
+
+    def test_floor_menu_preserves_s0_and_legacy_s1_without_auto_s1_override(self):
+        self.open_menu()
+        self.click("homeFloor_2")
+        self.assertEqual(self.session.calls, [("set_floor", {"floor": "2"})])
+        self.session.state.update(season="s1", availableFloors=["-1", "-2", "-3", "-4"])
+        self.session.changed.emit(); APP.processEvents()
+        self.assertEqual(self.page.property("floors").toVariant(), [])
+        self.session.state.update(manualAlignmentSession=True, automaticFloorObservationAvailable=False)
+        self.session.changed.emit(); APP.processEvents()
+        self.open_menu()
+        self.click("homeFloor_-4")
+        self.assertEqual(self.session.calls[-1], ("set_floor", {"floor": "-4"}))
+        self.session.state.update(automaticFloorObservationAvailable=True)
+        self.session.changed.emit(); APP.processEvents()
+        self.open_menu()
+        self.click("homeFloor_auto")
+        self.assertEqual(self.session.calls[-1], ("set_floor", {"floor": "auto"}))
+        self.assertEqual(len(self.session.calls), 3)
+
+    def test_s1_auto_hides_manual_selection_and_locks_block_actions(self):
+        self.session.state.update(season="s1", resourceLocked=True)
+        self.session.changed.emit(); APP.processEvents()
+        self.assertFalse(self.item("homeSelectMap").isVisible())
+        self.open_menu()
+        self.assertFalse(self.item("homeRecapture").isEnabled())
+        self.session.state.update(manualAlignmentSession=True, resourceLocked=False)
+        self.session.changed.emit(); APP.processEvents()
+        self.assertTrue(self.item("homeSelectMap").isVisible())
+        self.assertTrue(self.item("homeRecapture").isEnabled())
 
 
 if __name__ == "__main__":

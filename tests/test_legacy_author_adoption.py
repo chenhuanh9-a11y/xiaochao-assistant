@@ -39,7 +39,8 @@ class LegacyAdoptionTests(unittest.TestCase):
         for path in self.paths.values():
             self.f.write(path,b'approved')
         snapshot = manager.managed_author_packages_snapshot(self.f.root)
-        self.assertTrue(all(item['status']=='installed' and item['canRemove'] for item in snapshot))
+        self.assertTrue(all(item['status']=='installed' and item['canRemove']
+                            for item in snapshot if item['packageId'] in self.paths))
         receipts = {package: (self.f.receipt(package).read_bytes(), self.f.receipt(package).stat().st_ino)
                     for package in self.paths}
         manager.managed_author_packages_snapshot(self.f.root)
@@ -89,6 +90,8 @@ class LegacyAdoptionTests(unittest.TestCase):
         self.assertFalse(self.f.receipt().exists())
         real=manager.os.link
         def race(source,target):
+            if Path(source).parent.name.startswith('link-probe-'):
+                return real(source, target)
             Path(target).write_bytes(b'other writer')
             real(source,target)
         with patch.object(manager.os,'link',side_effect=race):

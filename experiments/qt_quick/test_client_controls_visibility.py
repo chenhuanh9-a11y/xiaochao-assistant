@@ -126,42 +126,6 @@ class VisibilitySettingsTests(VisibilityHelpers, unittest.TestCase):
         self.assertFalse(service.values[KEY]); self.assertTrue(service.persistedValues[KEY])
         self.assertEqual(len(failures), 1); self.assertIn('保存失败', failures[0])
 
-    def test_tk_save_transparently_keeps_valid_qt_intent_without_changing_orb(self):
-        # Execute the repository's complete production Tk save method; replace
-        # only UI-owned state with a fixture, never construct Tk or native input.
-        from test_reopen_lifecycle import method
-        from client_settings import ACTION_ORDER
-        import threading
-        import ast
-        source=Path(__file__).parents[2]/'app/identityv_daily_assistant.py'
-        tree=ast.parse(source.read_text(encoding='utf-8-sig'))
-        node=next(n for n in ast.walk(tree) if isinstance(n,ast.FunctionDef) and n.name=='atomic_write_text')
-        namespace=dict(Path=Path, os=os, threading=threading)
-        exec(compile(ast.Module(body=[node],type_ignores=[]),str(source),'exec'),namespace)
-        atomic=namespace['atomic_write_text']
-        save=method('_save_settings')
-        save.__globals__.update(json=json, ACTION_ORDER=ACTION_ORDER,
-            WindowAnchor=type('UnusedAnchor',(),{}), normalize_drag_boundary=lambda value:None,
-            atomic_write_text=atomic)
-        for value in (True, False, None, "false", 0):
-            with self.subTest(value=value):
-                raw={} if value is None else {KEY:value}
-                owner=SimpleNamespace(settings_path=self.path, settings=raw, hotkey_name='G',
-                    action_hotkeys={name:('',0) for name in ACTION_ORDER}, compact_position=None,
-                    sheet_position=None, sheet_opacity=.55, reference_opacity=.55, sheet_scale=1.,
-                    orb_visibility_enabled=False, interface_opacity=.82, experimental_auto_overlay=False,
-                    preferred_route_profile_id='fixture', zhan10_coffin_variant_id='variant-01',
-                    onboarding_completed=True, round_end_hint_shown=False, active_confirmation=None,
-                    control_layout_snapshot=lambda:{})
-                self.assertTrue(save(owner))
-                disk=json.loads(self.path.read_text())
-                self.assertIs(disk['orbVisible'],False)
-                self.assertEqual(len(disk['actionHotkeys']),10)
-                if type(value) is bool:
-                    self.assertIs(disk[KEY],value)
-                    self.assertIs(self.service().values[KEY],value)
-                else:
-                    self.assertNotIn(KEY,disk)
 
     def test_shutdown_drains_one_queued_latest_choice(self):
         service=self.service()
@@ -218,26 +182,35 @@ class VisibilityCoordinatorTests(VisibilityHelpers, unittest.TestCase):
         self.s.changed.emit()
         self.assertTrue(self.f.windows.snapshot['controls']['visible'])
 
-    def test_mouse_keyboard_use_same_intent_and_hide_hint_uses_actual_binding(self):
+    def test_mouse_keyboard_use_same_intent_and_hide_silently(self):
         c=self.coordinator({'orbVisible': False,
             'actionHotkeys':['Ctrl+F12','F6','F7','F8','','','F11','','F10','ALT']})
         notices=[]; c.notificationRequested.connect(lambda *args:notices.append(args))
+        changes=[]; c.controlVisibilityChanged.connect(lambda *args:changes.append(args))
         c.showControls(); self.wait(lambda: not self.s.pendingWrites)
         c.toggleControlsKeyboard(); self.wait(lambda: not self.s.pendingWrites)
         self.assertFalse(self.f.windows.snapshot['controls']['visible'])
         self.assertFalse(json.loads(self.path.read_text())[KEY])
-        self.assertIn('Ctrl+F12', notices[-1][1]); self.assertNotIn('F9', notices[-1][1])
+        self.assertEqual(notices, [])
         c.startRound(); self.assertFalse(self.f.windows.snapshot['controls']['visible'])
         c.toggleControls(); self.wait(lambda: not self.s.pendingWrites)
         self.assertTrue(json.loads(self.path.read_text())[KEY])
         self.assertIs(json.loads(self.path.read_text())['orbVisible'], False)
+        c.hideControls(); self.wait(lambda: not self.s.pendingWrites)
+        c.hideControls(); self.wait(lambda: not self.s.pendingWrites)
+        self.assertFalse(json.loads(self.path.read_text())[KEY])
+        self.assertFalse(self.f.windows.snapshot['controls']['visible'])
+        self.assertEqual(changes, [(True, 'mouse'), (False, 'keyboard'),
+                                   (True, 'mouse'), (False, 'mouse')])
+        self.assertEqual(notices, [])
 
-    def test_no_shortcut_hint_offers_home_and_failed_save_never_claims_persisted(self):
+    def test_hide_without_shortcut_is_silent_but_failed_save_still_warns(self):
         c=self.coordinator({'actionHotkeys':['','F6','F7','F8','','','F11','','F10','ALT']})
         notices=[]; c.notificationRequested.connect(lambda *args:notices.append(args))
         with patch.object(self.s, '_write', side_effect=OSError('no write')):
             c.hideControls(); self.wait(lambda: not self.s.pendingWrites)
-        self.assertIn('主页', notices[0][1]); self.assertNotIn('F9', notices[0][1])
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0][0], '控件偏好未保存')
         self.assertEqual(notices[-1][2], 'warning')
         self.assertIn('未保存', notices[-1][1])
         self.assertFalse(self.f.windows.snapshot['controls']['visible'])
@@ -262,6 +235,7 @@ class VisibilityCoordinatorTests(VisibilityHelpers, unittest.TestCase):
 
     def test_qml_settings_switch_uses_real_coordinator_and_never_writes_tk_orb(self):
         c=self.coordinator({'orbVisible': False})
+        notices=[]; c.notificationRequested.connect(lambda *args:notices.append(args))
         from PySide6.QtQuick import QQuickView
         view=QQuickView()
         view.rootContext().setContextProperty('settingsService',self.s)
@@ -283,12 +257,14 @@ class VisibilityCoordinatorTests(VisibilityHelpers, unittest.TestCase):
             self.wait(lambda: not self.s.pendingWrites)
             self.assertTrue(json.loads(self.path.read_text())[KEY])
             self.assertTrue(self.f.windows.snapshot['controls']['visible'])
+            self.assertEqual(notices, [])
         finally:
             view.close(); view.deleteLater()
             QCoreApplication.sendPostedEvents(None,QEvent.DeferredDelete); APP.processEvents()
 
     def test_qml_hide_menu_calls_real_coordinator_and_persists(self):
         c=self.coordinator({})
+        notices=[]; c.notificationRequested.connect(lambda *args:notices.append(args))
         engine=QQmlApplicationEngine()
         warnings=[]; engine.warnings.connect(lambda rows:warnings.extend(map(str,rows)))
         for name, value in dict(clientCoordinator=c, settingsService=self.s,
@@ -307,6 +283,7 @@ class VisibilityCoordinatorTests(VisibilityHelpers, unittest.TestCase):
             self.wait(lambda: not self.s.pendingWrites)
             self.assertFalse(json.loads(self.path.read_text())[KEY])
             self.assertFalse(self.f.windows.snapshot['controls']['visible'])
+            self.assertEqual(notices, [])
         finally:
             window.deleteLater(); engine.deleteLater()
             QCoreApplication.sendPostedEvents(None,QEvent.DeferredDelete); APP.processEvents()

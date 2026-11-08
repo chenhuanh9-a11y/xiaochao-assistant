@@ -1,9 +1,7 @@
 """Shared explicit-click focus contract with fake Win32 only; no Tk imports."""
 from __future__ import annotations
 
-import ast
 from pathlib import Path
-from types import SimpleNamespace
 import unittest
 
 from app.game_window_focus import NativeGameFocusAPI, focus_bound_game
@@ -142,24 +140,6 @@ class FocusTests(unittest.TestCase):
         self.assertEqual(fake.request()["reason"], "focus-request-failed")
         self.assertEqual(fake.mutations(), [])
         self.assertIsNone(NativeGameFocusAPI()._user32)
-
-    def test_actual_legacy_method_delegates_without_importing_the_tk_application(self):
-        source = ROOT / "app" / "identityv_daily_assistant.py"
-        tree = ast.parse(source.read_text(encoding="utf-8"))
-        method = next(node for node in ast.walk(tree)
-                      if isinstance(node, ast.FunctionDef) and node.name == "focus_game_from_desktop")
-        fake = FakeFocus()
-        namespace = dict(focus_bound_game=focus_bound_game,
-                         ctypes=SimpleNamespace(windll=SimpleNamespace(user32=fake)),
-                         window_process_id=fake.window_process_id,
-                         live_capture=SimpleNamespace(window_text=fake.window_text,
-                             process_image_path=fake.process_image_path,
-                             identityv_window_identity_is_allowed=fake.identity_is_allowed))
-        exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), "exec"), namespace)
-        owner = SimpleNamespace(game_hwnd=42, closed=False, _log=lambda *args, **values: None)
-        result = namespace["focus_game_from_desktop"](owner)
-        self.assertEqual(result["reason"], "focused")
-        self.assertEqual(fake.mutations(), [("SetForegroundWindow", 42)])
 
 
 if __name__ == "__main__": unittest.main()

@@ -81,6 +81,9 @@ class CoffinPreferenceTests(unittest.TestCase):
         service = SettingsService(self.root)
         self.addCleanup(service.shutdown)
         service.setValue("routeProfileId", "zhan10-coffin")
+        profiles = dict(service.values["contextRouteProfiles"])
+        profiles["s0:nightmare"] = "zhan10-coffin"
+        service.setValue("contextRouteProfiles", profiles)
         return service
 
     def test_original_declarations_select_distinct_pixels_without_optional_sidecar(self):

@@ -1,7 +1,7 @@
 """Qt-side glue for 手动选图 (manual map selection).
 
 Grouping, option titles and the two-stage page state come from
-``app/manual_map_picker_core.py``, shared with the Tk picker (#70), so there is
+``app/manual_map_picker_core.py``, retained from the original picker (#70), so there is
 one copy of those rules. This module adds only Qt-client specifics: the
 configurable hotkey action, the native picker keys and thumbnail lookup. It
 never imports tkinter or the Tk entrypoint.
@@ -40,6 +40,9 @@ def manual_map_thumbnail_source(pack, item, mode: str = "nightmare", native=None
     ``manualReference`` metadata), nightmare maps use the first existing layer
     in entry-floor/1/2/B1 order. Display only; never identity evidence.
     """
+    if getattr(pack, "raw", {}).get("season") == "s1":
+        display = getattr(native, "display_reference", None)
+        return display(item.id, str(getattr(pack, "default_entry_floor", "-1"))) if callable(display) else None
     if mode == "difficult":
         try:
             if native is not None:

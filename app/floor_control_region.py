@@ -16,13 +16,16 @@ MODE_FLOORS = dict(S0_MODE_FLOORS)
 FLOOR_NAMES = dict(S0_FLOOR_NAMES)
 
 FILL_LEVEL = 62        # selected tile fill; unselected panels and backdrop stay below
-GLYPH_LEVEL = 140      # button labels
+GLYPH_LEVEL = 140      # upper reference for local light-label contrast
 MIN_REGION_PIXELS = (24, 10)
 PITCH_RATIO = .94
 BACKDROP_MAX = 75     # median of the unselected buttons and the gaps between them
 # New S0 HUD: search the right-side column, excluding the zoom slider.
 # These are search bounds, never fixed click coordinates.
 VERTICAL_SEARCH_AREA = (.75, .15, .18, .45)
+# Automatic fallback uses the S1 position-search domain, not its four-floor
+# reader. Keep the default/fixed pass small and retain all S0 signed checks.
+AUTO_VERTICAL_SEARCH_AREA = (.55, .04, .435, .89)
 
 
 def normalized_region(value) -> tuple[float, float, float, float] | None:
@@ -59,6 +62,22 @@ def _candidate_tiles(gray: np.ndarray, kernel: int, min_height: float, max_heigh
     return sorted(tiles, key=lambda tile: tile[4], reverse=True)[:limit]
 
 
+def _bright_label_mask(patch):
+    """Separate a locally visible light glyph from its panel, not screen gain.
+
+    A thin numeral need not fill a fixed fraction of a larger button. The
+    high percentile estimates its ink while the median estimates the panel;
+    retain minimum local contrast so a nearly uniform patch supplies no ink.
+    """
+    background = float(np.median(patch))
+    ink = float(np.percentile(patch, 99))
+    if ink - background < 24:
+        return np.zeros(patch.shape, np.uint8)
+    threshold = min(GLYPH_LEVEL, background + (ink - background) * .5)
+    threshold = max(background + 12, threshold)
+    return (patch > threshold).astype(np.uint8)
+
+
 def _labelled_button(gray: np.ndarray, center: float, top: int, width: int, height: int,
                      selected: tuple[int, int]):
     """True/False for a labelled unselected button around ``center``; None if clipped."""
@@ -76,11 +95,18 @@ def _labelled_button(gray: np.ndarray, center: float, top: int, width: int, heig
         window = gray[top:top + height, x0:x1]
         if not window.size:
             continue
-        glyph = float((window > GLYPH_LEVEL).mean())
+        mask = _bright_label_mask(window)
         midtone = float(((window > FILL_LEVEL) & (window <= GLYPH_LEVEL)).mean())
-        # A label is a few percent of bright strokes on a dark panel; the
-        # textured highlight is mostly mid-tones, an empty backdrop has neither.
-        if .015 <= glyph <= .45 and midtone < .12:
+        if midtone >= .12:
+            continue
+        # Transposed glyph components: long axis is numeral height. Presence
+        # depends on its shape, not bright-pixel area divided by the button.
+        # Exact digit/sign/order is checked for the complete column below.
+        _, _, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+        if any(.16 * width <= w <= .40 * width
+               and .035 * height <= h <= .30 * height
+               and area >= .002 * width * height
+               for _x, _y, w, h, area in stats[1:]):
             return True
     return False
 
@@ -144,12 +170,12 @@ def _read_axis(gray: np.ndarray, floors, tiles, origin, size, reason: str) -> di
 
 
 def _vertical_label_evidence(gray, points, bounds, order, selected, origin, size):
-    """Check signed glyph structure, so cropped S1 negative labels are not S0.
+    """Score the whole signed column with stored synthetic glyph exemplars.
 
-    This is deliberately a narrow 1/2/-1 shape check, not general OCR. Every
-    label must be fully inside the ROI and have the expected sign and width.
-    Unsupported fonts/occlusion fail closed rather than relying on count alone.
+    A weak glyph can be supported by the other rows and the measured highlight;
+    an alternative digit or missing minus cannot be relabelled by the mode.
     """
+    from s0_floor_templates import classify_label
     fw, fh = size
     ox, oy = origin
     tw, th = bounds[2] * fw, bounds[3] * fh
@@ -160,55 +186,109 @@ def _vertical_label_evidence(gray, points, bounds, order, selected, origin, size
         y0, y1 = int(y - th * .30), int(y + th * .30)
         if x0 < 0 or y0 < 0 or x1 > gray.shape[1] or y1 > gray.shape[0]:
             return None
-        patch = gray[y0:y1, x0:x1]
-        mask = (patch < FILL_LEVEL if floor == selected else patch > GLYPH_LEVEL).astype(np.uint8)
-        _, _, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
-        digits = [r for r in stats[1:] if .16 * th <= r[3] <= .40 * th
-                  and .035 * tw <= r[2] <= .30 * tw and r[4] >= .002 * tw * th]
-        if len(digits) != 1:
+        match = classify_label(gray[y0:y1,x0:x1], selected=floor==selected)
+        if match is None or match["label"] != floor:
             return None
-        dx, dy, dw, dh, _ = digits[0]
-        if dx == 0 or dy == 0 or dx + dw >= patch.shape[1] or dy + dh >= patch.shape[0]:
-            return None
-        ratio = dw / dh
-        if not ((.10 <= ratio <= .40) if abs(floor) == 1 else (.40 < ratio <= .85)):
-            return None
-        signs = [r for r in stats[1:] if r[0] + r[2] < dx and .30 * dh <= r[2] <= .85 * dh
-                 and r[3] <= .22 * dh and abs(r[1] + r[3] / 2 - (dy + dh / 2)) <= .25 * dh]
-        if bool(signs) != (floor < 0):
-            return None
-        evidence.append(dict(floor=floor, negative=bool(signs), digitAspect=float(ratio)))
+        score = match["scores"][floor]
+        evidence.append(dict(floor=floor, negative=floor<0,
+            digitAspect=match["digitAspect"], score=score))
+    scores = [row["score"] for row in evidence]
+    if (min(scores) < .45 or sum(score >= .70 for score in scores) < len(scores)-1
+            or float(np.mean(scores)) < .70):
+        return None
     return evidence
 
 
 def _read_vertical(gray, floors, origin, size, reason):
-    """Reuse structural reading with transposed pixels, not rotated labels.
+    """Template-qualified whole columns, with observed 2D click geometry.
 
-    S0 visual order is the reverse of its semantic floor-value order.
-    centerPoints are normalized (x, y) pairs, in observedOrder. Deliberately
-    omit scalar centers/pitch: click consumers require full 2D geometry.
-    This is floor-reading evidence, not verified click geometry.
+    Filled tiles propose columns; they do not decide numeral identity. Verify
+    every proposal before detecting ambiguity, so an unrelated thin UI glyph
+    cannot veto a valid column merely by resembling the old geometric sketch.
     """
     width = size[0]
     transposed = np.ascontiguousarray(gray.T)
     tiles = _candidate_tiles(transposed, round(width * .0036), width * .010, width * .06)
     order = tuple(reversed(floors))
-    read = _read_axis(transposed, order, tiles, origin[::-1], size[::-1], reason)
-    if read.get("selectedFloor") is None:
+    accepted, first_failure = [], None
+    for tile in tiles:
+        read = _read_axis(transposed, order, [tile], origin[::-1], size[::-1], reason)
+        if read.get("selectedFloor") is None:
+            first_failure = first_failure or read
+            continue
+        y, x, h, w = read.pop("tileBounds")
+        centers = read.pop("centers")
+        before, after = read.pop("left"), read.pop("right")
+        points = [[x + w / 2, cy] for cy in centers]
+        evidence = _vertical_label_evidence(gray, points, [x,y,w,h], order,
+                                            read["selectedFloor"], origin, size)
+        if evidence is None:
+            first_failure = first_failure or _unread("vertical-labels-unverified")
+            continue
+        pitch = read.pop("pitch")
+        result = dict(read, controlAxis="vertical", observedOrder=list(order),
+                      tileBounds=[x,y,w,h], centerPoints=points, axisPitch=pitch,
+                      before=before, after=after, labelEvidence=evidence,
+                      controlGeometryVerified=False)
+        background = _column_background(gray,result,origin,size)
+        tx, ty = round(x*size[0]-origin[0]), round(y*size[1]-origin[1])
+        patch = gray[ty:ty+round(h*size[1]),tx:tx+round(w*size[0])]
+        if background is None or not patch.size or float(np.median(patch))-background < 12:
+            first_failure = first_failure or _unread("highlight-not-found")
+            continue
+        accepted.append(result)
+    if len(accepted) > 1:
+        return _unread("columns-ambiguous")
+    return accepted[0] if accepted else first_failure or _unread("highlight-not-found")
+
+
+def _column_background(gray, read, origin, size):
+    """Measure only this proved column's unselected panels and gaps."""
+    ox, oy = origin
+    fw, fh = size
+    x, y, w, h = read["tileBounds"]
+    left, right = max(0, int(x * fw - ox)), min(gray.shape[1], math.ceil((x + w) * fw - ox))
+    centers = [point[1] * fh - oy for point in read["centerPoints"]]
+    top = max(0, int(min(centers) - h * fh / 2))
+    bottom = min(gray.shape[0], math.ceil(max(centers) + h * fh / 2))
+    rows = np.arange(top, bottom)
+    rows = rows[(rows < y * fh - oy) | (rows >= (y + h) * fh - oy)]
+    pixels = gray[rows, left:right]
+    return float(np.median(pixels)) if pixels.size else None
+
+
+def _read_vertical_contrast(gray, floors, origin, size, reason):
+    """Compare complete column proofs at bounded, ROI-independent exposures.
+
+    Darkening separates a raised panel from its fill; brightening restores a
+    dim highlight's extent. Every exposure proves the full signed column on
+    its own. No rows are combined and any complete contradiction is retained.
+    """
+    original = _read_vertical(gray, floors, origin, size, reason)
+    if original.get("reason") == "columns-ambiguous":
+        return original
+    accepted = [(original, 1.)] if original.get("selectedFloor") is not None else []
+    for exposure in (2. / 3., 1.5):
+        read = _read_vertical(cv2.convertScaleAbs(gray, alpha=exposure), floors, origin, size, reason)
+        if read.get("reason") == "columns-ambiguous":
+            return _unread("columns-ambiguous", controlExposure=exposure)
+        if read.get("selectedFloor") is None:
+            continue
+        for previous, _ in accepted:
+            tolerance_x = max(previous["tileBounds"][2], read["tileBounds"][2]) * .25
+            tolerance_y = max(previous["tileBounds"][3], read["tileBounds"][3]) * .25
+            if (read["selectedFloor"] != previous["selectedFloor"]
+                    or any(abs(a[0]-b[0]) > tolerance_x or abs(a[1]-b[1]) > tolerance_y
+                           for a,b in zip(previous["centerPoints"],read["centerPoints"]))):
+                return _unread("columns-ambiguous", controlExposure=exposure)
+        accepted.append((read, exposure))
+    if not accepted:
+        return original
+    read, exposure = accepted[0]
+    if exposure == 1.:
         return read
-    y, x, h, w = read.pop("tileBounds")
-    centers = read.pop("centers")
-    before, after = read.pop("left"), read.pop("right")
-    points = [[x + w / 2, cy] for cy in centers]
-    evidence = _vertical_label_evidence(gray, points, [x, y, w, h], order,
-                                        read["selectedFloor"], origin, size)
-    if evidence is None:
-        return _unread("vertical-labels-unverified")
-    pitch = read.pop("pitch")
-    return dict(read, controlAxis="vertical", observedOrder=list(order),
-                tileBounds=[x, y, w, h], centerPoints=points,
-                axisPitch=pitch, before=before, after=after,
-                labelEvidence=evidence, controlGeometryVerified=False)
+    return dict(read, controlExposure=exposure,
+                controlBackground=_column_background(gray,read,origin,size))
 
 
 def _merge_region_read(fixed, read, source, **extra):
@@ -238,21 +318,37 @@ def read_floor_in_region(frame: np.ndarray, region, mode: str, *, season="s0") -
     gray, origin = _crop(frame, box)
     if gray is None:
         return _unread("region-too-small")
-    read = _read_vertical(gray, contract.observed_values, origin, frame.shape[1::-1], "region-highlight-read")
+    read = _read_vertical_contrast(gray, contract.observed_values, origin, frame.shape[1::-1], "region-highlight-read")
     return dict(read, controlSearchRegion=list(box))
 
 
-def locate_vertical_floor_controls(frame: np.ndarray, mode: str, *, season="s0") -> dict:
+def locate_vertical_floor_controls(frame: np.ndarray, mode: str, *, season="s0", expanded=False) -> dict:
     """Read only the new S0 column; never infer a season from button count."""
     contract = floor_contract(mode, season=season)
     if season != "s0" or contract is None:
         return _unread("vertical-floor-detector-unvalidated" if contract else "floor-contract-unavailable")
     if frame is None or getattr(frame, "ndim", 0) != 3:
         return _unread("region-invalid")
-    column, origin = _crop(frame, VERTICAL_SEARCH_AREA)
-    result = (_read_vertical(column, contract.observed_values, origin, frame.shape[1::-1], "auto-located")
+    area = AUTO_VERTICAL_SEARCH_AREA if expanded else VERTICAL_SEARCH_AREA
+    column, origin = _crop(frame, area)
+    result = (_read_vertical_contrast(column, contract.observed_values, origin, frame.shape[1::-1], "auto-located")
               if column is not None else _unread("region-too-small"))
-    return dict(result, controlSearchRegion=list(VERTICAL_SEARCH_AREA))
+    if not expanded:
+        return dict(result, controlSearchRegion=list(area))
+    # The broad search domain is metadata, never an automatic screenshot ROI.
+    # Once verified, retain only the measured column for failure diagnostics.
+    # An unread broad pass supplies no new pixel-saving region.
+    height, width = frame.shape[:2]
+    result["controlSearchBounds"] = [origin[0], origin[1],
+        min(width, math.ceil(width * (area[0] + area[2]))),
+        min(height, math.ceil(height * (area[1] + area[3])))]
+    if result.get("selectedFloor") is not None:
+        x, y, w, h = result["tileBounds"]
+        ys = [point[1] for point in result["centerPoints"]]
+        left, right = max(0., x - .3 * w), min(1., x + 1.3 * w)
+        top, bottom = max(0., min(ys) - .7 * h), min(1., max(ys) + .7 * h)
+        result["controlSearchRegion"] = [left, top, right - left, bottom - top]
+    return result
 
 
 def region_for_client(setting, size) -> tuple[float, float, float, float] | None:
@@ -278,10 +374,11 @@ def region_for_client(setting, size) -> tuple[float, float, float, float] | None
 
 
 def _auto(mode, frame, floor_read: dict, source: str, **extra) -> dict:
-    """Use the current default column, or locate the same vertical layout."""
-    if floor_read.get("selectedFloor") is not None:
+    """Keep a current read or contradiction; expand only genuine no-reads."""
+    if (floor_read.get("selectedFloor") is not None
+            or floor_read.get("reason") == "columns-ambiguous"):
         return dict(floor_read, floorSource=source, **extra)
-    located = locate_vertical_floor_controls(frame, mode)
+    located = locate_vertical_floor_controls(frame, mode, expanded=True)
     if located["selectedFloor"] is None:
         return dict(floor_read, floorSource=source + "-auto-unread", autoRead=located, **extra)
     return _merge_region_read(floor_read, located, "auto-located", autoRead=located, **extra)
@@ -309,6 +406,8 @@ def apply_floor_region(settings, mode, frame, floor_read: dict) -> dict:
     if rect is None:
         return _auto(mode, frame, floor_read, "fixed-region-unavailable")
     read = read_floor_in_region(frame, rect, mode)
+    if read.get("reason") == "columns-ambiguous":
+        return _merge_region_read(floor_read, read, "region", regionRead=read)
     if read["selectedFloor"] is None:
         return _auto(mode, frame, floor_read, "fixed-region-unread", regionRead=read)
     return _merge_region_read(floor_read, read, "region", regionRead=read)

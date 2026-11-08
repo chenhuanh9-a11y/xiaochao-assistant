@@ -2,7 +2,6 @@
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import QtQuick.Dialogs
 
 ApplicationWindow {
     id: root
@@ -12,16 +11,19 @@ ApplicationWindow {
     visible: true; title: productionProduct ? "星图" : "星图 · Qt 私测"
     color: "#f3f5fa"; font.family: "Microsoft YaHei UI"; font.pixelSize: 13
     property string page: "home"
-    property real replayAlpha: 0.55
-    property var pages: ["home", "gallery", "resources", "settings", "replay", "help", "recognition", "custom", "downloads", "plaza"]
+    property var pages: ["home", "gallery", "resources", "settings", "help", "custom", "downloads", "plaza"]
     readonly property bool compactRail: width < 800 || height < 660
     readonly property int workspaceMargin: width >= 1200 ? 48 : 28
-    function section(name) { return name === "resources" || name === "downloads" ? "gallery" : name === "recognition" ? "home" : name === "replay" ? "help" : name }
-    function heading(name) { return ({home:"主页面",gallery:"地图资源",resources:"图包管理",downloads:"在线图包",settings:"设置",replay:"识别回放",help:"帮助与公告",recognition:"地图识别",custom:"自定义路线",plaza:"路线广场"})[name] || "星图" }
+    function section(name) { return name === "resources" || name === "downloads" ? "gallery" : name }
+    function heading(name) { return ({home:"主页面",gallery:"地图资源",resources:"图包管理",downloads:"在线图包",settings:"设置",help:"帮助与公告",custom:"自定义路线",plaza:"路线广场"})[name] || "星图" }
     readonly property var routeOptions: {
-        var options = routeChoices.profiles.slice()
+        if (routeChoices.busy || routeChoices.season !== (settingsService.values.gameSeason || "s0")
+                || routeChoices.mode !== settingsService.values.gameMode) return []
+        var options = routeChoices.profiles.filter(function(row) { return row.runtimeSelectable !== false }).map(function(row) {
+            return {id: row.runtimeProfileId || row.id, name: row.name}
+        })
         var custom = customGalleryService.snapshot
-        if (routeChoices.mode === "nightmare" && custom.available)
+        if (!routeChoices.busy && routeChoices.season === "s0" && routeChoices.mode === "nightmare" && custom.available)
             for (var i = 0; i < custom.galleries.length; i++)
                 options.push({id: "custom:" + custom.galleries[i].id, name: custom.galleries[i].name})
         return options
@@ -43,6 +45,10 @@ ApplicationWindow {
     ClientOnboarding {}
     ClientTutorial {}
     ClientAccount {}
+    ClientAnnouncement {
+        hostWindow: root
+        blocked: clientCoordinator.closing || closeChoice.visible || onboardingService.active
+    }
     onClosing: function(event) {
         if (clientCoordinator.closeReady) {
             closeChoice.close()
@@ -129,12 +135,11 @@ ApplicationWindow {
         RowLayout {
             Layout.fillWidth: true; Layout.preferredHeight: 60
             Layout.leftMargin: root.workspaceMargin; Layout.rightMargin: root.workspaceMargin
-            AppButton { visible: root.page === "resources" || root.page === "downloads" || root.page === "recognition" || root.page === "replay"; text: "返回"; implicitWidth: 62; onClicked: root.page = root.section(root.page) }
+            AppButton { visible: root.page === "resources" || root.page === "downloads"; text: "返回"; implicitWidth: 62; onClicked: root.page = root.section(root.page) }
             // Pages with their own large title skip the duplicate small one.
             Label { visible: root.page !== "settings" && root.page !== "gallery"; text: root.heading(root.page); color: "#17365e"; font.pixelSize: 14; font.bold: true }
             Item { Layout.fillWidth: true }
             Label { visible: root.width >= 800; text: clientCoordinator.boundWindow ? "已连接游戏" : "等待连接游戏"; color: "#5b7294"; font.pixelSize: 12 }
-            AppButton { text: "最小化到任务栏"; onClicked: root.showMinimized() }
         }
         StackLayout {
             objectName: "clientPages"
@@ -142,35 +147,26 @@ ApplicationWindow {
             Layout.leftMargin: root.workspaceMargin; Layout.rightMargin: root.workspaceMargin; Layout.bottomMargin: 24
             currentIndex: root.pages.indexOf(root.page)
             ClientHome {}
-            ClientGallery {}
-            ClientResources {}
-            ClientSettings { profileOptions: root.routeOptions; profilesMode: routeChoices.mode }
-            ColumnLayout {
-                spacing: 16
-                RowLayout {
-                    Label { text: "识别结果回放"; color: "#142b4b"; font.pixelSize: 26; font.bold: true }
-                    Item { Layout.fillWidth: true }
-                    AppButton { text: "选择回放"; enabled: !session.busy; onClicked: replayPicker.open() }
-                    AppButton { text: "悬浮查看"; primary: true; enabled: backend.replayAvailable; onClicked: clientCoordinator.showAlignedReplay() }
-                }
-                Label { text: backend.replayMessage; color: "#526785"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-                Rectangle {
-                    Layout.fillWidth: true; Layout.fillHeight: true; radius: 12; color: "#142035"
-                    ReplayCanvas { id: replay; objectName: "clientReplayCanvas"; anchors.fill: parent; anchors.margins: 10; record: backend.replayData; routeAlpha: root.replayAlpha }
-                    Label { anchors.centerIn: parent; visible: !backend.replayAvailable || !replay.imagesReady; color: "#eaf1fd"; text: backend.replayAvailable ? "正在读取回放…" : "选择一份已保存的结果" }
-                }
-                RowLayout {
-                    Label { text: "路线透明度"; color: "#354f75" }
-                    AppSlider { Layout.preferredWidth: 240; from: 0; to: 1; value: root.replayAlpha; onMoved: root.replayAlpha=value }
-                    Item { Layout.fillWidth: true }
-                    Label { text: "历史结果不授权当前游戏显示"; color: "#526785"; font.pixelSize: 12 }
-                }
+            ClientLazyPage {
+                objectName: "lazyGalleryPage"; selected: root.page === "gallery"
+                sourceComponent: Component { ClientGallery { packageActions: resourcePage } }
             }
-            ClientHelp {}
-            ClientRecognition {}
-            ClientCustomGallery {}
-            ClientOnlinePackages {}
-            ClientRoutePlaza {}
+            ClientResources {
+                id: resourcePage
+                active: root.page === "resources" && !clientCoordinator.closing
+                refreshAllowed: !session.busy && !session.snapshot.resourceLocked
+                    && !session.snapshot.contextPending && !session.snapshot.roundActive
+                    && !session.snapshot.roundWorkActive && !session.snapshot.roundPreparing
+                    && !session.snapshot.closed && !clientCoordinator.closing
+            }
+            ClientLazyPage {
+                objectName: "lazySettingsPage"; selected: root.page === "settings"
+                sourceComponent: Component { ClientSettings { profileOptions: root.routeOptions; profilesMode: routeChoices.mode; profilesSeason: routeChoices.season; profilesBusy: routeChoices.busy } }
+            }
+            ClientLazyPage { objectName: "lazyHelpPage"; selected: root.page === "help"; sourceComponent: Component { ClientHelp {} } }
+            ClientLazyPage { objectName: "lazyCustomPage"; selected: root.page === "custom"; sourceComponent: Component { ClientCustomGallery {} } }
+            ClientLazyPage { objectName: "lazyDownloadsPage"; selected: root.page === "downloads"; sourceComponent: Component { ClientOnlinePackages {} } }
+            ClientLazyPage { objectName: "lazyPlazaPage"; selected: root.page === "plaza"; sourceComponent: Component { ClientRoutePlaza {} } }
         }
         }
     }
@@ -186,12 +182,16 @@ ApplicationWindow {
         header: Label { text: closeChoice.title; padding: 20; color: "#142035"; font.pixelSize: 17; font.bold: true }
         contentItem: ColumnLayout {
             spacing: 12
-            Label { Layout.fillWidth: true; text: "请选择后台运行或结束程序。取消会留在当前窗口。"; color: "#354f75"; wrapMode: Text.WordWrap }
-            AppButton { objectName: "closeToBackground"; Layout.fillWidth: true; text: "后台运行（程序继续运行）"
-                onClicked: { closeChoice.close(); windows.hide("main") }
+            AppButton { objectName: "closeToBackground"; Layout.fillWidth: true; text: "后台运行"
+                // Establish the visibility gate before releasing the dialog gate.
+                onClicked: { windows.hide("main"); closeChoice.close() }
             }
-            AppButton { objectName: "closeApplication"; Layout.fillWidth: true; text: "退出星图（结束程序）"; primary: true
-                onClicked: { closeChoice.close(); clientCoordinator.requestClose() }
+            AppButton { objectName: "closeApplication"; Layout.fillWidth: true; text: "退出星图"; primary: true
+                onClicked: {
+                    if (typeof gameStartupService !== "undefined") gameStartupService.suppressCurrentGame()
+                    clientCoordinator.requestClose()
+                    closeChoice.close()
+                }
             }
             AppButton { objectName: "cancelClose"; Layout.fillWidth: true; text: "取消"; onClicked: closeChoice.close() }
         }
@@ -219,7 +219,6 @@ ApplicationWindow {
             importSuccess.open()
         }
     }
-    FileDialog { id: replayPicker; title: "选择识别回放"; nameFilters: ["星图回放 (replay.json)"]; onAccepted: clientCoordinator.loadReplay(selectedFile.toString()) }
     Popup {
         anchors.centerIn: parent; width: 310; height: 110; modal: true; closePolicy: Popup.NoAutoClose
         visible: clientCoordinator.closing && !clientCoordinator.closeReady

@@ -13,6 +13,9 @@ import re
 
 
 _OPERATION_MESSAGES = {
+    "no-current-supported-candidates": ("当前结构暂未匹配", "当前画面尚未得到通过位置核验的地图候选，本次未生成贴合。请等待地图画面稳定或探索更多结构后重新开图。", "recognition-alignment"),
+    "candidate-floor-unavailable": ("暂未读到楼层", "当前楼层高亮暂时无法确认，已撤下贴合。请保持地图打开，等待画面稳定。", "floor"),
+    "candidate-map-closed": ("地图已关闭", "地图已关闭，本次楼层观察结束。", "floor"),
     "capture-context-changed": ("游戏画面已变化", "窗口、画面或当前操作已变化，本次结果未采用。请保持游戏在前台，重新打开地图后再试。", "capture"),
     "capture-enable-rejected": ("游戏画面采集未启动", "当前无法开始采集游戏画面，本次识别未启动。请检查游戏连接状态；若仍失败，请查看技术详情。", "capture"),
     "capture-start-failed": ("游戏画面采集未启动", "本次未能开始采集游戏画面。请检查游戏连接状态，并在帮助页查看技术详情。", "capture"),
@@ -26,6 +29,7 @@ _OPERATION_MESSAGES = {
     "resource-operation-requires-idle": ("暂不能修改地图资源", "本局或后台任务仍在运行，本次资源操作未开始。请先结束本局并等待后台任务完成。", "resource"),
     "entry-resource-unavailable": ("识别所需资源不可用", "当前地图的识别资源无法读取，本次未完成识别。请到“地图资源”核对资源，并查看技术详情。", "resource"),
     "registered-floor-resource-unavailable": ("当前楼层资源不可用", "当前楼层所需资源无法读取，本次未生成新的贴合。请到“地图资源”核对该地图楼层的资源。", "resource"),
+    "locked-map-resource-unavailable": ("本局锁定地图资源不可用", "当前资源无法提供本局已锁定的地图，已暂停贴合，不会改为其他候选。请结束本局后核对地图资源。", "resource"),
 }
 
 
@@ -162,6 +166,7 @@ def operation_problem(receipt, state):
                 mode=state.get('mode', ''), mapId=state.get('mapId', ''), floor=state.get('floor', ''),
                 captureDiagnostics=receipt.get('captureDiagnostics') or {},
                 preparationObservation=preparation_observation,
+                **({'mapAttempt': receipt['mapAttempt']} if 'mapAttempt' in receipt else {}),
                 traceback=str(receipt.get('traceback') or '')[:8192])
     if receipt.get('error'):
         for key in ('exceptionType', 'exceptionOrigin', 'exceptionAction'):

@@ -283,7 +283,8 @@ recorder.record_automatic(root=sys.argv[3], reason='structure-current-geometry-f
         methods = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in
                    ('_automatic_failure_sample', '_record_automatic_failure_sample')]
         module = ast.Module(body=[ast.ClassDef(name='Runtime', bases=[], keywords=[], body=methods, decorator_list=[])], type_ignores=[])
-        namespace = {}
+        from season_context import context_key
+        namespace = dict(time=time, context_key=context_key)
         exec(compile(ast.fix_missing_locations(module), '<production-runtime>', 'exec'), namespace)
         runtime = namespace['Runtime']()
         frame = np.zeros((300, 400, 3), np.uint8)
@@ -293,15 +294,21 @@ recorder.record_automatic(root=sys.argv[3], reason='structure-current-geometry-f
         with tempfile.TemporaryDirectory() as directory:
             runtime._failure_samples = _enabled_recorder()
             runtime._failure_samples.configure(event_path='events.jsonl', build_fingerprint='test', source_commit='a'*40)
-            runtime._failure_capture_stamp = (captured, now.isoformat(), 1, 7)
+            # Match the current production attempt + lifetime capture contract.
+            attempt, capture_scope = 'a'*32, ('synthetic-current-lifetime',)
+            runtime._failure_capture_scope = lambda: capture_scope
+            runtime._failure_capture_stamp = (captured, now.isoformat(), 1, 7, attempt, capture_scope)
             runtime._active = True
             runtime._evidence_kind = 'live-client-capture'
+            runtime._season = 's0'
             runtime._mode = 'difficult'
+            runtime._failure_notice_limits = {}
             runtime._engine = SimpleNamespace(memory_store=SimpleNamespace(root=Path(directory)))
             runtime._capture_is_current = lambda context, generation: generation == 7
             runtime._full_frame = lambda value: frame
             runtime._notify = lambda *args, **kwargs: None
-            result = runtime._automatic_failure_sample('structure-current-geometry-failed', captured=captured, current=lambda: True)
+            result = runtime._automatic_failure_sample('structure-current-geometry-failed',
+                captured=captured, attempt_id=attempt, current=lambda: True)
             self.assertTrue(result['saved'], result)
             journal = Path(directory)/'failures/automatic-v2/automatic-failures.jsonl'
             row = json.loads(journal.read_text())
@@ -324,7 +331,8 @@ recorder.record_automatic(root=sys.argv[3], reason='structure-current-geometry-f
                 exported = cv2.imdecode(np.frombuffer(archive.read('evidence/001/image-0.png'), np.uint8), cv2.IMREAD_COLOR)
             np.testing.assert_array_equal(exported, image)
             runtime._capture_is_current = lambda *args, **kwargs: False
-            self.assertEqual(runtime._automatic_failure_sample('map-open-preparation-deadline')['missingReason'], 'capture-not-current')
+            self.assertEqual(runtime._automatic_failure_sample('map-open-preparation-deadline',
+                captured=captured, attempt_id=attempt)['missingReason'], 'capture-not-current')
 
     @unittest.skipUnless(os.name == 'nt', 'automatic mutation requires Windows exclusive handles')
     def test_control_band_shares_intent_recovery_capacity_and_disabled_export_boundary(self):

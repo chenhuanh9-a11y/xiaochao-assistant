@@ -87,6 +87,9 @@ class LiveAuthorImportTests(unittest.TestCase):
     def test_107_main_and_helper_share_strict_import_contract(self):
         self._check_version_import_contract('1.0.7', '1.0.0.11')
 
+    def test_112_main_and_helper_share_strict_import_contract(self):
+        self._check_version_import_contract('1.1.2', '1.0.0.24')
+
     def _check_version_import_contract(self, display, numeric):
         import star_map_import_helper as helper
         self.write('_internal/version.json', json.dumps(dict(
@@ -117,7 +120,8 @@ class LiveAuthorImportTests(unittest.TestCase):
     def test_unknown_client_version_remains_rejected(self):
         package = self.package('nightmare-suju', {SUJU: b'image'})
         for display, numeric in (('99.0', '1.0.0.7'), ('1.0.8', '1.0.0.12'),
-                                 ('1.0.6', '1.0.1.10')):
+                                 ('1.0.6', '1.0.1.10'), ('1.1.3', '1.0.0.25'),
+                                 ('1.1.2', '1.1.2.0')):
             with self.subTest(display=display, numeric=numeric):
                 self.write('_internal/version.json', json.dumps(dict(
                     displayVersion=display, numericVersion=numeric)).encode())

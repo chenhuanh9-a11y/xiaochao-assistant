@@ -18,6 +18,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from structure_cache_memory import reference_arrays, trim_prepared_cache, prepared_cache_snapshot
+
 
 @dataclass(frozen=True)
 class PreparedStructure:
@@ -30,6 +32,18 @@ class PreparedStructure:
 
 _prepared = OrderedDict()
 _prepared_lock = threading.Lock()
+PREPARED_CACHE_MAX_BYTES = 512 * 1024 * 1024
+
+
+def _prepared_arrays(entry):
+    reference, result = entry
+    return (*reference_arrays(reference), result.distance, result.chains, result.rays)
+
+
+def prepared_memory_snapshot():
+    with _prepared_lock:
+        return prepared_cache_snapshot(_prepared, max_entries=4,
+            max_bytes=PREPARED_CACHE_MAX_BYTES, arrays_for=_prepared_arrays)
 
 
 def _pitch(mask):
@@ -109,8 +123,9 @@ def load_prepared(reference):
             # Retaining the reference prevents Python id reuse from admitting
             # another resource through an existing in-memory cache entry.
             _prepared[key] = (reference, result)
-            while len(_prepared) > 4:
-                _prepared.popitem(last=False)
+            _prepared.move_to_end(key)
+            trim_prepared_cache(_prepared, max_entries=4,
+                max_bytes=PREPARED_CACHE_MAX_BYTES, arrays_for=_prepared_arrays)
         return result
     except (OSError, ValueError, KeyError):
         return None
@@ -298,7 +313,7 @@ def refine(points, prepared, scale, translation, *, lock_scale):
     return confidence, current_scale, current
 
 
-def propose(frame, reference, prepared, *, prior=None, cancelled=None, context=None):
+def propose(frame, reference, prepared, *, prior=None, cancelled=None, context=None, local_only=False):
     from single_map_structure import current_geometry, current_part
     started = time.perf_counter()
     if cancelled and cancelled():
@@ -307,10 +322,15 @@ def propose(frame, reference, prepared, *, prior=None, cancelled=None, context=N
     if context is None:
         return [], context, {'reason': 'fast-observation-unavailable'}
     edge = current_part(frame, context, 'observed')
-    points = sample_edges(edge, 300)
+    sampled = context.get("_sampled_observation_edges")
+    if sampled is not None and sampled[0] is edge:
+        points, coarse = sampled[1], sampled[2]
+    else:
+        points, coarse = sample_edges(edge, 300), None
     if len(points) < 40:
         return [], context, {'reason': 'fast-insufficient-edges', 'points': len(points)}
-    coarse = sample_edges(edge, 96)
+    if coarse is None:
+        coarse = sample_edges(edge, 96)
     rows = []
     searches = []
     def grid(scale, seed):
@@ -322,7 +342,7 @@ def propose(frame, reference, prepared, *, prior=None, cancelled=None, context=N
         return found
     if prior is not None:
         rows = grid(float(prior[0,0]), prior)
-        if not rows or rows[0][0] < .50:
+        if (not rows or rows[0][0] < .50) and not local_only:
             rows.extend(grid(float(prior[0,0]), None))
     else:
         seeds = _chain_seeds(frame, context, prepared, cancelled)
@@ -397,7 +417,42 @@ def native_point_geometry(frame, prepared, matrix, context, *, lock_scale):
     return geometry
 
 
-def try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_seed=None, context=None):
+def try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_seed=None, context=None, pose_prior=None):
+    """Optional geometry hint, never a verified group or display authority.
+
+    A rejected local hint always falls back to the original unrestricted path,
+    including fresh scale estimation. The default None path is unchanged.
+    Runtime must scope-check any acknowledged-material hint before this call.
+    """
+    attempted_local = False
+    if pose_prior is not None:
+        from s1_pose_prior import isotropic_matrix
+        hint = isotropic_matrix(pose_prior)
+        if hint is not None:
+            attempted_local = True
+            began = time.perf_counter()
+            preceding_fast = next((event for event in reversed(getattr(assistant, 'events', ()))
+                                   if event.get('event') == 'experimental-fast-alignment'), None)
+            result = _try_alignment(assistant, frame, map_id, floor, cancelled=cancelled,
+                                    entry_seed=entry_seed, context=context, _external_prior=hint)
+            accepted = bool(result and result.get('success'))
+            detail = {}
+            if getattr(assistant, 'collect_fit_diagnostics', False):
+                latest_fast = next((event for event in
+                    reversed(getattr(assistant, 'events', ()))
+                    if event.get('event') == 'experimental-fast-alignment'), None)
+                detail = dict(priorMatrix=hint, rejection=latest_fast if latest_fast is not preceding_fast
+                              else dict(reason='fast-attempt-unavailable'))
+            assistant._log('experimental-pose-prior', mapId=map_id, floor=floor,
+                           accepted=accepted, elapsedMs=(time.perf_counter()-began)*1000,
+                           fallback=result is None, **detail)
+            if result is not None:
+                return result
+    return _try_alignment(assistant, frame, map_id, floor, cancelled=cancelled,
+                          entry_seed=entry_seed, context=context, _force_unseeded=attempted_local)
+
+
+def _try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_seed=None, context=None, _external_prior=None, _force_unseeded=False):
     """Full production proposal + existing residual consumers; no state writer."""
     if os.environ.get('IDENTITYV_FAST_ALIGNMENT', '1') == '0' or not assistant._shared_structure_mode_enabled():
         return None
@@ -409,10 +464,14 @@ def try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_seed
         return None
     prepared = load_prepared(reference)
     if prepared is None:
+        if getattr(assistant, 'collect_fit_diagnostics', False):
+            assistant._log('experimental-fast-alignment', mapId=map_id, floor=floor,
+                           reason='fast-prepared-unavailable', accepted=False,
+                           searchKind='local-prior' if _external_prior is not None else 'global-search')
         return None
     prior = None
     group = assistant._active_round_layer_group(map_id)
-    if group is not None and str(floor) in group.verified_floors:
+    if _external_prior is None and not _force_unseeded and group is not None and str(floor) in group.verified_floors:
         view = assistant._round_group_floor_view(map_id, floor, render_overlay=False)
         if view is not None:
             canonical = view.get('canonicalMatrixSourceToClient')
@@ -421,11 +480,17 @@ def try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_seed
                 matrix = np.asarray(canonical) @ adapter
                 if np.isfinite(matrix).all() and matrix[0,0] > 0 and np.allclose(matrix[:2,:2], np.eye(2)*matrix[0,0]):
                     prior = matrix
-    rows, context, diagnostics = propose(frame, reference, prepared, prior=prior, cancelled=cancelled, context=context)
+    if _external_prior is not None:
+        prior = _external_prior
+    rows, context, diagnostics = propose(frame, reference, prepared, prior=prior, cancelled=cancelled, context=context,
+                                         local_only=_external_prior is not None)
+    proposal_details = {}
     if rows:
         from single_map_structure import graph_point_geometry, partial_wall_geometry, projected_geometry, regional_validation
         score, scale, translation = rows[0]
         matrix = np.array([[scale,0,translation[0]],[0,scale,translation[1]],[0,0,1]], np.float64)
+        if getattr(assistant, 'collect_fit_diagnostics', False):
+            proposal_details['proposalMatrix'] = matrix.copy()
         static_args = {}
         if reference.known_boundary is not None:
             static_args = dict(source_known_boundary=reference.known_boundary,
@@ -438,9 +503,14 @@ def try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_seed
         verified = bool(selected.get('success'))
         if selected.get('success'):
             matrix = np.asarray(selected['matrixSourceToClient'], np.float64)
+            if getattr(assistant, 'collect_fit_diagnostics', False):
+                proposal_details['pointMatrix'] = matrix.copy()
+                proposal_details['regionalMatrix'] = matrix.copy()
             projected = projected_geometry(frame, reference.clean_mask, matrix, context)['mask']
-            verified = bool(regional_validation(frame,context['query'],projected,
-                                                _context=context).get('regionalEdgeVerified'))
+            regions = regional_validation(frame,context['query'],projected, _context=context)
+            verified = bool(regions.get('regionalEdgeVerified'))
+            if getattr(assistant, 'collect_fit_diagnostics', False):
+                proposal_details['regions'] = regions
         wall_args = dict(static_args)
         if static_args:
             wall_args.update(source_wall_mask=reference.known_boundary,
@@ -457,24 +527,34 @@ def try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_seed
             verified = bool(partial.get('success'))
         if partial.get('success'):
             matrix = np.asarray(partial['matrix'], np.float64)
+            if getattr(assistant, 'collect_fit_diagnostics', False):
+                proposal_details['wallMatrix'] = matrix.copy()
             verified = True
         if prior is not None and not np.allclose(matrix[:2,:2], prior[:2,:2], rtol=0, atol=1e-10):
             verified = False
         diagnostics.update(pointGeometryReason=geometry.get('reason'),
                            wallGeometryReason=partial.get('reason'))
         if verified:
+            if getattr(assistant, 'collect_fit_diagnostics', False):
+                proposal_details['residualMatrix'] = matrix.copy()
             residual = assistant._rendered_profile_current_frame_residual(
                 frame, reference.clean_mask, matrix, profile_id='shared-structure',
                 visible_override=context.get('visible'))
+            if getattr(assistant, 'collect_fit_diagnostics', False):
+                proposal_details['residual'] = residual
             from alignment_observation import rendered_profile_residual_is_verified
             if rendered_profile_residual_is_verified(residual) and not (cancelled and cancelled()):
                 diagnostics.update(totalMs=(time.perf_counter()-started)*1000, accepted=True)
-                assistant._log('experimental-fast-alignment', mapId=map_id, floor=floor, **diagnostics)
+                assistant._log('experimental-fast-alignment', mapId=map_id, floor=floor,
+                    searchKind='local-prior' if _external_prior is not None else 'global-search',
+                    **dict(diagnostics, **proposal_details))
                 return dict(success=True, reason='experimental-fast-structure',
                     matrixSourceToClient=matrix, coordinateSpace='shared-structure-to-client',
                     routeProfileId='shared-structure', selectedRouteCurrentFrameResidual=residual,
                     fastAlignmentDiagnostics=diagnostics, inliers=len(context.get('nodes', [])))
         diagnostics['reason'] = 'fast-existing-validation-rejected'
     diagnostics.update(totalMs=(time.perf_counter()-started)*1000, accepted=False)
-    assistant._log('experimental-fast-alignment', mapId=map_id, floor=floor, **diagnostics)
+    assistant._log('experimental-fast-alignment', mapId=map_id, floor=floor,
+        searchKind='local-prior' if _external_prior is not None else 'global-search',
+        **dict(diagnostics, **proposal_details))
     return None

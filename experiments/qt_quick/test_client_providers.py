@@ -17,7 +17,7 @@ class ClientProviderTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
 
     def write(self, relative, data):
         path = self.root / relative
@@ -42,7 +42,11 @@ class ClientProviderTests(unittest.TestCase):
         self.assertTrue(result["success"])
         reports = engine.snapshot()["savedFrameCapabilities"]
         self.assertIn("missing-resource:references/nightmare-map-pack.json", reports["nightmare"]["reason"])
-        self.assertIn("missing-resource:difficult-native-manifest.json", reports["difficult"]["reason"])
+        self.assertEqual("resource-validation-pending", reports["difficult"]["reason"])
+        engine.dispatch("set_game_mode", dict(mode="difficult"))
+        engine.dispatch("inspect_engine_resources")
+        self.assertIn("missing-resource:difficult-native-manifest.json",
+                      engine.snapshot()["savedFrameCapabilities"]["difficult"]["reason"])
         self.assertNotIn("rank_saved_frame", engine.snapshot()["availableCommands"])
         self.assertFalse(engine.snapshot()["liveEngineAvailable"])
 
@@ -57,7 +61,8 @@ class ClientProviderTests(unittest.TestCase):
     def test_capability_reads_do_not_wait_for_resource_build(self):
         factories = build_engine_factories(self.root)
         entered, release, finished = threading.Event(), threading.Event(), threading.Event()
-        def build(mode):
+        def build(mode, *, season="s0"):
+            self.assertEqual(season, "s0")
             entered.set()
             if not release.wait(5):
                 raise AssertionError("test release timed out")
@@ -78,7 +83,7 @@ class ClientProviderTests(unittest.TestCase):
 
     def test_rank_capability_only_ready_for_prepared_mode(self):
         factories = build_engine_factories(self.root)
-        factories._build = lambda mode: SimpleNamespace(pack=SimpleNamespace(maps=[]), identity_floors=("1",))
+        factories._build = lambda mode, *, season="s0": SimpleNamespace(pack=SimpleNamespace(maps=[]), identity_floors=("1",))
         engine = EngineAdapter(engine_factories=factories)
         factories["nightmare"]()
         self.assertIn("rank_saved_frame", engine.snapshot()["availableCommands"])
@@ -89,7 +94,8 @@ class ClientProviderTests(unittest.TestCase):
     def test_resource_invalidation_discards_late_build_without_blocking(self):
         factories = build_engine_factories(self.root)
         entered, release = threading.Event(), threading.Event()
-        def build(mode):
+        def build(mode, *, season="s0"):
+            self.assertEqual(season, "s0")
             entered.set()
             if not release.wait(5):
                 raise AssertionError("test release timeout")
@@ -133,6 +139,23 @@ class ClientProviderTests(unittest.TestCase):
         versions[next(iter(versions))]["expected"] = dict(expected, sourceVersion="wrong-version")
         provider = SharedReferenceProvider(self.root, resources, versions)
         self.assertIsNone(provider("geometry", "fixture", "1"))
+
+    def test_typed_reference_fixture_canonicalizes_temporary_directory_alias(self):
+        # Windows TEMP may name the same directory using an 8.3 alias.  Use a
+        # portable lexical alias to exercise the fixture's canonical-path
+        # contract without weakening the production provider's exact check.
+        with tempfile.TemporaryDirectory() as directory:
+            canonical = Path(directory).resolve()
+            alias = canonical / ".." / canonical.name
+            case = ClientProviderTests(
+                "test_typed_reference_reuses_original_loader_and_rejects_version_mismatch")
+            temporary = SimpleNamespace(name=str(alias), cleanup=lambda: None)
+            with patch.object(tempfile, "TemporaryDirectory", return_value=temporary):
+                case.setUp()
+                try:
+                    case.test_typed_reference_reuses_original_loader_and_rejects_version_mismatch()
+                finally:
+                    case.doCleanups()
 
     def test_malformed_optional_catalog_keeps_validated_typed_mode_available(self):
         import numpy as np

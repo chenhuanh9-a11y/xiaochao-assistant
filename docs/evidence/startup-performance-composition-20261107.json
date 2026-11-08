@@ -1,0 +1,159 @@
+{
+  "scope": "Linux offscreen fixture QtClient composition; no imports/UAC/bootloader/game/real resources, all Python socket networking blocked",
+  "baseline": "1f3983bd0ac999671f31adc2f8df58cfe262a4d0",
+  "alternatingPairs": 8,
+  "summary": {
+    "baseline": {
+      "constructionMs": {
+        "median": 941.1137425013294,
+        "min": 889.0241049957694,
+        "max": 998.336308002763
+      },
+      "workingSetBytes": {
+        "median": 212936704.0,
+        "min": 212713472,
+        "max": 213762048
+      },
+      "qmlObjectCount": {
+        "median": 4230.0,
+        "min": 4230,
+        "max": 4230
+      }
+    },
+    "candidate": {
+      "constructionMs": {
+        "median": 798.4651585029496,
+        "min": 748.0424529931042,
+        "max": 919.3252039985964
+      },
+      "workingSetBytes": {
+        "median": 196282368.0,
+        "min": 195612672,
+        "max": 196710400
+      },
+      "qmlObjectCount": {
+        "median": 1860.0,
+        "min": 1860,
+        "max": 1860
+      }
+    }
+  },
+  "samples": {
+    "baseline": [
+      {
+        "constructionMs": 944.5804440038046,
+        "workingSetBytes": 213028864,
+        "qmlObjectCount": 4230,
+        "unvisitedPageCount": 0,
+        "evidence": "fixture-composition-not-packaged-startup"
+      },
+      {
+        "constructionMs": 989.3333220024942,
+        "workingSetBytes": 213762048,
+        "qmlObjectCount": 4230,
+        "unvisitedPageCount": 0,
+        "evidence": "fixture-composition-not-packaged-startup"
+      },
+      {
+        "constructionMs": 998.336308002763,
+        "workingSetBytes": 212795392,
+        "qmlObjectCount": 4230,
+        "unvisitedPageCount": 0,
+        "evidence": "fixture-composition-not-packaged-startup"
+      },
+      {
+        "constructionMs": 889.0241049957694,
+        "workingSetBytes": 213704704,
+        "qmlObjectCount": 4230,
+        "unvisitedPageCount": 0,
+        "evidence": "fixture-composition-not-packaged-startup"
+      },
+      {
+        "constructionMs": 937.6470409988542,
+        "workingSetBytes": 212766720,
+        "qmlObjectCount": 4230,
+        "unvisitedPageCount": 0,
+        "evidence": "fixture-composition-not-packaged-startup"
+      },
+      {
+        "constructionMs": 923.5393620037939,
+        "workingSetBytes": 212844544,
+        "qmlObjectCount": 4230,
+        "unvisitedPageCount": 0,
+        "evidence": "fixture-composition-not-packaged-startup"
+      },
+      {
+        "constructionMs": 960.071228997549,
+        "workingSetBytes": 212713472,
+        "qmlObjectCount": 4230,
+        "unvisitedPageCount": 0,
+        "evidence": "fixture-composition-not-packaged-startup"
+      },
+      {
+        "constructionMs": 898.2768700007,
+        "workingSetBytes": 213606400,
+        "qmlObjectCount": 4230,
+        "unvisitedPageCount": 0,
+        "evidence": "fixture-composition-not-packaged-startup"
+      }
+    ],
+    "candidate": [
+      {
+        "constructionMs": 748.0424529931042,
+        "workingSetBytes": 196710400,
+        "qmlObjectCount": 1860,
+        "unvisitedPageCount": 8,
+        "evidence": "fixture-composition-not-packaged-startup"
+      },
+      {
+        "constructionMs": 919.3252039985964,
+        "workingSetBytes": 196083712,
+        "qmlObjectCount": 1860,
+        "unvisitedPageCount": 8,
+        "evidence": "fixture-composition-not-packaged-startup"
+      },
+      {
+        "constructionMs": 913.9443919993937,
+        "workingSetBytes": 196677632,
+        "qmlObjectCount": 1860,
+        "unvisitedPageCount": 8,
+        "evidence": "fixture-composition-not-packaged-startup"
+      },
+      {
+        "constructionMs": 767.0208819981781,
+        "workingSetBytes": 196050944,
+        "qmlObjectCount": 1860,
+        "unvisitedPageCount": 8,
+        "evidence": "fixture-composition-not-packaged-startup"
+      },
+      {
+        "constructionMs": 760.3375339967897,
+        "workingSetBytes": 196575232,
+        "qmlObjectCount": 1860,
+        "unvisitedPageCount": 8,
+        "evidence": "fixture-composition-not-packaged-startup"
+      },
+      {
+        "constructionMs": 790.7503880051081,
+        "workingSetBytes": 196272128,
+        "qmlObjectCount": 1860,
+        "unvisitedPageCount": 8,
+        "evidence": "fixture-composition-not-packaged-startup"
+      },
+      {
+        "constructionMs": 806.1799290007912,
+        "workingSetBytes": 195612672,
+        "qmlObjectCount": 1860,
+        "unvisitedPageCount": 8,
+        "evidence": "fixture-composition-not-packaged-startup"
+      },
+      {
+        "constructionMs": 843.4146149957087,
+        "workingSetBytes": 196292608,
+        "qmlObjectCount": 1860,
+        "unvisitedPageCount": 8,
+        "evidence": "fixture-composition-not-packaged-startup"
+      }
+    ]
+  }
+}

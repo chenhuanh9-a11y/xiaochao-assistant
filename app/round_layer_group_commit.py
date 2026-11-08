@@ -30,9 +30,10 @@ def commit_alignment_v2_round_pose(
         """Commit V2's authorized root without entering a legacy writer."""
         if not self._native_similarity_resources_ready():
             return False
+        allowed_floors = tuple(getattr(self, "round_floor_ids", ROUND_LAYER_FLOORS))
         if (
             map_id not in getattr(getattr(self, "pack", None), "by_id", {})
-            or floor not in ROUND_LAYER_FLOORS
+            or floor not in allowed_floors
             or not isinstance(overlay, np.ndarray)
             or not isinstance(frame, np.ndarray)
         ):
@@ -65,6 +66,7 @@ def commit_alignment_v2_round_pose(
                     "front-door" if source.endswith("door-current-frame-v2")
                     else "generic"
                 ),
+                floors=allowed_floors,
             )
             self.round_layer_group = group
             self._prime_round_layer_group_relations(map_id, floor)
@@ -445,6 +447,7 @@ def seed_group_pose(self, map_id: str) -> bool:
             generation=int(getattr(group, "generation", 0)),
             reliable=True,
             source="round-layer-group-v2-seed",
+            floors=getattr(group, "floors", ROUND_LAYER_FLOORS),
         ))
 
 

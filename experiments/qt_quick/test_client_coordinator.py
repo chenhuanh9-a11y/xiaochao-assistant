@@ -21,7 +21,6 @@ class Service(QObject):
     actionRequested = Signal(str, object)
     resourcesChanged = Signal()
     actionTriggered = Signal(str)
-    replayOverlayRequested = Signal()
     overlayRequested = Signal()
     shortcutRecordingChanged = Signal(bool)
     mapInputRequested = Signal(object)
@@ -87,6 +86,42 @@ class CoordinatorTests(unittest.TestCase):
                       self.coordinator._material_timer):
             timer.stop()
         self.app.processEvents()
+
+    def test_gallery_author_persists_only_matching_context_and_runtime_alias(self):
+        self.backend.busy = False
+        self.backend.season = self.session.currentSeason = "s1"
+        self.backend.mode = self.session.currentMode = "nightmare"
+        self.backend.profileId = "s1-jiaye-handnotes"
+        self.session.currentProfile = "shared-structure"
+        self.backend.profiles = [dict(id=self.backend.profileId, runtimeSelectable=True, available=1)]
+        self.settings.setValue = Mock(side_effect=lambda key, value: self.settings.values.update({key: value}) or True)
+        self.settings.saveFields = Mock()
+        self.settings.values["contextRouteProfiles"] = {"s0:nightmare": "old-s0", "s1:difficult": "other"}
+        before = deepcopy(self.settings.values)
+        self.coordinator.useGalleryAuthor("s1", "nightmare", self.backend.profileId)
+        from season_context import context_key
+        key = context_key("nightmare", "s1")
+        expected = dict(before["contextRouteProfiles"], **{key: self.backend.profileId})
+        self.assertEqual(self.settings.values["contextRouteProfiles"], expected)
+        self.assertEqual(self.settings.values["routeProfileId"], before["routeProfileId"])
+        self.settings.saveFields.assert_called_once_with(["contextRouteProfiles"])
+        self.settings.saveFields.reset_mock()
+        for season, mode, profile in [("s0", "nightmare", self.backend.profileId), ("s1", "difficult", self.backend.profileId), ("s1", "nightmare", "unknown")]:
+            self.coordinator.useGalleryAuthor(season, mode, profile)
+        self.backend.profiles[0]["runtimeSelectable"] = False
+        self.coordinator.useGalleryAuthor("s1", "nightmare", self.backend.profileId)
+        self.backend.profiles[0]["runtimeSelectable"] = True
+        self.backend.profiles[0]["available"] = 0
+        self.coordinator.useGalleryAuthor("s1", "nightmare", self.backend.profileId)
+        self.settings.saveFields.assert_not_called()
+        self.backend.profiles[0].update(available=1, runtimeProfileId="shared-structure")
+        self.session.currentProfile = "old"
+        self.coordinator.useGalleryAuthor("s1", "nightmare", self.backend.profileId)
+        self.assertEqual(self.settings.values["contextRouteProfiles"][key], "shared-structure")
+        self.backend.season = self.session.currentSeason = "s0"
+        self.coordinator.useGalleryAuthor("s0", "nightmare", self.backend.profileId)
+        self.assertEqual(self.settings.values["routeProfileId"], "shared-structure")
+        self.assertEqual(self.settings.values["modeRouteProfiles"]["nightmare"], "shared-structure")
 
     def test_same_token_presentation_syncs_reference_once_and_rechecks_live_grant(self):
         row = dict(token="current", liveAuthorization=True)
@@ -550,7 +585,7 @@ class CoordinatorTests(unittest.TestCase):
         self.coordinator.setReferencePreviewProvider(provider)
         self.coordinator.beginReferenceEdit()
         context = self.coordinator._reference_preview_context
-        self.assertEqual(context[:2], self.coordinator._applied_context)
+        self.assertEqual(context[:3], self.coordinator._applied_context)
         self.coordinator.cancelReferenceEdit()
         provider.cancel.assert_called_once_with()
         provider.ready.emit(dict(context=context, requestId=1, pixels=object(),
@@ -653,27 +688,27 @@ class CoordinatorTests(unittest.TestCase):
         self.session.snapshot["roundActive"] = False
         self.settings.persistedValues.update(gameMode="difficult", routeProfileId="fallback",
                                              modeRouteProfiles={"difficult": "profile-two"})
-        def accepted(mode, profile):
+        def accepted(mode, profile, season):
             self.session.busy = True
             return True
         self.session.reconfigure.side_effect = accepted
         self.settings.saved.emit()
-        self.session.reconfigure.assert_called_once_with("difficult", "profile-two")
+        self.session.reconfigure.assert_called_once_with("difficult", "profile-two", "s0")
         self.runtime.invalidate.assert_called_once_with("preferences-committed")
-        self.assertEqual(self.coordinator._pending_context, ("difficult", "profile-two"))
-        self.assertEqual(self.coordinator._applied_context, ("nightmare", "profile-one"))
+        self.assertEqual(self.coordinator._pending_context, ("difficult", "profile-two", "s0"))
+        self.assertEqual(self.coordinator._applied_context, ("nightmare", "profile-one", "s0"))
         self.session.busy = False
         self.runtime_state.update(mode="difficult", profileId="old-profile")
         self.session.changed.emit()
-        self.assertEqual(self.coordinator._applied_context, ("nightmare", "profile-one"))
-        self.assertEqual(self.coordinator._pending_context, ("difficult", "profile-two"))
+        self.assertEqual(self.coordinator._applied_context, ("nightmare", "profile-one", "s0"))
+        self.assertEqual(self.coordinator._pending_context, ("difficult", "profile-two", "s0"))
         self.runtime_state["profileId"] = "profile-two"
         self.session.changed.emit()
-        self.assertEqual(self.coordinator._applied_context, ("difficult", "profile-two"))
+        self.assertEqual(self.coordinator._applied_context, ("difficult", "profile-two", "s0"))
         self.assertIsNone(self.coordinator._pending_context)
 
     def test_context_waits_for_resource_operations_and_locked_session(self):
-        self.coordinator._pending_context = ("difficult", "profile-two")
+        self.coordinator._pending_context = ("difficult", "profile-two", "s0")
         for busy, pending, locked in ((True, "", False), (False, "import", False), (False, "", True)):
             with self.subTest(busy=busy, pending=pending, locked=locked):
                 self.resources.busy, self.resources.pendingKind = busy, pending
@@ -883,6 +918,26 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertEqual(errors[0]["action"], "game-floor-control")
         self.assertNotIn("快捷键暂不可用", errors[0]["title"])
+
+    def test_auto_map_selection_opens_existing_controls_without_persisting_layout(self):
+        controls = Mock()
+        self.windows._windows["controls"] = controls
+        self.settings.persistedValues["mapSelectionMode"] = "auto"
+        with patch.object(self.coordinator, "showControls") as show:
+            self.coordinator.requestManualMapSelection()
+        self.session.dispatch.assert_called_once_with("reselect_map")
+        controls.setProperty.assert_any_call("collapsed", False)
+        controls.setProperty.assert_any_call("mapSelectionRequested", True)
+        show.assert_called_once_with()
+
+    def test_retired_routes_cannot_show_or_activate_any_window(self):
+        pages = []
+        self.coordinator.pageRequested.connect(pages.append)
+        with patch.object(self.coordinator, "_show_main") as show:
+            for name in ("recognition", "replay"):
+                self.coordinator.navigate(name)
+            show.assert_not_called()
+        self.assertEqual(pages, [])
 
     def test_manual_picker_hotkey_button_and_confirm_share_the_existing_command(self):
         picker = Mock()

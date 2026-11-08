@@ -1,7 +1,9 @@
 """Owned Qt save-dialog acceptance reaches the original gallery export schema."""
 import json
+import errno
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 from PySide6.QtCore import QObject, QUrl, QMetaObject, QCoreApplication, QEvent
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickWindow
@@ -13,6 +15,11 @@ class GallerySaveDialogTests(unittest.TestCase):
     setUp = fixture.CustomGalleryTests.setUp
     cleanup = fixture.CustomGalleryTests.cleanup
     call = fixture.CustomGalleryTests.call
+
+    def test_owned_save_dialog_accepts_on_linkless_filesystem(self):
+        with patch('client_custom_gallery.os.link', side_effect=
+                   OSError(errno.EOPNOTSUPP, 'synthetic no-hardlink filesystem')):
+            self.test_selected_user_path_is_written_only_after_owned_save_dialog_accepts()
 
     def test_selected_user_path_is_written_only_after_owned_save_dialog_accepts(self):
         self.call('createGallery', 'Chosen export')

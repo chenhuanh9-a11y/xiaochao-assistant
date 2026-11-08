@@ -24,7 +24,7 @@ class RecaptureCompositionTests(unittest.TestCase):
         self.assertEqual(result['newCaptures'], 1, result)
         self.assertEqual(result['focusRequests'], 1, result)
         self.assertEqual(result['qmlErrors'], [], result)
-        self.assertTrue(result['explicitListOpened'], result)
+        self.assertTrue(result['explicitHomeOpened'], result)
         self.assertTrue(result['closed'], result)
 
 
@@ -74,18 +74,14 @@ def composition():
             controls.setProperty('collapsed', False)
             controls.setProperty('expandedHeightLimit', 2000)
             client.windows.show('controls'); APP.processEvents()
-            more = qml_item(controls, 'controlMoreButton')
-            position = more.mapToScene(QPointF(more.width()/2, more.height()/2)).toPoint()
-            QTest.mouseClick(controls, Qt.LeftButton, Qt.NoModifier, position)
-            APP.processEvents()
-            list_button = qml_item(controls, 'controlsRecognitionMenu')
-            assert list_button is not None and list_button.isEnabled()
-            position = list_button.mapToScene(QPointF(list_button.width()/2, list_button.height()/2)).toPoint()
-            QTest.mouseClick(controls, Qt.LeftButton, Qt.NoModifier, position)
-            APP.processEvents()
-            explicit_open = client.main.isVisible() and client.main.property('page') == 'recognition'
-            assert explicit_open, 'explicit controls button did not open the actual main candidate page'
-            button = qml_item(client.main, 'recognitionCapture')
+            client.coordinator.navigate("home"); APP.processEvents()
+            explicit_open = client.main.isVisible() and client.main.property("page") == "home"
+            assert explicit_open
+            more = qml_item(client.main, "homeMapMore")
+            point = more.mapToScene(QPointF(more.width()/2, more.height()/2)).toPoint()
+            QTest.mouseClick(client.main, Qt.LeftButton, Qt.NoModifier, point)
+            QTest.qWait(180); APP.processEvents()
+            button = qml_item(client.main, "homeRecapture")
             assert button is not None and button.isEnabled(), client.session.snapshot
             before = len(fixture.backend.captures)
             fixture.native.foreground = 77
@@ -97,7 +93,7 @@ def composition():
                       if 'ReferenceError' in str(error) or 'recaptureFromMain' in str(error)]
             result = dict(registeredName='clientCoordinator', receipt=receipt,
                 newCaptures=len(fixture.backend.captures)-before,
-                focusRequests=len(fixture.native.mutations()), qmlErrors=errors, explicitListOpened=explicit_open)
+                focusRequests=len(fixture.native.mutations()), qmlErrors=errors, explicitHomeOpened=explicit_open)
             client.shutdown()
             result['closed'] = client._closed
             print(json.dumps(result))

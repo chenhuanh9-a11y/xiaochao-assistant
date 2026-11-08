@@ -1,0 +1,421 @@
+QtIFW synthetic logs. Root paths below are normalized, original bytes SHA256 recorded per section. No user resources were used.
+
+=== engine-version.log original-sha256=9f1a4695999ace97c4ef995b933d5d1711150e71978c7421d40a0c529722c038 ===
+IFW Version: 4.11.0, built with Qt 6.9.3.
+Build date: Mar 10 2026
+Installer Framework SHA1: aac2cf9c93b80a0f5959ab6c8a00bc378c54fdec
+Libarchive version: libarchive 3.8.5 zlib/1.3.1 liblzma/5.8.1 bz2lib/1.0.8 libb2/bundled
+
+=== fresh-install.log original-sha256=c5c33e5aca39333cfc18a0d870af8f340ceab7e3c20b354c5382a352bf733782 ===
+[0] Arguments: $PROBE_ROOT/v1/synthetic-installer, --root, $PROBE_ROOT/install with spaces 中文, --reject-messages, --auto-answer, installationErrorWithRetry=Cancel,installationError=Ok, --confirm-command, install
+[1] Operations sanity check succeeded.
+[2] Using metadata cache from "$PROBE_ROOT/cache/qt-installer-framework/4357b992-6e14-34cc-8da2-5676dc002d05"
+[2] Found 0 cached items.
+[2] Loading component scripts...
+[4] Loading component scripts...
+[4] Warning: QFont::setPixelSize: Pixel size <= 0 (-1)
+[4] Selected components without dependencies:
+org.xingtu.qtifw.lifecycleprobe
+[4] Installation space required: "42.90 MB"
+[4] Temporary space required: "0.00 bytes"
+[5] Cannot determine available space on device. Volume descriptor: "", Mount path: "". Continue silently.
+[5] 
+[5] backup  operation: Mkdir
+[5] 	- arguments: $PROBE_ROOT/install with spaces 中文
+[5] Done
+[5] perform  operation: Mkdir
+[5] 	- arguments: $PROBE_ROOT/install with spaces 中文
+[5] Done
+[5] Preparing the installation...
+[5] Install size: 1 components
+[5] Preparing to unpack components...
+[6] backup org.xingtu.qtifw.lifecycleprobe concurrent operation: Extract
+[6] 	- arguments: installer://org.xingtu.qtifw.lifecycleprobe/1.0.0program.7z, $PROBE_ROOT/install with spaces 中文
+[6] Started
+[6] Unpacking components...
+[6] perform org.xingtu.qtifw.lifecycleprobe concurrent operation: Extract
+[6] 	- arguments: installer://org.xingtu.qtifw.lifecycleprobe/1.0.0program.7z, $PROBE_ROOT/install with spaces 中文
+[6] Started
+[6] Extracting "1.0.0program.7z"
+[7] Done
+[8] Writing maintenance tool: "$PROBE_ROOT/install with spaces 中文/probe-maintenance.new"
+[8] Writing maintenance tool.
+[42] Wrote permissions for maintenance tool.
+[46] Maintenance tool hard restart: false.
+[46] Installation finished!
+[46] Components installed successfully.
+
+=== successful-update.log original-sha256=29f4b1bb1706ff1e42d4ea532098e9dfa1ae72201057a6a52d52c7577f38ef00 ===
+[0] Arguments: $PROBE_ROOT/install with spaces 中文/probe-maintenance, --set-temp-repository, file://$PROBE_ROOT/v2/repository, --reject-messages, --auto-answer, installationErrorWithRetry=Cancel,installationError=Ok, --confirm-command, update
+[2] Operations sanity check succeeded.
+[2] Using metadata cache from "$PROBE_ROOT/cache/qt-installer-framework/4357b992-6e14-34cc-8da2-5676dc002d05"
+[2] Found 0 cached items.
+[2] Adding custom repository: "file://$PROBE_ROOT/v2/repository"
+[3] Fetching latest update information...
+[3] Downloading 1 items to cache.
+[3] Retrieving information from remote repositories...
+[3] Retrieving meta information from remote repository...
+[4] Extracting meta information...
+[4] Updating local cache with 1 new items...
+[6] Loading component scripts...
+[8] Loading component scripts...
+[8] Loading component scripts...
+[8] Warning: QFont::setPixelSize: Pixel size <= 0 (-1)
+[8] Selected components without dependencies:
+org.xingtu.qtifw.lifecycleprobe
+[8] Installation space required: "74.00 bytes"
+[8] Temporary space required: "299.00 bytes"
+[8] Cannot determine available space on device. Volume descriptor: "", Mount path: "". Continue silently.
+[8] 
+[8] Install size: 1 components
+[8] Preparing the installation...
+[8] Downloading packages...
+[9] Archive "2.0.0program.7z.sha1" downloaded for component Synthetic application component.
+[9] Archive "2.0.0program.7z" downloaded for component Synthetic application component.
+[9] Removing deselected components...
+[9] undo operation= "MinimumProgress"
+[9] undo operation= "Extract"
+[9] undo org.xingtu.qtifw.lifecycleprobe operation: Extract
+[9] 	- arguments: installer://org.xingtu.qtifw.lifecycleprobe/1.0.0program.7z, $PROBE_ROOT/install with spaces 中文
+[9] Removing files extracted from "1.0.0program.7z"
+[9] Done
+[10] Preparing to unpack components...
+[10] backup org.xingtu.qtifw.lifecycleprobe concurrent operation: Extract
+[10] 	- arguments: installer://org.xingtu.qtifw.lifecycleprobe/2.0.0program.7z, $PROBE_ROOT/install with spaces 中文
+[10] Started
+[10] Unpacking components...
+[10] perform org.xingtu.qtifw.lifecycleprobe concurrent operation: Extract
+[10] 	- arguments: installer://org.xingtu.qtifw.lifecycleprobe/2.0.0program.7z, $PROBE_ROOT/install with spaces 中文
+[10] Started
+[10] Extracting "2.0.0program.7z"
+[11] Done
+[11] Update finished!
+[13] Maintenance tool hard restart: false.
+[13] Components updated successfully.
+
+=== failed-update.log original-sha256=4351dac2d8c46c068cdf2f8d9632338c98b818fbc0fe5ce0aab75c684a3ba00d ===
+[0] Arguments: $PROBE_ROOT/install with spaces 中文/probe-maintenance, --set-temp-repository, file://$PROBE_ROOT/failure/repository, --reject-messages, --auto-answer, installationErrorWithRetry=Cancel,installationError=Ok, --confirm-command, update
+[2] Operations sanity check succeeded.
+[2] Using metadata cache from "$PROBE_ROOT/cache/qt-installer-framework/4357b992-6e14-34cc-8da2-5676dc002d05"
+[2] Found 0 cached items.
+[2] Adding custom repository: "file://$PROBE_ROOT/failure/repository"
+[2] Fetching latest update information...
+[2] Downloading 1 items to cache.
+[2] Retrieving information from remote repositories...
+[3] Retrieving meta information from remote repository...
+[3] Extracting meta information...
+[3] Updating local cache with 1 new items...
+[5] Loading component scripts...
+[7] Loading component scripts...
+[7] Loading component scripts...
+[7] Warning: QFont::setPixelSize: Pixel size <= 0 (-1)
+[7] Selected components without dependencies:
+org.xingtu.qtifw.lifecycleprobe
+[7] Installation space required: "74.00 bytes"
+[7] Temporary space required: "301.00 bytes"
+[7] Cannot determine available space on device. Volume descriptor: "", Mount path: "". Continue silently.
+[7] 
+[7] Install size: 1 components
+[7] Preparing the installation...
+[7] Downloading packages...
+[8] Archive "3.0.0program.7z.sha1" downloaded for component Synthetic application component.
+[8] Archive "3.0.0program.7z" downloaded for component Synthetic application component.
+[8] Removing deselected components...
+[8] undo operation= "MinimumProgress"
+[8] undo operation= "Extract"
+[8] undo org.xingtu.qtifw.lifecycleprobe operation: Extract
+[8] 	- arguments: installer://org.xingtu.qtifw.lifecycleprobe/2.0.0program.7z, $PROBE_ROOT/install with spaces 中文
+[8] Removing files extracted from "2.0.0program.7z"
+[8] Done
+[8] Preparing to unpack components...
+[9] backup org.xingtu.qtifw.lifecycleprobe concurrent operation: Extract
+[9] 	- arguments: installer://org.xingtu.qtifw.lifecycleprobe/3.0.0program.7z, $PROBE_ROOT/install with spaces 中文
+[9] Started
+[9] Unpacking components...
+[9] perform org.xingtu.qtifw.lifecycleprobe concurrent operation: Extract
+[9] 	- arguments: installer://org.xingtu.qtifw.lifecycleprobe/3.0.0program.7z, $PROBE_ROOT/install with spaces 中文
+[9] Started
+[9] Extracting "3.0.0program.7z"
+[10] Done
+[10] Installing component Synthetic application component
+[10] backup org.xingtu.qtifw.lifecycleprobe operation: Execute
+[10] 	- arguments: {0}, /opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python, -c, import sys; sys.exit(47)
+[10] Done
+[10] perform org.xingtu.qtifw.lifecycleprobe operation: Execute
+[10] 	- arguments: {0}, /opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python, -c, import sys; sys.exit(47)
+[10] /opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python" started, arguments: "-c import sys; sys.exit(47)
+[22] Done
+[22] Operation \"Execute\" with arguments \"{0}; /opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python; -c; import sys; sys.exit(47)\" failed: Execution failed (Unexpected exit code: 47): \"/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python -c import sys; sys.exit(47)\"
+[22] installationErrorWithCancel : Installer Error : Error during installation process (org.xingtu.qtifw.lifecycleprobe):
+Execution failed (Unexpected exit code: 47): "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python -c import sys; sys.exit(47)" Retry|Ignore|Cancel
+[22] Answer: "Cancel"
+[22] undo org.xingtu.qtifw.lifecycleprobe operation: Execute
+[22] 	- arguments: {0}, /opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python, -c, import sys; sys.exit(47)
+[22] Done
+[22] undo org.xingtu.qtifw.lifecycleprobe operation: Extract
+[22] 	- arguments: installer://org.xingtu.qtifw.lifecycleprobe/3.0.0program.7z, $PROBE_ROOT/install with spaces 中文
+[23] Removing files extracted from "3.0.0program.7z"
+[23] Done
+[23] Update aborted!
+
+=== after-failed-update-list.log original-sha256=b8f3d4ef6d79c759d1769cd33cf306e1d8db38a8221e44e3b239659931b8b710 ===
+[0] Arguments: $PROBE_ROOT/install with spaces 中文/probe-maintenance, list
+[2] Critical: Operations missing for installed packages QList()
+[2] Critical: Orphaned operations QList("org.xingtu.qtifw.lifecycleprobe")
+[2] Critical: Your installation seems to be corrupted. Please consider re-installing from scratch, remove the packages from components.xml which operations are missing, or reinstall the packages.
+[2] Using metadata cache from "$PROBE_ROOT/cache/qt-installer-framework/4357b992-6e14-34cc-8da2-5676dc002d05"
+[2] Found 0 cached items.
+<?xml version="1.0"?>
+<localpackages/>
+
+=== repair-after-failed-update.log original-sha256=135a88078416fb45836d6fb4c784918d2996e5d2e72fb4ea1b8375dadfde351a ===
+[0] Arguments: $PROBE_ROOT/install with spaces 中文/probe-maintenance, --set-temp-repository, file://$PROBE_ROOT/v2/repository, --reject-messages, --auto-answer, installationErrorWithRetry=Cancel,installationError=Ok, --confirm-command, install, org.xingtu.qtifw.lifecycleprobe
+[2] Critical: Operations missing for installed packages QList()
+[2] Critical: Orphaned operations QList("org.xingtu.qtifw.lifecycleprobe")
+[2] Critical: Your installation seems to be corrupted. Please consider re-installing from scratch, remove the packages from components.xml which operations are missing, or reinstall the packages.
+[2] Using metadata cache from "$PROBE_ROOT/cache/qt-installer-framework/4357b992-6e14-34cc-8da2-5676dc002d05"
+[2] Found 0 cached items.
+[2] Adding custom repository: "file://$PROBE_ROOT/v2/repository"
+[2] Fetching latest update information...
+[2] Downloading 1 items to cache.
+[2] Retrieving information from remote repositories...
+[3] Retrieving meta information from remote repository...
+[3] Extracting meta information...
+[3] Updating local cache with 1 new items...
+[5] Loading component scripts...
+[7] Loading component scripts...
+[7] Warning: QFont::setPixelSize: Pixel size <= 0 (-1)
+[7] Selected components without dependencies:
+org.xingtu.qtifw.lifecycleprobe
+[7] Installation space required: "74.00 bytes"
+[7] Temporary space required: "299.00 bytes"
+[8] Cannot determine available space on device. Volume descriptor: "", Mount path: "". Continue silently.
+[8] 
+[8] Install size: 1 components
+[8] Preparing the installation...
+[8] Downloading packages...
+[8] Archive "2.0.0program.7z.sha1" downloaded for component Synthetic application component.
+[8] Archive "2.0.0program.7z" downloaded for component Synthetic application component.
+[8] Removing deselected components...
+[8] undo operation= "MinimumProgress"
+[8] undo operation= "Extract"
+[8] undo org.xingtu.qtifw.lifecycleprobe operation: Extract
+[8] 	- arguments: installer://org.xingtu.qtifw.lifecycleprobe/2.0.0program.7z, $PROBE_ROOT/install with spaces 中文
+[8] Warning: Cannot open file  "$PROBE_ROOT/install with spaces 中文/installerResources/org.xingtu.qtifw.lifecycleprobe/2.0.0program.txt"  for reading: "No such file or directory" . Component is already uninstalled  or file is manually deleted.
+[8] Warning: Cannot remove data file "$PROBE_ROOT/install with spaces 中文/installerResources/org.xingtu.qtifw.lifecycleprobe/2.0.0program.txt"
+[8] Done
+[9] Preparing to unpack components...
+[9] backup org.xingtu.qtifw.lifecycleprobe concurrent operation: Extract
+[9] 	- arguments: installer://org.xingtu.qtifw.lifecycleprobe/2.0.0program.7z, $PROBE_ROOT/install with spaces 中文
+[9] Started
+[10] Unpacking components...
+[10] perform org.xingtu.qtifw.lifecycleprobe concurrent operation: Extract
+[10] 	- arguments: installer://org.xingtu.qtifw.lifecycleprobe/2.0.0program.7z, $PROBE_ROOT/install with spaces 中文
+[10] Started
+[10] Extracting "2.0.0program.7z"
+[10] Done
+[11] Update finished!
+[13] Maintenance tool hard restart: false.
+[13] Components installed successfully
+
+=== uninstall.log original-sha256=2292e65c5ccb4ed3a10c1d3edba111458fcdee591573b36fed1324c4ac71adaa ===
+[0] Arguments: $PROBE_ROOT/install with spaces 中文/probe-maintenance, --reject-messages, --confirm-command, purge
+[2] Operations sanity check succeeded.
+[2] Using metadata cache from "$PROBE_ROOT/cache/qt-installer-framework/4357b992-6e14-34cc-8da2-5676dc002d05"
+[2] Found 0 cached items.
+[2] Complete uninstallation was chosen.
+[2] undo operation= "MinimumProgress"
+[2] undo operation= "Extract"
+[2] undo org.xingtu.qtifw.lifecycleprobe operation: Extract
+[2] 	- arguments: installer://org.xingtu.qtifw.lifecycleprobe/2.0.0program.7z, $PROBE_ROOT/install with spaces 中文
+[2] Removing files extracted from "2.0.0program.7z"
+[2] Done
+[2] Removal completed successfully.
+
+=== cancel-before-install.log original-sha256=2e5f3fb6727d0b6046b848bbf8dbf16df45bdb352491aafaccfde548b5af6964 ===
+[0] Arguments: $PROBE_ROOT/v1/synthetic-installer, --root, $PROBE_ROOT/cancelled, --reject-messages, --auto-answer, installationErrorWithRetry=Cancel,installationError=Ok, install
+[2] Operations sanity check succeeded.
+[2] Using metadata cache from "$PROBE_ROOT/cache/qt-installer-framework/4357b992-6e14-34cc-8da2-5676dc002d05"
+[2] Found 0 cached items.
+[3] Loading component scripts...
+[5] Loading component scripts...
+[5] Warning: QFont::setPixelSize: Pixel size <= 0 (-1)
+[5] Selected components without dependencies:
+org.xingtu.qtifw.lifecycleprobe
+[5] Installation space required: "42.90 MB"
+[5] Temporary space required: "0.00 bytes"
+[6] Cannot determine available space on device. Volume descriptor: "", Mount path: "". Continue silently.
+[6] 
+[6] Do you want to continue?
+[6] Yes|No
+[6] Critical: User input is required but the output device is not associated with a terminal.
+
+=== new-install-operation-failure.log original-sha256=751dcbdfc709a6929f02712cc93e3457e5fbcc0b45466cff43f71d45baabb0f3 ===
+[0] Arguments: $PROBE_ROOT/failure/synthetic-installer, --root, $PROBE_ROOT/fresh-failure, --reject-messages, --auto-answer, installationErrorWithRetry=Cancel,installationError=Ok, --confirm-command, install
+[2] Operations sanity check succeeded.
+[2] Using metadata cache from "$PROBE_ROOT/cache/qt-installer-framework/4357b992-6e14-34cc-8da2-5676dc002d05"
+[2] Found 0 cached items.
+[2] Loading component scripts...
+[4] Loading component scripts...
+[4] Warning: QFont::setPixelSize: Pixel size <= 0 (-1)
+[4] Selected components without dependencies:
+org.xingtu.qtifw.lifecycleprobe
+[4] Installation space required: "42.90 MB"
+[4] Temporary space required: "0.00 bytes"
+[5] Cannot determine available space on device. Volume descriptor: "", Mount path: "". Continue silently.
+[5] 
+[5] backup  operation: Mkdir
+[5] 	- arguments: $PROBE_ROOT/fresh-failure
+[5] Done
+[5] perform  operation: Mkdir
+[5] 	- arguments: $PROBE_ROOT/fresh-failure
+[5] Done
+[5] Preparing the installation...
+[5] Install size: 1 components
+[5] Preparing to unpack components...
+[6] backup org.xingtu.qtifw.lifecycleprobe concurrent operation: Extract
+[6] 	- arguments: installer://org.xingtu.qtifw.lifecycleprobe/3.0.0program.7z, $PROBE_ROOT/fresh-failure
+[6] Started
+[6] Unpacking components...
+[6] perform org.xingtu.qtifw.lifecycleprobe concurrent operation: Extract
+[6] 	- arguments: installer://org.xingtu.qtifw.lifecycleprobe/3.0.0program.7z, $PROBE_ROOT/fresh-failure
+[6] Started
+[6] Extracting "3.0.0program.7z"
+[7] Done
+[7] Installing component Synthetic application component
+[7] backup org.xingtu.qtifw.lifecycleprobe operation: Execute
+[7] 	- arguments: {0}, /opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python, -c, import sys; sys.exit(47)
+[7] Done
+[7] perform org.xingtu.qtifw.lifecycleprobe operation: Execute
+[7] 	- arguments: {0}, /opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python, -c, import sys; sys.exit(47)
+[7] /opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python" started, arguments: "-c import sys; sys.exit(47)
+[19] Done
+[19] Operation \"Execute\" with arguments \"{0}; /opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python; -c; import sys; sys.exit(47)\" failed: Execution failed (Unexpected exit code: 47): \"/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python -c import sys; sys.exit(47)\"
+[19] installationErrorWithCancel : Installer Error : Error during installation process (org.xingtu.qtifw.lifecycleprobe):
+Execution failed (Unexpected exit code: 47): "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python -c import sys; sys.exit(47)" Retry|Ignore|Cancel
+[19] Answer: "Cancel"
+[19] undo org.xingtu.qtifw.lifecycleprobe operation: Execute
+[19] 	- arguments: {0}, /opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python, -c, import sys; sys.exit(47)
+[19] Done
+[19] undo org.xingtu.qtifw.lifecycleprobe operation: Extract
+[19] 	- arguments: installer://org.xingtu.qtifw.lifecycleprobe/3.0.0program.7z, $PROBE_ROOT/fresh-failure
+[20] Removing files extracted from "3.0.0program.7z"
+[20] Done
+[20] Installation aborted!
+
+=== legacy-guard-after-nonempty-consent.log original-sha256=090611db8b8e92eb4d46cbff1c9f1ad6fd647eb840d175679f9a7ce6dae6c508 ===
+[0] Arguments: $PROBE_ROOT/v1/synthetic-installer, --root, $PROBE_ROOT/legacy-synthetic, --reject-messages, --auto-answer, installationErrorWithRetry=Cancel,installationError=Ok,OverwriteTargetDirectory=Yes, --confirm-command, install
+[2] Operations sanity check succeeded.
+[2] Using metadata cache from "$PROBE_ROOT/cache/qt-installer-framework/4357b992-6e14-34cc-8da2-5676dc002d05"
+[2] Found 0 cached items.
+[2] OverwriteTargetDirectory : Warning : You have selected an existing, non-empty directory for installation.
+Note that it will be completely wiped on uninstallation of this application.
+It is not advisable to install into this directory as installation might fail.
+Do you want to continue? Yes|No
+[2] Automatic answer for "OverwriteTargetDirectory": "Yes"
+[3] Loading component scripts...
+[5] Loading component scripts...
+[5] Warning: QFont::setPixelSize: Pixel size <= 0 (-1)
+[5] Selected components without dependencies:
+org.xingtu.qtifw.lifecycleprobe
+[5] Installation space required: "42.90 MB"
+[5] Temporary space required: "0.00 bytes"
+[5] Cannot determine available space on device. Volume descriptor: "", Mount path: "". Continue silently.
+[5] 
+[6] backup  operation: Mkdir
+[6] 	- arguments: $PROBE_ROOT/legacy-synthetic
+[6] Done
+[6] perform  operation: Mkdir
+[6] 	- arguments: $PROBE_ROOT/legacy-synthetic
+[6] Done
+[6] Preparing the installation...
+[6] Install size: 1 components
+[6] installationError : Error : Error: legacy-inno-migration-required 
+This may be solved by restarting the application after clearing the cache from: "$PROBE_ROOT/cache/qt-installer-framework/4357b992-6e14-34cc-8da2-5676dc002d05"
+[6] Automatic answer for "installationError": "Ok"
+[6] ROLLING BACK operations= 0
+[6] Installation aborted!
+
+=== collision-guard-after-nonempty-consent.log original-sha256=45a14110782ea1367f79e5d315d0bbe2f985fcef760453641719aeffd5cb7757 ===
+[0] Arguments: $PROBE_ROOT/v1/synthetic-installer, --root, $PROBE_ROOT/unknown-collision, --reject-messages, --auto-answer, installationErrorWithRetry=Cancel,installationError=Ok,OverwriteTargetDirectory=Yes, --confirm-command, install
+[1] Operations sanity check succeeded.
+[1] Using metadata cache from "$PROBE_ROOT/cache/qt-installer-framework/4357b992-6e14-34cc-8da2-5676dc002d05"
+[1] Found 0 cached items.
+[2] OverwriteTargetDirectory : Warning : You have selected an existing, non-empty directory for installation.
+Note that it will be completely wiped on uninstallation of this application.
+It is not advisable to install into this directory as installation might fail.
+Do you want to continue? Yes|No
+[2] Automatic answer for "OverwriteTargetDirectory": "Yes"
+[2] Loading component scripts...
+[3] Loading component scripts...
+[4] Warning: QFont::setPixelSize: Pixel size <= 0 (-1)
+[4] Selected components without dependencies:
+org.xingtu.qtifw.lifecycleprobe
+[4] Installation space required: "42.90 MB"
+[4] Temporary space required: "0.00 bytes"
+[4] Cannot determine available space on device. Volume descriptor: "", Mount path: "". Continue silently.
+[4] 
+[4] backup  operation: Mkdir
+[4] 	- arguments: $PROBE_ROOT/unknown-collision
+[5] Done
+[5] perform  operation: Mkdir
+[5] 	- arguments: $PROBE_ROOT/unknown-collision
+[5] Done
+[5] Preparing the installation...
+[5] Install size: 1 components
+[5] installationError : Error : Error: unowned-payload-collision 
+This may be solved by restarting the application after clearing the cache from: "$PROBE_ROOT/cache/qt-installer-framework/4357b992-6e14-34cc-8da2-5676dc002d05"
+[5] Automatic answer for "installationError": "Ok"
+[5] ROLLING BACK operations= 0
+[5] Installation aborted!
+
+=== interrupt.log original-sha256=00b5d07ef3e1d1d81f015441e2a219574c87a5289bb084986163b6755d30b465 ===
+[0] Arguments: $PROBE_ROOT/pause/synthetic-installer, --root, $PROBE_ROOT/interrupted, --reject-messages, --confirm-command, install
+[1] Operations sanity check succeeded.
+[2] Using metadata cache from "$PROBE_ROOT/cache/qt-installer-framework/4357b992-6e14-34cc-8da2-5676dc002d05"
+[2] Found 0 cached items.
+[2] Loading component scripts...
+[4] Loading component scripts...
+[4] Warning: QFont::setPixelSize: Pixel size <= 0 (-1)
+[4] Selected components without dependencies:
+org.xingtu.qtifw.lifecycleprobe
+[4] Installation space required: "42.90 MB"
+[4] Temporary space required: "0.00 bytes"
+[4] Cannot determine available space on device. Volume descriptor: "", Mount path: "". Continue silently.
+[4] 
+[5] backup  operation: Mkdir
+[5] 	- arguments: $PROBE_ROOT/interrupted
+[5] Done
+[5] perform  operation: Mkdir
+[5] 	- arguments: $PROBE_ROOT/interrupted
+[5] Done
+[5] Preparing the installation...
+[5] Install size: 1 components
+[5] Preparing to unpack components...
+[5] backup org.xingtu.qtifw.lifecycleprobe concurrent operation: Extract
+[5] 	- arguments: installer://org.xingtu.qtifw.lifecycleprobe/3.0.0program.7z, $PROBE_ROOT/interrupted
+[5] Started
+[6] Unpacking components...
+[6] perform org.xingtu.qtifw.lifecycleprobe concurrent operation: Extract
+[6] 	- arguments: installer://org.xingtu.qtifw.lifecycleprobe/3.0.0program.7z, $PROBE_ROOT/interrupted
+[6] Started
+[6] Extracting "3.0.0program.7z"
+[6] Done
+[6] Installing component Synthetic application component
+[6] backup org.xingtu.qtifw.lifecycleprobe operation: Execute
+[7] 	- arguments: {0}, /opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python, -c, import pathlib,sys,time; p=pathlib.Path(sys.argv[1]); p.write_text('entered', encoding='utf-8'); time.sleep(180), $PROBE_ROOT/interrupted/probe-interrupt-checkpoint.txt
+[7] Done
+[7] perform org.xingtu.qtifw.lifecycleprobe operation: Execute
+[7] 	- arguments: {0}, /opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python, -c, import pathlib,sys,time; p=pathlib.Path(sys.argv[1]); p.write_text('entered', encoding='utf-8'); time.sleep(180), $PROBE_ROOT/interrupted/probe-interrupt-checkpoint.txt
+[7] /opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python" started, arguments: "-c import pathlib,sys,time; p=pathlib.Path(sys.argv[1]); p.write_text('entered', encoding='utf-8'); time.sleep(180) $PROBE_ROOT/interrupted/probe-interrupt-checkpoint.txt
+
+=== interrupt-retry-no-overwrite.log original-sha256=b911dbb6cb20cb12dcdeb0ec859317face80165b8b8a4df57dcbc08b6d9a682b ===
+[0] Arguments: $PROBE_ROOT/v1/synthetic-installer, --root, $PROBE_ROOT/interrupted, --reject-messages, --auto-answer, installationErrorWithRetry=Cancel,installationError=Ok, --confirm-command, install
+[2] Operations sanity check succeeded.
+[2] Using metadata cache from "$PROBE_ROOT/cache/qt-installer-framework/4357b992-6e14-34cc-8da2-5676dc002d05"
+[2] Found 0 cached items.
+[2] OverwriteTargetDirectory : Warning : You have selected an existing, non-empty directory for installation.
+Note that it will be completely wiped on uninstallation of this application.
+It is not advisable to install into this directory as installation might fail.
+Do you want to continue? Yes|No
+[2] Answer: "No"
