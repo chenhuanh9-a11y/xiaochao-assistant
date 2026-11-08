@@ -131,7 +131,7 @@ def main():
         Description="仅限本测试安装的 program/work；地图和外部文件保留。", Version="1.0.0",
         ReleaseDate="2026-11-08", Default="true", Script="data-component.js"))
     write_xml(config / "config.xml", "Installer", dict(Name="星图安装器隔离试用 " + instance,
-        Version="1.0.0", Title="星图安装器隔离试用（非正式版）", Publisher="星图开发试用",
+        Version="1.0.0", Title="星图（试用版）", Publisher="星图开发试用",
         TargetDir=str(output / "targets/trial"), MaintenanceToolName="trial-maintenance",
         RemoveTargetDir="true", AllowNonAsciiCharacters="true", AllowSpaceInPath="true",
         AllowRepositoriesForOfflineInstaller="false", SaveDefaultRepositories="false", PersistentLocalCache="false",

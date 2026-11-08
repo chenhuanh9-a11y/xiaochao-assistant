@@ -23,7 +23,9 @@ function Controller() {
     installer.setValue("TrialHelper", helper);
     // The maintenance executable is an uninstaller, not a package manager UI.
     if (!installer.isInstaller() && !installer.isCommandLineInstance()) installer.setUninstaller();
-    installer.setDefaultPageVisible(QInstaller.Introduction, false);
+    // The introduction owns QtIFW's metadata fetch. Keep its lifecycle, then
+    // advance automatically; hiding it bypasses component/UI loading.
+    installer.setDefaultPageVisible(QInstaller.Introduction, true);
     installer.setDefaultPageVisible(QInstaller.ComponentSelection, false);
     installer.setDefaultPageVisible(QInstaller.LicenseCheck, false);
     installer.setDefaultPageVisible(QInstaller.StartMenuSelection, false);
@@ -81,6 +83,7 @@ Controller.prototype.IntroductionPageCallback = function() {
         page.MessageLabel.text = installer.isInstaller() ?
             "欢迎使用星图安装器试用向导。点击“下一步”开始安装。" :
             "欢迎使用星图维护向导。可在这里维护或卸载本测试安装。";
+    gui.clickButton(buttons.NextButton);
 };
 
 Controller.prototype.ReadyForInstallationPageCallback = function() {
