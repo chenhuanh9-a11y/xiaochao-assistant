@@ -216,7 +216,7 @@ def main():
         ET.SubElement(translations, "Translation").text = name
     ET.indent(tree)
     tree.write(config / "config.xml", encoding="utf-8", xml_declaration=True)
-    setup = output / ("星图-" + record["version"]["version"] + ".exe" if args.release else "Xingtu-QtIFW-Local-Trial-Setup.exe")
+    setup = output / ("星图-" + record["version"]["version"] + "-Setup.exe" if args.release else "Xingtu-QtIFW-Local-Trial-Setup.exe")
     with (output / "binarycreator.log").open("wb") as log:
         subprocess.run([str(args.ifw_bin / "binarycreator.exe"), "--offline-only", "--compression", "3",
             "--resources", str(qrc), "-t", str(args.ifw_bin / "installerbase.exe"),
