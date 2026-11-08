@@ -10,6 +10,7 @@ function trialRun(action, choice, operation) {
 }
 
 function Controller() {
+    console.log("TRIAL_UI_LANGUAGE: " + installer.value("UILanguage"));
     var scope = __SCOPE__;
     if (!installer.fileExists(scope + "/.qtifw-trial-scope") ||
         installer.readFile(scope + "/.qtifw-trial-scope", "UTF-8").trim() !== __INSTANCE__)
@@ -60,9 +61,9 @@ Controller.prototype.ReadyForInstallationPageCallback = function() {
     // installer. Own this choice in the documented controller ready-page hook.
     var answer = QMessageBox.question("TrialDataChoice", "测试资料处理",
         "<p>是否保留本测试安装的资料？</p>" +
-        "<p><b>Yes（是）：保留资料，默认推荐。</b><br/>" +
-        "No（否）：清除本测试安装 program/work 中的设置、导入记录、缓存和日志。<br/>" +
-        "Cancel（取消）：退出，不卸载。</p>" +
+        "<p><b>是：保留资料，默认推荐。</b><br/>" +
+        "否：清除本测试安装 program/work 中的设置、导入记录、缓存和日志。<br/>" +
+        "取消：退出，不卸载。</p>" +
         "<p>地图目录、外部文件、中断恢复副本和协作锁均保留。仅用于专用测试资料。</p>" +
         "<p>更新失败不会自动恢复旧程序，可使用已验证仓库重装恢复。</p>",
         QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel, QMessageBox.Yes);

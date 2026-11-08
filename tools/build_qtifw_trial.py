@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import uuid
+import xml.etree.ElementTree as ET
 
 import build_qt_client as build
 from rebuild_qt_installer import validate_managed_runtime_reuse
@@ -123,12 +124,20 @@ def main():
     write_xml(data_meta / "package.xml", "Package", dict(DisplayName="资料处理（默认保留）",
         Description="仅限本测试安装的 program/work；地图和外部文件保留。", Version="1.0.0",
         ReleaseDate="2026-11-08", Default="true", Script="data-component.js"))
-    write_xml(config / "config.xml", "Installer", dict(Name="Xingtu QtIFW Local Trial " + instance,
-        Version="1.0.0", Title="星图安装器隔离试用（非正式版）", Publisher="Xingtu development trial",
+    write_xml(config / "config.xml", "Installer", dict(Name="星图安装器隔离试用 " + instance,
+        Version="1.0.0", Title="星图安装器隔离试用（非正式版）", Publisher="星图开发试用",
         TargetDir=str(output / "targets/trial"), MaintenanceToolName="trial-maintenance",
         RemoveTargetDir="false", AllowNonAsciiCharacters="true", AllowSpaceInPath="true",
         AllowRepositoriesForOfflineInstaller="false", SaveDefaultRepositories="false", PersistentLocalCache="false",
         ControlScript="controller.js", StyleSheet="trial.qss"))
+    # Include both IFW pages and Qt standard buttons. Explicit translations
+    # also apply to the generated maintenance tool, independent of OS locale.
+    tree = ET.parse(config / "config.xml")
+    translations = ET.SubElement(tree.getroot(), "Translations")
+    for name in ("ifw_zh_CN", "qt_zh_CN"):
+        ET.SubElement(translations, "Translation").text = name
+    ET.indent(tree)
+    tree.write(config / "config.xml", encoding="utf-8", xml_declaration=True)
     setup = output / "Xingtu-QtIFW-Local-Trial-Setup.exe"
     with (output / "binarycreator.log").open("wb") as log:
         subprocess.run([str(args.ifw_bin / "binarycreator.exe"), "--offline-only", "--compression", "3",
