@@ -1,17 +1,4 @@
-function Component() {
-    component.loaded.connect(this, function() {
-        if (!installer.isCommandLineInstance() && !installer.isInstaller()) {
-            if (!installer.addWizardPage(component, "TrialDataPage", QInstaller.ReadyForInstallation))
-                throw new Error("无法显示测试资料选择页");
-            var page = gui.pageWidgetByObjectName("DynamicTrialDataPage");
-            page.keepData.checked = true;
-            installer.setValue("DataChoice", "keep");
-            page.clearData.toggled.connect(function(checked) {
-                installer.setValue("DataChoice", checked ? "clear" : "keep");
-            });
-        }
-    });
-}
+function Component() {}
 
 Component.prototype.createOperations = function() {
     if (installer.value("TrialRootRejected", "") === "true")

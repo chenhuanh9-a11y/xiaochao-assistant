@@ -10,10 +10,12 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import time
 from types import SimpleNamespace
+import xml.etree.ElementTree as ET
 
 from qtifw_trial_helper import scoped, verify
 from probe_qtifw_windows import WindowsProbe, DATA
@@ -87,6 +89,33 @@ class TrialProbe:
         finally:
             link.unlink()  # Remove only this test-created fault, not the data.
         return dict(invalidChoiceRejected=True, activeLeaseRejected=True, linkedDataRejected=True, programPreserved=True)
+
+    def update_failure_repair(self, target):
+        packages = self.output / "update-v2/packages"
+        shutil.copytree(self.root / "packages", packages)
+        for metadata in packages.glob("*/meta/package.xml"):
+            tree = ET.parse(metadata)
+            tree.getroot().find("Version").text = "2.0.0"
+            tree.write(metadata, encoding="utf-8", xml_declaration=True)
+        repository = self.output / "update-v2/repository"
+        assert self.run("real-update-repository", [r"E:\codex\tools\qtifw-4.11.0\bin\repogen.exe", "-p", packages, repository]) == 0
+        tool = target / "trial-maintenance.exe"
+        common = [tool, "--set-temp-repository", repository.as_uri(), "--reject-messages", "--confirm-command"]
+        sentinel = target / "program/work/trial-personal.txt"
+        before = sentinel.read_bytes()
+        failed = self.run("real-update-injected-failure", [*common, "update", "TrialFault=fail", "DataChoice=clear"])
+        assert failed != 0 and sentinel.read_bytes() == before
+        observed = dict(exitCode=failed, programPresent=(target / "program/星图.exe").exists(),
+                        maintenancePresent=tool.exists(), dataPreserved=True)
+        self.run("real-after-failed-update-list", [tool, "list"])
+        assert self.run("real-update-explicit-repair", [*common, "install", "org.xingtu.qtifw.realtrial"]) == 0
+        repaired = verify(self.policy, target)
+        assert sentinel.read_bytes() == before
+        assert self.run("real-after-repair-list", [tool, "list"]) == 0
+        text = (self.output / "real-after-repair-list.log").read_bytes().decode("utf-8", errors="replace")
+        assert "2.0.0" in text and "org.xingtu.qtifw.realtrial" in text
+        return dict(failedUpdate=observed, explicitRepair=repaired, componentVersion="2.0.0",
+                    productVersionUnchanged=True, automaticRollbackImplemented=False)
 
     def interruption(self, name, fault):
         target = self.target(name)
@@ -204,6 +233,7 @@ class TrialProbe:
             self.report["helperEntryChecks"] = helpers
             self.report["postRuntimeInventory"] = verify(self.policy, target)
             self.report["nativeAdmission"] = self.native_guards(target)
+            self.report["realUpdateFailureRepair"] = self.update_failure_repair(target)
             self.report["keepUninstall"] = self.purge("keep-uninstall", target, "keep")
             assert self.install("same-target-reinstall", target) == 0
             self.report["reinstall"] = verify(self.policy, target)

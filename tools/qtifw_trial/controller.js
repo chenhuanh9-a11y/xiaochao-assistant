@@ -54,6 +54,26 @@ function Controller() {
     });
 }
 
+Controller.prototype.ReadyForInstallationPageCallback = function() {
+    if (installer.isCommandLineInstance() || !installer.isUninstaller()) return;
+    // Uninstaller mode does not load the component page lifecycle used by the
+    // installer. Own this choice in the documented controller ready-page hook.
+    var answer = QMessageBox.question("TrialDataChoice", "测试资料处理",
+        "是否保留本测试安装的资料？\n\n" +
+        "是：保留资料（默认、推荐）。\n否：清除本测试安装 program/work 中的设置、导入记录、缓存和日志。\n取消：退出，不卸载。\n\n" +
+        "地图目录、外部文件、中断恢复副本和协作锁文件均保留。仅用于专用测试资料。\n\n" +
+        "更新失败不会自动恢复旧程序，可使用已验证仓库重装恢复。",
+        QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel, QMessageBox.Yes);
+    if (answer === QMessageBox.Cancel) { gui.rejectWithoutPrompt(); return; }
+    installer.setValue("DataChoice", answer === QMessageBox.No ? "clear" : "keep");
+    var page = gui.currentPageWidget();
+    if (page && page.RemoveAllMsgLabel)
+        page.RemoveAllMsgLabel.text = installer.value("DataChoice") === "clear" ?
+            "本次卸载会清除本测试安装的 program/work；地图、外部文件和恢复副本保留。" :
+            "本次卸载保留测试资料。";
+    console.log("TRIAL_GUI_DATA_CHOICE: " + installer.value("DataChoice"));
+};
+
 Controller.prototype.FinishedPageCallback = function() {
     if (!installer.isUninstaller()) return;
     var text = "程序卸载流程已结束。资料处理尚未确认，请保留测试目录并检查日志。";

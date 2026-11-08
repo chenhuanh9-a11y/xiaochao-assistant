@@ -13,7 +13,6 @@ import shutil
 import subprocess
 import sys
 import uuid
-import xml.etree.ElementTree as ET
 
 import build_qt_client as build
 from rebuild_qt_installer import validate_managed_runtime_reuse
@@ -114,7 +113,6 @@ def main():
     controller = controller.replace("__SCOPE__", json.dumps(output.as_posix())).replace("__INSTANCE__", json.dumps(instance))
     (config / "controller.js").write_text(controller, encoding="utf-8")
     shutil.copy2(scripts / "component.js", meta / "component.js")
-    shutil.copy2(scripts / "data-page.ui", meta / "data-page.ui")
     write_xml(meta / "package.xml", "Package", dict(DisplayName="星图真实程序（隔离安装试用）",
         Description="原 142001C8 程序与辅助文件；只用于本机隔离验证。", Version="1.0.0", ReleaseDate="2026-11-08",
         Default="true", Script="component.js", Dependencies=DATA_PACKAGE))
@@ -124,9 +122,6 @@ def main():
     write_xml(data_meta / "package.xml", "Package", dict(DisplayName="资料处理（默认保留）",
         Description="仅限本测试安装的 program/work；地图和外部文件保留。", Version="1.0.0",
         ReleaseDate="2026-11-08", Default="true", Script="data-component.js"))
-    tree = ET.parse(meta / "package.xml")
-    ET.SubElement(ET.SubElement(tree.getroot(), "UserInterfaces"), "UserInterface").text = "data-page.ui"
-    tree.write(meta / "package.xml", encoding="utf-8", xml_declaration=True)
     write_xml(config / "config.xml", "Installer", dict(Name="Xingtu QtIFW Local Trial " + instance,
         Version="1.0.0", Title="星图安装器隔离试用（非正式版）", Publisher="Xingtu development trial",
         TargetDir=str(output / "targets/trial"), MaintenanceToolName="trial-maintenance",
