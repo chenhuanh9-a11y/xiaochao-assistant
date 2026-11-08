@@ -225,7 +225,7 @@ def clear_data(policy, target, choice, *, native_lease=False):
     if choice not in {"keep", "clear"}:
         raise ValueError("explicit-data-choice-required")
     target, _ = bound_owner(policy, target)
-    if choice == "keep":
+    if choice == "keep" and not _safe(target / CLEAR_STATE).exists():
         return dict(dataChoice="keep", cleared=0)
     program = _safe(target / "program")
     program.mkdir(exist_ok=True)
@@ -236,8 +236,10 @@ def clear_data(policy, target, choice, *, native_lease=False):
     else:
         lease = resource_write_lock(program)
     with lease:
-        assert_resources_ready(program)
         recover_clear(target, program)
+        if choice == "keep":
+            return dict(dataChoice="keep", cleared=0)
+        assert_resources_ready(program)
         preserved = []
         _, paths = data_files(policy, target, preserved=preserved)
         if len(paths) > 50000:
@@ -287,7 +289,39 @@ def recover_clear(target, program):
     if not any(directory.iterdir()):
         directory.rmdir()
         return
-    journal = upgrade._read_json(_safe(directory / "journal.json"))
+    # replace() is the metadata commit point. Leftover temporary contents
+    # cannot authorize deletion, even when they claim committed status.
+    temporaries = []
+    for path in directory.iterdir():
+        name = path.name
+        if name == "journal.json" or (name.isascii() and name.isdecimal()
+                and str(int(name)) == name):
+            continue
+        try:
+            token = name.removeprefix("journal-").removesuffix(".tmp")
+            temporary = name == f"journal-{uuid.UUID(token)}.tmp"
+        except ValueError:
+            temporary = False
+        if not temporary:
+            raise ValueError("trial-clear-recovery-extra-files")
+        path = _safe(path)
+        info = path.stat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or info.st_size > upgrade.MAX_JOURNAL_BYTES):
+            raise ValueError("trial-clear-recovery-invalid-temporary")
+        temporaries.append(path)
+    journal_path = _safe(directory / "journal.json")
+    if not journal_path.exists():
+        # No payload can move before the initial journal is published.
+        # Partial/empty JSON is expected; do not infer ownership from it.
+        if len(temporaries) != len(list(directory.iterdir())):
+            raise ValueError("trial-clear-recovery-journal-missing")
+        for path in temporaries:
+            path.unlink()
+        directory.rmdir()
+        upgrade._directory_sync(target)
+        return
+    journal = upgrade._read_json(journal_path)
     if (journal.get("schema") != "qtifw-data-clear-v1"
             or journal.get("rootIdentity") != upgrade._identity(program.stat())
             or journal.get("status") not in {"preparing", "committed"}
@@ -304,6 +338,10 @@ def recover_clear(target, program):
         seen.add(relative)
         upgrade._valid_identity(list(row["identity"]))
         upgrade._digest(row["sha256"])
+    allowed = {"journal.json", *(str(n) for n in range(len(journal["entries"]))),
+               *(path.name for path in temporaries)}
+    if any(path.name not in allowed for path in directory.iterdir()):
+        raise ValueError("trial-clear-recovery-extra-files")
     committed = journal["status"] == "committed"
     for number, row in enumerate(journal["entries"]):
         retained = _safe(directory / str(number))
@@ -320,7 +358,9 @@ def recover_clear(target, program):
             upgrade._directory_sync(directory)
         elif not committed and not upgrade._matches(original, row, row["identity"]):
             raise ValueError("trial-clear-recovery-original-missing-or-changed")
-    # Unknown objects (including interrupted metadata writes) are never erased.
+    for path in temporaries:
+        path.unlink()
+    # Unknown objects are never erased.
     extras = [path for path in directory.iterdir() if path.name != "journal.json"]
     if extras:
         raise ValueError("trial-clear-recovery-extra-files")

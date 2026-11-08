@@ -103,6 +103,111 @@ class DataProtectionTests(unittest.TestCase):
         self.assertFalse((self.target / helper.CLEAR_STATE).exists())
         self.assertEqual(self.clear()['cleared'], 0)
 
+    def interrupt_move(self):
+        real = upgrade._move_owned
+        def interrupt(*args, **kwargs):
+            real(*args, **kwargs)
+            raise KeyboardInterrupt()
+        with patch.object(upgrade, '_move_owned', side_effect=interrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.clear()
+
+    def keep_twice(self):
+        for _ in range(2):
+            self.assertEqual(helper.clear_data(self.policy, self.target, 'keep')['cleared'], 0)
+        self.assertFalse((self.target / helper.CLEAR_STATE).exists())
+        self.assertEqual(self.settings.read_bytes(), b'{"schema":"xingtu-custom-gallery-v1","galleries":[]}')
+        self.assertEqual(self.routes.read_bytes(), b'{"schema":"xingtu-custom-routes-v1","maps":{}}')
+        self.assertEqual(self.unknown.read_bytes(), b'unknown, keep')
+
+    def test_interrupted_clear_then_keep_restores_and_is_idempotent(self):
+        self.interrupt_move()
+        self.keep_twice()
+
+    def test_keep_recovery_failure_writes_failed_receipt(self):
+        self.interrupt_move()
+        self.settings.write_bytes(b'foreign replacement')
+        (self.scope / 'qtifw-trial-policy.json').write_text(json.dumps(self.policy))
+        with patch.object(helper, '__file__', str(self.scope / 'helper.py')), \
+                patch.object(sys, 'argv', ['helper', 'data', str(self.target), 'keep']), \
+                redirect_stdout(StringIO()):
+            self.assertEqual(helper.main(), 2)
+        receipt = json.loads((self.target / 'trial-data.json').read_bytes())
+        self.assertFalse(receipt['success'])
+        self.assertEqual(self.settings.read_bytes(), b'foreign replacement')
+        self.assertTrue((self.target / helper.CLEAR_STATE).exists())
+
+    def test_initial_journal_write_interrupt_full_or_partial_then_keep(self):
+        real = upgrade._write_new
+        for partial in (False, True):
+            def interrupt(path, data):
+                real(path, data[:7] if partial else data)
+                raise KeyboardInterrupt()
+            with patch.object(upgrade, '_write_new', side_effect=interrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    self.clear()
+            self.assertFalse((self.target / helper.CLEAR_STATE / 'journal.json').exists())
+            self.keep_twice()
+
+    def test_commit_journal_write_interrupt_uses_old_preparing_journal(self):
+        real = upgrade._write_new
+        def interrupt(path, data):
+            real(path, data)
+            if json.loads(data)['status'] == 'committed':
+                raise KeyboardInterrupt()
+        with patch.object(upgrade, '_write_new', side_effect=interrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.clear()
+        self.assertFalse(self.settings.exists())
+        self.keep_twice()
+
+    def test_partial_gc_interrupt_then_keep_finishes_committed_cleanup(self):
+        import star_map_import as files
+        real = files._rollback_published
+        def interrupt(*args, **kwargs):
+            result = real(*args, **kwargs)
+            self.assertTrue(result)
+            raise KeyboardInterrupt()
+        with patch.object(files, '_rollback_published', side_effect=interrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.clear()
+        directory = self.target / helper.CLEAR_STATE
+        self.assertEqual(len(list(directory.iterdir())), 2)  # journal + remaining payload
+        for _ in range(2):
+            helper.clear_data(self.policy, self.target, 'keep')
+        self.assertFalse(directory.exists())
+        self.assertFalse(self.settings.exists())
+        self.assertFalse(self.routes.exists())
+        self.assertTrue(self.unknown.exists())
+
+    def test_missing_journal_with_payload_never_discards_payload_or_temporary(self):
+        self.interrupt_move()
+        directory = self.target / helper.CLEAR_STATE
+        temporary = directory / 'journal-00000000-0000-0000-0000-000000000000.tmp'
+        (directory / 'journal.json').rename(temporary)
+        with self.assertRaisesRegex(ValueError, 'journal-missing'):
+            helper.clear_data(self.policy, self.target, 'keep')
+        self.assertTrue((directory / '0').exists())
+        self.assertTrue(temporary.exists())
+
+    def test_hardlinked_temporary_is_preserved_and_rejected(self):
+        directory = self.target / helper.CLEAR_STATE
+        directory.mkdir()
+        temporary = directory / 'journal-00000000-0000-0000-0000-000000000000.tmp'
+        os.link(self.unknown, temporary)
+        with self.assertRaisesRegex(ValueError, 'invalid-temporary'):
+            helper.clear_data(self.policy, self.target, 'keep')
+        self.assertTrue(temporary.exists())
+        self.assertEqual(self.unknown.read_bytes(), b'unknown, keep')
+
+    def test_unknown_quarantine_file_blocks_without_deleting_user_data(self):
+        self.interrupt_move()
+        unknown = self.target / helper.CLEAR_STATE / 'personal.txt'
+        unknown.write_bytes(b'keep')
+        with self.assertRaisesRegex(ValueError, 'extra-files'):
+            helper.clear_data(self.policy, self.target, 'keep')
+        self.assertEqual(unknown.read_bytes(), b'keep')
+
     def test_committed_cleanup_failure_is_persistent_and_retry_finishes_gc(self):
         import star_map_import as files
         with patch.object(files, '_rollback_published', side_effect=OSError('GC failure')):
