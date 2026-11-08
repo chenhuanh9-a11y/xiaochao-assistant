@@ -29,6 +29,12 @@ function Controller() {
     installer.setDefaultPageVisible(QInstaller.ComponentSelection, false);
     installer.setDefaultPageVisible(QInstaller.LicenseCheck, false);
     installer.setDefaultPageVisible(QInstaller.StartMenuSelection, false);
+    // Native page initialization updates button visibility after page
+    // callbacks. Apply this when the transition has actually completed.
+    gui.currentPageChanged.connect(function(oldId, newId) {
+        var back = gui.findChild(gui, "__qt__passive_wizardbutton0");
+        if (back) back.visible = installer.isInstaller() && newId === QInstaller.ReadyForInstallation;
+    });
     // QtIFW applies --root AFTER construction. Custom key=value parameters are
     // already available here, so bind the actual target before admission.
     var requested = installer.value("TrialTarget", "");
