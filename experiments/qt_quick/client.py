@@ -9,7 +9,7 @@ import sys
 import traceback
 from uuid import uuid4
 from PySide6.QtCore import QTimer, QUrl, QThreadPool, Qt
-from PySide6.QtGui import QFont, QFontDatabase, QGuiApplication, QIcon, QWindow
+from PySide6.QtGui import QFont, QGuiApplication, QIcon, QWindow
 from PySide6.QtQml import QQmlApplicationEngine
 from client_paths import APP_ROOT, DEFAULT_SANDBOX, FROZEN, PRODUCTION, RESOURCE_ROOT, WORK_ROOT, owned_sandbox, runtime_paths
 from client_manual_map_service import ManualMapPickerService
@@ -743,8 +743,6 @@ def _run_primary_client(app, args, guard):
     app.setOrganizationName("XiaochaoAssistant" if PRODUCTION else "XingtuQtClientTest")
     app.setApplicationName("星图" if PRODUCTION else "XingtuQtClientTest")
     app.setFont(QFont("Microsoft YaHei UI", 10))
-    if args.probe_output and Path("C:/Windows/Fonts/msyh.ttc").is_file():
-        QFontDatabase.addApplicationFont("C:/Windows/Fonts/msyh.ttc")
     args.sandbox = args.sandbox.resolve()
     if PRODUCTION:
         owned_sandbox(args.sandbox)

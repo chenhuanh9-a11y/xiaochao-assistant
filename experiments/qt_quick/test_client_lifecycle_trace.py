@@ -1,5 +1,6 @@
 """Opt-in timing/privacy/exit boundaries, controlled runtime and owned Qt queue."""
 import json
+import math
 import os
 import subprocess
 import sys
@@ -31,7 +32,7 @@ class LifecycleTraceTests(unittest.TestCase):
         self.addCleanup(stop)
         return service
 
-    def test_default_off_creates_no_service_and_observation_does_no_diagnostic_timing(self):
+    def test_default_off_creates_no_detail_service_but_preserves_recognition_timing(self):
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop(tracing.ENVIRONMENT_FLAG, None)
             with patch.object(tracing, "LifecycleTrace", side_effect=AssertionError("disabled service constructed")):
@@ -39,8 +40,19 @@ class LifecycleTraceTests(unittest.TestCase):
                     self.assertIsNone(tracing.create_lifecycle_trace(SimpleNamespace()))
         fixture, session = self.producer("nightmare")
         self.assertIsNone(fixture.runtime._diagnostics)
-        with patch("client_live_runtime.time.monotonic", side_effect=AssertionError("disabled diagnostic clock")):
-            fixture.runtime._observe(fixture.engine, fixture.capture.frame)
+        events = []
+        fixture.runtime.set_event_callback(events.append)
+        clock = Mock(side_effect=(100., 100.125))
+        # The default recognition log is independent of opt-in detailed trace.
+        # Replace only this runtime's clock namespace, never all Qt/writer time.
+        with patch("client_live_runtime.time", SimpleNamespace(monotonic=clock)):
+            observed, floor, floor_read = fixture.runtime._observe(fixture.engine, fixture.capture.frame)
+        self.assertTrue(observed["detected"])
+        self.assertEqual((floor, floor_read["floorSource"]), ("1", "fixed"))
+        self.assertEqual(clock.call_count, 2)
+        diagnostic = next(row for row in events if row["event"] == "recognition-diagnostic")
+        self.assertEqual(diagnostic["recognitionDiagnostics"]["elapsedMs"], 125.)
+        self.assertNotIn("producedAt", diagnostic)
 
     def test_enabled_real_queue_and_presenter_record_source_observation_and_delivery(self):
         trace = self.trace()
@@ -76,7 +88,12 @@ class LifecycleTraceTests(unittest.TestCase):
         self.assertEqual((close["source"], close["inputAt"]), ("escape", pressed))
         observation = next(row for row in rows if row["stage"] == "observation")
         self.assertIs(observation["mapDetected"], True)
-        self.assertGreaterEqual(observation["floorMs"], 0)
+        self.assertEqual((observation["floor"], observation["floorSource"], observation["combinedSensor"]),
+                         ("1", "fixed", False))
+        # The unified observation measures the whole sensor, not a fabricated
+        # separately timed floor pass.
+        self.assertTrue(math.isfinite(observation["elapsedMs"]))
+        self.assertGreaterEqual(observation["elapsedMs"], 0)
         delivered = next(row for row in rows if row["stage"] == "runtime-event-received")
         self.assertGreaterEqual(delivered["deliveryMs"], 0)
         self.assertTrue(any(row.get("accepted") is True for row in rows if row["stage"] == "result-consumed"))
