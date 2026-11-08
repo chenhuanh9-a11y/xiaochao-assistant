@@ -77,6 +77,18 @@ class TrialTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 scoped(self.policy, candidate)
 
+    def test_stale_unpublished_owner_file_cannot_block_repeated_verification(self):
+        self.seed()
+        stale = self.target / (OWNER + ".new")
+        stale.write_bytes(b"interrupted metadata write")
+        (self.target / "program/app.exe").write_bytes(b"whole")
+        internal = self.target / "program/_internal"
+        internal.mkdir()
+        (internal / "runtime.dll").write_bytes(b"runtime")
+        self.assertTrue(verify(self.policy, self.target)["verified"])
+        self.assertTrue(verify(self.policy, self.target)["verified"])
+        self.assertEqual(stale.read_bytes(), b"interrupted metadata write")
+
     @unittest.skipUnless(os.name == "nt", "same-handle Windows deletion")
     def test_default_keep_then_clear_only_work_and_preserve_outside_unknowns(self):
         work = self.seed()

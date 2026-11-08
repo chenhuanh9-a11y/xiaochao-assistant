@@ -21,6 +21,7 @@ from probe_qtifw_lifecycle import write_xml
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = "org.xingtu.qtifw.realtrial"
+DATA_PACKAGE = "org.xingtu.qtifw.trialdata"
 
 
 def stage_payload(stage, record, output, *, payload_stage=None, archive_from=None, ifw_bin=None):
@@ -116,7 +117,13 @@ def main():
     shutil.copy2(scripts / "data-page.ui", meta / "data-page.ui")
     write_xml(meta / "package.xml", "Package", dict(DisplayName="星图真实程序（隔离安装试用）",
         Description="原 142001C8 程序与辅助文件；只用于本机隔离验证。", Version="1.0.0", ReleaseDate="2026-11-08",
-        Default="true", Script="component.js"))
+        Default="true", Script="component.js", Dependencies=DATA_PACKAGE))
+    data_meta = output / "packages" / DATA_PACKAGE / "meta"
+    data_meta.mkdir(parents=True)
+    shutil.copy2(scripts / "data-component.js", data_meta / "data-component.js")
+    write_xml(data_meta / "package.xml", "Package", dict(DisplayName="资料处理（默认保留）",
+        Description="仅限本测试安装的 program/work；地图和外部文件保留。", Version="1.0.0",
+        ReleaseDate="2026-11-08", Default="true", Script="data-component.js"))
     tree = ET.parse(meta / "package.xml")
     ET.SubElement(ET.SubElement(tree.getroot(), "UserInterfaces"), "UserInterface").text = "data-page.ui"
     tree.write(meta / "package.xml", encoding="utf-8", xml_declaration=True)

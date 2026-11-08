@@ -203,6 +203,8 @@ def main():
             if args.choice not in {"keep", "clear"}:
                 raise ValueError("explicit-data-choice-required")
             result = dict(choice=args.choice, operation=args.operation)
+            if args.operation == "none":
+                receipt(policy, args.target, "data", dict(success=False, status="not-requested"))
         elif args.action == "noop":
             bound_owner(policy, args.target)
             result = dict(armed=True)
@@ -237,6 +239,11 @@ def main():
         print(json.dumps(result, ensure_ascii=True))
         return 0
     except (ValueError, OSError, KeyError) as error:
+        if args.action in {"data", "undo-data"}:
+            try:
+                receipt(policy, args.target, "data", dict(success=False, status="incomplete", reason=str(error)))
+            except (ValueError, OSError):
+                pass  # Native log still records the original failure.
         print(json.dumps(dict(success=False, reason=str(error)), ensure_ascii=True))
         return 2
 

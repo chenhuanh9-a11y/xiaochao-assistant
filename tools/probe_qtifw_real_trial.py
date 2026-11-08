@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -19,12 +20,14 @@ from probe_qtifw_windows import WindowsProbe, DATA
 
 
 class TrialProbe:
-    def __init__(self, root):
+    def __init__(self, root, evidence_name="validation"):
         self.root = root.resolve(strict=True)
         self.record = json.loads((self.root / "qtifw-build-record.json").read_bytes())
         self.policy = json.loads((self.root / "qtifw-trial-policy.json").read_bytes())
         self.setup = Path(self.record["setup"])
-        self.output = self.root / "validation"
+        if not re.fullmatch(r"[A-Za-z0-9-]+", evidence_name):
+            raise ValueError("Evidence name must be a simple local directory name")
+        self.output = self.root / evidence_name
         self.output.mkdir()
         self.runs = []
         self.report = dict(realPayload=True, payloadSource=self.record["payloadSource"],
@@ -168,13 +171,18 @@ class TrialProbe:
                 oldDataCopyRetained=True, targetChoice=choice, actualProductInnoMigrated=False))
         return results
 
-    def execute(self):
+    def execute(self, *, resume_installed=False):
         try:
             target = self.target("real-payload 中文")
-            assert self.install("real-install", target) == 0
+            if not resume_installed:
+                assert self.install("real-install", target) == 0
+            else:
+                assert (target / "trial-maintenance.exe").is_file()
+                self.report["existingInstallReused"] = True
             self.report["installed"] = verify(self.policy, target)
             program = target / "program"
             self.seed(target)
+            (program / "work/.qt-client-probe-owner").write_text("qt-quick-build-probe-v1\n", encoding="utf-8")
             # The production binary's existing probe namespace isolates IPC and
             # disables native game enumeration, input, capture and network update.
             probe = self.output / "client-ui"
@@ -216,10 +224,12 @@ class TrialProbe:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trial-root", type=Path, required=True)
+    parser.add_argument("--evidence-name", default="validation")
+    parser.add_argument("--resume-installed", action="store_true", help="Reuse the byte-verified initial install after a probe preparation failure")
     args = parser.parse_args()
     if os.name != "nt":
         parser.error("Windows only")
-    print(json.dumps(TrialProbe(args.trial_root).execute(), ensure_ascii=True, indent=2))
+    print(json.dumps(TrialProbe(args.trial_root, args.evidence_name).execute(resume_installed=args.resume_installed), ensure_ascii=True, indent=2))
 
 
 if __name__ == "__main__":

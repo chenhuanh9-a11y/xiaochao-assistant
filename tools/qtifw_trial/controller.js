@@ -53,3 +53,17 @@ function Controller() {
         trialRun("select-data", installer.value("DataChoice", "keep"), "purge");
     });
 }
+
+Controller.prototype.FinishedPageCallback = function() {
+    if (!installer.isUninstaller()) return;
+    var text = "程序卸载流程已结束。资料处理尚未确认，请保留测试目录并检查日志。";
+    try {
+        var result = JSON.parse(installer.readFile(installer.value("TargetDir") + "/trial-data.json", "UTF-8"));
+        if (result.success === true && result.dataChoice === installer.value("DataChoice", "keep"))
+            text = result.dataChoice === "clear" ? "程序已卸载，本测试安装的 work 资料已清除；地图、外部文件及协作锁保留。" : "程序已卸载，测试资料已保留。";
+        else text = "程序卸载流程已结束，但资料处理未完成。请保留测试目录并检查日志。";
+    } catch (error) {}
+    var page = gui.currentPageWidget();
+    if (page && page.MessageLabel) page.MessageLabel.text = text;
+    console.log("TRIAL_DATA_OUTCOME: " + text);
+};
