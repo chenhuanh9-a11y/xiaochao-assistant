@@ -1474,6 +1474,8 @@ class NightmareMemoryStore:
     ) -> None:
         self.pack = pack
         self.root = Path(root)
+        from failure_sampling import register_failure_root
+        register_failure_root(self.root)
         # Keep the unresolved default only for cleanup admission. Recognition
         # and persistence retain their existing resolved resource-path semantics.
         self._retention_root = Path(os.path.abspath(
@@ -1926,10 +1928,15 @@ class NightmareMemoryStore:
     def alignment_failures(self) -> list[dict]:
         """Return automatically captured no-display incidents for diagnosis."""
         with self._failure_write_lock:
-            if not self.alignment_failure_path.is_file():
-                return []
             rows = []
-            for line in self.alignment_failure_path.read_text(encoding="utf-8").splitlines():
+            lines = (self.alignment_failure_path.read_text(encoding="utf-8").splitlines()
+                     if self.alignment_failure_path.is_file() else [])
+            from failure_sampling import automatic_storage_transaction, automatic_storage_inventory
+            with automatic_storage_transaction(self.root, namespace='full-v2') as status:
+                if status == 'ready':
+                    inventory = automatic_storage_inventory(self.root, namespace='full-v2')
+                    lines.extend(line for line, _ in inventory['rows'])
+            for line in lines:
                 try:
                     row = json.loads(line)
                 except json.JSONDecodeError:
@@ -2053,37 +2060,14 @@ class NightmareMemoryStore:
                 del task
 
     def _reserve_failure_bytes(self, size):
-        """Writer-only accounting includes old samples and the JSONL journal.
+        """Legacy full frames have no original-identity ownership journal.
 
-        Over budget, the oldest failure images are deleted first so the
-        newest evidence is kept; their JSONL rows remain as the audit trail.
+        Do not recursively enumerate, adopt or delete historical failures (which
+        may include exports, manual labels and old automatic evidence). New full frames use
+        save_full_failure_frame instead; this legacy entry stays closed.
         """
-        if not self._retention_root_allowed():
-            raise OSError('alignment-failure-unsafe-cleanup-root; existing evidence preserved')
-        if self._failure_disk_bytes is None:
-            self._failure_disk_bytes = sum(info.st_size for _, info in _retention_files(self.root / 'failures'))
-            journal = _retention_stat(self.alignment_failure_path, self.root)
-            if journal is not None and stat.S_ISREG(journal.st_mode):
-                self._failure_disk_bytes += journal.st_size
-        budget = self._failure_sampling.max_disk_bytes
-        if self._failure_disk_bytes + size > budget:
-            for entry in _oldest_first(self.root / 'failures'):
-                path = entry.path
-                if self._failure_disk_bytes + size <= budget:
-                    break
-                try:
-                    info = _retention_stat(path, self.root / 'failures')
-                    if (info is None or not stat.S_ISREG(info.st_mode)
-                            or _retention_identity(info) != entry.identity):
-                        continue
-                    freed = info.st_size
-                    path.unlink()
-                except OSError:
-                    continue
-                self._failure_disk_bytes -= freed
-        if self._failure_disk_bytes + size > budget:
-            raise OSError('alignment-failure-budget-exhausted; existing evidence preserved')
-        self._failure_disk_bytes += size
+        self._failure_sampling.last_status = 'full-frame-ownership-unavailable'
+        raise OSError('full-frame-ownership-unavailable; existing evidence preserved')
 
     def _retention_root_allowed(self):
         # Missing roots are safe only if all existing ancestors are safe;
@@ -2111,30 +2095,8 @@ class NightmareMemoryStore:
                         lastCycleId=row.get('cycleId'))
 
     def _alignment_failure_image(self, frame, map_id, floor, lossless):
-        extension = '.png' if lossless else '.jpg'
-        ok, encoded = cv2.imencode(extension, frame, [] if lossless else [cv2.IMWRITE_JPEG_QUALITY, 92])
-        if not ok:
-            raise ValueError('alignment-failure-frame-encode-failed')
-        # Reuse the existing content-addressed failure directory and atomic I/O.
-        digest = hashlib.sha256(encoded.tobytes()).hexdigest()
-        relative = Path('failures') / (map_id if map_id is not None else 'unknown') / floor / f'{digest[:20]}{extension}'
-        path = self.root / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if not path.is_file():
-            self._reserve_failure_bytes(encoded.nbytes)
-            temporary = path.with_name(f'.{path.name}.{os.getpid()}.{threading.get_ident()}.tmp')
-            try:
-                with temporary.open('wb') as handle:
-                    handle.write(encoded.tobytes())
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                os.replace(temporary, path)
-            finally:
-                try:
-                    temporary.unlink(missing_ok=True)
-                except OSError:
-                    pass
-        return relative, digest
+        # Compatibility entry intentionally closed; never create/adopt old paths.
+        self._reserve_failure_bytes(0)
 
     def record_alignment_failure(
         self,
@@ -2159,12 +2121,16 @@ class NightmareMemoryStore:
             or not frame.size
         ):
             raise ValueError("invalid-alignment-failure")
+        import re
+        from failure_sampling import save_full_failure_frame
+        from diagnostic_privacy import safe_record
         fit = fit or {}
         with self._failure_write_lock:
-            relative, digest = self._alignment_failure_image(frame, map_id, floor, lossless)
-            observation_paths = {}
-            for name, pixels in (observations or {}).items():
-                observation_paths[name] = self._alignment_failure_image(pixels, map_id, floor, True)[0].as_posix()
+            ok, encoded = cv2.imencode('.png', frame)
+            if not ok:
+                raise OSError('alignment-failure-frame-encode-failed')
+            if encoded.nbytes > self._failure_sampling.max_disk_bytes:
+                raise OSError('alignment-failure-budget-exhausted')
             recorded_at = datetime.now().astimezone().isoformat(timespec='milliseconds')
             row = {
                 "event": "alignment-failure-sample-written",
@@ -2182,9 +2148,9 @@ class NightmareMemoryStore:
                 "cycleId": cycle_id,
                 "attempt": attempt,
                 "diagnostic": diagnostic,
-                "observationPaths": observation_paths,
-                "samplePath": relative.as_posix(),
-                "sampleSha256": digest,
+                "observationPaths": {},
+                "samplePath": '',
+                "sampleSha256": None,
                 "clientSize": [int(frame.shape[1]), int(frame.shape[0])],
                 "clientBounds": list(client_bounds) if client_bounds else None,
                 "alignmentMode": fit.get("alignmentMode"),
@@ -2199,21 +2165,19 @@ class NightmareMemoryStore:
                     ) if key in fit
                 },
             }
-            self.root.mkdir(parents=True, exist_ok=True)
-            serialized = json.dumps(row, ensure_ascii=False, default=str, separators=(",", ":")) + "\n"
-            # A disk-full short write can leave a partial final line. Keep its
-            # bytes for diagnosis, but do not concatenate the next valid event.
-            if self.alignment_failure_path.is_file() and self.alignment_failure_path.stat().st_size:
-                with self.alignment_failure_path.open('rb') as previous:
-                    previous.seek(-1, os.SEEK_END)
-                    if previous.read(1) != b'\n':
-                        serialized = '\n' + serialized
-            self._reserve_failure_bytes(len(serialized.encode('utf-8')))
-            with self.alignment_failure_path.open("a", encoding="utf-8", newline="\n") as handle:
-                handle.write(serialized)
-                handle.flush()
-                os.fsync(handle.fileno())
-        return row
+            clean = safe_record(row)
+            # Preserve only our configured log correlation, never a window name.
+            correlation = clean.setdefault('diagnostic', {})
+            original = diagnostic or {}
+            event_name = Path(str(original.get('eventPath', ''))).name
+            if re.fullmatch(r'events-[A-Za-z0-9_.-]+\.jsonl', event_name):
+                correlation['eventPath'] = event_name
+            if type(original.get('pid')) is int:
+                correlation['pid'] = original['pid']
+            frame_id = original.get('frameId')
+            if isinstance(frame_id,str) and re.fullmatch(r'[0-9]{1,20}:[0-9]{1,20}:[a-f0-9]{16}',frame_id):
+                correlation['frameId'] = frame_id
+            return save_full_failure_frame(self.root, encoded.tobytes(), clean)
 
     def record_alignment_success_evidence(
         self,

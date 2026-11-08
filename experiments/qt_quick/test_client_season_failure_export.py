@@ -1,8 +1,8 @@
 """Real Info export and saved PNG/JSON/ZIP across season roots in owned Temp.
 
-No capture, recognition, network or installed data. POSIX replaces only the
-Windows transaction/require gates for fresh fixtures; inventory, identity,
-hash checks, session matching, cleanup traversal and ZIP writing stay real.
+No capture, recognition, network or installed data. POSIX substitutes transaction, journal publish and deletion IO for fresh
+fixtures; inventory, identity, hash checks, session matching and ZIP writing
+stay real. These substitutes do not verify native Windows safety.
 Windows uses the native storage transactions without these substitutes.
 """
 from contextlib import contextmanager, ExitStack
@@ -55,13 +55,10 @@ class SeasonFailureExportTests(unittest.TestCase):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         if os.name != 'nt':
-            @contextmanager
-            def transaction(root, *, create=False, namespace='automatic'):
-                directory = Path(root) / 'failures' / namespace
-                yield 'ready' if directory.exists() else 'storage-absent'
-            self.stack.enter_context(patch.object(failure_sampling, 'automatic_storage_transaction', transaction))
-            self.stack.enter_context(patch.object(failure_sampling, '_require_transaction',
-                side_effect=lambda root, namespace: Path(root) / 'failures' / namespace))
+            import sys
+            sys.path.insert(0, str(Path(__file__).resolve().parents[2]/'tests'))
+            from retention_io_fixture import image_io
+            self.stack.enter_context(image_io())
 
     def sample(self, context, index=0, *, diagnostic=None):
         season, mode = context

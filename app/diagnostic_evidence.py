@@ -73,7 +73,7 @@ def _image(root, relative, limit, expected=None, *, single_link=False):
 
 def _automatic_image(root, relative, limit, expected):
     from failure_sampling import automatic_storage_transaction, automatic_storage_inventory, read_automatic_image
-    match = re.fullmatch(r'failures/(automatic(?:-v2)?)/auto-[0-9a-f]{32}\.png', str(relative))
+    match = re.fullmatch(r'failures/(automatic(?:-v2)?|full-v2)/auto-[0-9a-f]{32}\.png', str(relative))
     if not match:
         return None, 'invalid-automatic-sample-path'
     namespace = match[1]
@@ -81,7 +81,7 @@ def _automatic_image(root, relative, limit, expected):
         return None, 'automatic-image-hash-missing'
     try:
         with (automatic_storage_transaction(root, namespace=namespace)
-              if namespace == 'automatic-v2' else nullcontext('ready')) as status:
+              if namespace in ('automatic-v2', 'full-v2') else nullcontext('ready')) as status:
             if status != 'ready':
                 return None, status
             inventory = automatic_storage_inventory(root, namespace=namespace)
@@ -91,7 +91,7 @@ def _automatic_image(root, relative, limit, expected):
                         if row.get('samplePath') == relative and row.get('sampleSha256') == expected), None)
             if row is None:
                 return None, 'automatic-image-ownership-unavailable'
-            if namespace == 'automatic-v2':
+            if namespace in ('automatic-v2', 'full-v2'):
                 return read_automatic_image(root, row, limit=limit, namespace=namespace), 'included'
             return _image(root, relative, limit, expected, single_link=True)
     except OSError as error:
@@ -123,6 +123,7 @@ def export_failure_evidence(archive, roots, log_windows, redact, *, build_finger
         from failure_sampling import cleanup_automatic_failure_samples
         try:
             journal['automaticCleanup'] = cleanup_automatic_failure_samples(root, namespace='automatic-v2')
+            journal['fullFrameCleanup'] = cleanup_automatic_failure_samples(root, namespace='full-v2')
         except OSError as error:
             journal['cleanupStatus'] = type(error).__name__
         try:
@@ -131,19 +132,20 @@ def export_failure_evidence(archive, roots, log_windows, redact, *, build_finger
         except OSError as error:
             journal['status'] = 'journal-missing' if isinstance(error, FileNotFoundError) else type(error).__name__
             data = b''
-        if include_automatic:
+        if include_automatic or not automatic_only:
             from failure_sampling import automatic_storage_transaction, automatic_storage_inventory
             # Legacy storage stays separate: a damaged old cache must not hide v2 evidence.
-            for namespace in ('automatic', 'automatic-v2'):
-                status_key = 'automaticStatus' if namespace == 'automatic' else 'automaticV2Status'
+            for namespace in ((('automatic', 'automatic-v2') if include_automatic else ()) + (() if automatic_only else ('full-v2',))):
+                status_key = {'automatic':'automaticStatus','automatic-v2':'automaticV2Status','full-v2':'fullFrameStatus'}[namespace]
                 try:
                     with (automatic_storage_transaction(root, namespace=namespace)
-                          if namespace == 'automatic-v2' else nullcontext('ready')) as status:
+                          if namespace in ('automatic-v2', 'full-v2') else nullcontext('ready')) as status:
                         journal[status_key] = status
                         if status == 'ready':
                             inventory = automatic_storage_inventory(root, namespace=namespace)
                             journal[status_key] = inventory['status']
-                            if inventory['status'] == 'ready':
+                            # Keep bounded text even when the image cannot be verified.
+                            if inventory['status']=='ready' or namespace=='full-v2':
                                 data += b'\n' + b'\n'.join(line for line, _ in inventory['rows'])
                 except OSError as error:
                     journal[status_key] = type(error).__name__
@@ -157,9 +159,9 @@ def export_failure_evidence(archive, roots, log_windows, redact, *, build_finger
                     raise ValueError('invalid-diagnostic')
                 if row.get('event') not in ('alignment-failure-sample-written', 'automatic-failure-sample'):
                     continue
-                if automatic_only and row.get('event') != 'automatic-failure-sample':
+                if automatic_only and (row.get('fullFrame') or row.get('event') != 'automatic-failure-sample'):
                     continue
-                if not include_automatic and row.get('event') == 'automatic-failure-sample':
+                if not include_automatic and row.get('event') == 'automatic-failure-sample' and not row.get('fullFrame'):
                     continue
                 stamp = datetime.fromisoformat(row['recordedAt']).timestamp()
                 captured = datetime.fromisoformat(row.get('capturedAt') or row['recordedAt']).timestamp()
@@ -221,7 +223,7 @@ def export_failure_evidence(archive, roots, log_windows, redact, *, build_finger
             if not relative:
                 pixels, status = None, row.get('missingReason') or 'sample-file-missing'
             elif (row.get('event') == 'automatic-failure-sample' and not re.fullmatch(
-                    r'failures/automatic(?:-v2)?/auto-[0-9a-f]{32}\.png', str(relative))):
+                    r'failures/(?:automatic(?:-v2)?|full-v2)/auto-[0-9a-f]{32}\.png', str(relative))):
                 pixels, status = None, 'invalid-automatic-sample-path'
             elif remaining <= 0:
                 pixels, status = None, 'export-image-budget-exhausted'

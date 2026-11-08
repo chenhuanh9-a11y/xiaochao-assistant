@@ -29,11 +29,11 @@ class StorageTests(unittest.TestCase):
             root=Path(folder);unknown=root/'events-unknown.jsonl';unknown.write_text('keep-user-file')
             for i in range(4):
                 storage.append_record(root/f'events-owned-{i}.jsonl',dict(event='capture-error',seq=i),
-                    file_limit=512,root_limit=2048,max_files=4,now=i*100,max_age=150)
+                    file_limit=512,root_limit=2048,max_files=4,now=i*100,max_age=1500)
             before={p.name:p.read_bytes() for p in root.glob('*.jsonl')}
             with self.assertRaises(OSError):
                 storage.append_record(root/'events-new.jsonl',dict(event='capture-error'),
-                    file_limit=512,root_limit=2048,max_files=4,now=1000,max_age=150)
+                    file_limit=512,root_limit=2048,max_files=4,now=1000,max_age=1500)
             self.assertEqual(before,{p.name:p.read_bytes() for p in root.glob('*.jsonl')})
 
     def test_unknown_changed_hardlinked_and_symlink_targets_are_preserved(self):

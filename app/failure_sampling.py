@@ -14,6 +14,9 @@ import stat
 import threading
 import weakref
 
+_image_budget_guard = threading.RLock()
+_image_roots_guard = threading.Lock()
+_known_image_roots = set()
 _transaction_guard = threading.Lock()
 _transaction_locks = weakref.WeakValueDictionary()
 _lock_name = '.automatic-sampling.lock'
@@ -23,8 +26,14 @@ _IMAGE_COUNT = 6
 _JOURNAL_BYTES = 256 * 1024
 
 
+def register_failure_root(root):
+    """Register actual store contexts, not directory-name guesses or adoption."""
+    with _image_roots_guard:
+        _known_image_roots.add(Path(root).absolute())
+
+
 def _directory(root, namespace):
-    if namespace not in ('automatic', 'automatic-v2'):
+    if namespace not in ('automatic', 'automatic-v2', 'full-v2'):
         raise ValueError('automatic-namespace-invalid')
     return Path(root).absolute() / 'failures' / namespace
 
@@ -39,6 +48,15 @@ def _require_transaction(root, namespace):
 
 @contextmanager
 def automatic_storage_transaction(root, *, create=False, namespace='automatic'):
+    # No arbitrary filesystem scan/adoption. Known roots are shared by both modes.
+    with _image_budget_guard:
+        register_failure_root(root)
+        with _automatic_storage_transaction(root, create=create, namespace=namespace) as status:
+            yield status
+
+
+@contextmanager
+def _automatic_storage_transaction(root, *, create=False, namespace='automatic'):
     """Pin the directory chain and exclusively hold the journal on Windows."""
     directory = _directory(root, namespace)
     from diagnostic_storage import _safe, _pinned_root, _open_fd, _read_fd
@@ -50,7 +68,8 @@ def automatic_storage_transaction(root, *, create=False, namespace='automatic'):
         yield 'storage-absent'; return
     if os.name != 'nt':
         yield 'automatic-safe-storage-unsupported'; return
-    if getattr(_automatic_state, 'journal', None) is not None:
+    previous_journal = getattr(_automatic_state, 'journal', None)
+    if previous_journal is not None and previous_journal[0] == directory:
         yield 'automatic-storage-busy'; return
     if not _transaction_guard.acquire(blocking=False):
         yield 'automatic-storage-busy'; return
@@ -82,7 +101,7 @@ def automatic_storage_transaction(root, *, create=False, namespace='automatic'):
             try:
                 yield 'ready'
             finally:
-                _automatic_state.journal = None
+                _automatic_state.journal = previous_journal
     finally:
         if journal_fd is not None: os.close(journal_fd)
         if descriptor is not None: os.close(descriptor)
@@ -185,11 +204,11 @@ def automatic_storage_inventory(root, *, namespace='automatic'):
         if result['retainedAuxiliaryBytes'] > _JOURNAL_BYTES:
             return dict(result, status='automatic-auxiliary-byte-limit')
         # V2 has never written temporary journals. Any such object is unknown.
-        if namespace == 'automatic-v2' and auxiliary:
+        if namespace in ('automatic-v2', 'full-v2') and auxiliary:
             return dict(result, status='ownership-unavailable')
         journal = directory / 'automatic-failures.jsonl'
         candidates = [p for p in entries if p.name not in (journal.name, _lock_name) and p not in auxiliary]
-        if len(candidates) > _IMAGE_COUNT:
+        if len(candidates) > (64 if namespace == 'full-v2' else _IMAGE_COUNT):
             return dict(result, status='cleanup-image-limit')
         if journal in entries:
             _safe(journal)
@@ -222,7 +241,7 @@ def automatic_storage_inventory(root, *, namespace='automatic'):
         for _, row in result['rows']:
             if not row.get('samplePath'):
                 continue
-            if namespace == 'automatic-v2':
+            if namespace in ('automatic-v2', 'full-v2'):
                 _image_path(root, row, namespace)
                 _validate_row(row)
                 if row['samplePath'] in bindings:
@@ -237,7 +256,7 @@ def automatic_storage_inventory(root, *, namespace='automatic'):
             _safe(path)
             fd = _open_image_read(path)
             try:
-                if namespace == 'automatic-v2':
+                if namespace in ('automatic-v2', 'full-v2'):
                     payload = _verified_image_fd(fd, row)
                 else:
                     _image_info(fd)
@@ -247,7 +266,7 @@ def automatic_storage_inventory(root, *, namespace='automatic'):
             finally:
                 os.close(fd)
             result['imageBytes'] += len(payload)
-            if result['imageBytes'] > _IMAGE_BYTES:
+            if result['imageBytes'] > (FailureSampling.max_disk_bytes if namespace == 'full-v2' else _IMAGE_BYTES):
                 return dict(result, status='automatic-image-byte-limit')
             result['images'].append(path)
             result['imageRows'].append(row)
@@ -266,7 +285,7 @@ def replace_automatic_journal(directory, data, *, namespace='automatic'):
     """Rewrite the same validated journal handle, never a pathname replacement."""
     from diagnostic_storage import _read_fd
     directory = Path(directory).absolute()
-    if directory.name != namespace or namespace not in ('automatic', 'automatic-v2'):
+    if directory.name != namespace or namespace not in ('automatic', 'automatic-v2', 'full-v2'):
         raise OSError('automatic-namespace-invalid')
     current = getattr(_automatic_state, 'journal', None)
     if os.name != 'nt' or current is None or current[0] != directory:
@@ -291,7 +310,7 @@ def create_automatic_image(root, relative, payload, *, namespace='automatic-v2')
     partial images are never adopted, retried in-place, or path-deleted.
     """
     _require_transaction(root, namespace)
-    if namespace != 'automatic-v2':
+    if namespace not in ('automatic-v2', 'full-v2'):
         raise OSError('automatic-legacy-read-only')
     path = _image_path(root, {'samplePath': relative}, namespace)
     if not isinstance(payload, bytes) or not 0 < len(payload) <= _IMAGE_BYTES:
@@ -377,7 +396,7 @@ def _mark_delete_image(fd):
 def retire_automatic_image(root, row, *, namespace='automatic-v2'):
     """Verify and retire the same Windows file handle; never trust inventory IO."""
     _require_transaction(root, namespace)
-    if namespace != 'automatic-v2':
+    if namespace not in ('automatic-v2', 'full-v2'):
         raise OSError('automatic-legacy-read-only')
     path = _image_path(root, row, namespace)
     _validate_row(row)  # Never fill missing identity from today's pathname.
@@ -393,16 +412,16 @@ def retire_automatic_image(root, row, *, namespace='automatic-v2'):
     return 'retired'
 
 
-def _without_image(row):
+def _without_image(row, reason='automatic-image-retired'):
     clean = dict(row)
     for key in ('samplePath', 'sampleSha256', 'sampleBytes', 'sampleIdentity'):
         clean.pop(key, None)
-    clean['missingReason'] = 'automatic-image-retired'
+    clean['missingReason'] = reason
     return clean
 
 
-def _repair_retired_rows(inventory, retired, *, namespace):
-    rows = [_without_image(row) if row.get('samplePath') in retired else row
+def _repair_retired_rows(inventory, retired, *, namespace, reason='automatic-image-retired'):
+    rows = [_without_image(row, reason) if row.get('samplePath') in retired else row
             for _, row in inventory['rows']]
     payload = b''.join((json.dumps(row, ensure_ascii=False, separators=(',', ':')) + '\n').encode('utf-8') for row in rows)
     replace_automatic_journal(inventory['directory'], payload, namespace=namespace)
@@ -420,7 +439,7 @@ def _row_time(row):
         raise OSError('journal-invalid-timestamp') from None
 
 
-def _retire_rows(root, inventory, rows, *, namespace, report):
+def _retire_rows(root, inventory, rows, *, namespace, report, reason='automatic-image-retired'):
     removed = 0
     for row in rows:
         outcome = retire_automatic_image(root, row, namespace=namespace)
@@ -429,7 +448,7 @@ def _retire_rows(root, inventory, rows, *, namespace, report):
             report['removed'] += 1
         # Persist each retirement before moving to another object. On failure the
         # durable row remains, and the next inventory sees a recoverable missing.
-        _repair_retired_rows(inventory, {row['samplePath']}, namespace=namespace)
+        _repair_retired_rows(inventory, {row['samplePath']}, namespace=namespace, reason=reason)
         inventory = automatic_storage_inventory(root, namespace=namespace)
         if inventory['status'] != 'ready':
             raise OSError(inventory['status'])
@@ -442,7 +461,7 @@ def _recover_automatic_image_intent_locked(root, *, namespace='automatic'):
     Complete and partial images remain pending. An intent never proves final
     current-frame consent and never licenses adoption or deletion of a file.
     """
-    if namespace != 'automatic-v2':
+    if namespace not in ('automatic-v2', 'full-v2'):
         return 'automatic-legacy-read-only'
     try:
         directory = _require_transaction(root, namespace)
@@ -501,7 +520,7 @@ def _operation_status(error):
         'journal-invalid-timestamp', 'automatic-journal-short-write',
         'storage-redirected', 'cleanup-entry-limit', 'cleanup-image-limit',
         'automatic-auxiliary-count-limit', 'automatic-auxiliary-link-unavailable',
-        'automatic-auxiliary-byte-limit',
+        'automatic-auxiliary-byte-limit', 'automatic-shared-budget-exhausted',
     }
     return code if code in known else 'automatic-storage-operation-failed'
 
@@ -521,7 +540,7 @@ def ensure_automatic_capacity(root, incoming_bytes, *, namespace='automatic-v2')
     report = dict(status='ready', removed=0, complete=True)
     try:
         _require_transaction(root, namespace)
-        if namespace != 'automatic-v2':
+        if namespace not in ('automatic-v2', 'full-v2'):
             raise OSError('automatic-legacy-read-only')
         if type(incoming_bytes) is not int or not 0 < incoming_bytes <= _IMAGE_BYTES:
             raise OSError('automatic-image-byte-limit')
@@ -533,14 +552,55 @@ def ensure_automatic_capacity(root, incoming_bytes, *, namespace='automatic-v2')
             inventory = automatic_storage_inventory(root, namespace=namespace)
             if inventory['status'] != 'ready':
                 raise OSError(inventory['status'])
+        # Current context limits first; global victims are then selected by age
+        # across registered store roots. Every victim gets its own journal lock
+        # and same-handle revalidation; no pathname-only removal is used.
         ordered = sorted(inventory['imageRows'], key=_row_time)
         count, size, retire = len(ordered), inventory['imageBytes'], []
-        while count + 1 > _IMAGE_COUNT or size + incoming_bytes > _IMAGE_BYTES:
+        context_limit = FailureSampling.max_disk_bytes if namespace == 'full-v2' else _IMAGE_BYTES
+        count_limit = 64 if namespace == 'full-v2' else _IMAGE_COUNT
+        while count + 1 > count_limit or size + incoming_bytes > context_limit:
+            if not ordered:
+                raise OSError('automatic-shared-budget-exhausted')
             row = ordered.pop(0)
             retire.append(row)
             count -= 1
             size -= row['sampleBytes']
-        _retire_rows(root, inventory, retire, namespace=namespace, report=report)
+        _retire_rows(root, inventory, retire, namespace=namespace, report=report,
+                     reason='automatic-image-retired-capacity')
+        while True:
+            total, victims = 0, []
+            with _image_roots_guard:
+                registered = _known_image_roots | {Path(root).absolute()}
+            for known in registered:
+                if not known.exists():
+                    with _image_roots_guard:
+                        _known_image_roots.discard(known)
+                    continue
+                for kind in ('automatic-v2', 'full-v2'):
+                    other = automatic_storage_inventory(known, namespace=kind)
+                    if other['status'] != 'ready':
+                        raise OSError('ownership-unavailable')
+                    total += other['imageBytes']
+                    victims.extend((_row_time(row), known, kind, row) for row in other['imageRows'])
+            if total + incoming_bytes <= FailureSampling.max_disk_bytes:
+                break
+            if not victims:
+                raise OSError('automatic-shared-budget-exhausted')
+            _, victim_root, kind, row = min(victims, key=lambda item:item[0])
+            if victim_root == Path(root).absolute() and kind == namespace:
+                victim_inventory = automatic_storage_inventory(root, namespace=namespace)
+                _retire_rows(root, victim_inventory, [row], namespace=namespace, report=report,
+                             reason='automatic-image-retired-capacity')
+            else:
+                with automatic_storage_transaction(victim_root, namespace=kind) as status:
+                    if status != 'ready':
+                        raise OSError(status)
+                    victim_inventory = automatic_storage_inventory(victim_root, namespace=kind)
+                    if victim_inventory['status'] != 'ready':
+                        raise OSError(victim_inventory['status'])
+                    _retire_rows(victim_root, victim_inventory, [row], namespace=kind, report=report,
+                                 reason='automatic-image-retired-capacity')
     except OSError as error:
         report.update(status=_operation_status(error), complete=False)
     return report
@@ -572,13 +632,13 @@ def _cleanup_automatic_failure_samples_locked(root, *, now=None, namespace='auto
         inventory = _recovering_inventory(root, namespace)
         if inventory['status'] != 'ready':
             raise OSError(inventory['status'])
-        expired = [row for row in inventory['imageRows'] if now - _row_time(row) > 7 * 86400]
+        expired = [row for row in inventory['imageRows'] if now - _row_time(row) >= 7 * 86400]
         if inventory['missingRows']:
             _repair_retired_rows(inventory, {r['samplePath'] for r in inventory['missingRows']}, namespace=namespace)
             inventory = automatic_storage_inventory(root, namespace=namespace)
             if inventory['status'] != 'ready':
                 raise OSError(inventory['status'])
-        _retire_rows(root, inventory, expired, namespace=namespace, report=report)
+        _retire_rows(root, inventory, expired, namespace=namespace, report=report, reason='automatic-image-retired-expired')
     except OSError as error:
         report.update(status=_operation_status(error), complete=False)
     return report
@@ -587,7 +647,9 @@ def _cleanup_automatic_failure_samples_locked(root, *, now=None, namespace='auto
 class FailureSampling:
     interval_seconds = 60.0
     max_keys = 512
-    max_disk_bytes = 512 * 1024 * 1024
+    # huan retention decision / cxres B: historical 64 MiB cap, bounding
+    # sensitive temporary evidence; no claim about measured days of coverage.
+    max_disk_bytes = 64 * 1024 * 1024
 
     def __init__(self):
         self.saved = OrderedDict()
@@ -622,3 +684,39 @@ class FailureSampling:
             self.errors = min(self.errors + 1, 5)
             self.retry_at = now + min(60.0, 2.0 ** self.errors)
             self.last_status = 'write-error-backoff'
+
+
+def save_full_failure_frame(root, payload, metadata):
+    """New full frames share proven ownership and retention with local crops.
+
+    Historical failures/ remains read-only. No ownership is reconstructed.
+    """
+    import uuid
+    from datetime import datetime, timezone
+    namespace = 'full-v2'
+    with automatic_storage_transaction(root, create=True, namespace=namespace) as status:
+        if status != 'ready':
+            raise OSError(status)
+        report = _cleanup_automatic_failure_samples_locked(root, namespace=namespace)
+        if not report['complete']:
+            raise OSError(report['status'])
+        report = ensure_automatic_capacity(root, len(payload), namespace=namespace)
+        if not report['complete']:
+            raise OSError(report['status'])
+        inventory = automatic_storage_inventory(root, namespace=namespace)
+        if inventory['status'] != 'ready':
+            raise OSError(inventory['status'])
+        relative = f'failures/{namespace}/auto-{uuid.uuid4().hex}.png'
+        row = dict(metadata, recordedAt=metadata.get('recordedAt') or datetime.now(timezone.utc).isoformat(),
+                   event='automatic-failure-sample', fullFrame=True, samplePath=relative,
+                   sampleBytes=len(payload), sampleSha256=hashlib.sha256(payload).hexdigest())
+        intent = dict(row, event='automatic-failure-image-intent',
+                      imageTransactionSchema='automatic-image-intent-v1')
+        rows = [r for _, r in inventory['rows']]
+        def publish(current):
+            data = b''.join((json.dumps(r, ensure_ascii=False, separators=(',', ':'))+'\n').encode() for r in current)
+            replace_automatic_journal(inventory['directory'], data, namespace=namespace)
+        publish(rows + [intent])
+        row.update(create_automatic_image(root, relative, payload, namespace=namespace))
+        publish(rows + [row])
+        return row
