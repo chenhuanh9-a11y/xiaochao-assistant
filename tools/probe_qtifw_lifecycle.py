@@ -123,7 +123,13 @@ class Probe:
                 self.runs.append(dict(label=label, timedOut=True,
                     seconds=round(time.monotonic() - started, 3)))
                 raise
-        result.stdout = log_path.read_text(encoding="utf-8")
+        raw = log_path.read_bytes()
+        try:
+            result.stdout = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            # Windows native tools emit the active ANSI code page. Keep the
+            # original log bytes, decode only the inspection copy.
+            result.stdout = raw.decode("mbcs" if os.name == "nt" else "utf-8", errors="replace")
         self.runs.append(dict(label=label, exitCode=result.returncode,
                               seconds=round(time.monotonic() - started, 3)))
         return result
