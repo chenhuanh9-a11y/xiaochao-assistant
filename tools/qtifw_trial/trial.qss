@@ -2,3 +2,5 @@
 QWizardPage, QWizardPage QWidget { background-color: #ffffff; color: #202124; }
 QWizardPage QLabel, QWizardPage QRadioButton, QWizardPage QCheckBox { color: #202124; }
 QWizardPage QRadioButton:disabled, QWizardPage QCheckBox:disabled { color: #9ca3af; }
+/* Chinese link labels need more width than their short English originals. */
+QLabel#SelectAll, QLabel#SelectNone, QLabel#Default { min-width: 32px; }

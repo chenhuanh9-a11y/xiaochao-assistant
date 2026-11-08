@@ -34,6 +34,8 @@ function Controller() {
         // Only after the native helper has admitted this owned, isolated target.
         installer.setMessageBoxAutomaticAnswer("OverwriteTargetDirectory", QMessageBox.Yes);
         installer.setDefaultPageVisible(QInstaller.TargetDirectory, false);
+        // This trial creates no Start Menu shortcuts.
+        installer.setDefaultPageVisible(QInstaller.StartMenuSelection, false);
     } else {
         // A signal callback exception does not stop QtIFW. Constructor failure
         // happens before native operations, including for command-line purge.
@@ -54,6 +56,14 @@ function Controller() {
         trialRun("select-data", installer.value("DataChoice", "keep"), "purge");
     });
 }
+
+Controller.prototype.IntroductionPageCallback = function() {
+    var page = gui.currentPageWidget();
+    if (page && page.MessageLabel)
+        page.MessageLabel.text = installer.isInstaller() ?
+            "欢迎使用星图安装器试用向导。点击“下一步”开始安装。" :
+            "欢迎使用星图维护向导。可在这里维护或卸载本测试安装。";
+};
 
 Controller.prototype.ReadyForInstallationPageCallback = function() {
     if (installer.isCommandLineInstance() || !installer.isUninstaller()) return;

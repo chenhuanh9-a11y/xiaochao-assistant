@@ -129,7 +129,7 @@ def main():
         TargetDir=str(output / "targets/trial"), MaintenanceToolName="trial-maintenance",
         RemoveTargetDir="false", AllowNonAsciiCharacters="true", AllowSpaceInPath="true",
         AllowRepositoriesForOfflineInstaller="false", SaveDefaultRepositories="false", PersistentLocalCache="false",
-        ControlScript="controller.js", StyleSheet="trial.qss"))
+        ControlScript="controller.js", StyleSheet="trial.qss", WizardStyle="Modern"))
     # Include both IFW pages and Qt standard buttons. Explicit translations
     # also apply to the generated maintenance tool, independent of OS locale.
     tree = ET.parse(config / "config.xml")
