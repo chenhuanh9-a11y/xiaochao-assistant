@@ -6,16 +6,16 @@
 
 ## 候选与来源
 
-本机产物相对于 checkout：`work/qtifw-real-trial-20261108-r10/Xingtu-QtIFW-Local-Trial-Setup.exe`。
+本机中文产物相对于 checkout：`work/qtifw-real-trial-20261108-r12-zh/Xingtu-QtIFW-Local-Trial-Setup.exe`。此前 r10 的默认向导仍为英文，保留为历史证据，不再作为当前交付包。
 
 | 字段 | 实际值 |
 | --- | --- |
-| 安装器源码 | `6a949b3818bfef925be9fe3eeaccde2bc9349af1`，构建开始时为干净提交 |
+| 安装器源码 | `19973a5ca506a8b5d63b6597527d1e5af536735c`，构建开始时为干净远端提交 |
 | 程序源码 | `142001c884029a8fb9dc08d9760e5149b9cb72da`，原冻结程序，未改标为新源码 |
 | 程序版本 | 1.1.2 / 1.0.0.24，指纹 `142001C8` |
 | QtIFW | 官方 Windows 4.11.0 / Qt 6.9.3；工具来源与校验见第一轮交接 |
-| Setup 字节数 | 326,100,701 |
-| Setup SHA256 | `c2556375fbcbf2b6a3f641b7681f839e50b8c181d2e8c8987d147fea9b7a23e2` |
+| Setup 字节数 | 322,565,480 |
+| Setup SHA256 | `1e053758c54af6bac4565721e6a58a32c4612529f279d266f95b6446dd1a9531` |
 
 QtIFW 组件 1.0.0 / 更新测试 2.0.0 是试验编号，不是星图产品版本。`qtifw-build-record.json` 的 `installed=false` 是构建时状态；安装/卸载结果在独立验证回执，未改写构建记录。
 
@@ -25,7 +25,7 @@ QtIFW 组件 1.0.0 / 更新测试 2.0.0 是试验编号，不是星图产品版�
 
 - 每个候选有独立 QtIFW 安装名称和试用 ID。支持工具的固定策略只允许本候选根下的 `targets`；旧星图目录不在可操作范围。
 - 布局为 `<target>/program/星图.exe`，应用数据仍在 EXE 旁的 `<target>/program/work`。不会自动启动星图、创建普通程序启动快捷方式或启用游戏 watcher。
-- 维护器在卸载汇总前询问：**Yes 保留（默认）／No 清除／Cancel 退出**；汇总再次显示范围。清除只处理本测试安装的 `program/work`，保留协作锁、外部文件及恢复副本。用户地图所在的 `assets/custom-maps`、`_internal/assets/custom-maps` 不在清除范围；程序拥有的只读默认资源随程序卸载。
+- 维护器在卸载汇总前询问：**是：保留（默认）／否：清除／取消：退出**；汇总再次显示范围。清除只处理本测试安装的 `program/work`，保留协作锁、外部文件及恢复副本。用户地图所在的 `assets/custom-maps`、`_internal/assets/custom-maps` 不在清除范围；程序拥有的只读默认资源随程序卸载。
 - 清理复用资源写锁和现有同句柄 Windows 删除原语；链接、占用租约、未完成资源事务会阻止对应操作。QtIFW 可能忽略撤销错误而返回 0，因此同时核对 `trial-data.json`；完成页也会明确提示资料处理未完成，不能仅凭进程退出码称成功。
 
 **普通 EXE 的生产单实例身份没有改变。** 不要直接双击内部 `星图.exe` 作为并行游戏试用。本轮运行验证只使用既有 `--probe-output` 独立 IPC/禁用游戏监听入口，以及 `--self-check`。常规并行运行身份仍是正式接入的缺口。
@@ -64,7 +64,11 @@ QtIFW 组件 1.0.0 / 更新测试 2.0.0 是试验编号，不是星图产品版�
 - `qtifw-real-trial-20261108-r10/gui-validation`：最终包默认目标新装核对及原生向导观测；`gui.stdout.log` 记录 `TRIAL_GUI_DATA_CHOICE: clear`。`scope-clear-validation/result.json` 记录取消后 3,648 文件不变、后续 CLI 清除及两个地图目录保留。
 - `qtifw-real-trial-20261108-r8/default-after-cancel/result.json`：取消 clear 后 CLI 默认 keep。此处资料选择与操作代码和最终包相同。
 
-r7 至 r10 的后续变化只接入控制脚本中的 GUI 选择、汇总文字与 Windows 深色系统下的页面可读性；最终包补验默认新装、字节核对、GUI/取消和清除范围，未把 r6 的完整流程宣称为 r10 全部重跑。程序 payload、支持工具的恢复/清理函数及组件依赖操作保持相同，程序全清单复核约束继续生效。
+r7 至 r10 的后续变化只接入控制脚本中的 GUI 选择、汇总文字与 Windows 深色系统下的页面可读性；r10 补验默认新装、字节核对、GUI/取消和清除范围，未把 r6 的完整流程宣称为 r10 全部重跑。程序 payload、支持工具的恢复/清理函数及组件依赖操作保持相同，程序全清单复核约束继续生效。
+
+中文修订 r11/r12 明确配置 `ifw_zh_CN` 与 `qt_zh_CN`，框架页面和标准按钮共用内置简体中文翻译，不依赖系统区域格式或启动参数。修订包含中文产品文案、去除欢迎页技术标识、隐藏没有实际快捷方式操作的开始菜单页面，以及中文链接宽度和原生 Modern 向导布局。机制见 [QtIFW 官方翻译配置](https://doc.qt.io/qtinstallerframework/ifw-customizing-installers.html#configuring-and-overwriting-default-translations)。原英文实际窗口和日志在 `work/qtifw-zh-validation-20261108`；中文修订的实际 UI/安装证据在各自候选 `zh-validation`。r12 新装再次核对 3,648 项程序文件通过；欢迎、组件、汇总、维护器、资料选择及取消确认页面均实际观察为中文，两个 GUI 日志记录 `UILanguage=zh_CN`。取消后的程序清单再次完整。21 项源码回归通过。本轮没有重跑完整 r6 故障/迁移流程，不将旧证据改称 r12 全量实测。
+
+目录选择仍为本机固定测试范围，不是面向用户的正式目录选择交互。用户指出它不方便；推荐目录和可浏览更改位置的设计仍待单独接入，中文修订未放开目录保护。
 
 保留的中间失败包括：r1 把 RCC 当 QRC 导致附加工具未装载；r3 发现 `--root` 时序，未提取程序；r5 的首次客户端探针遗漏测试写入标记被保护拒绝，补齐自身测试前提后重跑；同轮撤销顺序错误使资料回执缺失，未算通过。实测还证明信号回调抛错或 `interrupt()` 不能阻止卸载，撤销错误可能被框架忽略。修复分别放在原生操作前的准入、明确的组件依赖顺序和独立结果核对，没有放宽原断言或删除失败记录。
 
