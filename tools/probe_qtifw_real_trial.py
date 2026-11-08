@@ -15,11 +15,66 @@ import shutil
 import subprocess
 import sys
 import time
+import zipfile
 from types import SimpleNamespace
 import xml.etree.ElementTree as ET
 
 from qtifw_trial_helper import scoped, verify
 from probe_qtifw_windows import WindowsProbe, DATA
+
+
+def verify_bundled_displays(target, packages):
+    """Read installed author layers through the actual Qt display consumer."""
+    import cv2
+    import numpy as np
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "experiments/qt_quick"))
+    import star_map_import as api
+    from client_providers import build_engine_factories
+    from client_route_preferences import prepare_display_layer
+    program = target / "program"
+    factory = build_engine_factories(program / "_internal")
+    results = []
+    for package in packages:
+        package_id, season = package["packageId"], package["season"]
+        with zipfile.ZipFile(target / package["path"]) as archive:
+            metadata = json.loads(archive.read("map-package.json"))
+            names = [name for name in archive.namelist() if name.endswith("/display-bindings.json")]
+            bindings = json.loads(archive.read(names[0])) if names else None
+        candidates = []
+        if api.is_generic_profile(package_id):
+            candidates = [(row["mode"], row["mapId"], row["floor"], package_id) for row in bindings["layers"]]
+        elif bindings:
+            mode = "difficult" if package_id.startswith("difficult-") else "nightmare"
+            candidates = [(mode, row["mapId"], row["floor"], api.AUTHOR_PACKAGES[package_id]) for row in bindings["entries"]]
+        else:
+            mode = "difficult" if package_id.startswith("difficult-") else "nightmare"
+            engine = factory._get(mode, season=season)
+            owned = {row["path"] for row in metadata["files"]}
+            for profile in engine.qt_catalog.profiles.values():
+                for map_id, variants in profile.maps.items():
+                    for variant in variants:
+                        for floor, path in variant.layers.items():
+                            if path.is_relative_to(program) and path.relative_to(program).as_posix() in owned:
+                                candidates.append((mode, map_id, floor, profile.id))
+        assert candidates, "No installed author candidates: " + package_id
+        selected = list(dict.fromkeys(candidates[:1] + candidates[-1:]))
+        input_images = {row["sha256"] for row in metadata["files"]
+                        if Path(row["path"]).suffix.lower() in {".png", ".webp", ".jpg", ".jpeg"}}
+        samples = []
+        for mode, map_id, floor, profile in selected:
+            layer = prepare_display_layer(factory._get(mode, season=season), map_id, floor, profile)
+            assert not layer["fallback"] and layer["routeProfileId"] == profile, (package_id, map_id, floor, layer.get("fallbackReason"))
+            image = Path(layer["referencePath"]).read_bytes()
+            assert hashlib.sha256(image).hexdigest() in input_images, ("Display did not consume the accepted archive", package_id,
+                map_id, floor, profile, layer["referencePath"], hashlib.sha256(image).hexdigest(), len(input_images))
+            decoded = cv2.imdecode(np.frombuffer(image, np.uint8), cv2.IMREAD_UNCHANGED)
+            np.testing.assert_array_equal(layer["pixels"], decoded)
+            matrix = np.asarray(layer["matrixDisplayToReference"])
+            assert matrix.shape == (3, 3) and np.isfinite(matrix).all() and abs(np.linalg.det(matrix)) > 1e-12
+            samples.append(dict(mode=mode, mapId=map_id, floor=floor, profile=profile,
+                                inputPixelsExact=True, finiteInvertibleDisplayBridge=True))
+        results.append(dict(packageId=package_id, samples=samples))
+    return results
 
 
 class TrialProbe:
@@ -54,7 +109,17 @@ class TrialProbe:
         return result.returncode
 
     def install(self, label, target, *values):
-        return self.run(label, [self.setup, "--reject-messages", "--confirm-command", "install", "TrialTarget=" + str(target), *values])
+        flags = []
+        if self.policy.get("portable"):
+            script = self.output / (label + "-paths.js")
+            script.write_text('eval(installer.readFile(":/metadata/installer-config/controller_js", "UTF-8"));\n'
+                'var Original=Controller; Controller=function(){\n'
+                'installer.setValue("DesktopDir",' + json.dumps(str(self.output / "desktop")) + ');\n'
+                'installer.setValue("UserStartMenuProgramsPath",' + json.dumps(str(self.output / "programs")) + ');\n'
+                'Original.call(this);};Controller.prototype=Original.prototype;\n', encoding="utf-8")
+            flags = ["--script", script]
+        return self.run(label, [self.setup, "--reject-messages", "--confirm-command", *flags,
+                               "install", "TrialTarget=" + str(target), *values], timeout=600)
 
     def seed(self, target):
         work = target / "program/work"
@@ -264,15 +329,37 @@ class TrialProbe:
 
     def execute_complete(self):
         """Current fresh-install policy; retention/migration above is historical."""
+        startup_test_enabled = False
         try:
             target = self.target("complete-uninstall 中文")
             assert self.install("complete-new-install", target) == 0
             self.report["installed"] = verify(self.policy, target)
+            if self.policy.get("mapPackages"):
+                seeded = json.loads((target / "trial-install-maps.json").read_bytes())
+                assert seeded["success"] and seeded["installed"] == len(self.policy["mapPackages"])
+                self.report["authorDisplays"] = verify_bundled_displays(target, self.policy["mapPackages"])
+            if self.policy.get("portable"):
+                assert self.run("frozen-self-check", [target / "program/星图.exe", "--self-check", "--verify-resources"], timeout=300) == 0
+                checked = json.loads((target / "program/work/client-self-check.json").read_bytes())
+                assert checked["ready"] and checked["qml"] and not checked["nativeInputStarted"]
+                self.report["frozenSelfCheck"] = checked
+                gui_output = self.output / "client-ui"
+                (target / "program/work/.qt-client-probe-owner").write_text("qt-quick-build-probe-v1\n", encoding="utf-8")
+                assert self.run("frozen-client-ui", [target / "program/星图.exe", "--sandbox", target / "program",
+                                                       "--probe-output", gui_output], timeout=330) == 0
+                ui = json.loads((gui_output / "client-probe.json").read_bytes())
+                assert ui["all_assertions_pass"]
+                self.report["clientUi"] = ui
             self.seed(target)
             outside = target.parent / "complete-uninstall-external.txt"
             with outside.open("xb") as stream:
                 stream.write(b"External file must remain\n")
             self.report["nativeAdmission"] = self.native_guards(target)
+            if self.policy.get("portable"):
+                from game_startup import enabled, set_enabled
+                set_enabled(target / "program", True)  # This target's unique Run value; does not launch the watcher.
+                startup_test_enabled = True
+                assert enabled(target / "program")
             tool = target / "trial-maintenance.exe"
             code = self.run("complete-native-purge", [tool, "--reject-messages", "--confirm-command", "purge"])
             assert code == 0, "Native complete uninstall failed"
@@ -284,16 +371,26 @@ class TrialProbe:
                 time.sleep(.1)
             assert not target.exists(), "Complete uninstall left the target directory"
             assert outside.read_bytes() == b"External file must remain\n"
-            receipt = json.loads((self.root / "last-uninstall.json").read_bytes())
-            assert (receipt["success"] and receipt["status"] == "scheduled"
-                    and receipt["nativeRemovalScheduled"] and Path(receipt["target"]) == target)
+            if self.policy.get("portable"):
+                assert not enabled(target / "program"), "Uninstall retained its game-start Run value"
+                startup_test_enabled = False
+                self.report["gameStartupEntryRemoved"] = True
+            if not self.policy.get("portable"):
+                receipt = json.loads((self.root / "last-uninstall.json").read_bytes())
+                assert (receipt["success"] and receipt["status"] == "scheduled"
+                        and receipt["nativeRemovalScheduled"] and Path(receipt["target"]) == target)
             self.report.update(completed=True, completeUninstallExitCode=code,
                                targetDirectoryRemoved=True, outsideFilePreserved=True,
-                               runtimeChecksExecuted=False)
+                               runtimeChecksExecuted=bool(self.policy.get("portable")))
         except BaseException as error:
             self.report.update(completed=False, failure=type(error).__name__ + ": " + str(error))
             raise
         finally:
+            if startup_test_enabled:
+                try:
+                    set_enabled(target / "program", False)
+                except OSError as error:
+                    self.report["testRunEntryCleanupError"] = str(error)
             self.report["runs"] = self.runs
             (self.output / "result.json").write_text(json.dumps(self.report, ensure_ascii=False, indent=2), encoding="utf-8")
         return self.report

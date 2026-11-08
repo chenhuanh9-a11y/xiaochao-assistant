@@ -1,4 +1,4 @@
-"""Local QtIFW trial support. A baked policy confines every write to its test run.
+"""QtIFW support with explicit fresh-target ownership and frozen inventories.
 
 The original program inventory supplies file ownership. Interrupted first-install
 files are quarantined, never deleted or treated as a general rollback engine.
@@ -37,10 +37,12 @@ def write_owner(target, owner, *, new=False):
 
 
 def scoped(policy, target):
-    scope = _safe(Path(policy["scope"]).absolute())
-    token = _safe(scope / ".qtifw-trial-scope").read_text(encoding="ascii").strip()
-    if token != policy["instance"]:
-        raise ValueError("trial-scope-mismatch")
+    scope = None
+    if not policy.get("portable"):
+        scope = _safe(Path(policy["scope"]).absolute())
+        token = _safe(scope / ".qtifw-trial-scope").read_text(encoding="ascii").strip()
+        if token != policy["instance"]:
+            raise ValueError("trial-scope-mismatch")
     supplied = Path(target)
     if not supplied.is_absolute():
         raise ValueError("absolute-install-directory-required")
@@ -48,10 +50,11 @@ def scoped(policy, target):
     _safe(target)
     if ".." in target.parts or target == Path(target.anchor):
         raise ValueError("invalid-install-directory")
-    internal = target.is_relative_to(scope / "targets") and target != scope / "targets"
-    if not internal and (not policy.get("allowNewTargets") or target.is_relative_to(scope)
-                         or scope.is_relative_to(target)):
-        raise ValueError("outside-trial-targets")
+    if scope is not None:
+        internal = target.is_relative_to(scope / "targets") and target != scope / "targets"
+        if not internal and (not policy.get("allowNewTargets") or target.is_relative_to(scope)
+                             or scope.is_relative_to(target)):
+            raise ValueError("outside-trial-targets")
     if os.name == "nt" and (target.drive.startswith("\\\\") or
             os.path.isreserved(str(target)) or
             target.is_relative_to(Path(os.environ.get("SystemRoot", "C:/Windows")))):
@@ -218,16 +221,17 @@ def receipt(policy, target, name, value):
     target = scoped(policy, target)
     destination = _safe(target / ("trial-" + name + ".json"))
     destination.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
-    if name == "data":
+    if name == "data" and not policy.get("portable"):
         # Native full uninstall removes TargetDir at exit; keep its result in
         # this trial's separate support scope for the finish page and evidence.
+        # Portable installs read the target receipt before native final removal.
         external = _safe(Path(policy["scope"]) / "last-uninstall.json")
         external.write_text(json.dumps(dict(value, target=str(target)), ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("check-target", "prepare", "verify-program", "verify", "inspect-data", "hold-uninstall", "select-data", "undo-data", "noop", "data", "pause", "fail"))
+    parser.add_argument("action", choices=("check-target", "prepare", "verify-program", "verify", "install-maps", "disable-watcher", "inspect-data", "hold-uninstall", "select-data", "undo-data", "noop", "data", "pause", "fail"))
     parser.add_argument("target", type=Path)
     parser.add_argument("choice", nargs="?", default="keep")
     parser.add_argument("operation", nargs="?", default="none", choices=("none", "purge"))
@@ -247,6 +251,15 @@ def main():
             if not _safe(target / "trial-maintenance.exe").is_file():
                 raise ValueError("maintenance-not-created")
             result = verify(policy, args.target)
+        elif args.action == "install-maps":
+            target, owner = bound_owner(policy, args.target)
+            if owner["phase"] != "installing":
+                raise ValueError("maps-require-new-installation")
+            verify_program(policy, target)
+            result = dict(installed=0, packages=[])
+            if policy.get("mapPackages"):
+                from qtifw_map_seed import install_bundled_maps
+                result = install_bundled_maps(target, policy["mapPackages"])
         elif args.action == "select-data":
             bound_owner(policy, args.target)
             if args.choice not in {"keep", "clear"}:
@@ -257,6 +270,15 @@ def main():
         elif args.action == "noop":
             bound_owner(policy, args.target)
             result = dict(armed=True)
+        elif args.action == "disable-watcher":
+            target, _ = bound_owner(policy, args.target)
+            program = target / "program"
+            from game_startup_watcher import control
+            from game_startup_win32 import Windows
+            code = control("--disable", program, Windows())
+            if code != 0:
+                raise ValueError("game-startup-disable-failed:" + str(code))
+            result = dict(watcherDisabled=True)
         elif args.action in {"data", "undo-data"}:
             target, owner = bound_owner(policy, args.target)
             choice = args.choice

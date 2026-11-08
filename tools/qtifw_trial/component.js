@@ -94,8 +94,15 @@ Component.prototype.createOperations = function() {
     // A signal-handler exception cannot fail native installation. Make program
     // integrity an ordinary DO operation before writing the maintenance tool.
     component.addOperation("Execute", "{0}", helper, "verify-program", "@TargetDir@");
+    if (installer.value("TrialPortable") === "true")
+        component.addOperation("Execute", "{0}", helper, "install-maps", "@TargetDir@");
     if (fault === "after-extract")
         component.addOperation("Execute", "{0}", helper, "pause", "@TargetDir@");
     if (fault === "fail")
         component.addOperation("Execute", "{0}", helper, "fail", "@TargetDir@");
+    if (installer.value("TrialPortable") === "true")
+        // Last DO means first UNDO, while the full program still exists.
+        // Cancel at the confirmation page leaves the original opt-in intact.
+        component.addOperation("Execute", "{0}", helper, "noop", "@TargetDir@", "UNDOEXECUTE",
+            "@TargetDir@/_installer-support/qtifw-trial-helper.exe", "disable-watcher", "@TargetDir@");
 };

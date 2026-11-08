@@ -1,12 +1,14 @@
 """Two-file native QtIFW review regression; never launches the synthetic EXE."""
 from pathlib import Path
 import argparse, hashlib, json, os, subprocess, sys, time, uuid
+import shutil
 import xml.etree.ElementTree as ET
 
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--ifw-bin',type=Path,required=True)
 parser.add_argument('--output',type=Path,required=True)
 parser.add_argument('--baseline-ref',help='Reproduce the pre-fix counterexamples from this Git ref, not a passing-current run')
+parser.add_argument('--portable',action='store_true',help='Exercise distribution mode without a build-directory dependency')
 args=parser.parse_args()
 if os.name!='nt':parser.error('Windows native fixture only')
 ROOT=Path(__file__).resolve().parents[2]; IFW=args.ifw_bin.absolute()
@@ -15,15 +17,20 @@ from probe_qtifw_lifecycle import write_xml
 PACKAGE='org.xingtu.qtifw.realtrial'; DATA='org.xingtu.qtifw.trialdata'
 which='baseline' if args.baseline_ref else 'current'; runroot=args.output.absolute()
 old=bool(args.baseline_ref)
+if old and args.portable:parser.error('Historical baseline has no portable mode')
 from resource_transaction import _safe
 if '..' in runroot.parts or not runroot.is_relative_to(ROOT/'work') or runroot==ROOT/'work':
     parser.error('New fixture output must be inside this checkout work directory')
 _safe(runroot)
 runroot.mkdir(parents=True)
+if args.portable:
+    (runroot/'temp').mkdir()
+    os.environ['TEMP']=os.environ['TMP']=str(runroot/'temp')
 instance=uuid.uuid4().hex;(runroot/'targets').mkdir();(runroot/'.qtifw-trial-scope').write_text(instance)
 values={'星图.exe':b'synthetic EXE - do not execute\n','_internal/runtime.txt':b'expected runtime\n'}
 policy=dict(scope=str(runroot),instance=instance,payloadSource='a'*40,allowNewTargets=True,fullUninstall=True,
-            faultsAllowed=False,files={n:dict(bytes=len(b),sha256=hashlib.sha256(b).hexdigest()) for n,b in values.items()})
+            portable=args.portable,faultsAllowed=False,files={n:dict(bytes=len(b),sha256=hashlib.sha256(b).hexdigest()) for n,b in values.items()})
+if args.portable:policy.pop('scope')
 (runroot/'qtifw-trial-policy.json').write_text(json.dumps(policy),encoding='utf-8')
 
 def source(name):
@@ -62,7 +69,8 @@ def build(name,broken=False):
         p=data/n;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b'CORRUPTED\n' if broken and n.endswith('runtime.txt') else b)
     dm=case/'packages'/DATA/'meta';dm.mkdir(parents=True);(dm/'data-component.js').write_bytes(source('tools/qtifw_trial/data-component.js'))
     write_xml(dm/'package.xml','Package',dict(DisplayName='Synthetic cleanup',Version='1.0.0',ReleaseDate='2026-11-08',Virtual='true',Script='data-component.js'))
-    text=source('tools/qtifw_trial/controller.js').decode('utf-8').replace('__SCOPE__',json.dumps(runroot.as_posix())).replace('__INSTANCE__',json.dumps(instance)).replace('__SUPPORT_FILES__',json.dumps(files))
+    if args.portable:shutil.copytree(helper_root,dm.parent/'data/_installer-support')
+    text=source('tools/qtifw_trial/controller.js').decode('utf-8').replace('__SCOPE__',json.dumps('' if args.portable else runroot.as_posix())).replace('__INSTANCE__',json.dumps(instance)).replace('__SUPPORT_FILES__',json.dumps(files))
     # Only OS shortcut locations are redirected. Core helper and native
     # operations are the actual PR scripts, with no simulated algorithms.
     text=text.replace('function Controller() {','function Controller() {\ninstaller.setValue("DesktopDir",'+json.dumps(str(case/'desktop'))+');\ninstaller.setValue("UserStartMenuProgramsPath",'+json.dumps(str(case/'programs'))+');',1)
@@ -75,7 +83,7 @@ def build(name,broken=False):
 
 report=dict(revision=args.baseline_ref if old else subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
             uncommittedChanges=bool(subprocess.check_output(['git','status','--porcelain'],cwd=ROOT).strip()),
-            baselineCounterexamples=old,syntheticFiles=2,actualProgramLaunched=False)
+            baselineCounterexamples=old,portable=args.portable,syntheticFiles=2,actualProgramLaunched=False)
 
 def install(name,broken=False,post_fault=False):
     case,setup,target=build(name,broken)
@@ -108,6 +116,13 @@ def lease(target):
     return p,p.stdout.readline().strip()
 
 case,_,target=install('late-lease');assert report['late-lease']['exitCode']==0
+if args.portable:
+    # Preserve, but make the install-time support paths unavailable. Uninstall
+    # must recreate its own admission helper and use the installed UNDO helper.
+    previous=list((runroot/'temp').glob('xingtu-setup-*'))
+    assert previous, 'Portable installer did not use its runtime temporary directory'
+    for path in previous:path.rename(path.with_name('preserved-'+path.name))
+    report['originalInstallerSupportUnavailable']=True
 p,state=lease(target);assert state=='held'
 active=call('active-before-purge',[target/'trial-maintenance.exe','--reject-messages','--confirm-command','purge']);assert active!=0 and (target/'program/星图.exe').exists()
 p.communicate('\n',timeout=10);report['activeBeforePurgeRejected']=True

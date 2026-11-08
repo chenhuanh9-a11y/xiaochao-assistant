@@ -1,4 +1,4 @@
-// All mutations are confined by the helper's baked local trial policy.
+// The baked policy admits fresh targets and binds all later writes to ownership.
 function trialRun(action, choice, operation) {
     var args = [action, installer.value("TargetDir")];
     if (choice) args.push(choice);
@@ -12,10 +12,16 @@ function trialRun(action, choice, operation) {
 function Controller() {
     console.log("TRIAL_UI_LANGUAGE: " + installer.value("UILanguage"));
     var scope = __SCOPE__;
-    if (!installer.fileExists(scope + "/.qtifw-trial-scope") ||
-        installer.readFile(scope + "/.qtifw-trial-scope", "UTF-8").trim() !== __INSTANCE__)
+    var portable = scope === "";
+    installer.setValue("TrialPortable", portable ? "true" : "false");
+    if (!portable && (!installer.fileExists(scope + "/.qtifw-trial-scope") ||
+        installer.readFile(scope + "/.qtifw-trial-scope", "UTF-8").trim() !== __INSTANCE__))
         throw new Error("本地测试范围不匹配，未接管安装目录。");
-    var support = scope + "/session-tools/" + String(Date.now());
+    var temporary = installer.environmentVariable("TEMP") || installer.environmentVariable("TMP");
+    if (portable && !temporary) throw new Error("无法获取系统临时目录。");
+    var support = portable ? temporary +
+        "/xingtu-setup-" + __INSTANCE__ + "-" + String(Date.now()) + "-" + String(Math.random()).substring(2) :
+        scope + "/session-tools/" + String(Date.now());
     if (!installer.performOperation("Mkdir", [support])) throw new Error("无法准备测试工具目录");
     var helper = support + "/qtifw-trial-helper.exe";
     var supportFiles = __SUPPORT_FILES__;
@@ -60,7 +66,6 @@ function Controller() {
             installer.setMessageBoxAutomaticAnswer("OverwriteTargetDirectory", QMessageBox.Yes);
         }
         installer.setDefaultPageVisible(QInstaller.TargetDirectory, false);
-        // This trial creates no Start Menu shortcuts.
         installer.setDefaultPageVisible(QInstaller.StartMenuSelection, false);
     } else {
         // A signal callback exception does not stop QtIFW. Constructor failure
@@ -149,7 +154,10 @@ Controller.prototype.FinishedPageCallback = function() {
     if (!installer.isUninstaller()) return;
     var text = "卸载流程已结束，正在确认清理结果。";
     try {
-        var result = JSON.parse(installer.readFile(__SCOPE__ + "/last-uninstall.json", "UTF-8"));
+        var outcome = installer.value("TrialPortable") === "true" ?
+            installer.value("TargetDir") + "/trial-data.json" : __SCOPE__ + "/last-uninstall.json";
+        var result = JSON.parse(installer.readFile(outcome, "UTF-8"));
+        if (installer.value("TrialPortable") === "true") result.target = installer.value("TargetDir");
         function normal(path) { return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase(); }
         if (result.success === true && result.dataChoice === "clear" && result.nativeRemovalScheduled === true &&
                 normal(result.target) === normal(installer.value("TargetDir")))

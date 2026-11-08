@@ -7,15 +7,17 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from contextlib import redirect_stdout
 from io import StringIO
 from unittest.mock import patch
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "tools"), str(ROOT / "app")]
 import qtifw_trial_helper as helper
 from qtifw_trial_helper import OWNER, prepare, verify, verify_program, clear_data, scoped, check_target
-from build_qtifw_trial import check_archive_inventory
+from build_qtifw_trial import check_archive_inventory, map_inputs
 
 
 class TrialTests(unittest.TestCase):
@@ -46,6 +48,74 @@ class TrialTests(unittest.TestCase):
         inventory["files"]["app.exe"] = dict(bytes=5, sha256=hashlib.sha256(b"other").hexdigest())
         with self.assertRaisesRegex(ValueError, "inventory differs"):
             check_archive_inventory(prior, self.policy["payloadSource"], inventory)
+
+    def test_portable_install_has_no_build_scope_dependency_and_keeps_owner_binding(self):
+        self.policy.update(portable=True, allowNewTargets=True, fullUninstall=True)
+        self.policy.pop("scope")
+        (self.scope / ".qtifw-trial-scope").unlink()
+        self.assertTrue(prepare(self.policy, self.target)["prepared"])
+        other = self.scope / "targets/other"
+        other.mkdir()
+        (other / OWNER).write_bytes((self.target / OWNER).read_bytes())
+        with self.assertRaisesRegex(ValueError, "owner-target-mismatch"):
+            check_target(self.policy, other)
+        helper.receipt(self.policy, self.target, "data", dict(success=True, status="scheduled"))
+        self.assertEqual(json.loads((self.target / "trial-data.json").read_bytes())["status"], "scheduled")
+        self.assertFalse((self.scope / "last-uninstall.json").exists())
+
+    def test_portable_mode_still_rejects_nonempty_unowned_directory(self):
+        self.policy.update(portable=True, allowNewTargets=True)
+        self.policy.pop("scope")
+        self.target.mkdir()
+        original = self.target / "personal.txt"
+        original.write_bytes(b"keep")
+        with self.assertRaisesRegex(ValueError, "directory-not-empty"):
+            prepare(self.policy, self.target)
+        self.assertEqual(original.read_bytes(), b"keep")
+        self.assertFalse((self.target / OWNER).exists())
+
+    def test_accepted_map_delivery_is_copied_by_exact_archive_identity(self):
+        archives = self.scope / "archives"
+        archives.mkdir()
+        original = archives / "author.zip"
+        with zipfile.ZipFile(original, "w") as archive:
+            archive.writestr("map-package.json", json.dumps(dict(packageId="author-example", season="s1")))
+        payload = original.read_bytes()
+        report = self.scope / "delivery.json"
+        report.write_text(json.dumps(dict(packages=[dict(path="author.zip", outputBytes=len(payload),
+                                                       sha256=hashlib.sha256(payload).hexdigest())])))
+        packages, sources = map_inputs(archives, report)
+        self.assertEqual(packages[0]["path"], "_installer-support/maps/author.zip")
+        self.assertEqual(packages[0]["packageId"], "author-example")
+        self.assertTrue(packages[0]["versionedAuthor"])
+        self.assertEqual(sources, [(original, packages[0]["path"])])
+        original.write_bytes(payload + b"changed")
+        with self.assertRaisesRegex(ValueError, "archive changed"):
+            map_inputs(archives, report)
+
+    @unittest.skipUnless(os.name == "nt", "Win32 per-install Run entry")
+    def test_uninstall_disables_own_run_entry_even_if_watcher_exe_is_missing(self):
+        from game_startup import WATCHER_NAME, MAIN_NAME, set_enabled, enabled
+        import game_startup_win32
+        prepare(self.policy, self.target)
+        program = self.target / "program"
+        program.mkdir()
+        for name in (WATCHER_NAME, MAIN_NAME):
+            (program / name).write_bytes(b"synthetic, never executed")
+        set_enabled(program, True)
+        try:
+            (program / WATCHER_NAME).unlink()
+            (self.scope / "qtifw-trial-policy.json").write_text(json.dumps(self.policy))
+            # Replace only process/SID discovery. Run registration, the existing
+            # control function, and its actual removal are production code.
+            windows = SimpleNamespace(interactive_user_matches=lambda: True, watcher_state=lambda path: "absent")
+            with patch.object(helper, "__file__", str(self.scope / "helper.py")), \
+                    patch.object(sys, "argv", ["helper", "disable-watcher", str(self.target)]), \
+                    patch.object(game_startup_win32, "Windows", return_value=windows), redirect_stdout(StringIO()):
+                self.assertEqual(helper.main(), 0)
+            self.assertFalse(enabled(program))
+        finally:
+            set_enabled(program, False)
 
     def test_program_validation_is_read_only_and_rejects_wrong_bytes(self):
         self.seed()

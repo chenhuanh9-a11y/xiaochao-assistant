@@ -1,4 +1,24 @@
-# PR #110 合并前审查（最新）
+# 正式候选包构建与验证
+
+用户确认执行正式包准备后，整合现有 1.1.2（含 PR #112 的通用作者 V2 制包入口）与已审 QtIFW 生命周期修复。下方 r16/r10 等均为各时点的历史记录，不代表当前候选已经发布或其待办仍然适用。
+
+`tools/build_qtifw_trial.py --release` 复用同一安装/卸载实现，生成可独立分发的中文 `星图-<版本>-Setup.exe`。正式模式不依赖构建目录、测试标记或旧临时 helper；支持工具随依赖组件安装，卸载的 UNDO 从本安装读取，临时工具只用于当前进程准入。仅接收新建/空目录，不接管旧版或复制旧资料；目录、桌面/开始菜单名称使用“星图”。运行身份继续沿用现有生产身份。
+
+同时提供 `--map-pack-root` 与 `--map-pack-report`，以已验收压缩汇总及其 `batch-report.json` 为输入；所有 ZIP 保留原字节。地图放入安装支持组件，通过原生 DO 调用 `qtifw_map_seed`：全部归档字节准入后，复用运行时租约、受管 base 修复、生产 inspect/install、回执及快照验证。地图校验/安装失败会使原生安装失败；完整精确的同包重试只复用生产验证结果，不自建回滚或恢复引擎。卸载的第一个 UNDO 调现有游戏启动绑定控制接口，关闭且只删除本安装的 Run 项；确认页取消不改绑定。
+
+```powershell
+python tools/build_qtifw_trial.py --release --build-record <同一最终提交的build-record.json> --stage <对应freeze/星图> --ifw-bin <QtIFW-bin> --output <全新输出目录> --map-pack-root <已验收压缩汇总> --map-pack-report <batch-report.json>
+python tools/probe_qtifw_real_trial.py --trial-root <上述候选目录>
+python tests/windows/qtifw_native_lifecycle.py --portable --ifw-bin <QtIFW-bin> --output work/<全新原生回归目录>
+```
+
+候选联合验证走实际 Setup 安装、完整程序字节核对、作者包 Qt 消费者采样、冻结自检及有界 GUI 探针、原生卸载和退出后目录清理。探针只重定向本轮快捷方式目录，不替换安装器、资源事务、提取或客户端核心；本轮测试开关限制为自身安装的 Run 项。GUI 探针关闭游戏窗口枚举、截图采集和原生按键；不作为实机验收。运行、取消、占用、pending 与外部哨兵由保留的原生回归覆盖；不宣称断电或任意 IO 错误都自动回滚。
+
+正式构建从最终远端提交的干净源码开始；按既有生产 S1 构建约定重绑 release lock 的源码指纹，版本及资源清单保持原样。安装包身份、字节数、SHA256 和最终联合结果写入候选交付记录，未对外发布。公告仍按下方“先卸载旧版，再安装新版”的文案。
+
+---
+
+# PR #110 合并前审查（正式整合前的历史）
 
 本轮只推进安装器审查及源码修复，不重新开发试用原型，不打正式包，不修改地图导入 PR #111 的工作树。
 
