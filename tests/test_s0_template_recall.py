@@ -43,6 +43,32 @@ class TemplateRecall(unittest.TestCase):
         self.assertFalse(read['controlGeometryVerified'])
         self.assertIsNone(validated_control_rects(read))
 
+    def test_clipped_numeral_is_not_a_complete_label(self):
+        from s0_floor_templates import classify_label
+        for selected in (False, True):
+            background, ink = (110, 15) if selected else (33, 225)
+            patch = np.full((64, 64), background, np.uint8)
+            patch[32:62, 28:32] = ink
+            with self.subTest(selected=selected):
+                self.assertEqual(classify_label(patch, selected=selected)['label'], 1)
+                self.assertIsNone(classify_label(patch[:52], selected=selected))
+
+    def test_soft_highlight_cannot_create_a_conflict_from_a_clipped_neighbor(self):
+        frame = s0_bright('difficult', 2)
+        frame[:700, 1570:1750] = 33
+        # Independent soft-edged button pixels: dimming changes the measured
+        # fill extent, but the complete visible labels still say 2 above 1.
+        frame[296:425, 1571:1670] = 50
+        frame[305:416, 1578:1663] = 80
+        frame[307:402, 1584:1657] = 110
+        cv2.putText(frame, '2', (1609, 368), cv2.FONT_HERSHEY_PLAIN,
+                    2.5, (15,) * 3, 2)
+        frame[451:481, 1618:1622] = 225
+        observation, read = observe_s0_map(frame, 'difficult')
+        self.assertTrue(observation['mapOpen'], (observation, read))
+        self.assertEqual(read['selectedFloor'], 2, read)
+        self.assertIsNotNone(validated_control_rects(read))
+
     def test_narrow_digits_use_whole_column_not_button_coverage(self):
         for mode, order in ORDERS:
             for selected in order:
