@@ -129,7 +129,7 @@ def main():
     shutil.copy2(scripts / "data-component.js", data_meta / "data-component.js")
     write_xml(data_meta / "package.xml", "Package", dict(DisplayName="卸载清理",
         Description="彻底卸载时清理安装目录。", Version="1.0.0", Virtual="true",
-        ReleaseDate="2026-11-08", Default="true", Script="data-component.js"))
+        ReleaseDate="2026-11-08", Script="data-component.js"))
     write_xml(config / "config.xml", "Installer", dict(Name="星图安装器隔离试用 " + instance,
         Version="1.0.0", Title="星图（试用版）", Publisher="星图开发试用",
         TargetDir=str(output / "targets/trial"), MaintenanceToolName="trial-maintenance",
