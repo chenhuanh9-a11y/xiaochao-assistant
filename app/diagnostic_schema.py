@@ -1572,3 +1572,6 @@ CODES = CODES | frozenset({'g-cycle-evidence', 'admission', 'completion', 'queue
 FIELDS = FIELDS | frozenset({"mapControlExposure"})
 
 CODES = CODES | frozenset({"locked-map-resource-unavailable"})
+
+# Explicit cleanup receipt keys; never permit arbitrary paths or context keys.
+FIELDS = FIELDS | frozenset({'s1:nightmare', 's1:difficult'})

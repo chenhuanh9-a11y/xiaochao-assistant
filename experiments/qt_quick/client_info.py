@@ -15,7 +15,7 @@ from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtCore import qVersion
 from backend import ROOT, Work
 from map_resource_context import load_browse_context
-from season_context import SEASONS
+from season_context import SEASONS, modes_for_season
 from season_map_resources import browse_modes
 from client_paths import PRODUCTION, WORK_ROOT, runtime_paths, bundled_author_root
 from PySide6.QtCore import QThreadPool, Qt
@@ -620,7 +620,14 @@ class ClientInfoService(QObject):
         runtime_context = dict(collectionStatus="existing-state-only",
             gameWindowBound=window_environment["gameWindowBound"], mapOpen=bool(state.get("mapOpen")),
             gameForeground=state.get("gameForeground", "unknown"))
-        failure_roots = tuple(self.paths.memory_root(mode) for mode in ("nightmare", "difficult")) if (
+        # Read the same season-scoped stores that production providers write.
+        # All roots share one export budget, independent of the selected page.
+        # Retain legacy S0 cleanup keys; identical mode names in S1 must not
+        # overwrite them. Contexts come only from the supported catalog.
+        failure_stores = {
+            mode if season == "s0" else f"{season}:{mode}": self.paths.memory_root(mode, season)
+            for season in SEASONS for mode in modes_for_season(season)}
+        failure_roots = tuple(failure_stores.values()) if (
             self._include_failure_evidence or self._include_automatic_failure_evidence) else ()
         automatic_only = not self._include_failure_evidence
         include_automatic = self._include_automatic_failure_evidence
@@ -647,8 +654,8 @@ class ClientInfoService(QObject):
         self._diagnostics = {}
         def save():
             from failure_sampling import cleanup_automatic_failure_samples
-            report['automaticFailureCleanup'] = {mode: cleanup_automatic_failure_samples(self.paths.memory_root(mode), namespace='automatic-v2')
-                for mode in ('nightmare', 'difficult')}
+            report['automaticFailureCleanup'] = {context: cleanup_automatic_failure_samples(root, namespace='automatic-v2')
+                for context, root in failure_stores.items()}
             from client_problem_history import summarize_problem_history
             history = summarize_problem_history(log_dir, recent)
             report['recentProblems'], report['problemHistoryCoverage'] = history['recentProblems'], history['coverage']
