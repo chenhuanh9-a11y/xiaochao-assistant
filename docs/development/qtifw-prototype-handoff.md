@@ -1,5 +1,7 @@
 # Qt Installer Framework 原型交接
 
+当前本地真实 payload 的接续结果见 [试用候选交接](qtifw-real-trial.md)。本文仍保留云端原型当时的未测项与证据边界。
+
 本地 Windows 后续证据及迁移方案见 [Windows 隔离原型](qtifw-windows-prototype.md)。以下保留云端交接时的范围和未测项，不以新证据改写旧结果。
 
 ## 当前范围
