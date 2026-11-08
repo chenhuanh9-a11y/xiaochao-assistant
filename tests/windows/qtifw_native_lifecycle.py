@@ -216,8 +216,9 @@ if old:
 else:
     case,_,target=install('clear');assert report['clear']['exitCode']==0
     data=target/'program/work/nightmare-memory';data.mkdir(parents=True,exist_ok=True)
-    settings=data/'ui-settings.json';settings.write_text('{"synthetic":true}')
-    routes=data/'custom-routes.json';routes.write_text('{"routes":[]}')
+    # ui-settings.json has no ownership schema; use recognized owned settings.
+    settings=data/'chest-auto-tap.json';settings.write_text('{"schema":"xingtu-chest-auto-tap-v1"}')
+    routes=data/'custom-routes.json';routes.write_text('{"schema":"xingtu-custom-routes-v1","maps":{}}')
     unknown=data/'personal.txt';unknown.write_bytes(b'unknown remains')
     maintenance=target/'trial-maintenance.exe'
     rejected=call('clear-without-confirm',[maintenance,'--reject-messages','--confirm-command','purge','DataChoice=clear'])
@@ -227,6 +228,16 @@ else:
     assert unknown.read_bytes()==b'unknown remains'
     assert not (target/'program/星图.exe').exists()
     report['confirmedClearOnlyOwnedData']=True
+    case,_,target=install('clear-untagged');assert report['clear-untagged']['exitCode']==0
+    data=target/'program/work/nightmare-memory';data.mkdir(parents=True,exist_ok=True)
+    settings=data/'ui-settings.json';settings.write_bytes(b'{"synthetic":true}')
+    routes=data/'custom-routes.json';routes.write_bytes(b'{"routes":[]}')
+    code=call('clear-untagged-confirmed',[target/'trial-maintenance.exe','--reject-messages','--confirm-command','purge','DataChoice=clear','ConfirmClear=yes'])
+    assert code==0
+    assert settings.read_bytes()==b'{"synthetic":true}'
+    assert routes.read_bytes()==b'{"routes":[]}'
+    assert not (target/'program/星图.exe').exists()
+    report['confirmedClearRetainsUntaggedSettings']=True
     case,_,target=install('cancel');assert report['cancel']['exitCode']==0
     cancel=case/'cancel.js';cancel.write_text('''eval(installer.readFile(":/metadata/installer-config/controller_js","UTF-8"));
 installer.autoAcceptMessageBoxes();
