@@ -12,8 +12,10 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
-from qtifw_trial_helper import scoped, verify, prepare, clear_data
+from qtifw_trial_helper import scoped, verify
+from probe_qtifw_windows import WindowsProbe, DATA
 
 
 class TrialProbe:
@@ -39,7 +41,7 @@ class TrialProbe:
         return result.returncode
 
     def install(self, label, target, *values):
-        return self.run(label, [self.setup, "--root", target, "--reject-messages", "--confirm-command", "install", *values])
+        return self.run(label, [self.setup, "--reject-messages", "--confirm-command", "install", "TrialTarget=" + str(target), *values])
 
     def seed(self, target):
         work = target / "program/work"
@@ -58,11 +60,36 @@ class TrialProbe:
         assert (target / "program/work/trial-personal.txt").exists() == (choice == "keep")
         return result
 
+    def native_guards(self, target):
+        tool = target / "trial-maintenance.exe"
+        assert self.run("invalid-data-choice", [tool, "--reject-messages", "--confirm-command", "purge", "DataChoice=invalid"]) != 0
+        assert (target / "program/星图.exe").is_file()
+        code = ("import sys;sys.path.insert(0,sys.argv[1]);from resource_transaction import resource_runtime_lease;"
+                "lease=resource_runtime_lease(sys.argv[2]);print('ready',flush=True);sys.stdin.readline();lease.close()")
+        process = subprocess.Popen([sys.executable, "-c", code, str(Path(__file__).resolve().parents[1] / "app"), str(target / "program")],
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        try:
+            assert process.stdout.readline().strip() == "ready"
+            assert self.run("busy-runtime-purge-rejected", [tool, "--reject-messages", "--confirm-command", "purge", "DataChoice=clear"]) != 0
+            assert (target / "program/星图.exe").is_file()
+            assert (target / "program/work/trial-personal.txt").is_file()
+        finally:
+            process.communicate("finish\n", timeout=10)
+        link = target / "fault-injected-hardlink.txt"
+        os.link(target / "program/work/trial-personal.txt", link)
+        try:
+            assert self.run("linked-data-purge-rejected", [tool, "--reject-messages", "--confirm-command", "purge", "DataChoice=clear"]) != 0
+            assert (target / "program/星图.exe").is_file()
+            assert link.read_bytes() == b"Dedicated synthetic trial data\n"
+        finally:
+            link.unlink()  # Remove only this test-created fault, not the data.
+        return dict(invalidChoiceRejected=True, activeLeaseRejected=True, linkedDataRejected=True, programPreserved=True)
+
     def interruption(self, name, fault):
         target = self.target(name)
         log = (self.output / (name + "-interrupt.log")).open("wb")
-        process = subprocess.Popen([str(self.setup), "--root", str(target), "--reject-messages",
-            "--confirm-command", "install", "TrialFault=" + fault], stdout=log, stderr=subprocess.STDOUT)
+        process = subprocess.Popen([str(self.setup), "--reject-messages", "--confirm-command", "install",
+            "TrialTarget=" + str(target), "TrialFault=" + fault], stdout=log, stderr=subprocess.STDOUT)
         try:
             checkpoint = target / "trial-checkpoint.json"
             deadline = time.monotonic() + 150
@@ -93,6 +120,54 @@ class TrialProbe:
                     quarantined=len(result["quarantined"]), userDataPreserved=True,
                     maintenanceCreated=True, uninstallAfterRetryVerified=True)
 
+    def migrations(self):
+        fixtures = self.root / "legacy-fixtures"
+        fixtures.mkdir()
+        compiler = Path(r"E:\codex\tools\inno-setup-6.7.3\compiler\ISCC.exe")
+        # Reuse the already-validated Inno fixture builder, with only this
+        # trial's allowed targets. This is not a production discovery adapter.
+        def fixture_run(label, args):
+            return SimpleNamespace(returncode=self.run(label, args))
+        fixture = SimpleNamespace(root=fixtures, targets=self.root / "targets",
+            identity=self.record["instance"], inno=compiler, run=fixture_run)
+        results = []
+        for case, new_directory, fail in (("same", False, False), ("new", True, False), ("failed", False, True)):
+            old = self.target("legacy-" + case)
+            setup, uninstaller, entry = WindowsProbe.inno_fixture(fixture, "legacy-" + case, old)
+            old_work = old / "work"
+            old_work.mkdir()
+            for name, value in DATA.items():
+                (old_work / name).write_bytes(value)
+            target = self.target("migrated-new-directory") if new_directory else old
+            assert self.install("legacy-" + case + "-guard", old) != 0
+            assert uninstaller.exists() and not (old / ".qtifw-trial-owner.json").exists()
+            assert self.run("legacy-" + case + "-uninstall", [uninstaller, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"]) == 0
+            deadline = time.monotonic() + 15
+            while (old / "unins000.exe").exists() or (old / "unins000.dat").exists():
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("Legacy self-removal did not complete")
+                time.sleep(.1)
+            code = self.install("legacy-" + case + "-qt-install", target, *( ["TrialFault=fail"] if fail else [] ))
+            assert all((old_work / name).read_bytes() == value for name, value in DATA.items())
+            if fail:
+                assert code != 0
+                assert self.run("legacy-known-setup-recovery", [setup, "/CURRENTUSER", "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=" + str(old)]) == 0
+                assert (old / "program/legacy.txt").read_bytes() == b"Synthetic Inno v0, not Xingtu.\n"
+                results.append(dict(case=case, dataPreserved=True, explicitLegacyReinstall=True, automaticRollback=False))
+                continue
+            assert code == 0
+            verify(self.policy, target)
+            self.seed(target)
+            for name, value in DATA.items():
+                (target / "program/work" / name).write_bytes((old_work / name).read_bytes())
+            choice = "clear" if new_directory else "keep"
+            self.purge("legacy-" + case + "-qt-purge", target, choice)
+            assert all((old_work / name).read_bytes() == value for name, value in DATA.items())
+            assert (target / "program/work/settings.json").exists() == (choice == "keep")
+            results.append(dict(case=case, legacyRegistryMatched=True, dataCopied=True,
+                oldDataCopyRetained=True, targetChoice=choice, actualProductInnoMigrated=False))
+        return results
+
     def execute(self):
         try:
             target = self.target("real-payload 中文")
@@ -120,12 +195,14 @@ class TrialProbe:
             assert helpers["XingtuGameWatcher.exe --status"] == 0
             self.report["helperEntryChecks"] = helpers
             self.report["postRuntimeInventory"] = verify(self.policy, target)
+            self.report["nativeAdmission"] = self.native_guards(target)
             self.report["keepUninstall"] = self.purge("keep-uninstall", target, "keep")
             assert self.install("same-target-reinstall", target) == 0
             self.report["reinstall"] = verify(self.policy, target)
             self.report["clearUninstall"] = self.purge("clear-uninstall", target, "clear")
             self.report["beforeExtractRecovery"] = self.interruption("interrupt-before", "before-extract")
             self.report["afterExtractRecovery"] = self.interruption("interrupt-after", "after-extract")
+            self.report["realPayloadFixtureMigration"] = self.migrations()
             self.report["completed"] = True
         except BaseException as error:
             self.report.update(completed=False, failure=type(error).__name__ + ": " + str(error))

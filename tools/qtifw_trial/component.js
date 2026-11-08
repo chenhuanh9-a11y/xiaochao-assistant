@@ -14,6 +14,8 @@ function Component() {
 }
 
 Component.prototype.createOperations = function() {
+    if (installer.value("TrialRootRejected", "") === "true")
+        throw new Error("目录覆盖被拒绝。请使用 TrialTarget=已核准测试目录，而不是 --root。");
     if (installer.isInstaller() && installer.value("TrialPreparedTarget") !== installer.value("TargetDir"))
         throw new Error("测试目标已改变，请使用 --root 重新启动安装器。");
     var helper = installer.value("TrialHelper");

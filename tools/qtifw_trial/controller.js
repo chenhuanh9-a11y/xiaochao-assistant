@@ -20,6 +20,10 @@ function Controller() {
     if (!installer.performOperation("Copy", [":/qtifw-trial/helper.exe", helper]))
         throw new Error("无法读取随包测试工具");
     installer.setValue("TrialHelper", helper);
+    // QtIFW applies --root AFTER construction. Custom key=value parameters are
+    // already available here, so bind the actual target before admission.
+    var requested = installer.value("TrialTarget", "");
+    if (installer.isInstaller() && requested !== "") installer.setValue("TargetDir", requested);
     if (installer.value("DataChoice", "") === "") installer.setValue("DataChoice", "keep");
     if (installer.value("DataChoice") !== "keep" && installer.value("DataChoice") !== "clear")
         throw new Error("请选择保留或清除测试资料");
@@ -36,6 +40,14 @@ function Controller() {
     }
     // Disarm a stale prior choice on every maintenance/update invocation.
     trialRun("select-data", "keep", "none");
+    var admittedTarget = installer.value("TargetDir");
+    function normal(path) { return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase(); }
+    installer.valueChanged.connect(function(key, value) {
+        if (key === "TargetDir" && normal(value) !== normal(admittedTarget)) {
+            installer.setValue("TrialRootRejected", "true");
+            installer.setValue("TargetDir", admittedTarget);
+        }
+    });
     installer.installationFinished.connect(function() { trialRun("verify"); });
     installer.uninstallationStarted.connect(function() {
         trialRun("select-data", installer.value("DataChoice", "keep"), "purge");

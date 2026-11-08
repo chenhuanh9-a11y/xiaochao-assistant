@@ -18,9 +18,22 @@ import uuid
 
 if not getattr(sys, "frozen", False):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
-from resource_transaction import _safe, resource_write_lock, assert_resources_ready
+from resource_transaction import _safe, resource_write_lock, assert_resources_ready, rename_no_replace
 
 OWNER = ".qtifw-trial-owner.json"
+
+
+def write_owner(target, owner, *, new=False):
+    marker = _safe(target / OWNER)
+    temporary = _safe(target / (OWNER + "." + uuid.uuid4().hex + ".new"))
+    with temporary.open("x", encoding="utf-8") as stream:
+        json.dump(owner, stream)
+        stream.flush()
+        os.fsync(stream.fileno())
+    if new:
+        rename_no_replace(temporary, marker)
+    else:
+        temporary.replace(marker)
 
 
 def scoped(policy, target):
@@ -79,10 +92,10 @@ def prepare(policy, target):
             raise ValueError("unowned-program-collision")
         target.mkdir(parents=True, exist_ok=True)
         owner = dict(instance=policy["instance"], payloadSource=policy["payloadSource"], phase="installing")
-        with marker.open("x", encoding="utf-8") as stream:
-            json.dump(owner, stream)
-            stream.flush()
-            os.fsync(stream.fileno())
+        write_owner(target, owner, new=True)
+    if owner["phase"] != "installing":
+        owner["phase"] = "installing"
+        write_owner(target, owner)
     # All present program files were absent before this marked first attempt.
     # Preserve them (including torn/changed files) outside the new component.
     moved = []
@@ -107,13 +120,7 @@ def verify(policy, target):
         if path.stat().st_size != row["bytes"] or hashlib.sha256(path.read_bytes()).hexdigest() != row["sha256"]:
             raise ValueError("program-byte-mismatch:" + name)
     owner["phase"] = "complete"
-    marker = _safe(target / OWNER)
-    temporary = marker.with_name(OWNER + ".new")
-    with temporary.open("x", encoding="utf-8") as stream:
-        json.dump(owner, stream)
-        stream.flush()
-        os.fsync(stream.fileno())
-    temporary.replace(marker)
+    write_owner(target, owner)
     return dict(verified=True, files=len(entries))
 
 
@@ -187,6 +194,9 @@ def main():
         if args.action == "prepare":
             result = prepare(policy, args.target)
         elif args.action == "verify":
+            target, _ = bound_owner(policy, args.target)
+            if not _safe(target / "trial-maintenance.exe").is_file():
+                raise ValueError("maintenance-not-created")
             result = verify(policy, args.target)
         elif args.action == "select-data":
             bound_owner(policy, args.target)
