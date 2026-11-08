@@ -153,7 +153,9 @@ class TrialProbe:
             assert (target / "program/work/trial-personal.txt").is_file()
         finally:
             process.communicate("finish\n", timeout=10)
-        link = target / "fault-injected-hardlink.txt"
+        # Internal aliases are valid author snapshots; an alias outside the
+        # installation must still prevent native removal.
+        link = self.output / "fault-injected-hardlink.txt"
         os.link(target / "program/work/trial-personal.txt", link)
         try:
             assert self.run("linked-data-purge-rejected", [tool, "--reject-messages", "--confirm-command", "purge", "DataChoice=clear"]) != 0
