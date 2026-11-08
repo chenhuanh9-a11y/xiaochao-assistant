@@ -1,7 +1,8 @@
 // All mutations are confined by the helper's baked local trial policy.
-function trialRun(action, choice) {
+function trialRun(action, choice, operation) {
     var args = [action, installer.value("TargetDir")];
     if (choice) args.push(choice);
+    if (operation) args.push(operation);
     var result = installer.execute(installer.value("TrialHelper"), args);
     console.log("TRIAL_" + action + ": " + result);
     if (result.length !== 2 || result[1] !== 0)
@@ -20,20 +21,23 @@ function Controller() {
         throw new Error("无法读取随包测试工具");
     installer.setValue("TrialHelper", helper);
     if (installer.value("DataChoice", "") === "") installer.setValue("DataChoice", "keep");
+    if (installer.value("DataChoice") !== "keep" && installer.value("DataChoice") !== "clear")
+        throw new Error("请选择保留或清除测试资料");
     if (installer.isInstaller()) {
         trialRun("prepare");
         installer.setValue("TrialPreparedTarget", installer.value("TargetDir"));
         // Only after the native helper has admitted this owned, isolated target.
         installer.setMessageBoxAutomaticAnswer("OverwriteTargetDirectory", QMessageBox.Yes);
         installer.setDefaultPageVisible(QInstaller.TargetDirectory, false);
+    } else {
+        // A signal callback exception does not stop QtIFW. Constructor failure
+        // happens before native operations, including for command-line purge.
+        trialRun("inspect-data");
     }
+    // Disarm a stale prior choice on every maintenance/update invocation.
+    trialRun("select-data", "keep", "none");
     installer.installationFinished.connect(function() { trialRun("verify"); });
     installer.uninstallationStarted.connect(function() {
-        if (installer.value("DataChoice") !== "keep" && installer.value("DataChoice") !== "clear")
-            throw new Error("请选择保留或清除测试资料");
-        trialRun("inspect-data");
-    });
-    installer.uninstallationFinished.connect(function() {
-        trialRun("data", installer.value("DataChoice", "keep"));
+        trialRun("select-data", installer.value("DataChoice", "keep"), "purge");
     });
 }

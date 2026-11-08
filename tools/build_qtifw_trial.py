@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -22,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = "org.xingtu.qtifw.realtrial"
 
 
-def stage_payload(stage, record, output):
+def stage_payload(stage, record, output, *, payload_stage=None):
     """Use the original installed inventory; exclude every active data plane."""
     from managed_base_resources import CANDIDATE
     compiled = validate_managed_runtime_reuse(stage, record, record["source"])
@@ -35,12 +36,17 @@ def stage_payload(stage, record, output):
             original = name[len(CANDIDATE + "/payload/"):]
         else:
             original = name
-        source = build._local_file(stage, original)
+        source = build._local_file(payload_stage, name) if payload_stage else build._local_file(stage, original)
         if source.stat().st_size != row["bytes"] or build.sha256(source) != row["sha256"]:
             raise ValueError("Frozen file changed during QtIFW staging: " + name)
         target = data / name
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
+        if payload_stage:
+            # Read-only build inputs only; native archives materialize regular
+            # independent files. Never link an installed runtime/user directory.
+            os.link(source, target)
+        else:
+            shutil.copy2(source, target)
         if build.sha256(target) != row["sha256"]:
             raise ValueError("QtIFW staged file differs: " + name)
     return compiled, inventory
@@ -52,6 +58,7 @@ def main():
     parser.add_argument("--stage", type=Path, required=True)
     parser.add_argument("--ifw-bin", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--payload-stage", type=Path, help="Reuse verified read-only staged build inputs on the same volume")
     args = parser.parse_args()
     if build._git("status", "--porcelain").strip():
         raise ValueError("Build from a clean committed checkout")
@@ -62,7 +69,7 @@ def main():
     _safe(output)
     record = json.loads(args.build_record.read_bytes())
     output.mkdir(parents=True)
-    compiled, inventory = stage_payload(args.stage, record, output)
+    compiled, inventory = stage_payload(args.stage, record, output, payload_stage=args.payload_stage)
     instance = uuid.uuid4().hex
     (output / "targets").mkdir()
     (output / ".qtifw-trial-scope").write_text(instance + "\n", encoding="ascii")

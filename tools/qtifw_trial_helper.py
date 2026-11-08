@@ -177,9 +177,10 @@ def receipt(policy, target, name, value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "verify", "inspect-data", "data", "pause", "fail"))
+    parser.add_argument("action", choices=("prepare", "verify", "inspect-data", "select-data", "undo-data", "noop", "data", "pause", "fail"))
     parser.add_argument("target", type=Path)
     parser.add_argument("choice", nargs="?", default="keep")
+    parser.add_argument("operation", nargs="?", default="none", choices=("none", "purge"))
     args = parser.parse_args()
     policy = json.loads(Path(__file__).with_name("qtifw-trial-policy.json").read_text(encoding="utf-8"))
     try:
@@ -187,11 +188,27 @@ def main():
             result = prepare(policy, args.target)
         elif args.action == "verify":
             result = verify(policy, args.target)
-        elif args.action == "data":
+        elif args.action == "select-data":
+            bound_owner(policy, args.target)
+            if args.choice not in {"keep", "clear"}:
+                raise ValueError("explicit-data-choice-required")
+            result = dict(choice=args.choice, operation=args.operation)
+        elif args.action == "noop":
+            bound_owner(policy, args.target)
+            result = dict(armed=True)
+        elif args.action in {"data", "undo-data"}:
             target, owner = bound_owner(policy, args.target)
+            choice = args.choice
+            if args.action == "undo-data":
+                selected = json.loads(_safe(target / "trial-select-data.json").read_bytes())
+                if selected.get("operation") != "purge":
+                    print('{"skipped":"update-or-install-rollback"}')
+                    return 0
+                choice = selected["choice"]
             if owned_program(policy, target):
                 raise ValueError("native-uninstall-not-complete")
-            result = clear_data(policy, args.target, args.choice)
+            result = clear_data(policy, args.target, choice)
+            receipt(policy, args.target, "data", dict(success=True, **result))
         elif args.action == "inspect-data":
             target, paths = data_files(policy, args.target)
             with resource_write_lock(target / "program"):
