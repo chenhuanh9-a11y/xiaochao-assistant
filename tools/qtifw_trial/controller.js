@@ -88,20 +88,23 @@ Controller.prototype.IntroductionPageCallback = function() {
 };
 
 Controller.prototype.DynamicInstallLocationCallback = function() {
-    gui.button(buttons.BackButton).visible = false;
+    var back = gui.findChild(gui, "__qt__passive_wizardbutton0");
+    if (back) back.visible = false;
 };
 
 Controller.prototype.ReadyForInstallationPageCallback = function() {
     if (installer.isCommandLineInstance()) return;
     var page = gui.currentPageWidget();
     if (installer.isInstaller()) {
-        gui.button(buttons.BackButton).visible = true;
+        var back = gui.findChild(gui, "__qt__passive_wizardbutton0");
+        if (back) back.visible = true;
         page.title = "确认安装星图";
         page.subTitle = "安装位置：" + installer.toNativeSeparators(installer.value("TargetDir"));
         return;
     }
     if (!installer.isUninstaller()) return;
-    gui.button(buttons.BackButton).visible = false;
+    var back = gui.findChild(gui, "__qt__passive_wizardbutton0");
+    if (back) back.visible = false;
     page.title = "彻底卸载星图";
     page.subTitle = "点击“彻底卸载”后开始移除。";
     var summary = page ? gui.findChild(page, "RemoveAllMsgLabel") : null;
@@ -109,7 +112,7 @@ Controller.prototype.ReadyForInstallationPageCallback = function() {
         summary.text = "将删除以下安装目录及其中的程序、地图、设置、缓存和日志：\n\n" +
             installer.toNativeSeparators(installer.value("TargetDir")) +
             "\n\n同时移除桌面、开始菜单入口和卸载项。安装目录外的文件保留。";
-    gui.button(buttons.CommitButton).text = "彻底卸载";
+    gui.setWizardPageButtonText(QInstaller.ReadyForInstallation, buttons.CommitButton, "彻底卸载");
 };
 
 Controller.prototype.FinishedPageCallback = function() {
