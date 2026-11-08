@@ -77,6 +77,8 @@ def _children(root, relative):
 
 def _receipt(path, package):
     value = upgrade._read_json(path)
+    if files.standard_author_mode(package):
+        files.standard_author_descriptor(value)
     if value.get("packageId") != package or value.get("revision") != 1:
         _reject("removal-invalid-receipt")
     upgrade._digest(value.get("archiveSha256"))
@@ -141,9 +143,10 @@ def _legacy_owner(name):
 
 def _plan_locked(root, package_id=None, cancelled=None):
     assert_resources_ready(root)
-    if package_id is not None and package_id not in files.PACKAGE_IDS:
+    if package_id is not None and not files.is_package_id(package_id):
         _reject("unsupported-author-package")
-    selected = set(files.PACKAGE_IDS) if package_id is None else {package_id}
+    registered_ids = files.installed_package_ids(root)
+    selected = registered_ids if package_id is None else {package_id}
     protected = set(managed_base_inventory(root))
     active, histories, witnesses, archives = {}, [], {}, {}
 
@@ -151,7 +154,7 @@ def _plan_locked(root, package_id=None, cancelled=None):
         value = upgrade._read_json(path)
         digest = upgrade._digest(value.get("archiveSha256"))
         archives.setdefault(package, set()).add(digest)
-    for package in sorted(files.PACKAGE_IDS):
+    for package in sorted(registered_ids):
         path = _target(root, f"work/map-packages/{package}.json")
         if not path.exists():
             continue
@@ -343,16 +346,17 @@ def inspect_package_removal(install_root, package_id=None, *, cancelled=None):
 def managed_packages_snapshot(install_root, *, cancelled=None):
     with resource_read_lock(install_root, wait=True, cancelled=lambda: files._check_cancelled(cancelled)) as root:
         plan = _plan_locked(Path(root), cancelled=cancelled)
+        standard = files.installed_standard_authors(root)
         result = []
         for package in plan["registeredPackageIds"]:
             rows = [row for row in plan["entries"] if row["packageId"] == package]
             active = _target(Path(root), f"work/map-packages/{package}.json").exists()
             inventory = _receipt(_target(Path(root), f"work/map-packages/{package}.json"), package)[0] if active else {}
             modified = any(row["reason"] == "modified-or-unverified" and row["path"].casefold() in inventory for row in plan["preserved"])
-            result.append(dict(packageId=package, title=PACKAGE_NAMES.get(package, package),
+            result.append(dict(packageId=package, title=PACKAGE_NAMES.get(package, standard.get(package, {}).get('displayName', package)),
                 status="incomplete" if modified else "installed" if active else "managed-remnants", canRemove=bool(rows),
                 fileCount=len(rows), bytes=sum(row["bytes"] for row in rows),
-                mode="difficult" if package.startswith("difficult-") else "nightmare"))
+                mode=files.standard_author_mode(package) or ("difficult" if package.startswith("difficult-") else "nightmare")))
         return result
 
 
@@ -390,7 +394,7 @@ def _load_pending(root):
             or journal["rootIdentity"] != upgrade._identity(root.stat())
             or journal["status"] not in {"preparing", "prepared", "committed", "rolled-back"}
             or not isinstance(journal["packageIds"], list) or not journal["packageIds"]
-            or any(not isinstance(p, str) or p not in files.PACKAGE_IDS for p in journal["packageIds"])
+            or any(not files.is_package_id(p) for p in journal["packageIds"])
             or not isinstance(journal["entries"], list) or not 1 <= len(journal["entries"]) <= MAX_ENTRIES):
         _reject("removal-invalid-journal")
     seen = set()

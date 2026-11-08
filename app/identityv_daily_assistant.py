@@ -700,8 +700,9 @@ def inspect_display_environment(hwnd: int | None) -> dict:
 
 
 def normalize_route_profile_id(value) -> str:
+    from standard_author_package import standard_author_mode
     candidate = str(value or "").strip()
-    if gallery_of(candidate):
+    if gallery_of(candidate) or standard_author_mode(candidate):
         return candidate  # A custom map gallery; availability is checked where it is used.
     return candidate if candidate in ROUTE_PROFILE_LABELS or candidate == SHARED_STRUCTURE_PROFILE_ID else DEFAULT_ROUTE_PROFILE_ID
 
@@ -5185,7 +5186,8 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
                          in self.custom_galleries().galleries()) > 1)
             suffix = f' [{gallery}]' if duplicate else ''
             return f'自定义 · {name or "已删除的图库"}{suffix}'
-        return ROUTE_PROFILE_LABELS.get(profile, str(profile))
+        catalog_profile = getattr(getattr(self, 'author_route_catalog', None), 'profiles', {}).get(profile)
+        return ROUTE_PROFILE_LABELS.get(profile, getattr(catalog_profile, 'display_name', str(profile)))
 
     def _restore_route_profile_preference(self):
         selected = normalize_route_profile_id(self.settings.get('routeProfileId', DEFAULT_ROUTE_PROFILE_ID))
@@ -5216,7 +5218,8 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
                         and getattr(self,'author_route_catalog',None) is not None
                         and profile in self.author_route_catalog.profiles
                         and self.author_route_catalog.profile_has_assets(profile))]
-                return tuple((profile,ROUTE_PROFILE_LABELS[profile]) for profile in installed) or ((SHARED_STRUCTURE_PROFILE_ID,ROUTE_PROFILE_LABELS[SHARED_STRUCTURE_PROFILE_ID]),)
+                return tuple((profile, ROUTE_PROFILE_LABELS.get(profile) or self.author_route_catalog.profiles[profile].display_name)
+                             for profile in installed) or ((SHARED_STRUCTURE_PROFILE_ID,ROUTE_PROFILE_LABELS[SHARED_STRUCTURE_PROFILE_ID]),)
             profile = self._shared_display_profile_id() if getattr(self, 'author_route_catalog', None) is not None else SHARED_STRUCTURE_PROFILE_ID
             return ((profile, ROUTE_PROFILE_LABELS[profile]),)
         return tuple((key,label) for key,label in ROUTE_PROFILE_OPTIONS
@@ -29430,7 +29433,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
             binding = optional.binding(preferred,item.id,self.current_floor) if optional is not None else None
             if binding is not None:
                 suffix = '原图' if binding['usable'] else '原图（该层配准未通过，仅浏览）'
-                self._show_image(binding['path'],f'{item.name} · {ROUTE_PROFILE_LABELS[preferred]} · {suffix}',(420,500))
+                self._show_image(binding['path'],f'{item.name} · {self._route_profile_label(preferred)} · {suffix}',(420,500))
                 return
             native = getattr(self, 'difficult_native_context', None)
             if native is not None:
@@ -29486,7 +29489,7 @@ class DailyAssistant(NativeResourceValidationMixin, BaseDisplayIntegrationMixin,
                         and self._route_profile_validation_spec(profile_id, map_id, floor, np.eye(3), image) is not None):
                     return dict(routeSource=image, sourcePath=Path(path), routeProfileId=profile_id,
                         matrixDisplayToReference=np.linalg.inv(source_basis) @ display_basis,
-                        displayKind='author-route', displayLabel=ROUTE_PROFILE_LABELS.get(profile_id, profile_id),
+                        displayKind='author-route', displayLabel=self._route_profile_label(profile_id),
                         authorStatus='none', displayResourceKey=(getattr(self, '_base_display_epoch', 0), profile_id, str(path), id(image)))
             except (OSError, ValueError, KeyError, TypeError, cv2.error):
                 pass # Keep recognition independent of optional display files.

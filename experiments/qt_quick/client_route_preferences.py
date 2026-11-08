@@ -1,5 +1,6 @@
 """Display preferences using the existing catalog and coordinate declarations."""
 from pathlib import Path
+from standard_author_package import standard_author_mode
 
 
 COFFIN_CONTEXT = ("zhan10-coffin", "nightmare-01", "1")
@@ -168,7 +169,8 @@ def prepare_display_layer(engine, map_id, floor, preferred, *, variant_id="varia
                         or shared_route_validation_spec(owner, effective, map_id, floor, np.eye(3), pixels) is None):
                     raise ValueError("author-display-canvas-or-image-unavailable")
                 return metadata(dict(pixels=pixels, matrixDisplayToReference=np.linalg.inv(source) @ display,
-                    resourceIdentity=str(path), displayKind="author-route", displayLabel=effective,
+                    resourceIdentity=str(path), displayKind="author-route",
+                    displayLabel=profile.display_name if standard_author_mode(effective) else effective,
                     referencePath=str(path), routeProfileId=effective,
                     variantId=variant_id if coffin else None), fallback_reason=failure)
             except (OSError, ValueError, KeyError, TypeError, cv2.error):

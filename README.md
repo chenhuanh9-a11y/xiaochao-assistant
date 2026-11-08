@@ -42,6 +42,8 @@ py -3.13 -m venv .venv
 
 真实命令、输入输出和缺口见 [地图处理流程](docs/map-processing.md)。
 
+新增作者可使用[标准作者图包](docs/standard-author-packages.md)：准备楼层图片与坐标绑定后制成 ZIP，导入后由安装记录发现作者，不需要逐个修改程序名单。旧客户端需先升级到支持该格式的版本。
+
 | 入口 | 用途 |
 | --- | --- |
 | `skills/update-helper-maps/` | 项目维护技能：中间manifest契约、差异计划、内容寻址staging及fixture测试。 |

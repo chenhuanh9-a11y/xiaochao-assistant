@@ -40,7 +40,7 @@ class OptionalAuthorDisplays:
         if self.catalog is not None:
             self.catalog.profiles = dict(catalog.profiles)
             self.catalog._raw = copy.deepcopy(catalog._raw)
-        for profile in author_profiles_for_mode(mode):
+        for profile in author_profiles_for_mode(mode, self.root):
             folder = self.root/'references/author-packs'/profile
             sidecar = folder/'catalog.json'
             if not sidecar.is_file():

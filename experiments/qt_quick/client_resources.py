@@ -74,9 +74,11 @@ def package_problem(error, action, *, online=False, recovery_required=False):
                 phase="operation", kind="error", errorCode=code, errorDetails=fields["details"])
 
 
-def package_title(package_id):
+def package_title(package_id, inspection=None):
     if package_id == "all-managed":
         return "全部已导入图包"
+    if importer.standard_author_mode(package_id):
+        return (inspection or {}).get('standardAuthor', {}).get('displayName', '作者图包')
     return manager.PACKAGE_NAMES.get(package_id, "待确认的图包")
 
 
@@ -680,7 +682,7 @@ class ResourceService(QObject):
                 self._message = "请确认是否更新这个图包。"
                 self.changed.emit()
                 self.confirmationRequested.emit("更新图包", "将更新“%s”中的 %s 个文件，并新增 %s 个文件。\n\n只替换能确认属于这个图包、且没有被改动的文件。处理失败时会恢复尚未完成的更改；成功后会清理临时文件。\n点击取消可返回，不会开始更新。" % (
-                    package_title(inspection["packageId"]), len(inspection["replaceFiles"]), len(inspection["missingFiles"]))
+                    package_title(inspection["packageId"], inspection), len(inspection["replaceFiles"]), len(inspection["missingFiles"]))
                     + ("\n\n确认后软件会正常退出再导入，完成后请重新打开查看结果。" if self._import_launcher is not None and not importer.supports_live_author_import(inspection) else ""))
                 return
             self._install(path, inspection)

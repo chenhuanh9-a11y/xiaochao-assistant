@@ -15,6 +15,8 @@ import tempfile
 import unicodedata
 import zipfile
 from packaged_product_identity import CLOSED_EXE_NAMES
+from standard_author_package import (standard_author_mode, standard_author_descriptor,
+                                     standard_image_roots, validate_standard_author_payload)
 from resource_transaction import (ResourceTransactionError, resource_read_lock,
                                   resource_write_lock, assert_resources_ready,
                                   preflight_hardlinks)
@@ -64,9 +66,103 @@ DIFFICULT_AUTHOR_DEPENDENCIES = {
 }
 
 
-def author_profiles_for_mode(mode):
-    return tuple(profile for package, profile in AUTHOR_PACKAGES.items()
-                 if package.startswith(str(mode) + "-"))
+def is_package_id(package_id):
+    return isinstance(package_id, str) and (package_id in PACKAGE_IDS or standard_author_mode(package_id) is not None)
+
+
+def installed_standard_authors(root):
+    """Discover only receipt-owned packages; a loose directory never registers an author."""
+    root = Path(root)
+    found = {}
+    folder = _target(root, 'work/map-packages')
+    if not folder.is_dir():
+        return found
+    for path in sorted(folder.glob('author-*.json')):
+        package_id = path.stem
+        if standard_author_mode(package_id) is None:
+            continue
+        try:
+            rows, _ = _owned_inventory(root, package_id)
+            if rows:
+                found[package_id] = standard_author_descriptor(_json(_target(root, f'work/map-packages/{package_id}.json').read_bytes()))
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
+    return found
+
+
+def installed_package_ids(root):
+    return PACKAGE_IDS | set(installed_standard_authors(root))
+
+
+def author_image_roots(package_id):
+    return LIVE_AUTHOR_IMAGE_ROOTS.get(package_id, standard_image_roots(package_id))
+
+
+def author_profiles_for_mode(mode, resource_root=None):
+    legacy = tuple(profile for package, profile in AUTHOR_PACKAGES.items()
+                   if package.startswith(str(mode) + "-"))
+    if resource_root is None:
+        return legacy
+    root = Path(resource_root)
+    install_root = root.parent if root.name == '_internal' else root
+    return legacy + tuple(key for key, row in installed_standard_authors(install_root).items() if row['mode'] == mode)
+
+
+def build_standard_author_package(prepared_directory, install_root, output_path):
+    """Pack prepared metadata/pixels against an installed base; never alter that base."""
+    source = Path(prepared_directory).absolute()
+    _no_links(source)
+    declaration_path = _target(source, MANIFEST)
+    if declaration_path.stat().st_size > 2 * 1024 * 1024:
+        raise ImportRejected('manifest-missing-or-too-large')
+    metadata = _json(declaration_path.read_bytes())
+    try:
+        declaration = standard_author_descriptor(metadata)
+    except ValueError as error:
+        raise ImportRejected(str(error)) from error
+    if type(metadata.get('revision')) is not int or metadata['revision'] != 1:
+        raise ImportRejected('unsupported-package-version')
+    output = Path(output_path).absolute()
+    _no_links(output)
+    if output.is_relative_to(source):
+        raise ImportRejected('package-output-inside-prepared-source')
+    dependencies = DIFFICULT_AUTHOR_DEPENDENCIES if declaration['mode'] == 'difficult' else BASE_DEPENDENCIES
+    with resource_read_lock(install_root, wait=True) as locked_root:
+        root = Path(locked_root)
+        rows = []
+        total = 0
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix='author-package-', dir=output.parent) as temporary:
+            archive_path = Path(temporary) / 'package.zip'
+            with zipfile.ZipFile(archive_path, 'x', zipfile.ZIP_DEFLATED) as archive:
+                for path in sorted(source.rglob('*')):
+                    _no_links(path)
+                    if path.is_dir() or path == declaration_path:
+                        continue
+                    relative = _relative(path.relative_to(source).as_posix())
+                    if not _allowed(metadata['packageId'], relative) or path.stat().st_size > MAX_FILE_BYTES:
+                        raise ImportRejected('invalid-standard-author-source-file')
+                    data = path.read_bytes()
+                    total += len(data)
+                    if len(data) > MAX_FILE_BYTES or total > MAX_TOTAL_BYTES or len(rows) >= MAX_FILES:
+                        raise ImportRejected('archive-expanded-size-limit')
+                    rows.append(dict(path=relative, bytes=len(data), sha256=hashlib.sha256(data).hexdigest()))
+                    archive.writestr('data/' + relative, data)
+                metadata['files'] = rows
+                metadata['requiresFiles'] = []
+                for relative in sorted(dependencies):
+                    path = _target(root, relative)
+                    if path.stat().st_size > MAX_FILE_BYTES:
+                        raise ImportRejected('invalid-dependency-path')
+                    data = path.read_bytes()
+                    metadata['requiresFiles'].append(dict(path=relative, bytes=len(data), sha256=hashlib.sha256(data).hexdigest()))
+                archive.writestr(MANIFEST, json.dumps(metadata, ensure_ascii=False, indent=2).encode('utf-8'))
+            # Use the player's exact validator before publishing the completed ZIP.
+            with _open_archive(archive_path) as (archive, digest):
+                inspection = _validate(archive, root)
+            os.link(archive_path, output)  # Exclusive publication, without overwriting an existing package.
+            return dict(packageId=metadata['packageId'], output=str(output), bytes=output.stat().st_size,
+                        sha256=digest, fileCount=inspection['fileCount'])
 
 
 # Exact canonical r6 runtime closure: 58 native floors and two legacy-clean floors.
@@ -279,7 +375,7 @@ def _relative(value: str) -> str:
 def _allowed(package_id: str, path: str) -> bool:
     if package_id == "difficult-zhan10" and path in DIFFICULT_R6_PATHS:
         return True
-    author = AUTHOR_PACKAGES.get(package_id)
+    author = AUTHOR_PACKAGES.get(package_id) or (package_id if standard_author_mode(package_id) else None)
     if author is not None:
         prefix = f"_internal/assets/authors/{author}/"
         if path.startswith(prefix):
@@ -368,6 +464,11 @@ def _owned_inventory(root: Path, package_id: str):
         raise ImportRejected("invalid-installed-package-receipt")
     raw = path.read_bytes()
     receipt = _json(raw)
+    if standard_author_mode(package_id):
+        try:
+            standard_author_descriptor(receipt)
+        except ValueError as error:
+            raise ImportRejected(str(error)) from error
     if (receipt.get("packageId") != package_id or receipt.get("revision") != 1
             or not isinstance(receipt.get("archiveSha256"), str)
             or not re.fullmatch(r"[0-9a-f]{64}", receipt["archiveSha256"])):
@@ -405,19 +506,26 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None) -
     if info is None or info.filename != MANIFEST or info.file_size > 2 * 1024 * 1024:
         raise ImportRejected("manifest-missing-or-too-large")
     metadata = _json(archive.read(info))
-    if (type(metadata.get("schemaVersion")) is not int or metadata["schemaVersion"] != 1
+    standard = None
+    if metadata.get('schemaVersion') == 2:
+        try:
+            standard = standard_author_descriptor(metadata)
+        except ValueError as error:
+            raise ImportRejected(str(error)) from error
+    if (type(metadata.get("schemaVersion")) is not int or metadata["schemaVersion"] not in (1, 2)
             or type(metadata.get("revision")) is not int or metadata["revision"] != 1
-            or metadata.get("packageId") not in PACKAGE_IDS):
+            or (standard is None and metadata.get("packageId") not in PACKAGE_IDS)):
         raise ImportRejected("unsupported-package-version")
     package_id = metadata["packageId"]
     compatibility = metadata.get("clientCompatibility")
-    if (not isinstance(compatibility, dict) or compatibility != CLIENT_COMPATIBILITY
+    if standard is None and (not isinstance(compatibility, dict) or compatibility != CLIENT_COMPATIBILITY
             or type(compatibility.get("minimumBuild")) is not int
             or type(compatibility.get("maximumBuild")) is not int):
         raise ImportRejected("unsupported-client-compatibility")
     rows = _rows(metadata.get("files"))
     dependencies = _rows(metadata.get("requiresFiles"), dependencies=True)
-    required = DIFFICULT_AUTHOR_DEPENDENCIES if package_id in {"difficult-aichicu", "difficult-suju-speed"} else BASE_DEPENDENCIES
+    required = DIFFICULT_AUTHOR_DEPENDENCIES if (package_id in {"difficult-aichicu", "difficult-suju-speed"}
+        or standard is not None and standard['mode'] == 'difficult') else BASE_DEPENDENCIES
     if not required <= {r["path"] for r in dependencies.values()}:
         raise ImportRejected("base-dependencies-not-declared")
     version_path = _target(root, "_internal/version.json")
@@ -430,7 +538,7 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None) -
     numeric = version.get("numericVersion")
     build = re.fullmatch(r"1\.0\.0\.([1-9][0-9]{0,4})", numeric) if isinstance(numeric, str) else None
     # 1.0.1 changes only the desktop UI and update notices, not the resource layout.
-    if version.get("displayVersion") not in SUPPORTED_DISPLAY_VERSIONS or build is None or int(build[1]) > 65535:
+    if standard is None and (version.get("displayVersion") not in SUPPORTED_DISPLAY_VERSIONS or build is None or int(build[1]) > 65535):
         raise ImportRejected("unsupported-client-version")
     for row in dependencies.values():
         dependency = _target(root, row["path"])
@@ -467,7 +575,7 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None) -
                 if (old is None or not target.is_file() or target.stat().st_size != old["bytes"]
                         or _sha(target) != old["sha256"]):
                     raise ImportRejected(f"existing-data-conflict: {path}")
-                for other in PACKAGE_IDS - {package_id}:
+                for other in installed_package_ids(root) - {package_id}:
                     other_rows, _ = _owned_inventory(root, other)
                     if path.casefold() in other_rows:
                         raise ImportRejected(f"shared-package-ownership-conflict: {path}")
@@ -498,12 +606,32 @@ def _validate(archive: zipfile.ZipFile, root: Path, stage: Path | None = None) -
         # Reading through EOF also performs zipfile's CRC check.
         if count != row["bytes"] or digest.hexdigest() != row["sha256"]:
             raise ImportRejected(f"file-integrity-mismatch: {path}")
-    return {"packageId": package_id, "revision": 1, "files": list(rows.values()),
+    if standard is not None:
+        def read_payload(path):
+            row = rows.get(path.casefold())
+            if row is None:
+                raise ImportRejected('standard-author-file-not-declared')
+            return archive.read(entries[('data/' + path).casefold()])
+
+        def read_payload_json(path):
+            if rows.get(path.casefold(), {}).get('bytes', MAX_FILE_BYTES) > 2 * 1024 * 1024:
+                raise ImportRejected('standard-author-json-too-large')
+            return _json(read_payload(path))
+
+        try:
+            validate_standard_author_payload(standard, read_payload_json, read_payload,
+                lambda path: _json(_target(root, path).read_bytes()), {row['path'] for row in rows.values()})
+        except (ValueError, TypeError, KeyError, OSError) as error:
+            raise ImportRejected(str(error)) from error
+    result = {"packageId": package_id, "revision": 1, "files": list(rows.values()),
             "requiresFiles": list(dependencies.values()),
             "fileCount": len(rows), "bytes": total, "alreadyPresent": existing,
             "replaceFiles": replacements, "missingFiles": missing,
             "previousReceiptSha256": receipt_digest,
             "restartRequired": True, "authentication": "not-signed; SHA256 integrity only"}
+    if standard is not None:
+        result.update(schemaVersion=2, packageType='author-display', standardAuthor=standard)
+    return result
 
 
 @contextmanager
@@ -663,9 +791,9 @@ def rollback_package_upgrade(install_root, transaction_id, *, application_stoppe
 
 def _live_author_path(package_id, path):
     """Only display pixels and the two exact sidecars of each optional author."""
-    if path.startswith(LIVE_AUTHOR_IMAGE_ROOTS.get(package_id, ())):
+    if path.startswith(author_image_roots(package_id)):
         return PurePosixPath(path).suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
-    author = AUTHOR_PACKAGES.get(package_id)
+    author = AUTHOR_PACKAGES.get(package_id) or (package_id if standard_author_mode(package_id) else None)
     return author is not None and path in {
         f"_internal/references/author-packs/{author}/{name}" for name in AUTHOR_SIDECARS
     }
@@ -681,7 +809,7 @@ def supports_live_author_import(result) -> bool:
         return False
     package_id = result.get('packageId')
     replacements, missing = result.get('replaceFiles'), result.get('missingFiles')
-    if (not isinstance(package_id, str) or package_id not in LIVE_AUTHOR_IMAGE_ROOTS
+    if (not isinstance(package_id, str) or not author_image_roots(package_id)
             or not isinstance(replacements, list)
             or not isinstance(missing, list)):
         return False
@@ -836,13 +964,18 @@ if __name__ == "__main__":
     import sys
     sys.modules["star_map_import"] = sys.modules[__name__]
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["inspect", "install", "recover", "rollback"])
+    parser.add_argument("action", choices=["inspect", "install", "recover", "rollback", "pack"])
     parser.add_argument("archive")
     parser.add_argument("install_root")
     parser.add_argument("--application-closed", action="store_true")
+    parser.add_argument("--output", help="Output ZIP for pack; archive is the prepared directory")
     args = parser.parse_args()
     try:
-        if args.action == "inspect":
+        if args.action == 'pack':
+            if not args.output:
+                parser.error('pack requires --output')
+            result = build_standard_author_package(args.archive, args.install_root, args.output)
+        elif args.action == "inspect":
             result = inspect_package(args.archive, args.install_root)
         elif args.action == "recover":
             result = recover_package_upgrade(args.install_root, application_stopped=args.application_closed)

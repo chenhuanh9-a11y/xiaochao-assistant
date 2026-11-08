@@ -23,6 +23,9 @@ import numpy as np
 
 
 APP = Path(__file__).parents[1] / 'app'
+sys.path.insert(0, str(APP))
+from base_display_integration import BaseDisplayIntegrationMixin
+from native_resource_validation import NativeResourceValidationMixin
 SHARED = 'shared-structure'
 
 
@@ -62,15 +65,21 @@ def subject_type():
         '_alignment_v2_current_frame_candidate',
         '_alignment_v2_worker_pose_stale', '_alignment_v2_note_worker_failure',
         '_active_round_layer_group', '_round_group_floor_view', '_aligned_render_spec',
+        '_note_route_pose_verified',
     }
     methods = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name in names]
     assert len(methods) == len(names) + 1  # Property getter and setter.
-    wrapper = ast.ClassDef(name='Subject', bases=[], keywords=[], body=methods, decorator_list=[])
+    # Match DailyAssistant's production inheritance; its display/resource grants
+    # must run, rather than disappearing from this extracted-method harness.
+    wrapper = ast.ClassDef(name='Subject', bases=[ast.Name(id='NativeResourceValidationMixin', ctx=ast.Load()),
+        ast.Name(id='BaseDisplayIntegrationMixin', ctx=ast.Load())], keywords=[], body=methods, decorator_list=[])
     namespace = dict(np=np, cv2=cv2, hashlib=hashlib, replace=replace,
         SHARED_STRUCTURE_PROFILE_ID=SHARED, SOURCE_STRUCTURE_PROFILE_ID='source-structure',
         DEFAULT_ROUTE_PROFILE_ID='author-a', ROUTE_PROFILE_IDS_BY_LABEL={},
         normalize_route_profile_id=lambda profile: profile,
         gallery_of=lambda profile: None, AlignmentCandidate=CORE.AlignmentCandidate,
+        NativeResourceValidationMixin=NativeResourceValidationMixin,
+        BaseDisplayIntegrationMixin=BaseDisplayIntegrationMixin,
         RoundLayerGroup=RoundLayerGroup, ROUND_LAYER_FLOORS=('B1', '1', '2'))
     transaction_spec = importlib.util.spec_from_file_location('_route_native_transaction', APP / 'native_sibling_transaction.py')
     transaction = importlib.util.module_from_spec(transaction_spec)

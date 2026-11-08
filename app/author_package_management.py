@@ -12,12 +12,13 @@ from pathlib import Path
 import tempfile
 
 from star_map_import import (
-    ImportRejected, LIVE_AUTHOR_IMAGE_ROOTS, PACKAGE_IDS,
+    ImportRejected, installed_package_ids, installed_standard_authors, author_image_roots,
     _allowed, _check_cancelled, _live_author_path, _no_links, _owned_inventory, _rows,
     _pending_upgrade, _sha, _target, _writer_locked_installation,
     verified_installed_package,
 )
 from legacy_author_inventory import LEGACY_AUTHOR_INVENTORY
+from standard_author_package import standard_author_mode
 
 PACKAGE_NAMES = {
     'nightmare-zhan10': '展十 · 噩梦',
@@ -48,7 +49,7 @@ def package_inspection_message(error) -> str:
 
 
 def _package_id(package_id):
-    if package_id not in PACKAGE_NAMES:
+    if package_id not in PACKAGE_NAMES and standard_author_mode(package_id) is None:
         raise ImportRejected('unsupported-author-package')
     return package_id
 
@@ -83,7 +84,7 @@ def adopt_legacy_author_package(install_root, package_id, *, cancelled=None) -> 
         _, digest = _owned_inventory(root, package_id)
         if digest is not None:
             return dict(status='already-managed')
-        for other in PACKAGE_IDS - {package_id}:
+        for other in installed_package_ids(root) - {package_id}:
             other_rows, _ = _owned_inventory(root, other)
             if rows.keys() & other_rows.keys():
                 raise ImportRejected('shared-author-file-ownership')
@@ -139,7 +140,7 @@ def inspect_author_package_removal(install_root, package_id) -> dict:
     removable = [r for r in rows.values() if _live_author_path(package_id, r['path'])]
     if not removable:
         raise ImportRejected('no-managed-author-files')
-    for other in PACKAGE_IDS - {package_id}:
+    for other in installed_package_ids(root) - {package_id}:
         other_rows, _ = _owned_inventory(root, other)
         if any(r['path'].casefold() in other_rows for r in removable):
             raise ImportRejected('shared-author-file-ownership')
@@ -163,7 +164,10 @@ def inspect_author_package_removal(install_root, package_id) -> dict:
             if before.st_size != row['bytes'] or digest != row['sha256']:
                 modified.append(row['path'])
             present.append(dict(path=row['path'], bytes=before.st_size, sha256=digest))
-    plan = dict(packageId=package_id, title=PACKAGE_NAMES[package_id],
+    title = PACKAGE_NAMES.get(package_id)
+    if title is None:
+        title = installed_standard_authors(root)[package_id]['displayName']
+    plan = dict(packageId=package_id, title=title,
                 receiptSha256=receipt_sha, files=present, missingFiles=missing,
                 preservedCoreFiles=len(rows)-len(removable), fileCount=len(present),
                 bytes=sum(r['bytes'] for r in present), modifiedFiles=modified, restartRequired=False)
@@ -177,10 +181,12 @@ def managed_author_packages_snapshot(install_root, *, cancelled=None) -> list[di
     """Local state remains available even when there is no online catalog."""
     root = Path(os.path.abspath(install_root))
     result = []
-    for package_id, title in PACKAGE_NAMES.items():
+    names = dict(PACKAGE_NAMES)
+    names.update({key: row['displayName'] for key, row in installed_standard_authors(root).items()})
+    for package_id, title in names.items():
         _check_cancelled(cancelled)
         item = dict(packageId=package_id, title=title,
-                    mode='difficult' if package_id.startswith('difficult-') else 'nightmare',
+                    mode=standard_author_mode(package_id) or ('difficult' if package_id.startswith('difficult-') else 'nightmare'),
                     canRemove=False)
         adoption = None
         try:
@@ -198,7 +204,7 @@ def managed_author_packages_snapshot(install_root, *, cancelled=None) -> list[di
                 # Existence is only a warning, never ownership or deletion authority.
                 unowned = False
                 try:
-                    for prefix in LIVE_AUTHOR_IMAGE_ROOTS[package_id]:
+                    for prefix in author_image_roots(package_id):
                         folder = _target(root, prefix.rstrip('/'))
                         if folder.is_dir():
                             for path in folder.rglob('*'):

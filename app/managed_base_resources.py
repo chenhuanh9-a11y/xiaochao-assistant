@@ -43,7 +43,11 @@ class ManagedBaseResourceError(ValueError):
 
 def optional_author_sidecar(path):
     """Exact optional display metadata; never a mandatory shared dependency."""
-    return files._relative(path).casefold() in OPTIONAL_AUTHOR_SIDECARS
+    path = files._relative(path)
+    parts = path.split('/')
+    return path.casefold() in OPTIONAL_AUTHOR_SIDECARS or (
+        len(parts) == 5 and parts[:3] == ['_internal', 'references', 'author-packs']
+        and files.standard_author_mode(parts[3]) is not None and parts[4] in files.AUTHOR_SIDECARS)
 
 
 def _base_path(path):
@@ -144,7 +148,7 @@ def _package_constraints(root):
                 or re.fullmatch(r"helper-result-[a-z0-9_]{8}\.json", path.name)):
             continue
         package = path.stem
-        if package not in files.PACKAGE_IDS:
+        if not files.is_package_id(package):
             raise ManagedBaseResourceError("unrecognized-installed-package-receipt", [dict(path="work/map-packages/" + path.name, reason="unknown-package")])
         inventory, _ = files._owned_inventory(root, package)
         receipt = transaction._read_json(path)
