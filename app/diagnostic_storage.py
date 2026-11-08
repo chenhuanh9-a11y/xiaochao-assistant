@@ -294,6 +294,50 @@ def prune_owned_logs(root, *, now=None):
             _known_roots.add(root)
             _root_usage[root]=(sum(e['bytes'] for e in remaining.values()),len(remaining))
 
+    _prune_registered_log_budget()
+
+
+def _prune_registered_log_budget():
+    """Snapshot registered journals; revalidate oldest victims under root locks.
+
+    Disk IO never holds the reservation guard or two root transactions together.
+    """
+    with _guard:
+        roots = tuple(_known_roots)
+    candidates = []
+    totals = {}
+    for root in roots:
+        if not root.exists():
+            with _guard:
+                _known_roots.discard(root)
+                _root_usage.pop(root, None)
+            continue
+        with _transaction(root):
+            files = _read(root)
+            totals[root] = (sum(e['bytes'] for e in files.values()), len(files))
+            candidates.extend((e.get('createdAt', e['writtenAt']), root, n, e)
+                              for n, e in files.items())
+    size = sum(n for n, _ in totals.values())
+    count = sum(n for _, n in totals.values())
+    for _, root, name, expected in sorted(candidates, key=lambda row: row[0]):
+        if size <= ROOT_BYTES and count <= ROOT_FILES:
+            break
+        with _transaction(root):
+            files = _read(root)
+            if files.get(name) != expected:
+                continue
+            if not _verified(root, name, expected):
+                if (root / name).exists():
+                    continue
+            else:
+                _retire_log(root, name, expected)
+            del files[name]
+            _save(root, files)
+            size -= expected['bytes']
+            count -= 1
+            with _guard:
+                _root_usage[root] = (sum(e['bytes'] for e in files.values()), len(files))
+
 
 def _append_owned(root,path,previous,files,data,file_limit,root_limit,max_files,max_age,now):
     files=dict(files);cyclic=_cyclic(path);recycle=False;generation=0

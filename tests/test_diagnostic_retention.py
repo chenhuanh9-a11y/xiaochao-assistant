@@ -192,3 +192,78 @@ def test_native_full_frame_expires_original_by_handle(tmp_path):
     report=images.cleanup_automatic_failure_samples(tmp_path,now=1577836800+7*86400,namespace='full-v2')
     assert report['complete'] and report['removed']==1
     assert not (tmp_path/row['samplePath']).exists()
+
+
+@pytest.mark.parametrize('trigger', ['registration', 'periodic'])
+@pytest.mark.parametrize('namespace', ['automatic-v2', 'full-v2'])
+def test_idle_registered_images_expire(tmp_path, trigger, namespace):
+    with image_io(), patch.object(images, '_start_retention_worker', create=True):
+        idle = tmp_path/'s0-difficult'
+        with images.automatic_storage_transaction(idle, create=True, namespace=namespace):
+            relative = f'failures/{namespace}/auto-'+'2'*32+'.png'
+            row = dict(event='automatic-failure-sample', recordedAt='2020-01-01T00:00:00+00:00', samplePath=relative)
+            row.update(images.create_automatic_image(idle, relative, b'crop', namespace=namespace))
+            images.replace_automatic_journal(images._directory(idle, namespace), (json.dumps(row)+'\n').encode())
+        # A changed original must never be retired. Keep unknown evidence outside
+        # the managed namespace so it does not deliberately fail its inventory.
+        unknown = idle/'failures/user.png'
+        unknown.write_bytes(b'keep')
+        if trigger == 'registration':
+            images.register_failure_root(tmp_path/'s1-nightmare')
+        else:
+            images.prune_registered_failure_roots(now=1577836800+8*86400)
+        assert not (idle/relative).exists()
+        assert unknown.read_bytes() == b'keep'
+
+
+@pytest.mark.parametrize('files_per_root, file_bytes', [(16, logs.FILE_BYTES), (17, 1)])
+def test_startup_log_budget_is_global_and_oldest_first(tmp_path, log_io, files_per_root, file_bytes):
+    roots = [tmp_path/'one', tmp_path/'two']
+    payload = b'x'*file_bytes
+    for index, root in enumerate(roots):
+        root.mkdir()
+        entries = {}
+        for i in range(files_per_root):
+            path = root/f'events-{i}.jsonl'
+            path.write_bytes(payload)
+            st = path.stat()
+            entries[path.name] = dict(bytes=len(payload), sha256=hashlib.sha256(payload).hexdigest(),
+                identity=[st.st_dev, st.st_ino], writtenAt=index+1)
+        (root/logs.REGISTRY).write_text(json.dumps(dict(schema='diagnostic-ownership-v1', files=entries)))
+    unknown = roots[0]/'events-user.jsonl'
+    unknown.write_bytes(b'keep')
+    for root in roots:
+        logs.prune_owned_logs(root, now=3)
+    managed = [p for root in roots for p in root.glob('events-*.jsonl') if p != unknown]
+    assert sum(p.stat().st_size for p in managed) <= logs.ROOT_BYTES
+    assert len(managed) <= logs.ROOT_FILES
+    assert not (roots[0]/'events-0.jsonl').exists()
+    assert (roots[1]/'events-0.jsonl').exists()
+    assert unknown.read_bytes() == b'keep'
+
+
+@pytest.mark.parametrize('namespace', ['automatic-v2', 'full-v2'])
+def test_registered_expiry_preserves_replaced_image(tmp_path, namespace):
+    with image_io(), patch.object(images, '_start_retention_worker'):
+        with images.automatic_storage_transaction(tmp_path, create=True, namespace=namespace):
+            relative = f'failures/{namespace}/auto-'+'3'*32+'.png'
+            row = dict(event='automatic-failure-sample', recordedAt='2020-01-01T00:00:00+00:00', samplePath=relative)
+            row.update(images.create_automatic_image(tmp_path, relative, b'crop', namespace=namespace))
+            images.replace_automatic_journal(images._directory(tmp_path, namespace), (json.dumps(row)+'\n').encode())
+        path = tmp_path/relative
+        path.rename(tmp_path/'original.png')
+        path.write_bytes(b'crop')
+        reports = images.prune_registered_failure_roots(now=1577836800+8*86400)
+        assert not reports[(tmp_path, namespace)]['complete']
+        assert path.read_bytes() == b'crop'
+
+
+def test_periodic_worker_runs_registered_cleanup_after_low_frequency_wait():
+    class StopLoop(Exception):
+        pass
+    with patch.object(images.threading, 'Event') as event, patch.object(images, 'prune_registered_failure_roots') as prune:
+        event.return_value.wait.side_effect = [None, StopLoop]
+        with pytest.raises(StopLoop):
+            images._retention_loop()
+        prune.assert_called_once_with()
+        assert event.return_value.wait.call_args_list[0].args == (3600,)

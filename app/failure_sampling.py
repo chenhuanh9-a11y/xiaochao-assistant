@@ -26,10 +26,49 @@ _IMAGE_COUNT = 6
 _JOURNAL_BYTES = 256 * 1024
 
 
+_retention_worker = None
+_RETENTION_INTERVAL = 3600
+
+
+def _retention_loop():
+    # One daemon for the application lifetime; no filesystem work after exit.
+    while True:
+        threading.Event().wait(_RETENTION_INTERVAL)
+        prune_registered_failure_roots()
+
+
+def _start_retention_worker():
+    global _retention_worker
+    with _image_roots_guard:
+        if _retention_worker is None:
+            _retention_worker = threading.Thread(
+                target=_retention_loop, name='diagnostic-image-retention', daemon=True)
+            _retention_worker.start()
+
+
+def prune_registered_failure_roots(*, now=None):
+    """Only registered contexts and v2, through existing verified retirement."""
+    reports = {}
+    with _image_budget_guard:
+        with _image_roots_guard:
+            roots = tuple(_known_image_roots)
+        for root in roots:
+            for namespace in ('automatic-v2', 'full-v2'):
+                try:
+                    reports[(root, namespace)] = cleanup_automatic_failure_samples(
+                        root, now=now, namespace=namespace)
+                except OSError as error:
+                    reports[(root, namespace)] = dict(
+                        status=_operation_status(error), complete=False, removed=0)
+    return reports
+
+
 def register_failure_root(root):
     """Register actual store contexts, not directory-name guesses or adoption."""
     with _image_roots_guard:
         _known_image_roots.add(Path(root).absolute())
+    prune_registered_failure_roots()
+    _start_retention_worker()
 
 
 def _directory(root, namespace):
@@ -50,7 +89,8 @@ def _require_transaction(root, namespace):
 def automatic_storage_transaction(root, *, create=False, namespace='automatic'):
     # No arbitrary filesystem scan/adoption. Known roots are shared by both modes.
     with _image_budget_guard:
-        register_failure_root(root)
+        with _image_roots_guard:
+            _known_image_roots.add(Path(root).absolute())
         with _automatic_storage_transaction(root, create=create, namespace=namespace) as status:
             yield status
 
