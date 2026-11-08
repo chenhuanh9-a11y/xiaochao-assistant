@@ -16,16 +16,21 @@ function Component() {
 Component.prototype.createOperations = function() {
     if (installer.value("TrialRootRejected", "") === "true")
         throw new Error("目录覆盖被拒绝。请使用 TrialTarget=已核准测试目录，而不是 --root。");
-    if (installer.isInstaller() && installer.value("TrialPreparedTarget") !== installer.value("TargetDir"))
-        throw new Error("测试目标已改变，请使用 --root 重新启动安装器。");
+    function normal(path) { return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase(); }
+    if (installer.isInstaller() && normal(installer.value("TrialPreparedTarget")) !== normal(installer.value("TargetDir")))
+        throw new Error("测试目标已改变，请使用 TrialTarget=测试目录重新启动安装器。");
     var helper = installer.value("TrialHelper");
     // Runs LAST on uninstall, after Extract UNDO. Default/disarmed on update
     // and failed-install rollback. A cleanup error is a native operation error.
     component.addOperation("Execute", "{0}", helper, "noop", "@TargetDir@",
         "UNDOEXECUTE", helper, "undo-data", "@TargetDir@");
     var fault = installer.value("TrialFault", "");
-    if (fault === "before-extract")
-        component.addOperation("Execute", "{0}", helper, "pause", "@TargetDir@");
+    if (fault === "before-extract") {
+        // Extract is a concurrent operation, so an earlier queued Execute is
+        // not a pre-extraction checkpoint. Pause during operation preparation.
+        var paused = installer.execute(helper, ["pause", installer.value("TargetDir")]);
+        if (paused.length !== 2 || paused[1] !== 0) throw new Error("测试中断点未完成");
+    }
     component.createOperations();
     if (fault === "after-extract")
         component.addOperation("Execute", "{0}", helper, "pause", "@TargetDir@");

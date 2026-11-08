@@ -23,13 +23,27 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = "org.xingtu.qtifw.realtrial"
 
 
-def stage_payload(stage, record, output, *, payload_stage=None):
+def stage_payload(stage, record, output, *, payload_stage=None, archive_from=None, ifw_bin=None):
     """Use the original installed inventory; exclude every active data plane."""
     from managed_base_resources import CANDIDATE
     compiled = validate_managed_runtime_reuse(stage, record, record["source"])
     inventory_path = build.write_installer_program_inventory(stage, record, output, record["source"])
     inventory = json.loads(inventory_path.read_bytes())
     data = output / "packages" / PACKAGE / "data/program"
+    if archive_from:
+        prior = json.loads(build._local_file(archive_from, "qtifw-build-record.json").read_bytes())
+        binary = build._local_file(archive_from, Path(prior["setup"]).name)
+        if (prior["payloadSource"] != compiled or prior["programFiles"] != len(inventory["files"])
+                or binary.stat().st_size != prior["bytes"] or build.sha256(binary) != prior["sha256"]):
+            raise ValueError("Prior trial archive source changed")
+        dump = output / "archive-dump"
+        subprocess.run([str(ifw_bin / "devtool.exe"), "dump", str(binary), str(dump)], check=True)
+        archives = list((dump / "metadata" / PACKAGE).glob("*program.7z"))
+        if len(archives) != 1:
+            raise ValueError("Expected one original program archive")
+        data.parent.mkdir(parents=True)
+        shutil.copy2(archives[0], data.parent / "program.7z")
+        return compiled, inventory
     data.mkdir(parents=True)
     for name, row in inventory["files"].items():
         if name.startswith(CANDIDATE + "/payload/"):
@@ -59,6 +73,7 @@ def main():
     parser.add_argument("--ifw-bin", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--payload-stage", type=Path, help="Reuse verified read-only staged build inputs on the same volume")
+    parser.add_argument("--reuse-archive-from", type=Path, help="Reuse program archive from a hash-verified prior trial Setup; rebuild scripts/helper")
     args = parser.parse_args()
     if build._git("status", "--porcelain").strip():
         raise ValueError("Build from a clean committed checkout")
@@ -69,7 +84,8 @@ def main():
     _safe(output)
     record = json.loads(args.build_record.read_bytes())
     output.mkdir(parents=True)
-    compiled, inventory = stage_payload(args.stage, record, output, payload_stage=args.payload_stage)
+    compiled, inventory = stage_payload(args.stage, record, output, payload_stage=args.payload_stage,
+        archive_from=args.reuse_archive_from, ifw_bin=args.ifw_bin)
     instance = uuid.uuid4().hex
     (output / "targets").mkdir()
     (output / ".qtifw-trial-scope").write_text(instance + "\n", encoding="ascii")
