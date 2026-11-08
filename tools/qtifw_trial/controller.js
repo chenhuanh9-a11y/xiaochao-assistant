@@ -50,6 +50,7 @@ function Controller() {
         if (installer.isCommandLineInstance()) {
             trialRun("prepare");
             installer.setValue("TrialPreparedTarget", installer.value("TargetDir"));
+            installer.setMessageBoxAutomaticAnswer("OverwriteTargetDirectory", QMessageBox.Yes);
         }
         installer.setDefaultPageVisible(QInstaller.TargetDirectory, false);
         // This trial creates no Start Menu shortcuts.
@@ -86,15 +87,21 @@ Controller.prototype.IntroductionPageCallback = function() {
     gui.clickButton(buttons.NextButton);
 };
 
+Controller.prototype.DynamicInstallLocationCallback = function() {
+    gui.button(buttons.BackButton).visible = false;
+};
+
 Controller.prototype.ReadyForInstallationPageCallback = function() {
     if (installer.isCommandLineInstance()) return;
     var page = gui.currentPageWidget();
     if (installer.isInstaller()) {
+        gui.button(buttons.BackButton).visible = true;
         page.title = "确认安装星图";
         page.subTitle = "安装位置：" + installer.toNativeSeparators(installer.value("TargetDir"));
         return;
     }
     if (!installer.isUninstaller()) return;
+    gui.button(buttons.BackButton).visible = false;
     page.title = "彻底卸载星图";
     page.subTitle = "点击“彻底卸载”后开始移除。";
     var summary = page ? gui.findChild(page, "RemoveAllMsgLabel") : null;

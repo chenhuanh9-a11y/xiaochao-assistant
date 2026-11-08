@@ -116,8 +116,8 @@ def main():
     shutil.copy2(scripts / "trial.qss", config / "trial.qss")
     shutil.copy2(scripts / "component.js", meta / "component.js")
     shutil.copy2(scripts / "install-location.ui", meta / "install-location.ui")
-    write_xml(meta / "package.xml", "Package", dict(DisplayName="星图真实程序（隔离安装试用）",
-        Description="原 142001C8 程序与辅助文件；只用于本机隔离验证。", Version="1.0.0", ReleaseDate="2026-11-08",
+    write_xml(meta / "package.xml", "Package", dict(DisplayName="星图",
+        Description="星图桌面程序。", Version="1.0.0", ReleaseDate="2026-11-08",
         Default="true", Script="component.js", Dependencies=DATA_PACKAGE))
     package_tree = ET.parse(meta / "package.xml")
     interfaces = ET.SubElement(package_tree.getroot(), "UserInterfaces")
@@ -127,8 +127,8 @@ def main():
     data_meta = output / "packages" / DATA_PACKAGE / "meta"
     data_meta.mkdir(parents=True)
     shutil.copy2(scripts / "data-component.js", data_meta / "data-component.js")
-    write_xml(data_meta / "package.xml", "Package", dict(DisplayName="资料处理（默认保留）",
-        Description="仅限本测试安装的 program/work；地图和外部文件保留。", Version="1.0.0",
+    write_xml(data_meta / "package.xml", "Package", dict(DisplayName="卸载清理",
+        Description="彻底卸载时清理安装目录。", Version="1.0.0", Virtual="true",
         ReleaseDate="2026-11-08", Default="true", Script="data-component.js"))
     write_xml(config / "config.xml", "Installer", dict(Name="星图安装器隔离试用 " + instance,
         Version="1.0.0", Title="星图（试用版）", Publisher="星图开发试用",

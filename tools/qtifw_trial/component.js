@@ -24,7 +24,6 @@ Component.prototype.installLocationLoaded = function() {
     widget.windowTitle = "选择安装位置";
     widget.InstallPath.text = installer.toNativeSeparators(installer.value("TargetDir"));
     widget.BrowseButton.clicked.connect(this, Component.prototype.browseLocation);
-    widget.RecommendedButton.clicked.connect(this, Component.prototype.recommendedLocation);
     widget.InstallPath.textChanged.connect(this, Component.prototype.locationChanged);
     installer.setValidatorForCustomPage(component, "InstallLocation", "validateLocation");
     this.locationChanged(widget.InstallPath.text);
@@ -45,11 +44,6 @@ Component.prototype.browseLocation = function() {
     parent = parent.replace(/\\/g, "/").replace(/\/+$/, "");
     var path = /\/星图试用版$/.test(parent) ? parent : parent + "/星图试用版";
     gui.pageWidgetByObjectName("DynamicInstallLocation").InstallPath.text = installer.toNativeSeparators(path);
-};
-
-Component.prototype.recommendedLocation = function() {
-    gui.pageWidgetByObjectName("DynamicInstallLocation").InstallPath.text =
-        installer.toNativeSeparators(installer.value("TrialRecommendedTarget"));
 };
 
 Component.prototype.validateLocation = function() {
