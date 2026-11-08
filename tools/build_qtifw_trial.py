@@ -6,6 +6,7 @@ Selected empty targets are claimed explicitly; support files stay in this run.
 from __future__ import annotations
 
 import argparse
+import filecmp
 import json
 import os
 from pathlib import Path
@@ -25,10 +26,45 @@ PACKAGE = "org.xingtu.qtifw.realtrial"
 DATA_PACKAGE = "org.xingtu.qtifw.trialdata"
 
 
-def check_archive_inventory(prior_policy_path, compiled, inventory):
+def check_archive_inventory(prior_policy_path, compiled, inventory, program_copies=()):
+    if program_copies:
+        raise ValueError("Deduplicated program archives cannot be reused without their copy plan")
     prior_policy = json.loads(prior_policy_path.read_bytes())
     if prior_policy.get("payloadSource") != compiled or prior_policy.get("files") != inventory["files"]:
         raise ValueError("Prior trial archive inventory differs from this freeze")
+
+
+def deduplicate_payload(output, inventory, support_root):
+    """Store large identical files once; native Copy restores the original tree."""
+    data = output / "packages" / PACKAGE / "data/program"
+    canonical, copies = {}, []
+    for source in sorted(support_root.rglob("*")):
+        if source.is_file() and source.stat().st_size >= 65536:
+            canonical.setdefault((source.stat().st_size, build.sha256(source)),
+                ("@TargetDir@/_installer-support/" + source.relative_to(support_root).as_posix(), source))
+    omitted = 0
+    staged_aliases = []
+    for name, row in sorted(inventory["files"].items()):
+        if row["bytes"] < 65536:
+            continue
+        path = build._local_file(data, name)
+        key = (row["bytes"], row["sha256"].lower())
+        destination = "@TargetDir@/program/" + name
+        if key not in canonical:
+            canonical[key] = (destination, path)
+            continue
+        source_name, source_path = canonical[key]
+        if not filecmp.cmp(path, source_path, shallow=False):
+            raise ValueError("Staged duplicate differs from its inventory: " + name)
+        copies.append([source_name, destination])
+        staged_aliases.append(path)
+        omitted += row["bytes"]
+    # Only remove this invocation's staged names after the full plan is valid.
+    # Frozen inputs (including inputs sharing an inode) remain untouched.
+    for path in staged_aliases:
+        path.unlink()
+    return copies, dict(copiedProgramFiles=len(copies), omittedProgramBytes=omitted,
+                        originalProgramFiles=len(inventory["files"]))
 
 
 def map_inputs(root, report_path):
@@ -68,7 +104,8 @@ def stage_payload(stage, record, output, *, payload_stage=None, archive_from=Non
         if (prior["payloadSource"] != compiled or prior["programFiles"] != len(inventory["files"])
                 or binary.stat().st_size != prior["bytes"] or build.sha256(binary) != prior["sha256"]):
             raise ValueError("Prior trial archive source changed")
-        check_archive_inventory(build._local_file(archive_from, "qtifw-trial-policy.json"), compiled, inventory)
+        check_archive_inventory(build._local_file(archive_from, "qtifw-trial-policy.json"), compiled, inventory,
+                                prior.get("programCopies", []))
         dump = output / "archive-dump"
         subprocess.run([str(ifw_bin / "devtool.exe"), "dump", str(binary), str(dump)], check=True)
         archives = list((dump / "metadata" / PACKAGE).glob("*program.7z"))
@@ -111,6 +148,8 @@ def main():
     parser.add_argument("--payload-stage", type=Path, help="Reuse verified read-only staged build inputs on the same volume")
     parser.add_argument("--reuse-archive-from", type=Path, help="Reuse program archive from a hash-verified prior trial Setup; rebuild scripts/helper")
     args = parser.parse_args()
+    if args.release and args.reuse_archive_from:
+        parser.error("Release payload deduplication requires the original freeze or --payload-stage; compressed archive reuse is trial-only")
     if bool(args.map_pack_root) != bool(args.map_pack_report) or (args.map_pack_root and not args.release):
         parser.error("Map root and delivery report must be supplied together with --release")
     if build._git("status", "--porcelain").strip():
@@ -139,6 +178,8 @@ def main():
     policy_path.write_text(json.dumps(policy, ensure_ascii=False), encoding="utf-8")
     # Small asInvoker helper, independent of the application's administrator EXE.
     exclusions = [] if packages else ["--exclude-module", "numpy", "--exclude-module", "cv2"]
+    if args.release and not packages:
+        exclusions += ["--exclude-module", "PIL"]
     subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir", "--console",
         "--name", "qtifw-trial-helper", "--paths", str(ROOT / "app"),
         "--exclude-module", "PySide6", *exclusions,
@@ -148,8 +189,9 @@ def main():
     helper_root = output / "helper/qtifw-trial-helper"
     helper = helper_root / "qtifw-trial-helper.exe"
     build.verify_invoker_manifest(helper)
+    program_copies, deduplication = [], None
     if args.release:
-        shutil.copytree(helper_root, output / "packages" / DATA_PACKAGE / "data/_installer-support")
+        program_copies, deduplication = deduplicate_payload(output, inventory, helper_root)
         for archive, destination in map_sources:
             copied = output / "packages" / DATA_PACKAGE / "data" / destination
             copied.parent.mkdir(parents=True, exist_ok=True)
@@ -174,6 +216,8 @@ def main():
     (config / "controller.js").write_text(controller, encoding="utf-8")
     shutil.copy2(scripts / "trial.qss", config / "trial.qss")
     shutil.copy2(scripts / "component.js", meta / "component.js")
+    component_script = (meta / "component.js").read_text(encoding="utf-8")
+    (meta / "component.js").write_text(component_script.replace("__PROGRAM_COPIES__", json.dumps(program_copies)), encoding="utf-8")
     shutil.copy2(scripts / "install-location.ui", meta / "install-location.ui")
     if args.release:
         for path in (config / "controller.js", meta / "component.js", meta / "install-location.ui"):
@@ -192,7 +236,8 @@ def main():
     package_tree.write(meta / "package.xml", encoding="utf-8", xml_declaration=True)
     data_meta = output / "packages" / DATA_PACKAGE / "meta"
     data_meta.mkdir(parents=True)
-    shutil.copy2(scripts / "data-component.js", data_meta / "data-component.js")
+    data_script = (scripts / "data-component.js").read_text(encoding="utf-8")
+    (data_meta / "data-component.js").write_text(data_script.replace("__SUPPORT_FILES__", json.dumps(support_files)), encoding="utf-8")
     write_xml(data_meta / "package.xml", "Package", dict(DisplayName="卸载清理",
         Description="彻底卸载时清理安装目录。", Version="1.0.0", Virtual="true",
         ReleaseDate="2026-11-08", Script="data-component.js"))
@@ -218,7 +263,7 @@ def main():
     tree.write(config / "config.xml", encoding="utf-8", xml_declaration=True)
     setup = output / ("星图-" + record["version"]["version"] + "-Setup.exe" if args.release else "Xingtu-QtIFW-Local-Trial-Setup.exe")
     with (output / "binarycreator.log").open("wb") as log:
-        subprocess.run([str(args.ifw_bin / "binarycreator.exe"), "--offline-only", "--compression", "3",
+        subprocess.run([str(args.ifw_bin / "binarycreator.exe"), "--offline-only", "--compression", "9" if args.release else "3",
             "--resources", str(qrc), "-t", str(args.ifw_bin / "installerbase.exe"),
             "-c", str(config / "config.xml"), "-p", str(output / "packages"), str(setup)],
             stdout=log, stderr=subprocess.STDOUT, check=True)
@@ -228,6 +273,7 @@ def main():
         programFiles=len(inventory["files"]), instance=instance, root=str(output), setup=str(setup),
         bytes=setup.stat().st_size, sha256=build.sha256(setup), installed=False, published=False,
         portable=args.release,
+        compression=9 if args.release else 3, deduplication=deduplication, programCopies=program_copies,
         mapPackages=packages,
         runtimeEntry="Use --self-check or isolated --probe-output only; production IPC identity is unchanged")
     (output / "qtifw-build-record.json").write_text(json.dumps(result, indent=2), encoding="utf-8")

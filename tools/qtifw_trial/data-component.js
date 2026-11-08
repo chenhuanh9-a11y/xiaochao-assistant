@@ -19,6 +19,21 @@ Component.prototype.createOperations = function() {
         result = installer.execute(helper, ["select-data", installer.value("TargetDir"), "keep", "none"]);
         if (result.length !== 2 || result[1] !== 0) throw new Error("无法准备资料保留策略");
     }
+    if (installer.value("TrialPortable") === "true") {
+        // The controller has materialized writable bootstrap files from QRC.
+        // Record their permanent copies without adding a second archive.
+        var supportFiles = __SUPPORT_FILES__;
+        var parents = {};
+        for (var i = 0; i < supportFiles.length; ++i) {
+            var destination = "@TargetDir@/_installer-support/" + supportFiles[i];
+            var parent = destination.substring(0, destination.lastIndexOf("/"));
+            if (!parents[parent]) {
+                component.addOperation("Mkdir", parent);
+                parents[parent] = true;
+            }
+            component.addOperation("Copy", installer.value("TrialSupport") + "/" + supportFiles[i], destination);
+        }
+    }
     component.addOperation("Execute", "{0}", helper, "noop", "@TargetDir@",
         "UNDOEXECUTE", undoHelper, "undo-data", "@TargetDir@");
 };

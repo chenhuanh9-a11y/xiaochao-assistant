@@ -45,6 +45,9 @@ class TrialTests(unittest.TestCase):
         prior.write_text(json.dumps(self.policy), encoding="utf-8")
         inventory = {"files": dict(self.policy["files"])}
         check_archive_inventory(prior, self.policy["payloadSource"], inventory)
+        with self.assertRaisesRegex(ValueError, "Deduplicated program archives"):
+            check_archive_inventory(prior, self.policy["payloadSource"], inventory,
+                                    [["@TargetDir@/program/a", "@TargetDir@/program/b"]])
         inventory["files"]["app.exe"] = dict(bytes=5, sha256=hashlib.sha256(b"other").hexdigest())
         with self.assertRaisesRegex(ValueError, "inventory differs"):
             check_archive_inventory(prior, self.policy["payloadSource"], inventory)
