@@ -52,6 +52,8 @@ class QtIfwMapSeedTests(unittest.TestCase):
         first = seed.install_bundled_maps(self.target, [row])
         self.assertEqual(first["installed"], 1)
         self.assertEqual(first["packages"][0]["status"], "installed")
+        from qtifw_trial_lease import inspect_installation_objects
+        inspect_installation_objects(self.target, self.program / "work/map-packages/import.lock")
         self.assertEqual(archive.read_bytes(), before_archive)
         verified = star_map_import.verified_installed_package(
             self.program, row["packageId"], row["sha256"])
