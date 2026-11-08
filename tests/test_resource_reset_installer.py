@@ -120,7 +120,9 @@ class ResourceResetHelperTests(unittest.TestCase):
         plan = json.loads((self.session / 'plan.json').read_text('utf-8'))
         self.assertEqual(plan['targetIdentity'], self.target)
         self.assertEqual(result['planSha256'], plan['planSha256'])
-        text = (self.session / 'summary.txt').read_text('utf-16')
+        raw = (self.session / 'summary.txt').read_bytes()
+        self.assertTrue(raw.startswith(b'\xef\xbb\xbf'))
+        text = raw.decode('utf-8-sig')
         for word in ('重新下载', '自建路线', '不永久删除', self.target['sourceCommit']):
             self.assertIn(word, text)
         self.assertTrue(self.case.old.exists())
@@ -197,12 +199,24 @@ class ResourceResetHelperTests(unittest.TestCase):
         self.assertEqual((self.session / 'result.ini').read_bytes(), before)
 
     def test_run_failure_has_explicit_error_receipt_and_no_false_success(self):
-        with patch.object(helper, '_target', side_effect=ValueError('injected-target-change')):
+        detail = '盘点失败：目录 E:\\星图\\旧图包；injected-target-change'
+        with patch.object(helper, '_target', side_effect=ValueError(detail)):
             self.assertEqual(helper.run(self.args), 2)
         receipt = configparser.ConfigParser()
         receipt.read(self.session / 'result.ini', encoding='utf-16')
         self.assertEqual(receipt['result']['status'], 'error')
-        self.assertIn('injected-target-change', (self.session / 'error.txt').read_text('utf-16'))
+        self.assertEqual(receipt['result']['errorCode'], 'ValueError')
+        raw = (self.session / 'error.txt').read_bytes()
+        self.assertTrue(raw.startswith(b'\xef\xbb\xbf'))
+        self.assertNotIn(b'\0', raw)
+        self.assertEqual(raw.decode('utf-8-sig'), detail)
+        self.assertTrue(self.case.old.exists())
+        self.case.unchanged_user_data()
+
+    def test_empty_exception_still_provides_error_details(self):
+        with patch.object(helper, '_target', side_effect=ValueError()):
+            self.assertEqual(helper.run(self.args), 2)
+        self.assertEqual((self.session / 'error.txt').read_text('utf-8-sig'), 'ValueError')
 
     def test_durable_commit_with_pending_requires_confirmed_matching_program_cleanup(self):
         self.inspect_prepare()
@@ -286,6 +300,24 @@ class ResourceResetPackagingTests(unittest.TestCase):
 
 
 class ResourceResetSourceContracts(unittest.TestCase):
+    def test_exec_launch_error_is_distinct_from_helper_exit_and_missing_detail(self):
+        source = (ROOT / 'tools/qt-resource-reset.iss').read_text('utf-8-sig')
+        call = source.split('function CallResourceReset(', 1)[1].split('function ReviewResourceReset(', 1)[0]
+        launch = call.split('if not Exec(', 1)[1].split('if Code <> 0 then begin', 1)[0]
+        self.assertNotIn('or (Code <> 0)', launch)
+        self.assertIn('Windows 错误', launch)
+        self.assertIn('SysErrorMessage(Code)', launch)
+        self.assertIn('RESOURCE_RESET_LAUNCH_FAILED ', launch)
+        self.assertIn('Exit;', launch)
+        helper_failure = call.split('if Code <> 0 then begin', 1)[1].split("if GetIniString('result', 'action'", 1)[0]
+        self.assertIn('程序退出码', helper_failure)
+        self.assertIn("ResetReadText(ResultDir + '\\error.txt')", helper_failure)
+        self.assertIn("GetIniString('result', 'errorCode'", helper_failure)
+        self.assertIn('未生成可读错误详情', helper_failure)
+        self.assertIn('RESOURCE_RESET_HELPER_FAILED ', helper_failure)
+        self.assertIn('Exit;', helper_failure)
+        self.assertIn("ResetReadText(ResultDir + '\\summary.txt')", source)
+
     def test_installer_event_order_and_unresolved_commit_are_fail_closed(self):
         source = (ROOT / 'tools/qt-client.iss').read_text('utf-8-sig')
         events = source.split('procedure CurStepChanged', 1)[1].split('procedure DeinitializeSetup', 1)[0]

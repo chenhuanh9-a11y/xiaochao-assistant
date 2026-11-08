@@ -115,7 +115,9 @@ def _execute(args, api, target):
                                             target_identity=target)
         _write_new(Path(args.result_directory) / 'plan.json',
                    json.dumps(plan, ensure_ascii=False, indent=2).encode('utf-8'))
-        _write_new(Path(args.result_directory) / 'summary.txt', _summary(plan, target).encode('utf-16'))
+        # Inno LoadStringsFromFile consumes UTF-8 text, not the UTF-16 INI
+        # format used below by GetIniString. Keep a BOM for older Inno readers.
+        _write_new(Path(args.result_directory) / 'summary.txt', _summary(plan, target).encode('utf-8-sig'))
         return dict(status='inspected', planSha256=plan['planSha256'], sessionId=str(uuid.uuid4()))
     if args.action == 'prepare':
         if not args.confirmed or not re.fullmatch(r'[0-9a-f]{64}', args.plan_sha256 or ''):
@@ -188,7 +190,8 @@ def run(args):
         code = 0
     except Exception as error:
         result['errorCode'] = getattr(error, 'code', type(error).__name__)
-        _write_new(directory / 'error.txt', str(error).encode('utf-16'))
+        detail = str(error).strip() or str(result['errorCode'])
+        _write_new(directory / 'error.txt', detail.encode('utf-8-sig'))
     parser = configparser.ConfigParser()
     parser.optionxform = str
     parser['result'] = {key: str(value) for key, value in result.items()

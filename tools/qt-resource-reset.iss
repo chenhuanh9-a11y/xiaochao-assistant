@@ -96,7 +96,7 @@ begin
 end;
 
 function CallResourceReset(const Action: String; Confirmed: Boolean; var Reason, ResultDir: String): Boolean;
-var Params, ParentImage: String; Code: Integer; Size: LongWord;
+var Params, ParentImage, Detail: String; Code: Integer; Size: LongWord;
   Created, Exited, KernelTime, UserTime: Int64;
 begin
   Result := False;
@@ -140,12 +140,22 @@ begin
     Code := -1;
     Log('RESOURCE_RESET_STEP ' + Action + ' plan=' + ResourceResetPlanHash + ' transaction=' + ResourceResetTransaction);
     if not Exec(ResourceResetExtractRoot + '\star-map-reset-helper.exe', Params,
-      ResourceResetExtractRoot, SW_HIDE, ewWaitUntilTerminated, Code) or (Code <> 0) then begin
-      Reason := '资源升级步骤 ' + Action + ' 未完成（错误码 ' + IntToStr(Code) + '）。' + #13#10 +
-        ResetReadText(ResultDir + '\error.txt');
+      ResourceResetExtractRoot, SW_HIDE, ewWaitUntilTerminated, Code) then begin
+      Reason := '资源升级步骤 ' + Action + ' 的检查程序未能启动（Windows 错误 ' + IntToStr(Code) + '）。' + #13#10 +
+        SysErrorMessage(Code);
+      Log('RESOURCE_RESET_LAUNCH_FAILED ' + Action + ' result-directory=' + ResultDir);
+      Log(Reason);
+      Exit;
+    end;
+    if Code <> 0 then begin
+      Detail := Trim(ResetReadText(ResultDir + '\error.txt'));
+      if Detail = '' then Detail := GetIniString('result', 'errorCode', '', ResultDir + '\result.ini');
+      if Detail = '' then Detail := '未生成可读错误详情。';
+      Reason := '资源升级步骤 ' + Action + ' 执行失败（程序退出码 ' + IntToStr(Code) + '）。' + #13#10 + Detail;
       if ((Action = 'prepare') or (Action = 'start-native')) and
         (Pos('native-observation-evidence-budget-exceeded', Reason) > 0) then
         Reason := '本包在当前安装路径下的完整恢复凭据超出支持容量，尚未进入 Windows 程序安装。将核对恢复准备步骤，暂不能继续。' + #13#10 + Reason;
+      Log('RESOURCE_RESET_HELPER_FAILED ' + Action + ' result-directory=' + ResultDir);
       Log(Reason);
       Exit;
     end;
