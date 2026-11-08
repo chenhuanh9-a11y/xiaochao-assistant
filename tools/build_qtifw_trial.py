@@ -112,6 +112,7 @@ def main():
     controller = (scripts / "controller.js").read_text(encoding="utf-8")
     controller = controller.replace("__SCOPE__", json.dumps(output.as_posix())).replace("__INSTANCE__", json.dumps(instance))
     (config / "controller.js").write_text(controller, encoding="utf-8")
+    shutil.copy2(scripts / "trial.qss", config / "trial.qss")
     shutil.copy2(scripts / "component.js", meta / "component.js")
     write_xml(meta / "package.xml", "Package", dict(DisplayName="星图真实程序（隔离安装试用）",
         Description="原 142001C8 程序与辅助文件；只用于本机隔离验证。", Version="1.0.0", ReleaseDate="2026-11-08",
@@ -127,7 +128,7 @@ def main():
         TargetDir=str(output / "targets/trial"), MaintenanceToolName="trial-maintenance",
         RemoveTargetDir="false", AllowNonAsciiCharacters="true", AllowSpaceInPath="true",
         AllowRepositoriesForOfflineInstaller="false", SaveDefaultRepositories="false", PersistentLocalCache="false",
-        ControlScript="controller.js"))
+        ControlScript="controller.js", StyleSheet="trial.qss"))
     setup = output / "Xingtu-QtIFW-Local-Trial-Setup.exe"
     with (output / "binarycreator.log").open("wb") as log:
         subprocess.run([str(args.ifw_bin / "binarycreator.exe"), "--offline-only", "--compression", "3",

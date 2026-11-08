@@ -1,0 +1,4 @@
+/* Keep wizard page text readable with Windows dark system palettes. */
+QWizardPage { background-color: #ffffff; color: #202124; }
+QWizardPage QLabel, QWizardPage QRadioButton, QWizardPage QCheckBox { color: #202124; }
+QWizardPage QRadioButton:disabled, QWizardPage QCheckBox:disabled { color: #9ca3af; }
