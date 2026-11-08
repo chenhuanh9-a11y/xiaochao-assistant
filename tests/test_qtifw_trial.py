@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "tools"), str(ROOT / "app")]
-from qtifw_trial_helper import OWNER, prepare, verify, clear_data, scoped
+from qtifw_trial_helper import OWNER, prepare, verify, clear_data, scoped, check_target
 
 
 class TrialTests(unittest.TestCase):
@@ -32,6 +32,60 @@ class TrialTests(unittest.TestCase):
         (work / "settings.json").write_bytes(b"synthetic settings")
         (self.target / "personal.txt").write_bytes(b"outside declared data scope")
         return work
+
+    def external_target(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.policy["allowNewTargets"] = True
+        return Path(temporary.name) / "中文 安装位置" / "星图试用版"
+
+    def test_selected_external_directory_is_read_only_until_real_prepare(self):
+        target = self.external_target()
+        self.assertTrue(check_target(self.policy, target)["checked"])
+        self.assertFalse(target.parent.exists())
+        prepare(self.policy, target)
+        self.assertEqual(json.loads((target / OWNER).read_text())["target"], str(target))
+        for name, data in {"app.exe": b"whole", "_internal/runtime.dll": b"runtime"}.items():
+            path = target / "program" / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        self.assertTrue(verify(self.policy, target)["verified"])
+        self.assertEqual(clear_data(self.policy, target, "keep")["cleared"], 0)
+
+    def test_files_arriving_after_directory_validation_block_real_prepare(self):
+        target = self.external_target()
+        check_target(self.policy, target)
+        target.mkdir(parents=True)
+        personal = target / "personal.txt"
+        personal.write_bytes(b"do not overwrite")
+        with self.assertRaisesRegex(ValueError, "not-empty"):
+            prepare(self.policy, target)
+        self.assertFalse((target / OWNER).exists())
+        self.assertEqual(personal.read_bytes(), b"do not overwrite")
+
+    def test_owner_cannot_be_copied_to_adopt_another_selected_directory(self):
+        target = self.external_target()
+        prepare(self.policy, target)
+        other = target.parent / "another"
+        other.mkdir()
+        (other / OWNER).write_bytes((target / OWNER).read_bytes())
+        with self.assertRaisesRegex(ValueError, "owner-target-mismatch"):
+            prepare(self.policy, other)
+
+    def test_selected_location_inside_existing_installation_is_rejected(self):
+        target = self.external_target()
+        target.parent.mkdir(parents=True)
+        (target.parent / "星图.exe").write_bytes(b"existing application")
+        with self.assertRaisesRegex(ValueError, "inside-existing-installation"):
+            prepare(self.policy, target)
+        self.assertFalse(target.exists())
+
+    def test_broad_system_relative_and_build_directories_cannot_be_selected(self):
+        self.external_target()
+        for target in (self.scope, self.scope / "config", self.scope.parent,
+                       Path(self.scope.anchor), Path("relative-trial")):
+            with self.assertRaises(ValueError):
+                check_target(self.policy, target)
 
     def test_interrupted_retry_quarantines_whole_and_torn_files_without_adopting_unknowns(self):
         work = self.seed()

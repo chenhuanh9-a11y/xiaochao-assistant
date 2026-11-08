@@ -21,18 +21,34 @@ function Controller() {
     if (!installer.performOperation("Copy", [":/qtifw-trial/helper.exe", helper]))
         throw new Error("无法读取随包测试工具");
     installer.setValue("TrialHelper", helper);
+    // The maintenance executable is an uninstaller, not a package manager UI.
+    if (!installer.isInstaller() && !installer.isCommandLineInstance()) installer.setUninstaller();
+    installer.setDefaultPageVisible(QInstaller.Introduction, false);
+    installer.setDefaultPageVisible(QInstaller.ComponentSelection, false);
+    installer.setDefaultPageVisible(QInstaller.LicenseCheck, false);
+    installer.setDefaultPageVisible(QInstaller.StartMenuSelection, false);
     // QtIFW applies --root AFTER construction. Custom key=value parameters are
     // already available here, so bind the actual target before admission.
     var requested = installer.value("TrialTarget", "");
-    if (installer.isInstaller() && requested !== "") installer.setValue("TargetDir", requested);
-    if (installer.value("DataChoice", "") === "") installer.setValue("DataChoice", "keep");
+    var local = installer.environmentVariable("LOCALAPPDATA");
+    var recommended = (local || installer.value("HomeDir") + "/AppData/Local") + "/Programs/星图试用版";
+    installer.setValue("TrialRecommendedTarget", recommended);
+    if (installer.isInstaller()) {
+        if (requested !== "") installer.setValue("TargetDir", requested);
+        else if (!installer.isCommandLineInstance()) installer.setValue("TargetDir", recommended);
+    }
+    if (installer.value("DataChoice", "") === "") installer.setValue("DataChoice", "clear");
+    if (installer.isUninstaller() && installer.value("DataChoice") !== "clear")
+        throw new Error("此版本执行彻底卸载，不支持保留安装目录。请先备份需要保留的资料。");
     if (installer.value("DataChoice") !== "keep" && installer.value("DataChoice") !== "clear")
         throw new Error("请选择保留或清除测试资料");
     if (installer.isInstaller()) {
-        trialRun("prepare");
-        installer.setValue("TrialPreparedTarget", installer.value("TargetDir"));
-        // Only after the native helper has admitted this owned, isolated target.
-        installer.setMessageBoxAutomaticAnswer("OverwriteTargetDirectory", QMessageBox.Yes);
+        // GUI selection is read-only until the real component's pre-extract
+        // admission. Keep early admission for the existing CLI/root contract.
+        if (installer.isCommandLineInstance()) {
+            trialRun("prepare");
+            installer.setValue("TrialPreparedTarget", installer.value("TargetDir"));
+        }
         installer.setDefaultPageVisible(QInstaller.TargetDirectory, false);
         // This trial creates no Start Menu shortcuts.
         installer.setDefaultPageVisible(QInstaller.StartMenuSelection, false);
@@ -42,13 +58,15 @@ function Controller() {
         trialRun("inspect-data");
     }
     // Disarm a stale prior choice on every maintenance/update invocation.
-    trialRun("select-data", "keep", "none");
+    if (!installer.isInstaller() || installer.isCommandLineInstance())
+        trialRun("select-data", "keep", "none");
     var admittedTarget = installer.value("TargetDir");
     function normal(path) { return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase(); }
     installer.valueChanged.connect(function(key, value) {
-        if (key === "TargetDir" && normal(value) !== normal(admittedTarget)) {
+        var bound = installer.isInstaller() ? installer.value("TrialPreparedTarget", "") : admittedTarget;
+        if (key === "TargetDir" && bound !== "" && normal(value) !== normal(bound)) {
             installer.setValue("TrialRootRejected", "true");
-            installer.setValue("TargetDir", admittedTarget);
+            installer.setValue("TargetDir", bound);
         }
     });
     installer.installationFinished.connect(function() { trialRun("verify"); });
@@ -66,35 +84,44 @@ Controller.prototype.IntroductionPageCallback = function() {
 };
 
 Controller.prototype.ReadyForInstallationPageCallback = function() {
-    if (installer.isCommandLineInstance() || !installer.isUninstaller()) return;
-    // Uninstaller mode does not load the component page lifecycle used by the
-    // installer. Own this choice in the documented controller ready-page hook.
-    var answer = QMessageBox.question("TrialDataChoice", "测试资料处理",
-        "<p>是否保留本测试安装的资料？</p>" +
-        "<p><b>是：保留资料，默认推荐。</b><br/>" +
-        "否：清除本测试安装 program/work 中的设置、导入记录、缓存和日志。<br/>" +
-        "取消：退出，不卸载。</p>" +
-        "<p>地图目录、外部文件、中断恢复副本和协作锁均保留。仅用于专用测试资料。</p>" +
-        "<p>更新失败不会自动恢复旧程序，可使用已验证仓库重装恢复。</p>",
-        QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel, QMessageBox.Yes);
-    if (answer === QMessageBox.Cancel) { gui.rejectWithoutPrompt(); return; }
-    installer.setValue("DataChoice", answer === QMessageBox.No ? "clear" : "keep");
+    if (installer.isCommandLineInstance()) return;
     var page = gui.currentPageWidget();
+    if (installer.isInstaller()) {
+        page.title = "确认安装星图";
+        page.subTitle = "安装位置：" + installer.toNativeSeparators(installer.value("TargetDir"));
+        return;
+    }
+    if (!installer.isUninstaller()) return;
+    page.title = "彻底卸载星图";
+    page.subTitle = "点击“彻底卸载”后开始移除。";
     var summary = page ? gui.findChild(page, "RemoveAllMsgLabel") : null;
     if (summary)
-        summary.text = installer.value("DataChoice") === "clear" ?
-            "本次卸载会清除本测试安装的 program/work；地图、外部文件和恢复副本保留。" :
-            "本次卸载保留测试资料。";
-    console.log("TRIAL_GUI_DATA_CHOICE: " + installer.value("DataChoice"));
+        summary.text = "将删除以下安装目录及其中的程序、地图、设置、缓存和日志：\n\n" +
+            installer.toNativeSeparators(installer.value("TargetDir")) +
+            "\n\n同时移除桌面、开始菜单入口和卸载项。安装目录外的文件保留。";
+    gui.button(buttons.CommitButton).text = "彻底卸载";
 };
 
 Controller.prototype.FinishedPageCallback = function() {
+    if (installer.isInstaller()) {
+        var installed = installer.fileExists(installer.value("TargetDir") + "/program/星图.exe") &&
+            installer.fileExists(installer.value("TargetDir") + "/trial-maintenance.exe");
+        var finished = gui.currentPageWidget();
+        if (finished && finished.MessageLabel && installed)
+            finished.MessageLabel.text = "星图试用版已安装。\n\n安装位置：" +
+                installer.toNativeSeparators(installer.value("TargetDir")) +
+                "\n\n可从桌面“星图（试用版）”或开始菜单“星图试用版”打开程序。" +
+                "\n卸载请使用开始菜单中的“卸载星图试用版”。";
+        return;
+    }
     if (!installer.isUninstaller()) return;
-    var text = "程序卸载流程已结束。资料处理尚未确认，请保留测试目录并检查日志。";
+    var text = "卸载流程已结束，正在确认清理结果。";
     try {
-        var result = JSON.parse(installer.readFile(installer.value("TargetDir") + "/trial-data.json", "UTF-8"));
-        if (result.success === true && result.dataChoice === installer.value("DataChoice", "keep"))
-            text = result.dataChoice === "clear" ? "程序已卸载，本测试安装的 work 资料已清除；地图、外部文件及协作锁保留。" : "程序已卸载，测试资料已保留。";
+        var result = JSON.parse(installer.readFile(__SCOPE__ + "/last-uninstall.json", "UTF-8"));
+        function normal(path) { return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase(); }
+        if (result.success === true && result.dataChoice === "clear" &&
+                normal(result.target) === normal(installer.value("TargetDir")))
+            text = "星图已卸载。安装目录的最终清理由卸载程序退出时完成。";
         else text = "程序卸载流程已结束，但资料处理未完成。请保留测试目录并检查日志。";
     } catch (error) {}
     var page = gui.currentPageWidget();

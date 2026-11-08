@@ -90,7 +90,7 @@ def main():
     instance = uuid.uuid4().hex
     (output / "targets").mkdir()
     (output / ".qtifw-trial-scope").write_text(instance + "\n", encoding="ascii")
-    policy = dict(scope=str(output), instance=instance, payloadSource=compiled,
+    policy = dict(scope=str(output), instance=instance, payloadSource=compiled, allowNewTargets=True,
                   files=inventory["files"], faultsAllowed=True)
     policy_path = output / "qtifw-trial-policy.json"
     policy_path.write_text(json.dumps(policy, ensure_ascii=False), encoding="utf-8")
@@ -115,9 +115,15 @@ def main():
     (config / "controller.js").write_text(controller, encoding="utf-8")
     shutil.copy2(scripts / "trial.qss", config / "trial.qss")
     shutil.copy2(scripts / "component.js", meta / "component.js")
+    shutil.copy2(scripts / "install-location.ui", meta / "install-location.ui")
     write_xml(meta / "package.xml", "Package", dict(DisplayName="星图真实程序（隔离安装试用）",
         Description="原 142001C8 程序与辅助文件；只用于本机隔离验证。", Version="1.0.0", ReleaseDate="2026-11-08",
         Default="true", Script="component.js", Dependencies=DATA_PACKAGE))
+    package_tree = ET.parse(meta / "package.xml")
+    interfaces = ET.SubElement(package_tree.getroot(), "UserInterfaces")
+    ET.SubElement(interfaces, "UserInterface").text = "install-location.ui"
+    ET.indent(package_tree)
+    package_tree.write(meta / "package.xml", encoding="utf-8", xml_declaration=True)
     data_meta = output / "packages" / DATA_PACKAGE / "meta"
     data_meta.mkdir(parents=True)
     shutil.copy2(scripts / "data-component.js", data_meta / "data-component.js")
@@ -127,9 +133,10 @@ def main():
     write_xml(config / "config.xml", "Installer", dict(Name="星图安装器隔离试用 " + instance,
         Version="1.0.0", Title="星图安装器隔离试用（非正式版）", Publisher="星图开发试用",
         TargetDir=str(output / "targets/trial"), MaintenanceToolName="trial-maintenance",
-        RemoveTargetDir="false", AllowNonAsciiCharacters="true", AllowSpaceInPath="true",
+        RemoveTargetDir="true", AllowNonAsciiCharacters="true", AllowSpaceInPath="true",
         AllowRepositoriesForOfflineInstaller="false", SaveDefaultRepositories="false", PersistentLocalCache="false",
-        ControlScript="controller.js", StyleSheet="trial.qss", WizardStyle="Modern"))
+        ControlScript="controller.js", StyleSheet="trial.qss", WizardStyle="Modern",
+        WizardShowPageList="false", WizardDefaultWidth="680", WizardDefaultHeight="440"))
     # Include both IFW pages and Qt standard buttons. Explicit translations
     # also apply to the generated maintenance tool, independent of OS locale.
     tree = ET.parse(config / "config.xml")

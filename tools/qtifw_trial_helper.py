@@ -41,10 +41,21 @@ def scoped(policy, target):
     token = _safe(scope / ".qtifw-trial-scope").read_text(encoding="ascii").strip()
     if token != policy["instance"]:
         raise ValueError("trial-scope-mismatch")
-    target = Path(target).absolute()
+    supplied = Path(target)
+    if not supplied.is_absolute():
+        raise ValueError("absolute-install-directory-required")
+    target = supplied.absolute()
     _safe(target)
-    if ".." in target.parts or not target.is_relative_to(scope / "targets") or target == scope / "targets":
+    if ".." in target.parts or target == Path(target.anchor):
+        raise ValueError("invalid-install-directory")
+    internal = target.is_relative_to(scope / "targets") and target != scope / "targets"
+    if not internal and (not policy.get("allowNewTargets") or target.is_relative_to(scope)
+                         or scope.is_relative_to(target)):
         raise ValueError("outside-trial-targets")
+    if os.name == "nt" and (target.drive.startswith("\\\\") or
+            os.path.isreserved(str(target)) or
+            target.is_relative_to(Path(os.environ.get("SystemRoot", "C:/Windows")))):
+        raise ValueError("system-or-network-directory-not-supported")
     return target
 
 
@@ -53,6 +64,8 @@ def bound_owner(policy, target):
     owner = json.loads(_safe(target / OWNER).read_text(encoding="utf-8"))
     if owner.get("instance") != policy["instance"] or owner.get("payloadSource") != policy["payloadSource"]:
         raise ValueError("trial-owner-mismatch")
+    if policy.get("allowNewTargets") and os.path.normcase(owner.get("target", "")) != os.path.normcase(str(target)):
+        raise ValueError("trial-owner-target-mismatch")
     return target, owner
 
 
@@ -74,13 +87,17 @@ def owned_program(policy, target):
     return result
 
 
-def prepare(policy, target):
+def check_target(policy, target):
+    """Read-only admission shared by the directory page and pre-extract path."""
     target = scoped(policy, target)
+    for parent in target.parents:
+        if any(_safe(parent / name).exists() for name in (OWNER, "unins000.exe", "星图.exe")):
+            raise ValueError("inside-existing-installation")
     for prefix in (target, target / "program"):
         if any(_safe(prefix / name).exists() for name in ("unins000.exe", "unins000.dat")):
             raise ValueError("legacy-inno-migration-required")
-    entries = owned_program(policy, target)
     marker = _safe(target / OWNER)
+    entries = owned_program(policy, target) if marker.exists() or not policy.get("allowNewTargets") else []
     if marker.exists():
         _, owner = bound_owner(policy, target)
         if (target / "trial-maintenance.exe").exists():
@@ -90,8 +107,23 @@ def prepare(policy, target):
     else:
         if entries:
             raise ValueError("unowned-program-collision")
+        if policy.get("allowNewTargets") and target.exists() and (
+                not target.is_dir() or any(target.iterdir())):
+            raise ValueError("install-directory-not-empty")
+    return dict(checked=True, target=str(target))
+
+
+def prepare(policy, target):
+    check_target(policy, target)
+    target = scoped(policy, target)
+    entries = owned_program(policy, target)
+    marker = _safe(target / OWNER)
+    if marker.exists():
+        _, owner = bound_owner(policy, target)
+    else:
         target.mkdir(parents=True, exist_ok=True)
-        owner = dict(instance=policy["instance"], payloadSource=policy["payloadSource"], phase="installing")
+        owner = dict(instance=policy["instance"], payloadSource=policy["payloadSource"],
+                     phase="installing", target=str(target))
         write_owner(target, owner, new=True)
     if owner["phase"] != "installing":
         owner["phase"] = "installing"
@@ -180,18 +212,27 @@ def receipt(policy, target, name, value):
     target = scoped(policy, target)
     destination = _safe(target / ("trial-" + name + ".json"))
     destination.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+    if name == "data":
+        # Native full uninstall removes TargetDir at exit; keep its result in
+        # this trial's separate support scope for the finish page and evidence.
+        external = _safe(Path(policy["scope"]) / "last-uninstall.json")
+        external.write_text(json.dumps(dict(value, target=str(target)), ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "verify", "inspect-data", "select-data", "undo-data", "noop", "data", "pause", "fail"))
+    parser.add_argument("action", choices=("check-target", "prepare", "verify", "inspect-data", "select-data", "undo-data", "noop", "data", "pause", "fail"))
     parser.add_argument("target", type=Path)
     parser.add_argument("choice", nargs="?", default="keep")
     parser.add_argument("operation", nargs="?", default="none", choices=("none", "purge"))
     args = parser.parse_args()
     policy = json.loads(Path(__file__).with_name("qtifw-trial-policy.json").read_text(encoding="utf-8"))
     try:
-        if args.action == "prepare":
+        if args.action == "check-target":
+            # Browsing/validation must not create the target, marker or receipt.
+            print(json.dumps(check_target(policy, args.target), ensure_ascii=True))
+            return 0
+        elif args.action == "prepare":
             result = prepare(policy, args.target)
         elif args.action == "verify":
             target, _ = bound_owner(policy, args.target)
@@ -223,6 +264,12 @@ def main():
             receipt(policy, args.target, "data", dict(success=True, **result))
         elif args.action == "inspect-data":
             target, paths = data_files(policy, args.target)
+            if policy.get("allowNewTargets"):
+                for path in target.rglob("*"):
+                    _safe(path)
+                    info = path.stat()
+                    if not stat.S_ISDIR(info.st_mode) and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1):
+                        raise ValueError("installation-object-not-exclusive-file")
             with resource_write_lock(target / "program"):
                 assert_resources_ready(target / "program")
             result = dict(dataFiles=len(paths), scope="program/work only")

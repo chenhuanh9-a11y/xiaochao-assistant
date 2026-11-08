@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>InstallLocation</class>
+ <widget class="QWidget" name="InstallLocation">
+  <property name="windowTitle"><string>选择安装位置</string></property>
+  <layout class="QVBoxLayout" name="LocationLayout">
+   <item><widget class="QLabel" name="LocationHelp">
+    <property name="text"><string>可以直接使用推荐位置，或点“浏览”选择其他磁盘和文件夹。</string></property>
+    <property name="wordWrap"><bool>true</bool></property>
+   </widget></item>
+   <item><widget class="QLabel" name="PathLabel">
+    <property name="text"><string>安装到：</string></property>
+    <property name="buddy"><cstring>InstallPath</cstring></property>
+   </widget></item>
+   <item><layout class="QHBoxLayout" name="PathRow">
+    <item><widget class="QLineEdit" name="InstallPath">
+     <property name="accessibleName"><string>安装目录</string></property>
+    </widget></item>
+    <item><widget class="QPushButton" name="BrowseButton"><property name="text"><string>浏览…</string></property></widget></item>
+   </layout></item>
+   <item><layout class="QHBoxLayout" name="RecommendedRow">
+    <item><widget class="QPushButton" name="RecommendedButton"><property name="text"><string>使用推荐位置</string></property></widget></item>
+    <item><spacer name="ButtonSpace"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+   </layout></item>
+   <item><widget class="QLabel" name="FinalPath">
+    <property name="text"><string>最终安装位置：</string></property>
+    <property name="wordWrap"><bool>true</bool></property>
+    <property name="textFormat"><enum>Qt::PlainText</enum></property>
+    <property name="textInteractionFlags"><set>Qt::TextSelectableByMouse</set></property>
+   </widget></item>
+   <item><widget class="QLabel" name="LocationNote">
+    <property name="text"><string>浏览时会自动添加“星图试用版”子文件夹。已有安装和文件会保留。</string></property>
+    <property name="wordWrap"><bool>true</bool></property>
+   </widget></item>
+   <item><widget class="QLabel" name="LocationError">
+    <property name="text"><string/></property>
+    <property name="wordWrap"><bool>true</bool></property>
+   </widget></item>
+   <item><spacer name="BottomSpace"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property></spacer></item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
