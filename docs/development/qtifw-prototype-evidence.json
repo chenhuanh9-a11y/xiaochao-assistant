@@ -1,0 +1,182 @@
+{
+  "schema": "xingtu-qtifw-synthetic-lifecycle-v1",
+  "productPackaged": false,
+  "windowsValidated": false,
+  "innoMigrationImplemented": false,
+  "userDataDeletionImplemented": false,
+  "powerLossRecoveryValidated": false,
+  "engineVersionOutput": "IFW Version: 4.11.0, built with Qt 6.9.3.\nBuild date: Mar 10 2026\nInstaller Framework SHA1: aac2cf9c93b80a0f5959ab6c8a00bc378c54fdec\nLibarchive version: libarchive 3.8.5 zlib/1.3.1 liblzma/5.8.1 bz2lib/1.0.8 libb2/bundled",
+  "failedUpdate": {
+    "exitCode": 3,
+    "payloadVersionAfterFailure": null,
+    "maintenancePresent": true,
+    "files": {
+      "InstallationLog.txt": "23d0cfbf23e50cc776eb178ace6459d3622f052ec32c091e0590f1b2a5c73b1f",
+      "components.xml": "676a72a1f1a8028495acf603792b3e78db230784a2116c326b40fc6f29f712cc",
+      "installer.dat": "d7a883f3fabdc08253987a8269b0468418bb65d5573bbc9738610f68b7a28d4d",
+      "network.xml": "e1f195f42a8fc74590b5f4806f3f919dab82dce161e4118a9aec424aa681e90f",
+      "probe-maintenance": "2e216a6dcc84923f0943423a7b6eeb643664778eda2392d0efb13ff1e9f89596",
+      "probe-maintenance.dat": "a0d8ce45c87df572e40a491b2c076e060f78c3bcea9153bc29fb8060b3a193be",
+      "probe-maintenance.ini": "26d5b912b1ae24a105499d9875c70a8398c7c1156aa2b4eee40a08742085f7f4",
+      "program/local-created.txt": "102154c6adbe9705d6c8710d6b60453a83fb5e2de5813c18b8ddca6b82909844",
+      "work/user-created.txt": "97e7b6e2214f2510d5857628716f042d1df61e2d54e11da8899ce79f01364c3a"
+    }
+  },
+  "repairAfterFailedUpdate": {
+    "exitCode": 0,
+    "payloadVersion": "2.0.0"
+  },
+  "uninstall": {
+    "exitCode": 0,
+    "ownedPayloadRemoved": true,
+    "unknownPreserved": true,
+    "workPreserved": true,
+    "unknownInProgramPreserved": true
+  },
+  "cancel": {
+    "exitCode": 1,
+    "payloadAbsent": true
+  },
+  "freshFailure": {
+    "exitCode": 3,
+    "payloadAbsent": true
+  },
+  "legacyRejected": {
+    "exitCode": 1,
+    "filesUnchanged": true
+  },
+  "legacyGuardAfterConsent": {
+    "exitCode": 1,
+    "filesUnchanged": false,
+    "guardObserved": true
+  },
+  "unknownCollisionRejected": {
+    "exitCode": 1,
+    "filesUnchanged": true
+  },
+  "collisionGuardAfterConsent": {
+    "exitCode": 1,
+    "filesUnchanged": false,
+    "guardObserved": true
+  },
+  "abruptTermination": {
+    "exitCode": -9,
+    "payloadPresent": true,
+    "maintenancePresent": false,
+    "files": {
+      "installerResources/org.xingtu.qtifw.lifecycleprobe/3.0.0program.txt": "670c0296a86827987e8bcda7939e591c11245620f87becb8d4fd6f48c28ed187",
+      "probe-interrupt-checkpoint.txt": "e9b72a02344d78edf0dde7d94ebb8e07ddd699d602634019e0e842289c921a1e",
+      "program/synthetic.txt": "9e790536ae0752b73aac14cc45a62a1d44b8ad572ff16ea95d254736e4d2efd9",
+      "program/version.txt": "2985be8b28d3ade858e8d8fb4bc22f565b1bf6020dff982dce141f7721b9999c"
+    }
+  },
+  "interruptRetry": {
+    "exitCode": 1,
+    "filesUnchanged": true,
+    "automaticRecovery": false
+  },
+  "externalUserDataPreserved": true,
+  "probeCompleted": true,
+  "runs": [
+    {
+      "label": "engine-version",
+      "exitCode": 0,
+      "seconds": 0.008
+    },
+    {
+      "label": "v1-build",
+      "exitCode": 0,
+      "seconds": 0.164
+    },
+    {
+      "label": "v2-build",
+      "exitCode": 0,
+      "seconds": 0.114
+    },
+    {
+      "label": "failure-build",
+      "exitCode": 0,
+      "seconds": 0.115
+    },
+    {
+      "label": "pause-build",
+      "exitCode": 0,
+      "seconds": 0.114
+    },
+    {
+      "label": "fresh-install",
+      "exitCode": 0,
+      "seconds": 0.064
+    },
+    {
+      "label": "successful-update-repo",
+      "exitCode": 0,
+      "seconds": 0.032
+    },
+    {
+      "label": "successful-update",
+      "exitCode": 0,
+      "seconds": 0.032
+    },
+    {
+      "label": "failed-update-repo",
+      "exitCode": 0,
+      "seconds": 0.032
+    },
+    {
+      "label": "failed-update",
+      "exitCode": 3,
+      "seconds": 0.064
+    },
+    {
+      "label": "after-failed-update-list",
+      "exitCode": 0,
+      "seconds": 0.016
+    },
+    {
+      "label": "repair-after-failed-update",
+      "exitCode": 0,
+      "seconds": 0.032
+    },
+    {
+      "label": "uninstall",
+      "exitCode": 0,
+      "seconds": 0.016
+    },
+    {
+      "label": "cancel-before-install",
+      "exitCode": 1,
+      "seconds": 0.032
+    },
+    {
+      "label": "new-install-operation-failure",
+      "exitCode": 3,
+      "seconds": 0.032
+    },
+    {
+      "label": "inno-transition-rejected",
+      "exitCode": 1,
+      "seconds": 0.016
+    },
+    {
+      "label": "legacy-guard-after-nonempty-consent",
+      "exitCode": 1,
+      "seconds": 0.016
+    },
+    {
+      "label": "unknown-collision-rejected",
+      "exitCode": 1,
+      "seconds": 0.016
+    },
+    {
+      "label": "collision-guard-after-nonempty-consent",
+      "exitCode": 1,
+      "seconds": 0.016
+    },
+    {
+      "label": "interrupt-retry-no-overwrite",
+      "exitCode": 1,
+      "seconds": 0.016
+    }
+  ]
+}
