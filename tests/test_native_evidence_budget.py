@@ -41,6 +41,58 @@ def node_count(value):
     return 1
 
 
+class PendingUninstallerTests(unittest.TestCase):
+    def pending_context(self):
+        kw = context()
+        kw['uninstall_exe'] = None
+        kw['shortcut_targets'][1].update(path=r'C:\links\卸载星图.lnk', target=None)
+        return kw
+
+    def test_pre_native_admission_accepts_unassigned_name_but_capture_rejects_it(self):
+        kw = self.pending_context()
+        with patch.object(native, 'WindowsReadOnlyBackend', side_effect=AssertionError('native IO')):
+            admitted = native.preflight_native_evidence(ROOT, **kw)
+            self.assertGreater(admitted['knownBytes'], 0)
+            with self.assertRaisesRegex(native.NativeObservationError, 'uninstall-path-unavailable'):
+                native.capture_native_completion(ROOT, **kw)
+
+    def test_context_preserves_unassigned_name_without_guessing_a_filename(self):
+        import base64
+        import tempfile
+        kw = self.pending_context()
+        document = dict(schema='xingtu-installer-program-inventory-v1', sourceCommit=kw['target_identity']['sourceCommit'],
+            ownershipSha256=kw['ownership_sha256'], ownershipBase64=base64.b64encode(kw['ownership_bytes']).decode(),
+            files=kw['program_inventory'])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'inventory.json'
+            data = json.dumps(document).encode(); path.write_bytes(data)
+            args = SimpleNamespace(program_inventory=str(path), program_inventory_sha256=digest(data),
+                install_root=ROOT, target_report_sha256=kw['target_report_sha256'], uninstall_exe='',
+                group_shortcut=kw['shortcut_targets'][0]['path'], uninstall_shortcut=kw['shortcut_targets'][1]['path'],
+                desktop_shortcut=kw['shortcut_targets'][2]['path'], group_enabled=True, desktop_enabled=True)
+            actual = native_context(args, kw['target_identity'])
+            self.assertIsNone(actual['uninstall_exe'])
+            self.assertIsNone(actual['shortcut_targets'][1]['target'])
+            native.preflight_native_evidence(ROOT, **actual)
+
+    def test_pending_name_does_not_authorize_unknown_shortcut_targets_or_wrong_paths(self):
+        kw = self.pending_context()
+        kw['shortcut_targets'][0]['target'] = None
+        with self.assertRaises((native.NativeObservationError, TypeError)):
+            native.preflight_native_evidence(ROOT, **kw)
+        kw = self.pending_context()
+        kw['uninstall_exe'] = r'C:\elsewhere\unins000.exe'
+        with self.assertRaisesRegex(native.NativeObservationError, 'uninstall-path-not-owned'):
+            native.preflight_native_evidence(ROOT, **kw)
+
+    def test_pending_name_keeps_capacity_rejection(self):
+        kw = context(3000, 11)
+        kw['uninstall_exe'] = None
+        kw['shortcut_targets'][1].update(path=r'C:\links\卸载星图.lnk', target=None)
+        with self.assertRaisesRegex(native.NativeObservationError, 'evidence-budget-exceeded'):
+            native.preflight_native_evidence(ROOT, **kw)
+
+
 class ModelBackend(native.WindowsReadOnlyBackend):
     """Exercise production ancestor enumeration with bounded synthetic metadata."""
     def __init__(self):

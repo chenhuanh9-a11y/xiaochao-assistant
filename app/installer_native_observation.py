@@ -148,12 +148,18 @@ def program_paths_from_ownership(ownership_bytes):
 
 
 def _contract(root, target_identity, target_report_sha256, ownership_bytes,
-              ownership_sha256, program_inventory, uninstall_exe, shortcut_targets):
-    root, uninstall_exe = _path(os.fspath(root)), _path(os.fspath(uninstall_exe))
+              ownership_sha256, program_inventory, uninstall_exe, shortcut_targets,
+              *, allow_pending_uninstall=False):
+    root = _path(os.fspath(root))
+    pending_uninstall = allow_pending_uninstall and uninstall_exe is None
+    if not pending_uninstall:
+        if uninstall_exe is None:
+            _fail('uninstall-path-unavailable')
+        uninstall_exe = _path(os.fspath(uninstall_exe))
     if len(root) <= 3:
         _fail('install-root-is-drive-root')
-    if not _same_path(ntpath.dirname(uninstall_exe), root) or not re.fullmatch(
-            r'unins[0-9]{3}\.exe', ntpath.basename(uninstall_exe), re.I):
+    if not pending_uninstall and (not _same_path(ntpath.dirname(uninstall_exe), root) or not re.fullmatch(
+            r'unins[0-9]{3}\.exe', ntpath.basename(uninstall_exe), re.I)):
         _fail('uninstall-path-not-owned')
     fields = {'sourceCommit', 'displayVersion', 'numericVersion', 'executableSha256',
               'resourceInventorySha256'}
@@ -196,7 +202,12 @@ def _contract(root, target_identity, target_report_sha256, ownership_bytes,
         if (not isinstance(row, dict) or set(row) != {'path', 'target', 'enabled'}
                 or type(row['enabled']) is not bool):
             _fail('invalid-shortcut-selection')
-        shortcuts.append(dict(path=_path(row['path']), target=_path(row['target']), enabled=row['enabled']))
+        path = _path(row['path'])
+        if pending_uninstall and row['target'] is None and ntpath.basename(path).casefold() == '卸载星图.lnk':
+            target = None
+        else:
+            target = _path(row['target'])
+        shortcuts.append(dict(path=path, target=target, enabled=row['enabled']))
     shortcuts.sort(key=lambda row: row['path'].casefold())
     if len({row['path'].casefold() for row in shortcuts}) != 3:
         _fail('duplicate-shortcut')
@@ -229,8 +240,11 @@ def preflight_native_evidence(install_root, *, target_identity, target_report_sh
     """
     from installer_upgrade_journal import (MAX_EVIDENCE_BYTES, MAX_JSON_NODES,
         MAX_JSON_DEPTH, MAX_JSON_ITEMS, MAX_JSON_STRING, MAX_JSON_KEY)
+    # Inno has not allocated its uninsNNN.exe name at PrepareToInstall/ssInstall.
+    # Null is allowed only for this pure size admission, never capture/replay.
     contract = _contract(install_root, target_identity, target_report_sha256,
-        ownership_bytes, ownership_sha256, program_inventory, uninstall_exe, shortcut_targets)
+        ownership_bytes, ownership_sha256, program_inventory, uninstall_exe, shortcut_targets,
+        allow_pending_uninstall=True)
     byte_limit = min(MAX_METADATA, MAX_EVIDENCE_BYTES) - NATIVE_RESERVE_BYTES - JOURNAL_RESERVE_BYTES
     node_limit = MAX_JSON_NODES - NATIVE_RESERVE_NODES - JOURNAL_RESERVE_NODES
     totals = [0, 0]
@@ -291,6 +305,9 @@ def preflight_native_evidence(install_root, *, target_identity, target_report_sh
         contract=dict(contract, programInventory={}), observation=dict(users={},
             root=dict(state='directory', ancestors=[]), program={}, uninstall={}, registry={}, shortcuts=[]))
     add(skeleton, 0)
+    if contract['uninstallExe'] is None:
+        # Reserve both later path strings without inventing an observed filename.
+        charge(2 * (len(_encoded(contract['installRoot'])) + 32), 0)
     root = contract['installRoot']
     ancestors(root, 4, include_leaf=True)
     inventory = contract['programInventory']

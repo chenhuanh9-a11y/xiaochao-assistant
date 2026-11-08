@@ -126,7 +126,10 @@ begin
       AddQuotes(ResourceResetExtractRoot + '\_internal\managed-base-resources') +
       ' --program-inventory ' + AddQuotes(ExpandConstant('{tmp}\reset-program-inventory.json')) +
       ' --program-inventory-sha256 {#ResetProgramInventorySha256}' +
-      ' --uninstall-exe ' + AddQuotes(ExpandConstant('{uninstallexe}')) +
+      { Inno assigns this only inside PerformInstall, after PrepareToInstall/ssInstall.
+        Keep an empty value attached to its option so argparse cannot consume the
+        next option. Native completion still requires the actual assigned path. }
+      ' --uninstall-exe=' + AddQuotes(ExpandConstant('{uninstallexe}')) +
       ' --group-shortcut ' + AddQuotes(ExpandConstant('{group}\星图.lnk')) +
       ' --uninstall-shortcut ' + AddQuotes(ExpandConstant('{group}\卸载星图.lnk')) +
       ' --desktop-shortcut ' + AddQuotes(ExpandConstant('{autodesktop}\星图.lnk'));

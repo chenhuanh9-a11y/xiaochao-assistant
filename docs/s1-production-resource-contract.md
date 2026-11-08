@@ -30,3 +30,12 @@ author catalog never changes recognition resources. B4 remains native-only.
 See [the import protocol](s1-author-import-protocol.md) for registration evidence
 and limits. Source/offline checks, frozen checks, Setup installation, game
 acceptance and publication remain distinct evidence stages.
+
+Inno assigns `{uninstallexe}` during `PerformInstall`, after the installer calls
+`inspect`, `prepare` and `start-native`. An unresolved CLI value stays attached
+as `--uninstall-exe=`. Pre-native capacity admission keeps that path and its
+shortcut target explicitly unknown and reserves space for the later strings;
+it does not guess an `uninsNNN.exe` name. Native completion capture and replay
+still require the actual owned path and all existing identity checks. See the
+upstream [constant expansion](https://github.com/jrsoftware/issrc/blob/main/Projects/Src/Setup.MainFunc.pas)
+and [uninstaller filename allocation](https://github.com/jrsoftware/issrc/blob/main/Projects/Src/Setup.Install.pas).

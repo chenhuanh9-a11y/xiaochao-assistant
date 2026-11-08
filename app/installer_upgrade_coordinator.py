@@ -38,11 +38,12 @@ def native_context(args, target):
     if hashlib.sha256(ownership).hexdigest() != inventory['ownershipSha256']:
         raise ValueError('installer-ownership-changed')
     executable = ntpath.join(str(args.install_root), '星图.exe')
+    uninstall_exe = args.uninstall_exe or None
     return dict(target_identity=target, target_report_sha256=args.target_report_sha256,
         ownership_bytes=ownership, ownership_sha256=inventory['ownershipSha256'],
-        program_inventory=inventory['files'], uninstall_exe=args.uninstall_exe,
+        program_inventory=inventory['files'], uninstall_exe=uninstall_exe,
         shortcut_targets=[dict(path=args.group_shortcut, target=executable, enabled=args.group_enabled),
-            dict(path=args.uninstall_shortcut, target=args.uninstall_exe, enabled=args.group_enabled),
+            dict(path=args.uninstall_shortcut, target=uninstall_exe, enabled=args.group_enabled),
             dict(path=args.desktop_shortcut, target=executable, enabled=args.desktop_enabled)])
 
 
