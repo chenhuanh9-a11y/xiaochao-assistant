@@ -12,6 +12,7 @@ var
   UninstallFiles, UninstallHashes, UninstallDirectories: TStringList;
   UninstallHolding, UninstallBackupParent, UninstallBackupPath: String;
   UninstallBackupFinalParent: String;
+  UninstallScanFailure, UninstallScanPath: String;
   UninstallManifestHash, UninstallHashesHash: String;
   UninstallDeleteData, UninstallMakeBackup, UninstallBackupComplete: Boolean;
   UninstallHoldingCreated, UninstallDataFinalized, UninstallDeleteStarted: Boolean;
@@ -97,24 +98,46 @@ var
   Error: LongWord;
 begin
   Result := False;
-  if (Depth > 32) or not UninstallSafeRelative(Relative) then Exit;
+  UninstallScanPath := Relative;
+  if Depth > 32 then begin
+    UninstallScanFailure := '目录超过 32 层：' + Relative;
+    Exit;
+  end;
+  if not UninstallSafeRelative(Relative) then begin
+    UninstallScanFailure := '目录路径不安全或无法读取：' + Relative;
+    Exit;
+  end;
   Full := ExpandConstant('{app}\') + Relative;
   if not DirExists(Full) then begin
     Result := not FileExists(Full);
+    if not Result then UninstallScanFailure := '应为目录的位置存在文件：' + Relative;
     Exit;
   end;
   UninstallDirectories.Add(Relative);
   if not FindFirst(Full + '\*', Find) then begin
     Result := UninstallLastError = 2; { Empty only, not access denied. }
+    if not Result then UninstallScanFailure := '无法枚举目录：' + Relative;
     Exit;
   end;
   try
     repeat
       if (Find.Name <> '.') and (Find.Name <> '..') then begin
         Entries := Entries + 1;
-        if (Entries > 50000) or ((Find.Attributes and $400) <> 0) then Exit;
         Name := Relative + '\' + Find.Name;
-        if not UninstallSafeRelative(Name) then Exit;
+        UninstallScanPath := Name;
+        if Entries > 50000 then begin
+          UninstallScanFailure := '所选资料超过本次安全检查上限 50,000 项；已检查 ' +
+            IntToStr(Entries) + ' 项，停止位置：' + Name;
+          Exit;
+        end;
+        if (Find.Attributes and $400) <> 0 then begin
+          UninstallScanFailure := '所选资料含目录链接或重解析点：' + Name;
+          Exit;
+        end;
+        if not UninstallSafeRelative(Name) then begin
+          UninstallScanFailure := '资料路径不安全或无法读取：' + Name;
+          Exit;
+        end;
         if (Find.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then begin
           if not InspectUninstallDirectory(Name, Depth + 1, Entries) then Exit;
         end else if UninstallDataFile(Name) then begin
@@ -125,12 +148,78 @@ begin
       if not FindNext(Find) then begin
         Error := UninstallLastError;
         Result := Error = 18; { ERROR_NO_MORE_FILES only. }
+        if not Result then UninstallScanFailure := '目录枚举未能完整结束：' + Relative;
         Break;
       end;
     until False;
   finally
     FindClose(Find);
   end;
+end;
+
+function UninstallNeedsWorkScan: Boolean;
+begin
+  { Production 1.1.1 and 1.1.2 reject work/ from both their exact [Files]
+    projection and ownership list. Inno does not own these runtime objects.
+    Keeping them in place needs no scan, hash, copy or relocation. }
+  Result := UninstallMakeBackup or UninstallDeleteData;
+end;
+
+procedure RewindUninstallScan(FilesCount, DirectoriesCount: Integer);
+begin
+  { An incomplete read must never become a partial backup/clear manifest. }
+  while UninstallFiles.Count > FilesCount do
+    UninstallFiles.Delete(UninstallFiles.Count - 1);
+  while UninstallHashes.Count > FilesCount do
+    UninstallHashes.Delete(UninstallHashes.Count - 1);
+  while UninstallDirectories.Count > DirectoriesCount do
+    UninstallDirectories.Delete(UninstallDirectories.Count - 1);
+end;
+
+function InspectChosenUninstallWork(var Entries: Integer): Boolean;
+var
+  SavedFiles, SavedDirectories, SavedEntries, Answer: Integer;
+  Success: Boolean;
+  Choices: String;
+begin
+  Result := True;
+  if not UninstallNeedsWorkScan then begin
+    Log('UNINSTALL_RUNTIME_DATA_KEPT_IN_PLACE_WITHOUT_SCAN');
+    Exit;
+  end;
+  SavedFiles := UninstallFiles.Count;
+  SavedDirectories := UninstallDirectories.Count;
+  SavedEntries := Entries;
+  repeat
+    UninstallScanFailure := '';
+    try
+      Success := InspectUninstallDirectory('work', 0, Entries);
+    except
+      Success := False;
+      UninstallScanFailure := '无法读取资料：' + UninstallScanPath + #13#10 + GetExceptionMessage;
+    end;
+    if Success then Exit;
+    RewindUninstallScan(SavedFiles, SavedDirectories);
+    Entries := SavedEntries;
+    if UninstallScanFailure = '' then UninstallScanFailure := '无法完整检查所选资料。';
+    Log('UNINSTALL_RUNTIME_SCAN_INCOMPLETE ' + UninstallScanFailure);
+    if UninstallDeleteData then
+      Choices := '是：重试检查；否：取消清除和备份，保留全部资料继续卸载；取消：停止卸载。'
+    else
+      Choices := '是：重试检查；否：不备份，保留全部资料继续卸载；取消：停止卸载。';
+    Answer := SuppressibleMsgBox(UninstallScanFailure + #13#10 +
+      '尚未备份、移动或删除任何资料。默认保留资料不需要检查历史备份内容。' + #13#10#13#10 + Choices,
+      mbError, MB_YESNOCANCEL or MB_DEFBUTTON3, IDCANCEL);
+    if Answer = IDNO then begin
+      { The button explicitly changes both choices. Do not imply that omitted
+        work files were backed up or cleared, or silently continue a clear. }
+      UninstallDeleteData := False;
+      UninstallMakeBackup := False;
+      Log('UNINSTALL_RUNTIME_DATA_KEPT_IN_PLACE_AFTER_EXPLICIT_FALLBACK');
+      Exit;
+    end;
+    if Answer <> IDYES then begin Result := False; Exit; end;
+  until False;
 end;
 
 function UninstallObjectMatches(const Path, Digest: String): Boolean;
@@ -256,7 +345,7 @@ begin
     Text.AutoSize := False;
     Text.WordWrap := True;
     Text.Caption := '外部 ZIP、安装目录外的文件及未识别的邻近文件不在清除范围。游戏启动绑定单独停用，外部防重复提示记录保留。' + #13#10 +
-      '卸载期间会临时移动原文件，以避开旧安装记录的自动删除；不会因此多复制一份备份。' + #13#10 +
+      '默认保留时，work 内资料原地不动；旧安装记录拥有的资源会临时移位保护，不另复制备份。' + #13#10 +
       '下一步可核对选择；取消或关闭此向导不会移动、备份或删除资料。';
     NextButton := TNewButton.Create(Form);
     NextButton.Parent := Form;
@@ -425,10 +514,11 @@ begin
   UninstallHashes := TStringList.Create;
   UninstallDirectories := TStringList.Create;
   Entries := 0;
+  UninstallScanFailure := '';
   if not InspectUninstallDirectory('_internal', 0, Entries) or
-    not InspectUninstallDirectory('work', 0, Entries) or
     not InspectUninstallDirectory('assets\custom-maps', 0, Entries) then
-    RaiseException('无法安全检查资料，尚未开始卸载。请检查目录链接、权限或文件数量。');
+    RaiseException('无法安全检查原安装资源，尚未开始卸载：' + UninstallScanFailure);
+  if not InspectChosenUninstallWork(Entries) then Exit;
   if not OptionalUninstallBackup then Exit;
   UninstallHolding := UninstallHoldingDirectory;
   if not UninstallSafeAbsolute(UninstallHolding) or not CreateDir(UninstallHolding) then
