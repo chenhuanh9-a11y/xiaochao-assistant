@@ -7,10 +7,15 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "tools"), str(ROOT / "app")]
-from qtifw_trial_helper import OWNER, prepare, verify, clear_data, scoped, check_target
+import qtifw_trial_helper as helper
+from qtifw_trial_helper import OWNER, prepare, verify, verify_program, clear_data, scoped, check_target
+from build_qtifw_trial import check_archive_inventory
 
 
 class TrialTests(unittest.TestCase):
@@ -32,6 +37,55 @@ class TrialTests(unittest.TestCase):
         (work / "settings.json").write_bytes(b"synthetic settings")
         (self.target / "personal.txt").write_bytes(b"outside declared data scope")
         return work
+
+    def test_archive_reuse_rejects_same_source_and_count_with_different_bytes(self):
+        prior = self.scope / "prior-policy.json"
+        prior.write_text(json.dumps(self.policy), encoding="utf-8")
+        inventory = {"files": dict(self.policy["files"])}
+        check_archive_inventory(prior, self.policy["payloadSource"], inventory)
+        inventory["files"]["app.exe"] = dict(bytes=5, sha256=hashlib.sha256(b"other").hexdigest())
+        with self.assertRaisesRegex(ValueError, "inventory differs"):
+            check_archive_inventory(prior, self.policy["payloadSource"], inventory)
+
+    def test_program_validation_is_read_only_and_rejects_wrong_bytes(self):
+        self.seed()
+        (self.target / "program/app.exe").write_bytes(b"other")
+        internal = self.target / "program/_internal"
+        internal.mkdir()
+        (internal / "runtime.dll").write_bytes(b"runtime")
+        with self.assertRaisesRegex(ValueError, "program-byte-mismatch:app.exe"):
+            verify_program(self.policy, self.target)
+        self.assertEqual(json.loads((self.target / OWNER).read_text())["phase"], "installing")
+        (self.target / "program/app.exe").write_bytes(b"whole")
+        self.assertEqual(verify_program(self.policy, self.target), dict(verified=True, files=2))
+        self.assertEqual(json.loads((self.target / OWNER).read_text())["phase"], "installing")
+
+    def test_full_uninstall_schedules_native_cleanup_even_with_pending_journal(self):
+        work = self.seed()
+        packages = work / "map-packages"
+        packages.mkdir()
+        pending = packages / "pending-base-repair.json"
+        pending.write_bytes(b"interrupted resource transaction")
+        self.policy["fullUninstall"] = True
+        (self.target / "trial-select-data.json").write_text(json.dumps(dict(operation="purge", choice="clear")))
+        (self.scope / "qtifw-trial-policy.json").write_text(json.dumps(self.policy))
+        with patch.object(helper, "__file__", str(self.scope / "helper.py")), \
+                patch.object(sys, "argv", ["helper", "undo-data", str(self.target)]), redirect_stdout(StringIO()):
+            self.assertEqual(helper.main(), 0)
+        result = json.loads((self.scope / "last-uninstall.json").read_bytes())
+        self.assertEqual(result["status"], "scheduled")
+        self.assertTrue(result["nativeRemovalScheduled"])
+        self.assertEqual(pending.read_bytes(), b"interrupted resource transaction")
+        self.assertEqual((work / "settings.json").read_bytes(), b"synthetic settings")
+
+    @unittest.skipUnless(os.name == "nt", "Win32 direct native parent validation")
+    def test_uninstall_lease_refuses_wrong_parent_before_creating_work(self):
+        from qtifw_trial_lease import hold_uninstaller_lease
+        prepare(self.policy, self.target)
+        (self.target / "trial-maintenance.exe").write_bytes(b"not the live parent executable")
+        with self.assertRaisesRegex(ValueError, "parent-image-mismatch"):
+            hold_uninstaller_lease(self.target)
+        self.assertFalse((self.target / "program").exists())
 
     def external_target(self):
         temporary = tempfile.TemporaryDirectory()

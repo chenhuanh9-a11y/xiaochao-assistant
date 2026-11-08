@@ -1,4 +1,26 @@
-# QtIFW 独立新装与彻底卸载（当前）
+# PR #110 合并前审查（最新）
+
+本轮只推进安装器审查及源码修复，不重新开发试用原型，不打正式包，不修改地图导入 PR #111 的工作树。
+
+审查确认并修复三项问题：卸载构造时的短锁允许晚到运行者进入；pending 资源事务会阻止故障安装被彻底卸载；安装完成信号内的校验异常不能可靠改变原生成功状态。修复复用现有 Windows 父进程/物理锁对象校验：支持 helper 改为 one-folder，在原生删除前将独占资源句柄交给实际 QtIFW maintenance 父进程，一直留到它退出；不另造备份或回滚引擎。彻底卸载不要求资源先恢复可运行，UNDO 只记录 `scheduled`，退出后目标实际消失才算清理完成。安装字节校验加入原生 DO 操作，完成页读校验结果；完成信号处失败也转换为非成功状态。归档复用比对整个程序清单，避免同源码/同文件数掩盖冻结字节差异。
+
+30 项定向源码/真实文件系统测试通过。两文件原生 QtIFW 回归保留在 `tests/windows/qtifw_native_lifecycle.py`，只重定向测试快捷方式目录，不运行合成 EXE，不替换准备、提取、校验或卸载算法：
+
+```powershell
+python -u tests/windows/qtifw_native_lifecycle.py --ifw-bin <QtIFW-bin> --output work/<全新证据目录>
+# 单独复现修前缺陷（不是旧代码通过验收）：
+python -u tests/windows/qtifw_native_lifecycle.py --ifw-bin <QtIFW-bin> --output work/<另一个全新目录> --baseline-ref 564c35b
+```
+
+初轮原生前后对照在本机 `work/qtifw-pr110-native-audit-20261108/before2` 与 `after2`：坏 archive 和完成信号删文件时，修前错误返回 0，修后均为 3；修前晚到租约可进入并发生程序删除，修后租约被阻止，最后目录确实移除；pending 卸载修前退出 1，修后退出 0 且目录消失，外部哨兵保持；取消后程序保留、租约恢复可用。所有输入均为两个专用合成文件，未启动真实星图或操作用户安装。独立最终审查未发现新增 P1/P2 阻碍。
+
+边界：原生 Windows VBS 在 maintenance 退出后才删目录；父进程退出释放锁至 VBS 真正删完目录之间，不宣称仍受独占锁覆盖。需在原生进程退出后核对清理终态。历史 r16 Setup 没有本轮源码修复，不能当作修后正式包；正式包继续等待地图导入统一及联合验证。
+
+合入 `main` 的实际依赖：PR #110 当前 base 是 PR #109 的 `142001c`，并非 `main`。当前 `origin/main=029bf1c` 是祖先，但 `142001c` 相对它已有 588 个文件的前置开发差异；直接把 PR #110 改目标会一并带入这些变更。仅移植 18 个 QtIFW 新增文件也不能运行：`main` 缺少 `resource_transaction.rename_no_replace`、`build_qt_client.write_installer_program_inventory` 等所需接口，实际导入已复现 ImportError。不得以“没有文本冲突”代替依赖链审查，不擅自接管其他任务的集成。
+
+---
+
+# r16 独立新装与彻底卸载试用记录（审查修复前）
 
 2026-11-08，用户已明确调整为：独立新包，旧版由用户卸载；安装和卸载去掉组件、维护动作等多余选择；卸载使用单一“彻底卸载”入口。下方旧候选记录只保留为历史，其默认保留资料策略不再适用于当前包。
 

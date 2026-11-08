@@ -91,6 +91,9 @@ Component.prototype.createOperations = function() {
         "@UserStartMenuProgramsPath@/星图试用版/星图（试用版）.lnk", "workingDirectory=@TargetDir@/program");
     component.addOperation("CreateShortcut", "@TargetDir@/trial-maintenance.exe",
         "@UserStartMenuProgramsPath@/星图试用版/卸载星图试用版.lnk", "workingDirectory=@TargetDir@");
+    // A signal-handler exception cannot fail native installation. Make program
+    // integrity an ordinary DO operation before writing the maintenance tool.
+    component.addOperation("Execute", "{0}", helper, "verify-program", "@TargetDir@");
     if (fault === "after-extract")
         component.addOperation("Execute", "{0}", helper, "pause", "@TargetDir@");
     if (fault === "fail")

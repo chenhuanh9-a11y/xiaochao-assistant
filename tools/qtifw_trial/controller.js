@@ -18,8 +18,15 @@ function Controller() {
     var support = scope + "/session-tools/" + String(Date.now());
     if (!installer.performOperation("Mkdir", [support])) throw new Error("无法准备测试工具目录");
     var helper = support + "/qtifw-trial-helper.exe";
-    if (!installer.performOperation("Copy", [":/qtifw-trial/helper.exe", helper]))
-        throw new Error("无法读取随包测试工具");
+    var supportFiles = __SUPPORT_FILES__;
+    for (var i = 0; i < supportFiles.length; ++i) {
+        var relative = supportFiles[i];
+        var slash = relative.lastIndexOf("/");
+        if (slash >= 0 && !installer.performOperation("Mkdir", [support + "/" + relative.substring(0, slash)]))
+            throw new Error("无法准备安装支持目录");
+        if (!installer.performOperation("Copy", [":/qtifw-trial/" + relative, support + "/" + relative]))
+            throw new Error("无法读取随包安装工具");
+    }
     installer.setValue("TrialHelper", helper);
     // The maintenance executable is an uninstaller, not a package manager UI.
     if (!installer.isInstaller() && !installer.isCommandLineInstance()) installer.setUninstaller();
@@ -58,7 +65,7 @@ function Controller() {
     } else {
         // A signal callback exception does not stop QtIFW. Constructor failure
         // happens before native operations, including for command-line purge.
-        trialRun("inspect-data");
+        trialRun(installer.isUninstaller() ? "hold-uninstall" : "inspect-data");
     }
     // Disarm a stale prior choice on every maintenance/update invocation.
     if (!installer.isInstaller() || installer.isCommandLineInstance())
@@ -72,7 +79,13 @@ function Controller() {
             installer.setValue("TargetDir", bound);
         }
     });
-    installer.installationFinished.connect(function() { trialRun("verify"); });
+    installer.installationFinished.connect(function() {
+        try { trialRun("verify"); }
+        catch (error) {
+            installer.setValue("TrialVerificationFailed", "true");
+            if (installer.status === QInstaller.Success) installer.setCanceled();
+        }
+    });
     installer.uninstallationStarted.connect(function() {
         trialRun("select-data", installer.value("DataChoice", "keep"), "purge");
     });
@@ -117,9 +130,15 @@ Controller.prototype.ReadyForInstallationPageCallback = function() {
 
 Controller.prototype.FinishedPageCallback = function() {
     if (installer.isInstaller()) {
-        var installed = installer.fileExists(installer.value("TargetDir") + "/program/星图.exe") &&
-            installer.fileExists(installer.value("TargetDir") + "/trial-maintenance.exe");
+        var installed = false;
+        try {
+            var checked = JSON.parse(installer.readFile(installer.value("TargetDir") + "/trial-verify.json", "UTF-8"));
+            installed = checked.success === true && checked.verified === true &&
+                installer.value("TrialVerificationFailed", "") !== "true";
+        } catch (error) {}
         var finished = gui.currentPageWidget();
+        if (finished && finished.MessageLabel && !installed)
+            finished.MessageLabel.text = "安装未通过完整性校验，请保留现场并重新下载安装包。";
         if (finished && finished.MessageLabel && installed)
             finished.MessageLabel.text = "星图试用版已安装。\n\n安装位置：" +
                 installer.toNativeSeparators(installer.value("TargetDir")) +
@@ -132,9 +151,9 @@ Controller.prototype.FinishedPageCallback = function() {
     try {
         var result = JSON.parse(installer.readFile(__SCOPE__ + "/last-uninstall.json", "UTF-8"));
         function normal(path) { return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase(); }
-        if (result.success === true && result.dataChoice === "clear" &&
+        if (result.success === true && result.dataChoice === "clear" && result.nativeRemovalScheduled === true &&
                 normal(result.target) === normal(installer.value("TargetDir")))
-            text = "星图已卸载。安装目录的最终清理由卸载程序退出时完成。";
+            text = "程序移除已完成，安装目录的最终清理已安排。请关闭此窗口后确认目录已移除。";
         else text = "程序卸载流程已结束，但资料处理未完成。请保留测试目录并检查日志。";
     } catch (error) {}
     var page = gui.currentPageWidget();

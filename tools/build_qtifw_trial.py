@@ -1,7 +1,7 @@
 """Build an offline, local-only QtIFW trial from an existing verified Xingtu freeze.
 
 No installation, app launch, registry write or production source relabeling.
-The policy confines this trial Setup to a new, marked output/targets directory.
+Selected empty targets are claimed explicitly; support files stay in this run.
 """
 from __future__ import annotations
 
@@ -24,6 +24,12 @@ PACKAGE = "org.xingtu.qtifw.realtrial"
 DATA_PACKAGE = "org.xingtu.qtifw.trialdata"
 
 
+def check_archive_inventory(prior_policy_path, compiled, inventory):
+    prior_policy = json.loads(prior_policy_path.read_bytes())
+    if prior_policy.get("payloadSource") != compiled or prior_policy.get("files") != inventory["files"]:
+        raise ValueError("Prior trial archive inventory differs from this freeze")
+
+
 def stage_payload(stage, record, output, *, payload_stage=None, archive_from=None, ifw_bin=None):
     """Use the original installed inventory; exclude every active data plane."""
     from managed_base_resources import CANDIDATE
@@ -37,6 +43,7 @@ def stage_payload(stage, record, output, *, payload_stage=None, archive_from=Non
         if (prior["payloadSource"] != compiled or prior["programFiles"] != len(inventory["files"])
                 or binary.stat().st_size != prior["bytes"] or build.sha256(binary) != prior["sha256"]):
             raise ValueError("Prior trial archive source changed")
+        check_archive_inventory(build._local_file(archive_from, "qtifw-trial-policy.json"), compiled, inventory)
         dump = output / "archive-dump"
         subprocess.run([str(ifw_bin / "devtool.exe"), "dump", str(binary), str(dump)], check=True)
         archives = list((dump / "metadata" / PACKAGE).glob("*program.7z"))
@@ -90,21 +97,27 @@ def main():
     instance = uuid.uuid4().hex
     (output / "targets").mkdir()
     (output / ".qtifw-trial-scope").write_text(instance + "\n", encoding="ascii")
-    policy = dict(scope=str(output), instance=instance, payloadSource=compiled, allowNewTargets=True,
+    policy = dict(scope=str(output), instance=instance, payloadSource=compiled, allowNewTargets=True, fullUninstall=True,
                   files=inventory["files"], faultsAllowed=True)
     policy_path = output / "qtifw-trial-policy.json"
     policy_path.write_text(json.dumps(policy, ensure_ascii=False), encoding="utf-8")
     # Small asInvoker helper, independent of the application's administrator EXE.
-    subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--console",
+    subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir", "--console",
         "--name", "qtifw-trial-helper", "--paths", str(ROOT / "app"),
         "--exclude-module", "PySide6", "--exclude-module", "numpy", "--exclude-module", "cv2",
         "--distpath", str(output / "helper"), "--workpath", str(output / "helper-work"),
         "--specpath", str(output), "--add-data", str(policy_path) + ";.",
         str(ROOT / "tools/qtifw_trial_helper.py")], cwd=ROOT, check=True)
-    helper = output / "helper/qtifw-trial-helper.exe"
+    helper_root = output / "helper/qtifw-trial-helper"
+    helper = helper_root / "qtifw-trial-helper.exe"
     build.verify_invoker_manifest(helper)
     qrc = output / "trial.qrc"
-    qrc.write_text('<RCC><qresource prefix="/qtifw-trial"><file alias="helper.exe">helper/qtifw-trial-helper.exe</file></qresource></RCC>', encoding="utf-8")
+    support_files = sorted(path.relative_to(helper_root).as_posix() for path in helper_root.rglob("*") if path.is_file())
+    resource = ET.Element("RCC")
+    entries = ET.SubElement(resource, "qresource", prefix="/qtifw-trial")
+    for name in support_files:
+        ET.SubElement(entries, "file", alias=name).text = (helper_root / name).relative_to(output).as_posix()
+    ET.ElementTree(resource).write(qrc, encoding="utf-8", xml_declaration=True)
     config = output / "config"
     meta = output / "packages" / PACKAGE / "meta"
     meta.mkdir()
@@ -112,6 +125,7 @@ def main():
     scripts = ROOT / "tools/qtifw_trial"
     controller = (scripts / "controller.js").read_text(encoding="utf-8")
     controller = controller.replace("__SCOPE__", json.dumps(output.as_posix())).replace("__INSTANCE__", json.dumps(instance))
+    controller = controller.replace("__SUPPORT_FILES__", json.dumps(support_files))
     (config / "controller.js").write_text(controller, encoding="utf-8")
     shutil.copy2(scripts / "trial.qss", config / "trial.qss")
     shutil.copy2(scripts / "component.js", meta / "component.js")

@@ -143,17 +143,23 @@ def prepare(policy, target):
     return dict(prepared=True, quarantined=moved, target=str(target))
 
 
-def verify(policy, target):
-    target, owner = bound_owner(policy, target)
+def verify_program(policy, target):
+    target, _ = bound_owner(policy, target)
     entries = owned_program(policy, target)
     if len(entries) != len(policy["files"]):
         raise ValueError("program-incomplete")
     for name, path, row in entries:
         if path.stat().st_size != row["bytes"] or hashlib.sha256(path.read_bytes()).hexdigest() != row["sha256"]:
             raise ValueError("program-byte-mismatch:" + name)
+    return dict(verified=True, files=len(entries))
+
+
+def verify(policy, target):
+    result = verify_program(policy, target)
+    target, owner = bound_owner(policy, target)
     owner["phase"] = "complete"
     write_owner(target, owner)
-    return dict(verified=True, files=len(entries))
+    return result
 
 
 def data_files(policy, target):
@@ -221,7 +227,7 @@ def receipt(policy, target, name, value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("check-target", "prepare", "verify", "inspect-data", "select-data", "undo-data", "noop", "data", "pause", "fail"))
+    parser.add_argument("action", choices=("check-target", "prepare", "verify-program", "verify", "inspect-data", "hold-uninstall", "select-data", "undo-data", "noop", "data", "pause", "fail"))
     parser.add_argument("target", type=Path)
     parser.add_argument("choice", nargs="?", default="keep")
     parser.add_argument("operation", nargs="?", default="none", choices=("none", "purge"))
@@ -234,6 +240,8 @@ def main():
             return 0
         elif args.action == "prepare":
             result = prepare(policy, args.target)
+        elif args.action == "verify-program":
+            result = verify_program(policy, args.target)
         elif args.action == "verify":
             target, _ = bound_owner(policy, args.target)
             if not _safe(target / "trial-maintenance.exe").is_file():
@@ -260,8 +268,19 @@ def main():
                 choice = selected["choice"]
             if owned_program(policy, target):
                 raise ValueError("native-uninstall-not-complete")
-            result = clear_data(policy, args.target, choice)
+            if policy.get("fullUninstall"):
+                if choice != "clear":
+                    raise ValueError("full-uninstall-requires-clear")
+                result = dict(dataChoice="clear", status="scheduled", nativeRemovalScheduled=True)
+            else:
+                result = clear_data(policy, args.target, choice)
             receipt(policy, args.target, "data", dict(success=True, **result))
+        elif args.action == "hold-uninstall":
+            target, _ = bound_owner(policy, args.target)
+            if not policy.get("fullUninstall"):
+                raise ValueError("full-uninstall-policy-required")
+            from qtifw_trial_lease import hold_uninstaller_lease
+            result = hold_uninstaller_lease(target)
         elif args.action == "inspect-data":
             target, paths = data_files(policy, args.target)
             if policy.get("allowNewTargets"):
@@ -286,9 +305,10 @@ def main():
         print(json.dumps(result, ensure_ascii=True))
         return 0
     except (ValueError, OSError, KeyError) as error:
-        if args.action in {"data", "undo-data"}:
+        if args.action in {"data", "undo-data", "verify", "verify-program"}:
             try:
-                receipt(policy, args.target, "data", dict(success=False, status="incomplete", reason=str(error)))
+                name = "data" if args.action in {"data", "undo-data"} else args.action
+                receipt(policy, args.target, name, dict(success=False, status="incomplete", reason=str(error)))
             except (ValueError, OSError):
                 pass  # Native log still records the original failure.
         print(json.dumps(dict(success=False, reason=str(error)), ensure_ascii=True))

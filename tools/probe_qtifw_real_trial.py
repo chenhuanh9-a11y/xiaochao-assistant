@@ -6,6 +6,7 @@ watcher, or accesses a user's existing install. Keep all failure evidence.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -27,6 +28,13 @@ class TrialProbe:
         self.record = json.loads((self.root / "qtifw-build-record.json").read_bytes())
         self.policy = json.loads((self.root / "qtifw-trial-policy.json").read_bytes())
         self.setup = Path(self.record["setup"])
+        if (self.setup.parent != self.root or self.setup.stat().st_size != self.record["bytes"]
+                or hashlib.sha256(self.setup.read_bytes()).hexdigest() != self.record["sha256"]):
+            raise ValueError("Trial Setup does not match its build record")
+        config = ET.parse(self.root / "config/config.xml").getroot()
+        self.complete_removal = config.findtext("RemoveTargetDir") == "true"
+        if self.complete_removal and not self.policy.get("fullUninstall"):
+            raise ValueError("Legacy full-removal trial: use its original evidence, not the current probe")
         if not re.fullmatch(r"[A-Za-z0-9-]+", evidence_name):
             raise ValueError("Evidence name must be a simple local directory name")
         self.output = self.root / evidence_name
@@ -201,6 +209,10 @@ class TrialProbe:
         return results
 
     def execute(self, *, resume_installed=False):
+        if self.complete_removal:
+            if resume_installed:
+                raise ValueError("Complete-uninstall validation requires a new, owned test target")
+            return self.execute_complete()
         try:
             target = self.target("real-payload 中文")
             if not resume_installed:
@@ -242,6 +254,42 @@ class TrialProbe:
             self.report["afterExtractRecovery"] = self.interruption("interrupt-after", "after-extract")
             self.report["realPayloadFixtureMigration"] = self.migrations()
             self.report["completed"] = True
+        except BaseException as error:
+            self.report.update(completed=False, failure=type(error).__name__ + ": " + str(error))
+            raise
+        finally:
+            self.report["runs"] = self.runs
+            (self.output / "result.json").write_text(json.dumps(self.report, ensure_ascii=False, indent=2), encoding="utf-8")
+        return self.report
+
+    def execute_complete(self):
+        """Current fresh-install policy; retention/migration above is historical."""
+        try:
+            target = self.target("complete-uninstall 中文")
+            assert self.install("complete-new-install", target) == 0
+            self.report["installed"] = verify(self.policy, target)
+            self.seed(target)
+            outside = target.parent / "complete-uninstall-external.txt"
+            with outside.open("xb") as stream:
+                stream.write(b"External file must remain\n")
+            self.report["nativeAdmission"] = self.native_guards(target)
+            tool = target / "trial-maintenance.exe"
+            code = self.run("complete-native-purge", [tool, "--reject-messages", "--confirm-command", "purge"])
+            assert code == 0, "Native complete uninstall failed"
+            # QtIFW's VBS cleanup runs after the native process exits. A receipt
+            # only schedules it; neither exit=0 nor that receipt proves removal.
+            for _ in range(100):
+                if not target.exists():
+                    break
+                time.sleep(.1)
+            assert not target.exists(), "Complete uninstall left the target directory"
+            assert outside.read_bytes() == b"External file must remain\n"
+            receipt = json.loads((self.root / "last-uninstall.json").read_bytes())
+            assert (receipt["success"] and receipt["status"] == "scheduled"
+                    and receipt["nativeRemovalScheduled"] and Path(receipt["target"]) == target)
+            self.report.update(completed=True, completeUninstallExitCode=code,
+                               targetDirectoryRemoved=True, outsideFilePreserved=True,
+                               runtimeChecksExecuted=False)
         except BaseException as error:
             self.report.update(completed=False, failure=type(error).__name__ + ": " + str(error))
             raise
