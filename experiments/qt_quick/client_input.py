@@ -446,9 +446,9 @@ class NativeShortcutBackend(QObject):
                     allowed = (allowed and press[0] == foreground
                         and (action in MANAGEMENT_ACTIONS or not self._game_events_after
                              or press[1] >= self._game_events_after))
-                # The open picker owns bare F1-F4/PgUp/PgDn/Backspace; configurable
+                # The open picker owns bare F1-F4/PgUp/PgDn/Backspace/Escape; configurable
                 # actions on those primaries must not also fire.
-                if (picker_name is not None and action != "escape"
+                if (picker_name is not None
                         and not chord.modifiers and chord.vk in picker_vks):
                     allowed=False
                 if allowed:self._dispatch_action(action, event)
@@ -516,6 +516,11 @@ class NativeShortcutBackend(QObject):
                     # First sample after opening only establishes held state.
                     self._picker_down = {name: bool(read(vk) & 0x8000)
                                          for name, vk in picker_keys.items()}
+                    if (game_focus or assistant_focus) and not any(
+                            read(key) & 0x8000 for key in PICKER_MODIFIER_VKS):
+                        # Opening while held must not leak an edge to a binding.
+                        picker_consumed.update(vk for vk in picker_keys.values()
+                                               if read(vk) & 0x8001)
                 else:
                     picker_owner = bool(game_focus or assistant_focus) and not any(
                         read(key) & 0x8000 for key in PICKER_MODIFIER_VKS)
@@ -546,9 +551,8 @@ class NativeShortcutBackend(QObject):
                     allowed = False  # Application-local shortcut owns this edge.
                 if action not in MANAGEMENT_ACTIONS and game_rearm:
                     allowed = False  # Held keys cannot fire on game focus return.
-                # The open picker owns bare F1-F4/PgUp/PgDn/Backspace. Escape
-                # keeps its separate fixed map-close edge, as in the Tk client.
-                if (action != "escape" and not chord.modifiers
+                # Consumed picker edges stay exclusive even after synchronous close.
+                if (not chord.modifiers
                         and chord.vk in picker_consumed):
                     allowed = False
                 if (allowed and not suppress and edge

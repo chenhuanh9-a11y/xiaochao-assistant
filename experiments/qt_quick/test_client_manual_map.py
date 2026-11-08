@@ -485,11 +485,11 @@ class PickerKeyRoutingTests(unittest.TestCase):
         self.native.states[0x22] = 0x8001
         self.assertEqual(self.input.pollOnce(), [])
         self.assertEqual(self.picker, ["F1", "PageDown"])
-        # Escape keeps its fixed map-close edge and also reaches the picker.
+        # Escape belongs exclusively to the picker inside this app.
         self.native.states[0x22] = 0
         self.input.pollOnce()
         self.native.states[0x1b] = 0x8001
-        self.assertEqual(self.input.pollOnce(), ["escape"])
+        self.assertEqual(self.input.pollOnce(), [])
         self.assertEqual(self.picker, ["F1", "PageDown", "Escape"])
 
     def test_closing_picker_restores_action_hotkeys_and_keys_are_not_routed(self):
