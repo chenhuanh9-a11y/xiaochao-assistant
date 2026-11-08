@@ -91,6 +91,11 @@ def classify_label(patch, *, selected):
     if len(candidates) != 1:
         return None
     dx,dy,dw,dh,_ = candidates[0]
+    # A clipped stroke can still normalize into a convincing numeral. It
+    # cannot prove the neighboring row at a pitch inferred from a dimmed
+    # highlight, or that partial row can contradict the complete raw column.
+    if dx == 0 or dy == 0 or dx+dw >= crop.shape[1] or dy+dh >= crop.shape[0]:
+        return None
     scale = DIGIT_HEIGHT/dh
     matrix = np.float32([[scale,0,60-scale*(dx+(dw-1)/2)],
                          [0,scale,31.5-scale*(dy+(dh-1)/2)]])
