@@ -1111,21 +1111,34 @@ if __name__ == "__main__":
     import sys
     sys.modules["star_map_import"] = sys.modules[__name__]
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["inspect", "install", "recover", "rollback"])
+    parser.add_argument("action", choices=["inspect", "install", "recover", "rollback", "pack"])
     parser.add_argument("archive")
     parser.add_argument("install_root")
     parser.add_argument("--application-closed", action="store_true")
+    parser.add_argument("--output", help="Output ZIP for pack; archive is the prepared directory")
+    parser.add_argument("--versioned-author", action="store_true", help="Use the same author snapshots as the Qt client")
     parser.add_argument("--season", choices=("s0", "s1"), default="s0")
     args = parser.parse_args()
     try:
-        if args.action == "inspect":
-            result = inspect_package(args.archive, args.install_root, season=args.season)
+        if args.action == 'pack':
+            if not args.output:
+                parser.error('pack requires --output')
+            from author_package_builder import build_author_package
+            try:
+                result = build_author_package(args.archive, args.install_root, args.output)
+            except ImportRejected:
+                raise
+            except ValueError as error:
+                raise ImportRejected('author-package-build-failed: ' + str(error)) from error
+        elif args.action == "inspect":
+            result = inspect_package(args.archive, args.install_root, season=args.season, versioned=args.versioned_author)
         elif args.action == "recover":
             result = recover_package_upgrade(args.install_root, application_stopped=args.application_closed)
         elif args.action == "rollback":
             result = rollback_package_upgrade(args.install_root, args.archive, application_stopped=args.application_closed)
         else:
-            result = install_package(args.archive, args.install_root, application_stopped=args.application_closed, season=args.season)
+            result = install_package(args.archive, args.install_root, application_stopped=args.application_closed, season=args.season,
+                                     versioned=args.versioned_author)
         print(json.dumps(result, ensure_ascii=False, indent=2))
     except (ImportRejected, OSError, zipfile.BadZipFile) as error:
         print(json.dumps({"success": False, "reason": str(error)}, ensure_ascii=False))

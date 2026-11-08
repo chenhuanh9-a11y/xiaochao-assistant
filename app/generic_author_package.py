@@ -257,6 +257,10 @@ def validate_bindings(raw, rows, dependencies, read, *, root, dependency_paths=N
         try:
             data = read(path)
             check_browse_cancelled()
+            # Pillow exposes 16-bit RGB/RGBA PNG as RGB/RGBA, but the display
+            # consumer decodes it as uint16. Reject it before installation.
+            if extension == 'png' and (len(data) < 29 or data[24] != 8):
+                _reject('image-bit-depth-mismatch')
             with Image.open(io.BytesIO(data)) as image:
                 if (image.format != {'png': 'PNG', 'jpeg': 'JPEG'}[extension]
                         or list(reversed(image.size)) != row['displayShapeHW']
