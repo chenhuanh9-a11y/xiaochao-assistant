@@ -32,8 +32,8 @@ and limits. Source/offline checks, frozen checks, Setup installation, game
 acceptance and publication remain distinct evidence stages.
 
 Inno assigns `{uninstallexe}` during `PerformInstall`, after the installer calls
-`inspect`, `prepare` and `start-native`. An unresolved CLI value stays attached
-as `--uninstall-exe=`. Pre-native capacity admission keeps that path and its
+`inspect`, `prepare` and `start-native`. The unresolved CLI option is omitted.
+Pre-native capacity admission keeps that path and its
 shortcut target explicitly unknown and reserves space for the later strings;
 it does not guess an `uninsNNN.exe` name. Native completion capture and replay
 still require the actual owned path and all existing identity checks. See the

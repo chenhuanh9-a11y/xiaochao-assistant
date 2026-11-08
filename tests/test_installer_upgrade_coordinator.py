@@ -106,6 +106,58 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(self.execute('status')['status'], 'committed')
         self.assertEqual(self.execute('commit')['status'], 'committed')
 
+    def test_real_phase_contract_defers_uninstaller_until_native_completion(self):
+        # Real context parsing, budget admission, contract checks and journal;
+        # native observations/resource mutation remain explicitly owned doubles.
+        import base64
+        import hashlib
+        import json
+        import installer_native_observation as native
+        self.context_patch.stop()
+        from installer_upgrade_coordinator import native_context
+        ownership = ('星图.exe\nrelease-report.json\n' + native.OWNERSHIP_NAME + '\n').encode('utf-8')
+        digest = lambda value: hashlib.sha256(value).hexdigest()
+        inventory = {
+            '星图.exe': dict(bytes=7, sha256=self.target['executableSha256']),
+            'release-report.json': dict(bytes=7, sha256=self.args.target_report_sha256),
+            native.OWNERSHIP_NAME: dict(bytes=len(ownership), sha256=digest(ownership))}
+        document = dict(schema='xingtu-installer-program-inventory-v1', sourceCommit=self.target['sourceCommit'],
+            ownershipSha256=digest(ownership), ownershipBase64=base64.b64encode(ownership).decode(), files=inventory)
+        data = json.dumps(document).encode(); path = self.root / 'program-inventory.json'; path.write_bytes(data)
+        self.args.program_inventory, self.args.program_inventory_sha256 = str(path), digest(data)
+        self.args.uninstall_exe = None
+        self.args.group_shortcut = str(self.root / 'links/星图.lnk')
+        self.args.uninstall_shortcut = str(self.root / 'links/卸载星图.lnk')
+        self.args.desktop_shortcut = str(self.root / 'links/desktop.lnk')
+        self.args.group_enabled, self.args.desktop_enabled = True, False
+        admitted = []
+        def preflight(root, **context):
+            admitted.append(context['uninstall_exe'])
+            return native.preflight_native_evidence(root, **context)
+        capture = self.observer.capture_native_completion
+        def strict_contract_capture(root, **context):
+            native._contract(root, context['target_identity'], context['target_report_sha256'],
+                context['ownership_bytes'], context['ownership_sha256'], context['program_inventory'],
+                context['uninstall_exe'], context['shortcut_targets'])
+            return capture(root, **context)  # labelled model, not real Win32 capture
+        with patch.object(self.observer, 'preflight_native_evidence', side_effect=preflight), \
+                patch.object(self.observer, 'capture_native_completion', side_effect=strict_contract_capture):
+            self.assertEqual(self.execute('prepare')['installerStatus'], 'prepared')
+            self.assertEqual(self.execute('start-native')['installerStatus'], 'native-in-progress')
+            self.assertEqual(admitted, [None, None])
+            with self.assertRaisesRegex(native.NativeObservationError, 'uninstall-path-unavailable'):
+                self.execute('native-complete')
+            self.assertEqual(read_status(self.root, owner_sid=self.sid)['status'], 'native-in-progress')
+            self.assertEqual(self.api.writes, ['prepare'])
+            self.args.uninstall_exe = r'C:\elsewhere\unins017.exe'
+            with self.assertRaisesRegex(native.NativeObservationError, 'uninstall-path-not-owned'):
+                self.execute('native-complete')
+            self.args.uninstall_exe = str(self.root / 'unins017.exe')
+            self.observer.context = native_context(self.args, self.target)
+            self.assertEqual(self.execute('native-complete')['installerStatus'], 'native-complete')
+            self.assertTrue(self.execute('commit')['installerFinalized'])
+        self.assertEqual(self.api.writes, ['prepare', 'commit'])
+
     def test_start_native_reloads_context_and_rejects_changed_inventory(self):
         self.execute('prepare')
         with patch('installer_upgrade_coordinator.native_context',

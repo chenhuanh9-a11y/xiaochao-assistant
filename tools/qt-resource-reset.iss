@@ -96,7 +96,7 @@ begin
 end;
 
 function CallResourceReset(const Action: String; Confirmed: Boolean; var Reason, ResultDir: String): Boolean;
-var Params, ParentImage, Detail: String; Code: Integer; Size: LongWord;
+var Params, ParentImage, Detail, UninstallExe: String; Code: Integer; Size: LongWord;
   Created, Exited, KernelTime, UserTime: Int64;
 begin
   Result := False;
@@ -126,13 +126,13 @@ begin
       AddQuotes(ResourceResetExtractRoot + '\_internal\managed-base-resources') +
       ' --program-inventory ' + AddQuotes(ExpandConstant('{tmp}\reset-program-inventory.json')) +
       ' --program-inventory-sha256 {#ResetProgramInventorySha256}' +
-      { Inno assigns this only inside PerformInstall, after PrepareToInstall/ssInstall.
-        Keep an empty value attached to its option so argparse cannot consume the
-        next option. Native completion still requires the actual assigned path. }
-      ' --uninstall-exe=' + AddQuotes(ExpandConstant('{uninstallexe}')) +
       ' --group-shortcut ' + AddQuotes(ExpandConstant('{group}\星图.lnk')) +
       ' --uninstall-shortcut ' + AddQuotes(ExpandConstant('{group}\卸载星图.lnk')) +
       ' --desktop-shortcut ' + AddQuotes(ExpandConstant('{autodesktop}\星图.lnk'));
+    { Inno assigns this only inside PerformInstall, after PrepareToInstall/ssInstall.
+      Omit the unresolved option; completion still requires the actual path. }
+    UninstallExe := ExpandConstant('{uninstallexe}');
+    if UninstallExe <> '' then Params := Params + ' --uninstall-exe=' + AddQuotes(UninstallExe);
     if not WizardNoIcons then Params := Params + ' --group-enabled';
     if CreateDesktopShortcut then Params := Params + ' --desktop-enabled';
     if GameWatcherWasEnabled then Params := Params + ' --restore-watcher';

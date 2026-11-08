@@ -92,16 +92,16 @@ class InstallerLeaseProtocolTests(unittest.TestCase):
 
 
 class ResourceResetHelperTests(unittest.TestCase):
-    def test_unassigned_uninstaller_is_an_empty_value_not_a_missing_option_argument(self):
+    def test_unassigned_uninstaller_option_can_be_omitted(self):
         argv = ['--action', 'inspect', '--install-root', 'fixture', '--result-directory', 'fixture-result',
                 '--target-report', 'fixture-report', '--target-report-sha256', 'a' * 64,
                 '--source-commit', 'b' * 40, '--display-version', '1.1.2', '--numeric-version', '1.0.0.24',
                 '--parent-created', '1', '--parent-executable', 'fixture-parent', '--parent-sha256', 'c' * 64,
-                '--parent-pid', '1', '--lock-handle', '1', '--uninstall-exe=', '--group-shortcut', 'group']
+                '--parent-pid', '1', '--lock-handle', '1', '--group-shortcut', 'group']
         with patch.object(helper, 'run', return_value=0) as execute:
             self.assertEqual(helper.main(argv), 0)
         args = execute.call_args.args[0]
-        self.assertEqual(args.uninstall_exe, '')
+        self.assertIsNone(args.uninstall_exe)
         self.assertEqual(args.group_shortcut, 'group')
 
     def setUp(self):
