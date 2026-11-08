@@ -28,7 +28,7 @@ Component.prototype.createOperations = function() {
             var destination = "@TargetDir@/_installer-support/" + supportFiles[i];
             var parent = destination.substring(0, destination.lastIndexOf("/"));
             if (!parents[parent]) {
-                component.addOperation("Mkdir", parent);
+                component.addOperation("Mkdir", parent, "UNDOOPERATION", "");
                 parents[parent] = true;
             }
             component.addOperation("Copy", installer.value("TrialSupport") + "/" + supportFiles[i], destination);

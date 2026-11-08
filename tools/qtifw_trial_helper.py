@@ -6,7 +6,7 @@ files are quarantined, never deleted or treated as a general rollback engine.
 from __future__ import annotations
 
 import argparse
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 import hashlib
 import json
 import os
@@ -165,26 +165,47 @@ def verify(policy, target):
     return result
 
 
+# Exact application-written settings paths; never claim a whole work subtree.
+# Map payloads are selected separately through the existing receipt planner.
+SETTINGS_FILES = tuple("nightmare-memory/" + name for name in (
+    "ui-settings.json", "custom-routes.json", "custom-galleries.json", "update-state.json",
+    "tutorial-state.json", "chest-auto-tap.json"))
+
+
 def data_files(policy, target):
     target, _ = bound_owner(policy, target)
     work = _safe(target / "program/work")
     result = []
-    if work.exists():
-        if not work.is_dir():
-            raise ValueError("work-is-not-a-directory")
-        for path in work.rglob("*"):
-            _safe(path)
-            info = path.stat()
-            if stat.S_ISDIR(info.st_mode):
+    for name in SETTINGS_FILES:
+        path = _safe(work / name)
+        if not path.exists():
+            continue
+        info = path.stat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError("data-object-not-exclusive-file")
+        # Malformed/foreign data is retained for manual review.
+        try:
+            raw = path.read_bytes()
+            if not isinstance(json.loads(raw), dict):
                 continue
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                raise ValueError("data-object-not-exclusive-file")
-            if path.relative_to(work).as_posix() != "map-packages/import.lock":
-                result.append(path)
+        except (ValueError, UnicodeError):
+            continue
+        result.append((path, dict(bytes=info.st_size, sha256=hashlib.sha256(raw).hexdigest(),
+                                  identity=(info.st_dev, info.st_ino))))
+    # Reuse authoritative package ownership, including changed/unknown retention.
+    # Keep metadata as retry evidence; never remove receipts ahead of payloads.
+    if (work / "map-packages").exists():
+        from map_package_removal import _plan_locked
+        plan = _plan_locked(target / "program")
+        for row in plan["entries"]:
+            if row["path"] not in plan["witnesses"] and row["path"] != "work/map-packages/" + row["packageId"] + ".json":
+                path = _safe(target / "program" / row["path"])
+                result.append((path, dict(bytes=row["bytes"], sha256=row["sha256"],
+                                          identity=row["identity"])))
     return target, result
 
 
-def clear_data(policy, target, choice):
+def clear_data(policy, target, choice, *, native_lease=False):
     if choice not in {"keep", "clear"}:
         raise ValueError("explicit-data-choice-required")
     target, _ = bound_owner(policy, target)
@@ -193,7 +214,12 @@ def clear_data(policy, target, choice):
     program = _safe(target / "program")
     program.mkdir(exist_ok=True)
     # Same cooperative lock as startup/import. Never clear a running app's work.
-    with resource_write_lock(program):
+    if native_lease:
+        from qtifw_trial_lease import verified_uninstaller_lease
+        lease = closing(verified_uninstaller_lease(target))
+    else:
+        lease = resource_write_lock(program)
+    with lease:
         assert_resources_ready(program)
         _, paths = data_files(policy, target)
         if len(paths) > 50000:
@@ -203,13 +229,18 @@ def clear_data(policy, target, choice):
         from failure_sampling import _open_delete_image, _mark_delete_image
         with ExitStack() as stack:
             handles = []
-            for path in paths:
+            for path, expected in paths:
                 fd = _open_delete_image(path)
                 stack.callback(os.close, fd)
                 current = os.fstat(fd)
                 previous = path.stat()
+                digest = hashlib.sha256()
+                while block := os.read(fd, 1024 * 1024):
+                    digest.update(block)
                 if (current.st_nlink != 1 or not stat.S_ISREG(current.st_mode)
-                        or (current.st_dev, current.st_ino) != (previous.st_dev, previous.st_ino)):
+                        or (current.st_dev, current.st_ino) != (previous.st_dev, previous.st_ino)
+                        or (current.st_dev, current.st_ino) != tuple(expected["identity"])
+                        or current.st_size != expected["bytes"] or digest.hexdigest() != expected["sha256"]):
                     raise ValueError("trial-data-changed")
                 handles.append(fd)
             for fd in handles:
@@ -222,9 +253,8 @@ def receipt(policy, target, name, value):
     destination = _safe(target / ("trial-" + name + ".json"))
     destination.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
     if name == "data" and not policy.get("portable"):
-        # Native full uninstall removes TargetDir at exit; keep its result in
-        # this trial's separate support scope for the finish page and evidence.
-        # Portable installs read the target receipt before native final removal.
+        # Trial evidence also lives outside the target. Formal installs retain
+        # the target and read the local receipt on the finish page.
         external = _safe(Path(policy["scope"]) / "last-uninstall.json")
         external.write_text(json.dumps(dict(value, target=str(target)), ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -290,17 +320,12 @@ def main():
                 choice = selected["choice"]
             if owned_program(policy, target):
                 raise ValueError("native-uninstall-not-complete")
-            if policy.get("fullUninstall"):
-                if choice != "clear":
-                    raise ValueError("full-uninstall-requires-clear")
-                result = dict(dataChoice="clear", status="scheduled", nativeRemovalScheduled=True)
-            else:
-                result = clear_data(policy, args.target, choice)
+            result = clear_data(policy, args.target, choice, native_lease=args.action == "undo-data")
             receipt(policy, args.target, "data", dict(success=True, **result))
         elif args.action == "hold-uninstall":
             target, _ = bound_owner(policy, args.target)
-            if not policy.get("fullUninstall"):
-                raise ValueError("full-uninstall-policy-required")
+            if not policy.get("nativeUninstallLease"):
+                raise ValueError("native-uninstall-lease-policy-required")
             from qtifw_trial_lease import hold_uninstaller_lease
             result = hold_uninstaller_lease(target)
         elif args.action == "inspect-data":

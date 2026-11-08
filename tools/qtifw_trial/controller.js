@@ -62,9 +62,7 @@ function Controller() {
         if (requested !== "") installer.setValue("TargetDir", requested);
         else if (!installer.isCommandLineInstance()) installer.setValue("TargetDir", recommended);
     }
-    if (installer.value("DataChoice", "") === "") installer.setValue("DataChoice", "clear");
-    if (installer.isUninstaller() && installer.value("DataChoice") !== "clear")
-        throw new Error("此版本执行彻底卸载，不支持保留安装目录。请先备份需要保留的资料。");
+    if (installer.value("DataChoice", "") === "") installer.setValue("DataChoice", "keep");
     if (installer.value("DataChoice") !== "keep" && installer.value("DataChoice") !== "clear")
         throw new Error("请选择保留或清除测试资料");
     if (installer.isInstaller()) {
@@ -101,9 +99,12 @@ function Controller() {
             if (installer.status === QInstaller.Success) installer.setCanceled();
         }
     });
-    installer.uninstallationStarted.connect(function() {
-        trialRun("select-data", installer.value("DataChoice", "keep"), "purge");
-    });
+    // A command-line clear requires a second explicit acknowledgement.
+    if (installer.isUninstaller() && installer.isCommandLineInstance()) {
+        if (installer.value("DataChoice") === "clear" && installer.value("ConfirmClear", "") !== "yes")
+            throw new Error("清除资料需要 ConfirmClear=yes 最终确认；未开始卸载。");
+        trialRun("select-data", installer.value("DataChoice"), "purge");
+    }
 }
 
 Controller.prototype.IntroductionPageCallback = function() {
@@ -133,14 +134,20 @@ Controller.prototype.ReadyForInstallationPageCallback = function() {
     if (!installer.isUninstaller()) return;
     var back = gui.findChild(gui, "__qt__passive_wizardbutton0");
     if (back) back.visible = false;
-    page.title = "彻底卸载星图";
-    page.subTitle = "点击“彻底卸载”后开始移除。";
-    var summary = page ? gui.findChild(page, "RemoveAllMsgLabel") : null;
-    if (summary)
-        summary.text = "将删除以下安装目录及其中的程序、地图、设置、缓存和日志：\n\n" +
-            installer.toNativeSeparators(installer.value("TargetDir")) +
-            "\n\n同时移除桌面、开始菜单入口和卸载项。安装目录外的文件保留。";
-    gui.setWizardPageButtonText(QInstaller.ReadyForInstallation, buttons.CommitButton, "彻底卸载");
+    var clear = QMessageBox.question("ChooseUninstallData", "卸载星图",
+        "默认保留设置、地图、路线等资料。是否主动选择清除可确认归属的资料？未知文件始终保留。",
+        QMessageBox.Yes | QMessageBox.No, QMessageBox.No) === QMessageBox.Yes;
+    if (clear) clear = QMessageBox.question("ConfirmClearData", "最终确认清除资料",
+        "确定永久清除可确认属于星图的资料吗？此操作不经过回收站。选择否将保留资料。",
+        QMessageBox.Yes | QMessageBox.No, QMessageBox.No) === QMessageBox.Yes;
+    installer.setValue("DataChoice", clear ? "clear" : "keep");
+    try { trialRun("select-data", clear ? "clear" : "keep", "purge"); }
+    catch (error) { installer.setCanceled(); throw error; }
+    page.title = "卸载星图";
+    page.subTitle = clear ? "清除已确认归属的资料；未知文件保留。" : "保留设置、地图、路线等用户资料。";
+    var summary = gui.findChild(page, "RemoveAllMsgLabel");
+    if (summary) summary.text = page.subTitle + "\n\n" + installer.toNativeSeparators(installer.value("TargetDir"));
+    gui.setWizardPageButtonText(QInstaller.ReadyForInstallation, buttons.CommitButton, "卸载");
 };
 
 Controller.prototype.FinishedPageCallback = function() {
@@ -169,10 +176,10 @@ Controller.prototype.FinishedPageCallback = function() {
         var result = JSON.parse(installer.readFile(outcome, "UTF-8"));
         if (installer.value("TrialPortable") === "true") result.target = installer.value("TargetDir");
         function normal(path) { return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase(); }
-        if (result.success === true && result.dataChoice === "clear" && result.nativeRemovalScheduled === true &&
-                normal(result.target) === normal(installer.value("TargetDir")))
-            text = "程序移除已完成，安装目录的最终清理已安排。请关闭此窗口后确认目录已移除。";
-        else text = "程序卸载流程已结束，但资料处理未完成。请保留测试目录并检查日志。";
+        if (result.success === true && normal(result.target) === normal(installer.value("TargetDir")))
+            text = result.dataChoice === "keep" ? "用户资料已保留在原安装目录。程序移除情况请结合卸载结果确认。" :
+                "可确认归属的资料已清理。未知文件、未确认资料和恢复回执保留在原目录。程序移除情况请结合卸载结果确认。";
+        else text = "资料处理未完成。剩余资料已保留，请保留安装目录并检查日志后重试。";
     } catch (error) {}
     var page = gui.currentPageWidget();
     if (page && page.MessageLabel) page.MessageLabel.text = text;

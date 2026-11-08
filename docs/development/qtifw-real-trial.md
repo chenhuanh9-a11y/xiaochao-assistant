@@ -172,3 +172,47 @@ r7 至 r10 的后续变化只接入控制脚本中的 GUI 选择、汇总文字�
 重新复现需全新输出根：先运行 `tools/build_qtifw_trial.py --help` 构建，再运行 `tools/probe_qtifw_real_trial.py --trial-root <全新候选根>`。已有证据目录不可覆盖；本轮使用当前管理员进程上下文。
 
 官方接口参考：[QRC 附加资源示例](https://doc.qt.io/qtinstallerframework/qtinstallerframework-dynamicpage-example.html)、[操作与 UNDO](https://doc.qt.io/qtinstallerframework/operations.html)、[控制脚本生命周期](https://doc.qt.io/qtinstallerframework/noninteractive.html)、[资料选择对话框](https://doc.qt.io/qtinstallerframework/scripting-qmessagebox.html)。
+
+### QtIFW 卸载保留资料修复（2026-11-08，源码/离线验证）
+
+默认 `DataChoice=keep`；GUI 选择清除后另问一次最终确认，默认均为否，取消清除退回保留。
+CLI 清除必须同时传 `DataChoice=clear ConfirmClear=yes`。每次维护入口先撤销旧选择，
+安装回滚/更新的 `operation=none` 不执行资料删除；非空/旧目录保护性拒绝保持不变，不实现迁移。
+
+原生删除边界按 QtIFW 官方 [RemoveTargetDir 配置](https://doc.qt.io/qtinstallerframework/ifw-globalconfig.html)
+和 [操作/撤销合同](https://doc.qt.io/qtinstallerframework/operations.html) 核对：构建改为
+`RemoveTargetDir=false`，取消 helper 的“安排整目录清除”分支；显式 Mkdir 使用空 UNDO，
+避免其目录撤销遍历用户后加内容。原生 Extract 仍撤销其安装文件清单，Copy 撤销程序别名，
+快捷方式沿用原生撤销。程序清单由现有 `write_installer_program_inventory` 产生，排除用户 work 数据；
+图包安装由 helper 完成，不加入 Extract 清单。参照 [QtIFW 4.10 Extract 实现](https://github.com/qtproject/installer-framework/blob/4.10/src/libs/installer/extractarchiveoperation.cpp)
+核对清单生成与撤销入口；这不代替实际发布所用 QtIFW 二进制验收。
+
+资料清除在程序组件撤销之后执行：仅选定应用明确写入的六个 settings JSON 路径，
+以及现有图包删除规划器验证过的有效载荷。未知、修改后未通过归属验证的文件保留；
+图包回执、恢复元数据、未纳入清单的日志/缓存/独立路线等也保留，不承诺目录为空。
+清除前验证所有文件的身份、大小、SHA256 和单链接，再通过 Win32 同句柄标记删除。
+预检失败不删任何资料；删除中途失败可能已清掉部分选定文件，但剩余文件不改写，记录 incomplete，
+设置文件可重试。复杂图包中断若其原回执已不再满足完整性合同，仍拒绝猜测/放宽验证，需人工核对。
+卸载父进程持有的独占资源锁通过现有 `_duplicate_verified` 重验父进程、映像、创建时间、
+句柄所指文件及独占状态后复用，避免重复加锁冲突；进程退出释放原锁。
+
+正式构建通过 `release_text` 处理共享模板，覆盖“旧试用版”“测试目录”等文字；试用模板不改写。
+
+本机运行（Linux，全部使用临时合成目录，不访问实际 AppData）：
+
+- `python3 -m unittest discover -s tests -p 'test_qtifw*.py' -q`：56 项，成功，7 项 Windows 专属跳过。
+- `python3 -m unittest discover -s tests -p 'test_uninstall*.py' -q`：22 项，全部成功。
+- `python3 -m unittest discover -s tests -p 'test_map_package_removal.py' -q`：33 项，成功，1 项 Windows 专属跳过。
+- `node tests/qtifw_data_protection.js`：成功，直接执行实际 controller/component 脚本，QtIFW UI/进程 API 为替身。
+- `python3 -m py_compile tools/build_qtifw_trial.py tools/qtifw_trial_helper.py tools/qtifw_trial_lease.py tests/windows/qtifw_native_lifecycle.py` 和 `git diff --check`：成功。
+
+新增临时目录覆盖默认保留、确认清除、取消确认、预检失败、中途删除失败/回执/重试、未知文件、
+修改后文件、真实合成 ZIP 安装回执的地图归属，以及正式模板文字。POSIX 测试只替换 Win32 打开/删除句柄；
+不将其称为 Windows 同句柄删除或真实 GUI 通过。
+
+本机无 Windows、Wine 或 QtIFW binarycreator，未构建 Setup，未安装或运行真实客户端。
+Windows 待运行：
+`python tests/windows/qtifw_native_lifecycle.py --ifw-bin <QtIFW/bin> --output <checkout/work/新目录>`，
+并以另一个新目录加 `--portable` 复测。脚本已更新默认保留、CLI 确认门、主动清除和未知文件保留断言；
+仍须人工核对 GUI 默认焦点、最终确认取消、原生卸载失败/重试、目录残留、快捷方式/卸载项移除及 frozen helper 依赖。
+历史 `probe_qtifw_real_trial.py` 含同目录重装/迁移和旧清除语义，本批未运行，不能复用其旧验收结论。
