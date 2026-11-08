@@ -14,6 +14,28 @@ from resource_transaction import _safe
 from installer_resource_lease import _kernel, _FileInfo, _final, _parent
 
 
+def inspect_installation_objects(target, lock_path):
+    """Allow hard-link aliases only when every name stays in this installation."""
+    aliases = {}
+    for path in Path(target).rglob("*"):
+        _safe(path)
+        if path == lock_path:
+            continue  # checked through the live exclusive native handle
+        current = path.stat()
+        if stat.S_ISDIR(current.st_mode):
+            continue
+        if not stat.S_ISREG(current.st_mode):
+            raise ValueError("installation-object-not-regular-file")
+        if current.st_nlink != 1:
+            identity = (current.st_dev, current.st_ino)
+            expected, count = aliases.get(identity, (current.st_nlink, 0))
+            if expected != current.st_nlink:
+                raise ValueError("installation-hardlinks-changed")
+            aliases[identity] = (expected, count + 1)
+    if any(expected != count for expected, count in aliases.values()):
+        raise ValueError("installation-hardlink-outside-target")
+
+
 def hold_uninstaller_lease(target):
     if os.name != "nt":
         raise ValueError("windows-uninstall-lease-required")
@@ -51,13 +73,7 @@ def hold_uninstaller_lease(target):
             raise ValueError("uninstall-lock-object-mismatch")
         # Enumerate only under the live exclusive lock. Pending journals are
         # data to remove, not a requirement to make a broken install runnable.
-        for path in Path(target).rglob("*"):
-            _safe(path)
-            if path == lock_path:
-                continue  # already checked through the actual open object
-            current = path.stat()
-            if not stat.S_ISDIR(current.st_mode) and (not stat.S_ISREG(current.st_mode) or current.st_nlink != 1):
-                raise ValueError("installation-object-not-exclusive-file")
+        inspect_installation_objects(target, lock_path)
         _parent(api, parent, parent_pid, created, expected_parent, digest)
         if os.getppid() != parent_pid:
             raise ValueError("uninstaller-parent-changed")

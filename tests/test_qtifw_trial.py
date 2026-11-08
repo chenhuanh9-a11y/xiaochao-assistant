@@ -74,6 +74,22 @@ class TrialTests(unittest.TestCase):
         self.assertEqual(original.read_bytes(), b"keep")
         self.assertFalse((self.target / OWNER).exists())
 
+    def test_uninstall_accepts_internal_snapshot_aliases_but_rejects_external_links(self):
+        from qtifw_trial_lease import inspect_installation_objects
+        self.seed()
+        original = self.target / "program/work/activation.json"
+        original.write_bytes(b"immutable snapshot pointer")
+        internal = self.target / "program/work/pointer-witness.json"
+        os.link(original, internal)
+        lock = self.target / "program/work/map-packages/import.lock"
+        inspect_installation_objects(self.target, lock)
+        outside = self.scope / "external-pointer.json"
+        os.link(original, outside)
+        with self.assertRaisesRegex(ValueError, "hardlink-outside-target"):
+            inspect_installation_objects(self.target, lock)
+        self.assertEqual(outside.read_bytes(), b"immutable snapshot pointer")
+        self.assertEqual(original.stat().st_nlink, 3)
+
     def test_accepted_map_delivery_is_copied_by_exact_archive_identity(self):
         archives = self.scope / "archives"
         archives.mkdir()

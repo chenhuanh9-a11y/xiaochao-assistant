@@ -116,6 +116,11 @@ def lease(target):
     return p,p.stdout.readline().strip()
 
 case,_,target=install('late-lease');assert report['late-lease']['exitCode']==0
+if not old:
+    pointer=target/'program/work/author-snapshots/activation.json'
+    pointer.parent.mkdir(parents=True,exist_ok=True);pointer.write_bytes(b'owned snapshot publication')
+    os.link(pointer,pointer.with_name('publication-witness.json'))
+    report['internalHardlinkPair']=True
 if args.portable:
     # Preserve, but make the install-time support paths unavailable. Uninstall
     # must recreate its own admission helper and use the installed UNDO helper.
