@@ -81,8 +81,6 @@ def main():
     build.verify_invoker_manifest(helper)
     qrc = output / "trial.qrc"
     qrc.write_text('<RCC><qresource prefix="/qtifw-trial"><file alias="helper.exe">helper/qtifw-trial-helper.exe</file></qresource></RCC>', encoding="utf-8")
-    rcc = output / "trial.rcc"
-    subprocess.run([str(Path(sys.executable).parent / "pyside6-rcc.exe"), "--binary", str(qrc), "-o", str(rcc)], check=True)
     config = output / "config"
     meta = output / "packages" / PACKAGE / "meta"
     meta.mkdir()
@@ -108,7 +106,7 @@ def main():
     setup = output / "Xingtu-QtIFW-Local-Trial-Setup.exe"
     with (output / "binarycreator.log").open("wb") as log:
         subprocess.run([str(args.ifw_bin / "binarycreator.exe"), "--offline-only", "--compression", "3",
-            "--resources", str(rcc), "-t", str(args.ifw_bin / "installerbase.exe"),
+            "--resources", str(qrc), "-t", str(args.ifw_bin / "installerbase.exe"),
             "-c", str(config / "config.xml"), "-p", str(output / "packages"), str(setup)],
             stdout=log, stderr=subprocess.STDOUT, check=True)
     result = dict(installerSource=build._git("rev-parse", "HEAD"), payloadSource=compiled,
