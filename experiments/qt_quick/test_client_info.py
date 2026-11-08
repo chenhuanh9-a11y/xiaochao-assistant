@@ -73,7 +73,9 @@ class InfoTests(unittest.TestCase):
             service.exportDiagnosticsTo(QUrl.fromLocalFile(str(destination)).toString())
             self.wait(lambda: not service.checking)
         self.assertTrue(service.diagnosticsReceipt['success'])
-        self.assertEqual(len(export.call_args.kwargs['failure_roots']), 2)
+        self.assertEqual(export.call_args.kwargs['failure_roots'], tuple(
+            service.paths.memory_root(mode, season)
+            for season in ('s0', 's1') for mode in ('nightmare', 'difficult')))
         self.assertTrue(export.call_args.kwargs['automatic_failure_only'])
         self.assertTrue(export.call_args.kwargs['include_automatic_failure_evidence'])
         self.assertEqual(self.calls, [])
@@ -338,7 +340,7 @@ class InfoTests(unittest.TestCase):
             self.assertEqual(manifest["windowEnvironment"]["candidates"],
                              [dict(width=1280, height=720, dpi=96, clientBounds=[0, 0, 1280, 720])])
             self.assertEqual(manifest["failureEvidence"]["status"], "no-matching-saved-frame")
-            self.assertEqual(len(manifest["failureEvidence"]["journals"]), 2)
+            self.assertEqual(len(manifest["failureEvidence"]["journals"]), 4)
             self.assertNotIn("private window title", json.dumps(manifest))
             self.assertEqual(manifest["windowEnvironment"]["readPermission"], "unknown")
         self.assertEqual(self.calls, [])
