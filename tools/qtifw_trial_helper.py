@@ -231,7 +231,7 @@ def receipt(policy, target, name, value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("check-target", "prepare", "verify-program", "verify", "install-maps", "disable-watcher", "inspect-data", "hold-uninstall", "select-data", "undo-data", "noop", "data", "pause", "fail"))
+    parser.add_argument("action", choices=("migrate-legacy", "check-target", "prepare", "verify-program", "verify", "install-maps", "disable-watcher", "inspect-data", "hold-uninstall", "select-data", "undo-data", "noop", "data", "pause", "fail"))
     parser.add_argument("target", type=Path)
     parser.add_argument("choice", nargs="?", default="keep")
     parser.add_argument("operation", nargs="?", default="none", choices=("none", "purge"))
@@ -241,6 +241,15 @@ def main():
         if args.action == "check-target":
             # Browsing/validation must not create the target, marker or receipt.
             print(json.dumps(check_target(policy, args.target), ensure_ascii=True))
+            return 0
+        elif args.action == "migrate-legacy":
+            target, owner = bound_owner(policy, args.target)
+            if owner["phase"] != "installing":
+                raise ValueError("migration-requires-new-installation")
+            verify_program(policy, target)
+            from legacy_migration import migrate
+            result = migrate(Path(args.choice), target / "program")
+            print(json.dumps(result, ensure_ascii=True))
             return 0
         elif args.action == "prepare":
             result = prepare(policy, args.target)
