@@ -277,7 +277,8 @@ class InstallerUpgradeJournalTests(unittest.TestCase):
         deep = {}
         for _ in range(journal.MAX_JSON_DEPTH + 2):
             deep = {'deeper': deep}
-        payloads = [deep, {'large': ['x' * (1024 ** 2)] * 17}, {'many': [0] * (journal.MAX_JSON_ITEMS + 1)}]
+        payloads = [deep, {'large': ['x' * (1024 ** 2)] * (journal.MAX_EVIDENCE_BYTES // (1024 ** 2) + 1)},
+                    {'many': [0] * (journal.MAX_JSON_ITEMS + 1)}]
         for evidence in payloads:
             with self.subTest(), self.assertRaises(ValueError):
                 self.instance.record_native_complete(evidence, verify_native=lambda *_: True)
@@ -293,6 +294,17 @@ class InstallerUpgradeJournalTests(unittest.TestCase):
             self.instance.record_native_complete(self.evidence, verify_native=lambda *_: False)
         with self.assertRaisesRegex(ValueError, 'abort-after-native-forbidden'):
             self.instance.abort_pre_native(verify_resource=lambda _: True)
+
+    def test_large_evidence_survives_generation_reload_and_forward_completion(self):
+        # Real bounded serialization and on-disk replay; native verification is doubled.
+        self.native()
+        evidence = {'chunks': ['x' * (1024 ** 2)] * 17}
+        self.instance.record_native_complete(evidence, verify_native=lambda *_: True)
+        self.assertEqual(self.instance.status()['nativeEvidence'], evidence)
+        result = self.finish()
+        self.assertEqual(result['nativeEvidence'], evidence)
+        self.assertFalse(result['pending'])
+        self.assertEqual(len(self.generations()), 5)
 
     def test_current_native_must_still_match_before_forward_or_last_clear(self):
         self.complete_native()

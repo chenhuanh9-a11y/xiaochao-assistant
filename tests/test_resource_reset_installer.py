@@ -273,7 +273,10 @@ class ResourceResetPackagingTests(unittest.TestCase):
             path.write_bytes(('synthetic not executable: ' + name).encode())
             inventory[name] = dict(bytes=path.stat().st_size, sha256=build.sha256(path))
         executable = stage / '星图.exe'; executable.write_bytes(b'synthetic main executable')
-        report = stage / 'release-report.json'; report.write_text('{}')
+        report = stage / 'release-report.json'
+        report.write_text(json.dumps(dict(sourceCommit='a' * 40, displayVersion='1.1.2',
+            numericVersion='1.0.0.24', executableSha256=build.sha256(executable),
+            resourceInventorySha256='b' * 64)))
         (stage / '_installer-owned-files.txt').write_bytes(b'')
         base = stage / '_internal/references/base.json'
         base.parent.mkdir(parents=True); base.write_bytes(b'base')
@@ -295,6 +298,18 @@ class ResourceResetPackagingTests(unittest.TestCase):
             lines = (output / 'reset-helper-inventory.txt').read_text('utf-8-sig').splitlines()
             self.assertEqual(len(lines), 3)
             self.assertFalse(record['resourceResetInstaller']['nativeTested'])
+            capacity = record['resourceResetInstaller']['capacityPreflight']
+            self.assertFalse(capacity['nativeIOPerformed'])
+            self.assertEqual(len(capacity['examples']), 2)
+            self.assertTrue(all(row['knownNodes'] > 0 for row in capacity['examples']))
+
+    def test_real_inventory_capacity_is_checked_before_setup_wrapping(self):
+        import installer_upgrade_journal as journal
+        with tempfile.TemporaryDirectory() as folder:
+            stage, output, record = self.fixture(Path(folder))
+            with patch.object(journal, 'MAX_JSON_NODES', 1000):
+                with self.assertRaisesRegex(ValueError, 'evidence-budget-exceeded'):
+                    build.resource_reset_installer_defines(stage, record, output, dict(commit='a' * 40))
 
     def test_old_missing_changed_or_extra_helper_cannot_be_wrapped(self):
         for kind in ('missing', 'changed', 'extra', 'target', 'program', 'payload', 'projection'):

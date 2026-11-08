@@ -33,9 +33,9 @@ from resource_transaction import preflight_resource_publication, rename_no_repla
 SCHEMA = 'xingtu-installer-upgrade-v1'
 PENDING = 'work/pending-installer-upgrade.json'
 HISTORY = 'work/installer-upgrades'
-MAX_METADATA_BYTES = 20 * 1024 * 1024
-MAX_EVIDENCE_BYTES = 16 * 1024 * 1024
-MAX_JSON_NODES = 500000
+MAX_METADATA_BYTES = 36 * 1024 * 1024
+MAX_EVIDENCE_BYTES = 32 * 1024 * 1024
+MAX_JSON_NODES = 1250000
 MAX_JSON_DEPTH = 64
 MAX_JSON_ITEMS = 20000
 MAX_JSON_STRING = 4 * 1024 * 1024

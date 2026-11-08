@@ -86,7 +86,7 @@ class PendingUninstallerTests(unittest.TestCase):
             native.preflight_native_evidence(ROOT, **kw)
 
     def test_pending_name_keeps_capacity_rejection(self):
-        kw = context(3000, 11)
+        kw = context(6000, 20)
         kw['uninstall_exe'] = None
         kw['shortcut_targets'][1].update(path=r'C:\links\卸载星图.lnk', target=None)
         with self.assertRaisesRegex(native.NativeObservationError, 'evidence-budget-exceeded'):
@@ -136,11 +136,19 @@ class NativeBudgetTests(unittest.TestCase):
             self.assertEqual(result['knownNodes'], node_count(actual))
             journal._bounded(actual, evidence=True)
 
-    def test_same_count_shallow_passes_deep_3000_rejects(self):
+    def test_stock_scale_deep_inventory_fits_but_larger_deep_inventory_rejects(self):
         self.assertGreater(native.preflight_native_evidence(ROOT, **context(3000))['knownNodes'], 0)
-        for count in (3000, 4000):
+        self.assertGreater(native.preflight_native_evidence(ROOT, **context(3000, 11))['knownNodes'], 0)
+        for count in (4000, 6000):
             with self.assertRaisesRegex(native.NativeObservationError, 'evidence-budget-exceeded'):
                 native.preflight_native_evidence(ROOT, **context(count, 11))
+
+    def test_stock_scale_materialized_evidence_fits_native_and_journal_encoders(self):
+        kw = context(3000, 11)
+        actual = materialized_known(ROOT, kw)
+        encoded = native._encoded(actual)
+        self.assertGreater(len(encoded), 16 * 1024 * 1024)
+        self.assertEqual(encoded, journal._bounded(actual, evidence=True))
 
     def test_byte_and_node_boundaries_plus_minus_one(self):
         kw = context(2, 3)
@@ -152,8 +160,13 @@ class NativeBudgetTests(unittest.TestCase):
                 with self.subTest(field=field, delta=delta), patch.object(native, reserve,
                         total - wrapper - result[field] - delta):
                     if delta < 0:
-                        with self.assertRaisesRegex(native.NativeObservationError, 'evidence-budget-exceeded'):
+                        with self.assertRaisesRegex(native.NativeObservationError, 'evidence-budget-exceeded') as caught:
                             native.preflight_native_evidence(ROOT, **kw)
+                        self.assertIn('nodeLimit', str(caught.exception))
+                        self.assertIn('byteLimit', str(caught.exception))
+                        self.assertIn('knownBytes', caught.exception.details)
+                        self.assertIn('knownNodes', caught.exception.details)
+                        self.assertTrue(caught.exception.details['measurementStoppedEarly'])
                     else:
                         self.assertEqual(result[field], native.preflight_native_evidence(ROOT, **kw)[field])
 
@@ -176,8 +189,8 @@ class NativeBudgetTests(unittest.TestCase):
         with patch.object(native, 'WindowsReadOnlyBackend', side_effect=AssertionError('native IO')):
             native.preflight_native_evidence(ROOT, **context())
 
-    def test_prepare_3000_rejects_before_begin_or_resources(self):
-        kw = context(3000, 11)
+    def test_prepare_oversized_inventory_rejects_before_begin_or_resources(self):
+        kw = context(6000, 20)
         args = SimpleNamespace(action='prepare', install_root=ROOT, confirmed=True)
         api, ledger = Mock(), Mock()
         coordinator = Coordinator(args, api, kw['target_identity'], object(), 'fixture')
@@ -190,7 +203,7 @@ class NativeBudgetTests(unittest.TestCase):
         self.assertEqual(api.mock_calls, [])
 
     def test_current_root_rechecked_before_start_native(self):
-        kw = context(1400)
+        kw = context(3000)
         native.preflight_native_evidence(ROOT, **kw)
         root = 'C:\\' + '\\'.join(['long-install-directory'] * 20)
         kw['uninstall_exe'] = root + r'\unins000.exe'

@@ -301,6 +301,32 @@ def write_installer_program_inventory(stage, record, output, source):
     return destination
 
 
+def native_capacity_preflight(program_inventory, report, source):
+    """Admit the real frozen inventory at example paths; never read Windows state."""
+    from types import SimpleNamespace
+    from installer_upgrade_coordinator import native_context
+    from installer_native_observation import preflight_native_evidence
+    release = _read(report)
+    target = dict(sourceCommit=source['commit'], **{name: release[name] for name in (
+        'displayVersion', 'numericVersion', 'executableSha256', 'resourceInventorySha256')})
+    # Lexical capacity examples only, not observed users or guessed uninstaller names.
+    user = 'C:\\Users\\' + 'capacity-check-' + 'x' * 64
+    roots = ('C:\\Program Files\\XiaochaoAssistant',
+             user + '\\AppData\\Local\\Programs\\XiaochaoAssistant')
+    examples = []
+    for root in roots:
+        args = SimpleNamespace(program_inventory=str(program_inventory),
+            program_inventory_sha256=sha256(program_inventory), install_root=root,
+            target_report_sha256=sha256(report), uninstall_exe=None,
+            group_shortcut=user + '\\links\\星图.lnk',
+            uninstall_shortcut=user + '\\links\\卸载星图.lnk',
+            desktop_shortcut=user + '\\desktop\\星图.lnk', group_enabled=True, desktop_enabled=True)
+        result = preflight_native_evidence(root, **native_context(args, target))
+        examples.append(dict(installRootExample=root, **result))
+    return dict(programFiles=len(_read(program_inventory)['files']), examples=examples,
+                nativeIOPerformed=False, meaning='known-shape capacity admission; not installation acceptance')
+
+
 def resource_reset_installer_defines(stage, record, output, source):
     """Pin the complete new helper/runtime and target identities into Setup."""
     stage, output = Path(stage), Path(output)
@@ -336,7 +362,8 @@ def resource_reset_installer_defines(stage, record, output, source):
         programInventorySha256=sha256(program_inventory),
         helperInventorySha256=sha256(listing), targetReportSha256=sha256(report),
         targetManifestSha256=sha256(candidate), lease='verified-duplicate-of-setup-share-zero-handle',
-        confirmation='exact-plan-sha256', nativeTested=False)
+        confirmation='exact-plan-sha256', nativeTested=False,
+        capacityPreflight=native_capacity_preflight(program_inventory, report, source))
     return [f'/DResetHelperInventory={listing}', f'/DResetHelperInventorySHA256={sha256(listing)}',
             f'/DResetSourceCommit={source["commit"]}', f'/DResetTargetReportSHA256={sha256(report)}',
             f'/DResetCandidateSHA256={sha256(candidate)}',

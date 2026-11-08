@@ -39,3 +39,15 @@ it does not guess an `uninsNNN.exe` name. Native completion capture and replay
 still require the actual owned path and all existing identity checks. See the
 upstream [constant expansion](https://github.com/jrsoftware/issrc/blob/main/Projects/Src/Setup.MainFunc.pas)
 and [uninstaller filename allocation](https://github.com/jrsoftware/issrc/blob/main/Projects/Src/Setup.Install.pas).
+
+Native evidence retains every program file and its complete ancestor chain.
+The 3,648-file package measures about 14.3 MB / 660k known JSON nodes at the
+observed Program Files path and 20.7 MB / 908k nodes at the default user path,
+before native-object and journal reserves. Fixed limits are 32 MiB for evidence,
+36 MiB for the enclosing record and 1.25 million nodes; all other shape, identity,
+ownership and generation limits remain. Build-time admission checks the exact
+new program inventory at lexical Program Files and long user-profile examples,
+without reading Windows state. Deep or larger unsupported inputs still fail
+before journal/resource mutation; a budget failure includes the measured count
+at rejection and both limits. These capacity examples are not installation or
+native-completion acceptance.

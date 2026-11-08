@@ -29,7 +29,11 @@ APP_ID = '{D04394A0-DACE-4FF9-874D-3DCB43EE53D1}'
 UNINSTALL_KEY = 'Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\' + APP_ID + '_is1'
 OWNERSHIP_NAME = '_installer-owned-files.txt'
 SCHEMA = 'xingtu-native-install-observation-v1'
-MAX_METADATA = 16 * 1024 * 1024
+# The stock 3,648-file package needs ~20 MiB / 908k nodes at the default
+# per-user path because every file retains its complete ancestor witness.
+# Keep exact evidence and fixed bounds; budget admission still runs before writes.
+MAX_METADATA = 32 * 1024 * 1024
+MAX_REGISTRY_BYTES = 8 * 1024 * 1024  # Preserve the previous registry bound.
 MAX_FILES = 20000
 MAX_FILE = 16 * 1024 ** 3
 MAX_LINK = 1024 * 1024
@@ -57,9 +61,10 @@ _SID = re.compile(r'S-1-\d+(?:-\d+){1,15}\Z')
 
 
 class NativeObservationError(ValueError):
-    def __init__(self, code):
+    def __init__(self, code, *, details=None):
         self.code = 'native-observation-' + code
-        super().__init__(self.code)
+        self.details = details
+        super().__init__(self.code + (': ' + json.dumps(details, sort_keys=True) if details else ''))
 
 
 def _fail(code):
@@ -253,7 +258,9 @@ def preflight_native_evidence(install_root, *, target_identity, target_report_sh
         totals[0] += size
         totals[1] += nodes
         if totals[0] > byte_limit or totals[1] > node_limit:
-            _fail('evidence-budget-exceeded')
+            raise NativeObservationError('evidence-budget-exceeded', details=dict(
+                knownBytes=totals[0], byteLimit=byte_limit,
+                knownNodes=totals[1], nodeLimit=node_limit, measurementStoppedEarly=True))
 
     def measure(value, depth):
         # Mirror journal JSON constraints, including keys counting as nodes.
@@ -1171,7 +1178,7 @@ class WindowsReadOnlyBackend:
             ctypes.byref(subkeys), None, None, ctypes.byref(values), None, ctypes.byref(max_data), None, ctypes.byref(stamp))
         if status != 0 or size.value >= len(klass) or len(klass.value) != size.value:
             _fail('registry-info-unavailable')
-        if subkeys.value > MAX_REG_KEYS or values.value > MAX_REG_VALUES or max_data.value > MAX_METADATA // 2:
+        if subkeys.value > MAX_REG_KEYS or values.value > MAX_REG_VALUES or max_data.value > MAX_REGISTRY_BYTES:
             _fail('registry-limit')
         return dict(lastWrite=_ticks(stamp), subkeyCount=subkeys.value,
                     valueCount=values.value, keyClass=klass.value, maxValueBytes=max_data.value)
@@ -1220,7 +1227,7 @@ class WindowsReadOnlyBackend:
             seen.add(text.casefold())
             self._check_value(kind.value, raw)
             budget[2] += len(raw) + len(text.encode('utf-16-le'))
-            if budget[2] > MAX_METADATA // 2:
+            if budget[2] > MAX_REGISTRY_BYTES:
                 _fail('registry-byte-limit')
             values.append(dict(name=text, type=kind.value, rawBase64=base64.b64encode(raw).decode('ascii')))
         seen.clear()
