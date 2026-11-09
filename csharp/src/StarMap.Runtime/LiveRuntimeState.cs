@@ -49,6 +49,7 @@ public sealed record LiveRuntimeState(RuntimeContext Context, bool ResourcesBoun
     NativeGeometryPose? NativePose, IReadOnlyList<RuntimeCandidate> Candidates, int SelectedCandidateIndex,
     string Reason, JsonElement Diagnostics, IReadOnlyList<string> CapabilityGaps)
 {
+    public MapOpenRecoveryStatus MapOpenRecovery { get; init; } = new(false);
     public bool Closed { get; init; }
     public string? ManualFloor { get; init; }
     public string? ObservedFloor { get; init; }
@@ -60,3 +61,6 @@ public sealed record LiveRuntimeState(RuntimeContext Context, bool ResourcesBoun
     public RuntimeGroupChoice GroupChoice { get; init; } = new(0, null, null, null, null, "", "", Array.Empty<RuntimeGroupMember>());
     public RuntimeDisplayState Display { get; init; } = new(false, false, false, "pose-not-verified");
 }
+
+public sealed record MapOpenRecoveryStatus(bool Pending, string? Id = null, bool Due = false,
+    int Remaining = 0, string? Reason = null);

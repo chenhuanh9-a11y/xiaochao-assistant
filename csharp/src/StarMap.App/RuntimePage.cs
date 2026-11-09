@@ -31,7 +31,7 @@ internal sealed class RuntimePage : UserControl
     LiveRuntimeState? renderedGroupState;
     readonly ComboBox floor = new() { MinWidth = 130, HorizontalAlignment = HorizontalAlignment.Left, DisplayMemberPath = "Label", SelectedValuePath = "Id" };
     readonly Button start, end, acquire, cancel, previous, next, confirm, pick, applyFloor, toggleVisibility;
-    readonly DispatcherTimer renderTimer;
+    readonly DispatcherTimer renderTimer, recoveryTimer;
     SessionService? session;
     LiveRuntime? runtime;
     CancellationTokenSource? pendingCapture;
@@ -126,6 +126,9 @@ internal sealed class RuntimePage : UserControl
         // Read the runtime's bounded immutable view only. RefreshRuntime would
         // treat an in-flight producer's new frame/map as an external invalidation.
         renderTimer = new(TimeSpan.FromMilliseconds(125), DispatcherPriority.Background, (_, _) => Render(), Dispatcher);
+        // Runtime work must continue when this page or the main window is hidden.
+        recoveryTimer = new(TimeSpan.FromMilliseconds(200), DispatcherPriority.Background, (_, _) => RecoverMapOpen(), Dispatcher);
+        recoveryTimer.Stop();
         renderTimer.Stop(); Render();
         IsVisibleChanged += (_, _) =>
         {
@@ -263,6 +266,7 @@ internal sealed class RuntimePage : UserControl
                 await session.DrainAsync();
             }
             if (closed) return false;
+            recoveryTimer.Start();
             if (IsVisible) renderTimer.Start();
             var applied = runtime!.ReadState();
             bool succeeded = applied.ResourcesBound && applied.Context.Selection == desired;
@@ -280,7 +284,7 @@ internal sealed class RuntimePage : UserControl
         var result = session.Dispatch(action, payload is null ? null : JsonSerializer.SerializeToElement(payload));
         if (result.Disposition is SessionDispatchDisposition.Enqueued or SessionDispatchDisposition.Coalesced)
         {
-            if (action == "capture_now") mapRead = (session.Read().Sequence.LastIssuedSequence, mapInput.Sequence);
+            if (action is "capture_now" or "map" or "recover_map_open") mapRead = (session.Read().Sequence.LastIssuedSequence, mapInput.Sequence);
             if (action is "end_round" or "stop_round" or "reset_round") { mapInput.Reset(); mapRead = null; }
         }
         if (result.Disposition is SessionDispatchDisposition.Unavailable or SessionDispatchDisposition.ResourceLocked)
@@ -310,7 +314,7 @@ internal sealed class RuntimePage : UserControl
                 || session.Read().PendingAction is "start_round" or "end_round" or "stop_round" or "reset_round" or "toggle_round") return;
             CancelDelay(); session.CancelPending("new-map-input"); runtime.InvalidateCapture("new-map-input"); session.RefreshRuntime();
             var payload = new { inputSequence = edge.Sequence, openIntent = edge.OpenIntent, inputCreatedAt = edge.CreatedAtSeconds, inputSource = edge.Source };
-            Dispatch(edge.OpenIntent ? "capture_now" : "close_map", payload);
+            Dispatch("map", payload);
             return;
         }
         var command = action switch { "start-round" => "start_round", "toggle-round" => "toggle_round",
@@ -347,6 +351,18 @@ internal sealed class RuntimePage : UserControl
     }
 
     void CancelDelay() => pendingCapture?.Cancel();
+    internal void RecoverMapOpen()
+    {
+        if (closed || configuring || loadingResources || pendingCapture is not null || session is null || runtime is null) return;
+        if (session.Read() is not { Busy: false, WorkerActive: false, ContextPending: false, ResourceLocked: false, QueuedCount: 0 }) return;
+        var state = runtime.ReadState();
+        if (!state.RoundActive || !state.ResourcesBound || state.WorkActive || !capture.IsBound
+            || state.MapOpenRecovery is not { Pending: true, Due: true, Id: { } id }) return;
+        if (capture is Platform.WindowsRuntimeCapturePort native && !native.IsBindingForeground()) return;
+        // Refresh is safe here: there is no in-flight producer to invalidate.
+        session.RefreshRuntime();
+        Dispatch("recover_map_open", new { recoveryId = id });
+    }
     void CancelWork()
     {
         CancelDelay(); session?.CancelPending(); runtime?.InvalidateCapture("cancelled");
@@ -367,7 +383,7 @@ internal sealed class RuntimePage : UserControl
         start.IsEnabled = available && !active && !working && Supports("start_round");
         end.IsEnabled = active && !configuring && !loadingResources && Supports("end_round");
         acquire.IsEnabled = active && capture.IsBound && !working && Supports("capture_now");
-        cancel.IsEnabled = !configuring && !loadingResources && working;
+        cancel.IsEnabled = !configuring && !loadingResources && (working || state?.MapOpenRecovery.Pending == true);
         previous.IsEnabled = active && !working && Supports("previous_candidate");
         next.IsEnabled = active && !working && Supports("next_candidate");
         confirm.IsEnabled = active && !working && Supports("confirm_route");
@@ -384,7 +400,8 @@ internal sealed class RuntimePage : UserControl
             : state.Candidates.Count > 0 ? "选择候选后确认地图；也可以展开手动选图。" : "读取游戏地图后，候选会显示在这里。";
         candidates.Visibility = state.Candidates.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         detail.Text = configuring || loadingResources ? "正在读取资源或应用设置，请稍候。"
-            : working ? "正在识别，可随时取消。" : Reason(state.Reason);
+            : working ? "正在识别，可随时取消。" : state.MapOpenRecovery.Pending
+                ? "地图尚未就绪，正在短暂等待画面，可随时取消。" : Reason(state.Reason);
         rendering = true;
         try
         {
@@ -416,6 +433,7 @@ internal sealed class RuntimePage : UserControl
     internal async Task DrainAsync() { if (session is not null) await session.DrainAsync(); }
     async Task CloseRuntime()
     {
+        recoveryTimer.Stop();
         if (session is null) return;
         var previousSession = session; var previousRuntime = runtime!;
         session = null; runtime = null;
@@ -425,7 +443,7 @@ internal sealed class RuntimePage : UserControl
     internal async Task CloseAsync()
     {
         if (closed) return;
-        closed = true; renderTimer.Stop(); CancelDelay();
+        closed = true; renderTimer.Stop(); recoveryTimer.Stop(); CancelDelay();
         proposedSession?.Shutdown(); proposedRuntime?.Shutdown();
         await CloseRuntime();
         if (configurationCompleted is { } completed) await completed.Task;

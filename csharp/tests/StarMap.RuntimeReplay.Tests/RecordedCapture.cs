@@ -13,7 +13,8 @@ internal sealed class RecordedCapture(Dictionary<string, JsonObject> index) : IC
     public Hold HoldNext() => nextHold = new(new(TaskCreationOptions.RunContinuationsAsynchronously), new(TaskCreationOptions.RunContinuationsAsynchronously));
     public int Calls { get; private set; }
     public bool IsBound => true;
-    public void Select(string id) { selected = index[id]; Advance(); }
+    public CaptureBindingScope? BindingScope => new("recorded-only", generation);
+    public void Select(string id, bool invalidateBinding = true) { selected = index[id]; if (invalidateBinding) Advance(); }
     public void Advance() { generation++; current = null; }
     public bool IsCurrent(CaptureStamp stamp) => current == stamp && stamp.Generation == generation;
     public async ValueTask<ClientCaptureResult> CaptureAsync(CancellationToken cancellation)

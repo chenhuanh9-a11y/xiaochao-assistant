@@ -3,6 +3,9 @@ namespace StarMap.Runtime;
 /// <summary>Opaque exact physical window identity, binding generation, and captured frame identity.</summary>
 public sealed record CaptureStamp(string WindowIdentity, long Generation, string FrameId);
 
+/// <summary>Binding lifetime, independent of the frame replaced by each capture.</summary>
+public sealed record CaptureBindingScope(string WindowIdentity, long Generation);
+
 public enum CaptureEvidenceKind { Unspecified, Synthetic, RecordedClient, LiveClient }
 
 /// <summary>Physical screen coordinates of this exact full client, never WPF DIPs.</summary>
@@ -52,6 +55,8 @@ public sealed record ClientCaptureResult(CapturedClientFrame? Frame, string Reas
 public interface ICapturePort
 {
     bool IsBound { get; }
+    // Ports without a stable binding identity cannot authorize background recovery.
+    CaptureBindingScope? BindingScope => null;
     ValueTask<ClientCaptureResult> CaptureAsync(CancellationToken cancellationToken);
     bool IsCurrent(CaptureStamp stamp);
 }

@@ -3,7 +3,7 @@ using System.Text.Json.Nodes;
 using StarMap.Core.Session;
 using StarMap.Runtime;
 
-if (args.Length == 5 && args[0] is "--identity-prior-only" or "--unselected-floor-only")
+if (args.Length == 5 && args[0] is "--identity-prior-only" or "--unselected-floor-only" or "--map-recovery-only" or "--map-recovery-late-only")
 {
     string priorOnlyOutput = Path.GetFullPath(args[4]);
     if (Directory.Exists(priorOnlyOutput)) throw new IOException("Preserve previous evidence; use a new output.");
@@ -17,6 +17,10 @@ if (args.Length == 5 && args[0] is "--identity-prior-only" or "--unselected-floo
         };
         if (args[0] == "--identity-prior-only")
             await IdentityEntryRuntimeRegression.RunPrior(args[1], args[2], args[3], priorOnlyOutput, priorOnlyCheck);
+        else if (args[0] == "--map-recovery-only")
+            await MapRecoveryRuntimeRegression.Run(args[1], args[2], args[3], priorOnlyOutput, priorOnlyCheck);
+        else if (args[0] == "--map-recovery-late-only")
+            await MapRecoveryRuntimeRegression.RunLate(args[1], args[2], priorOnlyOutput, priorOnlyCheck);
         else await IdentityEntryRuntimeRegression.RunUnselectedFloor(args[1], args[2], args[3], priorOnlyOutput, priorOnlyCheck);
     }
     catch (Exception error)

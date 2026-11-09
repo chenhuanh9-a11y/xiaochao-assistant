@@ -31,7 +31,19 @@ public sealed class WindowsRuntimeCapturePort : ICapturePort, IDisposable
 
     public WindowsRuntimeCapturePort(ClientCapturePolicy policy = ClientCapturePolicy.PreferWgc) => this.policy = policy;
     public bool IsBound { get { lock (sync) return !disposed && binding is not null; } }
+    public CaptureBindingScope? BindingScope { get { lock (sync) return !disposed && binding is { } selected
+        ? new(windowIdentity, selected.Generation) : null; } }
     public BoundWindow? Binding { get { lock (sync) return disposed ? null : binding; } }
+
+    internal bool IsBindingForeground()
+    {
+        BoundWindow? selected;
+        lock (sync) selected = disposed ? null : binding;
+        if (selected is null) return false;
+        try { bindingOwner.ValidateBinding(selected, requireForeground: true); }
+        catch (Exception error) when (CaptureError(error)) { return false; }
+        lock (sync) return !disposed && ReferenceEquals(selected, binding);
+    }
 
     public BoundWindow Bind(WindowCandidate candidate)
     {

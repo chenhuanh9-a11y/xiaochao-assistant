@@ -148,7 +148,10 @@ internal static class Program
             int resourcesOption = Array.IndexOf(args, "--resources");
             int replayOption = Array.IndexOf(args, "--original-replay");
             if (resourcesOption >= 0 && replayOption >= 0)
+            {
                 Await(GroupChoiceWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption + 1]), Path.GetFullPath(args[replayOption + 1]), output, Check));
+                Await(MapRecoveryWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption + 1]), Path.GetFullPath(args[replayOption + 1]), output, Check));
+            }
             int steadyOption = Array.IndexOf(args, "--steady-oracle");
             if (resourcesOption >= 0 && replayOption >= 0 && steadyOption >= 0)
             {

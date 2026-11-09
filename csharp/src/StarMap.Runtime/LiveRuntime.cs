@@ -22,7 +22,6 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
 {
     private static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
     private static readonly string[] Gaps = ["steady-tracking-fallback-unavailable",
-        "automatic-map-open-recovery-unavailable",
         "locked-canvas-floor-reuse-unavailable", "native-identity-strong-conflict-producer-unavailable",
         "pose-index-candidate-provider-unavailable"];
     private readonly object _sync = new();
@@ -73,7 +72,9 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         lock (_sync)
         {
             if (_frame is not null && !_capture.IsCurrent(_frame.Stamp)) return Withhold(_publishedState);
-            return _publishedState;
+            var recovery = RecoveryStatus();
+            return recovery == _publishedState.MapOpenRecovery ? _publishedState
+                : _publishedState with { MapOpenRecovery = recovery };
         }
     }
 
@@ -82,7 +83,8 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         lock (_sync)
         {
             if (_frame is not null && !_capture.IsCurrent(_frame.Stamp)) return Snapshot(Withhold(_publishedState));
-            return _capture.IsBound == _publishedBindingState ? _publishedSnapshot : Snapshot(_publishedState);
+            return _mapRecovery is null && _capture.IsBound == _publishedBindingState
+                ? _publishedSnapshot : Snapshot(_publishedState with { MapOpenRecovery = RecoveryStatus() });
         }
     }
 
@@ -194,6 +196,12 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
                 if (!RequestMatches(request)) return Receipt(request, false, "request-runtime-context-mismatch");
                 RequireCurrent(epoch, cancellationToken);
                 _progressRequest = request.Context; _progressEpoch = epoch; _progressCancellation = cancellationToken;
+                if (request.Action == "capture_now" && request.Payload.TryGetProperty("inputObservationSequence", out var observationSequence))
+                {
+                    if (observationSequence.ValueKind != JsonValueKind.Number || !observationSequence.TryGetInt64(out var sequence)
+                        || sequence < _lastMapInputSequence) return Receipt(request, false, "map-input-sequence-expired");
+                    _lastMapInputSequence = sequence;
+                }
             }
             return request.Action switch
             {
@@ -203,8 +211,9 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
                 "toggle_round" => IsRoundActive() ? EndRound(request) : StartRound(request, epoch, cancellationToken),
                 "end_round" or "stop_round" or "reset_round" or "cancel" => EndRound(request),
                 "close_map" => CloseMap(request),
-                "map" => IsMapOpen() ? CloseMap(request) : await CaptureAndSolve(request, epoch, cancellationToken).ConfigureAwait(false),
+                "map" => await MapInput(request, epoch, cancellationToken).ConfigureAwait(false),
                 "capture_now" => await CaptureAndSolve(request, epoch, cancellationToken).ConfigureAwait(false),
+                "recover_map_open" => await RecoverMapOpen(request, epoch, cancellationToken).ConfigureAwait(false),
                 "confirm_route" => ConfirmMap(request, epoch, cancellationToken),
                 "select_group_member" => SelectGroupMember(request, epoch, cancellationToken),
                 "select_candidate" or "previous_candidate" or "next_candidate" => SelectCandidate(request),
@@ -248,7 +257,8 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
                 AdvanceOwnedEpoch(); RevokeFrame("context-bound"); ClearIdentity(); ClearFloor();
                 _resources = bound; _resourceRoot = root;
             }
-            if (desired.ProfileId != _selection.ProfileId) DiscardGroupMaterial("group-author-preference-changed");
+            if (desired.ProfileId != _selection.ProfileId)
+            { _displayGeneration++; DiscardGroupMaterial("group-author-preference-changed"); }
             _selection = desired; _reason = "context-bound"; Publish();
         }
         if (!reload) RefreshDisplayPreference(epoch, token, desired.ProfileId);
@@ -283,7 +293,11 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
 
     private RuntimeOperationResult CloseMap(SessionRuntimeRequest request)
     {
-        lock (_sync) { AdvanceOwnedEpoch(); RevokeFrame("map-closed"); Publish(); return Receipt(request, true, _reason); }
+        lock (_sync) {
+            if (request.Payload.TryGetProperty("inputSequence", out var value) && value.ValueKind == JsonValueKind.Number
+                && value.TryGetInt64(out var sequence))
+                _lastMapInputSequence = Math.Max(_lastMapInputSequence, sequence);
+            AdvanceOwnedEpoch(); RevokeFrame("map-closed"); Publish(); return Receipt(request, true, _reason); }
     }
 
     private RuntimeOperationResult ToggleSheetVisibility(SessionRuntimeRequest request)
@@ -295,9 +309,13 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         }
     }
 
-    private async ValueTask<RuntimeOperationResult> CaptureAndSolve(SessionRuntimeRequest request, long epoch, CancellationToken token)
+    private async ValueTask<RuntimeOperationResult> CaptureAndSolve(SessionRuntimeRequest request, long epoch,
+        CancellationToken token, RecoveryTicket? recovery = null)
     {
         BoundResources bound;
+        CaptureBindingScope? captureBinding;
+        bool wasOpen;
+        bool preparing = recovery is null && (request.Action == "map" || Flag(request.Payload, "foregroundReturn"));
         lock (_sync)
         {
             RequireCurrent(epoch, token);
@@ -305,19 +323,21 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             if (_resources is null) return Receipt(request, false, "resources-not-bound");
             if (!_capture.IsBound) return Receipt(request, false, "capture-not-bound");
             bound = _resources;
-            if (!_mapOpen) _mapCycle++;
-            RevokeFrame("map-open-preparing"); _workActive = true; Publish();
+            captureBinding = _capture.BindingScope;
+            wasOpen = _mapOpen;
+            RevokeFrame("map-open-preparing", retainRecovery: recovery is not null); _workActive = true; Publish();
         }
         var started = _options.TimeProvider.GetTimestamp();
-        var limit = _options.PreparationTimeout;
+        var limit = recovery is not null ? RecoveryLifetime - _options.TimeProvider.GetElapsedTime(recovery.Started)
+            : preparing ? _options.PreparationTimeout : TimeSpan.MaxValue;
         var period = _options.PreparationInterval;
         bool locked;
         lock (_sync) locked = _mapId is not null;
-        var nextProbe = locked ? TimeSpan.Zero : period;
-        int maxProbes = Math.Max(1, checked((int)Math.Ceiling(limit.TotalSeconds / period.TotalSeconds)));
+        var nextProbe = !preparing || locked ? TimeSpan.Zero : period;
+        int maxProbes = preparing ? Math.Max(1, checked((int)Math.Ceiling(limit.TotalSeconds / period.TotalSeconds))) : 1;
         CapturedClientFrame? captured = null;
         FloorObservationResult? floorRead = null;
-        string? preparedFloor = null;
+        string? observedFloor = null;
         int probes = 0;
         double captureMs = 0, decodeMs = 0, observationMs = 0;
         string? capturedFrameId = null;
@@ -327,9 +347,34 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             budgetMs = limit.TotalMilliseconds, captureMs, decodeMs, observationMs,
             capturedFrameId, map = floorRead?.MapObservation, floor = floorRead?.FloorRead
         };
+        RuntimeOperationResult Unprepared(string phase)
+        {
+            if (_capture.BindingScope != captureBinding)
+                return FailCurrent(request, epoch, "capture-context-obsolete", Preparation("binding-changed"));
+            if (recovery is null)
+                return preparing ? PreparationFailed(request, epoch, Preparation(phase))
+                    : FailCurrent(request, epoch, "map-not-observed", Preparation(phase));
+            lock (_sync)
+            {
+                RequireCurrent(epoch, token);
+                if (!ReferenceEquals(_mapRecovery, recovery) || recovery.Scope != CurrentRecoveryScope())
+                    return Receipt(request, false, "cancelled-or-stale");
+                bool pending = recovery.Remaining > 0 && _options.TimeProvider.GetElapsedTime(recovery.Started) < RecoveryLifetime;
+                if (!pending) _mapRecovery = null;
+                _workActive = false; _reason = pending ? "map-open-recovery-pending" : "map-open-recovery-exhausted";
+                _diagnostics = JsonSerializer.SerializeToElement(Preparation(phase), Json); Publish();
+                return Receipt(request, false, _reason);
+            }
+        }
         for (int attempt = 0; attempt < maxProbes; attempt++)
         {
             CheckCurrent(epoch, token);
+            if (_capture.BindingScope != captureBinding)
+                return FailCurrent(request, epoch, "capture-context-obsolete", Preparation("binding-changed"));
+            if (recovery is not null)
+                lock (_sync)
+                    if (!ReferenceEquals(_mapRecovery, recovery) || recovery.Scope != CurrentRecoveryScope())
+                        return Receipt(request, false, "cancelled-or-stale");
             var elapsed = _options.TimeProvider.GetElapsedTime(started);
             if (elapsed >= limit) break;
             while (elapsed < nextProbe)
@@ -349,11 +394,16 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             captureMs = Stopwatch.GetElapsedTime(stageStarted).TotalMilliseconds;
             capturedFrameId = acquisition.Frame?.Stamp.FrameId;
             CheckCurrent(epoch, token);
-            if (_options.TimeProvider.GetElapsedTime(started) >= limit)
-                return FailCurrent(request, epoch, "map-open-preparation-deadline", Preparation("capture-finished-after-deadline"));
-            if (acquisition.Frame is null) return FailCurrent(request, epoch, acquisition.Reason.Length > 0 ? acquisition.Reason : "capture-unavailable", Preparation("capture-unavailable"));
+            // Initial preparation still observes a late current capture: the
+            // original host retains a detected map with unknown floor for
+            // manual correction. A recovery probe has no such expiry exception.
+            if (!preparing && _options.TimeProvider.GetElapsedTime(started) >= limit)
+                return Unprepared("capture-finished-after-deadline");
+            if (acquisition.Frame is null) return recovery is not null ? Unprepared("capture-unavailable")
+                : FailCurrent(request, epoch, acquisition.Reason.Length > 0 ? acquisition.Reason : "capture-unavailable", Preparation("capture-unavailable"));
             captured = acquisition.Frame;
-            if (!_capture.IsCurrent(captured.Stamp)) return FailCurrent(request, epoch, "capture-context-obsolete", Preparation("capture-obsolete"));
+            if (_capture.BindingScope != captureBinding || !_capture.IsCurrent(captured.Stamp))
+                return FailCurrent(request, epoch, "capture-context-obsolete", Preparation("capture-obsolete"));
             stageStarted = Stopwatch.GetTimestamp();
             using var frame = ToBgr(captured);
             decodeMs = Stopwatch.GetElapsedTime(stageStarted).TotalMilliseconds;
@@ -362,16 +412,23 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
                 _options.FloorSettings is { } settings ? JsonNode.Parse(settings.GetRawText())?.AsObject() : null,
                 bound.StructureCatalog is not null ? S1FloorUse.StructureCandidate : _options.S1FloorUse, frameCurrent: true);
             observationMs = Stopwatch.GetElapsedTime(stageStarted).TotalMilliseconds;
-            // The source rechecks the deadline after observation, not merely
-            // before starting capture. Late usable pixels are never prepared.
-            if (_options.TimeProvider.GetElapsedTime(started) >= limit)
-                return FailCurrent(request, epoch, "map-open-preparation-deadline", Preparation("observation-finished-after-deadline"));
             lock (_sync)
             {
                 RequireCurrent(epoch, token, captured, bound);
-                preparedFloor = ResolveObservedFloor(floorRead);
             }
-            if (floorRead.MapOpen == true && preparedFloor is not null) break;
+            // Preparation classifies raw current evidence only. The manual
+            // override/expiry policy belongs to an accepted observation below;
+            // a late rejected usable frame must not clear the user's floor.
+            observedFloor = floorRead.AutomaticEligible ? floorRead.FloorId : null;
+            // A positive map with unreadable floor is retained for manual
+            // correction, not treated as a missing-map recovery opportunity.
+            // Late usable geometry still cannot pass the preparation deadline.
+            if (_options.TimeProvider.GetElapsedTime(started) >= limit)
+            {
+                if (preparing && observedFloor is null && floorRead.MapObservation["detected"]?.GetValue<bool>() == true) break;
+                return Unprepared("observation-finished-after-deadline");
+            }
+            if (floorRead.MapOpen == true && observedFloor is not null) break;
             nextProbe = probeStarted + period;
             if (attempt == maxProbes - 2)
             {
@@ -380,17 +437,26 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
                 if (lastProbe > nextProbe) nextProbe = lastProbe;
             }
         }
-        if (captured is null || floorRead?.MapOpen != true) return FailCurrent(request, epoch, "map-open-preparation-deadline", Preparation("probe-loop-ended-without-map"));
+        bool mapObserved = bound.Passports.Mode == "difficult" ? floorRead?.MapOpen == true
+            : floorRead?.MapObservation["detected"]?.GetValue<bool>() == true || floorRead?.MapOpen == true;
+        if (captured is null || floorRead is null || !mapObserved) return Unprepared("probe-loop-ended-without-map");
         var preparation = JsonSerializer.SerializeToElement(Preparation("prepared"), Json);
         string? floor, map;
         lock (_sync)
         {
             RequireCurrent(epoch, token, captured, bound);
-            floor = preparedFloor;
+            if (recovery is not null && (!ReferenceEquals(_mapRecovery, recovery) || recovery.Scope != CurrentRecoveryScope()))
+                return Receipt(request, false, "cancelled-or-stale");
+            floor = ResolveObservedFloor(floorRead);
+            if (!wasOpen) _mapCycle++;
             _frame = captured; _mapOpen = true; _floor = floor; _pose = null;
             _diagnostics = JsonSerializer.SerializeToElement(new { stage = "floor-observation", map = floorRead.MapObservation, floor = floorRead.FloorRead, preparation }, Json);
             _reason = floor is null ? "current-floor-unavailable" : "current-floor-observed";
-            map = _mapId; Publish();
+            map = _mapId;
+            // The recovered observation now owns this opening. Clearing only
+            // its ticket must not revoke the frame/material it is about to fit.
+            if (recovery is not null) _mapRecovery = null;
+            Publish();
         }
         if (floor is null) return Receipt(request, false, "current-floor-unavailable");
         using var current = ToBgr(captured);
@@ -595,8 +661,9 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         { _manualFloor = null; _manualFloorStarted = null; }
         return _manualFloor ?? _observedFloor;
     }
-    private void RevokeFrame(string reason)
+    private void RevokeFrame(string reason, bool retainRecovery = false)
     { _frame = null; _pose = null; _mapOpen = false; _workActive = false; _candidates = []; _selected = -1; _reason = reason;
+        if (!retainRecovery) _mapRecovery = null;
         RevokeDisplay(reason);
         _entryCandidates.Clear();
         _structureSession?.RevokeCurrent(); _structureTicket = null; _diagnostics = JsonSerializer.SerializeToElement(new { }); }
@@ -647,6 +714,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             _mapId is not null, _identitySource, _pose is not null, _pose, Array.AsReadOnly(_candidates.ToArray()), _selected,
             _reason, _diagnostics.Clone(), Array.AsReadOnly(Gaps))
         { Closed = _closed, ManualFloor = _manualFloor, ObservedFloor = _observedFloor, Display = _display, AlignedVisible = _alignedVisible,
+            MapOpenRecovery = RecoveryStatus(),
             IdentityKind = _identitySource == "group-default" ? "group" : _mapId is null ? "unresolved" : "map",
             MapDisplayName = _resources?.Passports.Maps.FirstOrDefault(map => map.MapId == _mapId)?.Name,
             IdentityGroupId = HasRegisteredGroup ? _nativeIdentity!.GroupId : null,
@@ -662,6 +730,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         {
             commands.AddRange(["set_floor", "reselect_map"]);
             commands.AddRange(["capture_now", "map"]);
+            if (state.MapOpenRecovery.Pending) commands.Add("recover_map_open");
             if (state.MapOpen) commands.Add("cycle_floor");
             if (state.Candidates.Count > 0 && !state.IdentityLocked) commands.AddRange(["select_candidate", "previous_candidate", "next_candidate", "confirm_route"]);
             if (state.IdentityMemberIds.Count > 1 && state.Context.FloorId is not null) commands.Add("select_group_member");

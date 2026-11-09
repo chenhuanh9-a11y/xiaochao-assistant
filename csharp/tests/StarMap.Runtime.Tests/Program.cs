@@ -94,10 +94,11 @@ await Run("manual-confirmation-locks-before-fit-and-consumes-actual-native-fit",
     Check(state.NativeGeometryVerified == expected.GeometryVerified && confirmation.Receipt.Success == expected.GeometryVerified, "real fast fit verdict preserved");
     if (expected.Matrix is not null && expected.GeometryVerified)
         Check(JsonNode.DeepEquals(JsonSerializer.SerializeToNode(state.NativePose!.ToMatrix()), JsonSerializer.SerializeToNode(expected.Matrix)), "native matrix exactly matches independently executed fit");
-    bool expectedPrior = before.NativeGeometryVerified && before.Context.MapId == chosen.MapId;
     Check(state.Diagnostics.GetProperty("stage").GetString() == "s0-host-fit"
-        && state.Diagnostics.GetProperty("priorUsed").GetBoolean() == expectedPrior,
-        "human fit uses only the current map's previously verified target-floor prior when one actually exists");
+        && !state.Diagnostics.GetProperty("priorUsed").GetBoolean()
+        && typeof(LiveRuntime).GetField("_geometryGroup", System.Reflection.BindingFlags.NonPublic
+            | System.Reflection.BindingFlags.Instance)!.GetValue(runtime) is null,
+        "the legacy capture fixture without physical context cannot turn a native pose into an authoritative reusable geometric group");
     Check(state.Context.ProfileId == "display-preference-only" && state.Diagnostics.GetProperty("nativeReferenceKey").GetString() == entry.StableKey,
         "display preference never changes the actual fitted structure resource");
     Check(!runtime.ReadSnapshot().LiveAuthorization && (!state.Display.Prepared || state.Display.CanonicalVerified),
@@ -165,7 +166,7 @@ await Run("new-synthetic-black-frame-preparation-fails-without-identity", async 
     var black = new LiveRuntime(synthetic, resourceRoot);
     var calls = new Driver(black);
     Check((await calls.Ask("set_context")).Receipt.Success && (await calls.Ask("start_round")).Receipt.Success, "synthetic uses actual bound production runtime");
-    var result = await calls.Ask("capture_now");
+    var result = await calls.Ask("map", new { openIntent = true, inputSequence = 1 });
     Check(!result.Receipt.Success && result.Receipt.Reason == "map-open-preparation-deadline" && !black.ReadState().IdentityLocked && !black.ReadState().NativeGeometryVerified,
         "new synthetic black input cannot fabricate open floor or identity");
     File.WriteAllText(Path.Combine(output, "synthetic-black.json"), JsonSerializer.Serialize(new { evidenceKind = "new-synthetic-black-frame", state = black.ReadState(), captureCalls = synthetic.Calls }));
@@ -209,13 +210,13 @@ await Run("preparation-deadline-rejects-valid-late-probe-" + lateProbe, async ()
             "real manual confirmation locks identity without creating capture or pose evidence");
     }
     var before = actual.ReadState();
-    var result = await calls.Ask("capture_now");
+    var result = await calls.Ask("map", new { openIntent = true, inputSequence = 1 });
     var state = actual.ReadState();
-    Check(state.Diagnostics.GetProperty("phase").GetString() == "capture-finished-after-deadline"
+    Check(state.Diagnostics.GetProperty("phase").GetString() == "observation-finished-after-deadline"
         && state.Diagnostics.GetProperty("probes").GetInt32() == lateProbe
         && state.Diagnostics.GetProperty("elapsedMs").GetDouble() > state.Diagnostics.GetProperty("budgetMs").GetDouble()
         && state.Diagnostics.GetProperty("capturedFrameId").GetString() is not null,
-        "late capture retains phase, probe, deadline and current frame diagnostics");
+        "initial late capture is still observed and retains phase, probe, deadline and current frame diagnostics");
     File.WriteAllText(Path.Combine(output, "late-probe-" + lateProbe + ".json"), JsonSerializer.Serialize(new
     { before, result, state, capture.Calls, starts, clockTicks = clock.GetTimestamp(), floatingProbeLimit = Math.Ceiling(new LiveRuntimeOptions().PreparationTimeout.TotalSeconds / new LiveRuntimeOptions().PreparationInterval.TotalSeconds) }));
     if (lateProbe == 1)
@@ -238,7 +239,7 @@ await Run("unlocked-preparation-original-cadence-has-20-starts-before-deadline",
     { BeforeReturn = _ => starts.Add(clock.GetTimestamp()) };
     var actual = new LiveRuntime(capture, resourceRoot, new() { TimeProvider = clock }); var calls = new Driver(actual);
     Check((await calls.Ask("set_context")).Receipt.Success && (await calls.Ask("start_round")).Receipt.Success, "unlocked cadence uses actual runtime");
-    var result = await calls.Ask("capture_now"); var state = actual.ReadState();
+    var result = await calls.Ask("map", new { openIntent = true, inputSequence = 1 }); var state = actual.ReadState();
     File.WriteAllText(Path.Combine(output, "unlocked-cadence.json"), JsonSerializer.Serialize(new { result, state, capture.Calls, starts, clockTicks = clock.GetTimestamp(), origin = "new synthetic black probes; clock boundary only" }));
     Check(capture.Calls == 20 && starts.SequenceEqual(Enumerable.Range(1, 20).Select(i => TimeSpan.FromMilliseconds(i * 50).Ticks))
         && clock.GetTimestamp() == TimeSpan.FromSeconds(1.05).Ticks && !result.Receipt.Success && result.Receipt.Reason == "map-open-preparation-deadline"
@@ -256,7 +257,7 @@ await Run("preparation-deadline-rechecked-after-current-frame-observation", asyn
     };
     var actual = new LiveRuntime(capture, resourceRoot, new() { TimeProvider = clock }); var calls = new Driver(actual);
     Check((await calls.Ask("set_context")).Receipt.Success && (await calls.Ask("start_round")).Receipt.Success, "post-capture clock context starts");
-    var result = await calls.Ask("capture_now");
+    var result = await calls.Ask("map", new { openIntent = true, inputSequence = 1 });
     Check(advanced && !result.Receipt.Success && result.Receipt.Reason == "map-open-preparation-deadline"
         && !actual.ReadState().MapOpen && actual.ReadState().Candidates.Count == 0 && actual.ReadState().Context.FrameId is null,
         "passing capture-return check does not exempt observation from the same deadline");
