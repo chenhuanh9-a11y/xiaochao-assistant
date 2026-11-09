@@ -1,0 +1,19 @@
+<Window x:Class="StarMap.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="星图" Height="460" Width="640" MinWidth="480" MinHeight="360">
+    <DockPanel Margin="16">
+        <StackPanel DockPanel.Dock="Top" Margin="0,0,0,12">
+            <TextBlock x:Name="SessionText" FontSize="16" TextWrapping="Wrap"/>
+            <TextBlock x:Name="HandshakeText" Margin="0,6,0,0" TextWrapping="Wrap"/>
+        </StackPanel>
+        <StackPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
+            <TextBlock Text="录制帧目录"/>
+            <DockPanel Margin="0,4,0,0">
+                <Button DockPanel.Dock="Right" Margin="8,0,0,0" Padding="12,4" Click="RunSlice" Content="运行纵向切片"/>
+                <TextBox x:Name="FrameBox"/>
+            </DockPanel>
+        </StackPanel>
+        <TextBlock x:Name="ResultText" TextWrapping="Wrap" FontFamily="Consolas"/>
+    </DockPanel>
+</Window>
