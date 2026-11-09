@@ -151,8 +151,14 @@ internal static class Program
                 Await(GroupChoiceWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption + 1]), Path.GetFullPath(args[replayOption + 1]), output, Check));
             int steadyOption = Array.IndexOf(args, "--steady-oracle");
             if (resourcesOption >= 0 && replayOption >= 0 && steadyOption >= 0)
+            {
                 Await(SteadyWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption + 1]), Path.GetFullPath(args[replayOption + 1]),
                     Path.GetFullPath(args[steadyOption + 1]), output, Check));
+                int hostOption = Array.IndexOf(args, "--host-path-oracle");
+                if (hostOption < 0) throw new ArgumentException("--host-path-oracle is required with --steady-oracle");
+                Await(S1ExplicitDomainWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption + 1]), Path.GetFullPath(args[replayOption + 1]),
+                    Path.GetFullPath(args[hostOption + 1]), output, Check));
+            }
             int captureOption = Array.IndexOf(args, "--capture-record");
             if (resourcesOption >= 0 && captureOption >= 0)
                 Await(RuntimeWorkspaceRegression.Run(Path.GetFullPath(args[captureOption + 1]), Path.GetFullPath(args[resourcesOption + 1]), output, Check));

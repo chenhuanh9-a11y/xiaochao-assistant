@@ -457,16 +457,12 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         JsonObject steadyDiagnostic = new() { ["attempted"] = false, ["reason"] = "steady-disabled" };
         if (bound.StructureCatalog is not null)
         {
-            source = bound.LoadReference(entry).Value;
-            if (source is not null)
-                steady = TrySteady(epoch, token, captured, bound, entry, source, frame, preferred, null, out steadyDiagnostic);
-            if (steady is not null) fit = steady.Fit;
-            else
-            {
-                using var pipeline = new SharedStructureFitPipeline(bound.Catalog, bound.LoadReference);
-                fit = pipeline.Fit(frame, entry, () => Obsolete(epoch, token, captured, bound));
-                source = StructureEvidence.VerifiedPose(fit) ? bound.LoadReference(entry).Value : null;
-            }
+            // client_live_runtime._solve_observation calls the S1 Host with
+            // explicit full-client bounds; that path does not request steady.
+            steadyDiagnostic["reason"] = "explicit-domain-independent-fit";
+            using var pipeline = new SharedStructureFitPipeline(bound.Catalog, bound.LoadReference);
+            fit = pipeline.Fit(frame, entry, () => Obsolete(epoch, token, captured, bound));
+            source = StructureEvidence.VerifiedPose(fit) ? bound.LoadReference(entry).Value : null;
         }
         else
         {

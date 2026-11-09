@@ -20,7 +20,10 @@ public sealed partial class LiveRuntime
     private readonly Dictionary<SteadyFloorKey, CommittedSteadyFloor> _steadyFloors = new();
     private string? _rememberedMaterial;
 
-    private bool SteadyEnabled => _options.Idvb0059Enabled && Environment.GetEnvironmentVariable("IDENTITYV_IDVB0059_STEADY") != "0";
+    // Original Qt S1 supplies an explicit full-frame observation domain. The
+    // Host deliberately skips 0059 there, even when the setting is enabled.
+    private bool SteadyEnabled => _selection.Season == "s0" && _options.Idvb0059Enabled
+        && Environment.GetEnvironmentVariable("IDENTITYV_IDVB0059_STEADY") != "0";
 
     private static SteadyFloorKey? SteadyKey(CapturedClientFrame frame, string map, string floor, string resource)
     {
