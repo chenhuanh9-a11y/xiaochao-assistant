@@ -123,4 +123,5 @@ def classify_label(patch, *, selected):
     eligible = tuple(label for label in LABELS if label<0) if signs else LABELS
     best = max(eligible,key=scores.get)
     return dict(label=best, scores=scores, digitAspect=float(dw/dh),
+                digitCenterY=float(dy+(dh-1)/2),
                 family=TEMPLATE_FAMILY)
